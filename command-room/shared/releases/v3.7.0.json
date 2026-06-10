@@ -1,0 +1,13 @@
+{
+  "version": "3.7.0",
+  "headline": "Polished reports save as Word documents now — no more loose markdown files for things you read.",
+  "items": [
+    {
+      "id": "v370_announce_md_deliverable_policy",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Every polished report I produce — automation scans, dormancy reports, audits, monthly recaps, follow-up packs, summaries — now saves as a Word document so it renders correctly in Word and Pages. Email drafts no longer save as files at all; they go straight to your Gmail Drafts. Files I use as working memory (briefings, insights, notes, project context) stay in their original format since they're for me to read, not you. No action needed — next time any of these fires, you get the document.",
+      "action": "announce_only"
+    }
+  ]
+}

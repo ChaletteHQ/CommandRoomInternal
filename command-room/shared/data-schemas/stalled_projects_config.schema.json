@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command-room://schemas/stalled_projects_config.schema.json",
+  "title": "Stalled Projects Skill Config",
+  "description": "First-run questionnaire answers for the stalled-projects skill. Stored at _hq/data/skill_config/stalled-projects.json via skill_config_writer.py. Thresholds cover all 6 canonical thread statuses per ORG_AND_THREAD_MODEL v2.10.3+: active, exploring, paused, blocked, dormant, archived. Archived threads are never flagged; no threshold key needed.",
+  "type": "object",
+  "required": ["schema_version", "configured_at", "skill_name", "config"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "configured_at": { "type": "string", "format": "date-time" },
+    "skill_name": { "const": "stalled-projects" },
+    "config": {
+      "type": "object",
+      "required": ["thresholds", "activity_event_types", "surface_locations"],
+      "properties": {
+        "thresholds": {
+          "type": "object",
+          "properties": {
+            "active_days": { "type": "integer", "minimum": 1, "default": 14 },
+            "exploring_days": { "type": "integer", "minimum": 1, "default": 30 },
+            "paused_days": { "type": "integer", "minimum": 1, "default": 45 },
+            "blocked_days": { "type": "integer", "minimum": 1, "default": 14 },
+            "dormant_days": { "type": "integer", "minimum": 1, "default": 90 }
+          },
+          "additionalProperties": false
+        },
+        "activity_event_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["meeting", "commitment", "decision", "interaction", "intel_logged", "status_change"]
+          },
+          "default": ["meeting", "commitment", "decision", "interaction"]
+        },
+        "surface_locations": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "string",
+            "enum": ["pulse_phase_9", "friday_wrap", "morning_brief_if_any", "weekly_audit_only"]
+          },
+          "default": ["pulse_phase_9", "friday_wrap"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "version": "3.4.2",
+  "headline": "A new way to triage inbound bug reports — say `process bug report` when one lands.",
+  "items": [
+    {
+      "id": "v342_announce_process_bug_report",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I added a skill for when someone forwards you a bug report. Say `process bug report` and I'll triage it — verify the diagnosis, check for related broken spots, log it, and draft a voice-calibrated reply saved to your Gmail Drafts (never auto-sent).",
+      "action": "announce_only"
+    }
+  ]
+}

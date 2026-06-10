@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Tests for brief_writer table + matrix primitives (Bug #58, v3.13.8)."""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "shared" / "scripts"))
+
+from brief_writer import make_brief  # noqa: E402
+
+
+def _extract_xml(path: Path) -> str:
+    with zipfile.ZipFile(str(path)) as z:
+        return z.read("word/document.xml").decode("utf-8")
+
+
+def test_basic_table_renders() -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="brief_table_test_"))
+    out = tmp / "brief.docx"
+    make_brief(
+        str(out),
+        brief_kind="memo",
+        title="Test memo",
+        subtitle="Test subtitle",
+        sections=[
+            {
+                "heading": "Section A",
+                "body": "Body text.",
+                "table": {
+                    "headers": ["Col1", "Col2", "Col3"],
+                    "rows": [
+                        ["a1", "a2", "a3"],
+                        ["b1", "b2", "b3"],
+                        ["c1", "c2", "c3"],
+                    ],
+                    "highlight_row_idx": 1,
+                },
+            },
+        ],
+    )
+    assert out.exists()
+    xml = _extract_xml(out)
+    # Table element should appear
+    assert "<w:tbl" in xml, "expected table XML"
+    # Headers should appear
+    assert "Col1" in xml and "Col2" in xml and "Col3" in xml
+    # Cells should appear
+    assert "a1" in xml and "b2" in xml and "c3" in xml
+    print("PASS test_basic_table_renders")
+
+
+def test_matrix_with_star_renders() -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="brief_matrix_test_"))
+    out = tmp / "matrix.docx"
+    make_brief(
+        str(out),
+        brief_kind="decision_memo",
+        title="Decision test",
+        subtitle="Test subtitle",
+        sections=[
+            {
+                "heading": "Comparison",
+                "body": "Comparing options.",
+                "matrix": {
+                    "headers_row": ["Option A", "Option B", "Option C"],
+                    "headers_col": ["Cost", "Risk", "Time"],
+                    "cells": [
+                        ["$10k", "$20k", "$15k"],
+                        ["low", "high", "med"],
+                        ["2wk", "1mo", "3wk"],
+                    ],
+                    "star_col_idx": 0,
+                },
+            },
+        ],
+    )
+    assert out.exists()
+    xml = _extract_xml(out)
+    assert "<w:tbl" in xml
+    assert "Option A" in xml and "Cost" in xml
+    # Star glyph on column 0 cells
+    assert "★" in xml, "expected star glyph in matrix col 0"
+    print("PASS test_matrix_with_star_renders")
+
+
+def test_insights_kind_supported() -> None:
+    """Bug #26 — insight-generator can use brief_writer with insights kind."""
+    tmp = Path(tempfile.mkdtemp(prefix="brief_insights_test_"))
+    out = tmp / "insights.docx"
+    make_brief(
+        str(out),
+        brief_kind="insights",
+        title="Workspace insights",
+        subtitle="Weekly observations",
+        sections=[
+            {"heading": "Observation 1", "body": "Lorem ipsum."},
+        ],
+    )
+    assert out.exists()
+    xml = _extract_xml(out)
+    assert "INSIGHTS" in xml
+    print("PASS test_insights_kind_supported")
+
+
+def test_table_only_section_works() -> None:
+    """A section with just a table (no body/bullets) should render."""
+    tmp = Path(tempfile.mkdtemp(prefix="brief_table_only_"))
+    out = tmp / "table_only.docx"
+    make_brief(
+        str(out),
+        brief_kind="board_pack",
+        title="Board pack test",
+        subtitle="Q2 metrics",
+        sections=[
+            {
+                "heading": "KPIs",
+                "table": {
+                    "headers": ["Metric", "Q1", "Q2"],
+                    "rows": [
+                        ["Revenue", "$100k", "$120k"],
+                        ["Margin", "32%", "38%"],
+                    ],
+                },
+            },
+        ],
+    )
+    assert out.exists()
+    print("PASS test_table_only_section_works")
+
+
+def main() -> int:
+    test_basic_table_renders()
+    test_matrix_with_star_renders()
+    test_insights_kind_supported()
+    test_table_only_section_works()
+    print("\nALL brief_writer table/matrix tests PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

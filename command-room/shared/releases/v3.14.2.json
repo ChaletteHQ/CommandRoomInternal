@@ -1,0 +1,13 @@
+{
+  "version": "3.14.2",
+  "headline": "Your AI has a name now, and it routes when you call it.",
+  "items": [
+    {
+      "id": "v3142_brain_name_routing_announce",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two things landed in this update:\n\n  1. **Address me by name.** Whatever you named me (default `Penelope`, change with `name my AI [Name]`), say it at the start of any request and I'll know you're talking to me. `Penelope, prep me for my 2pm` routes to call-prep. `Penelope, draft an email to Sam` routes to email-writer. `Penelope, what's going on` runs the full briefing. The name strips off and the rest of your message routes normally — I'm not adding a step, I'm catching the natural way you'd address a chief of staff.\n\n  2. **`new project` works on its own.** Before this, saying `new project` and then pasting context in a follow-up message often didn't fire project creation — you had to say `new project in command room` to force it. Now `new project` (plus any natural variant like `start a new project` / `create a new project` / `I want to add a new project`) locks the routing as soon as you say it. If you don't include the name inline, my first follow-up is just `What's the project name?` — no open-ended re-prompts.\n\nAlso: my name now shows up across briefing intros, call-prep covers, meeting-notes acknowledgments, board pack covers, decision memo bylines, the weekly audit summary, and the project roster footer. Wherever the back-and-forth happens, it should feel like a real conversation with a named operator from here on.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "client": "Chalette Internal",
+  "repo": "CommandRoomInternal",
+  "note": "Core skills listed here are SKIPPED when core is mirrored in, because this client has a custom replacement in command-room-internal-custom/. Empty = client tracks core for every skill.",
+  "core_skill_overrides": []
+}

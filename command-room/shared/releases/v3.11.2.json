@@ -1,0 +1,13 @@
+{
+  "version": "3.11.2",
+  "headline": "Audit cleanup — small fixes from a sweep across the last several releases.",
+  "items": [
+    {
+      "id": "v3112_announce_audit_cleanup",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "A small cleanup pass — no new features. Tied up about 17 paper-cuts and consistency items that surfaced after the recent release arc: automation scaffolding now actually uses its helper, monthly intro check-ins surface in your daily pulse, stale references to retired skills swept across documentation, decision-revisit routing fixed, Friday Wrap counts reconciled, board-pack QuickBooks failure modes documented, and a new automated guard to block this drift class going forward. Two new note types added to my recognized list. No action needed.",
+      "action": "announce_only"
+    }
+  ]
+}

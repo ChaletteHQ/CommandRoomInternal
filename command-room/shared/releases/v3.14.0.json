@@ -1,0 +1,13 @@
+{
+  "version": "3.14.0",
+  "headline": "v3.14 foundation — first-run questionnaire infrastructure + new event types",
+  "items": [
+    {
+      "id": "v3140_foundation_prep",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Quiet foundation update preparing for new skills coming in upcoming releases. Adds the infrastructure for skills to remember your first-time setup answers between sessions, so when a new skill asks you 3-5 setup questions, it only asks once — not every time you fire it. Nothing for you to do; the next wave of skills will use this automatically.",
+      "action": "announce_only"
+    }
+  ]
+}

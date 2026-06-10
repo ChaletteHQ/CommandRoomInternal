@@ -1,0 +1,13 @@
+{
+  "version": "3.6.4",
+  "headline": "Your meeting briefs got noticeably richer.",
+  "items": [
+    {
+      "id": "v364_announce_meeting_brief_improvements",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I fixed a drift where some content I extract from meetings wasn't making it into your briefs. From now on, your morning Upcoming Meetings brief includes a since-your-last-brief delta, decisions already on the record, and per-attendee tagging on talking points when 2+ people are in the room. Your evening Past Meetings brief preserves scope changes and financial details in the document, and the notes I append keep the deeper analysis — risks, opportunities, timeline, relationships — that was getting dropped. Your next scheduled fire picks up the new content automatically.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "version": "3.11.0",
+  "headline": "Friday Wrap weekly recap arrives — and the Commitment Cockpit retires.",
+  "items": [
+    {
+      "id": "v3110_announce_cockpit_retirement",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I retired the Commitment Cockpit dashboard. The kanban surface (you owe / they owe / both stuck) is now folded into your daily Commitments scheduled chat, which carries inline action surfaces — strictly better than a snapshot-only dashboard. If you have the Cockpit pinned in your sidebar, you can leave it (it just won't refresh) or unpin it. No data lost.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3110_add_friday_wrap_to_existing_schedules",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I added Friday Wrap — your first weekly-rhythm scheduled chat. It fires 4 PM Fridays your local time and produces a 7-day cross-source recap saved as a document. To register it in your workspace, type `set up command room schedules`. Your existing scheduled tasks stay; Friday Wrap is added alongside. On first fire, Cowork will surface a one-time permission prompt — click Run Now to authorize.",
+      "action": "instruct_user"
+    }
+  ]
+}

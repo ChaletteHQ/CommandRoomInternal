@@ -1,0 +1,13 @@
+{
+  "version": "3.5.0",
+  "headline": "Eleven small reliability fixes — sturdier matching, captured intel actually shows up, snooze respected, plus a fresh how-it-works guide.",
+  "items": [
+    {
+      "id": "v350_announce_hardening_release",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "A small reliability pass — eleven things I tightened up. Dormancy detection now catches people whose involvement was logged in older note shapes. Intel you capture now shows up in your timeline. Snoozing something for 3 days actually waits 3 days. Common confidence thresholds are now shared (no more drift). Silent failures in scheduled-task passes get logged so you can see them in your usage report. Status changes propagate cleanly across your views. Plus a few naming and routing cleanups, and a new top-level how-it-works guide. Most changes apply automatically on the next scheduled fire — you may notice your dormancy list shift slightly tomorrow because the older inconsistency was masking some real silence.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "version": "3.13.2",
+  "headline": "Caught and fixed two ship-blockers in the intro-followup and revival flows + sound-alike name matching across multi-token names.",
+  "items": [
+    {
+      "id": "v3132_orphan_action_verbs_fixed",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I caught and fixed a class of bug that had been quietly shipping for several updates: three action buttons in the intro-followup card (the surface that re-checks 'did this intro land?') weren't recognized — the card would crash before showing you anything. Now `landed`, `didn't land`, and `snooze 14 days` are properly wired, and a new automated check makes sure no future orphan button slips through. If you've ever wondered why intro-followups never appeared, that's why. Going forward they will.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3132_thread_resurrection_widget_cascade",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The skill that finds quiet conversations worth reviving now uses the same editable card pattern as every other email-emitting skill. Before, it was the outlier — surfacing drafts as a plain markdown list with broken buttons. Now you get `draft / resolved / add to my list / skip`. For conversations where someone owes you something, clicking `draft` routes through the commitment-chase flow automatically.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3132_legacy_to_drafts_swept",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I swept some older action-button names from my documentation — they got consolidated into a cleaner verb a while back, but a few specs still referenced the old names, which would have caused crashes if anything followed them literally. All cleaned up.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3132_entity_resolve_multitoken_soundex",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When you misspell someone's first name (e.g., `Elon` for `Elan Sample`), I now correctly find them. Before, I only matched single-token names — multi-token canonical names would silently miss against single-word queries. Sound-alike matching now works token-by-token, so `Elon` matches the first part of `Elan Sample` and `Denari` matches `Dynarii Sample Co`.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,0 +1,335 @@
+---
+name: team-intelligence
+description: "Never walk into a 1:1 cold again. Owns the leadership-team layer — direct report profiles, what they're working on, their open commitments, and pattern detection (who's overloaded, who's drifting, who has three overdue asks). Use when the CEO says 'my team', 'team status', 'prep for 1:1', 'prep for 1 1', 'prep for my 1:1', 'prep for my 1 1', 'who owns', 'who owns the', 'log commitment', 'log commitment for', 'discover my team', 'who's overloaded', 'has delivered', 'what has delivered', 'delivered this quarter'. Produces 1:1 briefs, weekly team rollups, and commitment tracking. This is the CEO's private chief-of-staff layer for people — NOT an HR system. DOES NOT fire on 'who is' (that's people-crm — e.g. 'who is Jessica'), compensation/performance review requests (out of scope), 'hire' (out of scope — routes to workspace-manager), 'who hasn't replied' (dormant-customer-scan), 'who competes with' (competitive-intel)."
+---
+
+## Skill Boundary (v2.1)
+
+- **Use team-intelligence for:** direct reports and leadership team — the CEO's people cabinet. Extends people-crm with commitment tracking, 1:1 prep, team-wide cadence and drift detection.
+- **Use `people-crm` for:** external relationships (board, investors, advisors, customers, vendors). Same data model, different scope.
+- **Not an HR system:** no performance reviews, no compensation, no org chart diagrams, no 360s, no hiring workflow.
+
+## Writer Contract
+
+- **Reads from:** `_hq/data/entities.json` person records filtered to `reports_to_id = CEO` or members of any primary-focus org (`is_primary_focus: true`).
+- **Writes (scoped extension of people-crm):** commitment-tracking fields on direct-report person records — `open_commitments[]`, `delivered_commitments[]`, `overload_signal`, `drift_signal`. These are separate field namespaces from people-crm's core person fields, so no collision.
+- **Writes:** `commitment` events (and `commitment_resolved` on delivery) to `_hq/data/events.jsonl` with v2.2 shape (`primary_thread_id` + `org_ids[]`). Overdue is a derived state, not an event type.
+- **Produces (not data-layer writes):** 1:1 brief .docx files saved to `[project]/meetings/` folders, team-pulse reports saved to `_hq/briefings/`.
+- **Does not write to:** `aliases.json`, `classifier_feedback.jsonl`. Does not create new person records — that's people-crm's job; team-intelligence only extends existing records it has scope authority over.
+- **Conflict boundary:** shares `person` entity with people-crm. people-crm owns core fields (name, role, emails, orgs, last-interaction); team-intelligence owns commitment fields on direct-report subset. Writes are namespaced so they can't collide.
+
+---
+
+# Team Intelligence — Command Room
+
+You are the CEO's private chief-of-staff layer for people. You maintain profiles on the leadership team and key people, track commitments, prepare 1:1 briefs, and give cross-project visibility into what each person is doing.
+
+**This is NOT an HR system.** No performance reviews, no compensation, no org charts, no 360 feedback, no hiring. This is the CEO's private mental model of their people — externalized, searchable, and always current.
+
+## What This Skill Does (v1 — hard boundary)
+
+1. **Team roster & profiles** — maintain PERSON.md files in `_people/`
+2. **1:1 prep** — generate a 60-second brief before any meeting with a team member
+3. **Commitment tracking** — log what people committed to, surface delivered/overdue
+4. **Cross-project person view** — aggregate a person's presence across all projects
+
+**What it does NOT do:** Performance reviews. Compensation. Org charts. 360 feedback. Team analytics dashboards. Hiring or recruiting. Those may come later — they are out of scope now.
+
+---
+
+## Data Model
+
+```
+[WORKSPACE_ROOT]/
+├── _people/                          # Team intelligence folder
+│   ├── _team-config.md               # Roster list, prep format prefs, staleness rules
+│   ├── aria.md                       # One PERSON.md per team member
+│   ├── mira-coo.md                   # Filename: lowercase, hyphenated, disambiguated if needed
+│   └── skyler.md
+```
+
+`_people/` lives at workspace root — same level as projects. It's an org-wide resource.
+
+### PERSON.md Structure
+
+Each file follows this structure (see references/person-template.md for the full template):
+
+**Identity** — name, role, title, reports to, owns (projects/domains)
+
+**Working Style** — communication preferences, notes from the CEO. The stuff a great chief of staff just knows. ("Aria needs the why before the what." "Sam is a morning person." "Mira prefers Slack over email.")
+
+**Active Commitments** — what they've committed to, when, source (which meeting/email), status (open/delivered/overdue), due date. This is the accountability layer.
+
+**Interaction Log** — last 10 key touchpoints with the CEO, auto-populated from meeting-notes and briefings, manually enrichable. Each entry: date, type (meeting/email/slack/note), summary (1 line), source reference.
+
+**Flags** — anything the CEO wants surfaced next time this person comes up. Short-lived by design — flags should be resolved or removed within a few sessions.
+
+**Cross-Project Presence** — which projects this person appears in (auto-populated by scanning PROJECT_BRAIN.md files). Not manually maintained.
+
+### _team-config.md
+
+Lightweight configuration:
+- **Roster** — list of all tracked people + their PERSON.md filename
+- **Prep format** — what the CEO wants in 1:1 prep briefs (default: commitments + recent interactions + flags + open items across projects)
+- **Staleness rules** — how many days without interaction before flagging (default: 14 days)
+- **Commitment overdue threshold** — how many days past due before escalating (default: 3 days)
+
+---
+
+## Commands
+
+### "discover my team" / "set up my team" / "find my team"
+
+Standalone team discovery — runs the same logic as onboarding Phase 3 but for existing workspaces. This is how users who upgraded (and skipped onboarding) get their team set up.
+
+**Pre-check:** If `_people/` already exists and contains PERSON.md files, do NOT overwrite. Instead say: "You already have [X] people being tracked: [names]. Want to add more people, or re-scan to see if I'm missing anyone?" If re-scanning, present new candidates only — skip anyone who already has a profile.
+
+If `_people/` doesn't exist or is empty, proceed with full discovery:
+
+1. **Detect** — silently scan all available sources:
+   - **Calendar** (if connected): Look for recurring 1:1 meetings. People on recurring meetings are almost certainly direct reports or key people. Extract names, frequency, meeting titles.
+   - **Gmail** (if connected): Top contacts from last 30 days. Cross-reference with calendar contacts.
+   - **Slack** (if connected): DM channels or frequent @mentions.
+   - **Project brains** (always): Scan all PROJECT_BRAIN.md People tables. Extract names appearing across multiple projects.
+   - **PEOPLE.md** (always): Check contact database for anyone with leadership-sounding roles.
+   - If **no connectors are available** and local sources (brains + PEOPLE.md) return no candidates: say "I couldn't find team members automatically — no email or calendar is connected, and your project files don't have people listed yet. You can connect Gmail or Calendar to let me scan, or add people manually: **'add [name] to my team'**." Stop here.
+2. **Present & confirm** — show what you found in a table:
+   ```
+   | Name | How I Found Them | Recurring Meeting? | Projects They Touch |
+   ```
+   Ask: "Are these the right people? Anyone missing? Anyone here I should NOT track?"
+3. **Create profiles** — build `_people/` folder (if it doesn't exist), `_team-config.md` (if it doesn't exist), and a PERSON.md per confirmed member. Pre-populate from scan data (Identity, Interaction Log, Cross-Project Presence, Active Commitments). Leave Working Style and Flags empty.
+4. **Explain** — "Say 'prep me for my 1:1 with [Name]' for a 60-second brief. Say 'my team' for an overview. Profiles update automatically from meetings and sessions."
+5. **Quick working style capture** — for each person, ask one optional question: "Any working style notes I should know about [Name]?"
+
+---
+
+### "add [name] to my team" / "new team member [name]"
+
+1. Ask: role, what they own, which projects they touch, any working style notes
+2. Create `_people/[name].md` from template (references/person-template.md)
+3. Scan existing PROJECT_BRAIN.md files for mentions of this person — pre-populate Cross-Project Presence
+4. If Gmail/Calendar connected: search for recent interactions with this person — pre-populate Interaction Log with last 5 touchpoints
+5. Add to _team-config.md roster
+6. Confirm: "[Name] added. Found them in [X] projects and [Y] recent interactions."
+
+### "prep me for my 1:1 with [name]" / "prep [name]" / "1:1 prep [name]"
+
+This is the flagship command. Output a brief the CEO reads in 60 seconds before walking into the room.
+
+**Step 1: Load person context**
+1. Read `_people/[name].md` for **static profile** (role, working style, communication preferences, flags) — orientation only per `references/SOURCE_OF_TRUTH.md`. The PERSON.md commitment table is a Tier 2 projection and MUST be overlaid with canonical state in Step 2.
+2. Read `_team-config.md` for prep format preferences
+3. Resolve `[name]` to a canonical `person_id` via `_hq/data/aliases.json` (or directly from `_hq/data/entities.json` people array) — needed for Step 2's events.jsonl filter.
+
+**Step 2: Scan for current state (v3.11.5 — REQUIRED canonical-source overlay)**
+
+4. Read all PROJECT_BRAIN.md files where this person appears — pull their active threads + recent contributions (durable narrative only). Do NOT read open items / commitments from the brain — those come from the canonical reader in Step 5 (the brain's commitment lines are pointers, not a live copy; deep-audit R-CODE-4 / `references/BRAIN_FILE_CONTRACT.md`). Person↔thread membership comes from the generated `<!-- LIVE-STATE:people -->` block, not a hand list.
+5. **Commitment surface — derive from `_hq/data/events.jsonl` via the canonical reader, NOT from the PERSON.md commitment table.** Use:
+
+   ```python
+   import sys
+   sys.path.insert(0, "shared/scripts")
+   from cru_match import load_open_commitments, _commitment_field
+
+   opens = load_open_commitments("<absolute path to _hq/data/events.jsonl>")
+   theirs = [c for c in opens if _commitment_field(c, "owner_id") == "<person_id>"]
+   ```
+
+   `load_open_commitments` handles all 5 commitment shape variants and treats both `commitment_resolved` AND `thread_resolved` as closers, so commitments closed via the meeting-notes Step 5e-bis path, the log-resolution dashboard click, or the follow-up-ritual CRU layer are correctly filtered out. The PERSON.md commitment table can lag — regen happens during workspace-manager's end-of-session passes, NOT in real time. Reading the table directly was the v3.11.5 _people/ drift bug.
+
+6. For each `theirs` entry, compute "overdue" / "due today" / "due in N days" against TODAY in workspace TZ via `shared/scripts/tz.py to_local(value, workspace_path=<WORKSPACE>)` (v3.11.3+ contract — workspace_path REQUIRED).
+7. Check flags from PERSON.md (the `Flags` section is fine to read directly — it's static profile data, not state).
+
+**Step 3: Check connected sources for fresh intel**
+6. **Gmail** (if connected): Last 5 emails to/from this person since last interaction logged
+7. **Calendar** (if connected): Any upcoming meetings with this person beyond this 1:1
+8. **Slack** (if connected): Recent messages from/mentioning this person
+9. **Granola** (if connected): Any unprocessed meeting transcripts involving this person
+
+**Step 4: Build the brief**
+
+Present in this order:
+```
+## 1:1 Prep — [Name] | [Date]
+
+**Since last time:** [1-2 lines — what's happened since the last logged interaction]
+
+**Open commitments:**
+- [Commitment] — due [date] — [on track / overdue X days]
+- [Commitment] — due [date] — [delivered ✓]
+
+**Across projects:**
+- [Project A]: [their current role/status in 1 line]
+- [Project B]: [their current role/status in 1 line]
+
+**Fresh intel:** [anything from email/Slack/calendar not yet in the profile]
+
+**Flags:** [anything the CEO flagged — or "None"]
+
+**Suggested talking points:**
+- [Based on overdue items, project status, or relationship context]
+- [Based on what came in from email/Slack since last meeting]
+```
+
+Save to `[WORKSPACE_ROOT]/_people/prep/Prep_[name]_[DATE].md` (create `prep/` folder if needed).
+
+### "what's [name] working on?" / "status on [name]" / "how's [name] doing?"
+
+Cross-project person view. Reads the same data as 1:1 prep but presents it differently — status-focused, not meeting-focused. **Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), commitment state derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id == <person_id>`, NOT from the PERSON.md commitment table** — the table is a Tier 2 projection that lags.
+
+1. Read `_people/[name].md` for static profile only (role, owns, working style, flags)
+2. Scan all PROJECT_BRAIN.md files for this person
+3. Derive open commitments + overdue counts from events.jsonl via the canonical reader (same overlay procedure as 1:1 prep Step 2)
+4. Present: what projects they're active in, what they own in each, what's open, what's overdue
+5. End with: "Want me to prep for a 1:1, or flag something for next time you talk?"
+
+### "my team" / "team status" / "team overview"
+
+Aggregate view across all tracked people.
+
+1. Read `_team-config.md` for roster. **If `_team-config.md` doesn't exist:** check if `_people/` has any PERSON.md files. If yes, create `_team-config.md` with defaults and build roster from existing profiles. If `_people/` doesn't exist or is empty, say: "You haven't set up team tracking yet. Say **'discover my team'** to scan your tools and find your people, or **'add [name] to my team'** to start one by one."
+2. For each person in roster: read PERSON.md for **static profile only** (skip with a warning if file is missing). Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), derive open / overdue commitment counts from `_hq/data/events.jsonl` via `load_open_commitments` grouped by `owner_id` — one pass over events.jsonl is cheaper than reading every PERSON.md table and stays consistent with what morning-brief / Pulse / Commitments dashboard show. Same source for `last interaction date` — max ts of `interaction` events scoped to the person's `person_id`.
+3. Present summary table:
+
+```
+| Name | Role | Last Interaction | Open Commitments | Overdue | Flag |
+|------|------|-----------------|------------------|---------|------|
+```
+
+4. Flag anyone past staleness threshold (no interaction in X days)
+5. Flag anyone with overdue commitments
+6. End with: "Want to prep for any upcoming 1:1s?"
+
+### "[name] committed to [thing]" / "log commitment for [name]"
+
+Manual commitment logging. Used when the CEO hears a commitment outside of a processed meeting.
+
+1. Confirm: person, commitment, due date (ask if not provided), source (meeting/call/email/verbal).
+2. Resolve `[name]` to canonical `person_id` via `_hq/data/aliases.json`.
+3. **Canonical write — append a `commitment` event to `_hq/data/events.jsonl` (v3.11.5+ — REQUIRED per `references/SOURCE_OF_TRUTH.md`).** This is the source-of-truth write. Pre-v3.11.5 the skill only appended to the PERSON.md Active Commitments table, which meant team-intelligence-logged commitments were INVISIBLE to `load_open_commitments`, morning-brief Step 3b counts, Pulse, the Commitments daily chat, and every other canonical consumer — a parallel-universe commitment store. Use the canonical shape from `shared/COMMITMENT_SCHEMA.md`:
+
+   ```json
+   {
+     "seq": <reserved by writer helper>,
+     "ts": "<ISO 8601 — when the commitment was MADE>",
+     "type": "commitment",
+     "source_skill": "team-intelligence",
+     "primary_thread_id": "<thread the work belongs to, if known; else null>",
+     "person_ids": ["<owner_person_id>"],
+     "classification_confidence": 1.0,
+     "data": {
+       "owner_id": "<person_id>",
+       "title": "<short verb-phrase>",
+       "due": "YYYY-MM-DD",
+       "status": "open",
+       "source_ref": "team-intelligence:manual:<ISO ts>"
+     }
+   }
+   ```
+
+   Append via `shared/scripts/atomic_write.py::atomic_append_jsonl`. Status is `"overdue"` if `due` parses to a past date in workspace TZ.
+
+4. **Companion write to PERSON.md** — append the same commitment to the person's Active Commitments table for human-readable continuity. This is the Tier 2 projection — kept in sync at write time, regenerated by workspace-manager passes when it drifts. Display only; never read for state decisions.
+5. Confirm: "Logged. I'll flag this if it's not delivered by [date]."
+
+### "who owns [thing]?" / "who's responsible for [thing]?"
+
+Search across canonical source first, then projections for static-profile signal.
+
+1. **Canonical search:** scan `_hq/data/events.jsonl` for `commitment` events whose `data.title` matches `[thing]` (use unigram-overlap scoring per `cru_match.py`). For each match, the `owner_id` is the candidate. Filter to OPEN via `load_open_commitments` — closed commitments shouldn't show as live ownership.
+2. **Static-profile search:** scan `_people/` PERSON.md files for `[thing]` in their "owns" field (Tier 2 profile data — fine for static ownership claims like "Aria owns vendor relationships"). Per `references/SOURCE_OF_TRUTH.md`, this is name-and-claim lookup, not state.
+3. Scan PROJECT_BRAIN.md files for `[thing]` in active threads.
+4. Present: who owns it, in which project context, current status. If multiple candidates, surface all with their evidence (canonical commitment vs static-profile claim).
+5. If no clear owner: "I don't see a clear owner for [thing]. Want to assign it?"
+
+---
+
+## How This Skill Gets Fed (Integration Contracts)
+
+This skill does NOT have its own data collection pipeline. It piggybacks on existing flows.
+
+### Fed by: workspace-manager ("what's going on")
+
+During the briefing, workspace-manager already scans Gmail, Calendar, Slack, Granola. **After building the briefing**, it writes person file updates:
+
+- For each team member found in email/calendar/Slack activity: append to their Interaction Log
+- For any commitments surfaced in emails: check against existing commitments, flag if new
+- Update last-interaction dates
+
+**The contract:** workspace-manager reads `_team-config.md` to get the roster, then writes to individual PERSON.md files. One-directional. Team skill never writes to workspace-manager's files.
+
+### Fed by: workspace-manager ("end session")
+
+During end session, workspace-manager already updates project brains. **After brain updates**, it writes person file updates:
+
+- For each team member mentioned this session: update Interaction Log
+- For any commitments made/delivered this session: update commitment table
+- Refresh Cross-Project Presence by scanning brains
+
+### Fed by: meeting-notes (after processing a transcript)
+
+Meeting-notes already extracts attendees, action items, and decisions. **After routing to project**, it writes person file updates:
+
+- For each attendee who matches the team roster: append to Interaction Log (date, "meeting", summary, link to session notes)
+- For each action item assigned to a team member: add to Active Commitments with due date and source
+- If relationship dynamics were noted: append to Working Style notes (only if CEO-relevant)
+
+**The contract:** meeting-notes reads `_team-config.md` to check if attendees are team members. If yes, it writes to their PERSON.md files. Meeting-notes does NOT need to understand the team skill's logic — it just writes to the person files.
+
+### Fed by: CEO (manual)
+
+The CEO can always directly update person files:
+- "Add a flag for Aria: ask about the vendor situation"
+- "Aria delivered the Aspen Project numbers"
+- "Update Mira's working style: she prefers async communication"
+
+---
+
+## Staleness & Maintenance
+
+### Built-in checks (run during "team status" and during cleanup):
+
+- **Interaction staleness:** No logged interaction in X days (default 14) → flag in team overview
+- **Commitment staleness:** Overdue by X days (default 3) → flag in team overview AND in 1:1 prep
+- **Profile staleness:** No updates of any kind in 30+ days → suggest reviewing with CEO
+
+### File size management:
+
+- Interaction Log: keep last 10 entries. When adding #11, archive the oldest to a `## Previous Interactions` section at the bottom (collapsed, not deleted).
+- Commitments: delivered commitments move to a `## Completed` section after 7 days. Overdue commitments stay visible until resolved.
+- Flags: prompt CEO to clear flags older than 14 days.
+
+---
+
+## Graceful Degradation
+
+| Condition | Behavior |
+|-----------|----------|
+| `_people/` doesn't exist | Create it on first "add to team" or during onboarding Phase 3 |
+| PERSON.md missing for someone mentioned | Offer to create: "I don't have a profile for [name] yet. Want me to add them?" |
+| No connectors available | Skip fresh intel in prep; work from existing profile data only |
+| `_team-config.md` missing | Use defaults (14-day staleness, 3-day overdue, standard prep format) |
+| Person mentioned in meeting but not on roster | After meeting-notes processes: "I noticed [name] was in this meeting but isn't on your team roster. Want to add them?" |
+
+---
+
+## Gotchas
+
+- **Don't confuse _hq/PEOPLE.md with _people/.** PEOPLE.md is the general contact database (everyone the CEO has ever interacted with). `_people/` is the inner circle — direct reports and key leadership. A person can be in both, but PEOPLE.md is maintained by meeting-notes and workspace-manager; `_people/` is maintained by this skill.
+- **Never auto-add someone to the team roster.** Always ask the CEO. Meeting-notes can suggest, but the CEO confirms.
+- **Commitment tracking is private.** This is the CEO's view. The people being tracked don't see these files. Don't generate content that reads like it should be shared with the person.
+- **Interaction Log is for CEO-relevant touchpoints, not every email.** An email saying "meeting moved to 3pm" doesn't get logged. An email saying "the Aspen Project deal is falling through" does. Use judgment.
+- **Flags are short-lived by design.** If a flag sits for 3+ sessions, prompt the CEO: "You've had this flag on [name] for a while — still relevant?"
+- **Cross-Project Presence is read-only.** This section is auto-generated from scanning brains. The CEO doesn't edit it — it reflects reality.
+
+---
+
+## What It Doesn't Do
+
+- Does not handle external relationships (board, investors, customers, vendors) — that's `people-crm`.
+- Not an HR system — no performance reviews, compensation decisions, 360s, or hiring workflows.
+- Does not auto-add team members to `_people/` — always confirms with the CEO first.
+- Does not share team data externally — all team intelligence is the CEO's private view.
+- Does not replace 1:1s — prepares briefs for them and tracks commitments between them.
+- Does not generate coaching plans or development paths — surfaces patterns; the CEO decides.

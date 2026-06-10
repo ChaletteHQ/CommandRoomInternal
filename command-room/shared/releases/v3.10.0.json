@@ -1,0 +1,13 @@
+{
+  "version": "3.10.0",
+  "headline": "Helper plumbing for the new skills — every document I produce now uses the canonical layout pipeline.",
+  "items": [
+    {
+      "id": "v3100_announce_helper_scripts",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Plumbing for the new skills I added — every document they produce (memos, board packs, decision memos, automation scaffolds) now runs through the same polished layout pipeline as the rest of my output. The user-facing behavior of every skill is unchanged; their documents just look better. No action needed.",
+      "action": "announce_only"
+    }
+  ]
+}

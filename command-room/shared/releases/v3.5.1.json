@@ -1,0 +1,13 @@
+{
+  "version": "3.5.1",
+  "headline": "Two small polish items before broader rollout.",
+  "items": [
+    {
+      "id": "v351_announce_prerollout_polish",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Final polish — two routing-edge cases tightened, plus housekeeping on a few note types I write. No action needed.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,0 +1,279 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>:root{color-scheme:dark;--paper:#16130F;--paper-lift:#211C16;--ink:#F0E8D8;--ink-soft:#C9C0AE;--gold:#C9A06A;--gold-soft:#2A2218;--rule:rgba(240,232,216,0.12);--rule-strong:rgba(240,232,216,0.32);--muted:#8C8475;--card:#211C16;--good:#8FB979;--good-soft:#1F2A1A;--pill-bg:#2A241D;--paper-2:#1A1612;--ink-2:#D6CCB7;--ink-3:#A89F8C;--ink-4:#7A7160;--ink-5:#4F4839;--line-2:#352F27;--line-strong:#4A4339;--gold-bright:#DDB47A;--gold-dim:#8C7148;--serif:'Cormorant Garamond',Georgia,serif;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace;--sans:-apple-system,BlinkMacSystemFont,system-ui,sans-serif}body,html{margin:0;padding:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.55}.wrap{max-width:760px;padding:30px 30px 26px}.brand-head{text-align:center;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid var(--rule)}.wordmark{font-family:var(--serif);font-weight:500;font-size:42px;letter-spacing:-0.5px;line-height:1;margin-bottom:12px}.wordmark .c-letter{color:var(--gold)}.wordmark .halette{color:var(--ink);font-size:38px}.cr-band{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:10px}.cr-band .rule{flex:1;max-width:100px;height:1px;background:var(--rule-strong)}.cr-label{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:3.5px;color:var(--ink);text-transform:uppercase}.artifact-title{font-family:var(--serif);font-size:30px;font-weight:500;color:var(--ink);margin:18px 0 4px;line-height:1.15}.sub{color:var(--ink-2);font-size:13px;font-family:var(--sans);line-height:1.5}.controls{display:flex;gap:10px;align-items:center;margin:0 0 22px;justify-content:center;flex-wrap:wrap}.ghost-btn{appearance:none;background:transparent;border:1px solid var(--line-2);color:var(--ink-3);font-family:var(--mono);font-size:9.5px;letter-spacing:0.24em;text-transform:uppercase;padding:7px 12px;cursor:pointer;border-radius:3px;transition:color 200ms,border-color 200ms,background 200ms}.ghost-btn:hover{color:var(--gold);border-color:var(--gold);background:var(--gold-soft)}.timestamp{color:var(--muted);font-size:11.5px;font-family:var(--mono)}.cat{margin-bottom:28px}.cat-head{font-family:var(--mono);font-size:10.5px;font-weight:500;text-transform:uppercase;letter-spacing:1.8px;color:var(--gold);margin:0 0 6px;padding-bottom:6px;border-bottom:1px solid var(--rule-strong)}.cat-desc{color:var(--ink-2);font-size:12.5px;font-family:var(--sans);line-height:1.5;margin:0 0 14px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.card{padding:13px 15px 14px;background:var(--card);border:1px solid var(--rule);border-radius:4px;cursor:pointer;transition:border-color 0.12s,background 0.12s,transform 0.12s;display:flex;flex-direction:column;gap:6px}.card:hover{border-color:var(--gold);background:var(--gold-soft)}.card:active{transform:translateY(1px)}.card-trigger{font-family:var(--mono);color:var(--gold);font-size:13px;letter-spacing:0.2px;line-height:1.3;font-weight:500}.card-trigger::before{content:"› "}.card-desc{color:var(--ink-2);font-size:13px;font-family:var(--sans);line-height:1.5}@media (max-width:640px){.grid{grid-template-columns:1fr}}.footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--rule);color:var(--ink-3);font-size:12px;text-align:center;line-height:1.6;font-family:var(--sans)}.footer code{background:var(--pill-bg);padding:2px 7px;border-radius:3px;font-size:11.5px;font-family:var(--mono);color:var(--ink)}#cr-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--paper-lift);color:var(--ink);padding:11px 20px;border:1px solid rgba(201,160,106,0.45);border-radius:4px;font-size:13px;font-family:var(--mono);letter-spacing:0.5px;z-index:9999;opacity:0;transition:opacity 0.18s;box-shadow:0 6px 18px rgba(0,0,0,0.5);pointer-events:none;max-width:90%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#cr-toast.show{opacity:1}</style>
+<div class="wrap" data-artifact="quick-commands">
+  <div class="brand-head">
+    <div class="wordmark"><span class="c-letter">C</span><span class="halette">halette</span></div>
+    <div class="cr-band"><div class="rule"></div><div class="cr-label">Command Room</div><div class="rule"></div></div>
+    <div class="artifact-title">Quick Commands</div>
+    <div class="sub">{{CEO_DISPLAY_NAME}} · click any card to fire it · brackets are placeholders to fill in</div>
+  </div>
+
+  <div class="controls">
+    <button class="ghost-btn" id="refresh-btn" type="button">↻ Refresh</button>
+    <span class="timestamp">Built {{LAST_BUILT}}</span>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Daily Loop · Morning Pattern</div>
+    <div class="cat-desc">What to ask first thing. Each fires a chat that surfaces what matters.</div>
+    <div class="grid">
+      <div class="card" data-prompt="what's going on">
+        <div class="card-trigger">what's going on</div>
+        <div class="card-desc">Full daily briefing across calendar, inbox, commitments. Use first thing in the morning.</div>
+      </div>
+      <div class="card" data-prompt="let's work">
+        <div class="card-trigger">let's work</div>
+        <div class="card-desc">Silent project-list load — no briefing, no questions. Use when you already know what you need.</div>
+      </div>
+      <div class="card" data-prompt="brief me">
+        <div class="card-trigger">brief me</div>
+        <div class="card-desc">Daily digest: calendar, important email summary, overdue follow-ups, urgent items.</div>
+      </div>
+      <div class="card" data-prompt="triage my inbox">
+        <div class="card-trigger">triage my inbox</div>
+        <div class="card-desc">Classifies overnight email into Reply Now / Decision / FYI / Discard. Drafts 2-3 replies.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Workspace · Navigate</div>
+    <div class="cat-desc">Load a project, list what's active, search across history.</div>
+    <div class="grid">
+      <div class="card" data-prompt="go [name]">
+        <div class="card-trigger">go [name]</div>
+        <div class="card-desc">Fuzzy-match into any project, person, or org. Aliases work. Replace [name].</div>
+      </div>
+      <div class="card" data-prompt="list active">
+        <div class="card-trigger">list active</div>
+        <div class="card-desc">Zero-interaction org tree of every active project with last-activity dates.</div>
+      </div>
+      <div class="card" data-prompt="show my list">
+        <div class="card-trigger">show my list</div>
+        <div class="card-desc">Read-only review of everything you've flagged for later via 'add to my list'.</div>
+      </div>
+      <div class="card" data-prompt="search transcripts for [topic]">
+        <div class="card-trigger">search transcripts for [topic]</div>
+        <div class="card-desc">Cross-meeting keyword search. Returns hits with date, attendees, and context snippet.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">People · Relationships</div>
+    <div class="cat-desc">Never walk into a meeting cold. Owns the relationship layer.</div>
+    <div class="grid">
+      <div class="card" data-prompt="tell me about [person]">
+        <div class="card-trigger">tell me about [person]</div>
+        <div class="card-desc">Full person record — who they are, recent activity, open commitments, history.</div>
+      </div>
+      <div class="card" data-prompt="prep me for dinner with [person]">
+        <div class="card-trigger">prep me for dinner with [person]</div>
+        <div class="card-desc">Casual-context brief — what's on their mind, what to ask, what not to bring up.</div>
+      </div>
+      <div class="card" data-prompt="prep for my 1:1 with [person]">
+        <div class="card-trigger">prep for my 1:1 with [person]</div>
+        <div class="card-desc">Direct-report brief: what they own, open commitments, pattern flags (overloaded / drifting).</div>
+      </div>
+      <div class="card" data-prompt="intro [A] to [B]">
+        <div class="card-trigger">intro [A] to [B]</div>
+        <div class="card-desc">Two voice-calibrated intro drafts (double-opt-in + direct). Logged into the connections graph.</div>
+      </div>
+      <div class="card" data-prompt="who went dark">
+        <div class="card-trigger">who went dark</div>
+        <div class="card-desc">Customers quiet relative to their own cadence. Ranked list with re-engagement angles.</div>
+      </div>
+      <div class="card" data-prompt="threads to revive">
+        <div class="card-trigger">threads to revive</div>
+        <div class="card-desc">Warm conversations that died mid-step. Different from dormant-customer-scan (people vs threads).</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Drafts · Writing</div>
+    <div class="cat-desc">Voice-calibrated output. Each saves a .docx or stages a Gmail draft.</div>
+    <div class="grid">
+      <div class="card" data-prompt="draft an email to [person] about [topic]">
+        <div class="card-trigger">draft an email to [person] about [topic]</div>
+        <div class="card-desc">Voice-matched draft staged to Gmail Drafts. Replace brackets.</div>
+      </div>
+      <div class="card" data-prompt="memo on [topic]">
+        <div class="card-trigger">memo on [topic]</div>
+        <div class="card-desc">1-3 page structured memo — decision doc, scope, strategy, board update.</div>
+      </div>
+      <div class="card" data-prompt="write a one-pager on [topic]">
+        <div class="card-trigger">write a one-pager on [topic]</div>
+        <div class="card-desc">Polished .docx — headline, 3 key points, supporting data, recommendation. Under 60s.</div>
+      </div>
+      <div class="card" data-prompt="decision memo on [topic]">
+        <div class="card-trigger">decision memo on [topic]</div>
+        <div class="card-desc">Structured tradeoff analysis — options, weighted criteria, recommendation. Three-pass interactive.</div>
+      </div>
+      <div class="card" data-prompt="build the board pack">
+        <div class="card-trigger">build the board pack</div>
+        <div class="card-desc">Multi-page board pack .docx — KPIs, deltas, wins, concerns, decisions, asks, hiring, financials.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Meetings · Process &amp; Follow-up</div>
+    <div class="cat-desc">Turn meetings into events, decisions, and follow-ups.</div>
+    <div class="grid">
+      <div class="card" data-prompt="prep me for my next meeting">
+        <div class="card-trigger">prep me for my next meeting</div>
+        <div class="card-desc">Synthesizes calendar + inbox + Slack + transcripts + commitments for every attendee. Use 5 min before.</div>
+      </div>
+      <div class="card" data-prompt="process the last call">
+        <div class="card-trigger">process the last call</div>
+        <div class="card-desc">Pulls most recent Granola transcript — extracts events, commitments, decisions.</div>
+      </div>
+      <div class="card" data-prompt="follow up on the [meeting] meeting">
+        <div class="card-trigger">follow up on the [meeting] meeting</div>
+        <div class="card-desc">60-second close-the-loop pack: summary, per-attendee action items, voice-calibrated drafts.</div>
+      </div>
+      <div class="card" data-prompt="schedule a 30-min with [name]">
+        <div class="card-trigger">schedule a 30-min with [name]</div>
+        <div class="card-desc">Finds mutual availability, drafts substrate-aware agenda, creates the calendar event.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Memory · Decisions &amp; Insights</div>
+    <div class="cat-desc">Compounds over time. Read these to track your own thinking.</div>
+    <div class="grid">
+      <div class="card" data-prompt="log decision: [what]">
+        <div class="card-trigger">log decision: [what]</div>
+        <div class="card-desc">Append to the decision log with rationale. Use for any choice you'll want to remember why.</div>
+      </div>
+      <div class="card" data-prompt="what decisions should I revisit">
+        <div class="card-trigger">what decisions should I revisit</div>
+        <div class="card-desc">Surfaces stale decisions based on elapsed time + contradictory signal. Per-decision actions.</div>
+      </div>
+      <div class="card" data-prompt="clean up my workspace">
+        <div class="card-trigger">clean up my workspace</div>
+        <div class="card-desc">Self-maintaining weekly tidy-up — heals drift, fixes what's safe, flags only what needs your eyes.</div>
+      </div>
+      <div class="card" data-prompt="generate insights">
+        <div class="card-trigger">generate insights</div>
+        <div class="card-desc">Weekly synthesis — cross-project patterns, what's drifting, classification review, project proposals.</div>
+      </div>
+      <div class="card" data-prompt="weekly recap">
+        <div class="card-trigger">weekly recap</div>
+        <div class="card-desc">7 days across every connector synthesized into a .docx + inline summary. Passive backfill side-effect.</div>
+      </div>
+      <div class="card" data-prompt="scan for commitments">
+        <div class="card-trigger">scan for commitments</div>
+        <div class="card-desc">One-shot backfill from historic transcripts + Gmail. Use when commitments tracker shows empty.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Strategy · Analysis</div>
+    <div class="cat-desc">Pressure-test plans, contracts, and the workflows hiding in your week.</div>
+    <div class="grid">
+      <div class="card" data-prompt="stress test this plan">
+        <div class="card-trigger">stress test this plan</div>
+        <div class="card-desc">Munger inversion — every failure mode mapped, then reversed into structural safeguards.</div>
+      </div>
+      <div class="card" data-prompt="review this contract">
+        <div class="card-trigger">review this contract</div>
+        <div class="card-desc">Extracts terms, compares to your standard, flags deviations green/yellow/red, suggests redlines.</div>
+      </div>
+      <div class="card" data-prompt="what can be automated">
+        <div class="card-trigger">what can be automated</div>
+        <div class="card-desc">Scans session notes + transcripts for repetitive work. Ranks by time-saved-vs-build-effort.</div>
+      </div>
+      <div class="card" data-prompt="scaffold automation #1">
+        <div class="card-trigger">scaffold automation #1</div>
+        <div class="card-desc">Generates real working artifacts (Zap config, script, n8n flow) for a surfaced opportunity.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Ingest · Pull In Data</div>
+    <div class="cat-desc">Bring outside context into the workspace.</div>
+    <div class="grid">
+      <div class="card" data-prompt="ingest folder [path]">
+        <div class="card-trigger">ingest folder [path]</div>
+        <div class="card-desc">Auto-detects intent — extracts context, optionally copies files into matching projects.</div>
+      </div>
+      <div class="card" data-prompt="ingest context from [path]">
+        <div class="card-trigger">ingest context from [path]</div>
+        <div class="card-desc">Extract people / projects / decisions only — no file copies. Use for ChatGPT exports, v1.x migrations.</div>
+      </div>
+      <div class="card" data-prompt="file documents from [path]">
+        <div class="card-trigger">file documents from [path]</div>
+        <div class="card-desc">Context extraction PLUS file migration into project folders. Copy-only, preview-before-confirm.</div>
+      </div>
+      <div class="card" data-prompt="break down this video [url]">
+        <div class="card-trigger">break down this video [url]</div>
+        <div class="card-desc">Turns any link or pasted content into structured intel connected to named entities.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Reporting</div>
+    <div class="cat-desc">CEO-facing recaps of what the system did for you and what it cost.</div>
+    <div class="grid">
+      <div class="card" data-prompt="monthly recap">
+        <div class="card-trigger">monthly recap</div>
+        <div class="card-desc">Operating Lift report — what would have slipped, what got captured, conservative hours-saved estimate.</div>
+      </div>
+      <div class="card" data-prompt="usage report">
+        <div class="card-trigger">usage report</div>
+        <div class="card-desc">Plain-English breakdown of scheduled-task spend — per orchestrator, per connector, per fire.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-head">Maintenance · Setup</div>
+    <div class="cat-desc">Install, refresh, and configure Command Room itself.</div>
+    <div class="grid">
+      <div class="card" data-prompt="rebuild quick commands">
+        <div class="card-trigger">rebuild quick commands</div>
+        <div class="card-desc">Refresh this dashboard with the current curated trigger set.</div>
+      </div>
+      <div class="card" data-prompt="rebuild workspace map">
+        <div class="card-trigger">rebuild workspace map</div>
+        <div class="card-desc">Refresh the Workspace Map sidebar artifact — org tree, people, commitment counts.</div>
+      </div>
+      <div class="card" data-prompt="set up command room schedules">
+        <div class="card-trigger">set up command room schedules</div>
+        <div class="card-desc">Register Cowork scheduled tasks — daily + weekly action chats. Idempotent.</div>
+      </div>
+      <div class="card" data-prompt="change my schedule">
+        <div class="card-trigger">change my schedule</div>
+        <div class="card-desc">Customize when each scheduled chat fires. Move, pause, disable per task.</div>
+      </div>
+      <div class="card" data-prompt="level up command room">
+        <div class="card-trigger">level up command room</div>
+        <div class="card-desc">Umbrella menu for optional Layer 2 sidebar dashboards.</div>
+      </div>
+      <div class="card" data-prompt="report a bug">
+        <div class="card-trigger">report a bug</div>
+        <div class="card-desc">Auto-diagnoses a Command Room misfire and drafts a Gmail to Matthew with full context.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Each card is a chat trigger. Replace <code>[bracketed]</code> placeholders before pressing enter.<br>
+    Click <code>↻ Refresh</code> if you've added new skills and want this list rebuilt.
+  </div>
+</div>
+<div id="cr-toast"></div>
+<script>const $=document.getElementById.bind(document);const $c=document.createElement.bind(document);const $qa=document.querySelectorAll.bind(document);
+function aE(e,t,f,o){return e.addEventListener(t,f,o);}
+function flashToast(msg){const t=$('cr-toast');if(!t) return;t.textContent=msg;t.classList.add('show');clearTimeout(t._timer);t._timer=setTimeout(()=>t.classList.remove('show'),2200);}
+function tryExecCopy(text){try{const ta=$c('textarea');ta.value=text;ta.setAttribute('readonly','');ta.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;';document.body.appendChild(ta);ta.focus();ta.select();ta.setSelectionRange(0,text.length);const ok=document.execCommand('copy');ta.remove();return !!ok;}catch(e){return false;}}
+function send(prompt){if(window.cowork&&typeof window.cowork.sendPrompt==='function'){try{window.cowork.sendPrompt(prompt);flashToast('Sent to chat');return;}catch(e){}}if(typeof window.sendPrompt==='function'){try{window.sendPrompt(prompt);flashToast('Sent to chat');return;}catch(e){}}if(tryExecCopy(prompt)){flashToast('Copied — paste in chat');return;}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(prompt).then(()=>flashToast('Copied — paste in chat'));}}
+$qa('.card').forEach(c=>{aE(c,'click',()=>send(c.dataset.prompt));});
+(function(){const b=$('refresh-btn');if(b)aE(b,'click',()=>send('rebuild quick commands'));})();</script>

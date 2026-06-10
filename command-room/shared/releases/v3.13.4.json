@@ -1,0 +1,41 @@
+{
+  "version": "3.13.4",
+  "headline": "Third-round verification fixes (two more would-crash bugs caught) + a new automated guard so this class of bug can't ship silently again.",
+  "items": [
+    {
+      "id": "v3134_upcoming_meetings_phase_leak_fix",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Third-round verification caught a sister bug in an upcoming-meetings example — body text containing an internal phrase that trips my jargon scanner. Any orchestrator copying the example would have crashed. Rewrote the example in plain language and added a new automated check that scans every example body text across every spec, so this class can't silently ship again.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3134_calendar_writer_shape_fix",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Calendar invites would have crashed on every fire because my email-shape detector saw `To` + `Subject` in the invite's data and demanded a `draft` button — but calendar invites don't use a draft button. The detector now recognizes calendar-shaped items (time / duration / location / date fields present) and uses send / edit then send / skip, by design.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3134_contract_rule6_consolidation",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Internal tidying — two of my style rules were contradicting each other. Reconciled so internal authors aren't misdirected. Nothing changes for you.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3134_email_draft_protocol_path_leaks",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I reworded three user-facing strings that would have been blocked by my privacy scanner before reaching you — they were guidance shown when an email-send setup needs attention. Reworded to describe the issue without leaking internal details.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3134_structural_leak_scan_test",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I added a new automated guard that scans every literal string in every example card across every spec — at commit time, not just at render time. Two updates in a row had the same bug class slip through; this stops the pattern.",
+      "action": "announce_only"
+    }
+  ]
+}

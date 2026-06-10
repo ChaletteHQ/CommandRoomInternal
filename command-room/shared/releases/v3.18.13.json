@@ -1,0 +1,5 @@
+{
+  "version": "3.18.13",
+  "headline": "The first run of the new sent-mail reconcile now looks back 30 days, so follow-ups you sent before it started get caught instead of stranded. If yours already ran once and missed the backlog, just say 'catch up my sent mail' and it'll sweep the last 30 days once.",
+  "items": []
+}

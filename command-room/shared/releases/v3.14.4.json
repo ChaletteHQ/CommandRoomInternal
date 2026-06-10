@@ -1,0 +1,20 @@
+{
+  "version": "3.14.4",
+  "headline": "The system does its own plumbing now — no more migration prompts you don't understand.",
+  "items": [
+    {
+      "id": "v3144_auto_apply_announce",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Behavior change worth knowing: when an update introduces a small repair or backfill for your workspace, I now do it on your behalf and tell you what I did — instead of asking you to type a phrase to make it happen. Three things that used to prompt you (substrate hygiene, linking older to-discuss items, registering missing default chats) now just happen silently when applicable, with a one-line notice after. The only things I'll still ask about are genuine choices — your assistant's name, what kind of operator you are — that only you can answer.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3144_org_tier_auto_apply_announce",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Same change applied to your org classifications: when I first learn the vendor / prospect / dormant taxonomy on your workspace, I auto-tier from your email patterns instead of asking you to confirm each one. If you ever want to review the inferred tiers, say `recheck my org classifications`.",
+      "action": "announce_only"
+    }
+  ]
+}

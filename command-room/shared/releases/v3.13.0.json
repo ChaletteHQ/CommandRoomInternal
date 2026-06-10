@@ -1,0 +1,167 @@
+{
+  "version": "3.13.0",
+  "headline": "A big update — better people / org memory, sharper name matching, sturdier document rendering, friendlier voice across every surface you read.",
+  "items": [
+    {
+      "id": "v3130_canonical_edit_surface_migration",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I noticed your workspace docs (your master `CLAUDE.md` and infrastructure notes) still reference an older folder layout I retired a while back. Nothing breaks, but every fresh session reading them gets the wrong location for things. Let me show you the replacement text to paste in.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3130_person_schema_evolution",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I improved how I store people — you can now have multiple emails, phones, and nicknames per person, all properly tracked. Your existing records may have older shape drift; I can run a one-time cleanup with a dry-run preview before applying anything. Backup taken automatically.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3130_atomic_write_lock",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When several parts of me write to your memory at the same time, we no longer step on each other's changes. If a write somehow produces a broken file, I auto-restore from the most recent backup and surface the failure rather than letting silent issues accumulate.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_org_writer_introduced",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I now have a canonical way to write organization records — validated, deduped, and consistent. Your older org records may have shape drift; I can run a one-time repair with a dry-run preview. No data lost.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3130_auto_org_attribution",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When a new person enters your workspace from a meeting or calendar, I now auto-attach them to their org when the signal is strong (matching work-domain or explicit hint). Free-mail addresses (gmail, yahoo, icloud, etc.) never auto-trigger. For your existing unattributed people, I can run a one-time backfill with a dry-run preview — any new orgs I'd create show up before they're saved.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3130_widget_orphan_context_capture",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When you type into a card's `+ Add context` field but don't click an action, your typed text is no longer dropped — it's saved to your discuss list so you can revisit it. The Apply button enables as you type, even without selecting an action. Affects every action card across your scheduled chats and meeting notes.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_fragment_render_mode",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Internal plumbing — cards now render through their canonical pathway with full validation. Same look for you; sturdier guarantees behind the scenes.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_email_writer_widget_cascade",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When I draft emails for you — direct drafts, intro drafts, follow-up drafts — they now show up as editable cards instead of plain text previews. You can edit, send, save to drafts, or skip, all inline. Inbox reply paths and quiet-conversation revival drafts get the same treatment in a later update.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_native_computer_url_form",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Deliverable links in my replies now open reliably on Windows when your workspace folder contains spaces (which is the default). Previously the link would silently fail to open. Now it works.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_h2_deliverable_link_format",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When I produce a document for you, the link to it in my reply is now a bold heading at the bottom of the turn — easy to find, never buried mid-response. Multi-document surfaces use smaller headings to stay scannable.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_present_files_demoted",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Reveal-in-folder cards no longer dual-surface alongside the clickable link. The link is what you click; the card was redundant.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_entity_resolve_shared_helper",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Name resolution is sharper now. When you mention `Elon` or `Dynarii` anywhere, I match through exact alias, fuzzy similarity, and sound-alike — so a misspelled name or a brand never mentioned in transcripts still finds the right person or org instead of producing four open-ended clarifying questions.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_decision_log_renderer",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your decision log view now actually updates. Previously it claimed to be auto-generated but no code was producing it — yours was significantly stale. It now rebuilds whenever any decision-related skill writes, and the first run during this update brings it current.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_inbox_triage_thread_state",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Inbox triage now reads the actual latest message of every thread before classifying it. Before, it sometimes relied on a truncated slice — so threads where you'd already replied could be misclassified as 'stalled on you.' That's fixed; whose ball it is now keys off the latest message direction.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_calendar_writer_approval",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I never silently create a calendar event anymore. Every invite shows up as an editable card with `send` / `edit then send` / `skip` — and the actual write to your calendar only fires when you click send.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_morning_brief_rework",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your morning brief got a substantial rebuild. The Top 3 moves you need to make today now appear near the top (after the one-line theme and your commitments at a glance), not buried at the bottom. New: deltas instead of raw counts (+3 since Monday), going-quiet relationships promoted to a top-tier section, clickable deliverable links, internal vs external work visually split, and a since-yesterday momentum line. Vocabulary kept portable so the brief renders cleanly when shared. Verify by firing the next morning brief.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_empty_state_contract",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When a scheduled chat finds nothing to surface (no urgent items, no one going quiet), the output now explains why — what window was scanned, what was filtered — and links you back to the last non-empty run. So an empty day is never a dead end, and you can tell whether the system found nothing or hiccuped.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_pulse_live_contact_check",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Pulse no longer flags people you've recently contacted as dormant. Before, if you emailed someone today and the inbox skill hadn't logged it yet, Pulse still saw silence. Now a live Gmail and Calendar check runs before any dormancy flag — recent contact catches you up.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_weekly_recap_internal_external_split",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your Friday Wrap now splits 'You Owe' into External (client commitments) and Internal (your own backlog) when both exist. Cleaner separation; the Internal section only renders when you're the operator of the system itself.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_operator_report_synthesis_lead",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your monthly recap now opens with a one-paragraph synthesis of the month — the anchor moment, the theme it crystallized, what came of it — before the metrics. Numbers stay where they were; theme leads.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_universal_voice_contract",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I tightened my voice rules. No more alarming framing (FAIL / CRITICAL / ABORT), no more scores or grades shown to you, no more internal mechanism names in your replies, no more self-narration (scanning, regenerating, validating). Calm, friendly assistant tone; lead with the action; numbers only when factual. Applied immediately to weekly audits and insights; the cross-skill sweep finishes in the next update.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_weekly_audit_friendly_reframe",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your weekly audit looks different now. One-line friendly summary (Healthy / Drifting / Needs work in human voice), top 3 prioritized actions for the week, then smaller follow-ups by category, then aging commitments framed as 'getting older' instead of 'overdue.' No scores, no color-coded grades, no FAIL framing. The deeper Word document follows the same friendly voice.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3130_insight_generator_scope_and_format",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Insights I generate are now strictly about people, customers, relationships, and your business — never about your workspace plumbing or system health (those belong in the weekly audit). The output is a Word document with a clickable link at the bottom of the turn. Classification review and project proposals surface as separate interactive cards.",
+      "action": "announce_only"
+    }
+  ]
+}

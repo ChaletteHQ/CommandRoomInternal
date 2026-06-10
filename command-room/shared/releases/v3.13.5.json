@@ -1,0 +1,27 @@
+{
+  "version": "3.13.5",
+  "headline": "Cleanup pass — every remaining drift item from the four-round verification round closed (no new functionality, pure hygiene).",
+  "items": [
+    {
+      "id": "v3135_cross_refs_fixed",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I fixed three internal cross-references that pointed at files that don't exist. An agent following those references for context would have hit a dead end. Now they resolve.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3135_stale_action_verb_prose_swept",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I swept some stale action-button references from documentation prose that escaped my structural guard (the guard scans code blocks, not prose tables). Examples used button names that had been consolidated to newer canonical names. All updated.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3135_email_protocol_scope_backed_by_refs",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Internal tidying — my email draft protocol now has consistent references on both sides of its scope contract. Nothing changes for you.",
+      "action": "announce_only"
+    }
+  ]
+}

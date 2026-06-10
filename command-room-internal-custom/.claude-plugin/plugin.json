@@ -1,0 +1,13 @@
+{
+  "name": "command-room-internal-custom",
+  "version": "0.1.0",
+  "description": "Chalette Internal custom skills, layered on top of Command Room. Updated only at Chalette Internal's request; never overwritten by core updates.",
+  "author": {
+    "name": "Chalette Holdings"
+  },
+  "keywords": [
+    "command-room",
+    "custom",
+    "internal"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "version": "3.4.4",
+  "headline": "Commitments — older items will surface in your daily fire.",
+  "items": [
+    {
+      "id": "v344_dropped_commitments_announce",
+      "detector_module": "release_detectors.v3_4_4_dropped_commitments",
+      "detector_function": "count_dropped_open_commitments",
+      "prompt_template": "I fixed something that was quietly missing some of your open commitments — {count} of them. They'll show up in tomorrow's daily Commitments chat alongside everything else; no action needed on your end.",
+      "action": "announce_only"
+    }
+  ]
+}

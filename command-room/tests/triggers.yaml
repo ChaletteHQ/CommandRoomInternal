@@ -1,0 +1,487 @@
+# Trigger Collision Test Suite
+#
+# Purpose: Verify that real CEO phrases fire exactly one skill.
+# Fail conditions:
+#   - Zero skills match a phrase (missing trigger)
+#   - Two or more skills match a phrase (collision)
+#
+# Add a new entry whenever a real user phrase uncovers a gap.
+# Format:
+#   - phrase: "what the user actually says"
+#     expected: skill-folder-name
+#     notes: optional context
+
+# =========================================================
+# DAILY RITUAL PHRASES
+# =========================================================
+- phrase: "brief me"
+  expected: morning-briefing
+- phrase: "morning briefing"
+  expected: morning-briefing
+- phrase: "daily briefing"
+  expected: morning-briefing
+- phrase: "what do I need to know today"
+  expected: morning-briefing
+- phrase: "start my day"
+  expected: morning-briefing
+
+- phrase: "triage my inbox"
+  expected: inbox-triage
+- phrase: "inbox triage"
+  expected: inbox-triage
+- phrase: "what's in my inbox"
+  expected: inbox-triage
+- phrase: "process my inbox"
+  expected: inbox-triage
+- phrase: "go through my email"
+  expected: inbox-triage
+- phrase: "email triage"
+  expected: inbox-triage
+- phrase: "morning email pass"
+  expected: inbox-triage
+
+# =========================================================
+# MEETING RITUAL PHRASES
+# =========================================================
+- phrase: "follow up on that call"
+  expected: follow-up-ritual
+- phrase: "process the call and draft follow-ups"
+  expected: follow-up-ritual
+- phrase: "close the loop on the Acme meeting"
+  expected: follow-up-ritual
+- phrase: "draft follow-ups"
+  expected: follow-up-ritual
+- phrase: "send follow-ups from my last call"
+  expected: follow-up-ritual
+- phrase: "follow-up ritual"
+  expected: follow-up-ritual
+
+- phrase: "process the last call"
+  expected: meeting-notes
+- phrase: "summarize the call with Bob"
+  expected: meeting-notes
+- phrase: "what did we decide"
+  expected: decision-log
+- phrase: "action items from the meeting"
+  expected: meeting-notes
+- phrase: "meeting notes"
+  expected: meeting-notes
+
+- phrase: "prep me for the Acme call"
+  expected: call-prep
+  notes: "call-prep owns 'prep me for' — must not collide with follow-up-ritual"
+
+# =========================================================
+# COMPOSER PHRASES
+# =========================================================
+- phrase: "one-pager on our pricing"
+  expected: one-pager-composer
+- phrase: "make me a one-pager"
+  expected: one-pager-composer
+- phrase: "one page summary of the Q2 plan"
+  expected: one-pager-composer
+
+# speech-prep retired from command-room in v3.9.0 — moved to chalette plugin.
+# Trigger phrases for that skill no longer route in this plugin.
+
+# =========================================================
+# WRITING PHRASES (v2.7.1+ — Voice Calibration v3.0)
+# =========================================================
+- phrase: "draft an email to Sarah about the contract"
+  expected: email-writer
+- phrase: "email to Bob about the Q2 pricing change"
+  expected: email-writer
+- phrase: "write an email to the team"
+  expected: email-writer
+  notes: "email-writer owns 'write an email' — must not collide with inbox-triage"
+
+- phrase: "memo on the pricing strategy"
+  expected: memo-writer
+- phrase: "decision doc for the vendor selection"
+  expected: memo-writer
+- phrase: "scope doc for the redesign"
+  expected: memo-writer
+- phrase: "strategy memo about expansion"
+  expected: memo-writer
+- phrase: "write up our thinking on the acquisition"
+  expected: memo-writer
+- phrase: "position paper on AI governance"
+  expected: memo-writer
+
+# voice-test retired from command-room in v3.9.0 — moved to chalette plugin.
+
+# =========================================================
+# SCAN PHRASES
+# =========================================================
+- phrase: "which customers have gone dark"
+  expected: dormant-customer-scan
+- phrase: "dormant customer scan"
+  expected: dormant-customer-scan
+- phrase: "who hasn't replied in a while"
+  expected: dormant-customer-scan
+
+# beta-telemetry retired from command-room in v3.9.0 — moved to chalette plugin.
+
+# =========================================================
+# WORKSPACE PHRASES
+# =========================================================
+- phrase: "lets work"
+  expected: workspace-manager
+- phrase: "I'm here"
+  expected: workspace-manager
+- phrase: "workspace status"
+  expected: workspace-manager
+- phrase: "what's going on"
+  expected: workspace-manager
+- phrase: "end session"
+  expected: workspace-manager
+- phrase: "new client Acme"
+  expected: workspace-manager
+- phrase: "new project BrightLabs"
+  expected: workspace-manager
+- phrase: "archive NorthStar"
+  expected: workspace-manager
+
+- phrase: "scan everything"
+  expected: cleanup
+  notes: "weekly-audit retired v3.15; cleanup is the workspace health pass. Bare 'audit'/'quick audit' vocabulary dropped (collided with 'automation audit')."
+
+- phrase: "weekly audit"
+  expected: cleanup
+- phrase: "health check"
+  expected: cleanup
+- phrase: "system review"
+  expected: cleanup
+
+# =========================================================
+# ANALYZER PHRASES
+# =========================================================
+- phrase: "stress test this plan"
+  expected: stress-test
+- phrase: "what could go wrong"
+  expected: stress-test
+- phrase: "pre-mortem"
+  expected: stress-test
+- phrase: "poke holes in this"
+  expected: stress-test
+
+# competitive-intel is a user-installed HQ skill, not bundled in the v2 plugin.
+# Trigger tests for it live in the HQ skill repo, not here.
+
+# =========================================================
+# INTEL PHRASES
+# =========================================================
+- phrase: "break down this youtube video"
+  expected: intel-intake
+- phrase: "what can I do with this article"
+  expected: intel-intake
+
+# =========================================================
+# PEOPLE-CRM PHRASES
+# =========================================================
+- phrase: "who is Jessica Park"
+  expected: people-crm
+- phrase: "who do I know at Sequoia"
+  expected: people-crm
+- phrase: "add David Chen to my contacts"
+  expected: people-crm
+- phrase: "what did Bob and I last discuss"
+  expected: people-crm
+- phrase: "prep me for dinner with Philippe"
+  expected: people-crm
+- phrase: "tell me about Linda from the board"
+  expected: people-crm
+
+# =========================================================
+# TEAM-INTELLIGENCE PHRASES
+# =========================================================
+- phrase: "my team"
+  expected: team-intelligence
+- phrase: "team status"
+  expected: team-intelligence
+- phrase: "prep for 1:1 with Priya"
+  expected: team-intelligence
+- phrase: "who owns the sourcing bot"
+  expected: team-intelligence
+- phrase: "log commitment for Daniel"
+  expected: team-intelligence
+- phrase: "discover my team"
+  expected: team-intelligence
+- phrase: "who's overloaded"
+  expected: team-intelligence
+- phrase: "what has Ben delivered this quarter"
+  expected: team-intelligence
+
+# =========================================================
+# LIST-ACTIVE PHRASES
+# =========================================================
+- phrase: "list projects"
+  expected: list-active
+- phrase: "list active projects"
+  expected: list-active
+- phrase: "active projects"
+  expected: list-active
+- phrase: "project list"
+  expected: list-active
+- phrase: "show projects"
+  expected: list-active
+- phrase: "show me projects"
+  expected: list-active
+- phrase: "what projects"
+  expected: list-active
+- phrase: "what projects do I have"
+  expected: list-active
+- phrase: "roster"
+  expected: list-active
+- phrase: "project roster"
+  expected: list-active
+- phrase: "list all projects"
+  expected: list-active
+  notes: "includes archived — list-active handles the filter flag"
+
+# =========================================================
+# INSIGHT-GENERATOR PHRASES
+# =========================================================
+- phrase: "weekly insights"
+  expected: insight-generator
+- phrase: "what am I missing"
+  expected: insight-generator
+- phrase: "run insights"
+  expected: insight-generator
+- phrase: "synthesize the week"
+  expected: insight-generator
+- phrase: "what should I pay attention to"
+  expected: insight-generator
+- phrase: "cross-project patterns"
+  expected: insight-generator
+- phrase: "what's drifting"
+  expected: insight-generator
+- phrase: "show me the insight report"
+  expected: insight-generator
+- phrase: "generate insights"
+  expected: insight-generator
+- phrase: "review project proposals"
+  expected: insight-generator
+- phrase: "new project proposals"
+  expected: insight-generator
+
+# =========================================================
+# DECISION-LOG PHRASES
+# =========================================================
+- phrase: "log decision"
+  expected: decision-log
+- phrase: "we decided to go with Vercel"
+  expected: decision-log
+- phrase: "what did we decide about pricing"
+  expected: decision-log
+- phrase: "decision history"
+  expected: decision-log
+- phrase: "why did we choose AWS"
+  expected: decision-log
+- phrase: "revisit the hiring decision"
+  expected: decision-revisit  # v3.11.1+ — revisit verbs moved from decision-log to decision-revisit (v3.8.0+ skill owns the verb)
+
+# =========================================================
+# AUTOMATION-SCANNER PHRASES
+# =========================================================
+- phrase: "what can be automated"
+  expected: automation-scanner
+- phrase: "automation scan"
+  expected: automation-scanner
+- phrase: "automation audit"
+  expected: automation-scanner
+- phrase: "show me automations"
+  expected: automation-scanner
+- phrase: "where am I wasting time"
+  expected: automation-scanner
+- phrase: "what should I automate first"
+  expected: automation-scanner
+
+# =========================================================
+# INGEST FAMILY (v3.5.0+ — workspace-ingest is the pipeline; file-documents +
+# ingest-context are the focused alias skills that own most user-facing
+# triggers. Bare "ingest this folder" / "ingest folder [path]" stays on
+# workspace-ingest as the intent-ambiguous entry point.)
+# =========================================================
+- phrase: "scan my desktop"
+  expected: file-documents
+- phrase: "ingest this folder"
+  expected: workspace-ingest
+- phrase: "scan my files"
+  expected: file-documents
+- phrase: "organize my downloads"
+  expected: file-documents
+- phrase: "sort these into projects"
+  expected: file-documents
+
+# =========================================================
+# COMMAND-ROOM-ONBOARDING PHRASES
+# =========================================================
+- phrase: "set up command room"
+  expected: command-room-onboarding
+- phrase: "command room setup"
+  expected: command-room-onboarding
+- phrase: "get started with command room"
+  expected: command-room-onboarding
+- phrase: "onboard me"
+  expected: command-room-onboarding
+
+# =========================================================
+# COMMAND-ROOM-COACH PHRASES
+# =========================================================
+# Bare triggers
+- phrase: "show me what's next"
+  expected: command-room-coach
+- phrase: "what should I focus on this week"
+  expected: command-room-coach
+- phrase: "what should I focus on this month"
+  expected: command-room-coach
+- phrase: "show me around"
+  expected: command-room-coach
+- phrase: "what can you do for me"
+  expected: command-room-coach
+- phrase: "coach me"
+  expected: command-room-coach
+- phrase: "command room coach"
+  expected: command-room-coach
+- phrase: "prove it"
+  expected: command-room-coach
+
+# Personal-name-prefixed variants — the AI's chosen name (default Penelope,
+# else workspace.brain_name) followed by any coach-shaped question
+- phrase: "Penelope, what should I focus on this week"
+  expected: command-room-coach
+  notes: "personal-name prefix is conversational sugar; post-prefix is coach-shaped"
+- phrase: "Penelope, show me around"
+  expected: command-room-coach
+- phrase: "Penelope, what can you do for me"
+  expected: command-room-coach
+- phrase: "Penelope, show me what's next"
+  expected: command-room-coach
+
+# Disambiguation: personal-name prefix on NON-coach-shaped questions still
+# routes by content. Penelope addressing doesn't override skill specificity.
+- phrase: "Penelope, draft an email to Bo about the proposal"
+  expected: email-writer
+  notes: "personal-name prefix is just conversational — content routes"
+
+# =========================================================
+# NATURAL LANGUAGE — CONVERSATIONAL WRAPPERS
+# =========================================================
+# Real CEOs don't talk in command syntax. These phrases embed
+# triggers inside casual, messy, mid-thought language.
+
+# Morning / daily ritual — conversational
+- phrase: "ok brief me, what's the day look like"
+  expected: morning-briefing
+- phrase: "alright start my day, what do I need"
+  expected: morning-briefing
+- phrase: "hey, morning briefing please"
+  expected: morning-briefing
+
+# Inbox — casual
+- phrase: "ugh, go through my email before I lose my mind"
+  expected: inbox-triage
+- phrase: "let's do inbox triage real quick"
+  expected: inbox-triage
+- phrase: "can you process my inbox"
+  expected: inbox-triage
+
+# Follow-up — mid-thought
+- phrase: "oh I need to follow up on that call with Daniel"
+  expected: follow-up-ritual
+- phrase: "can you draft follow-ups from this morning"
+  expected: follow-up-ritual
+- phrase: "close the loop on the NorthStar meeting yesterday"
+  expected: follow-up-ritual
+
+# Meeting notes — casual
+- phrase: "hey, process the last call for me"
+  expected: meeting-notes
+- phrase: "can you give me meeting notes from today"
+  expected: meeting-notes
+
+# Call prep — natural
+- phrase: "prep me for the Acme call in 20"
+  expected: call-prep
+- phrase: "quick prep me for my 3pm"
+  expected: call-prep
+
+# Composer — natural requests
+- phrase: "I need a one-pager on our Q3 pricing change"
+  expected: one-pager-composer
+- phrase: "throw together a one-pager for the team"
+  expected: one-pager-composer
+# speech-prep retired from command-room in v3.9.0 — moved to chalette plugin.
+
+# People — natural
+- phrase: "quick, who is Jessica again"
+  expected: people-crm
+- phrase: "ok tell me about Linda before I call her"
+  expected: people-crm
+
+# Team — conversational
+- phrase: "hey, team status real quick"
+  expected: team-intelligence
+- phrase: "who's overloaded this week"
+  expected: team-intelligence
+
+# Decision — natural
+- phrase: "we decided to delay the launch"
+  expected: decision-log
+- phrase: "remind me what did we decide about the CEO search"
+  expected: decision-log
+
+# Stress test — natural
+- phrase: "poke holes in this launch plan"
+  expected: stress-test
+- phrase: "stress test this plan for me"
+  expected: stress-test
+- phrase: "pre-mortem on the Q3 rollout"
+  expected: stress-test
+
+# Workspace catch-all — lifecycle commands in natural language
+- phrase: "lets work"
+  expected: workspace-manager
+  notes: "duplicate guard — make sure both formal and natural phrasing still route"
+- phrase: "ok end session"
+  expected: workspace-manager
+- phrase: "pull up the NorthStar status"
+  expected: workspace-manager
+  notes: "workspace-manager handles name-drop + loose action phrasing"
+- phrase: "new project BrightLabs"
+  expected: workspace-manager
+
+# Audit — casual
+- phrase: "run a health check on the workspace"
+  expected: cleanup
+
+# =========================================================
+# NEGATIVE TESTS — must NOT mis-fire
+# =========================================================
+# These phrases contain words that look close to a trigger
+# but should be caught by negative triggers or routing rules.
+
+- phrase: "prep me for my 2pm"
+  expected: call-prep
+  notes: "generic meeting prep → call-prep, NOT people-crm even though 'prep me for' is ambiguous"
+
+- phrase: "hire a new head of ops"
+  expected: workspace-manager
+  notes: "'hire' is out-of-scope for team-intelligence — should fall to workspace-manager"
+
+- phrase: "decision memo on the pricing change"
+  expected: decision-memo-composer
+  notes: "v3.8.0+ owns the 'decision memo on [topic]' trigger. Pre-v3.8.0 this routed to workspace-manager as a placeholder lifecycle command."
+
+- phrase: "what's going on"
+  expected: workspace-manager
+  notes: "full daily briefing — must NOT fire list-active even though 'what' + 'projects' adjacent"
+
+- phrase: "lets work"
+  expected: workspace-manager
+  notes: "silent load — must NOT fire list-active"
+
+- phrase: "pull up the NorthStar status"
+  expected: workspace-manager
+  notes: "name-drop engagement — must NOT fire list-active"

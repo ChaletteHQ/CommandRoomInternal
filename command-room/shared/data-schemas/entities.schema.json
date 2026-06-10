@@ -1,0 +1,434 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command-room://schemas/entities.schema.json",
+  "title": "Entities",
+  "description": "Canonical registry of all entities (people, threads, orgs) tracked in the workspace. Source of truth. Markdown views (PEOPLE.md, MASTER_TRACKER.md) are regenerated from this file.",
+  "type": "object",
+  "required": ["version", "last_updated", "last_writer", "entities"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically incremented on every write. Used for optimistic concurrency."
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 datetime (workspace-local, no timezone suffix). e.g., 2026-04-20T14:32:00"
+    },
+    "last_writer": {
+      "type": "string",
+      "description": "Name of the skill that performed the last write."
+    },
+    "entities": {
+      "type": "object",
+      "required": ["people", "projects", "orgs"],
+      "properties": {
+        "people": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/person" }
+        },
+        "projects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/project" }
+        },
+        "orgs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/org" }
+        },
+        "engagements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/engagement" },
+          "description": "Non-ownership relationships between orgs (fund engagements, portfolio links, deals, advisory, vendor, etc.). Optional. Distinct from org.parent_org_id which encodes ownership only."
+        }
+      }
+    },
+    "workspace": {
+      "$ref": "#/$defs/workspace_settings",
+      "description": "Per-workspace settings: user_id, user_timezone, first_go_months, etc. Optional but, when present, consumed by tz.py / people_writer.py / org_writer.py / workspace-manager."
+    }
+  },
+  "$defs": {
+    "person": {
+      "type": "object",
+      "required": ["id", "canonical_name", "first_seen"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^person_[0-9]{3,}$",
+          "description": "Stable identifier. Never reused. Format: person_001, person_002, ..."
+        },
+        "canonical_name": {
+          "type": "string",
+          "description": "Full first + last name, title case. Source of truth for display."
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Name-resolution corpus — every string a user might type that should resolve to this person. Used by workspace-manager / transcript-search / aliases.json reverse lookup."
+        },
+        "nicknames": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Informal display variants (v3.13.0+). Distinct from `aliases`: nicknames is for display/quick-reference; aliases is the search corpus. Most consumers want both flattened together via the get_person_display_names() helper."
+        },
+        "role": {
+          "type": "string"
+        },
+        "primary_org_id": {
+          "type": ["string", "null"],
+          "description": "The org this person primarily belongs to. Drives affiliation-aware name resolution."
+        },
+        "affiliation_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "All orgs this person is affiliated with (board roles, co-ownership, cross-company). Primary is usually also listed here."
+        },
+        "org_id": {
+          "type": ["string", "null"],
+          "description": "DEPRECATED. Use primary_org_id."
+        },
+        "email": {
+          "type": ["string", "null"],
+          "format": "email",
+          "description": "DEPRECATED v3.13.0+. Use `emails` array. Kept for back-compat reads. New writers prefer `emails`; readers use the get_person_emails() helper which merges both."
+        },
+        "emails": {
+          "type": "array",
+          "items": { "type": "string", "format": "email" },
+          "description": "Canonical email shape (v3.13.0+). Array of all known email addresses for this person, work + personal. Use get_person_emails() to read."
+        },
+        "phones": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Phone numbers (v3.13.0+). Array — no singular equivalent."
+        },
+        "project_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Threads this person is involved in."
+        },
+        "first_seen": {
+          "type": "string",
+          "format": "date"
+        },
+        "last_interaction": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "last_touched_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO datetime of the most recent write/touch on this record. Bumped by intro-broker when an intro_made event fires. Optional."
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["person_id", "connection_source"],
+            "properties": {
+              "person_id": { "type": "string", "pattern": "^person_[0-9]{3,}$" },
+              "connection_source": { "type": "string", "description": "e.g. 'intro_made'" },
+              "connection_event_seq": { "type": "integer" },
+              "connected_ts": { "type": "string", "format": "date-time" }
+            }
+          },
+          "description": "Optional relationship-graph edges between this person and others. Currently written by intro-broker when an intro_made event fires (one entry per intro, on both sides). Per WORKSPACE_API.md, the connections[] sub-array is namespaced to intro-broker — no collision with people-crm."
+        },
+        "notes": {
+          "type": ["string", "null"]
+        },
+        "communication_style": {
+          "type": ["string", "null"]
+        },
+        "reports_to_id": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "archived"],
+          "default": "active"
+        },
+        "needs_enrichment": {
+          "type": "boolean",
+          "description": "Provisional record awaiting the people-crm enrichment pull (deep-audit #21). The on-entity enrichment flag; cleared (false) after enriching. Replaces the forbidden pending_review/inferred_from on-entity trigger."
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "description": "A tracked unit of attention (a 'thread'). User-facing language is 'thread'; the 'project_' id prefix is historical. See 'kind' for the full taxonomy.",
+      "required": ["id", "folder_name", "status", "first_seen"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^project_[0-9]{3,}$"
+        },
+        "folder_name": {
+          "type": "string",
+          "description": "Exact folder name under workspace root. Kinds without a filesystem presence may use a logical name."
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "dormant", "paused", "blocked", "archived"],
+          "description": "Project lifecycle state. v2.10.3+ adds 'dormant' between active and archived: real activity but quiet for 30+ days. Don't Forget proposes the active→dormant transition at 30d and auto-flips at 60d if no user action. Dormant projects are accessible by name (go [project]) but invisible in daily flows. Re-opening a dormant project (go [project] + adding a session note) auto-revives to active."
+        },
+        "stage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "affiliation_id": {
+          "type": ["string", "null"],
+          "pattern": "^(org_[a-z0-9_]+|personal)$",
+          "description": "The org this thread belongs to (most specific level, e.g. org_acme_restaurant rather than the holding org_acme_co). Use 'personal' for threads with no org affiliation."
+        },
+        "org_id": {
+          "type": ["string", "null"],
+          "description": "DEPRECATED. Use affiliation_id."
+        },
+        "parent_thread_id": {
+          "type": ["string", "null"],
+          "description": "Parent thread if this is a nested thread (replaces subproject model). Must reference an existing project id; no cycles."
+        },
+        "spawned_from_thread_id": {
+          "type": ["string", "null"],
+          "description": "Lineage: the thread from which this one was spawned. Informational; not a hierarchy."
+        },
+        "cross_refs": {
+          "type": "array",
+          "description": "Soft links to other threads that are related without being hierarchical.",
+          "items": {
+            "type": "object",
+            "required": ["thread_id", "reason"],
+            "properties": {
+              "thread_id": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["initiative", "deal", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"],
+          "description": "The semantic kind of this thread."
+        },
+        "project_class": {
+          "type": "string",
+          "description": "DEPRECATED. Use 'kind'."
+        },
+        "owner_person_id": {
+          "type": ["string", "null"]
+        },
+        "stakeholder_person_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "last_activity": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "next_step": {
+          "type": ["string", "null"]
+        },
+        "success_criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "first_seen": {
+          "type": "string",
+          "format": "date"
+        },
+        "session_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Number of sessions this project has been touched in. Maintained by workspace-manager."
+        },
+        "dormancy_reviewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO datetime of the last time insight-generator's Pass 7 connector probe ran against this project. Used to gate the 14-day re-probe cooldown. Optional."
+        },
+        "archived_at": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "archive_reason": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "org": {
+      "type": "object",
+      "required": ["id", "canonical_name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^org_[a-z0-9_]+$",
+          "description": "Stable org id. Readable slug preferred (e.g., org_acme_co, org_holding_co)."
+        },
+        "canonical_name": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["holding", "operating", "division", "brand", "fund", "other"],
+          "description": "What role this org plays in the tree. 'holding' = top-level parent with operating children. 'operating' = revenue-generating unit. 'division' = sub-unit inside operating. 'brand' = customer-facing label. 'fund' = investment vehicle. 'other' = escape hatch with scope_label."
+        },
+        "scope_label": {
+          "type": ["string", "null"],
+          "description": "Free-text label when scope='other'."
+        },
+        "parent_org_id": {
+          "type": ["string", "null"],
+          "description": "Parent org for nested structures. Null for top-level entities. No cycles."
+        },
+        "relationship_type": {
+          "type": "string",
+          "enum": ["operating", "partner", "board", "advisory", "investment", "client", "portfolio_company", "beneficiary", "vendor", "prospect", "service_provider", "other"],
+          "description": "The CEO's role vs this org. 'operating' = runs it. 'partner' = co-founded/co-owned. 'board' = board seat. 'advisory' = advisor/consultant. 'investment' = holds equity, doesn't run. 'client' = paid engagement. 'portfolio_company' = portco of a fund the CEO runs. 'beneficiary' = family office beneficiary/grantor. 'vendor' = a third party who sells the CEO products/services (added v2.10.3). 'prospect' = a third party in active sales conversation, not yet a client (added v2.10.3). 'service_provider' = a vendor with ongoing relationship — accountant, lawyer, agency (added v2.10.3). 'other' = escape hatch with relationship_label."
+        },
+        "relationship_label": {
+          "type": ["string", "null"],
+          "description": "Free-text label when relationship_type='other'."
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["primary", "secondary", "external", "passive"],
+          "default": "secondary",
+          "description": "Visual + filtering tier (added v2.10.3). 'primary' = the CEO's own org(s) — holding + operating units they run. Renders prominent in Orgs Map; surfaces in every daily flow. 'secondary' = active client/partner/advisor — high-signal external relationships. Renders normally; surfaces in daily flows. 'external' = vendor/prospect/service_provider — low-signal third parties. Renders smaller / under collapsed External section in Orgs Map; only surfaces in daily flows when there's an open commitment or a meeting on the calendar. 'passive' = dormant/archived/orphan — historical reference only. Hidden from daily flows; accessible by name. Tier is set by inference rules at onboarding (primary-affiliation gate + interaction-volume thresholds) or explicitly by the user."
+        },
+        "is_primary_focus": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bubbles this org to the top of briefings. Multiple orgs can be primary focus (portfolio/holding-co operators)."
+        },
+        "domains": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Email/web domains associated with this org. Used for connector-driven discovery and aliasing."
+        },
+        "slack_workspace_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "inferred_from": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["email_domain_cluster", "slack_workspace", "calendar_attendee_cluster", "drive_folder", "email_signature", "user_input", "manual_edit", "migration_v1_8"]
+          },
+          "description": "What signals led to this org's existence in the registry. Supports weekly-audit boundary and drift checks."
+        },
+        "first_seen": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "last_interaction": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "archived"],
+          "default": "active"
+        },
+        "type": {
+          "type": "string",
+          "description": "DEPRECATED. Use relationship_type + is_primary_focus. Legacy values: 'home' | 'side' | 'personal'."
+        },
+        "domain": {
+          "type": ["string", "null"],
+          "description": "DEPRECATED. Use domains[]."
+        },
+        "notes": {
+          "type": ["string", "null"]
+        },
+        "needs_enrichment": {
+          "type": "boolean",
+          "description": "Provisional org from reactive discovery, awaiting CEO confirm (deep-audit #18). On-entity flag; cleared on confirm. Replaces the forbidden pending_review."
+        }
+      }
+    },
+    "engagement": {
+      "type": "object",
+      "description": "A non-ownership edge between two orgs (fund engagement, portfolio company, deal, advisory, vendor, etc.). The orgs map renderer surfaces these under the from-org as 'Engaged with:' rows, visually distinct from owned children. Engaged orgs remain at top level — engagements form a graph, not a tree.",
+      "required": ["id", "from_org_id", "to_org_id", "kind"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^engagement_[0-9]{3,}$",
+          "description": "Stable engagement id. Sequential: engagement_001, engagement_002, …"
+        },
+        "from_org_id": {
+          "type": "string",
+          "description": "The engaging org (the one that 'has' the relationship). Must reference an existing org id."
+        },
+        "to_org_id": {
+          "type": "string",
+          "description": "The target org (the one being engaged with). Must reference an existing org id."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["fund_engagement", "portfolio", "deal", "client", "vendor", "advisor", "partner_other"],
+          "description": "Initial taxonomy. Renderer treats unknown kinds as generic 'engaged with'."
+        },
+        "label": {
+          "type": ["string", "null"],
+          "description": "Short display label, e.g., 'Fund-level partnership', 'Pilot deal — AP automation'."
+        },
+        "notes": {
+          "type": ["string", "null"],
+          "description": "Free-text context. Surfaced in tooltips / detail views."
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "ended_at": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "is_active": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inactive engagements are filtered from the renderer."
+        },
+        "inferred_from": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "workspace_settings": {
+      "type": "object",
+      "description": "Per-workspace user/locale/onboarding settings. Lives at top-level `workspace` field of entities.json. All fields optional; readers handle missing fields with sensible defaults.",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "pattern": "^person_[0-9]{3,}$",
+          "description": "The primary user's person_id. Used by readers that need to identify whose workspace this is (Friday Wrap internal/external split, dormancy live-check self-reply filter, etc.). Canonical signal — preferred over the legacy `is_primary_user: true` person field."
+        },
+        "user_timezone": {
+          "type": "string",
+          "description": "IANA timezone name (e.g. America/New_York). Read by tz.py to_local() for workspace-local date math. Falls back to UTC if missing — but missing should be filled by command-room-onboarding Step 1c."
+        },
+        "first_go_months": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many months back the user wants the initial backfill to cover at first install. Set by command-room-onboarding Step 1c. Optional after first install."
+        },
+        "schedule_timezone": {
+          "type": "string",
+          "description": "Timezone used by scheduled tasks. Usually identical to user_timezone but can be set separately for cases where the user travels."
+        }
+      }
+    }
+  }
+}

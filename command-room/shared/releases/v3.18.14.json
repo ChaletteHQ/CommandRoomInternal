@@ -1,0 +1,5 @@
+{
+  "version": "3.18.14",
+  "headline": "Reconciliation now actually closes the follow-ups you've sent: it matches an email to a commitment by the recipient's name in the commitment, not just a linked contact record — so 'Send Sam the deck' closes when you email Sam, even if Sam wasn't linked or had no address on file. It also now reliably knows which person is you, so your 'you owe' list and the matching are attributed correctly.",
+  "items": []
+}

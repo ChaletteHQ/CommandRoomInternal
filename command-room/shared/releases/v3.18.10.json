@@ -1,0 +1,16 @@
+{
+  "version": "3.18.10",
+  "headline": "Your update now reaches your existing projects: the recent people-list fix — dropping stray contacts who showed up once but aren't really on a project — gets applied to your projects the moment you update, instead of waiting for the weekly cleanup. Plus a behind-the-scenes fix so updates from much older versions never skip a step.",
+  "items": [
+    {
+      "id": "v31810_rerender_brains",
+      "detector_module": "release_detectors.v3_18_9_brains_stale_logic",
+      "detector_function": "brains_stale_logic",
+      "action": "auto_apply",
+      "action_module": "release_actions.v3_18_9_rerender_brains",
+      "action_function": "rerender_brains",
+      "notice_template": "I refreshed the people lists on {n_rerendered} of your projects to drop stray contacts who showed up once but aren't really on the project — a correction from this update. Nothing for you to do.",
+      "fallback_prompt_template": "A small refresh of your project people lists is pending from this update. It'll apply on its own at the next weekly cleanup."
+    }
+  ]
+}

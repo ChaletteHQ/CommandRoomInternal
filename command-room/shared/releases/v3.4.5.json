@@ -1,0 +1,20 @@
+{
+  "version": "3.4.5",
+  "headline": "Update flow learns to play per-version fixes — and decisions can now close.",
+  "items": [
+    {
+      "id": "v345_announce_manifest_system",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When you say `update command room` now, I'll also check for any per-update fixes that apply to your workspace — surface anything you need to know about, announce new skills, run small repairs in the background. Every future update plays these automatically, and I only surface what actually applies to you.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v345_announce_decision_closure",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Decisions you logged before now close themselves. When a new meeting transcript shows that something got signed / kicked off / 'went with', I write a decision-resolved note automatically. If you change direction (changed our mind / switching to / decided against), I mark it superseded. Conservative threshold — borderline calls don't act.",
+      "action": "announce_only"
+    }
+  ]
+}

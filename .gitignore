@@ -1,0 +1,4 @@
+command-room/.simplify-findings/
+**/__pycache__/
+*.pyc
+.DS_Store

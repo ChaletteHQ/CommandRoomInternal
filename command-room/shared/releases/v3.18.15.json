@@ -1,0 +1,13 @@
+{
+  "version": "3.18.15",
+  "headline": "New skill: research — verified briefs on any company, person, or market, folded back into your workspace.",
+  "items": [
+    {
+      "id": "v31815_announce_research_skill",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New skill: research. When you need to learn something that isn't already in your workspace or your meetings, just say 'research [company]', 'look into [company] before my call', 'background on [person]', or 'pull together research on [topic]'. I'll frame it against what you already have on file, run verified web research with citations, and hand you a branded brief — then offer to save the findings into your workspace so they compound into future briefs. It works out of the box on built-in web search (no setup). If you've connected Tavily it searches the web deeper; if you've connected Vibe Prospecting it also verifies company size/revenue, surfaces funding and hiring signals, and identifies the real decision-makers. The brief always shows which sources it used.",
+      "action": "announce_only"
+    }
+  ]
+}

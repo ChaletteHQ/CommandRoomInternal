@@ -1,0 +1,20 @@
+{
+  "version": "3.14.3",
+  "headline": "Multi-draft emails render in one widget; Friday Wrap fills in for older installs.",
+  "items": [
+    {
+      "id": "v3143_email_writer_multidraft_widget",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When you ask me to draft multiple emails at once — a stage 1 and a stage 2, a with-intro and a without-intro variant, two recipients in parallel — I now render all of them in a single widget. Each draft gets its own send / edit then send / draft / skip controls so you can pick what to ship and what to drop visually. No more typing `send stage 2` to choose.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3143_post_update_rebind_recovery",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One thing to know if you hit it: after a plugin update, your scheduled chats may briefly point at the old plugin until Cowork's underlying cache refreshes. If tomorrow's morning brief (or any scheduled chat) shows a message about not being able to load its instructions, the fix is to fully quit and reopen Cowork — end every Cowork process in Task Manager / Activity Monitor, not just close the window. When you reopen, type `set up command room schedules` to re-bind your tasks against the new install. Your tasks themselves aren't broken — only the mount needs a refresh.",
+      "action": "instruct_user"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "version": "3.9.0",
+  "headline": "Six internal diagnostic skills retired — your trigger router is cleaner.",
+  "items": [
+    {
+      "id": "v390_announce_internal_skills_retired",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I retired six skills that were internal diagnostics — they only fired on phrases customers never used, and they cluttered routing. A few may interest you: speech-prep is being phased out (use `memo on` with a board-update or position-paper angle instead — produces stronger talking-point output). The other five moved to a separate internal plugin. Customer-visible change: 'speech prep', 'prep me to speak', 'help me prepare for the keynote' no longer route here — use memo writing for talking points.",
+      "action": "announce_only"
+    }
+  ]
+}

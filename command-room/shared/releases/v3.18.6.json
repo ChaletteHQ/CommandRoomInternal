@@ -1,0 +1,13 @@
+{
+  "version": "3.18.6",
+  "headline": "You can now close the loop on a prospect: say \"[Name] is now a client\" and Command Room converts them — flips the relationship, links the engagement, and offers to set up the project. Previously this was offered but never actually did anything.",
+  "items": [
+    {
+      "id": "v3186_prospect_to_client_conversion",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New command: when a prospect becomes a paying client, just say \"[Name] is now a client\" (or \"promote [Name] to client\"). I'll flip them from prospect to client, link the engagement to your company, and offer to set up their project folder — reusing the existing record, no duplicate. This used to be offered but never worked; now it does. If any of your current prospects have already signed, you can convert them now.",
+      "action": "announce_only"
+    }
+  ]
+}

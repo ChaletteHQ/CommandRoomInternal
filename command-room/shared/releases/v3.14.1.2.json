@@ -1,0 +1,13 @@
+{
+  "version": "3.14.1.2",
+  "headline": "Stalled-projects fix — now reads every workspace shape cleanly + handles every project status.",
+  "items": [
+    {
+      "id": "v31412_stall_detector_canonical_shape",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Quick bugfix on the stalled-projects detector. The first version only worked on workspaces with an older data shape — most workspaces use the newer one and got zero results. Now I read both, use each project's own last-activity timestamp as the primary signal, and handle every project status (active, exploring, paused, blocked, dormant, archived — the prior version only knew three). If you already configured stalled-projects, your settings carry forward. Say `change my stall settings` to add thresholds for the new statuses, or `show me stalled projects` to run the fixed detector.",
+      "action": "announce_only"
+    }
+  ]
+}

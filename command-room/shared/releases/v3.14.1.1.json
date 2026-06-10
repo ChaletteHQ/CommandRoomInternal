@@ -1,0 +1,13 @@
+{
+  "version": "3.14.1.1",
+  "headline": "Settings UX — reconfigure, show, reset paths for config-aware skills",
+  "items": [
+    {
+      "id": "v31411_settings_ux",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Small UX upgrade — for skills with first-run setup questions (currently just stalled-projects, more coming), you can now change your answers anytime. Say 'change my stall settings' or 'reconfigure stalled-projects' to walk the questions again with your current answers pre-filled. Say 'show my stall settings' to just see what's set. Say 'reset stall settings' to start over from defaults. Future skills with setup questions will all support this same pattern.",
+      "action": "announce_only"
+    }
+  ]
+}

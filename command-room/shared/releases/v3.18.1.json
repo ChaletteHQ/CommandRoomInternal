@@ -1,0 +1,5 @@
+{
+  "version": "3.18.1",
+  "headline": "Small fix so the automatic activity-log repair actually runs on update (it now heals any current glitches immediately, instead of quietly skipping).",
+  "items": []
+}

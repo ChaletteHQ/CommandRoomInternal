@@ -1,0 +1,26 @@
+{
+  "name": "command-room",
+  "version": "3.18.17",
+  "description": "Claude as your chief of staff. Turns a folder of notes, transcripts, and emails into an executive workspace. Daily loop: morning briefing, inbox triage, meeting prep, follow-up ritual. Writing: emails, Slack, memos, one-pagers, board updates — voice-calibrated to you. Memory layer: decision log, insights, self-maintaining weekly cleanup. Per-workspace skills generate from your own context.",
+  "author": {
+    "name": "Chalette Holdings"
+  },
+  "keywords": [
+    "command-room",
+    "workspace",
+    "project-management",
+    "chief-of-staff",
+    "executive-assistant",
+    "productivity",
+    "SMB",
+    "CEO",
+    "skill-generation",
+    "workspace-local-skills",
+    "live-artifacts",
+    "dashboards"
+  ],
+  "python_dependencies": [
+    "python-docx==1.2.0",
+    "backports.zoneinfo==0.2.1; python_version < '3.9'"
+  ]
+}

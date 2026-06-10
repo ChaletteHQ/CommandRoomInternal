@@ -1,0 +1,13 @@
+{
+  "version": "3.6.5",
+  "headline": "Two sidebar dashboards redesigned — cleaner navigation tree + sharper Quick Commands typography.",
+  "items": [
+    {
+      "id": "v365_announce_dashboard_redesign",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I redesigned two of your sidebar dashboards. The Workspace Map is now a pure navigation tree — org → projects, with optional stuck-people inline. The engagement chart, count pills, key-people block, and Run Weekly Audit button are gone (use the `weekly audit` chat trigger instead). All sections are collapsible. The Quick Commands cheat sheet got a typography pass for legibility — same command set, easier to read. Both auto-rebuilt during this update.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "version": "3.7.1",
+  "headline": "Six skills now contribute to my memory — past one-pagers, automation scans, sent emails, transcript searches, decisions, and follow-ups are all remembered now.",
+  "items": [
+    {
+      "id": "v371_announce_substrate_upgrades",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I upgraded six skills to log what they do, so the rest of me can reference it later. One-pagers from 3 months ago are now visible to me. Automation scans dedup against prior ones. Email drafts now naturally address what's already open between you and the recipient. Repeated transcript searches become an insight signal — search 'pricing' 7 times in 60 days and the next pulse will surface a pricing insight. Memo writing auto-logs the decision when the memo IS a decision. Follow-up packs link back to the source meeting. No action needed — next time any of these fires, the memory lands.",
+      "action": "announce_only"
+    }
+  ]
+}

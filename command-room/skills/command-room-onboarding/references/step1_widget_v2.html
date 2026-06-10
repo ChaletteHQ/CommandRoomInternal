@@ -1,0 +1,301 @@
+<!--
+  Step 1 setup widget — v3 (2026-05-23, M1 redesign)
+
+  Self-contained HTML/JS. Loaded by skills/command-room-onboarding/SKILL.md
+  Phase 0, passed verbatim to mcp__visualize__show_widget. Bypasses
+  shared/scripts/chat_output_renderer.py — the Phase 0 widget is decoupled
+  from the standard CR renderer so onboarding doesn't share a single point
+  of failure with the scheduled-task orchestrator surfaces.
+
+  Four questions, progressive reveal:
+    Q1 — Role (six top chips, sub-chip drill-down, optional refinement textbox)
+    Q2 — Email exclusions (none / exclude-with-textbox)
+    Q3 — Timezone (four US zones / Other-with-textbox)
+    Q4 — AI name (default "Penelope" / pick-your-own-with-textbox) — NEW v3
+
+  Submission shape (fires on final Q4 Finish click):
+    apply choices: [{"n":1,"action":"<top>","sub":"<sub>","input":"<text>"}, ...]
+    `sub` and `input` are optional per tuple. Four tuples total.
+
+  Routes via apply-choices to command-room-onboarding "Reply handling — Phase 0
+  setup". Fire-marker event widget_kind = step_1_setup_v3.
+-->
+<div style="padding: 1rem 0;">
+<h2 class="sr-only">Phase 0 onboarding widget — four questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; final question names your AI</h2>
+
+<div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1.25rem;">
+
+  <div style="margin-bottom: 1rem;">
+    <p style="margin: 0 0 4px; font-size: 16px; font-weight: 500;">Quick setup — four questions, then I'll scan your tools</p>
+    <p style="margin: 0; font-size: 13px; color: var(--color-text-secondary);">Pick a chip, refine a step deeper, add detail if helpful.</p>
+  </div>
+
+  <div data-q="1" class="qcard qactive" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px;">
+    <div class="qhead">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <i class="ti ti-user" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+        <span style="font-size: 14px; font-weight: 500;">Which best describes you?</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">1 / 4</span>
+      </div>
+      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button class="chip top" data-v="run-company" data-label="Run a company">Run a company</button>
+        <button class="chip top" data-v="senior-leader" data-label="Senior leader (not owner)">Senior leader (not owner)</button>
+        <button class="chip top" data-v="investor" data-label="Investor / board / advisor">Investor / board / advisor</button>
+        <button class="chip top" data-v="client-work" data-label="Client work / service">Client work / service</button>
+        <button class="chip top" data-v="nonprofit" data-label="Nonprofit">Nonprofit</button>
+        <button class="chip top top-other" data-v="other" data-label="Other">Other&hellip;</button>
+      </div>
+      <div class="subrow" style="display: none; margin-top: 12px; padding-top: 12px; border-top: 0.5px solid var(--color-border-tertiary);">
+        <p style="margin: 0 0 8px; font-size: 12px; color: var(--color-text-secondary);">Refine:</p>
+        <div class="subchips" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+      </div>
+      <div class="refine-row" style="display: none; margin-top: 10px;">
+        <textarea class="refine-input" style="width: 100%; min-height: 50px; padding: 8px 10px; font-size: 13px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); resize: vertical; box-sizing: border-box;"></textarea>
+        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Next <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
+      </div>
+    </div>
+    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
+      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
+      <span class="summary-label"></span>
+    </div>
+  </div>
+
+  <div data-q="2" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px; opacity: 0.4;">
+    <div class="qhead">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <i class="ti ti-lock" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+        <span style="font-size: 14px; font-weight: 500;">Any email domains I should never read?</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 4</span>
+      </div>
+      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button class="chip top simple" data-v="none" data-label="None — read everything" disabled>None &mdash; read everything</button>
+        <button class="chip top top-other" data-v="exclude" data-label="Exclude domains" data-ph="lawfirm.example.com, wife@example.com" disabled>Exclude domains&hellip;</button>
+      </div>
+      <div class="refine-row" style="display: none; margin-top: 10px;">
+        <textarea class="refine-input" style="width: 100%; min-height: 44px; padding: 8px 10px; font-size: 13px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); resize: vertical; box-sizing: border-box;"></textarea>
+        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Next <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
+      </div>
+    </div>
+    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
+      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
+      <span class="summary-label"></span>
+    </div>
+  </div>
+
+  <div data-q="3" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px;">
+    <div class="qhead">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <i class="ti ti-clock" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+        <span style="font-size: 14px; font-weight: 500;">What timezone are you in?</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 4</span>
+      </div>
+      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button class="chip top simple" data-v="pacific" data-label="Pacific" disabled>Pacific</button>
+        <button class="chip top simple" data-v="mountain" data-label="Mountain" disabled>Mountain</button>
+        <button class="chip top simple" data-v="central" data-label="Central" disabled>Central</button>
+        <button class="chip top simple" data-v="eastern" data-label="Eastern" disabled>Eastern</button>
+        <button class="chip top top-other" data-v="other" data-label="Other" data-ph="City or IANA zone (London, Phoenix, Tokyo)" disabled>Other&hellip;</button>
+      </div>
+      <div class="refine-row" style="display: none; margin-top: 10px;">
+        <textarea class="refine-input" style="width: 100%; min-height: 44px; padding: 8px 10px; font-size: 13px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); resize: vertical; box-sizing: border-box;"></textarea>
+        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Next <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
+      </div>
+    </div>
+    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
+      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
+      <span class="summary-label"></span>
+    </div>
+  </div>
+
+  <div data-q="4" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px;">
+    <div class="qhead">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+        <i class="ti ti-sparkles" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+        <span style="font-size: 14px; font-weight: 500;">What do you want to call your AI?</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 4</span>
+      </div>
+      <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">Default is Penelope. Pick anything that feels right — Jarvis, Alfred, your own first name. She runs your Command Room and shows up by name in every chat (&ldquo;ask Penelope,&rdquo; &ldquo;Penelope said&rdquo;). Her workspace folder becomes <code>[Name]&rsquo;s Brain</code>.</p>
+      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button class="chip top simple" data-v="default" data-label="Keep Penelope" disabled>Keep Penelope</button>
+        <button class="chip top top-other" data-v="custom" data-label="Pick my own" data-ph="A name (e.g., Jarvis, Alfred, Athena)" disabled>Pick my own&hellip;</button>
+      </div>
+      <div class="refine-row" style="display: none; margin-top: 10px;">
+        <input type="text" class="refine-input" maxlength="40" style="width: 100%; padding: 8px 10px; font-size: 13px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); box-sizing: border-box;" />
+        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Finish <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
+      </div>
+    </div>
+    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
+      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
+      <span class="summary-label"></span>
+    </div>
+  </div>
+
+  <p style="margin: 1rem 0 0; font-size: 12px; color: var(--color-text-tertiary);">Everything stays in the folder you chose. Nothing leaves your machine.</p>
+
+</div>
+</div>
+
+<style>
+  .chip { padding: 5px 11px; font-size: 12px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: 999px; background: transparent; color: var(--color-text-primary); cursor: pointer; transition: background 0.1s, border-color 0.1s; }
+  .chip:hover:not(:disabled) { background: var(--color-background-secondary); }
+  .chip:disabled { cursor: not-allowed; }
+  .chip.selected { background: var(--color-text-primary); color: var(--color-background-primary); border-color: var(--color-text-primary); }
+</style>
+
+<script>
+  (function () {
+    const root = document.currentScript.parentElement;
+    const labels = { 1: 'Your role', 2: 'Email privacy', 3: 'Timezone', 4: 'AI name' };
+    const selections = {};
+
+    const subOptions = {
+      'run-company': [
+        { v: 'single-op-co', label: 'Single operating company', ph: 'Industry, size — optional' },
+        { v: 'holdco', label: 'Multiple companies (holdco)', ph: 'Portfolio size, industries — optional' },
+        { v: 'family-business', label: 'Family business', ph: 'Industry, generation, your role — optional' },
+        { v: 'other', label: 'Other', ph: 'Describe the company structure', other: true }
+      ],
+      'senior-leader': [
+        { v: 'c-suite', label: 'C-suite', ph: 'Role + company — optional' },
+        { v: 'vp', label: 'VP / SVP', ph: 'Function + company — optional' },
+        { v: 'director-below', label: 'Director or below', ph: 'Function + company — optional' },
+        { v: 'other', label: 'Other', ph: 'Describe your role + company', other: true }
+      ],
+      'investor': [
+        { v: 'gp-fund', label: 'GP / fund partner', ph: 'Fund + stage — optional' },
+        { v: 'board-director', label: 'Board director', ph: 'How many boards, kinds — optional' },
+        { v: 'independent-advisor', label: 'Independent advisor', ph: 'Areas of focus — optional' },
+        { v: 'family-office', label: 'Family office principal', ph: 'Mandate, AUM — optional' },
+        { v: 'other', label: 'Other', ph: 'Describe your investing role', other: true }
+      ],
+      'client-work': [
+        { v: 'consulting', label: 'Consulting', ph: 'Practice area, clients — optional' },
+        { v: 'agency', label: 'Agency', ph: 'Discipline, clients — optional' },
+        { v: 'professional-services', label: 'Professional services', ph: 'Legal, accounting, etc.' },
+        { v: 'other', label: 'Other', ph: 'Describe the service business', other: true }
+      ],
+      'nonprofit': [
+        { v: 'exec-director', label: 'Executive director', ph: 'Mission, org size — optional' },
+        { v: 'senior-staff', label: 'Senior staff', ph: 'Role + mission — optional' },
+        { v: 'board-member', label: 'Board member', ph: 'Boards, focus — optional' },
+        { v: 'other', label: 'Other', ph: 'Describe your nonprofit role', other: true }
+      ]
+    };
+
+    function collapseAndAdvance(qNum, summaryText) {
+      const card = root.querySelector('.qcard[data-q="' + qNum + '"]');
+      card.querySelector('.qhead').style.display = 'none';
+      card.querySelector('.qsummary').style.display = 'block';
+      card.querySelector('.qsummary .summary-label').textContent = labels[qNum] + ': ' + summaryText;
+      card.classList.remove('qactive');
+      const next = root.querySelector('.qcard[data-q="' + (qNum + 1) + '"]');
+      if (next) {
+        next.classList.remove('qlocked');
+        next.classList.add('qactive');
+        next.style.opacity = '1';
+        next.querySelectorAll('.chip').forEach(function (c) { c.disabled = false; });
+      } else {
+        const payload = [1, 2, 3, 4].map(function (n) { return Object.assign({ n: n }, selections[n]); });
+        sendPrompt('apply choices: ' + JSON.stringify(payload));
+      }
+    }
+
+    function openRefine(card, ph, required) {
+      const row = card.querySelector('.refine-row');
+      const input = row.querySelector('.refine-input');
+      input.placeholder = ph;
+      input.dataset.required = required ? '1' : '0';
+      input.value = '';
+      row.style.display = 'block';
+      setTimeout(function () { input.focus(); }, 50);
+    }
+
+    function renderSubChips(card, topValue, topLabel) {
+      const subrow = card.querySelector('.subrow');
+      const subchips = card.querySelector('.subchips');
+      subchips.innerHTML = '';
+      subOptions[topValue].forEach(function (opt) {
+        const btn = document.createElement('button');
+        btn.className = 'chip sub';
+        btn.dataset.v = opt.v;
+        btn.dataset.label = opt.label;
+        btn.dataset.ph = opt.ph;
+        btn.dataset.other = opt.other ? '1' : '0';
+        btn.textContent = opt.label + (opt.other ? '…' : '');
+        btn.addEventListener('click', function () {
+          card.querySelectorAll('.chip.sub').forEach(function (c) { c.classList.remove('selected'); });
+          btn.classList.add('selected');
+          card.dataset.activeTop = topValue;
+          card.dataset.activeTopLabel = topLabel;
+          card.dataset.activeSub = opt.v;
+          card.dataset.activeSubLabel = opt.label;
+          openRefine(card, opt.ph, !!opt.other);
+        });
+        subchips.appendChild(btn);
+      });
+      subrow.style.display = 'block';
+    }
+
+    root.querySelectorAll('.chip.top').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (btn.disabled) return;
+        const card = btn.closest('.qcard');
+        const qNum = Number(card.dataset.q);
+        const v = btn.dataset.v;
+        const lbl = btn.dataset.label;
+
+        card.querySelectorAll('.chip.top').forEach(function (c) { c.classList.remove('selected'); });
+        btn.classList.add('selected');
+
+        const subrow = card.querySelector('.subrow');
+        const refineRow = card.querySelector('.refine-row');
+
+        if (btn.classList.contains('simple')) {
+          if (subrow) subrow.style.display = 'none';
+          if (refineRow) refineRow.style.display = 'none';
+          selections[qNum] = { action: v };
+          collapseAndAdvance(qNum, lbl);
+          return;
+        }
+
+        if (btn.classList.contains('top-other')) {
+          if (subrow) subrow.style.display = 'none';
+          card.dataset.activeTop = v;
+          card.dataset.activeTopLabel = lbl;
+          card.dataset.activeSub = '';
+          card.dataset.activeSubLabel = '';
+          openRefine(card, btn.dataset.ph || 'Describe in your own words', true);
+          return;
+        }
+
+        if (refineRow) refineRow.style.display = 'none';
+        card.dataset.activeTop = v;
+        card.dataset.activeTopLabel = lbl;
+        renderSubChips(card, v, lbl);
+      });
+    });
+
+    root.querySelectorAll('.next-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const card = btn.closest('.qcard');
+        const qNum = Number(card.dataset.q);
+        const input = card.querySelector('.refine-input');
+        const text = input.value.trim();
+        const required = input.dataset.required === '1';
+        if (required && !text) { input.focus(); return; }
+        const topV = card.dataset.activeTop;
+        const topL = card.dataset.activeTopLabel;
+        const subV = card.dataset.activeSub || null;
+        const subL = card.dataset.activeSubLabel || null;
+        const sel = { action: topV };
+        if (subV) sel.sub = subV;
+        if (text) sel.input = text;
+        selections[qNum] = sel;
+        let summary = topL;
+        if (subL) summary += ' → ' + subL;
+        if (text) summary += ' — ' + (text.length > 40 ? text.slice(0, 38) + '…' : text);
+        collapseAndAdvance(qNum, summary);
+      });
+    });
+  })();
+</script>

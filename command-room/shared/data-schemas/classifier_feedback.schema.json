@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command-room://schemas/classifier_feedback.schema.json",
+  "title": "ClassifierFeedback",
+  "description": "Single feedback record. classifier_feedback.jsonl is a newline-delimited file where every line matches this schema. Append-only — never edited or reordered. One row per action taken by the user during a classification review session in insight-generator (Pass 8). Consumed by future classification passes as a learning signal — repeated user corrections on a given signal type cause that signal to be down-weighted.",
+  "type": "object",
+  "required": ["ts", "event_seq", "user_action", "confidence_before"],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 datetime when the user acted on the classification review row."
+    },
+    "event_seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The seq of the event being reviewed. References events.jsonl."
+    },
+    "user_action": {
+      "type": "string",
+      "enum": ["confirmed", "changed", "skipped"],
+      "description": "What the user did with the row. 'confirmed' = accepted the classifier's assignment. 'changed' = reassigned to a different thread (a corresponding reclassification event was appended to events.jsonl). 'skipped' = left unreviewed (current classification stands but no explicit confirmation signal)."
+    },
+    "old_primary": {
+      "type": ["string", "null"],
+      "pattern": "^project_[0-9]{3,}$",
+      "description": "The primary_thread_id that was on the event before this review action. Null if the event had no classification (pure ambiguous)."
+    },
+    "new_primary": {
+      "type": ["string", "null"],
+      "pattern": "^project_[0-9]{3,}$",
+      "description": "The primary_thread_id the user picked (if user_action='changed'). Equal to old_primary if 'confirmed'. Null if 'skipped'."
+    },
+    "signals_used": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "direct_marker",
+          "alias_match",
+          "people_clustering",
+          "org_clustering",
+          "email_domain",
+          "slack_workspace",
+          "calendar_attendee",
+          "drive_folder",
+          "email_signature",
+          "weak_signal",
+          "no_signal"
+        ]
+      },
+      "description": "Which classifier signals contributed to the original assignment. If user_action='changed', these are the signals that misfired — the classifier should down-weight them for this source/pattern going forward."
+    },
+    "confidence_before": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "The classification_confidence value on the event at review time."
+    },
+    "review_session_ts": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Timestamp of the parent classification_review event this row belongs to. Lets readers group per-row feedback by the aggregate review run."
+    },
+    "notes": {
+      "type": ["string", "null"],
+      "description": "Optional free-text note from the user when they changed a classification (e.g., 'rio@ is only Acme Restaurant, not the holding')."
+    }
+  },
+  "additionalProperties": false
+}

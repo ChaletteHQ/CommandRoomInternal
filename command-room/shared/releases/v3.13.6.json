@@ -1,0 +1,76 @@
+{
+  "version": "3.13.6",
+  "headline": "Slow-pass update — 7 ship-blockers and 8 high-severity bugs caught by actually running code against realistic data, not just static checks.",
+  "items": [
+    {
+      "id": "v3136_entity_resolve_crash_fix",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I fixed a crash in my name-resolution helper that's been silently broken for a couple of updates. The same helper underlies the `go [name]` flow and transcript-name search — both have been quietly returning empty results. Now fixed and tested against realistic data.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3136_friday_wrap_keyerror_fix",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I fixed two bugs in your Friday Wrap weekly recap that would have crashed every Friday afternoon. The recap now produces the actual weekly document instead of crashing.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3136_operator_report_complete",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I fixed a half-merged template in your monthly recap and a three-sided contradiction about output format. The report now produces what was specified, with the synthesis lead I added earlier.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3136_canonical_edit_surface_idempotent",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The workspace doc cleanup I offered a couple of updates back was non-idempotent — the replacement text contained the same marker the detector watched for, so the prompt kept firing forever even after you'd updated. Fixed; clicking through now resolves it permanently.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3136_org_repair_transactional",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The org-record repair I offered a couple updates back had three bugs (raw error on validation failure, partial-write on mid-loop crash, dry-run that didn't validate so the preview lied). Rewrote as transactional — either every org repairs successfully or none are written. Dry-run now actually validates.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3136_writer_event_shape_fix",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The person and org writers were producing malformed entries in your activity log on every record write. Every workspace had polluted entries that failed validation. Fixed the shape; added the missing note types to my recognized list.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3136_intro_made_shape_aligned",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The intro-followup flow had a silent shape mismatch between the writer and the reader — every resolution wrote entries with empty people lists. Now both sides agree, with back-compat for in-flight entries from before.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3136_insight_generator_half_merge_cleanup",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Internal tidying — my insight generator had a few half-merge spots between an older shape and the newer one. All reconciled. Nothing changes for you.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3136_onboarding_stale_refs",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The first-install onboarding flow had three stale references (a removed step, a non-existent playbook file, a retired skill). New users following the install path no longer hit broken pointers. Corrections now flow through natural-language commands like `move X under Y` and `merge those orgs`.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3136_schema_additions",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Housekeeping — I now properly recognize a few fields I'd been writing without formal recognition. You won't see a difference.",
+      "action": "announce_only"
+    }
+  ]
+}

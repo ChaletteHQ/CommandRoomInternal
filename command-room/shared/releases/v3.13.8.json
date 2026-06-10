@@ -1,0 +1,85 @@
+{
+  "version": "3.13.8",
+  "headline": "A bigger update — sturdier under the hood, sharper documents, fewer ways for things to go wrong.",
+  "items": [
+    {
+      "id": "v3138_substrate_corruption_recovery",
+      "detector_module": "release_detectors.v3_13_8_substrate_corruption",
+      "detector_function": "has_malformed_events",
+      "action_module": "release_actions.v3_13_8_quarantine_substrate",
+      "action_function": "auto_quarantine_malformed",
+      "notice_template": "I quietly set aside {quarantined_count} incomplete entries from old data ({date_range_label}); your real history is intact and the originals are preserved if I ever need to recover them.",
+      "action": "auto_apply"
+    },
+    {
+      "id": "v3138_canonical_widget_transport",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I tightened up how your interactive cards render — same look, but every one now passes through my safety checks before it reaches you. Wider coverage means fewer odd buttons or missing details slip through.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_brief_writer_migration",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Every document I produce for you — memos, one-pagers, board packs, stress tests, decision docs — now runs through one polished render pipeline. Real headings, consistent typography, and a final scan that catches internal jargon before it reaches you. Tables in decision memos and ranked safeguards in stress tests look cleaner too.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_substrate_hygiene_defense",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your activity history reader is sturdier now. If a stray malformed line ever sneaks in, I notice it and tell you instead of crashing or silently swallowing it. The repair tool can also clean it up when you ask.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_dead_chrome_recovery",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I'll never show you a Send button next to a contact whose email I don't actually have. If the address is missing, I'll show you `add email then send` instead — type it once and I'll remember it for next time.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_entity_resolve_protocol_extended",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I now resolve names the same way everywhere — when you mention 'Bo' or 'Northstar' in any conversation, it lands on the same person or project no matter which part of me is listening. Your daily brief also reads from the same open-commitments source as the rest of me, so the count matches what you see in your discuss list.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_atomic_write_multi",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When I'm updating several of your files in one pass, I now treat the whole batch as one safe transaction — either all of it lands cleanly or none of it does. No more half-applied changes if something gets interrupted mid-flow.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_canonical_next_seq",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When I log a new entry in your activity history, the numbering helper is more careful now — it skips over any junk lines or oddly-numbered residue from old bugs so your sequence stays clean going forward.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_widget_degradation_ladder",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Interactive cards now follow consistent rules whether there's one item, many items, or just something for you to read. Same look across every surface I produce.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_schema_enum_additions",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Housekeeping — your activity log now properly recognizes a few new kinds of notes I'd been writing. You won't see a difference; your weekly audit will just run quieter going forward.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3138_pack_run_telemetry",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your scheduled chats now report their work more cleanly behind the scenes. Your usage report will give you a more accurate picture of where your time goes.",
+      "action": "announce_only"
+    }
+  ]
+}

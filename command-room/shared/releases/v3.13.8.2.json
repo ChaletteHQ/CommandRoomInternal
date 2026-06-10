@@ -1,0 +1,20 @@
+{
+  "version": "3.13.8.2",
+  "headline": "A small follow-up — naming, and a quiet housekeeping pass on your activity log.",
+  "items": [
+    {
+      "id": "v31382_brain_name_prompt",
+      "detector_module": "release_detectors.v3_13_8_2_brain_name_prompt",
+      "detector_function": "needs_brain_name_prompt",
+      "prompt_template": "Quick one-time setup — want to give me a name? Many people find it more natural to refer to their assistant by name. The default is `{default_name}` but you can pick anything (or skip). To set it, type:\n\n  - `name my AI Penelope`  (or any name you prefer)\n  - `name my AI skip`  (I'll stay nameless)\n\nThe name shows up in your scheduled briefs, signatures, and our conversations. You can change it any time with `name my AI [new name]`.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v31382_schema_enum_hygiene",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Housekeeping — I tightened up your activity log so a few new kinds of notes I write are recognized cleanly. You won't see a difference; your weekly audit will just run quieter going forward.",
+      "action": "announce_only"
+    }
+  ]
+}

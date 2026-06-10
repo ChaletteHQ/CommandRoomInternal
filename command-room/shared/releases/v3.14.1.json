@@ -1,0 +1,13 @@
+{
+  "version": "3.14.1",
+  "headline": "New skill — stalled-projects: surface projects that have gone quiet",
+  "items": [
+    {
+      "id": "v3141_stalled_projects_skill",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New skill — stalled-projects. Surfaces every project that has gone quiet (no meetings, commitments, decisions, or real conversations within a threshold you set: 14 days for active, 30 for exploring, 60 for dormant — all configurable on first fire). Fire it with 'show me stalled projects' or 'what's stalled'. Projects you created but never touched also surface, with a different recommended action. In an upcoming release this will also surface automatically in Pulse + Friday Wrap.",
+      "action": "announce_only"
+    }
+  ]
+}

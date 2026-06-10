@@ -1,0 +1,27 @@
+{
+  "version": "3.13.3",
+  "headline": "Caught one more crash in the intro-followup surface + tied up paths and apply-time handlers from the prior round.",
+  "items": [
+    {
+      "id": "v3133_intro_followup_leak_fix",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Second-round verification caught one more crash in the intro-followup card. The action buttons were fixed, but the description text still contained a phrase that trips my internal jargon scanner — so the card would crash with a different error. Fixed.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3133_apply_choices_intro_handlers",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I added the apply-time handler documentation for the three intro-followup action buttons from the prior update — they were recognized by the renderer but the dispatch logic for what happens on click wasn't documented. Every button now has a documented path so the intro-followup state persists correctly across pulses.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3133_email_draft_protocol_moved",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Internal tidying — nothing changes for you.",
+      "action": "announce_only"
+    }
+  ]
+}

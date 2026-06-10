@@ -1,0 +1,27 @@
+{
+  "version": "3.13.1",
+  "headline": "Voice cleanup across the rest of my skills + one-question-with-options for vague asks + editable inbox reply cards.",
+  "items": [
+    {
+      "id": "v3131_voice_sweep",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I finished the voice cleanup across the rest of my skills. Every surface you read is now reframed — morning brief, weekly recap, inbox triage, follow-ups, intro drafts, thread resurrection, meeting prep, decision revisits, dormant scan, automation scanner, onboarding, the update prompts, and more. No more FAIL framing, no scores in front of you, no internal file paths, no internal phase or pass labels in your text.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3131_workspace_manager_step5",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When you ask something genuinely vague (`help`, `catch me up`, `what now`), I now respond with ONE focused question and two to four concrete options — not a wall of open-ended questions. If you mention a name in your message, I check your workspace first so I don't ask about something already on file.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v3131_inbox_triage_widget",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When you triage your inbox, your Reply Now drafts now show up as editable email cards — the same kind your scheduled tasks already use. Edit, send, save to drafts, or skip, all inline. Decision-needed, deep-read, and FYI items stay as list entries since they don't carry a draft.",
+      "action": "instruct_user"
+    }
+  ]
+}

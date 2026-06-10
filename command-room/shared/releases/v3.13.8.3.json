@@ -1,0 +1,20 @@
+{
+  "version": "3.13.8.3",
+  "headline": "Patch — substrate writer hygiene (auto-stamp seq + ts) + state-aware instruct_user idempotency",
+  "items": [
+    {
+      "id": "v31383_atomic_append_jsonl_auto_stamp",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Quiet reliability fix: tightened the activity-log writer so every entry now gets a sequence number and timestamp automatically — even if a skill's template forgot to include them. This closes a class of bugs where ~36% of historic entries were missing sequence numbers (breaking the 'discuss → resolve → close underlying' chain in a few corner cases) and the occasional empty-timestamp entry that's been quietly polluting the tail. Nothing for you to do; new entries from now on will be clean.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v31383_instruct_user_re_nudge",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Behavior change worth knowing: when I have something specific for you to do (like naming your AI or picking your workspace shape), I'll keep mentioning it on each update until you take the action or tell me to skip it — previously these quietly disappeared after the first surface even if nothing was done. Informational notes still fire once. If a re-nudge is bugging you, say `skip [item]` and it stops permanently.",
+      "action": "announce_only"
+    }
+  ]
+}

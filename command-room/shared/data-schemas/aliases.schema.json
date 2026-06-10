@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command-room://schemas/aliases.schema.json",
+  "title": "Aliases",
+  "description": "Canonical-name registry. Every raw form (nickname, handle, email, fuzzy name) maps to exactly one canonical entity id. Readers lookup here first.",
+  "type": "object",
+  "required": ["version", "last_updated", "last_writer", "mappings"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "last_updated": { "type": "string", "format": "date-time" },
+    "last_writer": { "type": "string" },
+    "mappings": {
+      "type": "object",
+      "properties": {
+        "people": { "$ref": "#/$defs/mapping_list" },
+        "projects": { "$ref": "#/$defs/mapping_list" },
+        "orgs": { "$ref": "#/$defs/mapping_list" }
+      }
+    }
+  },
+  "$defs": {
+    "mapping_list": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["raw", "canonical_id"],
+        "properties": {
+          "raw": {
+            "type": "string",
+            "description": "The raw form as it appears in source data. Match case-insensitive + trimmed."
+          },
+          "canonical_id": {
+            "type": "string",
+            "description": "Target entity id (person_042, project_008, org_003)."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Confidence at the time of mapping. Manual mappings = 1.0."
+          },
+          "added_ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "added_by": {
+            "type": "string",
+            "description": "Skill that added the mapping."
+          }
+        }
+      }
+    }
+  }
+}

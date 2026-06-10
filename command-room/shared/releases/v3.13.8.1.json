@@ -1,0 +1,50 @@
+{
+  "version": "3.13.8.1",
+  "headline": "A small reliability pass — the activity log is sturdier, and a few stale items in your to-discuss list can be linked up.",
+  "items": [
+    {
+      "id": "v31381_wrapper_source_seq_backfill",
+      "detector_module": "release_detectors.v3_13_8_1_wrapper_backfill",
+      "detector_function": "has_legacy_wrappers",
+      "action_module": "release_actions.v3_13_8_1_run_wrapper_backfill",
+      "action_function": "auto_run_wrapper_backfill",
+      "notice_template": "I linked {wrappers_linked} of your older to-discuss items back to the work they came from, so marking one done now closes the original too. {wrappers_marked_needs_review} that were ambiguous stayed flagged for you to confirm later.",
+      "action": "auto_apply"
+    },
+    {
+      "id": "v31381_atomic_append_jsonl_defensive_wrap",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I closed a subtle writer bug that was occasionally re-introducing malformed lines into your activity log even after a recovery ran. Recovery is now a one-time fix, not a recurring chore.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v31381_customer_message_surfacing",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When I run a repair on your activity log, you'll see a friendly summary now instead of raw output.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v31381_recover_corruption_field_harmonization",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Recovery now carries a few small details that make your weekly audit's recap of any repair cleaner and more accurate.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v31381_file_uri_transport_limitation",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Honest note: I tightened how I prepare interactive cards for you, but the very last step still goes through the older path because of a limitation outside my control. Your experience is unchanged either way — and the moment that limitation lifts, I'll switch automatically with no work on your end.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v31381_master_plan_reconciliations",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Internal tidying — nothing changes for you.",
+      "action": "announce_only"
+    }
+  ]
+}

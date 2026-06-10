@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Command Room plugin — pre-commit privacy guard
+#
+# Runs the structural privacy test BEFORE any commit lands, catching real
+# customer/partner-name leaks at write-time instead of months later during a
+# manual audit. Per CONTRACT.md Rule 26 + references/PRIVACY_POLICY.md.
+#
+# To install on a fresh clone:
+#   git config core.hooksPath .githooks
+#
+# To bypass for a specific commit (NOT recommended — leaks ship by accident):
+#   git commit --no-verify
+#
+# v3.12.2 — added alongside the Layer 3 structural name allowlist conversion
+# in tests/run_no_real_customer_names_test.py.
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$(pwd)"
+
+# The plugin's tests live under command-room/tests/ in the marketplace
+# repo layout (chaletteholdings/commandroom1 root → command-room/ subdir).
+# In the staging-clone canonical edit surface they're at the same depth.
+if [ -f "$REPO_ROOT/command-room/tests/run_no_real_customer_names_test.py" ]; then
+  TEST_DIR="$REPO_ROOT/command-room"
+elif [ -f "$REPO_ROOT/tests/run_no_real_customer_names_test.py" ]; then
+  TEST_DIR="$REPO_ROOT"
+else
+  echo "pre-commit: privacy test not found — skipping (this is a non-plugin repo)"
+  exit 0
+fi
+
+echo "pre-commit: running privacy guard..."
+cd "$TEST_DIR"
+
+# Run the structural guards. Any failure blocks the commit.
+FAILED=0
+for test in \
+  tests/run_no_real_customer_names_test.py \
+  tests/run_no_hardcoded_drive_test.py \
+  tests/run_no_md_deliverables_test.py \
+  tests/run_no_retired_skills_test.py \
+  tests/run_no_jargon_in_customer_surfaces_test.py \
+  tests/run_event_contract_test.py
+do
+  if [ -f "$test" ]; then
+    if ! python "$test" > /tmp/cr-pre-commit-output 2>&1; then
+      echo ""
+      echo "=== pre-commit BLOCKED by $test ==="
+      cat /tmp/cr-pre-commit-output | head -40
+      echo ""
+      FAILED=1
+    fi
+  fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+  echo ""
+  echo "pre-commit: structural guard failed. Fix the violations above, OR"
+  echo "use 'git commit --no-verify' to bypass (NOT recommended — privacy"
+  echo "leaks ship by accident this way)."
+  exit 1
+fi
+
+echo "pre-commit: privacy guard clean."

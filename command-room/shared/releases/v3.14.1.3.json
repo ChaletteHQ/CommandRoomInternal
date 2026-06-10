@@ -1,0 +1,13 @@
+{
+  "version": "3.14.1.3",
+  "headline": "stalled-projects UX flip — show, then tune (no questions on first fire)",
+  "items": [
+    {
+      "id": "v31413_show_then_tune",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Better UX for stalled-projects. The first version blocked you behind 3 setup questions before showing anything useful. Now: first time you fire 'show me stalled projects', it just shows you your stalled threads using the recommended thresholds, then asks if you want to tune. You can also give freeform feedback ('flag paused threads sooner', 'I don't care about exploring threads') and it'll parse that into a config change without walking the full questionnaire. Same canonical pattern — 'show, then tune' — will roll out to every other customizable skill from here.",
+      "action": "announce_only"
+    }
+  ]
+}

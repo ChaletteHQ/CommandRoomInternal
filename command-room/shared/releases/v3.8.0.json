@@ -1,0 +1,13 @@
+{
+  "version": "3.8.0",
+  "headline": "Eight new skills — calendar scheduling, contract review, intro drafting, decision memos, board packs, and more.",
+  "items": [
+    {
+      "id": "v380_announce_eight_new_skills",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "I gained eight new skills that all leverage your accumulated memory. (1) Calendar scheduling — I can write to your calendar now, with substrate-aware agendas pulling open commitments. (2) Contract review — parse contracts, compare against your standards, flag deviations, suggest redlines, history-aware. (3) Automation scaffolding — pair with the automation scanner to get a real working Zapier zap, Python script, or n8n flow for the opportunities I surface. (4) Decision revisiting — find decisions worth re-examining based on time elapsed and contradictory new signal. (5) Thread resurrection — find specific quiet conversations worth reviving (different from the dormant-customer scan, which finds quiet people). (6) Intro brokering — draft both-sided intros voice-calibrated to your past ones, with a follow-up check a month out. (7) Decision memos — structured tradeoff analysis with weighted criteria and a recommended call. (8) Board pack assembly — a multi-page board pack that writes itself from your activity history, decision log, people / project memory, and QuickBooks. Try them by name: `build the board pack for next Tuesday`, `review this contract`, `intro Bo to Rio`, `what decisions should I revisit`, and more.",
+      "action": "announce_only"
+    }
+  ]
+}
