@@ -1,6 +1,6 @@
 ---
 name: inbox-triage
-description: "Morning inbox pass: reads overnight email, classifies into Reply Now / Decision Needed / FYI / Discard / Deep Read. Surfaces the 3–5 that matter, drafts replies for 2–3. Triggers: 'triage my inbox', 'inbox triage', 'what's in my inbox', 'process my inbox', 'go through my email', 'email triage', 'morning email pass'. Owns all 'inbox' + deep-email phrasing. Does NOT fire on bare 'morning briefing' or 'brief me' — those go to morning-briefing for the daily digest."
+description: "Morning inbox pass: reads overnight email, classifies into Reply Now / Decision Needed / FYI / Discard / Deep Read. Surfaces the 3–5 that matter, drafts replies for 2–3. Triggers: 'triage my inbox', 'inbox triage', 'what's in my inbox', 'process my inbox', 'go through my email', 'email triage', 'morning email pass'. Owns all 'inbox' + deep-email phrasing. Also handles first-run personalization settings — use when the user says 'tune inbox triage', 'tune inbox-triage', 'show inbox triage settings', 'show inbox-triage settings', 'reset inbox triage to defaults', 'reset inbox-triage to defaults'. Does NOT fire on bare 'morning briefing' or 'brief me' — those go to morning-briefing for the daily digest."
 ---
 
 ## Skill Boundary (v2.1)
@@ -14,7 +14,9 @@ If user says "brief me and triage my inbox" — run morning-briefing first, then
 
 ## Voice Calibration
 
-When drafting replies (Reply Now bucket + "draft a decision-needed response" flow), this skill applies `shared/VOICE_CALIBRATION.md`. Reads `_hq/VOICE_SAMPLES.md`, extracts voice markers, applies recipient modifier based on sender's entities.json record, runs the forbidden-phrase check. Drafts are never sent automatically — always returned for CEO review and one-click send.
+When drafting replies (Reply Now bucket + "draft a decision-needed response" flow), this skill applies `shared/VOICE_CALIBRATION.md`. Reads `_hq/voice/voice-block-inbox-triage.md` (the customer voice override, per `shared/VOICE_CALIBRATION.md`), extracts voice markers, applies recipient modifier based on sender's entities.json record, runs the forbidden-phrase check. Drafts are never sent automatically — always returned for CEO review and one-click send.
+
+**Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-inbox-triage.md` if it exists — it supersedes this SKILL.md's `## Voice Block` section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
 
 ## Writer Contract
 
@@ -41,6 +43,68 @@ Pass over the unread / flagged inbox from a defined window (overnight, last 24 h
 2. **Surface the 3–5 that matter most** — ranked by sender importance (CEO/board/customer > staff > vendor > other), email thread urgency, and existing commitment exposure.
 3. **Draft replies for 2–3 Reply Now items** — ready to review, edit, and send from the widget (no Gmail draft is created until you act on one).
 4. **Output a triage brief** — scannable in 60 seconds, with a link or draft ID next to each item.
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). All
+three decisions are **show-then-tune (STT)** — the triage always runs first, then offers one-tap
+changes. Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
+# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "discard_aggressiveness": "standard",  # standard | aggressive | conservative
+    "vip_seed": [],                        # inferred top-5 VIP senders, confirm/edit (optional extra)
+    "default_action": "draft_replies",     # draft_replies | brief_only
+}
+cfg = get_config(workspace_root, "inbox-triage", DEFAULTS)
+```
+
+`discard_aggressiveness` shifts the Step 4 Discard-bucket threshold (`aggressive` = more into
+Discard; `conservative` = fewer). `vip_seed` augments the PEOPLE.md VIP tier with up to 5
+inferred-then-confirmed senders (it SEEDS the tiering the catalog references; never overrides an
+existing PEOPLE.md tier — additive). `default_action` sets whether the run drafts replies (default)
+or returns brief-only — persisting the existing "and draft the replies" / "just the brief" modifier.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "triage my inbox" | run triage with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "inbox-triage", DEFAULTS)` BEFORE rendering, then append the first-run block. |
+| **Show settings** | "show inbox-triage settings" | render current config in plain English; no triage. |
+| **Tune** | "tune inbox-triage" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-run triage. |
+| **Reset** | "reset inbox-triage to defaults" | `wipe_skill_config(workspace_root, "inbox-triage")` → next fire is a first-fire again. |
+
+**The first-run block (transport):** when a Reply Now widget renders this fire, the three decisions
+ride as `fr1`/`fr2`/`fr3` items in a "Make this yours" section at the BOTTOM of that all_batch_widget
+(the documented fr-item preselect exception — see `shared/CHAT_ACTION_WIDGET.md`); the `vip_seed`
+row uses the optional `[text]` extra to confirm/edit the inferred top-5. When NO widget renders this
+fire (no Reply Now drafts), use a 2–3 line FOOTER after the brief headline instead:
+
+> *First time triaging for you. I set 3 defaults: **normal filtering on what to discard** ·
+> **your top senders: [names]** · **drafting replies by default**. Say "tune inbox triage" to
+> change any, or just tell me ("be more aggressive" / "brief only, don't draft").*
+
+Tap/answer → apply-choices → `save_skill_config(..., is_reconfigure=True, origin="first_fire_override")`.
+The block renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "be more aggressive" / "discard more" | `discard_aggressiveness = aggressive` |
+| "be more conservative" / "don't discard so much" | `discard_aggressiveness = conservative` |
+| "just the brief, don't draft" / "brief only" | `default_action = brief_only` |
+| "draft the replies again" | `default_action = draft_replies` |
+| "add [name] to my VIPs" | append to `vip_seed` |
+| "drop [name] from VIPs" | remove from `vip_seed` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + re-run triage + confirm in one line.
 
 ## How to Use
 
@@ -77,7 +141,7 @@ Optional modifiers:
    **The rule:** before asserting "needs reply" / "Reply Now" / "stalled" / "no reply in N days" / "awaiting them" / who-owes-the-reply for any thread, call `get_thread(threadId, messageFormat=FULL_CONTENT)` and read the LAST message in the returned `messages` array. Do NOT infer state from `search_threads` snippets or the search result's partial `messages` list.
 
    **Determining ball-in-court from the latest message:**
-   - If the newest message has `SENT` in `labelIds` OR `sender == matthew@chaletteholdings.com` (the user's address): **the user has already replied → classify as "awaiting counterparty" / "owed-to-you"**, NOT "Reply Now" or "stalled on you".
+   - If the newest message has `SENT` in `labelIds` OR `sender == <the primary user's address>` (resolve the person_id via `shared/scripts/primary_user.py::resolve_primary_user(workspace_root)`, then read that person record's email(s) from entities.json — never hard-code an address): **the user has already replied → classify as "awaiting counterparty" / "owed-to-you"**, NOT "Reply Now" or "stalled on you".
    - Only classify "Reply Now" / "stalled on you" when the newest message is INBOUND (from the counterparty).
    - When the newest message is inbound AND contains a forward-looking promise from the counterparty ("I'll send X by Y", "Will deliver…"), emit a `type: commitment` event (owed-to-you) per `shared/COMMITMENT_SCHEMA.md` instead of a reply prompt.
    - **Calendar-close exception (v3.14.7+).** The latest-message check only sees EMAIL replies. A scheduling thread ("can we set a time?", "propose times", "Monday works") usually closes on the CALENDAR — the user replies by creating an invite, so the newest *message* stays inbound and this would mis-file it as "Reply Now". Before classifying a scheduling-flavored thread (detect via `cru_match.detect_scheduling_intent` on the subject/last message, or obvious phrasing — "set a time / propose times / when works / lock / book / move the call") as Reply Now, check the calendar (native Calendar MCP `list_events`, never Zapier per `EMAIL_DRAFT_PROTOCOL.md` §3c) for an event with that counterparty. If the user organized an event created/updated at or after the counterparty's last message, OR the counterparty has `accepted` an invite, the loop is closed → classify as **owed-to-you / handled**, NOT Reply Now. This mirrors morning-briefing Step 3c-bis and the Path 5 substrate resolver (`cru_match.match_calendar_to_commitments`).
@@ -92,9 +156,18 @@ Optional modifiers:
    - Discard: newsletter, marketing, auto-alerts, confirmed-resolved threads
    - Deep Read: dense content, long documents attached, requires focus
 5. **Rank the top of the pile.** Surface 3-5 items — these are the ones the CEO reads first. Everything else listed in an appendix.
-6. **Draft Reply Now replies.** 2-3 drafts max (more than that and drafts become noise). Voice-calibrated via `_hq/VOICE_SAMPLES.md` if available.
+6. **Draft Reply Now replies.** 2-3 drafts max (more than that and drafts become noise). Voice-calibrated via `_hq/voice/voice-block-inbox-triage.md` (the customer voice override, per `shared/VOICE_CALIBRATION.md`) if available.
+   - **Mechanical voice-tell gate (B2 — bash-gated, not prose).** After drafting each reply body and before surfacing it in the widget, run it through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn. This backstops the Step 2 critique, it does not replace it:
+
+     ```bash
+     SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+     PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+     printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
+     ```
+
+     On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0 (`pass`/`warn`). Never surface a draft the detector still fails. A phrase the sender's calibrated Voice Block demonstrably allows is exempt via `allow_phrases`; never improvise the override.
 7. **Write the triage brief.**
-   - Save: `_hq/inbox/TRIAGE_[YYYY-MM-DD_HH-MM].md`
+   - Save: `_hq/inbox/TRIAGE_[YYYY-MM-DD_HH-MM].docx` — the triage brief is ALWAYS a `.docx` (never a `.md` file), matching the "Saved triage brief file" contract below.
    - Record timestamp in `_hq/inbox/LAST_TRIAGE.txt`
 8. **Return:** file link + headline ("12 overnight emails. 3 top items flagged. 2 replies drafted. 1 decision needed: Acme pricing.")
 
@@ -123,7 +196,9 @@ After classifying each email but before writing the brief, scan each message bod
 - "Sending [thing] [day]"
 - "Action item: [name] — [verb]"
 
-Vague phrases ("I'll think about it", "let's circle back", "we should consider") DO NOT qualify. See `shared/COMMITMENT_SCHEMA.md` § "Extraction triggers" for the full list of qualifying vs disqualifying patterns.
+Vague phrases ("I'll think about it", "let's circle back", "we should consider") DO NOT qualify. See `shared/COMMITMENT_SCHEMA.md` § "Extraction triggers" for the full list of qualifying vs disqualifying patterns — and the **capture floor (Stage D 2026-07)**: clear owner + clear deliverable + real consequence, all three, or skip silently (below-floor items bury real promises). If `_hq/config/commitment-rules.md` exists, read it BEFORE writing and skip any item matching a user-taught `never-track` pattern.
+
+**Classify `data.kind` at capture (Stage D — REQUIRED; the gate rejects a kind-less commitment on the strict path):** email commitments almost always have a counterparty → `"promise"` (the sender or the user owes the other party); a self-note the user emails to themselves with no counterparty → `"task"`; scheduling intent ("I'll set up time with…") → `"scheduling"`; genuinely ambiguous → `"promise"` + `data.pending_review: true`. **Due-date nudge (S2):** propose `due` from the email language OR set explicit `data.no_due: true`.
 
 ### Field mapping
 
@@ -139,8 +214,11 @@ For each qualifying email:
   "ts": "<email send/receive ISO timestamp>",
   "data": {
     "owner_id": "<resolved per the table above>",
+    "counterparty_id": "<person_id of who the deliverable is owed TO / who owes it — for email commitments this is almost always the OTHER party on the thread. MUST populate when determinable (Stage E receipts, F5): it feeds the CRU candidacy gate directly (Bug #103 fix). Retires requester_id for NEW writes — readers keep the alias chain forever.>",
+    "counterparty_name": "<free-text fallback — SHOULD set when the counterparty is named but has no person record>",
     "title": "<short verb-phrase summarising the deliverable, ≤120 chars>",
-    "due": "<ISO date if explicit; empty if not>",
+    "kind": "promise" | "task" | "scheduling",
+    "due": "<ISO date if explicit; empty if not — pair empty with no_due: true>",
     "status": "open" | "overdue",
     "source_event_seq": <seq of the interaction event for this email>,
     "source_ref": "gmail:<message_id>",
@@ -151,7 +229,7 @@ For each qualifying email:
 
 **Status:** if `due` is parsed and is in the past relative to today (UTC), set `"overdue"`. Otherwise `"open"`.
 
-**Owner resolution:** use `aliases.json` to canonicalize sender's display name / email to a `person_id`. If the email is from someone not yet in entities.json, surface a one-line suggestion in the brief ("💡 [Sender] isn't on file — add to people?") but DO NOT skip the commitment — emit it with `owner_id: ""` so it's not lost.
+**Owner resolution:** use `aliases.json` to canonicalize sender's display name / email to a `person_id`. If the email is from someone not yet in entities.json, surface a one-line suggestion in the brief ("💡 [Sender] isn't in your contacts yet — want me to add them?") but DO NOT skip the commitment — emit it with `owner_id: ""` so it's not lost.
 
 **Dedup:** Match on `(source_ref, title)`. The same email shouldn't produce two equivalent commitments across re-runs. Skip if `(gmail:<message_id>, title)` already exists for a `type: commitment` event in events.jsonl.
 
@@ -162,7 +240,7 @@ For each qualifying email:
 Add one line to the brief output:
 
 ```
-## Commitments Captured This Run
+## Commitments I Caught
 - 3 they owe you (Aria will send pricing by Fri, Bowie will redline MSA, Carol will introduce VC)
 - 1 you owe (reply to Sam with Q3 plan by Mon)
 ```
@@ -191,9 +269,9 @@ Window: [start → end] | Unread: [N]
 - Discard (47): [bulk action — mark read?]
 - Deep Read (3): [list with attachment size]
 
-## Reply Drafts (review + send in the widget)
-- Reply to Aria (pricing) — drafted; fires to Gmail on your click
-- Reply to Lyra (call reschedule) — drafted; fires to Gmail on your click
+## Reply Drafts (review + send in chat)
+- Reply to Aria (pricing) — drafted; sends when you click send
+- Reply to Lyra (call reschedule) — drafted; sends when you click send
 ```
 
 ## Chat Output Format (v3.13.1+ — editable widget for Reply Now drafts)
@@ -269,7 +347,11 @@ Sources:
 
 If no sources were referenced (rare), omit the section.
 
-**Saved triage brief file** (the .docx output, separate from the chat widget) — the brief lists the reply drafts under "Reply Drafts" by recipient + subject. No `gmail://drafts/<id>` URLs are stamped at fire time, because under lazy creation no Gmail draft exists until the user clicks `draft`/`send` (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The body of each draft does NOT need to appear inside the brief — the widget carries it in chat. (Same simplification follow-up-ritual got in v3.13.0 — the .docx stopped embedding the email body once the widget became the editing surface.)
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "I made 3 calls: standard discard aggressiveness · VIP seed: [senders]"
+- Good: "I set 3 defaults: normal filtering on what to discard · your top senders: [names]"
+
+**Saved triage brief file** (the `.docx` at `_hq/inbox/TRIAGE_[YYYY-MM-DD_HH-MM].docx` — always `.docx`, separate from the chat widget) — the brief lists the reply drafts under "Reply Drafts" by recipient + subject. No `gmail://drafts/<id>` URLs are stamped at fire time, because under lazy creation no Gmail draft exists until the user clicks `draft`/`send` (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The body of each draft does NOT need to appear inside the brief — the widget carries it in chat. (Same simplification follow-up-ritual got in v3.13.0 — the .docx stopped embedding the email body once the widget became the editing surface.)
 
 ## Triggers
 
@@ -285,7 +367,7 @@ If no sources were referenced (rare), omit the section.
 
 - **Drafts only, never auto-send.** Non-negotiable.
 - **Never auto-archive anything.** Classify yes — archive no. User does the archiving pass.
-- **If Gmail connector isn't available, stop early** with: "Inbox triage needs Gmail. Connect Gmail and run again." Don't try to work around it with Outlook heuristics.
+- **Gmail and Outlook are peers (Rule 21 connector parity).** Discover the mail tool via `tool_discovery` and run against whichever is connected — never assume Gmail-only, never refuse to try Outlook. Only if NO mail connector is detected at all, stop early with: "Inbox triage needs your email connected. Connect Gmail or Outlook and run again."
 - **Respect VIP classification.** If the sender is on `_hq/PEOPLE.md` with a top-tier mark, never drop them into Discard — push them up the ranking even if the body is short.
 - **Never classify based on subject line alone.** Read the body — a two-line subject can be critical, a 400-word body can be noise.
 - **If the CEO's Reply Now drafts conflict with a decision in Decision Needed**, pause on those drafts and flag the dependency ("Can't draft reply to Aria — depends on board decision in item 2").
@@ -294,7 +376,7 @@ If no sources were referenced (rare), omit the section.
 
 ## Scheduling
 
-After first successful run, offer: "Want me to run this every weekday at 7am and drop it in your morning briefing?" — use `schedule` skill. Pairs naturally with `morning-briefing` (#28).
+The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the standard schedule set — customers turn it on via `set up command room schedules` and adjust it via `change my schedule`. Do NOT offer to register a separate ad-hoc recurring run from this skill.
 
 ## Integration
 
@@ -302,30 +384,18 @@ After first successful run, offer: "Want me to run this every weekday at 7am and
 - **Pulls from `_hq/PEOPLE.md`** for VIP ranking (Tier 2 view per `references/SOURCE_OF_TRUTH.md` — fine for static "who is a VIP" tier lookup; not used for "what's outstanding")
 - **Pulls open commitments from `_hq/data/events.jsonl`** via `cru_match.load_open_commitments` (canonical Tier 1 source). NOT from MASTER_TRACKER — see `references/SOURCE_OF_TRUTH.md` overlay rule.
 - **Drafts via Gmail connector** — never direct send
-- **Voice from `_hq/VOICE_SAMPLES.md`** (optional)
-
-## Demo Beat (May 14)
-
-Live with the CEO's own inbox during the pitch (if they're comfortable):
-1. "Triage my inbox"
-2. 15 seconds later: 3 items surface, 2 drafts ready
-3. CEO reads — "that's exactly the three I'd have picked"
-4. Open one draft in Gmail, click send
-
-If live inbox is too sensitive, use a demo inbox seeded with representative messages.
+- **Voice from `_hq/voice/voice-block-inbox-triage.md` (the customer voice override, per `shared/VOICE_CALIBRATION.md`)** (optional)
 
 ## What It Doesn't Do
 
 - Doesn't auto-send, auto-archive, or auto-delete
 - Doesn't build long-form replies (use `one-pager-composer` or write in Gmail)
 - Doesn't track outbound emails (separate concern)
-- Doesn't handle Outlook (Microsoft 365 connector, future) — stub for now
 
 ## Connected Tools
 
-- **Gmail connector** (required)
+- **Mail connector** (required — Gmail or Outlook, discovered via `tool_discovery` per Rule 21)
 - **PEOPLE.md** — VIP ranking (Tier 2 view; static-tier lookup only)
 - **`_hq/data/events.jsonl`** — open-commitment overlap (Tier 1 source, read via `cru_match.load_open_commitments`)
-- **VOICE_SAMPLES.md** (optional) — reply voice
-- **schedule skill** — recurring run
+- **`_hq/voice/voice-block-inbox-triage.md`** (optional) — customer voice override (per `shared/VOICE_CALIBRATION.md`)
 - **morning-briefing skill** — embedding target

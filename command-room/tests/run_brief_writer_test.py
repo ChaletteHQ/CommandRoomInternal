@@ -59,6 +59,9 @@ def _sample_call_prep(path):
             {"heading": "What to demo", "bullets": ["Connect Gmail.", "Surface a real signal."]},
             {"heading": "Suggested outcome", "body": "End with an installed Cowork."},
         ],
+        # B3: this fixture exercises typography/layout, not the output contract;
+        # the contract gate is covered by run_output_contract_validator_test.py.
+        contract="off",
     )
 
 
@@ -204,6 +207,7 @@ with tempfile.TemporaryDirectory() as tmp:
         "title": "JSON Test Title",
         "subtitle": "Today",
         "sections": [{"heading": "Solo section", "body": "Hello."}],
+        "contract": "off",  # B3: exercises the JSON round-trip, not the contract gate
     })
     returned = make_brief_from_json(payload)
     check("JSON entry point returns the path", returned == json_path)
@@ -246,13 +250,262 @@ with tempfile.TemporaryDirectory() as tmp:
     _expect_value_error(
         "rejects section without heading",
         lambda: make_brief(bad, brief_kind="call_prep", title="t", subtitle="s",
-                           sections=[{"body": "b"}]),
+                           sections=[{"body": "b"}], contract="off"),
     )
     _expect_value_error(
         "rejects section without body or bullets",
         lambda: make_brief(bad, brief_kind="call_prep", title="t", subtitle="s",
-                           sections=[{"heading": "h"}]),
+                           sections=[{"heading": "h"}], contract="off"),
     )
+
+
+# ============================================================================
+# Test 12 — SPEC EXEC1: exec_header renders before the first section
+# ============================================================================
+print("\n=== EXEC1: exec_header rendering ===")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = os.path.join(tmp, "exec.docx")
+    make_brief(
+        p,
+        brief_kind="memo",
+        title="Acme renewal is the only call this week",
+        subtitle="Sat, Jun 14, 2026",
+        exec_header={
+            "verdict": "Ratify the Acme renewal by Friday.",
+            "changed": "Acme moved from handshake to paperwork.",
+            "decide": "Whether to gate the sales hire — by Jun 15.",
+            "needs": "Approve the redline below.",
+        },
+        sections=[
+            {"heading": "Recommendation", "body": "Ratify the renewal."},
+            {"heading": "Why", "body": "Because the terms hold."},
+        ],
+        contract="off",
+        voice_gate="off",
+    )
+    doc = Document(p)
+    texts = [pp.text for pp in doc.paragraphs if pp.text.strip()]
+    # eyebrow, title, subtitle, verdict, CHANGED, DECIDE, NEEDED, then sections
+    check("verdict line present", "Ratify the Acme renewal by Friday." in texts)
+    check("CHANGED line present + labeled",
+          any(t.startswith("CHANGED") and "paperwork" in t for t in texts),
+          f"texts={texts[:8]}")
+    check("DECIDE line present + labeled", any(t.startswith("DECIDE") for t in texts))
+    check("NEEDED line present + labeled", any(t.startswith("NEEDED") for t in texts))
+    # exec header must precede the first section heading
+    verdict_idx = texts.index("Ratify the Acme renewal by Friday.")
+    rec_idx = texts.index("Recommendation")
+    check("exec header precedes first section", verdict_idx < rec_idx)
+    # verdict run is bold
+    verdict_para = [pp for pp in doc.paragraphs if pp.text == "Ratify the Acme renewal by Friday."][0]
+    check("verdict run is bold", verdict_para.runs[0].font.bold is True)
+
+# ============================================================================
+# Test 13 — SPEC EXEC1: asks block renders last under canonical heading
+# ============================================================================
+print("\n=== EXEC1: asks block ===")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = os.path.join(tmp, "asks.docx")
+    make_brief(
+        p,
+        brief_kind="memo",
+        title="t",
+        subtitle="s",
+        exec_header={"verdict": "Do the thing."},
+        sections=[{"heading": "Body", "body": "content"}],
+        asks=[{"text": "Approve the redline", "deadline": "Friday"},
+              {"text": "Confirm the board date"}],
+        contract="off",
+        voice_gate="off",
+    )
+    doc = Document(p)
+    texts = [pp.text for pp in doc.paragraphs if pp.text.strip()]
+    check("ASK heading present", "What I need from you" in texts)
+    bullet_texts = [pp.text for pp in doc.paragraphs if pp.style.name == "List Bullet"]
+    check("ask with deadline renders ' — by Friday'",
+          any("Approve the redline — by Friday" == b for b in bullet_texts),
+          f"bullets={bullet_texts}")
+    check("ask without deadline renders plain",
+          any(b == "Confirm the board date" for b in bullet_texts))
+    # asks block comes after the body section
+    check("asks heading is after body section",
+          texts.index("What I need from you") > texts.index("Body"))
+
+    # Zero / empty asks → no ASK heading rendered
+    p2 = os.path.join(tmp, "noasks.docx")
+    make_brief(p2, brief_kind="memo", title="t", subtitle="s",
+               exec_header={"verdict": "v"},
+               sections=[{"heading": "Body", "body": "c"}], asks=[],
+               contract="off", voice_gate="off")
+    texts2 = [pp.text for pp in Document(p2).paragraphs]
+    check("zero asks → no ASK heading", "What I need from you" not in texts2)
+
+
+# ============================================================================
+# Test 14 — SPEC EXEC1: asks cap (>3) raises
+# ============================================================================
+print("\n=== EXEC1: asks cap ===")
+
+with tempfile.TemporaryDirectory() as tmp:
+    bad = os.path.join(tmp, "bad.docx")
+
+    def _expect_ve(label, fn):
+        try:
+            fn()
+            check(label, False, "expected ValueError")
+        except ValueError:
+            check(label, True)
+        except Exception as e:
+            check(label, False, f"expected ValueError, got {type(e).__name__}: {e}")
+
+    _expect_ve(
+        "asks >3 raises",
+        lambda: make_brief(bad, brief_kind="memo", title="t", subtitle="s",
+                           sections=[{"heading": "h", "body": "b"}],
+                           asks=[{"text": "a"}, {"text": "b"}, {"text": "c"}, {"text": "d"}],
+                           contract="off", voice_gate="off"),
+    )
+    _expect_ve(
+        "ask without text raises",
+        lambda: make_brief(bad, brief_kind="memo", title="t", subtitle="s",
+                           sections=[{"heading": "h", "body": "b"}],
+                           asks=[{"deadline": "Friday"}], contract="off", voice_gate="off"),
+    )
+    # exactly 3 asks is OK
+    ok = os.path.join(tmp, "ok.docx")
+    make_brief(ok, brief_kind="memo", title="t", subtitle="s",
+               exec_header={"verdict": "v"},
+               sections=[{"heading": "h", "body": "b"}],
+               asks=[{"text": "a"}, {"text": "b"}, {"text": "c"}],
+               contract="off", voice_gate="off")
+    check("exactly 3 asks is allowed", os.path.isfile(ok))
+
+
+# ============================================================================
+# Test 15 — SPEC EXEC1: recommendation-ordering check (decision-shaped kinds)
+# ============================================================================
+print("\n=== EXEC1: recommendation ordering ===")
+
+with tempfile.TemporaryDirectory() as tmp:
+    bad = os.path.join(tmp, "bad.docx")
+
+    def _expect_ve2(label, fn):
+        try:
+            fn()
+            check(label, False, "expected ValueError")
+        except ValueError:
+            check(label, True)
+        except Exception as e:
+            check(label, False, f"expected ValueError, got {type(e).__name__}: {e}")
+
+    _expect_ve2(
+        "decision_memo with late Recommendation (idx 4) raises",
+        lambda: make_brief(bad, brief_kind="decision_memo", title="t", subtitle="s",
+                           sections=[{"heading": "Framing", "body": "b"},
+                                     {"heading": "Options", "body": "b"},
+                                     {"heading": "Criteria", "body": "b"},
+                                     {"heading": "Comparison", "body": "b"},
+                                     {"heading": "Recommendation", "body": "b"}],
+                           contract="off", voice_gate="off"),
+    )
+    # rec in first three sections → OK
+    ok = os.path.join(tmp, "ok.docx")
+    make_brief(ok, brief_kind="decision_memo", title="t", subtitle="s",
+               exec_header={"verdict": "v"},
+               sections=[{"heading": "Recommendation", "body": "b"},
+                         {"heading": "Comparison", "body": "b"}],
+               contract="off", voice_gate="off")
+    check("decision_memo with early Recommendation passes", os.path.isfile(ok))
+
+    # non-decision kind (call_prep) is NOT subject to the ordering check
+    ok2 = os.path.join(tmp, "ok2.docx")
+    make_brief(ok2, brief_kind="call_prep", title="t", subtitle="s",
+               sections=[{"heading": "A", "body": "b"}, {"heading": "B", "body": "b"},
+                         {"heading": "C", "body": "b"}, {"heading": "Decisions", "body": "b"}],
+               contract="off", voice_gate="off")
+    check("call_prep late 'Decisions' section is NOT ordering-checked", os.path.isfile(ok2))
+
+
+# ============================================================================
+# Test 16 — SPEC EXEC1: STANDARD_KINDS exec_header is WARN-ONLY (never raises)
+#           + brief_meta audit event written when workspace_root is passed
+# ============================================================================
+print("\n=== EXEC1: exec_header warn-only (client safety) ===")
+
+with tempfile.TemporaryDirectory() as tmp:
+    # A STANDARD_KIND with NO exec_header must still SAVE (warn-only, no raise).
+    p = os.path.join(tmp, "noheader.docx")
+    returned = make_brief(p, brief_kind="memo", title="t", subtitle="s",
+                          sections=[{"heading": "h", "body": "b"}],
+                          contract="off", voice_gate="off")
+    check("STANDARD_KIND without exec_header still saves (warn-only)",
+          os.path.isfile(p) and returned == p)
+
+    # When workspace_root is provided, a brief_meta audit event lands in
+    # events.jsonl — making the missing header DETECTABLE without breaking.
+    ws = os.path.join(tmp, "ws")
+    os.makedirs(os.path.join(ws, "_hq", "data"), exist_ok=True)
+    p2 = os.path.join(tmp, "audit.docx")
+    make_brief(p2, brief_kind="board_pack", title="t", subtitle="s",
+               sections=[{"heading": "h", "body": "b"}],
+               contract="off", voice_gate="off", workspace_root=ws)
+    events_path = os.path.join(ws, "_hq", "data", "events.jsonl")
+    check("brief_meta audit event file written", os.path.isfile(events_path))
+    if os.path.isfile(events_path):
+        lines = [l for l in open(events_path, encoding="utf-8").read().splitlines() if l.strip()]
+        evs = [json.loads(l) for l in lines]
+        check("a brief_meta event was appended",
+              any(e.get("type") == "brief_meta" for e in evs),
+              f"types={[e.get('type') for e in evs]}")
+        bm = [e for e in evs if e.get("type") == "brief_meta"]
+        check("brief_meta carries the kind + warn severity",
+              bool(bm) and bm[0]["data"].get("brief_kind") == "board_pack"
+              and bm[0]["data"].get("severity") == "warn")
+
+    # A STANDARD_KIND WITH exec_header writes NO brief_meta warn.
+    ws2 = os.path.join(tmp, "ws2")
+    os.makedirs(os.path.join(ws2, "_hq", "data"), exist_ok=True)
+    p3 = os.path.join(tmp, "withheader.docx")
+    make_brief(p3, brief_kind="memo", title="t", subtitle="s",
+               exec_header={"verdict": "Ship it."},
+               sections=[{"heading": "h", "body": "b"}],
+               contract="off", voice_gate="off", workspace_root=ws2)
+    ep2 = os.path.join(ws2, "_hq", "data", "events.jsonl")
+    no_warn = (not os.path.isfile(ep2)) or all(
+        json.loads(l).get("type") != "brief_meta"
+        for l in open(ep2, encoding="utf-8").read().splitlines() if l.strip()
+    )
+    check("exec_header present → no brief_meta warn", no_warn)
+
+
+# ============================================================================
+# Test 17 — SPEC C1: value_receipt kind is accepted + eyebrow "VALUE RECEIPT"
+# ============================================================================
+print("\n=== C1: value_receipt brief_kind ===")
+
+with tempfile.TemporaryDirectory() as tmp:
+    vr = os.path.join(tmp, "vr.docx")
+    make_brief(
+        vr,
+        brief_kind="value_receipt",
+        title="Value Receipt — May 2026",
+        subtitle="Your operating layer, in numbers",
+        sections=[
+            {"heading": "What Command Room handled",
+             "bullets": ["14 commitments captured that weren't tracked anywhere else",
+                         "12 meetings turned into a structured brief"]},
+            {"heading": "Time absorbed",
+             "body": "~31 hours of operational overhead absorbed.\n\nConservative — assumes you would have done each of these tasks yourself at average speed."},
+        ],
+    )
+    check("value_receipt file written", os.path.isfile(vr))
+    doc_vr = Document(vr)
+    check("value_receipt eyebrow = 'VALUE RECEIPT'",
+          doc_vr.paragraphs[0].text == "VALUE RECEIPT", f"got {doc_vr.paragraphs[0].text!r}")
+    body_text = "\n".join(p.text for p in doc_vr.paragraphs)
+    check("forwardable doc contains 'Conservative'", "Conservative" in body_text)
 
 
 # ============================================================================

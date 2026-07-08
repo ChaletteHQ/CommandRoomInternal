@@ -321,8 +321,8 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 **Delivery pattern:** direct
 **Target entity:** workspace
 **Signal condition:** Commitment-event volume ≥50 AND substrate-integrity insight fires (capture-to-close ratio <30%, per coach Phase 2B Insight 1).
-**Trigger chain:** `commitment forensics` (single trigger — produces .docx)
-**Composes with:** `memo-writer` (output is a memo) OR a dedicated render
+**Trigger chain:** `commitment forensics` (single trigger — produces .docx; routes to `memo-writer`, which claims this trigger)
+**Composes with:** `memo-writer` (renders the report via its memo path)
 **Synthesis spine:** every commitment event grouped by owed-by-you vs owed-to-you, clustered by project, ranked by relationship-cost, with the close-rate gap analyzed (where you're leaking trust).
 **Wow line:** The user sees the specific projects where their close-rate is anomalously low — and the named people who are absorbing that cost.
 **Render template:**
@@ -363,8 +363,8 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 **Delivery pattern:** direct
 **Target entity:** workspace
 **Signal condition:** ≥3 active projects with ≥10 events each across the last 60 days, with a measurable momentum delta vs the prior 60-day window.
-**Trigger chain:** `portfolio velocity` (or `which projects are gaining momentum`)
-**Composes with:** custom render via brief_writer
+**Trigger chain:** `portfolio velocity` (or `which projects are gaining momentum`) — routes to `operator-report`, which claims these triggers
+**Composes with:** `operator-report` (renders the scorecard from events.jsonl)
 **Synthesis spine:** every active project's 60-day momentum (decisions logged + commitments resolved + session-note freshness + meeting count) vs prior 60 → ranked scorecard: gainers / decayers / "looks active but isn't" anomalies.
 **Wow line:** A project the user thinks is active shows up in the decayers column — anchored to the specific gap evidence.
 **Render template:**
@@ -405,8 +405,8 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 **Delivery pattern:** direct
 **Target entity:** workspace
 **Signal condition:** ≥3 recurring meetings (≥4 instances in 30 days) WITHOUT corresponding `meeting_processed` / `followup_pack_drafted` / `memo_drafted` events.
-**Trigger chain:** `where am I leaking time` (or `hidden time cost`)
-**Composes with:** custom render via brief_writer
+**Trigger chain:** `where am I leaking time` (or `hidden time cost`) — routes to `automation-scanner`, which claims these triggers
+**Composes with:** `automation-scanner` (renders the recurring-meeting time-cost analysis)
 **Synthesis spine:** recurring-meeting catalog × follow-up-event coverage × estimated extractive cost (frequency × duration × no-output-per-instance).
 **Wow line:** A specific weekly meeting the user takes for granted shows up as the biggest time leak — with the hours-per-month named.
 **Render template:**
@@ -459,6 +459,27 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 > **To produce it:** Say `promise debt audit` — the audit lands in the next message.
 >
 > *Pattern:* Promise-debt audit — anytime, `promise debt audit`.
+
+---
+
+## 2.8 — Un-tuned high-use skill offer (SPEC FRP1)
+
+**Data tier:** accumulated (a skill has accumulated real usage on factory settings)
+**Delivery pattern:** direct (a one-line offer, not a produced document)
+**Target entity:** a specific skill (e.g. `inbox-triage`)
+**Signal condition:** a skill has **>N fires** (count its fire events in events.jsonl — e.g. `pack_run` / `email_drafted` / `meeting_processed` / the skill's own output event — N≈20 as the default high-use bar) AND its ONLY `skill_first_run_configured` event carries `data.origin: first_fire_defaults` with NO later `skill_reconfigured` (i.e. the user has never tuned it). **Fires ONCE EVER per skill** — after the offer is made (record via the `coach_session` event's offered-arcs list), never re-offer the same skill's tune. This is the per-skill nag-guard from SPEC FRP1 D5.
+**Trigger chain:** `tune [skill]` (the offer's accept path routes straight to the skill's Tune mode)
+**Composes with:** the target skill's first-run Tune mode (per `shared/FIRST_RUN_PROTOCOL.md`)
+**Synthesis spine:** per-skill fire-count × config-origin (`first_fire_defaults`-only) → the single highest-use skill the user has never personalized, with its fire count named.
+**Wow line:** A skill the user leans on heavily turns out to be running entirely on factory settings — and tuning it is one 60-second step away.
+**Render template:**
+> **Tune the skill you use most**
+>
+> *Why now:* You've used [skill] [N] times — all on the factory defaults. A 60-second tune makes it yours.
+>
+> **To do it:** Say `tune [skill]` — I'll walk the quick setup, or just tell me what you'd change.
+>
+> *Pattern:* Un-tuned high-use offer — shown once per skill; never repeated.
 
 ---
 

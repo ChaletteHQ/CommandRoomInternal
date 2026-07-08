@@ -2,32 +2,32 @@
 
 ## Features That Must Be Reflected in Onboarding
 
-Updated table for M1's 6-phase / 13-chat architecture. Features in M1's surface where shown; features that previously fired in onboarding Chat 1 (live briefing, project deep-dive, person deep-dive, guided two-prompt run) have moved to M2 or to the operator-driven Chat 3+ follow-on arc after Chat 1 ends.
+Updated table for M1's 6-phase architecture (scheduled-task generation stripped 2026-06 — see the scheduled-task rows). Features in M1's surface where shown; features that previously fired in onboarding Chat 1 (live briefing, project deep-dive, person deep-dive, guided two-prompt run) have moved to M2 or to the operator-driven follow-on arc after Chat 1 ends. **Onboarding registers no scheduled tasks** — the daily/weekly scheduled chats are an opt-in the customer runs separately via `set up command room schedules` after the call.
 
 | Feature | Where It Appears (M1) |
 |---|---|
-| **AI naming + employee framing** | Phase 0 widget Q4 (`workspace.brain_name` captured; default "Penelope"). Read by Chat 4's opening line + every scheduled-task signature + the coach skill. |
+| **AI naming + employee framing** | Phase 0 widget Q3 (`workspace.brain_name` captured; default "Penelope"). Read by Chat 4's opening line + every scheduled-task signature + the coach skill. |
 | **Team Intelligence / _people/** | Phase 1a (auto-detect from recurring 1:1s in the connector scan), Phase 1a workspace build (profiles created). |
 | **CLAUDE.md hot-cache memory** | Phase 1a workspace build (written with narration). Referenced in Chat 4 by name with a why-it-matters anchor ("the file Penelope reads at the start of every conversation"). |
-| **Morning Briefing** | Operator-opened Chat 2 at Phase 1a (during the scan), firing `set up command room schedules` — registers `morning-brief` as one of the 5 M1 first-install scheduled tasks. First fire happens via Run Now in Phase 4. |
+| **Morning Briefing** | Not set up during onboarding. Becomes a daily scheduled chat once the customer opts in via `set up command room schedules` (post-call); also available on demand via `what's going on`. |
 | **MASTER_TRACKER with rolling backup** | Phase 1a workspace build (tracker built live), backup infra created silently. |
 | **Tiered interaction log compression** | Silent — built into person profiles. Mentioned if customer asks about data retention. |
-| **Meeting Notes processing** | Operator-opened Chat 7 (Past Meetings scheduled task) first fire in Phase 4; on-demand `process the call`. |
-| **Weekly Recap / Friday Wrap** | Operator-opened Chat 10 (`friday-wrap`, surfaced to customer as `weekly-recap`) first fire in Phase 4 — covers 7-day window, produces .docx + inline summary. |
-| **Decision Log** | Phase 1a (created via view regeneration from events.jsonl); enriched by `cr-m1-backfill` Phase 2 extraction. |
-| **Communication Profile / Brand Voice** | Phase 1a workspace build (voice scan over 60d of sent emails); Phase 2a Voice contrast (three-way prompt-AND-output proof). |
+| **Meeting Notes processing** | On-demand `process the call`. Becomes the Past Meetings daily chat once the customer opts into schedules. |
+| **Weekly Recap / Friday Wrap** | On-demand `weekly-recap` (covers the 7-day window at full depth, produces .docx + inline summary) — this is also the deeper last-week read onboarding points the customer to in Phase 2b. Becomes the `friday-wrap` weekly scheduled chat once the customer opts into schedules. |
+| **Decision Log** | Phase 1a (created via view regeneration from events.jsonl); enriched on demand as the customer logs decisions and runs `weekly-recap`. |
+| **Communication Profile / Brand Voice** | Phase 1a workspace build (deep voice scan over 60d of sent emails — mechanics measured, lexicon + moves extracted, verbatim examples pulled, traits ranked, confidence flagged); proven twice in Chat 4 — Phase 2a Voice contrast (three-way memory proof) and Phase 5b Brand voice calibration proof (voice profile mirrored from `BRAND_VOICE.md`, then generic vs. voice-calibrated email side-by-side). |
 | **People CRM** | Phase 1a workspace build (PEOPLE.md populated from scan); deep dive via Phase 5 training command 2 (`tell me about [person]`). |
 | **Intel Intake** | Not surfaced in M1 — customer discovers organically. |
-| **Call Prep** | Operator-opened Chat 9 (Upcoming Meetings scheduled task) first fire in Phase 4 + Phase 5 training command 1 (`prep me for [meeting]`). |
+| **Call Prep** | Phase 5 training command 1 (`prep me for [meeting]`). Becomes the Upcoming Meetings daily chat once the customer opts into schedules. |
 | **Workspace Map (sidebar artifact)** | Customer-opened Chat 3 at Phase 1b (`install workspace map`). Refresh from manual `↻` button on the artifact. |
 | **Quick Commands (sidebar artifact)** | Phase 1a (silent install after entities.json populated). |
 | **Project deep-dive** | DEFERRED to M2 (`go [Project]`). |
 | **Person deep-dive** | Phase 5 training command 2 (`tell me about [person]`), then on-demand thereafter. Deeper deep-dive lives in M2. |
-| **Scheduled tasks (5 first-install)** | Operator-opened Chat 2 at Phase 1a — registers `morning-brief`, `past-meetings`, `inbox` (surfaced as `inbox-triage`), `upcoming-meetings`, `friday-wrap` (surfaced as `weekly-recap`). The remaining 2 (`commitments`, `pulse`) deferred to a follow-up session. |
-| **cr-m1-backfill (one-shot deep read)** | NEW M1. Auto-registered by Chat 1 at Phase 1b; customer clicks Run Now to authorize. Chat 5 runs on Haiku for 5–7 min, extracts commitments/decisions/follow-ups from the last 7 days at full content depth, emits a customer-readable structured recap, then auto-disables. Orchestrator at `references/m1-backfill-orchestrator.md`. |
-| **Triple beat (Mirror v1 → Voice contrast → Insights → Mirror v2)** | Chat 4 (the AI's home chat on Opus). Phase 2a delivers Mirror v1 + Voice contrast immediately. Phase 2b's Insights + Mirror v2 are user-triggered by typing `show me what's next` after the backfill completes. |
-| **Compounding-loop framing** | Phase 3 in Chat 4 (literal v1 vs v2 Mirror contrast, not abstract). |
-| **Run Now ritual** | Phase 4 in Chat 4. 5 manual Run Now clicks in Cowork's Scheduled section (one per registered task); each first-run produces real output the customer reads before moving on. |
+| **Scheduled tasks (5 first-install)** | NOT registered by onboarding (stripped 2026-06). The customer opts in after the call by running `set up command room schedules` in a fresh chat → `enable-command-room-schedules` registers `morning-brief`, `past-meetings`, `inbox` (surfaced as `inbox-triage`), `upcoming-meetings`, `friday-wrap` (surfaced as `weekly-recap`). The remaining 2 (`commitments`, `pulse`) deferred to a follow-up session. Phase 6 points the customer to it. |
+| **cr-m1-backfill (one-shot deep read)** | REMOVED from onboarding (2026-06). Onboarding no longer registers a deep-read scheduled task; the equivalent last-7-days read is available on demand via `weekly-recap`. The orchestrator body at `references/m1-backfill-orchestrator.md` is retained for reference but unwired. |
+| **Beats (Mirror v1 → Voice contrast → Insights)** | Chat 4 (the AI's home chat on Opus). Phase 2a delivers Mirror v1 + Voice contrast immediately. Phase 2b's Insights are user-triggered by typing `show me what's next` — computed from the 60-day metadata scan (no deep-read wait). There is no Mirror v2 deep-specifics pass in onboarding; Phase 2b points the customer to `weekly-recap` for the sharper read. |
+| **Compounding-loop framing** | Phase 3 in Chat 4 (every meeting / decision / follow-up / `weekly-recap` compounds on the 60-day baseline). |
+| **Run Now ritual** | REMOVED (2026-06). Onboarding registers nothing, so there is nothing to Run Now. The customer authorizes the scheduled chats themselves after opting in via `set up command room schedules`. |
 | **Training prompts** | Phase 5 in Chats 11/12/13. Three commands the customer fires themselves in new chats. |
 | **Historical 12-month backfill** | NOT auto-fired in M1. Customers extend per-project with `backfill [N] months on [project]` on demand. |
 | **Coach handoff (command-room-coach)** | Phase 6 in Chat 4. Chat 4 becomes the customer's permanent home with their AI. Subsequent visits to Chat 4 (or coach trigger phrases anywhere) re-enter `command-room-coach`. |
@@ -54,11 +54,11 @@ These happen later via M2/M3/M4 meetings or operator-driven follow-up sessions:
 3. **Their words, not yours.** Mirror their language in every file.
 4. **No empty scaffolding.** Real content or don't create it.
 5. **Build fast, narrate the build.** Workspace lands in front of them in Phase 1a.
-6. **One focused task per chat.** M1 distributes work across 13 chats, not stacks it in one.
+6. **One focused task per chat.** M1 distributes work across several chats, not stacks it in one.
 7. **Three escalating beats in Chat 4.** I see you → I can produce work for you → I notice things you don't.
-8. **The customer authorizes their daily rhythm.** 5 Run Now clicks in Phase 4 — they see real output before they commit.
+8. **The daily rhythm is opt-in, not auto-installed.** Onboarding registers no scheduled tasks; the customer turns on their daily/weekly chats when ready via `set up command room schedules` (post-call). Most palatable for letting the product run for anyone.
 9. **Phase 6 hands off to coach.** Chat 4 is `command-room-coach`'s permanent home from there.
-10. **Privacy matters.** Phase 0 widget (Q2) captures exclusion domains; everything else respects them.
+10. **Privacy matters.** Everything stays in the customer's chosen folder. Exclusion domains are no longer collected at onboarding (removed v5, 2026-06-30) — a customer sets one anytime via "add [domain] to my exclusion list" (`workspace-manager`), and every skill respects the list.
 11. **Output Quality Rules apply ONLY to the Chat 1 + Chat 4 demo surfaces.** Daily-use scheduled tasks aren't subject — over-application produces bloat. Demo surfaces are one-shot; richness here is the proof, richness in daily morning briefs is noise.
 12. **No wow language. No time promises. No value-math.** Strip "wow" / "in 30 seconds" / "this paid for a month's subscription" from customer-facing copy. The customer feels the wow; we don't announce it.
 13. **WHY-not-WHAT for file mentions.** Every named workspace file gets a why-it-matters anchor.

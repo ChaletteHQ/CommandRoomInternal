@@ -11,7 +11,7 @@ A single reference for understanding the plugin end-to-end — written for the o
 3. [The daily loop — six scheduled chats](#the-daily-loop--six-scheduled-chats)
 4. [The on-demand surface — skills by intent](#the-on-demand-surface--skills-by-intent)
 5. [Lifecycle — onboarding, updates, release manifests](#lifecycle--onboarding-updates-release-manifests)
-6. [Development model — Option B + staging + production](#development-model--option-b--staging--production)
+6. [Development model — cr1 staging + per-client production](#development-model--cr1-staging--per-client-production)
 7. [File layout — where things live](#file-layout--where-things-live)
 8. [Recurring bug classes to watch](#recurring-bug-classes-to-watch)
 9. [Debugging + verifying](#debugging--verifying)
@@ -79,6 +79,23 @@ Two safeguards: (1) `people_writer.py` enforces dedup at write time; (2) Pulse's
 ### aliases.json — name disambiguation
 
 Maps free-text names ("Sam", "Sam P", "DSample") to canonical `person_NNN` ids. Used by every skill that has to interpret natural-language references to people. Cheap to write; rich payoff in surface quality.
+
+### The three-layer memory model (episodic → canonical → semantic)
+
+The three files above are the middle and top of a three-layer memory. Naming the layers explains where every piece of the substrate lives and, more importantly, how memory *heals itself over time* instead of depending on whether a skill happened to fire at the right moment.
+
+| Layer | What it is | Where it lives | Written by |
+|---|---|---|---|
+| **L1 — episodic** | The raw record of everything that was said: full session transcripts of every Command Room chat, plus meeting transcripts. Verbatim, complete, and **free** — Cowork retains it whether or not we do anything, and (proven 2026-07-01) it is readable from inside a scheduled task. | Cowork's session store + the connected meeting-transcript sources (Granola, etc.) | Nobody — it accrues automatically as the CEO works |
+| **L2 — canonical** | The extracted, deduped, queryable timeline: one structured event per consequential thing. This is what almost every skill reads and writes. | `_hq/data/events.jsonl` | Many skills, all through the `append_event()` gate |
+| **L3 — semantic** | The consolidated understanding: the relationship/project graph, plus the synthesized analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / DORMANT / THEMES). | `_hq/data/entities.json` + `_hq/views/` | `people-crm` / `workspace-manager` (graph); `insight-generator` (views) |
+
+**The layers promote upward on a schedule, so capture is eventually-complete rather than moment-dependent:**
+
+- **L1 → L2, nightly** — the `session-sweep` task (Phase 5) reads the last day's session transcripts and promotes the commitments / decisions / interactions / deliverables that *never became events* into `events.jsonl`, deduped through `.source_refs.idx`. Its one-time companion `session-backfill` does the same over the last 60 days to catch a workspace up. This is the layer that closes the biggest historical leak: anything the CEO did in an ad-hoc chat that didn't fire a writing skill used to be lost; now the episodic layer is always there and the nightly pass lifts it into the canonical log after the fact — including Bug #98-class skips (a task that rendered but didn't write; the transcript shows the render, the sweep writes the missing event).
+- **L2 → L3, weekly** — `insight-generator` reads the canonical timeline and recomputes the five analytical views, consolidating events into patterns (aging, dormancy, themes).
+
+**Why this matters:** before the L1→L2 promotion existed, memory depended on the *moment of capture* — a writing skill had to fire exactly when something happened, or it was gone. With the layers, memory stops depending on that moment. The episodic layer is always complete; the canonical layer catches up every night; the semantic layer consolidates every week. A missed capture is no longer a permanent hole — it is a leftover the next sweep collects.
 
 ---
 
@@ -149,7 +166,16 @@ The most sophisticated reactive surface in the product. Phase 3 reference detect
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-dont-forget.md` (filename retains the legacy "dont-forget" name for events.jsonl back-compat).
 
-### 7. friday-wrap (cron 4 PM Fridays) — NEW v3.11.0
+### Scheduling timezone rule (R8 — settled empirically 2026-07-01)
+
+**Cowork cron and `fireAt` evaluate in MACHINE-local time — the computer's clock, not the workspace timezone.** Confirmed live: a machine in Mountain time with a Pacific workspace fired on Mountain wall-clock, and a scheduled session stamped its output in workspace time while firing on machine time. The split is real and permanent:
+
+- **Scheduling math is machine-local.** Cron expressions in `DEFAULT_SCHEDULES` / `schedule_config`, lateness computation (`late_fire.py`), and fired-recency math (`task_watchdog.py`) all use the machine clock. Never "correct" a fire time against the workspace TZ.
+- **Workspace TZ is presentation-only** (`shared/scripts/tz.py` `to_local()`): timestamps the CEO reads are rendered in `workspace.user_timezone`; nothing about when tasks fire changes with it.
+- **Conversion happens once, at registration/change time.** When the user asks for a time ("set inbox to 8am"), they mean THEIR timezone — change-schedule converts via `schedule_config.workspace_time_to_machine()` before building the cron, and says so in the confirm diff when the two clocks differ. (The conversion uses the current offset; a fixed cron can't track DST transitions, so a machine/workspace TZ pair that shifts on different dates drifts by the DST hour until the schedule is touched again.)
+- Most installs run machine == workspace timezone and none of this is visible; the rule exists for the ones that don't (travel, remote-desktop machines, VMs).
+
+### 7. friday-wrap (cron 1 PM Fridays — Phase 3/R4 default for new installs; earlier installs registered at 4 PM keep their time) — NEW v3.11.0
 
 First weekly-rhythm scheduled task. Wraps the existing `weekly-recap` skill — pulls 7 days of context across every connector (Mail, Calendar, Slack/Teams, Drive, every transcript source), runs `scan-for-commitments` on freshly-captured meeting events as a side effect, then synthesizes a recap surfaced both inline (markdown chat) and as a saved `.docx` at `_hq/meetings/Weekly_Recap_<YYYY-MM-DD>.docx`.
 
@@ -263,17 +289,17 @@ About 47 skills total in `skills/`. Organized here by user intent so you can fin
 
 ### First install (onboarding)
 
-`command-room-onboarding` fires automatically on first install when `CLAUDE.md` doesn't exist in the workspace. M1 (2026-05-23+) ships a 6-phase ~40-min flow distributed across 13 chats:
+`command-room-onboarding` fires automatically on first install when `CLAUDE.md` doesn't exist in the workspace. M1 (2026-05-23+; scheduled-task generation stripped 2026-06) ships a 6-phase ~30-min flow distributed across several chats. **Onboarding registers no scheduled tasks** — the daily/weekly scheduled chats are an opt-in the customer sets up after the call by running `set up command room schedules` in a fresh chat (registration only works reliably from its own chat, which is why onboarding no longer attempts it):
 
-0. **Setup widget** — workspace shape, email exclusions, timezone, AI name (4-question progressive-reveal widget; AI name defaults to "Penelope").
-1. **Education + scan + Workspace Map + backfill authorize** — Chat 1 runs the 60-day metadata scan + builds the workspace; Chat 2 (operator-opened) delivers a substantive scheduled-task explainer and registers 5 first-install tasks; Chat 3 (customer-opened) installs the Workspace Map; Chat 5 (customer-authorized via Run Now) starts the `cr-m1-backfill` 7-day deep read on Haiku.
-2. **Triple beat in Chat 4** — Mirror v1 + Voice contrast immediately on Opus; Insights + Mirror v2 fire user-triggered when the customer types `show me what's next` after the backfill completes.
-3. **Compounding loop** — Chat 4 frames the v1/v2 contrast as the literal demonstration of how the substrate compounds.
-4. **Run Now ritual** — customer authorizes the 5 scheduled chats via Run Now in Cowork's Scheduled section, reading each first-run output before moving on.
+0. **Setup widget** — workspace shape, email exclusions, timezone, AI name (progressive-reveal widget; AI name defaults to "Penelope").
+1. **Scan + workspace build + Workspace Map** — Chat 1 runs the 60-day metadata scan + builds the workspace; Chat 3 (customer-opened) installs the Workspace Map. No backfill task, no schedules chat.
+2. **Mirror + Voice contrast + Insights in Chat 4** — Mirror v1 + Voice contrast immediately on Opus; Insights fire user-triggered when the customer types `show me what's next`, computed from the 60-day scan (no deep-read wait). The deeper last-7-days read is pointed to via on-demand `weekly-recap`.
+3. **Compounding loop** — Chat 4 frames how the substrate compounds (every meeting / decision / follow-up / `weekly-recap` builds on the 60-day baseline).
+4. **(removed)** — the old Run Now ritual for 5 scheduled chats is gone; onboarding registers nothing to authorize.
 5. **Training prompts** — customer fires 3 hands-on commands in 3 new chats (`prep me for [meeting]`, `tell me about [person]`, `draft a check-in to [person]`).
-6. **Coach handoff** — accomplishment summary; Chat 4 becomes the customer's permanent home with their AI via the `command-room-coach` skill.
+6. **Coach handoff** — accomplishment summary (which points the customer to `set up command room schedules` and `weekly-recap`); Chat 4 becomes the customer's permanent home with their AI via the `command-room-coach` skill.
 
-Day-1 customers get 5 scheduled tasks registered (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`) per `FIRST_INSTALL_TASK_IDS`. The remaining 2 (`commitments`, `pulse`) get added later in operator-driven follow-up sessions once accumulated workspace signal makes them useful.
+Day-1 customers register **no** scheduled tasks during onboarding. When ready, they opt in via `set up command room schedules`, which registers the 5 first-install tasks (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`) per `FIRST_INSTALL_TASK_IDS`. The remaining 2 (`commitments`, `pulse`) get added later in operator-driven follow-up sessions once accumulated workspace signal makes them useful.
 
 ### Plugin updates
 
@@ -296,42 +322,42 @@ Future action types (`apply_workspace_migration`, `programmatic_refire`) will be
 
 ---
 
-## Development model — Option B + staging + production
+## Development model — cr1 staging + per-client production
 
-Established 2026-05-12. Documented in `_hq/PICKUP_RITUAL_command_room.md` (M's workspace) and `commandroom1/DEVELOPMENT.md` (the staging repo's README).
+Current model established 2026-06-22 (the "cr1 model"). Documented in the staging repo's `DEVELOPMENT.md` and the operator workspace's CLAUDE.md + `_hq/INFRASTRUCTURE.md`.
 
 ### The canonical edit surface
 
-**The staging marketplace clone IS the source of truth.** Path: `~/.claude/plugins/marketplaces/commandroom1/command-room/` on every machine where Cowork is installed (Cowork installs the marketplace clone as part of personal-plugin install).
+**A dedicated working clone is the source of truth.** Path: `~/repos/cr1-canonical/command-room/` — a git clone of **`ChaletteHQ/cr1`**, the private staging repo. Edits land there directly and push to `cr1`.
 
-There is no `plugin-source-v3/` folder anymore. Pre-v3 the model was "edit in Drive, mirror to staging clone." Drive sync was async + eventually-consistent → drift between PC and laptop. The staging clone is git, which is exact.
+**Do not edit any Command Room clone under `~/.claude/plugins/marketplaces/`.** Those are Cowork's locally-installed copies — read-only install caches, coupled to the Cowork install location and stale the moment staging moves ahead. The legacy staging marketplace clone's remote was renamed to `oldtest` and retired on 2026-06-22.
 
 ### Staging vs production
 
-| | Repo | Visibility | Internal name | Cowork display |
-|---|---|---|---|---|
-| Staging | `chaletteholdings/commandroom1` | Private | `cr` | "Cr" |
-| Production | `chaletteholdings/commandroom` | Private (paying clients) | `command-room` | "Command room" |
-| Chalette admin | `chaletteholdings/chalette` | Private (M only) | — | — |
+| | Repo(s) | Visibility | Role |
+|---|---|---|---|
+| Staging | `ChaletteHQ/cr1` | Private | The canonical edit surface clones this; the operator dogfoods from it |
+| Production | Per-client repos under `ChaletteHQ`: `CommandRoomInternal` plus one `CommandRoom<Client>` repo per client | Private (one repo per client) | What each client installs from |
+| Chalette admin | `chaletteholdings/chalette` | Private (operator only) | Internal operator tooling |
 
-Staging is M's personal install for dogfooding. Production is what paying clients install from. Plugin code is byte-identical between the two after a promote; only `marketplace.json` differs (marketplace internal name, plugin internal name, description without `[STAGING]` prefix).
+A promote fans the core out from staging to every per-client repo via `scripts/promote_core_to_clients.py`, honoring each client's `_chalette/overrides.json` so client-custom skills are never clobbered.
 
 ### Ship flow
 
 `ship-cr-plugin` skill in the chalette plugin handles the full release ritual:
 
-1. Pull staging clone fresh
+1. Pull staging fresh
 2. Status check (no unexpected dirty state)
 3. Release-readiness inspect
-4. Get version bump from M
+4. Get version bump from the operator
 5. Get release notes summary
 6. Write CHANGELOG.md + plugin.json
 7. **(v0.4.1+) MANDATORY release manifest at `shared/releases/v<X.Y.Z>.json`** — Step 5.5. Step 6 has a pre-commit gate that aborts if missing.
 8. Commit + push to staging
 9. Mirror to Cowork local-uploads (bypass VHD cache)
-10. Tell M what to do in Cowork
+10. Tell the operator what to do in Cowork
 
-Production promote is a separate command (`promote v3.X.Y`). Mirrors staging → production repo via `~/commandroom-build/` persistent clone (or temp clone if missing), commits + tags + pushes.
+Production promote is a separate command (`promote v3.X.Y`). It fans staging out to every per-client repo (see above), commits + tags + pushes each.
 
 ### Marketplace.json contract (non-negotiable)
 
@@ -498,7 +524,7 @@ Caught the v2.14.34 widget-wrapper-dropping bug after two days of misdiagnosis c
 ### Running tests locally
 
 ```bash
-cd ~/.claude/plugins/marketplaces/commandroom1/command-room/
+cd ~/repos/cr1-canonical/command-room/
 python tests/run_cru_match_test.py
 python tests/run_decision_match_test.py
 python tests/run_release_detectors_test.py
@@ -510,7 +536,7 @@ All should output `OK N tests passed`.
 ### Verifying a manifest detector against your own events.jsonl
 
 ```bash
-cd ~/.claude/plugins/marketplaces/commandroom1/command-room/
+cd ~/repos/cr1-canonical/command-room/
 python shared/scripts/release_detectors/<detector_module>.py "<absolute path to your events.jsonl>"
 ```
 

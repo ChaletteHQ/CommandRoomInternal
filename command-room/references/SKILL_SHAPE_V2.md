@@ -1,8 +1,8 @@
 # Skill Shape — v2.1 Spec
 
-**Purpose:** The canonical definition of what a v2.1 Command Room skill looks like. Every new skill added to the plugin must conform. The `cleanup` skill validates conformance; non-conforming skills cannot be merged.
+**Purpose:** The canonical definition of what a v2.1 Command Room skill looks like. Every new skill added to the plugin must conform. Conformance is enforced by the test battery (`tests/run_all.py` — the structural guard tier plus the skill-validator static gates in `tests/run_cr_skill_validator_test.py`); non-conforming skills fail the battery and cannot be merged.
 
-**Read by:** skill authors (human or agentic — the HQ `skill-creator` skill reads this when scaffolding new skills), `cleanup` (validator), and contributors adding to the plugin.
+**Read by:** skill authors (human or agentic — the HQ `skill-creator` skill reads this when scaffolding new skills), the test battery (validator), and contributors adding to the plugin.
 
 ---
 
@@ -101,9 +101,9 @@ Forbidden. Every file the skill writes must resolve under `[WORKSPACE_ROOT]`. Wr
 
 ---
 
-## Validation (run by cleanup)
+## Validation (run by the test battery)
 
-For each SKILL.md in `plugin-source-v2/skills/`, verify:
+Enforced by `tests/run_all.py` (run the guard tier with `python tests/run_all.py --tier guard`; the skill-validator static gates live in `tests/run_cr_skill_validator_test.py`). For each SKILL.md in `skills/` (the plugin tree — `command-room/skills/` in the repo), verify:
 
 1. Frontmatter parses. `name` matches folder. `description` exists and is 50–300 words.
 2. Description opens with an intent statement, not a trigger list.
@@ -115,7 +115,7 @@ For each SKILL.md in `plugin-source-v2/skills/`, verify:
 8. No literal customer strings (grep against `entities.json` canonical names).
 9. `## What It Doesn't Do` section exists.
 
-Any violation logs to `_hq/CONFLICTS.md` with type `skill-shape-violation` and surfaces in the cleanup report.
+Any violation fails the test battery — the offending gate prints the file and check that broke, and the battery's non-zero exit blocks the ship gate.
 
 ---
 
@@ -198,3 +198,11 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. [Describe 
 ---
 
 **End of skill shape spec.**
+
+## Naming convention — feedback provenance vs normative prose (P3.3, 2026-07-02)
+
+Feedback citations MAY name M with a date ("per M's 2026-05-20 feedback #9") —
+that's provenance, and it stays. NORMATIVE sentences (rules, behavior specs,
+output instructions) say **"the user"** — never M, never a real name. The two
+audits found the mix drives per-client fan-out bugs: a canonical file that says
+"ask M before sending" makes the model address someone else's CEO as M.

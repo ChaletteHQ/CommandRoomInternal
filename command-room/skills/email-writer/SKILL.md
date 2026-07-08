@@ -1,10 +1,13 @@
 ---
 name: email-writer
-description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro/connector emails. Use when the CEO says 'draft an email', 'draft an email to [recipient]', 'email [name] about [topic]', 'email to', 'write an email', 'respond to [thread]', 'cold email to [prospect]', 'intro email', 'reply to [person]', 'write an email saying', 'send [recipient] an email about'. Produces a ready-to-send draft saved to the recipient's thread or a staging folder. Runs voice calibration protocol per shared/VOICE_CALIBRATION.md with this skill's Voice Block. DOES NOT fire on 'draft follow-ups' from a meeting (that's follow-up-ritual), 'triage my inbox' (that's inbox-triage), or 'write a memo' / 'recurring update' (memo-writer)."
+description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro emails. Fires on: 'draft an email to [name] about [topic]', 'email to [name]', 'write an email to the team', 'reply to [name]', 'follow up with [name] about [topic]' (single named follow-up), plus 'tune email-writer', 'show email-writer settings', 'reset email-writer to defaults'. Reads the calibrated voice block and relationship context; output lands as a Gmail draft or preview per the draft-posture setting — never auto-sent. Does NOT fire on 'follow up on that call' / 'draft follow-ups' (follow-up-ritual — per-attendee pack from a transcript), 'who should I reach out to' (relationship-moves), or intro requests between two contacts (intro-broker). Register table and full trigger family: Routing section in the body."
+
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default
 template_version: 1.0.0
 ---
+
+**Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-email-writer.md` if it exists — it supersedes this SKILL.md's `## Voice Block` section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
 
 # Email Writer
 
@@ -16,7 +19,7 @@ Before resolving the recipient(s) from the trigger phrase, you MUST call `shared
 
 **Primary domain:** email. This skill is NOT for Slack, NOT for memos, NOT for board updates. Use the matching domain-specific skill for those.
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use `email-writer` for:** any standalone email draft — external short, external long, internal, cold outreach, intro/connector.
 - **Use `follow-up-ritual` for:** post-meeting follow-up emails specifically. That skill handles the full follow-up pack (summary + per-attendee action items + follow-up drafts) from a meeting transcript.
@@ -28,7 +31,7 @@ Before resolving the recipient(s) from the trigger phrase, you MUST call `shared
 Before writing, read `shared/WORKSPACE_API.md`.
 
 **Primary writer for:**
-- **Gmail Drafts (no file saved).** Per CONTRACT Rule 27 (no .md deliverables), email drafts are pushed to Gmail Drafts via the Zapier reply-thread mechanism wired in v3.2.2 (see `shared/scripts/zapier_send.py`) or via the native Gmail MCP connector if available. The pre-v3.7.0 saved-draft-file pattern (markdown files under each project's deliverable folder) was vestigial from before Gmail Drafts threading worked reliably — the deliverable is now the draft sitting in Gmail, ready for the user to review and click Send.
+- **Gmail Drafts (no file saved, click-gated).** Per CONTRACT Rule 27 (no .md deliverables) there is no draft file; and per the v3.13.7 lazy model the Gmail draft itself is created ONLY by the user's widget click, dispatched from `apply-choices` (native Gmail MCP `create_draft`; sends go through the Zapier reply-thread mechanism in `shared/scripts/zapier_send.py` when the native connector can't send). This skill's own path writes nothing to Gmail — it renders the widget. The pre-v3.7.0 saved-draft-file pattern was vestigial; the deliverable is the draft the user's click puts in Gmail.
 - `_hq/voice/corrections-email-writer.jsonl` — append on detected correction.
 
 **Appends to:**
@@ -51,7 +54,7 @@ Before writing, read `shared/WORKSPACE_API.md`.
 
 ## What It Does
 
-Takes a prompt like "draft an email to Sam about the LOI we discussed" and produces a ready-to-send draft that sounds like the CEO wrote it. The draft is stored in the project's email_drafts folder; the CEO reviews, edits if needed, then sends.
+Takes a prompt like "draft an email to Sam about the LOI we discussed" and produces a ready-to-send draft that sounds like the CEO wrote it. The draft surfaces as an editable widget — NOTHING is saved anywhere (no file, no Gmail draft) until the user clicks an action; the click is what creates the Gmail draft or sends it (v3.13.7 lazy model).
 
 ## How It Works
 
@@ -69,6 +72,70 @@ Translation:
 Why this is a hard rule (v3.13.6 → v3.13.7 trust-bomb fix): a paying customer asked "draft email to X" and saw a draft appear in their Gmail without ever approving it. Loss-of-control feeling. Day-1 churn signal. The eager-Gmail-draft model is reversed in v3.13.7 — same widget surface, lazy state change.
 
 If anything below seems to contradict this preamble (older language, a screenshot, a habit from prior versions), the preamble wins.
+
+### Phase 0 — First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`).
+Always read config through `get_config` — never read the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
+# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "draft_posture": "show_first",   # AF — show_first | auto_queue
+    "sign_off": "dash_first",        # STT — dash_first | thanks_first | first_only | custom
+    "length": "short_direct",        # STT — short_direct | fuller
+}
+cfg = get_config(workspace_root, "email-writer", DEFAULTS)
+```
+
+`draft_posture` gates outbound behavior, so email-writer is an **ask-first (AF)** skill — the
+one exception to output-first. `show_first` (default) keeps the v3.13.7 lazy contract: the draft
+appears as an editable widget and nothing touches Gmail until the user clicks. `auto_queue` means
+each generated draft is also created in Gmail Drafts immediately (opt-in to the old eager behavior).
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "draft an email…" | first relevant request only: ask the ONE AF posture question (below) BEFORE drafting, then `save_skill_config(workspace_root, "email-writer", DEFAULTS)`; subsequent fires skip straight to drafting with the saved posture. |
+| **Show settings** | "show email-writer settings" | render current config in plain English; no draft. |
+| **Tune** | "tune my email drafts", "tune email-writer", "change my email draft posture" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → confirm. |
+| **Reset** | "reset email-writer to defaults" | `wipe_skill_config(workspace_root, "email-writer")` → next draft is a first-fire again. |
+
+**First fire — the ONE AF question (asked once, before the first draft, with a working default-escape):**
+
+On the very first email-writer fire only (`not is_configured(workspace_root, "email-writer")`), before producing the draft, render a single fixed-option micro-widget:
+
+> *First time drafting with me. How do you want me to handle drafts?*
+> **[Show me first ▸ recommended]** — I'll show you the draft here; nothing touches Gmail until you click Send or Save draft.
+> **[Auto-queue to Gmail Drafts]** — I also drop every draft straight into your Gmail Drafts.
+> *Just go ahead and I'll use Show-me-first.*
+
+This is the documented current-state fixed-option row (`shared/CHAT_ACTION_WIDGET.md` preselect
+exception). The default-escape means proceeding without answering applies `show_first`. After the
+choice (or skip): `save_skill_config(workspace_root, "email-writer", {**DEFAULTS, "draft_posture": choice})`
+with `origin="first_fire_override"` if they changed it, else plain DEFAULTS. Then continue to Phase 1.
+sign-off and length are NOT asked at first run (one AF question max; email-writer ends in a draft
+widget so a trailing footer would violate `CHAT_ACTION_WIDGET.md` MUST-NOT rule 5) — they are
+discoverable via `tune email-writer` and the freeform table. The block renders exactly once ever.
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "auto-queue my drafts" / "put drafts straight in Gmail" | `draft_posture = auto_queue` |
+| "always show me first" / "stop auto-queueing" | `draft_posture = show_first` |
+| "sign off with just my first name" | `sign_off = first_only` |
+| "use Thanks, [name]" | `sign_off = thanks_first` |
+| "make my emails fuller" / "less terse" | `length = fuller` |
+| "keep emails short and direct" | `length = short_direct` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + confirm in one line ("Done — drafts auto-queue to Gmail Drafts now."). `sign_off` and `length` shape Phase 3 (the Voice Block sign-off tier + target length); `draft_posture` gates Phase 4 (when `auto_queue`, apply-choices also creates the Gmail draft on render — still never *sends* without a click).
 
 ### Phase 1 — Input parsing
 
@@ -109,15 +176,35 @@ Target length:
 - **Cold outreach:** 80-120 words. Must open with specific reason, not generic intro.
 - **Intro/connector:** 60-100 words. 2-3 sentences per person. Clear ask.
 
-#### Step 2 — Critique
+#### Step 2 — Critique (two-pass)
 
-Re-read the draft. Check against:
-- Voice Block cadence and structural rules
-- Universal banned-phrase list (strip or rewrite any hits)
-- Register appropriateness for this recipient
-- Banned openers + closers for this skill
+**Learned chase policy (Phase 6 Loop 6).** For a follow-up / check-in draft on a thread that's gone quiet, consult the per-relationship-type chase policy insight-generator learned from outcomes: `from chase_policy import load_chase_policy, get_chase_window` → `chase_days, escalate = get_chase_window(policy, <recipient's org relationship_type>)`. Use it to tune the follow-up's timing cue and escalation: after `escalate` silent chases to a relationship class that historically goes quiet, the draft shifts from "just checking in" to proposing a short call (a `follow-up call` cue) rather than another email. Missing store → the default `(7, 3)`, so a fresh workspace drafts exactly as before. This shapes tone/timing only; the draft still never sends without a click.
 
-If any check fails, rewrite that section. Repeat until clean.
+Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structure, specificity, floors — they do not override this skill's Voice Block on voice/tone/openers/taboos). Then run two passes in order.
+
+**Pass 1 — structure (binary):**
+- Opening sentence states the action / decision / info. If deleting it loses nothing, delete it.
+- No sentence over 25 words. Break any that run longer.
+- Banned-phrase sweep with named replacements (strip every hit from the universal list — no closer at all beats "hope this helps").
+
+**Pass 2 — register (run only after Pass 1 is clean):**
+- Peer = contractions and shorthand; warm it if it reads like a memo.
+- Senior / customer = strip familiarity ("just wanted to check in" fails).
+- Sign-off matches the tier.
+
+Rewrite what fails each pass, re-check once, then return.
+
+**Mechanical voice-tell gate (B2 — bash-gated, not prose).** After the two passes above, run the draft body through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells (em-dash pile-ups, tri-colons, hedging stacks, bullets-in-email) warn. This is enforced, not advisory — it does not replace the binary checklist, it backstops it:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
+```
+
+On exit 1 (`FAIL`), rewrite the flagged lines and re-run until the detector exits 0 (`pass` or `warn`). Never return a draft the detector still fails. A phrase the recipient's calibrated Voice Block demonstrably allows is exempt — feed it through `allow_phrases` (the Voice Block Taboos carve-out per `shared/VOICE_CALIBRATION.md`), never improvise the override.
+
+**Turn-level backstop (SPEC GATE1, v3.20.x — this is enforced even if you skip the Step-2 call above).** Email drafts never reach `brief_writer.make_brief` (no .docx is saved), so the email surface relies on this Step-2 gate — which v3.20.0 verification showed the LLM treats as optional and skips. The deterministic backstop closes that hole: when the draft is rendered through `render_chat_output_widget` (Phase 4), `turn_backstop.scan_data_view_for_tells` automatically scans every email-shaped body for banned voice tells and emits a `gate_ran` (`surface="chat_email"`) audit event on any fail. It is NON-BLOCKING (the widget still renders) but a `gate_ran` with `result="fail"` is a detectable signal that a banned phrase shipped. Running the Step-2 detector above is still mandatory — the backstop is the safety net, not a substitute. Do NOT hand-type the email body straight into chat without rendering the widget; that bypasses both the gate AND the backstop.
 
 ### Phase 3.5 — Subject synthesis (v2.10.8+)
 
@@ -182,7 +269,7 @@ data_view = {
                 ["To", recipient_email],
                 ["Subject", subject],
             ],
-            "context_tag": "Ready for your review — Gmail draft fires on click",
+            "context_tag": "Ready for your review — nothing is saved to Gmail until you click",
             # v3.13.8+ — Bug #30 fix. Only prefix with `>` when this is a
             # REPLY to an existing thread (i.e. you have a Gmail thread_id
             # in scope). Fresh-draft bodies render WITHOUT the blockquote
@@ -268,10 +355,14 @@ All four actions land in apply-choices. The Gmail / Zapier tool call is the FIRS
 
 - `1 send` — apply-choices creates the Gmail draft AND sends it in one motion. Native Gmail MCP path: `create_draft` → `send_draft`. Zapier-threaded send path: `zapier_send.py` with `In-Reply-To` if known. Logs `email_drafted` AND `email_sent` events (the draft is recorded for the substrate even though there's no human-visible draft state between create and send). Per `shared/EMAIL_DRAFT_PROTOCOL.md` §3c.
 - `1 edit then send` — apply-choices opens an inline edit input on the widget; the user types corrections, hits Apply, the input replaces the body. Then the same send flow as `1 send` fires against the edited body.
-- `1 draft` — apply-choices creates a Gmail draft via the native MCP `create_draft` tool (or Zapier draft path when no native connector). The draft now lives in Gmail Drafts for the user to find and send later. Logs `email_drafted` (no `email_sent` yet). Per v2.14.4 canonical-action consolidation, `to drafts` was renamed to `draft` — the action always opens an edit field before saving, so review-then-save is the default semantics.
+- `1 draft` — apply-choices creates a Gmail draft via the native MCP `create_draft` tool. (There is NO Zapier draft path — `zapier_send.py` only sends; with no native mail connector the body stays in the widget and the ack says email isn't connected.) The draft now lives in Gmail Drafts for the user to find and send later. Logs `email_drafted` (no `email_sent` yet). Per v2.14.4 canonical-action consolidation, `to drafts` was renamed to `draft` — the action always opens an edit field before saving, so review-then-save is the default semantics.
 - `1 skip` — no Gmail tool call (because no draft was ever created). Records a `chat_dismissal` event so substrate knows the draft was reviewed-and-not-sent.
 
 In the n>1 multi-draft case, the same four verbs apply per item (`N send`, `N edit then send`, `N draft`, `N skip`). The user can mix freely — e.g., `1 send 2 skip` ships draft 1, dismisses draft 2; `1 edit then send 2 send` edits the first then sends both. Apply-choices iterates the action set and fires the matching Gmail tool once per `N send` / `N draft` action.
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "I render the draft; the Gmail draft fires on click."
+- Good: "I'll show you the draft here; nothing touches Gmail until you click Send or Save draft."
 
 **Why lazy beats eager (v3.13.7 trust-bomb fix):** under the pre-v3.13.7 eager model, clicking `1 skip` still left a draft in the user's Gmail because the draft was created in Phase 4 before the user ever saw the widget. Same with the user closing the chat without clicking — silent draft persisted. Under the lazy model, skip and close both produce zero Gmail state change. The user has full control. The mental model "the widget is the draft; my click is what writes Gmail" matches reality.
 
@@ -320,12 +411,13 @@ Same relocation as Phase 5: when the user clicks `send` or `edit then send` in t
     "recipient": "...@example.com",
     "topic": "[topic]",
     "gmail_message_id": "<RFC 822 Message-ID>",
+    "gmail_thread_id": "<Gmail thread id, when the send response provides it>",
     "draft_event_seq": N
   }
 }
 ```
 
-`email_sent` fires regardless of dispatch path — native Gmail MCP send, native Outlook send, or Zapier reply-thread send all converge here. `draft_event_seq` links back to the original `email_drafted` so the substrate has the full lifecycle. This is the v3.7.1+ closure event that lets `cleanup` count drafted-but-not-sent as a real signal instead of guessing.
+`email_sent` fires regardless of dispatch path — native Gmail MCP send, native Outlook send, or Zapier reply-thread send all converge here. `draft_event_seq` links back to the original `email_drafted` so the substrate has the full lifecycle. This is the v3.7.1+ closure event that lets `cleanup` count drafted-but-not-sent as a real signal instead of guessing. **B6:** when the send response includes a Gmail thread id, record it as `data.gmail_thread_id` — the outcome watch (reconcile-sent Step 6) uses it to look up replies directly; without it the watch falls back to a `rfc822msgid:<gmail_message_id>` search. (Zapier standalone sends often have neither — those age out of the 21-day outcome window, never guessed.)
 
 ---
 
@@ -412,11 +504,11 @@ Mira
 If `voice_block_last_refreshed` is >12 months old, or corrections log has >20 rows since last refresh, emit at top of output:
 
 ```
-Quick note: your writing voice profile hasn't been refreshed in a while (last update: [date]). When you have a moment, rerun voice calibration so your drafts stay tuned to how you actually write.
+Quick note: your writing voice profile hasn't been refreshed in a while (last update: [date]). When you have a moment, say "tune my email drafts" and we'll refresh it so your drafts stay tuned to how you actually write.
 ```
 
-## Connector-aware behavior
+## Routing (full trigger corpus)
 
-If Gmail connector is authorized and the CEO says "send it", this skill can dispatch via the Gmail connector directly. Otherwise, it outputs the draft for copy-paste.
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-If sending: log an additional `email_sent` event. The `email_drafted` event remains, event history captures full lifecycle.
+> Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro/connector emails. Use when the CEO says 'draft an email', 'draft an email to [recipient]', 'email [name] about [topic]', 'email to', 'write an email', 'respond to [thread]', 'cold email to [prospect]', 'intro email', 'reply to [person]', 'write an email saying', 'send [recipient] an email about', 'follow up with [name] about [topic]', 'follow up with', 'draft a check-in', 'draft a check-in to [name]' (a plain outbound draft, no meeting in context). Produces a ready-to-send draft saved to the recipient's thread or a staging folder. Runs voice calibration protocol per shared/VOICE_CALIBRATION.md with this skill's Voice Block. Also handles first-run personalization settings — use when the CEO says 'tune my email drafts', 'tune email-writer', 'show email-writer settings', 'reset email-writer to defaults', 'change my email draft posture'. DOES NOT fire on 'follow up on that call' / 'follow up on the meeting' / 'draft follow-ups' from a meeting (follow-up-ritual — meeting-shaped), 'triage my inbox' (inbox-triage), or 'write a memo' / 'recurring update' (memo-writer). DOES NOT fire on 'draft a Slack message' / 'text [name]' / 'draft a text to' (out of scope — this skill drafts email only; chat-message drafting has no owner today, say so plainly instead of improvising).

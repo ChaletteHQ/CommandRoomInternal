@@ -1,0 +1,13 @@
+{
+  "version": "4.1.0",
+  "headline": "Weekly cleanup now archives instead of deleting — nothing in your workspace is ever removed.",
+  "items": [
+    {
+      "id": "v410_announce_cleanup_archives",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Small change to how I keep your workspace tidy: when I clear out old briefings, prep notes, and reports, I now move them into an archive folder instead of deleting them. Nothing is ever removed — if you ever want an old file back, it's still there. You don't need to do anything.",
+      "action": "announce_only"
+    }
+  ]
+}

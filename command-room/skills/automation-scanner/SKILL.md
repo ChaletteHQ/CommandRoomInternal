@@ -1,6 +1,6 @@
 ---
 name: automation-scanner
-description: "Find the low-hanging automation wins hiding in the CEO's own workspace — repetitive work, manual data pulls, and copy-paste patterns across session notes and meeting transcripts — then rank by time-saved-vs-build-effort. Use when the CEO says 'what can be automated', 'automation scan', 'automation audit', 'show me automations', 'where am I wasting time', 'what should I automate first'. Produces a ranked list with scope notes and suggested build approach. DOES NOT fire on 'set up [specific tool]' (that's implementation, not scanning) or 'build me a [workflow]' (that's a design/build request — this skill identifies opportunities, doesn't build them)."
+description: "Find the low-hanging automation wins hiding in the CEO's own workspace and rank by time-saved-vs-build-effort. Use when the CEO says 'what can be automated', 'automation scan', 'automation audit', 'show me automations', 'where am I wasting time', 'where am I leaking time', 'hidden time cost', 'what should I automate first'. Produces a ranked list with scope notes and suggested build approach (the recurring-meeting 'hidden time-cost' report is coach deliverable-catalog 2.5, rendered by this scan). DOES NOT fire on 'set up [specific tool]' (that's implementation, not scanning) or 'build me a [workflow]' (that's a design/build request — this skill identifies opportunities, doesn't build them)."
 ---
 
 ## Skill Boundary (v2.1)
@@ -62,7 +62,7 @@ Runs in two modes:
 - Finance/expense/invoice patterns
 - External communication loops (customer updates, board reports, investor check-ins)
 
-**Source:** Google Gmail — look for repeated message patterns over last 30-90 days.
+**Source:** Google Gmail — look for repeated message patterns over the last **60 days** (fixed window — long enough to surface monthly recurrence, short enough to stay current).
 
 ### 2. Calendar Patterns
 - Recurring prep work before meetings (prep time blocked, same meeting setup every week)
@@ -91,16 +91,28 @@ Runs in two modes:
 **Source:** SESSION_NOTES files in each project folder — scan for repeated action items, recurring questions, described workflows that should be systems.
 
 ### 5. Session History Patterns
-- Things you ask M to do manually that could be skills (e.g., "prep me for every Monday meeting", "send weekly status to board", "pull metrics for our dashboard")
+- Things the user asks you to do manually that could be skills (e.g., "prep me for every Monday meeting", "send weekly status to board", "pull metrics for our dashboard")
 - Requests that follow the same pattern weekly/monthly
 - Context you assemble manually that could be an automated dashboard or report
 - Manual data entry or copy-paste work
 
 **Source:** Read this session's recent history and check the workspace for README or logs of recurring requests.
 
-## Output Format
+## Output
+
+**Deliverable link (CONTRACT Rule 3 — H2 heading link, LAST in the turn):** surface the .docx via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` as the final line of the chat response — after the widget/summary and Sources, never interspliced mid-body, never a plain-text path, never a hand-built `computer://` URL. Format
 
 **Rendering (v3.13.8+ — Bug #53):** render the `.docx` via the canonical `shared/scripts/brief_writer.py` `make_brief(brief_kind="automation_scan", ...)`. Do NOT hand-roll python-docx or use docx-js. brief_writer enforces canonical typography, Heading 1/2/3 hierarchy, and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically. Use the v3.13.8 `table` primitive for the ranked-list section rather than synthesizing bullets for column-shaped data.
+
+**Ranking formula (compute, don't vibe):**
+
+```
+build_hours = {"S": 2, "M": 5, "L": 12}[complexity]
+rank_score  = (time_saved_per_week_minutes × 52 / 60) / build_hours
+            # = hours saved per year ÷ hours to build
+```
+
+Categorize by `rank_score`: **quick win = ≥ 10** (surface ALL); **medium = 3–10** (surface the top 2); **long-term = < 3** (omit unless the CEO asks). **Show the score next to each item** so the CEO can challenge the inputs, not the math.
 
 Ranked list with time-saved estimate, build complexity, and one-line description. Use this structure:
 
@@ -111,8 +123,8 @@ Found [N] opportunities worth looking at.
 #1 — saves about [TIME_SAVED] a week
 What it does: [What the automation does]
 Build size: [Small / Medium / Large]
-Where I saw it: [Email pattern / Calendar pattern / Task pattern / Meeting notes / Session history]
-Time to build: [e.g., "2-4 hours to build the skill + template"]
+Where I saw it: [your email / your calendar / your task list / your meeting notes / things you've asked me to do by hand]
+Time to build: [e.g., "about 2-4 hours to set up"]
 Example from your workspace: [Concrete example]
 
 #2 — saves about [TIME_SAVED] a week
@@ -134,6 +146,10 @@ What's next:
 - I'll help you build it
 - Run it for 2 weeks, then we'll check how much time it actually saved
 ```
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "Time to build: 2-4 hours to build the skill + template"
+- Good: "Time to build: about 2-4 hours to set up"
 
 ### Complexity Definitions
 
@@ -173,11 +189,11 @@ Examples:
 
 ### "But we already tried automation and it didn't work"
 **What happens**: You see an opportunity but remember a previous tool that didn't stick.
-**Instead**: Ask: "Why didn't it work?" Common reasons: tool was too slow, wasn't integrated into your flow, required extra steps. This time, build it as a skill that lives in your Command Room — it will feel integrated because it IS.
+**Instead**: Ask: "Why didn't it work?" Common reasons: tool was too slow, wasn't integrated into your flow, required extra steps. This time it lives inside your Command Room — it will feel integrated because it IS.
 
 ### Opportunity is too vague
 **What happens**: Scanner surfaces "meeting prep could be faster" without specifics.
-**Instead**: Always provide a concrete example from the workspace. "Every Monday you spend 15 minutes pulling context on the CEO roundtable. You ask for attendee background, check past notes, and search for relevant emails. A skill could do this in 10 seconds."
+**Instead**: Always provide a concrete example from the workspace. "Every Monday you spend 15 minutes pulling context on the CEO roundtable. You ask for attendee background, check past notes, and search for relevant emails. Your Command Room could do this in 10 seconds."
 
 ### Email/Calendar patterns that are false positives
 **What happens**: You sent 3 emails to the same person but they're all different (not a real pattern).
@@ -213,11 +229,11 @@ Examples:
 
 **Tone**: "Here's where I see opportunity to reclaim time. Let's start with the quick wins."
 
-**Next step**: Ask "Want me to build the first one?" and use skill-creator to build it immediately.
+**Next step**: Ask "Want me to build the first one?" — on yes, say `scaffold #N` semantics: hand the picked opportunity (by its `automation_opportunity_surfaced` seq) to **scaffold-automation**, which generates the config + setup recipe.
 
 ### Operator Mode (Audit)
 
-**Trigger**: M is running a periodic maintenance audit. Scans systematically for patterns that aren't obvious.
+**Trigger**: the operator is running a periodic maintenance audit. Scans systematically for patterns that aren't obvious.
 
 **Output**: Full detailed report. Include everything, ranked by ROI. Provide concrete examples with dates and specifics.
 
@@ -236,16 +252,16 @@ Examples:
 
 ## What It Doesn't Do
 
-- It doesn't build the automation (use **skill-creator** for that)
+- It doesn't build the automation (say **"scaffold #N"** — scaffold-automation builds from the surfaced opportunity)
 - It doesn't estimate cost or resourcing
 - It doesn't prioritize based on company strategy (you do that)
-- It doesn't track which automations were built or their actual ROI (that's for a future Automation Tracker)
+- It doesn't measure realized ROI after deployment (deployment state IS tracked — the Writer Contract's per-opportunity events + scaffold-automation's `automation_deployed` events carry built/deployed status; what nothing measures yet is actual-vs-estimated time saved)
 
 ## Next Steps
 
 After the scan:
 - Pick ONE quick win (S complexity)
-- Use **skill-creator** to build it
+- Say **"scaffold #N"** — scaffold-automation builds it
 - Test it for 2 weeks
 - Measure actual time saved
 - Repeat

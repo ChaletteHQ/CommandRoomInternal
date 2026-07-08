@@ -156,6 +156,21 @@ def format_telemetry_summary(telemetry: dict) -> str:
     return ", ".join(parts) if parts else "(no metrics captured)"
 
 
+def _duration_ms(tel: dict) -> int:
+    """Read a telemetry duration in MILLISECONDS, coalescing the field-name drift
+    seen across versions in real data. `duration_ms` is already ms; the `_s` /
+    `_sec` / `_seconds` variants are SECONDS and are converted (×1000) so totals
+    aren't silently wrong. Every read is None-coerced. First present field wins."""
+    ms = tel.get("duration_ms")
+    if ms is not None:
+        return int(ms or 0)
+    for key in ("duration_s", "duration_sec", "duration_seconds"):
+        v = tel.get(key)
+        if v is not None:
+            return int((v or 0) * 1000)
+    return 0
+
+
 def aggregate_pack_run_telemetry(events: Iterable[dict]) -> dict:
     """Aggregate telemetry across multiple pack_run events. Used by weekly-audit
     to summarize the week's spend per orchestrator.
@@ -180,14 +195,18 @@ def aggregate_pack_run_telemetry(events: Iterable[dict]) -> dict:
             "fires": 0, "tokens": 0, "ms": 0, "connector_calls": 0,
         })
         bucket["fires"] += 1
-        tokens = tel.get("prompt_tokens_est", 0) + tel.get("response_tokens_est", 0)
+        # Real pack_run events carry numeric keys PRESENT-but-None, so dict.get's
+        # default never applies — coerce every numeric read with `or 0`.
+        tokens = (tel.get("prompt_tokens_est") or 0) + (tel.get("response_tokens_est") or 0)
+        ms = _duration_ms(tel)
+        ccount = tel.get("connector_call_count") or 0
         bucket["tokens"] += tokens
-        bucket["ms"] += tel.get("duration_ms") or 0
-        bucket["connector_calls"] += tel.get("connector_call_count", 0)
+        bucket["ms"] += ms
+        bucket["connector_calls"] += ccount
         totals["fires"] += 1
         totals["tokens"] += tokens
-        totals["ms"] += tel.get("duration_ms") or 0
-        totals["connector_calls"] += tel.get("connector_call_count", 0)
+        totals["ms"] += ms
+        totals["connector_calls"] += ccount
 
     # Average metrics per kind
     for kind, bucket in by_kind.items():

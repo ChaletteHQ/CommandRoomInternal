@@ -1,6 +1,6 @@
 ---
 name: operator-report
-description: "Generates a CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered without being asked, and a conservative time-absorbed estimate at the bottom. NOT a usage/billing dashboard — a value-of-having-this report shaped like a board update for the CEO's own operations. Triggers: 'operator report', 'operating lift', 'what have you done for me', 'what did you save me', 'show me the value', 'monthly recap', 'what did you do this month', 'show me the impact', 'time saved report', 'my operating report'. Auto-generates on the 1st of every month to `_hq/operator-reports/[YYYY-MM].docx` (per CONTRACT Rule 27, no .md deliverables). The May 15 CEO-group pitch slot uses this format — the qualitative claims (commitments that would have slipped, decisions logged, etc.) lead; the hours estimate is the credibility anchor at the bottom, not the headline."
+description: "Generates the CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered unasked, and a conservative time-absorbed estimate, every number computed in code. Fires on: 'operator report', 'show me the value', 'portfolio velocity', 'monthly operating report', plus 'tune operator-report', 'customize operator-report', 'show operator-report settings / customizations', 'reset operator-report customizations'. Output: chat summary plus forwardable .docx with trend context. Does NOT fire on 'weekly recap' / 'what happened this month' (weekly-recap — events digest, not lift accounting), 'value receipt' (value-receipt — the forwardable ROI receipt), or 'usage report' (usage-report — cost/volume telemetry). Full trigger list and section spec: Routing section in the body."
 ---
 
 # operator-report
@@ -12,6 +12,101 @@ The CEO-facing value report. Surfaces what Command Room actually did for them ov
 This is not `usage-report`. That skill reports developer-facing telemetry (token spend, connector call counts, duration_ms per orchestrator). Useful for optimization decisions; not for showing a CEO what they're getting.
 
 This is also not a retention sales pitch. The numbers are real. If a section returns 0, it shows 0 — and either pivots to compound-value framing or stays silent on that section. Fabricated value claims would torch trust faster than no report at all.
+
+## Skill Boundary (v2.1)
+
+- **Use `operator-report` for:** the CEO-self-facing operating-lift report — synthesis lead, named relationships and decisions, what would have slipped, conservative hours anchor at the bottom.
+- **Use `value-receipt` for:** the forwardable ROI receipt — numbers-only, no names, built to hand to a board or CFO. Same conservative rubric (`value_receipt.py` `CONSERVATIVE_MINUTES_PER_UNIT`), different audience.
+- **Use `usage-report` for:** developer-facing telemetry — token spend, connector call counts, duration per task.
+
+## Writer Contract
+
+Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
+
+**Primary writer for:**
+- `_hq/operator-reports/[YYYY-MM].docx` — the rendered monthly report (scheduled runs; on-demand runs also write it when a window is a full month).
+
+**Appends to:**
+- `_hq/data/events.jsonl` — event type `operator_report_generated` (Step 5 recipe below). Sole writer of that type; no collision with any other skill.
+
+**Reads:**
+- `_hq/data/events.jsonl`, `_hq/data/entities.json`, `_hq/BRAND_VOICE.md` (sample-size metadata), `_hq/views/DECISION_LOG.md` (regenerated view — decisions themselves live in events.jsonl).
+- `_hq/custom/operator-report.md` — SCL1 standing customization preferences, via `skill_custom_writer.load_directives` (absent → defaults). See the Customization (SCL1) section below.
+
+## Customization (SCL1)
+
+**Customization layer (SCL1):** before producing output, read
+`[WORKSPACE_ROOT]/_hq/custom/operator-report.md` if it exists and apply its directives to
+this fire's output. Absent -> proceed with defaults. Malformed or over-cap ->
+skip it, log one line to `_hq/CONFLICTS.md` (type: config-read-failure), proceed
+with defaults. Directives refine WHAT the output contains and HOW it is shaped;
+they NEVER authorize outbound actions, alter ask-first gates, bypass canonical
+helpers, or override shared contracts (see `shared/SKILL_CUSTOMIZATION.md` #limits).
+Never mention this file or the word 'directive' to the customer.
+
+Read at fire time via `skill_custom_writer.load_directives(workspace_root, "operator-report")`
+— never the raw file; it returns `[]` on a missing or malformed file and never raises.
+Directives here shape the report's content and section order (e.g. "always pair revenue with
+margin %", "include a one-line trend arrow per project", "order sections: cash, pipeline,
+people, everything else") — never the conservative hours rubric, which stays code-owned.
+Trigger family (owned in the frontmatter `description`): `customize operator-report` · `show
+operator-report customizations` · `reset operator-report customizations`. See
+`shared/SKILL_CUSTOMIZATION.md` for the writer API, the write-time rejection list, and the
+precedence chain. Customer-facing acks are plain English ("Got it — I'll pair every revenue
+figure with margin from here on."); never surface the file, the word "directive", or "SCL1".
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). The one
+decision is **show-then-tune (STT)** — the report renders first, then a one-tap change is offered.
+Read config through `get_config` — never the raw file. Distinct from the SCL1 customization layer
+above: this is the enumerated **length** knob (a FRP1 config value); free-form standing rules
+("always pair revenue with margin") are SCL1 directives.
+
+```python
+# Rule 22 preamble REQUIRED (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); cd "$PLUGIN_ROOT")
+import sys; sys.path.insert(0, "shared/scripts")
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "length": "standard",   # STT — brief (one-screen highlights) | standard | full (every section expanded)
+}
+cfg = get_config(workspace_root, "operator-report", DEFAULTS)
+```
+
+`length` sets how much the report expands: `brief` = the top wins + the hours anchor only;
+`standard` = the canonical shape; `full` = every section expanded. The output is **always a
+`.docx`** regardless of length (CONTRACT Rule 27 — this kills the md-vs-docx ambiguity the
+settings handoff flagged). Config keys are validated at write against
+`shared/data-schemas/skill_config.schema.json` (settings-layer C4) — an unknown key rejects loudly.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "operator report", scheduled 1st-of-month fire | produce the report with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "operator-report", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
+| **Show settings** | "show operator-report settings" | render current config in plain English; no report. Listed beside "show operator-report customizations" (SCL1) in the footer. |
+| **Tune** | "tune operator-report" | freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-produce. |
+| **Reset** | "reset operator-report to defaults" | `wipe_skill_config(workspace_root, "operator-report")` → next fire is a first-fire again. |
+
+**The first-run block (footer):**
+
+> *First time building your operating report. I set it to **standard length**. Say "tune
+> operator-report" to make it shorter or fuller, or just tell me ("keep it brief" / "give me the
+> full version").*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "keep it brief" / "just the highlights" | `length = brief` |
+| "give me the full version" / "expand everything" | `length = full` |
+| "standard length" / "the normal report" | `length = standard` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + re-produce + confirm in one line.
 
 ## Why hours-saved isn't the headline
 
@@ -42,10 +137,10 @@ Read from:
 1. `_hq/data/events.jsonl` — full event stream within the window
 2. `_hq/data/entities.json` — current counts (people, orgs, projects)
 3. `_hq/BRAND_VOICE.md` — sample-size metadata for voice claim
-4. `_hq/DECISION_LOG.md` — decision count
+4. `_hq/views/DECISION_LOG.md` — decision count (regenerated view; the canonical decisions are `decision` events in events.jsonl)
 5. Scheduled-task fire records (also in events.jsonl as `pack_run` events)
 
-Compute the 5 report sections. **No section is fabricated.** If a count is 0, the report acknowledges it or skips the section per the rules below.
+Compute the 6 report sections (0-5). **No section is fabricated.** If a count is 0, the report acknowledges it or skips the section per the rules below.
 
 ### Step 3 — Compute the 6 sections (v3.13.0+ — added synthesis lead at the top per #1 feedback)
 
@@ -59,7 +154,7 @@ Method:
 
 Example (the kind of output #1 was asking for):
 
-> *"Heavy month on go-to-market and the Acme Co partnership. The May 14 CEO-group stage talk was the anchor — it spun off ~$45K in early pipeline, two demo cycles already booked, and a new vertical wedge that's now an active thread. Acme Co moved from handshake to paperwork. Operating businesses stayed in steady-state; older consulting clients continued to fade."*
+> *"Heavy month on go-to-market and the Acme Co partnership. The May 14 CEO-group stage talk was the anchor — it spun off ~$45K in early pipeline, two demo cycles already booked, and a new vertical wedge that's now an active project. Acme Co moved from handshake to paperwork. Operating businesses stayed in steady-state; older consulting clients continued to fade."*
 
 If the period has no clear anchor moment (truly mid-cycle period, no events with significant cluster connections), surface that honestly: *"This period was steady-state — no single anchor, just baseline execution across [active orgs]."*
 
@@ -69,11 +164,13 @@ The synthesis lead is the difference between "here are some numbers" and "here's
 
 Pull from events.jsonl within the window:
 - Commitments captured outside an existing tracker context (i.e., extracted from a meeting or email, not user-created). Count `type: commitment` events with `source_skill ∈ {meeting-notes, inbox-triage, follow-up-ritual, scan-for-commitments}`.
-- Cold relationships flagged. Count `type: pattern_break_detected` events with `source_skill ∈ {dormant-customer-scan, insight-generator, pulse}` (the canonical dormancy-flag event type per events.schema.json — pre-v3.13.6 this spec called for `dormant_flag` which isn't in the enum and would have silently returned 0).
+- Cold relationships flagged. Count `type: pattern_break_detected` events with `source_skill ∈ {dormant-customer-scan, insight-generator, pulse}` (the canonical dormancy-flag event type per events.schema.json — pre-v3.13.6 this spec called for `dormant_flag` which isn't in the enum and would have silently returned 0). **Back-compat (client migration):** normalize each event's `source_skill` through `source_skill_compat.normalize_source_skill` before the set check so workspaces whose Pulse history predates the v2.14.27 rename (`source_skill='cr-dont-forget'`) still count — it normalizes to `pulse`. events.jsonl is append-only; never rewrite it.
 - Decisions logged from real interactions. Count `type: decision` events with `source_skill: meeting-notes` or `decision-log`.
 - Aging follow-ups surfaced. Count open `type: commitment` events whose `data.due` is past the window-end date — i.e., commitments that aged into overdue status during the window. (Pre-v3.13.6 this spec called for `type: aging_followup` which isn't in the enum.)
 
 If a category returns 0, omit the bullet entirely (don't say "0 commitments captured" — that reads worse than not mentioning it).
+
+**Quantify discipline (EXEC1 element 3 — Section 1 only; Section 0 is untouched, it's the prototype).** Each "what would have slipped" item that traces to a valued relationship gets the dollar via `shared/scripts/quantify.py::money_time_tag(commitment_or_thread, entities)` — "the pricing reply you owed Acme — a $240K relationship." Append the tag ONLY when `money_time_tag` returns non-None (the helper traces commitment → thread → org → revenue/deal field and returns None when that field is absent). NEVER hand-type a dollar figure and NEVER estimate — a workspace without the field simply shows the item with no tag.
 
 **Section 2: What you no longer have to hold**
 
@@ -87,7 +184,7 @@ If `entities.json` is missing any of these fields, fall back to event-stream cou
 
 **Section 3: What got delivered without you asking**
 
-Pull scheduled-task fire records. `pack_run` events carry `data.task_id` (NOT `orchestrator` — that field name was the pre-v3.13.6 spec, never wired). Task ids per `enable-command-room-schedules/SKILL.md`:
+Pull scheduled-task fire records. `pack_run` events carry `data.task_id` (NOT `orchestrator` — that field name was the pre-v3.13.6 spec, never wired). **Back-compat (client migration):** a `pack_run` fire is identified by `data.task_id` OR `data.kind` OR `source_skill`; match by normalizing each through `source_skill_compat.normalize_source_skill` (so legacy `source_skill='cr-commitments'` history → `commitments`, `'cr-dont-forget'` → `pulse`). This mirrors the canonical `_is_for` matcher in `SHARED_CHAT_OUTPUT_PROTOCOL.md`. Never rewrite events.jsonl. Task ids per `enable-command-room-schedules/SKILL.md`:
 - Morning briefings generated — `pack_run` with `data.task_id: morning-brief`
 - Pre-meeting prep briefs — `pack_run` with `data.task_id: upcoming-meetings` AND yielded at least one brief
 - Email drafts produced in user's voice (count `email_drafted` events)
@@ -97,7 +194,9 @@ If scheduled-tasks aren't enabled (no `pack_run` events in window), surface a si
 
 **Section 4: A conservative time estimate**
 
-This is the anchor at the bottom — not the headline. Use a transparent rubric so the number is defensible:
+This is the anchor at the bottom — not the headline. Use a transparent rubric so the number is defensible.
+
+**Canonical rubric (single source of truth):** the minutes-per-unit values below live in code as `shared/scripts/value_receipt.py` `CONSERVATIVE_MINUTES_PER_UNIT` (SPEC C1 D2). The table here mirrors that constant — if you tune one, tune both in the same change, and prefer reading the constant. The `value-receipt` skill renders the same numbers from the same rubric, so the two surfaces never disagree.
 
 | Activity | Time absorbed per unit (conservative) |
 |---|---|
@@ -144,7 +243,7 @@ Render the report verbatim in chat (for on-demand invocations) AND write to `_hq
 What would have slipped
   • [N] commitments captured that weren't in any other system
   • [N] relationships I flagged as going quiet (last contact past their usual cadence)
-  • [N] decisions logged — including [reference 1-2 specific high-stakes decisions from DECISION_LOG.md, by name not generic]
+  • [N] decisions logged — including [reference 1-2 specific high-stakes decisions from the decision log, by name not generic]
   • [N] aging follow-ups surfaced
 
 What you no longer have to hold
@@ -157,7 +256,7 @@ What got delivered without you asking
   • [N] morning briefings
   • [N] pre-meeting prep briefs
   • [N] email drafts in your voice
-  • [N] cleanups
+  • [N] weekly workspace tidy-ups
 
 A conservative time estimate
   ~[N] hours of operational overhead absorbed
@@ -166,13 +265,18 @@ A conservative time estimate
   This is conservative — it assumes you would have done each of these yourself at average speed. The real lift is usually higher because half of these would have just dropped.
 
 Things that get more valuable the longer you use Command Room
-  Communication profile: [N] sent emails sampled — every draft renders in your voice
+  Communication profile: built from [N] of your sent emails — every draft comes out in your voice
   Decision log: [N] entries — you don't re-debate decisions you already made
-  People layer: [N] interactions logged — relationship context never resets
+  People memory: [N] interactions logged — relationship context never resets
+  Session notes: [N] across your projects — project history compounds
 
 Next [period]'s projection
   Based on current cadence: [N+] commitments captured, [N+] briefings, ~[N] hours absorbed.
 ```
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "[N] cleanups · People layer: [N] interactions · every draft renders in your voice"
+- Good: "[N] weekly workspace tidy-ups · People memory: [N] interactions · every draft comes out in your voice"
 
 The "Next period's projection" line is mandatory — it's what makes the report feel like a forward-looking ops update, not a backward-looking receipt.
 
@@ -180,6 +284,7 @@ The "Next period's projection" line is mandatory — it's what makes the report 
 
 ```python
 import sys
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
 sys.path.insert(0, "shared/scripts")
 from chat_output_renderer import doc_headline_link
 from brief_path import get_brief_artifact_url
@@ -192,9 +297,19 @@ Renders as `## → **[Operator report — May 2026](computer://...)**` — same 
 
 ### Step 5 — Log
 
-Append an `operator_report_generated` event to `events.jsonl`:
-```json
-{"type":"operator_report_generated","ts":"<ISO-now>","data":{"window":"<start>..<end>","hours_estimate":<N>,"output_path":"<path-or-chat>"}}
+Append the `operator_report_generated` event via the locked writer — never a hand-rolled JSON append:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from atomic_write import atomic_append_jsonl
+atomic_append_jsonl(f"{workspace_root}/_hq/data/events.jsonl", {
+    # no "seq" — the append gate auto-stamps it
+    "ts": "<ISO-now>",
+    "type": "operator_report_generated",
+    "source_skill": "operator-report",
+    "data": {"window": "<start>..<end>", "hours_estimate": "<N>", "output_path": "<path-or-chat>"},
+})
 ```
 
 ## Sourcing rules
@@ -211,7 +326,7 @@ This skill is invokable on-demand AND scheduled. Scheduled monthly run:
 - **Window:** previous calendar month
 - **Output:** writes to `_hq/operator-reports/YYYY-MM.docx` + surfaces a one-line link in chat next time the user opens Command Room
 
-The scheduled fire is wired separately in `enable-command-room-schedules` references — not configured here.
+The scheduled fire is real (SPEC C1): the `monthly-report` task in `schedule_config.py` `DEFAULT_SCHEDULES` (`0 7 1 * *`) runs this report AND the `value-receipt` for the previous month, registered via `enable-command-room-schedules` Step 1.D (the `SILENT_TASKS` registry loop, Phase 3 / SPEC-2.3). (Before C1, this section claimed a monthly fire that was never actually wired into `DEFAULT_SCHEDULES` — folding both reports into the one monthly task is where that claim became real, and it avoids paying the overlapping substrate read twice.) The on-demand trigger always works regardless of scheduled-task reliability.
 
 ## What it doesn't do
 
@@ -221,3 +336,9 @@ The scheduled fire is wired separately in `enable-command-room-schedules` refere
 - Does not bill, charge, or otherwise touch payment systems. Pure read-only report.
 - Does not export to PDF or external formats. The report is delivered as a `.docx` via `brief_writer.py` per CONTRACT Rule 27 — the user can open it directly, paste into another tool, or share it.
 - Does not fire if `_hq/data/events.jsonl` is empty (no activity to report on). Surface: *"There's nothing for me to report on yet. Give Command Room about a week of use and ask again."*
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Generates a CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered without being asked, and a conservative time-absorbed estimate at the bottom. NOT a usage/billing dashboard — a value-of-having-this report shaped like a board update for the CEO's own operations. Triggers: 'operator report', 'operating lift', 'what have you done for me', 'what did you save me', 'show me the value', 'what did you do this month', 'show me the impact', 'time saved report', 'my operating report', 'portfolio velocity', 'which projects are gaining momentum' (the 60-day project-momentum scorecard — coach deliverable-catalog 2.3, rendered from events.jsonl by this report). Auto-generates on the 1st of every month to `_hq/operator-reports/[YYYY-MM].docx` (per CONTRACT Rule 27, no .md deliverables). Also takes standing customization preferences — use when the CEO says 'customize operator-report', 'show operator-report customizations', 'reset operator-report customizations'. Also handles first-run settings — use when the CEO says 'tune operator-report', 'show operator-report settings', 'reset operator-report to defaults'. DOES NOT fire on 'monthly recap' / 'what happened this month' (weekly-recap's month window — a month-in-review of YOUR business, not a report on what I did). DOES NOT fire on 'value receipt' / 'roi receipt' / 'show me the receipt' (that's value-receipt — the forwardable numbers-only receipt built for a board or CFO; operator-report is the CEO-self-facing narrative with a synthesis lead and named relationships) or 'usage report' / 'token usage' (usage-report — developer-facing spend telemetry).

@@ -7,6 +7,12 @@ and Past_Meeting briefs go through `make_brief()`. Replaces the v2.14.31-era
 flow where each fire asked the docx skill to lay out the document and got
 slightly different output every time.
 
+Save-time gates (canonical order): input validation → output-contract gate
+(SPEC B3, PRE-Document()) → voice-tell gate (SPEC B2, PRE-Document(), see
+`make_brief`) → render → post-render leak scan (`docx_leak_scanner`). The
+contract and voice gates both raise before any file is written; the leak scan
+runs after save.
+
 Design goals:
   - Deterministic. Same structured input -> same docx output, every fire.
   - Forwardable-clean per `meeting-notes/SKILL.md` Brief Authoring Rules.
@@ -30,6 +36,7 @@ environments.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from typing import List, Dict, Optional, Union
@@ -80,6 +87,178 @@ RULE_HEX = "C0C0C0"                     # horizontal rule — light grey
 
 BODY_FONT = "Calibri"
 HEADING_FONT = "Calibri"
+
+
+# ---------- Supported brief kinds ----------
+# Module-level so the output-contract validator's sync guard can import it and
+# assert set(RULES_BY_KIND) <= set(EYEBROW_BY_KIND) — a renamed kind then
+# breaks loudly instead of silently un-scoping its contract rules.
+
+EYEBROW_BY_KIND = {
+    "call_prep":         "CALL PREP",
+    "past_meeting":      "MEETING BRIEF",
+    "board_pack":        "BOARD PACK",
+    "board_review":      "BOARD REVIEW",  # P1.9 2026-07-02 — boardroom deliberation memo (distinct from board_pack reporting)
+    "contract_review":   "CONTRACT REVIEW",
+    "decision_memo":     "DECISION MEMO",
+    "operator_report":   "OPERATING LIFT",
+    "value_receipt":     "VALUE RECEIPT",
+    "weekly_recap":      "WEEKLY RECAP",
+    "weekly_audit":      "WEEKLY AUDIT",
+    "dormant_scan":      "DORMANT CUSTOMER SCAN",
+    "automation_scan":   "AUTOMATION SCAN",
+    "automation_recipe": "AUTOMATION SETUP RECIPE",
+    "followup_pack":     "FOLLOW-UP PACK",
+    "memo":              "MEMO",
+    "one_pager":         "ONE-PAGER",
+    "insights":          "INSIGHTS",
+    "stress_test":       "STRESS TEST",
+}
+
+SUPPORTED_BRIEF_KINDS = frozenset(EYEBROW_BY_KIND)
+
+
+# ---------- Executive Output Standard (SPEC EXEC1) ----------
+# See shared/EXECUTIVE_OUTPUT_STANDARD.md. The standard is enforced HERE (the
+# render chokepoint), not re-implemented per skill.
+
+# Kinds expected to carry a 30-second exec header (element 1). Missing header on
+# one of these is WARN-ONLY this release (emit a brief_meta audit event, never
+# raise) — a hard-require now would break every scheduled brief on the live
+# client workspaces on upgrade day, because their orchestrator prompts lag the
+# plugin and don't pass exec_header yet (CONTRACT Rule 16). The ValueError is a
+# FUTURE release (N+1), after the prompts catch up. These are exactly the §4
+# docx-producing skills that take the adoption edit.
+STANDARD_KINDS = frozenset({
+    "call_prep",
+    "memo",
+    "board_pack",
+    "weekly_recap",
+    "one_pager",
+    "followup_pack",
+    "decision_memo",
+    "dormant_scan",
+})
+# NB: operator_report is deliberately NOT here. Per SPEC EXEC1 §4 its Section 0
+# synthesis lead is "untouched (it's the prototype)" and §5 lists it as a
+# synthesis-lead surface — its synthesis paragraph IS its contract/lead, so it
+# does not pass a separate exec_header (that would double-lead). The only EXEC1
+# change for operator-report is the quantify dollar tag on Section 1 items.
+
+# Decision-shaped kinds get the recommendation-ordering check (element 2):
+# a rec/decision/suggested-outcome-headed section that appears only LATE
+# (earliest occurrence at section index > 2) → ValueError. Analysis exists to
+# audit the recommendation, not to defer it.
+DECISION_SHAPED_KINDS = frozenset({"decision_memo", "memo", "one_pager"})
+
+# A section heading reads as a recommendation when it matches this. Scoped to
+# DECISION_SHAPED_KINDS only, so a past_meeting "Decisions" list (decisions
+# already made) never trips it.
+_REC_HEADING_RE = re.compile(
+    r"\b(recommendation|recommended|suggested\s+outcome|verdict|the\s+ask|decision)\b",
+    re.IGNORECASE,
+)
+
+# Canonical heading for the ASK block (element 4).
+ASKS_HEADING = "What I need from you"
+
+# Max asks (element 4) — more than this and the page stops being a contract.
+MAX_ASKS = 3
+
+# Small-caps labels for the three exec-header lines (element 1).
+_EXEC_HEADER_LINES = (("changed", "CHANGED"), ("decide", "DECIDE"), ("needs", "NEEDED"))
+
+
+def _emit_brief_meta_audit(brief_kind: str, reason: str, workspace_root: Optional[str]) -> None:
+    """WARN-ONLY exec-standard audit (SPEC EXEC1, element 1). NEVER raises.
+
+    Always surfaces a `[brief_meta]` line on stderr (dev-internal, never
+    user-visible — same channel the contract/voice gates use for warn-only
+    findings). When `workspace_root` is known, ALSO best-effort appends a
+    `brief_meta` event to events.jsonl (mirrors compute_and_log_brief_state) so
+    a missing-header brief is DETECTABLE in the verify loop without breaking the
+    brief. The events.jsonl write is wrapped so it can never block a save."""
+    print(
+        f"[brief_meta] exec-standard warn (save proceeds, never blocks): "
+        f"{brief_kind} — {reason}",
+        file=sys.stderr,
+    )
+    if not workspace_root:
+        return
+    try:
+        from pathlib import Path as _Path
+        from next_seq import next_seq as _next_seq
+        from atomic_write import atomic_append_jsonl as _append
+        from cru_match import _now_iso as _ts
+        events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        _append(events_path, [{
+            "seq": _next_seq(str(events_path)),
+            "ts": _ts(),
+            "type": "brief_meta",
+            "source_skill": "brief_writer",
+            "data": {"brief_kind": brief_kind, "reason": reason, "severity": "warn"},
+        }])
+    except Exception:
+        # Never let the audit write block the brief — warn-only is warn-only.
+        pass
+
+
+def _emit_gate_ran_audit(
+    brief_kind: str,
+    gates: List[str],
+    output_path: str,
+    workspace_root: Optional[str],
+) -> None:
+    """SPEC GATE1 — detectable-bypass audit. NEVER raises.
+
+    Emitted from inside `make_brief` AFTER a deliverable is successfully rendered
+    and saved, recording WHICH save-time gates actually ran for it (contract /
+    voice / leak). This is the #99 lesson applied: we cannot FORCE the LLM to
+    route deliverable production through `make_brief`, but a composer fire that
+    produces a .docx deliverable with NO matching `gate_ran` event that turn is
+    a flaggable bypass (the LLM hand-rolled a .docx via the generic docx skill,
+    or answered in chat). The verify loop / cleanup can join board-pack /
+    one-pager / memo `*_drafted` events against `gate_ran` events to surface a
+    deliverable that dodged the gates.
+
+    Self-contained on purpose: it adds `gate_ran` as its OWN events-schema enum
+    member and does NOT depend on EXEC1's unpushed `brief_meta` stack. Always
+    prints a `[gate_ran]` line on stderr (dev-internal, never user-visible —
+    same channel the contract/voice gates use). When `workspace_root` is known,
+    ALSO best-effort appends a `gate_ran` event to events.jsonl via the locked
+    writer so the signal lands in substrate; the write is wrapped so it can
+    never block a save."""
+    from os.path import basename
+    print(
+        f"[gate_ran] {brief_kind} rendered via make_brief — gates: "
+        f"{','.join(gates) if gates else 'none'} "
+        f"(file: {basename(output_path)})",
+        file=sys.stderr,
+    )
+    if not workspace_root:
+        return
+    try:
+        from pathlib import Path as _Path
+        from atomic_write import atomic_append_jsonl as _append
+        from cru_match import _now_iso as _ts
+        events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        # seq + ts are auto-stamped inside atomic_append_jsonl for events.jsonl,
+        # so we pass neither — the locked writer reserves the seq atomically.
+        _append(events_path, [{
+            "ts": _ts(),
+            "type": "gate_ran",
+            "source_skill": "brief_writer",
+            "data": {
+                "brief_kind": brief_kind,
+                "gates": gates,
+                "surface": "docx",
+                "artifact": basename(output_path),
+            },
+        }], holder="brief_writer.gate_ran")
+    except Exception:
+        # Never let the audit write block the brief — the deliverable is already
+        # on disk and valid; the audit is best-effort detectability only.
+        pass
 
 
 # ---------- Internal helpers ----------
@@ -401,6 +580,62 @@ def _add_footer(doc, text: str) -> None:
     _set_run(run, font=BODY_FONT, size=9, color=MUTED)
 
 
+def _add_exec_header(doc, exec_header: Dict[str, str]) -> None:
+    """SPEC EXEC1 element 1 — the 30-second contract, rendered as the first
+    block after the title/subtitle/rule and before any section:
+
+      [bold verdict sentence]
+      CHANGED  ...
+      DECIDE   ...
+      NEEDED   ...
+      <light rule>
+
+    `exec_header` keys: verdict (required), changed, decide, needs. Any of the
+    three lines may be a 'nothing-form' ('Nothing — execution day.') per the
+    anti-washing floor — the renderer is content-agnostic; the concreteness
+    floor is a checklist/validator concern, not a render concern.
+    """
+    verdict = (exec_header.get("verdict") or "").strip()
+    if verdict:
+        p = doc.add_paragraph()
+        run = p.add_run(verdict)
+        _set_run(run, font=HEADING_FONT, size=12, color=INK, bold=True)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(4)
+        p.paragraph_format.line_spacing = 1.15
+
+    for key, label in _EXEC_HEADER_LINES:
+        text = (exec_header.get(key) or "").strip()
+        if not text:
+            continue
+        p = doc.add_paragraph()
+        label_run = p.add_run(label + "  ")
+        _set_run(label_run, font=HEADING_FONT, size=9, color=ACCENT, bold=True)
+        text_run = p.add_run(text)
+        _set_run(text_run, font=BODY_FONT, size=11, color=INK)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.line_spacing = 1.20
+
+    _add_header_rule(doc)
+
+
+def _add_asks_block(doc, asks: List[Dict[str, str]]) -> None:
+    """SPEC EXEC1 element 4 — the ASK block. Rendered as the LAST content block
+    (after sections, before the footer), under the canonical heading. Zero asks
+    → caller skips this entirely (the exec header already said NEEDED Nothing).
+    Each ask is a reader-action; an optional deadline renders as ' — by <when>'."""
+    _add_section_heading(doc, ASKS_HEADING)
+    lines = []
+    for ask in asks:
+        text = (ask.get("text") or "").strip()
+        if not text:
+            continue
+        deadline = (ask.get("deadline") or "").strip()
+        lines.append(f"{text} — by {deadline}" if deadline else text)
+    _add_bullets(doc, lines)
+
+
 # ---------- Public API ----------
 
 def make_brief(
@@ -411,6 +646,12 @@ def make_brief(
     subtitle: str,
     sections: List[Dict[str, Union[str, List[str]]]],
     footer_text: str = "Command Room",
+    voice_gate: str = "default",
+    contract: str = "enforce",
+    contract_profile: Optional[str] = None,
+    exec_header: Optional[Dict[str, str]] = None,
+    asks: Optional[List[Dict[str, str]]] = None,
+    workspace_root: Optional[str] = None,
 ) -> str:
     """Write a polished brief .docx to `output_path` and return the path.
 
@@ -429,6 +670,7 @@ def make_brief(
           "contract_review"    → eyebrow "CONTRACT REVIEW"
           "decision_memo"      → eyebrow "DECISION MEMO"
           "operator_report"    → eyebrow "OPERATING LIFT"
+          "value_receipt"      → eyebrow "VALUE RECEIPT"
           "weekly_recap"       → eyebrow "WEEKLY RECAP"
           "weekly_audit"       → eyebrow "WEEKLY AUDIT"
           "dormant_scan"       → eyebrow "DORMANT CUSTOMER SCAN"
@@ -457,29 +699,62 @@ def make_brief(
       footer_text: centered footer text on every page. Defaults to
         "Command Room". NEVER include provenance metadata
         (Source / Fired / meeting_id / TTL) per CONTRACT.md Rule 15.
+      contract: output-contract gate mode (SPEC B3). Runs BEFORE the voice
+        gate (canonical order: contract → voice → render → leak scan).
+          "enforce" — raise OutputContractError (NO file written) on any
+            BLOCKING contract violation (missing required section, too-few
+            bullets, blank matrix/KPI cell, placeholder text, over-cap word
+            count). Warn-severity violations (e.g. the call_prep total-word
+            floor) print to stderr and the save proceeds — a sparse client
+            workspace is never blocked for lack of substrate.
+          "report"  — never block; print every violation to stderr and save.
+            For backfill/regeneration and orchestrators mid-incident.
+          "off"     — skip the contract gate entirely.
+      contract_profile: optional alternate rule set passed through to the
+        validator (e.g. "call_prep_internal" for internal-only meetings,
+        which relaxes the total-word floor and uses the internal section list).
+      voice_gate: pre-save voice-tell gate mode (SPEC B2).
+          "default" — hard-fail (raise VoiceTellError, NO file written) when a
+            fail-severity banned phrase appears AND brief_kind is a canonical
+            outbound kind (memo / one_pager / decision_memo / board_pack /
+            followup_pack). All other kinds are warn-only.
+          "warn"    — never block; emit findings to stderr and save anyway.
+            Escape valve for a caller with a legitimate calibrated override.
+          "off"     — skip the voice gate entirely.
+      exec_header: optional dict (SPEC EXEC1 element 1 — the 30-second
+        contract). Keys: `verdict` (one bold conclusion sentence), `changed`,
+        `decide`, `needs`. Rendered as the first block before any section. For
+        STANDARD_KINDS, omitting it is WARN-ONLY this release (a brief_meta
+        audit event, NEVER a raise — see _emit_brief_meta_audit); the
+        ValueError is release N+1. Other kinds may pass it freely; it's never
+        required for them.
+      asks: optional list of {text, deadline?} dicts (SPEC EXEC1 element 4 —
+        the ASK block). Max MAX_ASKS (3); more raises ValueError. Each is a
+        reader-action; rendered last under "What I need from you". Empty / None
+        → nothing rendered (the exec header already said NEEDED Nothing). When a
+        widget is the action surface, DON'T also pass asks — one-ask-surface.
+      workspace_root: optional absolute workspace root. When provided, the
+        warn-only exec-standard audit ALSO appends a brief_meta event to
+        events.jsonl (best-effort, never blocks). Omit it and the audit is
+        stderr-only — still never user-visible, still never raises.
 
     Returns: `output_path` on success.
 
-    Raises: ValueError on bad inputs. Lets python-docx errors propagate.
+    Raises:
+      ValueError on bad inputs.
+      OutputContractError (SPEC B3) when the pre-save contract gate blocks —
+        raised BEFORE Document() is built, so no partial file exists and no
+        content is lost; the caller reads each violation's section + fix_hint,
+        rewrites ONLY the failing sections, and re-saves.
+      VoiceTellError (SPEC B2) when the pre-save voice gate blocks — raised
+        BEFORE Document() is built, so no partial file exists and no content
+        is lost; the caller rewrites the flagged lines and re-saves.
+      Lets python-docx errors propagate.
+
+    Canonical pre-save gate order (B2 / B3): input validation → contract gate →
+    voice gate → render (Document) → post-render leak scan.
     """
-    eyebrow_by_kind = {
-        "call_prep":         "CALL PREP",
-        "past_meeting":      "MEETING BRIEF",
-        "board_pack":        "BOARD PACK",
-        "contract_review":   "CONTRACT REVIEW",
-        "decision_memo":     "DECISION MEMO",
-        "operator_report":   "OPERATING LIFT",
-        "weekly_recap":      "WEEKLY RECAP",
-        "weekly_audit":      "WEEKLY AUDIT",
-        "dormant_scan":      "DORMANT CUSTOMER SCAN",
-        "automation_scan":   "AUTOMATION SCAN",
-        "automation_recipe": "AUTOMATION SETUP RECIPE",
-        "followup_pack":     "FOLLOW-UP PACK",
-        "memo":              "MEMO",
-        "one_pager":         "ONE-PAGER",
-        "insights":          "INSIGHTS",
-        "stress_test":       "STRESS TEST",
-    }
+    eyebrow_by_kind = EYEBROW_BY_KIND
     if brief_kind not in eyebrow_by_kind:
         raise ValueError(
             f"brief_kind must be one of {sorted(eyebrow_by_kind)}, "
@@ -491,6 +766,169 @@ def make_brief(
         raise ValueError("subtitle is required")
     if not isinstance(sections, list) or not sections:
         raise ValueError("sections must be a non-empty list")
+    if contract not in ("enforce", "report", "off"):
+        raise ValueError(
+            f"contract must be 'enforce', 'report', or 'off', got {contract!r}"
+        )
+    if voice_gate not in ("default", "warn", "off"):
+        raise ValueError(
+            f"voice_gate must be 'default', 'warn', or 'off', got {voice_gate!r}"
+        )
+
+    # SPEC GATE1 — track which save-time gates actually run for this deliverable,
+    # so the post-save gate_ran audit records it (detectable-bypass signal).
+    gates_ran: List[str] = []
+
+    # SPEC EXEC1 — input validation for the new kwargs.
+    if exec_header is not None and not isinstance(exec_header, dict):
+        raise ValueError(f"exec_header must be a dict or None, got {type(exec_header).__name__}")
+    if asks is not None:
+        if not isinstance(asks, list):
+            raise ValueError(f"asks must be a list or None, got {type(asks).__name__}")
+        if len(asks) > MAX_ASKS:
+            # element 4 cap — more than 3 and the page stops being a contract.
+            raise ValueError(
+                f"asks may hold at most {MAX_ASKS} items (got {len(asks)}); "
+                f"a deliverable with >3 reader-actions is not a 30-second contract"
+            )
+        for ask in asks:
+            if not isinstance(ask, dict) or not (ask.get("text") or "").strip():
+                raise ValueError(
+                    f"each ask must be a dict with a non-empty 'text': {ask!r}"
+                )
+
+    # SPEC EXEC1 element 2 — recommendation-ordering check for decision-shaped
+    # kinds. Raised BEFORE the gates / render (a structural input error, like
+    # the kind/title/sections checks above) — no partial file. Analysis exists
+    # to AUDIT the recommendation, not to defer it: if a rec/decision/
+    # suggested-outcome-headed section appears ONLY late (earliest occurrence at
+    # section index > 2), the document is inverted.
+    if brief_kind in DECISION_SHAPED_KINDS:
+        rec_indices = [
+            i for i, sec in enumerate(sections)
+            if isinstance(sec, dict) and _REC_HEADING_RE.search(str(sec.get("heading") or ""))
+        ]
+        if rec_indices and min(rec_indices) > 2:
+            raise ValueError(
+                f"{brief_kind}: the recommendation must come before the analysis "
+                f"(EXEC1 element 2). A recommendation-shaped section first appears "
+                f"at index {min(rec_indices)}; move it into the first three "
+                f"sections (heading: {sections[min(rec_indices)].get('heading')!r})."
+            )
+
+    # SPEC B3 — pre-save output-contract gate. Runs BEFORE the voice gate and
+    # BEFORE Document(), so a blocked save writes NO partial file and loses NO
+    # content. Lazy import + ImportError tolerance, exactly like the voice gate
+    # and the post-render leak scan: a workspace mid-update that hasn't taken
+    # the output_contract_validator update still saves normally.
+    if contract != "off":
+        try:
+            from output_contract_validator import (
+                collect_contract_violations,
+                OutputContractError,
+            )
+        except ImportError:
+            collect_contract_violations = None  # validator not installed yet.
+
+        if collect_contract_violations is not None:
+            gates_ran.append("contract")
+            violations = collect_contract_violations(
+                brief_kind, title, subtitle, sections, profile=contract_profile
+            )
+            if violations:
+                blocking = [
+                    v for v in violations
+                    if v.get("severity", "error") == "error"
+                ]
+                if contract == "enforce" and blocking:
+                    # No file written — caller rewrites the failing sections.
+                    raise OutputContractError(brief_kind, blocking)
+                # report mode (any violation), or warn-only violations in
+                # enforce mode: surface to stderr and let the save proceed.
+                print(
+                    f"[output-contract] {len(violations)} contract "
+                    f"violation(s) in {brief_kind} "
+                    f"({'report mode' if contract == 'report' else 'warn-only'}"
+                    f", save proceeds):\n"
+                    + "\n".join(
+                        f"  [{v['rule']}] {v.get('section') or 'whole brief'}: "
+                        f"{v['observed']} — {v['expected']}. {v['fix_hint']}"
+                        for v in violations
+                    ),
+                    file=sys.stderr,
+                )
+
+    # SPEC B2 — pre-save voice-tell gate. Runs BEFORE Document() so a blocked
+    # save writes NO partial file and loses NO content (the draft is rewritten,
+    # never deleted post-save). Lazy import + ImportError tolerance, exactly
+    # like the post-render leak scan below: a workspace mid-update that hasn't
+    # taken the voice_tell_detector update still saves normally.
+    if voice_gate != "off":
+        try:
+            from voice_tell_detector import (
+                check_sections,
+                summarize_findings,
+                VoiceTellError,
+                FAIL_BLOCKING_KINDS,
+            )
+        except ImportError:
+            check_sections = None  # detector not installed yet — skip the gate.
+
+        if check_sections is not None:
+            gates_ran.append("voice")
+            # Per-client calibrated phrases (Voice Block Taboos) are fed through
+            # and NEVER hard-blocked. Sourced from B1's override loader when
+            # present; B2 has no hard dependency on it (ImportError tolerated).
+            allow_phrases = None
+            try:
+                from voice_corrections import load_voice_block_override  # type: ignore
+
+                override = load_voice_block_override(brief_kind)
+                if override:
+                    allow_phrases = override.get("taboos_allow") or override.get(
+                        "allow_phrases"
+                    )
+            except Exception:
+                allow_phrases = None
+
+            result = check_sections(
+                sections, brief_kind=brief_kind, allow_phrases=allow_phrases
+            )
+            fail_findings = [f for f in result["findings"] if f["severity"] == "fail"]
+            blocking = voice_gate == "default" and brief_kind in FAIL_BLOCKING_KINDS
+
+            if fail_findings and blocking:
+                raise VoiceTellError(
+                    f"Voice-tell gate blocked a {brief_kind} save — "
+                    f"{len(fail_findings)} banned phrase(s) must be rewritten "
+                    f"before this document can be written:\n"
+                    + summarize_findings(result["findings"]),
+                    findings=result["findings"],
+                )
+            if result["findings"]:
+                # Warn-only path (internal kind, or voice_gate="warn"): surface
+                # the findings on stderr and let the save proceed.
+                print(
+                    f"[voice-tell gate] {len(result['findings'])} tell(s) in "
+                    f"{brief_kind} (warn-only, save proceeds):\n"
+                    + summarize_findings(result["findings"]),
+                    file=sys.stderr,
+                )
+
+    # SPEC EXEC1 element 1 — STANDARD_KINDS exec-header presence check.
+    # WARN-ONLY this release: a STANDARD_KIND with no exec_header emits a
+    # brief_meta audit event and the save proceeds. NEVER raises (a hard-require
+    # now breaks every scheduled brief on the live client workspaces — their
+    # orchestrator prompts lag the plugin and don't pass exec_header yet,
+    # CONTRACT Rule 16). The ValueError is release N+1, after prompts catch up.
+    if brief_kind in STANDARD_KINDS and not (
+        exec_header and (exec_header.get("verdict") or "").strip()
+    ):
+        _emit_brief_meta_audit(
+            brief_kind,
+            "no exec_header (30-second contract) passed — warn-only until N+1",
+            workspace_root,
+        )
 
     doc = Document()
     _set_normal_baseline(doc)
@@ -501,6 +939,10 @@ def make_brief(
     _add_title(doc, title)
     _add_subtitle(doc, subtitle)
     _add_header_rule(doc)
+
+    # SPEC EXEC1 element 1 — the 30-second contract renders before any section.
+    if exec_header and (exec_header.get("verdict") or "").strip():
+        _add_exec_header(doc, exec_header)
 
     for sec in sections:
         heading = sec.get("heading")
@@ -544,6 +986,13 @@ def make_brief(
                 f"section needs 'body', 'bullets', 'table', or 'matrix': {sec!r}"
             )
 
+    # SPEC EXEC1 element 4 — the ASK block renders last, after all sections.
+    # Zero asks → nothing (the exec header already said NEEDED Nothing).
+    if asks:
+        renderable = [a for a in asks if (a.get("text") or "").strip()]
+        if renderable:
+            _add_asks_block(doc, renderable)
+
     _add_footer(doc, footer_text)
     doc.save(output_path)
 
@@ -554,11 +1003,18 @@ def make_brief(
     try:
         from docx_leak_scanner import scan_docx_for_leaks, LeakScanError
         scan_docx_for_leaks(output_path)
+        gates_ran.append("leak")
     except ImportError:
         # docx_leak_scanner not installed yet (e.g. a workspace that hasn't
         # taken the v3.13.8 update). Don't block briefs; the scanner will
         # apply on the next plugin update.
         pass
+
+    # SPEC GATE1 — emit the detectable-bypass audit AFTER a fully successful
+    # render+save (deliverable on disk, all wired gates passed). A composer fire
+    # that produces a doc with NO gate_ran event for that turn is a flaggable
+    # bypass. Best-effort + never raises (the deliverable is already valid).
+    _emit_gate_ran_audit(brief_kind, gates_ran, output_path, workspace_root)
 
     return output_path
 
@@ -579,6 +1035,12 @@ def make_brief_from_json(json_payload: str) -> str:
         subtitle=payload["subtitle"],
         sections=payload["sections"],
         footer_text=payload.get("footer_text", "Command Room"),
+        voice_gate=payload.get("voice_gate", "default"),
+        contract=payload.get("contract", "enforce"),
+        contract_profile=payload.get("contract_profile"),
+        exec_header=payload.get("exec_header"),
+        asks=payload.get("asks"),
+        workspace_root=payload.get("workspace_root"),
     )
     print(path)
     return path

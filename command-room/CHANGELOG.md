@@ -1,5 +1,466 @@
 # Command Room — Changelog
 
+## v4.5.1 — 2026-07-06 — Skill-description compliance (the runtime-cap patch)
+
+Every skill description now fits the Agent Skills 1,024-character cap with headroom (≤980), with tested trigger phrases front-loaded inside the 250-character listing window. Strict Cowork runtime builds silently DROP over-cap skills at load — one install was down to 28 of 50 skills. 39 of 59 were over the cap at v4.5.0; catalog routing payload cut 31% (68.6k → 47.2k chars).
+
+### How
+Lossless relocation: each original description moved verbatim into a new `## Routing (full trigger corpus)` body section (loads only at fire time, still binding); the new short descriptions are distillations built from each skill's tested trigger phrases. The declared routing corpus (description + Routing section) is now one rule shared by run_trigger_test, guard G6, and both adoption lints.
+
+### Guards
+NEW G11 (`run_guard_g11_description_budget_test.py`): ≤980/skill · no angle brackets · no version tags · at least one tested trigger stem in the first 250 chars · catalog ratchet at 48k (only goes down without M sign-off). triggers.yaml +2 previously-untested primary phrases.
+
+### Customer migration impact
+None — no behavior change; routing verified lossless (274/274 corpus). No re-registration needed.
+
+### What's NOT in this ship
+Body diet for the 10 over-500-line skills (v4.6 per the Master Build Plan); Evan repo registration (operational, not code).
+
+## v4.5.0 — 2026-07-04 — The consolidated trust wave (Phases 1–7)
+
+One release folding the entire 2026-07-01 consolidated build guide: eight build phases, 25 PRs, battery grown 123 → 159 suites. Every 2026-07-01 review thread's verified findings are shipped; the individual handoffs are superseded by the build guide + this release.
+
+**The eight phases in one line each:** Foundation — `append_event()` gate inside the single append path (seq, ts, enum, `cmt_<ulid>`, required `data.kind`). Commitments v2 — one projector, one counting API, one closure path, read-side amnesty (~252 dead letters recover on read), in-place mutation dead, kinds split with code-enforced policy, bulk-triage with undo, extraction receipts + pending-band recall. Reliability — receipts-first watchdog, late-fire tiers (machine-TZ), ghost-task fix, cron propagation, client-mix proposals. Trust patch — ~150 audit fixes across all 55 skills, jargon purge, routing lattice (254→269 trigger cases), G1–G10 guards in the ship gate. Memory — nightly session-sweep, 60-day backfill (supervised), three-layer model, subagent numeric gate. Learning loops — Passes 13–15 + Pass 7b propose-and-apply + confidence calibration + chase policy + noise thresholds, all confirm/edit/skip. Customization — SCL1 Phase 1 (`customize [skill]`), settings guardrail, onboarding seed pack ingestion.
+
+**New skills:** commitment-triage, system-health, session-sweep (silent), session-backfill (supervised).
+
+**Supervised scripts shipped, NOT run** (dogfood day): `repair_commitment_closures.py`, `migrate_commitment_kinds.py`, session-backfill. Their reports feed the client migration announcement.
+
+**What's NOT in this ship:** production promote (held for dogfood + upgrade-matrix test), the SCL1 distiller (operator-side), C3 personal reminders (consent decision pending), Phase 9 feature skills (post-promote backlog).
+
+The sections below (formerly "Unreleased") are this release's phase-by-phase detail.
+
+### Phase 6: Learning loops (Round 3 — Loop 3 + Loop 5)
+
+The slow-compounding loops: they need joins and rubrics but improve the substrate's front door. Same machinery, small-n floors, and confirm/edit/skip proposals; nothing changes silently.
+
+### Loop 3 — prep-brief accuracy grading (Pass 15)
+- NEW `shared/scripts/prep_grading.py` — `grade_brief(predicted_sections, transcript_topics)` scores which predicted talking-points/risks/questions came up, which topics were unpredicted, which sections were rendered-but-empty; `build_prep_feedback_event` writes a `prep_feedback` event. Pass 15 aggregates per meeting-type (**≥6 meetings, ≥80% empty**), proposes dropping a dead section → the call-prep skill config's new `section_weights`.
+- `orchestrator-past-meetings.md` — Phase 4.7 grades the prep brief against the transcript (join by calendar event id) after meeting-notes runs, silent.
+- `skills/call-prep/SKILL.md` — reads `prep_grading.section_weight(cfg, meeting_type, section)` before rendering; a learned weight of 0 drops that section for that meeting-type. Missing weight → 1.0 (unchanged).
+
+### Loop 5 — extraction-miss learning
+- NEW `shared/scripts/extraction_hints.py` — collects three miss signals (manual decision/commitment logged within 24h of a processed meeting → `data.extraction_miss`; inbound "already done" reply with no CRU match → `data.resolution_miss`; **session-sweep recoveries that overlap a processed meeting**), clusters them (**≥3 per pattern**), and on approval appends few-shot exemplars to `_hq/data/extraction-hints.md`.
+- Capture: `decision-log` tags `extraction_miss` via `find_recent_meeting`; the inbound CRU leg (`orchestrator-commitments`) marks `resolution_miss` via `is_resolution_miss` (bodies already read there — reconcile-sent stays metadata-only).
+- Consumers: `meeting-notes` reads the hints before extraction; `cru_match.detect_completion_signal` documents the LLM-side legs reading them for resolution language. insight-generator Loop 5 pass proposes hints.
+
+### Registration + tests
+- Registered `prep_weight_proposal`, `extraction_hint_proposal` (schema enum + EVENT_TYPES named consumers); `prep_feedback` writer/consumers documented.
+- NEW `tests/run_prep_grading_test.py`, `run_extraction_hints_test.py` — grading, aggregate/floor/cooldown, section-weight config; resolution-miss classifier, 24h-window meeting join, three-source miss collection, clustering + hint store.
+
+### Phase 6: Learning loops (Round 2 — Loop 4 + Loop 6 + S3 rider)
+
+Consumer-side loops: the data was already captured, so these turn static thresholds and fixed cadences into per-workspace, user-approved policy. Same machinery (proposal_ledger cooldowns, the review widget, small-n floors); nothing changes silently.
+
+### Loop 4 — confidence calibration
+- `shared/scripts/confidence.py` — NEW workspace-side override accessors (`get_threshold` + named `match_score_auto_resolve` / `surface_min` / … ) reading `_hq/data/confidence-overrides.json`, clamped to [0,1], **defaulting to the shipped constant** so every existing importer is byte-identical.
+- `shared/scripts/cru_match.py` — the 4 match functions take an optional `workspace_root`; when passed they resolve thresholds via the accessor (`_match_thresholds`), else the baked constants. Wired at the commitments Path-1/Path-4 legs; other CRU call sites default to baked until similarly passed.
+- NEW `shared/scripts/confidence_calibration.py` — computes confirm-rate per match-score band from `commitment_review_proposed` vs `commitment_resolved`/`commitment_review_dismissed`, with reversal detection via `commitment_reopened`. **≥20-sample floor, one proposal per run**; loosen (band confirmed ≥95%) or tighten (auto-resolves reopened >10%). insight-generator Loop 4 pass proposes → `confidence-overrides.json`.
+
+### Loop 6 — chase-policy learning (Pass 7b propose-and-apply)
+- NEW `shared/scripts/chase_policy.py` — derives per-relationship-type chase windows + escalation from `email_outcome` events (keeps Pass 7b's ≥8-terminal / ≥3-per-group floors) → `_hq/data/chase-policy.json`; `get_chase_window()` is the read.
+- `skills/insight-generator/SKILL.md` — Pass 7b extended from report-only to propose-and-apply.
+- `orchestrator-commitments.md` reads the policy for OWED-TO-YOU chase cadence; `email-writer/SKILL.md` reads it for follow-up timing/escalation. Missing store → the `(7, 3)` default, unchanged.
+
+### S3 rider — commitment noise thresholds (Brandon 71→33)
+- NEW `shared/scripts/commitment_noise.py` — flags counterparties whose captured commitments are mostly `dropped` (≥8 resolved, ≥50% dropped) and proposes a `never-track` rule appended to `_hq/config/commitment-rules.md` — the same file the Stage-D capture floor already reads. Rides the propose-approve machinery; additive, deduped, never a silent capture change.
+
+### Registration + tests
+- Registered `confidence_override_proposal`, `chase_policy_proposal`, `commitment_noise_proposal` (schema enum + EVENT_TYPES named consumers).
+- NEW `tests/run_confidence_calibration_test.py`, `run_chase_policy_test.py` — accessors/override clamp, cru_match honors override, loosen/tighten floors, chase floors + windows + escalation, noise analysis + never-track append/dedup.
+
+### Phase 6: Learning loops (Round 1 — Loop 1 + Loop 2 + quick wins A/B)
+
+The daily widget surfaces — where the CEO spends their minutes and generates the most feedback — stopped discarding that signal. Every new loop reuses the insight-generator Pass 8–11 machinery verbatim (fingerprints, 3-cap, 60-day cooldowns, atomic-reject, workspace-side override stores under `_hq/data/`); nothing learned lives in the plugin directory, every new event goes through the F1 gate, and every proposal is confirm/edit/skip through the existing review widget — never a silent behavior change.
+
+### Loop 1 — inbox triage feedback (Pass 13)
+- NEW `shared/scripts/triage_feedback.py` — `build_triage_feedback_event` (the capture) + `aggregate_sender_signals` / `propose_sender_rules` (Pass 13, ≥4-action + ≥80%-consistency floors, 3-cap) + the `_hq/data/sender-priority-rules.json` store (`load` / `write` / `apply_rules_to_score`). A generalization of the hand-coded billing@ +30 override that shipped only after a $10,400 estimate was filtered out.
+- `skills/apply-choices/SKILL.md` — Step 3e: on every inbox action at dispatch, append a `triage_feedback` event through `append_event`.
+- `skills/enable-command-room-schedules/references/orchestrator-inbox.md` — Phase 4 loads `sender-priority-rules.json` and applies it AFTER the hardcoded rules + financial-signal override, BEFORE ranking; Phase 8 caches the per-item triage context for apply-choices.
+- `skills/insight-generator/SKILL.md` — Pass 13 (weekly, interactive) proposes sender/domain priority rules; writes `sender_priority_proposal` events + the store.
+
+### Loop 2 — dismissal-pattern learning / surface tuning (Pass 14)
+- NEW `shared/scripts/surface_preferences.py` — reads BOTH `chat_dismissal` (24h) AND `dont_forget_feedback` (14d) across all 8 widget surfaces, normalizes each to a stable `(surface, item_class, entity_id)` fingerprint (legacy events derive it best-effort), keeps fingerprints dismissed 3+ times in 30 days, proposes suppressions (3-cap), and stores approved ones in `_hq/data/surface-preferences.json`. `is_suppressed()` is the one filter every orchestrator calls.
+- `skills/apply-choices/SKILL.md` — Step 3f: every `chat_dismissal` now stamps `data.fingerprint`/`surface`/`item_class`/`entity_id` (a resolved id, never a per-render seq).
+- All 8 orchestrators (inbox, commitments, dont-forget/pulse, past-meetings, upcoming-meetings, relationship-moves, friday-wrap, morning-brief) filter items through `is_suppressed` before rendering.
+- `skills/insight-generator/SKILL.md` — Pass 14 (weekly, interactive) proposes suppressions; writes `surface_preference_proposal` events + the store.
+
+### Quick win A — check-deliverables → voice-corrections corpus
+- `shared/scripts/deliverable_sweep.py` — NEW `feed_voice_corrections()`; `sweep_workspace`/`sweep_targets` (with `emit`) now append each FAIL-severity voice tell to `corrections-<skill>.jsonl` (attributed by filename) so Pass 11 gets more training data for free. FLAG-only — never edits the user's deliverable; privacy leaks are NOT fed. `skills/check-deliverables/SKILL.md` documents it.
+
+### Quick win B — Pulse "just busy" updates the cadence baseline
+- `shared/scripts/dormancy.py` — NEW `cadence_override_days` / `effective_baseline` / `record_just_busy`. The person-dormancy `resolved` reply now writes an explicit `dont_forget_feedback` event (naming the 14-day-suppression writer) AND widens a persisted per-person `cadence_override_days` via the canonical people writer, so the same gap stops re-flagging every 14 days. `people_writer.ALLOWED_PERSON_FIELDS` + `entities.schema.json` register the field; Pulse Phase 3 floors the computed cadence with it.
+
+### Shared machinery + registration
+- NEW `shared/scripts/proposal_ledger.py` — the shared 60-day cooldown + decision log (`_hq/data/proposal_feedback.jsonl`) for the new passes, plus `GLOBAL_PROPOSAL_CAP` (7) so the four new proposing passes ride one weekly widget without burying the CEO.
+- `shared/data-schemas/events.schema.json` + `shared/EVENT_TYPES.md` — registered `sender_priority_proposal`, `surface_preference_proposal` (named consumers); clarified the `triage_feedback` / `dont_forget_feedback` writers.
+
+### Tests
+- NEW `tests/run_triage_feedback_test.py`, `run_surface_preferences_test.py`, `run_proposal_ledger_test.py`, `run_learning_quickwins_test.py` — capture/gate, propose/floor/cooldown/cap, both-families mining, store round-trips, QW A flag-only + QW B widen-not-shrink.
+
+### Phase 5: Memory layer (R3 model + R4 transcript sources + R6 gate)
+
+Documentation + wiring that names the memory the R1/R2 sweeps promote, and closes the subagent-numbers failure class.
+
+### R3 — the three-layer memory model
+- `references/HOW_COMMAND_ROOM_WORKS.md` — new "three-layer memory model" section in *The substrate*: **L1 episodic** (session + meeting transcripts — raw, complete, free, now readable from a scheduled task) → **L2 canonical** (`events.jsonl`) → **L3 semantic** (`entities.json` + `_hq/views/`). The layers promote upward on a schedule — session-sweep lifts L1→L2 nightly, insight-generator consolidates L2→L3 weekly — so capture is eventually-complete instead of moment-dependent: a missed capture is a leftover the next sweep collects, not a permanent hole.
+
+### R4 — transcript-sourced sections
+- `skills/weekly-recap/SKILL.md` — new source in Phase 2: "what happened in your Command Room chats this week." Resolves the session-transcript MCP at runtime, reads the last-7-days sessions, surfaces what the nightly sweep already logged (never re-appends it), and emits only genuinely-new items (deduped via `source_ref_hash`, `source_ref: "session:<id>"`). Skip-not-fail when no session MCP is wired.
+- `skills/value-receipt/SKILL.md` — new "delivered means delivered, not just fired" section: a `pack_run` proves a task fired, not that the brief reached the CEO, so delivered-brief counts lean on **render/transcript evidence** (the `briefing` event, the scheduled-output self-audit's `receipt_gap`, the session transcripts the nightly sweep reads) over a bare fire receipt. The number stays `compute_value_receipt`'s, in code.
+
+### R6 — subagent numeric-verification gate
+- NEW `shared/SUBAGENT_VERIFICATION.md` — any orchestrator that fans out subagents re-verifies every numeric claim through the canonical helper before rendering (`commitment_state.commitment_counts`, `value_receipt.compute_value_receipt`, `event_time.event_time`, `source_ref_index`, QuickBooks MCP for financials). A subagent supplies reasoning + the ids it read; the *number* is always the code's. Proven necessary twice on 2026-07-01 (a −70%-decay claim that was +417 events, from parsing one of three timestamp fields; a wrong "1 of 11" hand-count).
+- `skills/boardroom/SKILL.md` (Round 2 Evidence + Synthesis) and `skills/weekly-recap/SKILL.md` reference the gate; `shared/RELIABILITY.md` indexes it.
+
+### Tests
+- NEW `tests/run_subagent_verification_gate_test.py` (9 checks): the contract doc exists + names the canonical helpers + records the proving failures, and both fan-out orchestrators (+ RELIABILITY.md) reference it.
+### Phase 5: Memory layer (R1 session-sweep)
+
+The largest memory leak closed: anything the CEO does in an ad-hoc chat that never fires a writing skill was lost. Session transcripts are readable from inside a scheduled task (proven 2026-07-01), so a silent nightly pass promotes that episodic layer (L1) into the canonical event log (L2) after the fact — including Bug #98-class skips (a task that rendered but didn't write; the transcript shows the render, the sweep writes the missing event). NEW single-responsibility SILENT scheduled task — never folded into a brief (Bug #98 doctrine).
+
+### session-sweep skill
+- NEW `skills/session-sweep/SKILL.md` — silent nightly pass (~10 PM daily, AFTER past-meetings so it takes only the leftovers). Resolves the session-transcript MCP at runtime (per-install server id, never hard-coded), lists sessions active since the last sweep (24h floor), extracts the commitments / decisions / interactions / deliverables that never became events, drops anything already logged, and writes the rest. Renders nothing; the brief and the list read what it wrote. Extraction is mechanical → Haiku-acceptable.
+- NEW `shared/scripts/session_sweep.py` — the deterministic write core. Dedup is on a 12-hex CONTENT hash through the EXISTING `.source_refs.idx` sidecar (never a second dedup path); `data.source_ref = "session:{session_id}"` is provenance only (session-level, so never the dedup key). Writes recovered items via `append_event()` (the F1 gatekeeper) as the existing `commitment` / `decision` / `interaction` / `note` families — no parallel "swept" variants; deliverables land as notes tagged `recovered_kind`. Commitments get a `cmt_<ulid>` id + a title, and a kindless commitment fails loud. One `session_sweep_run` receipt lands on every run (incl. a zero-recovered no-op) as the watchdog's proof; `validate_sweep_ran` reads it back (Bug #98: enforce on the event, not the narration).
+
+### Registration + watchdog (zero-prose-edit coverage)
+- `schedule_config.py` — `session-sweep` added to `DEFAULT_SCHEDULES` (10 PM daily), `SILENT_TASKS`, `FIRST_INSTALL_TASK_IDS`, `DISPLAY_NAMES`. The three registration paths (enable-command-room-schedules Step 1.D / Phase 5.9, update-bridge Phase 4.7) pick it up by looping the registry — no prose edits.
+- `task_watchdog.py` — `RECEIPT_SPECS["session-sweep"]` reads the `session_sweep_run` receipt, so a dead nightly sweep degrades visibly like every other task.
+
+### Tests
+- NEW `tests/run_session_sweep_test.py` (26 checks) on the real-shape `workspace_mini` fixture: content-hash dedup (not source_ref), within-batch + across-run idempotency, commitment id/kind/title, deliverable→note, no-op-still-writes-receipt, and `validate_sweep_ran` since-cursor semantics.
+- Registry/watchdog/schedule-view suites updated for the new first-install silent task.
+
+### Phase 5: Memory layer (R2 historical backfill)
+
+The one-time historical catch-up that gets a workspace to where the nightly session-sweep keeps it. Sweeps the last **60 days** of chat sessions (M's decided scope) for the commitments / decisions / interactions / deliverables that predate capture — **preview-and-confirm, shaped like workspace-ingest**: it shows exactly what it found and writes nothing until the CEO says go. **Ship-don't-run** — supervised, run once by an operator at dogfood; not a scheduled task, never auto-runs. **Archive-never-delete** — snapshots `events.jsonl` to `_archive/` before appending; history stays additive-only (§3.1), and a re-run dedups rather than double-counts.
+
+### session-backfill skill
+- NEW `skills/session-backfill/SKILL.md` — the supervised preview-and-confirm flow. Resolves the session-transcript MCP at runtime, lists the last-60-days sessions, extracts the misses (same item shape as session-sweep), renders a workspace-ingest-style preview (counts by type, already-on-file skips, sample), and only on an explicit confirm snapshots + writes. Manual triggers only ("backfill my history", "sweep the last 60 days", "recover my past chats"); disambiguated from session-sweep / past-meetings / reconcile-sent.
+- `shared/scripts/session_sweep.py` — reuses the SAME dedup+append `_sweep` core so backfill and the nightly pass write identically. Adds `preview_items` (dedup-checks without writing — the preview count equals what a confirm appends), `backfill_and_receipt` (snapshot-to-`_archive/` then `_sweep` with a `session_backfill_run` receipt carrying the 60-day window), and `validate_backfill_ran` / `last_backfill`.
+
+### Tests
+- NEW `tests/run_session_backfill_test.py` (18 checks) on `workspace_mini`: preview writes nothing (events.jsonl byte-identical), snapshot-before-touch equals the pre-backfill history, receipt records the window, and a re-run is idempotent (preview shows zero new).
+
+### Phase 2 Stage E: extraction receipts + pending-band recall (F5)
+
+Commitments v2 Stage E — the last stage (Build Guide 2026-07-01 §4 Phase 2; HANDOFF_commitment-lifecycle F5). reconcile-sent's low yield (4 closes / 644 scanned / 32 runs) was an upstream matching problem: extractions rarely linked the counterparty, so the matcher leaned on the title-token fallback; and the 0.30–0.55 pending band evaporated after one brief line. Matching THRESHOLDS, cursor mechanics, and reconcile-sent's isolation are all UNTOUCHED per spec.
+
+### Extraction receipts
+- meeting-notes 5e, inbox-triage, scan-for-commitments MUST populate `data.counterparty_id` (+ include it in `person_ids`) when determinable, and SHOULD set free-text `data.counterparty_name` when the counterparty is named but unresolvable. **Retires `requester_*` for NEW writes** (S1) — readers keep the alias chain forever (228 historic events stay readable).
+- `match_send_to_commitments` candidacy gate now reads both receipts directly: `counterparty_id` joins the person-id gate; recipient names/local-parts match against `counterparty_name`. The Bug #103 title-token fallback stays for historic events. Candidacy only — the title score still decides the recommendation.
+- COMMITMENT_SCHEMA.md + event-payloads.schema.json document the two receipt fields (+ `no_due`).
+
+### Pending-band recall
+- `reconcile_and_receipt` now PERSISTS each 0.30–0.55 pending proposal as a `commitment_review_proposed` event (gated append; deduped against `load_open_review_proposals`' open set so re-scans don't spam; receipt gains `reviews_written`). Before this the pending band lived only in the returned receipt — one brief line, then gone.
+- NEW orchestrator-commitments **Phase 3.6 review section**: `load_open_review_proposals` → compact "Did these get handled?" rows (cap 3/fire, oldest first, `r1/r2...` namespace) with one-click `confirm` → `close_commitment(..., user_confirmed=True)` / `not relevant` → `commitment_review_dismissed` / `add to my list`. Pulse's existing CRU-review pass stays — both surfaces read the same open-proposal set; first answer wins.
+- Pulse's `[rN] resolved` handler migrated to `close_commitment` (it was the one remaining hand-built closure write, pre-dating Stage B's sweep).
+- `pending_review` honored end-to-end: the auto path still raises `PendingReviewError`; only the explicit confirm click closes a flagged commitment.
+
+### Tests
+- NEW `tests/run_commitment_receipts_test.py` (21 checks): receipt-driven candidacy (id + name), fallback-unchanged + thresholds-unchanged pins, pending-band persistence + dedup + cursor/audit-untouched, one-click confirm/deny round trip, pending_review floor, and source gates across the three producers + both review surfaces.
+
+### Phase 2 Stage D: the kinds split (data.kind, code-enforced)
+
+Commitments v2 Stage D (Build Guide 2026-07-01 §4 Phase 2; HANDOFF_commitment-task-split S2–S6, applied under the ratified `data.kind` model — NOT a new event type). The live evidence: 69% of truly-open items were self-owed with no counterparty — tasks, not promises — burying real promises and rotting on chase surfaces.
+
+### Capture-time classification + the capture floor (S2/S3-floor)
+- meeting-notes 5e, scan-for-commitments, inbox-triage now CLASSIFY `data.kind` at write time (counterparty → `promise`; self-owed → `task`; scheduling intent → `scheduling`; ambiguous → `promise` + `pending_review`) and apply the **capture floor**: clear owner + clear deliverable + real consequence (the teachable rule that cut a live open set 71→33). Extractors read `_hq/config/commitment-rules.md` suppression patterns before writing. **Due-date nudge (S2):** every extraction proposes `due` OR explicit `data.no_due: true`; undated target < 30%.
+- **Gate flip (Phase 1 follow-up #1):** `data.kind` is now REQUIRED AT CAPTURE — missing kind REJECTS via strict `append_event()`; the legacy burn-in path warns loudly + stamps `promise` so un-migrated long-tail writers degrade visibly, never break. Historic events read as `promise` forever.
+
+### Code-enforced policy layer (the §3.1 ratification condition)
+- **Tasks never enter CRU:** NEW `cru_match.cru_eligible()` filters task kind INSIDE all four matchers (Paths 1/3/4/5) — a perfect-score task can't auto-resolve, and a surface reading around the projector still gets the filter (pinned by test).
+- **30-day task staleness:** NEW `commitment_state.stale_tasks()` — stale tasks sweep into the Friday triage as "still on your plate?"; tasks NEVER render in COMMITMENT_AGING (VIEW_GENERATION filter) and never surface on the daily Commitments chase widget (new REQUIRED kind filter — surfacing only; `count_commitments` totals still include them).
+- **Promote = label change:** NEW `commitment_state.promote_task_to_commitment()` appends an additive `commitment_reclassified` marker (never delete/recreate); the projector folds the latest marker into the effective kind (`kind_overridden_by_seq` provenance) and `by_kind` counts follow.
+
+### S4 — Commitment Triage surface (+ undo)
+- NEW `skills/commitment-triage/SKILL.md` (`triage my commitments`) + `orchestrator-commitment-triage.md` (Fri 15:00 opt-in via the Phase 6 add path — NOT first-install; late-fire step included) + orchestrator-map + DEFAULT_SCHEDULES entries. Full open set, oldest first; every action appends through `commitment_state` (this surface exists so the next cleanup chat doesn't rewrite history — F4).
+- **One deliberation verb set added under the ratified pre-authorization:** `drop` / `not mine` / `make task` / `promote` / `never track this` (CANONICAL_ACTIONS + CHAT_ACTION_WIDGET reference + apply-choices dispatch); `done`/`defer` respec onto canonical `resolved`/`push to [date]`.
+- **Undo delivered:** NEW `commitment_state.reopen_commitment()` + `commitment_reopened` event; the loader and close_commitment idempotency are now ORDER-AWARE (latest of closure vs reopen wins; a reopened item re-closes normally). Post-Apply ack always offers "say `undo`".
+- **Monday-note integrity flags (S4 addition):** `integrity_check` C17 — `_cleanup_*` key residue (ERROR) + closed-family `data.status` on commitment events (WARN; growth = active F4 writer); cleanup Phase 1k surfaces both in plain English.
+
+### S6 — migration markers
+- NEW `shared/scripts/migrate_commitment_kinds.py` (dry-run default; SHIPPED NOT RUN — live run supervised at dogfood): partitions open self-owed no-counterparty promises → additive `commitment_reclassified {new_kind: task}` markers; requester_* holders stay promises; pending_review → confirm list; the 249 in-place rows already have F3 tombstones (no double-count). Idempotent.
+- Event vocabulary: `commitment_reclassified` + `commitment_reopened` registered (enum + payloads + EVENT_TYPES.md with named consumers).
+
+### Rider flags
+- **Warn→strict enum flip (Phase 1 follow-up #2): NOT taken here** — the test rigs the flip is gated on (`chalette:bug-regression-suite` etc.) live in the operator plugin, not this repo; no Phase 2 stage migrates them. Flagged for its own slot.
+- **Phase 3 W5 waiting-on gate:** kinds now exist — the W5 gate can be revisited.
+
+### Tests
+- NEW `tests/run_commitment_kinds_test.py` (38 checks); `run_event_gate_test.py` updated for the required-at-capture flip; `tests/triggers.yaml` gains the triage phrases (collision-checked).
+
+### Phase 2 Stage C: read-side amnesty + one-time repair + F4 mutation kill
+
+Commitments v2 Stage C (Build Guide 2026-07-01 §4 Phase 2; HANDOFF F3/F4). The audit corpus this closes: 289 id-less/orphan closures (≈252 auto-recoverable) and 249 in-place status-mutated rows (growing to 251 during the audit day — active disease).
+
+### F3 read-side amnesty
+- `cru_match.load_open_commitments` closure chain EXTENDED with the seq aliases `data.commitment_seq` and `data.source_event_seq` (both map seq → the commitment event at that seq; int or digit-string; a seq pointing at a non-commitment event matches nothing). All existing aliases kept. ~252 historic dead letters become readable with zero writes — including the 52 workspace-manager catch-all closures that carried ONLY `source_event_seq`.
+- `commitment_state.close_commitment`'s idempotency chain extended identically (`_closer_target_seqs`) — the loader and the closure path always agree on what is closed (the Stage B scope boundary honored: both chains moved together).
+
+### One-time repair script (SHIPPED, not run — live run is supervised at dogfood time)
+- NEW `shared/scripts/repair_commitment_closures.py` (same home as the `backfill_substrate.py` repair precedent). PREVIEW BY DEFAULT; `--apply` snapshots events.jsonl to `_archive/events-jsonl_repair-snapshot_<date>/` BEFORE any write, then appends canonical tombstones through `close_commitments` with `source_skill: closure-repair-2026-07`. Three tiers: **seq** (orphan legacy seq SPELLINGS in id values — `"86"`/`"seq_86"`/`"event_086"`/`"commitment_seq_86"` — that the read chain doesn't parse), **title** (≥0.8 difflib match against EXACTLY ONE open commitment; ambiguous = unrecoverable, never guessed), **mutation** (the 249 in-place-closed rows formalized into append-only history — counts unchanged; per S6, no double-counting). pending_review targets are NEVER auto-closed — they land on a separate confirm list (the F2 floor holds mechanically: close_commitment raises). Unrecoverables print as M's 5-minute triage list. Idempotent re-runs. The 4 known-stale opens are closed manually at the supervised run.
+
+### Parity / round-trip test (AFTER amnesty, per the merge decision)
+- Gate-written commitments (cmt_<ulid> minted) → canonical close + `commitment_updated` deferral + a legacy seq-alias dead-letter closure → `load_open_commitments`, `commitment_counts`, and `compute_brief_state` all agree: one open set, one total, deferral honored by every counter.
+
+### F4 — in-place mutation killed
+- WORKSPACE_API.md ownership map + COMMITMENT_SCHEMA.md now carry the explicit prohibition: no write path may flip an existing commitment event's `data.status`; closure = appended tombstone via close_commitment, full stop. Readers honor legacy `status in (closed, resolved, superseded)` forever (pinned by test).
+- The two prose sites that invited mutation ("update that commitment's status to Delivered") — meeting-notes team-profile step + workspace-detail Active Commitments rules — now scope the status edit to the markdown TABLE only and route the canonical closure through close_commitment. (No shared/scripts code path ever mutated events.jsonl; the active mutation writers were model-driven chat edits following ambiguous prose — these were the apply paths the grep surfaced.)
+
+### Tests
+- NEW `tests/run_commitment_amnesty_test.py` (26 checks): both seq aliases + string digits + non-commitment-seq safety, loader/close_commitment chain parity, repair preview-writes-nothing, snapshot-first apply, additive-only history, tier coverage, pending_review confirm routing, unrecoverable triage, idempotent re-run, the post-amnesty parity/round-trip, and the F4 source gates.
+
+### Phase 2 Stage B: close_commitment() — the single closure path
+
+Commitments v2 Stage B (Build Guide 2026-07-01 §4 Phase 2; HANDOFF_commitment-lifecycle F2). Root cause addressed: five closers each constructed its own closure event — of 408 closures ever written to the live substrate, only 43 matched a commitment (291 id-less, 74 orphan ids).
+
+### commitment_state.close_commitment() — THE closure path
+- NEW `close_commitment(workspace_root, commitment_id, *, resolved_by, evidence, source_skill, resolution="done", primary_thread_id=None, user_confirmed=False, extra_data=None)` + batch `close_commitments()` + pure `normalize_commitment_id()`:
+  - **Legacy-id normalizer** — bare int `86`, `"86"`, `"seq_86"`, `"event_086"`, `"commitment_seq_86"` all resolve to the canonical id via seq lookup (regression pinned: the live bare-int closure class — the tombstone `"86"` matched nothing and the item stayed open while the UI said done).
+  - **Loud no-match** — `CommitmentIdError` when the id matches no commitment; NOTHING is written (74 orphan tombstones existed).
+  - **Full-set idempotency** — checks every closer in history (mirrors the loader's closer chain exactly), not log-resolution's last-200-lines tail window; re-close → `{"status": "already_resolved"}`, no duplicate.
+  - **pending_review floor** — `PendingReviewError` unless `user_confirmed=True` from an explicit user action; no path auto-resolves a flagged extraction.
+  - **Canonical shape** — `data.commitment_id` (canonical) + `resolved_by` + `evidence` (≤200) + `resolution` (done | dropped | superseded, S1's one closure vocabulary) + optional `extra_data` (Bug #51's `resolved_via_wrapper_seq`); appended via the Phase 1 gate (`event_gate.append_event`, seq/ts auto-stamped).
+- `cru_match.build_commitment_resolved_event` demoted to a legacy shape helper (construction-only; never build-and-append in new code).
+
+### Every closer migrated (matching logic in cru_match Paths 1–5 UNCHANGED — only event construction swapped)
+- **Code:** `reconcile_sent_commitments.reconcile_and_receipt` closes via `close_commitments` (cursor mechanics + `sent_reconcile` audit event + isolation untouched; a PendingReviewError demotes the proposal to the confirm list; `to_resolved_events` kept as a deprecated shape helper).
+- **Prose:** log-resolution (bare-seq artifact ids normalized; full-set idempotency), apply-choices (`resolved`/`mark done`/`mark received` handlers, show-my-list `resolved`, Bug #51 cascade-close via `extra_data`, CRU Path-1 send pass), workspace-manager catch-all (NEW mandatory block — the hand-rolled "mark done / that's handled" writes produced the 52 `source_event_seq` dead letters), orchestrator-commitments (Phases 2.5/2.6/2.7 + `N resolved` + `N mark received[, all]` — mark-received now writes the canonical `commitment_resolved` instead of bare `thread_resolved`), orchestrator-inbox 5.5, orchestrator-past-meetings, calendar-writer 3.5 real-time leg, meeting-notes, follow-up-ritual.
+- **Widget contract** (`shared/CHAT_ACTION_WIDGET.md`, new section): every commitment-closing action embeds `data.id` VERBATIM; no surface re-derives/abbreviates ids; the normalizer is a safety net for historic emitters, not a license; pending_review closes only as explicit confirm.
+- SOURCE_OF_TRUTH.md writer table + Writes-checklist, COMMITMENT_SCHEMA.md Resolution section, EVENT_TYPES.md commitment-family contract, event-payloads.schema.json `commitment_resolved` (documents `resolved_by`/`evidence`/`resolution`) all point at the single path.
+
+### Tests
+- NEW `tests/run_close_commitment_test.py` (46 checks): the bare-int closure regression across all five legacy spellings (incl. an id-less commitment closing via its synthesized id), orphan-tombstone refusal, beyond-tail-window idempotency (250 filler events), loader-chain alias closure recognition, pending_review floor, resolution vocabulary, evidence cap, extra_data non-override, batch error isolation, pure-normalizer contract, and source gates over all nine migrated closers + the widget contract.
+
+### Phase 2 Stage A: commitment_state projector + the one counting API
+
+Commitments v2 Stage A (Build Guide 2026-07-01 §4 Phase 2). Root cause addressed: N aggregators — every surface re-derived "how many commitments are open" with its own filters, so within 24 hours of the 2026-07-01 audit COMMITMENT_AGING said 104, MASTER_TRACKER said 54, and a live replay said 105 (the Bug #85 class, again).
+
+### commitment_state.py — the single projector
+- `shared/scripts/brief_state.py` PROMOTED to NEW `shared/scripts/commitment_state.py`; brief_state.py stays a compat shim (import alias) forever, so every existing caller and prose reference keeps working. The `brief_state` audit EVENT (Bug #99) is unchanged.
+- NEW `count_commitments(open_commitments, *, user_person_id, now_iso)` (pure) + `commitment_counts(workspace_root, ...)` (I/O wrapper) — **the one counting API**: total / you_owe / they_owe / unowned / stuck / undated / by_kind. `compute_brief_state(...)["counts"]` now delegates to it, so the brief header, the coach headline, and `commitment_counts()` are the same number by construction. `by_kind` reads the Phase 1 `data.kind` (missing → `promise`, read-side default; history never rewritten).
+- `compute_and_log_brief_state` no longer hand-allocates `seq`/`ts` — both are auto-stamped inside the writer lock (SPEC A1), removing the last out-of-lock `next_seq` call in this module.
+
+### commitment_updated fold — deferred items stop rendering overdue
+- `cru_match.load_open_commitments` now FOLDS `commitment_updated` deferrals into the effective due: the latest update carrying `data.new_due` (`due`/`due_date` variants accepted) wins, applied read-side to in-memory copies (`data.due` + `data.due_updated_by_seq` provenance) — events.jsonl history is never rewritten. Before this the type was write-only (written by the orchestrator `push to [date]` verb and the CRU schedule-shift path, read by NOTHING), so a deferred commitment rendered overdue forever off its immutable original due. Summary-only updates (`change_summary`, no due) don't affect the fold; a resolution still closes a deferred commitment.
+
+### Surfaces migrated to the one counting API
+- `render_master_tracker.py`: the "N open commitments" headline is now `count_commitments(...)["total"]` — the FULL open set. The ≥0.40 confidence floor only filters table ROWS; provisional items stay in the headline (reporting the filtered row count was the tracker's contribution to the 104-vs-54-vs-105 divergence). VIEW_GENERATION.md MASTER_TRACKER + COMMITMENT_AGING sections updated with the REQUIRED counting-API language.
+- coach SKILL.md hard count gate, morning-briefing SKILL.md (Steps 3b/3d), orchestrator-morning-brief.md Step 3, orchestrator-commitments.md (new MANDATORY header-counts block: `n_total`/`n_you_owe`/`n_owed_to_you` from `count_commitments` over the full open set; surface filters never shrink the header) all anchored on `commitment_state`.
+- `writer_contract_lint.py` ROUTING_HELPERS gains `commitment_state` (same locked writer as brief_state).
+- EVENT_TYPES.md + COMMITMENT_SCHEMA.md: `commitment_updated` now documented with its named read-side consumer (the projector fold) and the deferral contract.
+
+### Tests
+- NEW `tests/run_commitment_state_test.py` — the Stage A acceptance test: the fold (deferral clears overdue, latest-wins, summary-only updates don't erase, variant shapes, closure-beats-deferral), the counting math (direction/stuck/undated/by_kind, brief-counts == counting-API parity, safe degradation with an unresolvable user), the workspace-level wrapper, the brief_state shim, and source-side gates that every counting surface names the API.
+- `tests/run_render_master_tracker_test.py` updated: headline expectation moves from the filtered row count (5) to the canonical total (6) per the Stage A contract.
+
+### Phase 1 Foundation: append gatekeeper + read-side time normalization + wave event vocabulary
+
+The foundation layer of the 2026-07 consolidated build wave (Build Guide §4 Phase 1). Everything downstream (Commitments v2, reliability watchdog, memory layer, learning loops, customization) depends on these three pieces.
+
+### append_event() gatekeeper (F1)
+- NEW `shared/scripts/event_gate.py` — the canonical gated append. Built as an EXTENSION of `atomic_append_jsonl` (the gate runs inside its events.jsonl branch), never a second append path: every existing caller is gated from day one, caller-agnostic, across ALL event families (1,138 null-seq events existed across every family, not just commitments). On top of the existing locked seq/ts auto-stamp the gate adds:
+  - **cmt_<ulid> minting** — `type: commitment` events get `data.id = cmt_<ulid>` minted at write time when absent (ratified 2026-07-01). Ids are written, never synthesized-only.
+  - **data.kind** — required commitment discriminator (`promise` / `task` / `scheduling` / `agenda`, ratified 2026-07-01), validated at append time; missing kind is stamped `promise` (behavior-preserving default until the Phase 2 Stage D producer migration), invalid kind rejects.
+  - **Fail-loud closures** — an id-less `commitment_resolved` (no `commitment_id` / `id` / `target_id` / `commitment_seq` / `source_event_seq`) raises `EventGateError` instead of writing a dead letter. This exact silent failure produced 291 dead closures in the live substrate.
+  - **Type-drift normalization** — `commitment_update` → `commitment_updated` on append.
+  - **Schema-enum validation for every family** — strict (reject) via `event_gate.append_event()`; warn-on-stderr via the legacy `atomic_append_jsonl` entry during burn-in (same posture as SPEC EVT1). `CR_EVENT_GATE=0` is the emergency escape hatch.
+- NEW `shared/scripts/event_types.py` — runtime loader for the enum. **Enum home decision (final):** `shared/data-schemas/events.schema.json` stays the ONE home of the type enum (already enforced by source-of-truth Check 4 + weekly-audit); no Python-literal duplicate. NEW `shared/EVENT_TYPES.md` documents the registration rule + named consumers.
+
+### event_time.py read-side helper (R7)
+- NEW `shared/scripts/event_time.py` — `event_time` / `event_dt` / `parse_ts`, resolving `ts` → `timestamp` → `date` in priority order (live substrate carries all three spellings: ×3533 / ×156 / ×17). NO history rewrite — normalization is read-side only, forever.
+- Migrated all shared/scripts event-timestamp readers to it: cru_match, events_io (shard invariants), event_refs, rotate_events, cleanup_actions, deliverable_sweep, render_people_view, render_master_tracker, render_decision_log, build_dcc_input, build_workspace_map_input, dormancy, relationship_moves, email_outcomes, value_receipt, voice_corrections, reconcile_sent_commitments, source_event_seq_backfill, migrate_persons_v3_13_0 (which had the priority inverted).
+
+### Wave event vocabulary registered once
+- events.schema.json enum + EVENT_TYPES.md registry gain the full 2026-07 wave vocabulary with named consumers, so later phases' source-of-truth checks pass without reopening the enum: `skill_customization_added/removed/updated/reset/review`, `onboarding_seed_ingested`, `schedule_config_healed`, `late_fire`, `pulse_run`, `triage_feedback`, `prep_feedback`, `session_sweep_run`, `session_backfill_run`.
+- event-payloads.schema.json: `commitment` gains `id`/`kind` docs; `commitment_resolved`'s closer alias-group widened with the seq aliases (`commitment_seq`, `source_event_seq`) so the EVT1 payload check agrees with the gate.
+
+### Tests
+- NEW `tests/run_event_gate_test.py` (46 checks) + `tests/run_event_time_test.py` (22 checks), fixtures on real event shapes (canonical COMMITMENT_SCHEMA envelope, live closure/drift shapes).
+
+## v4.4.0 (2026-06-30) — Deeper brand-voice calibration + end-of-onboarding voice proof
+
+- **Brand-voice calibration is now in-depth and measured.** The Phase 1 `BRAND_VOICE.md` build no longer settles for adjectives — it measures mechanics (median sentence/email length, exact greeting + sign-off strings, punctuation habits, emoji use), extracts a lexicon (phrases they reach for / never use), captures moves (open/close/decision/how-they-say-no), pulls 2–3 verbatim example sentences, ranks signature traits most-identifying-first, and sets a confidence flag. Rewrote the `BRAND_VOICE.md` template (`references/templates.md`) and the full `Brand Voice Template` derivation guide (`references/onboarding-detail.md`) to match, plus a thin-corpus honesty rule (never fabricate traits).
+- **NEW Phase 5b — Brand voice calibration proof (end of onboarding).** After the training prompts and before the wrap-up, Chat 4 now (a) **mirrors the customer's actual voice** back to them — the signature traits and measured mechanics pulled verbatim from `BRAND_VOICE.md` — then (b) shows **two emails on the same neutral prompt: a generic stock-AI draft beside a voice-calibrated one**, where the calibrated version visibly matches each named trait from the mirror. Distinct from the Phase 2a Voice contrast (which is a *memory* proof); 5b is a pure *voice* proof. Full / medium / thin-data branches; emits a `m1_voice_proof_shown` event.
+- Updated the onboarding chat inventory, flow-control sub-beat rules, checkpoint sub-beats, the Communication-Profile principle, the Phase 6 accomplishment line, and `references/feature-reference.md` to reflect the deeper calibration and the two-proof structure.
+
+## v4.3.0 (2026-06-30) — Onboarding drops the email-exclusions question
+
+- **Removed the "exclude these domains" question from the Phase 0 onboarding widget.** The setup widget is now 4 questions (role / timezone / AI name / email draft posture), down from 5. Widget bumped to `step_1_setup_v5`; submission payload carries 4 tuples. The exclusion question added friction at the highest-drop-off moment for a control most customers never used at setup.
+- **Exclusions are now on-demand only.** The runtime domain-exclusion capability is unchanged — a customer sets one anytime via "add [domain] to my exclusion list" (`workspace-manager`), which populates the `## Excluded Domains` list in CLAUDE.md that inbox/triage skills already enforce. Nothing about how exclusions are *honored* changed; only where they're *collected*.
+- **Back-compat.** `apply-choices` still dispatches legacy `step_1_setup_v4` (5-tuple) payloads — the old exclusion tuple is simply ignored and the remaining items land. Item handlers now match on topic rather than a fixed `n`.
+- Updated onboarding SKILL.md (0c question table, wire shape, item handlers renumbered 2–4), apply-choices route note, first-run-protocol test, and onboarding reference docs (cold-start-path, feature-reference, onboarding-detail).
+
+## v4.2.0 (2026-06-28) — Deterministic MASTER_TRACKER renderer + insight-generator schedule fix + proactive self-heal
+
+Closes two bugs of the same class: a view advertised as auto-generated had no code actually generating it, so it drifted from the substrate for weeks while the JSON/JSONL sources stayed current.
+
+### MASTER_TRACKER renderer (the frozen-tracker fix)
+- NEW `shared/scripts/render_master_tracker.py` — first deterministic renderer for `_hq/views/MASTER_TRACKER.md`, mirroring `render_people_view.py` / `render_decision_log.py`: `regenerate()` + `regenerate_if_changed()` + a `_build_content()` split, dual-writes the canonical `_hq/views/` path + the back-compat `_hq/` copy, org-tree layout per `morning-briefing` Step 4, and reads every commitment field through `cru_match` (shape-safe — direct `data.owner_id` / `data.description` reads silently drop ~42% of commitments). Root cause: `references/VIEW_GENERATION.md` + `workspace-manager` claimed a "writer helper" regenerated the tracker, but no such code existed — it was hand-rendered by the model at end-session and froze when that lapsed. It was the only major projected view with no renderer and no cleanup backstop.
+- Wired into end-session (`workspace-manager` Step 2.5 — replaces the fictional "writer helper" line with a real renderer call for all three projected views) and cleanup (`cleanup` Phase 3.5d2 via `cleanup_actions.regenerate_master_tracker_if_changed` — changed-only weekly backstop).
+
+### insight-generator ghost schedule (the frozen analytical-views fix)
+- `weekly-insights` is now a real scheduled task. `insight-generator` advertised a "Sunday 19:00 by default" fire that was never wired into `DEFAULT_SCHEDULES` or `enable-command-room-schedules` — so every workspace that never manually typed `run insights` has had its 5 analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / DORMANT / THEMES) frozen since install. Added the silent Sunday-7PM task to `schedule_config.py` (`DEFAULT_SCHEDULES` + `FIRST_INSTALL_TASK_IDS` + display name) and `enable-command-room-schedules` (Step 1.G + the unconditional re-registration gate), mirroring the `cleanup` / `reconcile-sent` / `monthly-report` silent-task pattern. The skill self-guards on <14-day workspaces, so a fresh-install fire is a clean no-op.
+
+### Proactive self-heal for existing customers
+- `command-room-update-bridge` gains a `master_tracker_view_regenerate_v4_2_0` workspace-migration (force-regens a pre-v4.2.0 hand-rendered tracker on next update-check) and a `weekly-insights` generic-add path (registers the new task for upgraders, same mechanism that back-filled `cleanup` for Bug #82). Combined with the end-session + cleanup backstops, frozen views heal on whichever fires first — no manual step.
+
+### Files touched
+NEW `shared/scripts/render_master_tracker.py`, NEW `tests/run_render_master_tracker_test.py`; `shared/scripts/cleanup_actions.py`, `shared/scripts/schedule_config.py`, `skills/cleanup/SKILL.md`, `skills/workspace-manager/SKILL.md`, `skills/enable-command-room-schedules/SKILL.md`, `skills/command-room-update-bridge/SKILL.md`, `references/VIEW_GENERATION.md`.
+
+### Customer migration impact
+No data migration — both frozen views are pure projections of current substrate, so nothing is backfilled. The tracker re-renders on next end-session or Sunday cleanup (whichever first), and immediately on `update command room`; the analytical views recompute on the first `weekly-insights` Sunday fire once a workspace has ≥14 days of events. Existing customers pick up `weekly-insights` via the update-bridge generic-add path. Announce-only manifest item.
+
+### Legacy `_hq/` path deprecation — DEFERRED to v5.0
+Legacy flat paths are still read ~2:1 over canonical and three tier-1 skills (`morning-briefing`, `inbox-triage`, `command-room-coach`) read them as primary source; retiring now breaks the daily driver. Plan documented in `references/VIEW_GENERATION.md`: reader-migration audit, then retire all three views' legacy copies in one coordinated v5.0 release.
+
+### What's NOT in this ship
+The path-deprecation reader migration (v5.0). insight-generator's analytical views remain LLM lazy-synthesis (the fix was scheduling, not a deterministic renderer rewrite). **Production promote stays withheld pending a dogfood run** — consistent with the v4.0.x–4.1.0 staging hold.
+
+### Tests
+Full battery green: 115 suites, 0 failed (run with `PYTHONUTF8=1`). NEW `run_render_master_tracker_test.py` adds 30 assertions (determinism, idempotence, holding-nesting, OTHER ORGS rollup, paused/archived sections, all 5 commitment shape variants, low-conf + closed-commitment exclusion, both write paths, no-raw-id leakage, empty workspace).
+
+## v4.1.0 (2026-06-28) — Onboarding stops generating scheduled tasks; cleanup archives instead of deleting
+
+Two build changes to make Command Room palatable to let run autonomously for anyone: onboarding no longer creates scheduled tasks (they never registered reliably from inside the onboarding chats), and weekly cleanup never deletes — it archives.
+
+### Onboarding registers zero scheduled tasks
+- Removed the `cr-m1-backfill` deep-read one-shot (Phase 1b) and its Phase 2b preflight gate. Insights now compute from the 60-day metadata scan with no wait; the deeper last-7-days read is on demand via `weekly-recap`.
+- Removed the Phase 4 "Run Now" ritual for the 5 recurring tasks (phase left vacant to keep Phase 5/6 cross-refs stable).
+- Removed the `cr-day1-checkin` / `cr-week1-followup` retention one-shots (Phase 6c).
+- Removed the parallel "Chat 2" schedules orchestration during the scan.
+- Schedules stay available as opt-in: `enable-command-room-schedules` / `change-schedule` untouched; Phase 6 points the customer to `set up command room schedules` (registers reliably from its own chat). That skill's first-run explainer now fires on first opt-in instead of the defunct onboarding context.
+
+### Cleanup archives, never deletes
+- Briefings (>30d), prep files (>14d), cleanup reports (keep-12), tracker backups (keep-3), daily snapshots (>14d), stale lock sentinels, and dedup-index conflict copies now MOVE into `_archive/` instead of being deleted. `cleanup_actions.sweep_stale_locks` gained an `_archive_move` helper; tracker stale-pointer rows move to an in-tracker archive section. Reassurance copy updated ("I never delete anything").
+
+### Files touched
+`command-room-onboarding/SKILL.md` (+ `references/feature-reference.md`), `enable-command-room-schedules/SKILL.md`, `command-room-coach/SKILL.md`, `cleanup/SKILL.md`, `workspace-manager/SKILL.md` (+ `references/maintenance-rules.md`), `shared/scripts/cleanup_actions.py`, `references/HOW_COMMAND_ROOM_WORKS.md`, tests (`run_retention_hooks_test.py`, `run_cleanup_scan_test.py`).
+
+### Customer migration impact
+Existing users: weekly cleanup automatically archives instead of deleting on its next run — no action needed (announce-only manifest item). Already-onboarded users are unaffected by the onboarding change. New installs no longer auto-create scheduled chats; the customer opts in via `set up command room schedules` whenever ready.
+
+### What's NOT in this ship
+The retained-but-unwired `m1-backfill-orchestrator.md` / `day1-checkin-orchestrator.md` / `week1-followup-orchestrator.md` reference bodies are kept for reference. **Production promote stays withheld** (staging — consistent with the v4.0.x dogfood hold). Ephemeral briefing delta-checkpoints still expire (internal state, never user-visible).
+
+### Tests
+Full battery green: 115 passed, 0 failed (run with `PYTHONUTF8=1`).
+
+## v4.0.1 (2026-06-22) — Dogfood patch: three "passes-unit-tests, crashes-on-real-data" bugs
+
+A v4.0.0 dogfood run fired all 55 product skills against a real workspace (3,221 events, 88KB entities) and surfaced three runtime crashes the 111-suite battery missed — all the same class: the unit fixtures inject well-shaped/tz-consistent data, so they pass, but the skill breaks on real substrate. Each was reproduced against real-shaped data first, fixed minimally (stdlib only), and guarded by a new regression test. Full battery **115 suites, 0 failures**. Staging patch — promote stays withheld.
+
+### Bug fixes
+- **list-active rendered raw entity IDs** (HIGH). Real `entities.json` stores org/thread/person names only under `canonical_name`; the label fallback was `display_name or name or id`, so every node fell through to `org_001` / `project_005`. Added `canonical_name` to the fallback chain (`render_tree.py:148,175`) — matches how `build_workspace_map_input.py` already reads it.
+- **usage-report crashed on real telemetry** (MEDIUM-HIGH). Real `pack_run` events carry numeric telemetry keys present-but-`None`, so `dict.get(k, 0)` never returned its default → `None + None` TypeError in `aggregate_pack_run_telemetry`. Coerced every numeric read with `or 0`, plus a `_duration_ms()` helper that coalesces the duration field-name drift (`duration_ms` / `duration_s` / `duration_sec` / `duration_seconds`) **with unit conversion** — the `_s` variants are seconds, not ms.
+- **relationship-moves crashed on real dues** (HIGH). `_parse_ts("2026-05-22")` (date-only, common in real commitments — 11 of 59 open) returned a tz-naive datetime, raising "can't compare offset-naive and offset-aware" against the aware `now`. Made `cru_match._parse_ts` always return tz-aware UTC (assume UTC when no tzinfo); audited all three importers (`dormancy`, `relationship_moves`, `voice_corrections`) — all compare two `_parse_ts` outputs, so the fix is safe.
+
+### Other
+- **`render_artifact.py` now accepts `--input -` (stdin).** `enable-quick-commands` SKILL.md instructs a stdin heredoc that the script didn't handle; added stdin support so the docs work as written.
+- **Reader hardening:** `events_io._iter_file` now requires a non-empty string `type`, dropping structurally-valid-but-empty rows (`{}`, `{"type":null}`) that older readers admitted as events. Verified 0/3,221 live events affected.
+- **Trigger disambiguation:** `show me the value` now routes solely to operator-report (removed the colliding positive trigger from command-room-coach; locked with a `triggers.yaml` case).
+- **`backfill_substrate.py` (NEW, dry-run only):** owner-invoked one-shot to relocate org-in-thread-slot refs + fill derivable `primary_thread_id`, and report the 9 historical duplicate seqs. Reports-only by default; never part of recurring cleanup. Registered `substrate_backfill` in the events schema enum.
+
+### New regression tests (all auto-discovered)
+`run_list_active_render_test.py`, `run_telemetry_realdata_test.py`, `run_relationship_moves_realdata_test.py`, `run_events_io_typeguard_test.py`.
+
+### What's NOT in this ship
+The data-side repairs (9 duplicate seqs, 44 org-slot refs, 153 missing `primary_thread_id`) are flagged, not applied — `backfill_substrate.py` runs dry-run pending owner approval. **Production promote still withheld** — staging-for-dogfood only.
+
+## v4.0.0 (2026-06-21) — The gate stack lands + a capability wave (13 specs)
+
+The largest single release to date — the held quality-gate/reliability stack plus thirteen build-spec deliverables, assembled across two machines into cr1 (the canonical staging repo). **Staging release for dogfooding** — promote-to-production stays off until a Penelopes Brain run confirms the gate stack fires at runtime (GATE1's routing-enforcement model live-failed in Cowork; GATE2's enforcement-by-detection is the fix, surfaced through an on-demand skill because Cowork honors skills but not plugin hooks).
+
+### Quality gates + reliability (resolves the v3.20.0 HOLD)
+- **GATE2-v2 — on-demand deliverable sweep (NEW skill).** Runs the validated detection engine over recently produced `.docx`/`.md` + a just-drafted chat email/memo and flags voice tells + privacy/substrate leaks before they leave your hands. READ + FLAG only. Enforcement ships as a user-invoked skill, not a hook (Cowork honors skills, not hooks).
+- **EXEC1 / C1 / GATE1 / GATE2 (held stack, now documented + shipped).** Executive Output Standard; value-receipt ROI feature; the GATE1 routing-enforcement attempt (kept as the `gate_ran` audit + unified `docx_leak_scanner`); the GATE2 detection engine + cleanup sweep. Plus **v3.21 source-agnostic chat + meetings** (connector parity, Rule 21).
+
+### New capability
+- **B1 — voice-calibration loop wired end to end** (the biggest output-quality unlock; corrections → Voice Block updates).
+- **RET1 — retention instrumentation** (onboarding preflight gate, day-1/week-1 one-shots, training telemetry, recovery matrix, deterministic coach thresholds).
+- **B6 — outcome tracking v1** (email replies + commitment punctuality).
+- **REL1 — relationship moves + dormancy normalization** (one `dormancy_signal`; a Sunday relationship-moves surface).
+
+### Substrate + reliability hardening
+- **A3 — source_ref dedup index** (O(1) any-age dedup, auto-maintained, self-heals).
+- **A5 — events.jsonl yearly sharding** (immutable shards + `shard_rotated` seq-continuity marker; shard-transparent loaders).
+- **EVT1 — per-type payload schemas** (warn-only; 10 load-bearing types).
+- **A6 — entity-resolution prose consolidated** to one canonical doc.
+- **CON1 — CONTRACT enforcement map** (all 28 rules classified) + a voice-block coverage guard + the RELIABILITY timeout-fiction fix.
+- **ADV1 — advisory skills turned from vibes into recipes** (stress-test, automation-scanner, contract-review, decision-revisit).
+- **A8 — output-skill regression harness** (synthetic fixture + 6 runtime exercises rendering real `.docx` vs golden snapshots + aggregator + eval prompts).
+- **FRP1 (S1) — first-run personalization foundation** (`get_config` deep-merge + `origin` telemetry + protocol doc + `fr*` rails).
+
+### Assembly note (transparency)
+This release was built in parallel on two machines and reconciled into cr1 (the canonical repo): the laptop built GATE2-v2/RET1/B6/B1/REL1/A6/A3/EVT1; the PC contributed CON1/ADV1/A5/A8/FRP1-S1. Where both built the same spec, cr1 keeps the laptop's version (B1 only exists there). The legacy `commandroom1` staging repo is now redundant and will be retired. Full battery **111 suites, 0 failures**.
+
+### What's NOT in this ship
+A7 (workspace-manager SKILL.md diet — deferred), FRP1's per-skill adoption sweep (S2–S5), the EOS vertical pack, and the money cluster (QBO-gated). **Production promote deliberately withheld** — staging-for-dogfood only.
+
+## v3.20.0 (2026-06-14) — Save-time quality gates + events writer lock
+
+Makes the quality bars the system already *states* into bars it *enforces* — at save time, before any document or event reaches disk — and closes the last concurrency hole in the events log. Five changes ship together: a cross-process writer lock (A1), a drift-fix + cleanup-hardening batch (FIX1 + CLEAN1), Universal Writing Standards (B4), the voice-tell gate (B2), and the output-contract validator (B3).
+
+### A1 — events.jsonl cross-process writer lock (closes the last-writer-wins race)
+Wraps `atomic_append_jsonl`'s read → seq-stamp → atomic-rename in a cross-process advisory lock so seq reservation and the write are one critical section. Closes RELIABILITY.md §3 (deferred since v3.6.1).
+- **`shared/scripts/writer_lock.py`** (NEW) — OS byte-range lock on `_hq/data/.writer.lock` (`fcntl.flock` POSIX / `msvcrt.locking` Windows). Kernel releases on crash → zero manual cleanup. Zero sync churn (lock-file content never changes; diagnostics go to a sibling `.writer.lock.info`). Sentinel fallback on OSError (unsupported mounts), 30s jittered-retry timeout, reentrant per thread, best-effort contention telemetry in `_hq/.system/lock_stats.json` (swallows all exceptions — never breaks a write).
+- **Proof** (8 processes × 25 concurrent appends to one events.jsonl): pre-fix HEAD 25/200 lines (175 events LOST; on Windows the racing `os.replace` also raised PermissionError [WinError 5]); with lock 200/200 lines, seq exactly 1..200, 0 duplicates, 0 gaps.
+- Files: `shared/scripts/atomic_write.py`, `shared/scripts/next_seq.py`, `shared/RELIABILITY.md`, `shared/WORKSPACE_API.md`, `tests/run_writer_lock_test.py` (NEW — 8 cases incl. the torture test).
+
+### FIX1 + CLEAN1 — drift-fix batch + cleanup self-detection upgrades
+- **FIX1** — `cr-*` source_skill/taskId drift fixed across orchestrators *with reader back-compat* (client migration), guard + back-compat tests, ~20 doc/routing fixes, plus the register-pulse contradiction fix found in review.
+- **CLEAN1** — cleanup Phase 1 scan-as-code, `integrity_check` on every fire, session-notes backfill, DECISION_LOG regen, stale-view + >1h lock sweep + insight-generator nudge. Client-safe: orphans flagged-not-deleted, existing notes never overwritten, substrate never rewritten. Carries A1's `lock_stats` Monday-note line.
+- Files: `shared/scripts/cleanup_actions.py` (NEW), `shared/scripts/source_skill_compat.py` (NEW), `shared/scripts/integrity_check.py`, `shared/scripts/render_decision_log.py`, `skills/cleanup/SKILL.md`, orchestrator references + ~15 SKILL.md routing fixes, `tests/run_no_legacy_taskid_test.py` / `tests/run_source_skill_compat_test.py` / `tests/run_cleanup_scan_test.py` (NEW).
+
+### B4 — Universal Writing Standards + binary critique checklists
+Universal Writing Standards block added to `shared/VOICE_CALIBRATION.md` (governs structure/specificity/floors; explicit PRECEDENCE line — never overrides a client's calibrated per-skill Voice Block on voice/tone/openers/taboos). 10 composers wired with a reference line + per-skill edit: binary critique checklists (memo/email), countable gates (call-prep), evidence-anchored cells (decision-memo), no-fabrication gate (board-pack), anti-examples (one-pager), synthesis-lead test (morning-brief/weekly-recap), warm-but-brief (follow-up), confidence bands (research). Pure text; no Voice Block section altered (calibrated installs protected). Numbers kept consistent with B3's validator.
+
+### B2 — Voice-tell gate (save-time enforcement of the banned-phrase list)
+Turns `shared/VOICE_CALIBRATION.md`'s universal banned-phrase list from prompt-discipline prose into a deterministic, stdlib-only gate. Generic-assistant tells ("I'd be happy to…", "Hope this finds you well", "Best regards") no longer slip through on prompt discipline alone — they're caught and rewritten before any document reaches disk.
+- **`shared/scripts/voice_tell_detector.py`** (NEW) — `scan_text` / `check_sections` / `VoiceTellError` / CLI. Fail = the exact banned phrases (one rule per markdown bullet); warn = structural tells (>2 em-dashes per paragraph, tri-colons, hedging stacks, bullets-in-email). `skip_quoted` ignores transcript pulls and reply blockquotes; `allow_phrases` feeds a client's calibrated Voice Block Taboos through untouched (never hard-blocked).
+- **`tests/run_voice_tell_detector_test.py`** (NEW) — unit suite incl. a sync-floor assertion (detector fail-rule count ≥ markdown bullet count), brief_writer integration, CLI exit codes, and a prose-guard that every composer references the detector.
+- **8 composer SKILL.mds** (email-writer, memo-writer, one-pager-composer, follow-up-ritual, decision-memo-composer, inbox-triage, intro-broker, board-pack-assembler) — Step 2 critique gains the bash-gated detector call with rewrite-until-clean, alongside (not replacing) the existing binary checklist.
+
+### B3 — Output-contract validator (save-time enforcement of each composer's quality bar)
+Turns the prose-quality bars that every composer SKILL.md *states* (call-prep word floors; one-pager ≤25-word headline + 3-5 data bullets; decision-memo no-blank-matrix-cells; board-pack ≤6 exec bullets) into a checkable contract — validated against the structured `sections` payload before the `.docx` is rendered, so a skinny or placeholder-ridden brief is rewritten, never saved substandard.
+- **`shared/scripts/output_contract_validator.py`** (NEW) — declarative `RULES_BY_KIND` + `PROFILE_RULES` (the `call_prep_internal` variant) + generic placeholder/empty-bullet rules. `validate_brief` raises `OutputContractError` carrying per-violation diagnostics (`{rule, section, observed, expected, fix_hint, severity}`); non-raising twin `collect_contract_violations`; CLI (exit 0/1). Stdlib only.
+- **`tests/run_output_contract_validator_test.py`** (NEW) — per-kind pass/fail cases matching the five SKILL.md floors, both matrix cell shapes, the two allowed placeholder forms, brief_writer integration, and the `set(RULES_BY_KIND) <= set(EYEBROW_BY_KIND)` sync guard.
+- **5 composer SKILL.mds** (call-prep, memo-writer, one-pager-composer, decision-memo-composer, board-pack-assembler) — each gains the rewrite-on-failure loop (read `section` + `fix_hint`, rewrite only failing sections, max 2 retries) and a sync-rule sentence.
+
+### Canonical save order
+`brief_writer.make_brief` runs all gates PRE-`Document()`: **validation → contract (B3) → voice (B2) → render → leak scan.** New kwargs `contract` (`enforce|report|off`) + `voice_gate` (`default|warn|off`), both lazy-imported with ImportError tolerated. Every gate raises before any file is written — no partial file, no lost content. The supported-kind table is lifted to module-level `EYEBROW_BY_KIND` for the validator's sync guard.
+
+### Client safety
+- All save gates ship with escape valves (`contract='report'|'off'`, `voice_gate='warn'|'off'`) and ImportError tolerance — partial installs and thin workspaces still save. call_prep total-word floor is **REPORT severity (warn)** — never blocks. Per-kind blocking rules fire only on sections that are *present* (omit-don't-pad).
+- Writer lock falls back to sentinel on unsupported mounts; broken telemetry can't break a write; crashed holder reacquired in <0.01s with no cleanup; new `holder` kwarg defaults so every existing call site is unchanged.
+- FIX1 ships reader back-compat for the cr-* migration; CLEAN1 flags-not-deletes and never rewrites substrate.
+
+### What's NOT in this ship
+- Tier-B eval/regression gates (skill-creator evals, synthetic-workspace-runtime-test, bug-regression-suite) are queued to run before production fan-out. This is a staging ship for live testing first.
+
+## v3.19.0 (2026-06-14) — New skills: `boardroom` + `advisor-export` (multi-perspective board review + portable advisor personas)
+
+Two skills that work as a pair. `boardroom` puts one subject — a plan, deal, quarter, hire, or product call — in front of a board of distinct perspectives and hands back the *conflict map*: where the seats disagree, because that's where the blind spots live. `advisor-export` forges a portable "advisor profile" from a person's own substrate, so a colleague's archetype can travel between Command Rooms and sit on someone else's board.
+
+### Added
+- **`boardroom`** — convene a configurable board (default bench of five functional archetypes: CFO, COO, CRO / customer voice, skeptical independent director, strategy) on one subject. Each seat runs as an independent parallel subagent reading only its own substrate slice (financials, open commitments, people cadence, decision history, captured intel), blind to the others; a synthesis pass maps agreement, conflict, and the assumption under each disagreement. Two-round flow — Round 1 each seat asks its single hardest question via a chat-action widget; Round 2 verdicts — with a Skip-to-verdicts action and a `quick board take on` trigger that jumps straight to verdicts. Bench is show-then-tune (defaults run immediately; `configure my board` edits it), stored at `_hq/data/skill_config/boardroom.json`. Produces a board-memo `.docx`. Writes `board_convened`. Chains to decision-memo-composer / stress-test / decision-log.
+- **`advisor-export`** — forge, share, and seat advisor personas. Self-forge (`forge my advisor profile`) distills your own decision history, stated positions, and communication style into a portable pack you can hand to a colleague (shareable). Observed modeling (`model [name] as an advisor`) builds a local-only read of how a colleague tends to think — flagged as your interpretation and hard-blocked from export (consent guard). Import loads a shared pack into your guest bench so `boardroom` can seat that real colleague's archetype alongside the functional seats. New portable schema + writer with `scrub_internal_ids` + `validate_pack` privacy guards. Writes `advisor_profile_exported` / `advisor_profile_imported` / `advisor_profile_modeled`.
+
+### Substrate
+- 4 new event types in `events.schema.json`: `board_convened`, `advisor_profile_exported`, `advisor_profile_imported`, `advisor_profile_modeled` — each with a declared consumer per the event-contract gate.
+- New persona store at `_hq/data/advisors/`; bench config at `_hq/data/skill_config/boardroom.json`.
+
+### Files touched
+- `skills/boardroom/SKILL.md` (NEW), `skills/advisor-export/SKILL.md` (NEW)
+- `shared/data-schemas/advisor_profile.schema.json` (NEW), `shared/scripts/advisor_profile_writer.py` (NEW)
+- `shared/data-schemas/events.schema.json` — 4 enum additions
+- `tests/runtime_exercise_boardroom.py` (NEW), `tests/runtime_exercise_advisor_export.py` (NEW)
+- `DEVELOPMENT.md`, `README.md` — corrected to the ChaletteHQ / cr1 per-client ship model
+
+### What's NOT in this ship
+- Tier-B eval/regression gates (skill-creator evals, synthetic-workspace-runtime-test, bug-regression-suite) are queued to run before production fan-out. This is a staging ship for live testing first.
+
 ## v3.18.17 (2026-06-04) — research: actively reach for connected tools (was settling for built-in web)
 
 Live testing surfaced a real bug: `research` ran on built-in web search even when Tavily and Vibe Prospecting were connected — it only used them when the CEO *explicitly* named them ("use all mcp connectors you can"). Root cause: the skill's tool detection was passive ("if present, prefer"), so the model took the path of least resistance and defaulted to the always-available built-in web search.

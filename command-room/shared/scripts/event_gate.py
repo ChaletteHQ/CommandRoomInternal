@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""
+append_event() gatekeeper (Phase 1 Foundation, F1 — 2026-07).
+
+Built as an EXTENSION of atomic_write.atomic_append_jsonl, never a second
+append path: the gate logic below is invoked INSIDE atomic_append_jsonl's
+events.jsonl branch, so every existing caller — skill prose templates,
+shared/scripts writers, orchestrators — is gated from day one without
+migrating a single call site. `append_event()` is the canonical named entry
+for new code; it applies the same gate in STRICT mode (unknown event types
+reject instead of warn) and then delegates the actual locked write to
+atomic_append_jsonl. seq allocation and ts stamping already live inside
+atomic_append_jsonl's writer-lock critical section (v3.13.8.3 / SPEC A1);
+this module adds the identity + validation layer on top:
+
+  1. Type normalization — known drift is corrected on append
+     (`commitment_update` → `commitment_updated`).
+  2. Commitment identity — `type: commitment` events get `data.id` minted as
+     `cmt_<ULID>` at write time when the caller didn't set one (ratified
+     2026-07-01: cmt_<ulid>, minted at write time). Ids are written, never
+     synthesized-only.
+  3. Commitment kind — `data.kind` (promise | task | scheduling | agenda) is
+     REQUIRED AT CAPTURE on commitment events (ratified 2026-07-01; flipped
+     from stamp-promise in Phase 2 Stage D once the producers classified at
+     write time). A provided kind is validated against the enum (bad value =
+     reject). A MISSING kind REJECTS on both entries (Phase 4 2026-07-02 —
+     the F1 burn-in ended with the Phase 1-3 writer migrations). READ-side, a
+     historic event with no kind is a `promise` forever
+     (commitment_state.commitment_kind — never backfilled on disk).
+  4. Fail-loud closure identity — `type: commitment_resolved` with no
+     readable id field is REJECTED (EventGateError). This exact silent
+     failure produced 291 dead-letter closures in the live substrate.
+  5. Schema-enum validation for ALL event families — the type must be
+     registered in shared/data-schemas/events.schema.json (see
+     event_types.py for the enum-home decision). An unknown type raises on
+     BOTH entries — append_event() and the legacy atomic_append_jsonl path —
+     as of Phase 4 (2026-07-02). Register new types per shared/EVENT_TYPES.md
+     before writing them.
+
+Escape hatch: CR_EVENT_GATE=0 disables the gate entirely (emergencies only —
+e.g. replaying a quarantined batch that predates the contract). The write
+path itself (lock, seq, ts, atomic rename) is unaffected by the env var.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+from typing import Any, List
+
+try:
+    from event_types import (
+        COMMITMENT_CLOSURE_ID_FIELDS,
+        KIND_VALUES,
+        is_known_type,
+    )
+except ImportError:
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from event_types import (
+        COMMITMENT_CLOSURE_ID_FIELDS,
+        KIND_VALUES,
+        is_known_type,
+    )
+
+
+class EventGateError(ValueError):
+    """An event was rejected at append time. Fail loud, not silent — silent
+    success is the disease (291 id-less closures, 5 spellings of one type)."""
+
+
+# Known type drift corrected on append. Extend here (with a CHANGELOG note)
+# when a new drift spelling is discovered — readers never learn drift names.
+TYPE_NORMALIZATION = {
+    "commitment_update": "commitment_updated",
+}
+
+_KIND_DEFAULT = "promise"
+
+# Crockford base32 (no I, L, O, U) — standard ULID alphabet.
+_ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid() -> str:
+    """26-char ULID: 48-bit ms timestamp + 80 bits of randomness, Crockford
+    base32. Stdlib-only (no dependency); lexically sortable by mint time."""
+    ts_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    rand = int.from_bytes(os.urandom(10), "big")
+    value = (ts_ms << 80) | rand
+    chars = []
+    for shift in range(125, -1, -5):
+        chars.append(_ULID_ALPHABET[(value >> shift) & 0x1F])
+    return "".join(chars)
+
+
+def new_commitment_id() -> str:
+    """Mint a canonical commitment id: cmt_<ULID> (ratified 2026-07-01)."""
+    return "cmt_" + _ulid()
+
+
+def _gate_enabled() -> bool:
+    return os.environ.get("CR_EVENT_GATE", "1") != "0"
+
+
+def _has_closure_id(ev: dict) -> bool:
+    data = ev.get("data")
+    data = data if isinstance(data, dict) else {}
+    for field in COMMITMENT_CLOSURE_ID_FIELDS:
+        if data.get(field) not in (None, ""):
+            return True
+    # Legacy flat shape — a top-level id is still readable by cru_match.
+    for field in ("commitment_id", "id"):
+        if ev.get(field) not in (None, ""):
+            return True
+    return False
+
+
+def gate_events(
+    events: List[dict],
+    *,
+    strict_enum: bool = True,
+    holder: str = "event_gate",
+) -> List[dict]:
+    """Validate + enrich a batch of events bound for events.jsonl.
+
+    Returns NEW event dicts (callers' dicts are never mutated — same contract
+    as atomic_append_jsonl's stamp step). Raises EventGateError on the
+    fail-loud conditions documented in the module docstring. strict_enum
+    defaults to True (Phase 4 2026-07-02); passing False restores the F1
+    burn-in warn-only posture and exists for controlled replay tooling only —
+    no production writer may pass it.
+    """
+    if not _gate_enabled():
+        return events
+
+    out: List[dict] = []
+    for i, ev in enumerate(events):
+        ev = {**ev}
+
+        # 1. Normalize known type drift.
+        etype = ev.get("type")
+        if etype in TYPE_NORMALIZATION:
+            etype = TYPE_NORMALIZATION[etype]
+            ev["type"] = etype
+
+        # 5. Schema-enum validation — every family, from day one.
+        if not isinstance(etype, str) or not etype:
+            msg = f"event {i} has no 'type' (holder={holder})"
+            if strict_enum:
+                raise EventGateError(msg)
+            sys.stderr.write(f"[event_gate] {msg}\n")
+        elif not is_known_type(etype):
+            msg = (
+                f"event type '{etype}' is not registered in "
+                f"events.schema.json (holder={holder}) — register it per "
+                f"shared/EVENT_TYPES.md before writing it"
+            )
+            if strict_enum:
+                raise EventGateError(msg)
+            sys.stderr.write(f"[event_gate] {msg}\n")
+
+        # 2 + 3. Commitment identity + kind.
+        if etype == "commitment":
+            data = ev.get("data")
+            data = {**data} if isinstance(data, dict) else {}
+            if data.get("id") in (None, ""):
+                data["id"] = new_commitment_id()
+            kind = data.get("kind")
+            if kind in (None, ""):
+                # Stage D flip: kind is REQUIRED AT CAPTURE. Strict path
+                # rejects; legacy path warns loudly + stamps the
+                # behavior-preserving default (burn-in posture, same as the
+                # enum check) so an un-migrated long-tail writer degrades
+                # visibly instead of breaking a customer workspace.
+                msg = (
+                    f"commitment event carries no data.kind (holder={holder}) "
+                    f"— kind is required at capture (Phase 2 Stage D): "
+                    f"classify as one of {sorted(KIND_VALUES)} when writing "
+                    f"(counterparty promise → promise; self-owed → task; "
+                    f"scheduling intent → scheduling; discuss item → agenda)"
+                )
+                if strict_enum:
+                    raise EventGateError(msg)
+                sys.stderr.write(f"[event_gate] {msg}\n")
+                data["kind"] = _KIND_DEFAULT
+            elif kind not in KIND_VALUES:
+                raise EventGateError(
+                    f"commitment event has invalid data.kind {kind!r} "
+                    f"(allowed: {sorted(KIND_VALUES)}; holder={holder})"
+                )
+            ev["data"] = data
+        elif isinstance(etype, str) and etype.startswith("commitment"):
+            # Kind is only required on creation events, but a bad value on
+            # any commitment-family event is still drift — reject it.
+            data = ev.get("data")
+            kind = data.get("kind") if isinstance(data, dict) else None
+            if kind not in (None, "") and kind not in KIND_VALUES:
+                raise EventGateError(
+                    f"{etype} event has invalid data.kind {kind!r} "
+                    f"(allowed: {sorted(KIND_VALUES)}; holder={holder})"
+                )
+
+        # 4. Fail-loud rejection of id-less closures.
+        if etype == "commitment_resolved" and not _has_closure_id(ev):
+            raise EventGateError(
+                "commitment_resolved event carries no readable commitment id "
+                f"(need one of data.{'/data.'.join(COMMITMENT_CLOSURE_ID_FIELDS)}; "
+                f"holder={holder}). An id-less closure is a dead letter — it "
+                "closes nothing. Pass the commitment's data.id verbatim "
+                "(cmt_<ulid> or legacy commitment_seq_<n>)."
+            )
+
+        out.append(ev)
+    return out
+
+
+def append_event(
+    path,
+    events,
+    holder: str = "append_event",
+) -> None:
+    """Canonical gated append to events.jsonl (Phase 1 F1).
+
+    Same signature semantics as atomic_write.atomic_append_jsonl (single dict
+    or list of dicts; `path` is the events.jsonl path; omit seq/ts — they are
+    auto-stamped inside the writer lock). Both entries gate in STRICT mode
+    (Phase 4 2026-07-02); this one remains the canonical named entry for new
+    code. Delegates the actual write to atomic_append_jsonl — there is
+    exactly one append path.
+    """
+    if isinstance(events, dict):
+        events = [events]
+    if not isinstance(events, list):
+        raise TypeError(
+            f"append_event expects list[dict] or dict, got {type(events).__name__}"
+        )
+    for i, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            raise TypeError(
+                f"append_event entries must be dicts; entry {i} is "
+                f"{type(ev).__name__}: {ev!r}"
+            )
+
+    events = gate_events(events, strict_enum=True, holder=holder)
+
+    try:
+        from atomic_write import atomic_append_jsonl
+    except ImportError:
+        from pathlib import Path as _Path
+
+        sys.path.insert(0, str(_Path(__file__).resolve().parent))
+        from atomic_write import atomic_append_jsonl
+
+    atomic_append_jsonl(path, events, holder=holder)
+
+
+__all__ = [
+    "EventGateError",
+    "TYPE_NORMALIZATION",
+    "new_commitment_id",
+    "gate_events",
+    "append_event",
+]

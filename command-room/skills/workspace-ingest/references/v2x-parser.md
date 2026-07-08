@@ -30,7 +30,7 @@ Lifted from `migration-v2` Path B (Phases B2–B5) and adapted to emit into work
 
 ## Detection entry point
 
-Orchestrator dispatches here when `_hq/data/entities.json` exists AND at least one org record has a `type` field of `home` / `side` / `personal` AND no org has a `scope` field. See `../SKILL.md` → "Shape Detection".
+Orchestrator dispatches here when `_hq/data/entities.json` exists AND at least one org record has a `type` field of `home` / `side` / `personal` AND no org has a `scope` field. See `../SKILL.md` → Phase 1 "Shape Detection".
 
 If any org already has `scope`, shape detector should emit "Already on v2.x — nothing to ingest" and exit before this parser ever runs.
 

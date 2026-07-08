@@ -42,14 +42,19 @@ The registration skill (`enable-command-room-schedules/SKILL.md` Phase 1) reads 
 - Every literal `<TASK_ID>` → the canonical taskId (e.g., `cr-inbox`)
 - Every literal `<ORCHESTRATOR_FILENAME>` → the orchestrator filename from `ORCHESTRATOR_MAP` (e.g., `orchestrator-inbox.md`)
 - (v2.14.26+) Every literal `<WORKSPACE_BASENAME>` → the basename of the customer-confirmed workspace folder. Cowork mounts the connected folder under `mnt/<basename>/`, so whatever the customer named their folder is what the basename becomes — could be anything. NEVER substitute a hardcoded folder name from these docs; resolve at runtime via `shared/CONTRACT.md` Rule 22 (`find $SESSION_DIR/mnt -name _hq`).
+- (Phase 3 / W4, 2026-07) Every literal `<PLUGIN_VERSION>` → the installed plugin version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` at registration time. This stamp is DIAGNOSTIC ONLY — fire behavior always comes from the freshly-resolved plugin, so a "stale" stamp never changes what runs. It exists so the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) can DETECT registered-prompt drift (a bootloader registered under an old plugin) instead of hoping Rule 16 is obeyed. Side effect worth knowing: the stamp makes the composed bootloader's hash change across plugin versions, so the Step 1.C hash-compare refreshes prompts on the first `set up command room schedules` (or update-bridge Phase 4.7) run after any upgrade — that refresh is intentional and idempotent.
 
 Then passes the substituted body to `create_scheduled_task` / `update_scheduled_task` as the `prompt` parameter.
+
+**Pulse filename alias (debugging note — R5, docs-only):** the `pulse` task's `<ORCHESTRATOR_FILENAME>` is `orchestrator-dont-forget.md`, NOT `orchestrator-pulse.md` (which doesn't exist). That is deliberate, not drift: the filename stays for `events.jsonl` `source_skill` back-compat — see the `pulse` entry comment in `shared/scripts/schedule_config.py` and the top of `orchestrator-dont-forget.md`. Don't "fix" the mapping.
 
 **Frontmatter rule:** the bootloader body MUST NOT start with a `---` frontmatter block. Cowork prepends its own frontmatter; user-supplied frontmatter would create a doubling bug (verified live 2026-05-06).
 
 ## The bootloader template (everything below this heading is the registered prompt body)
 
 # Scheduled task bootloader — <TASK_ID>
+
+Registered from plugin-version: <PLUGIN_VERSION> (diagnostic stamp — the watchdog compares it against the installed plugin to detect registration drift; it never changes fire behavior, because the orchestrator below is always read fresh from the currently-installed plugin).
 
 You are running the scheduled task `<TASK_ID>`. This SKILL.md is a bootloader, not the orchestrator. The canonical orchestrator content lives in the plugin folder and is read fresh at every fire — so plugin upgrades propagate automatically without re-registration.
 

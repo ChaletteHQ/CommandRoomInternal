@@ -1,0 +1,20 @@
+{
+  "version": "3.19.0",
+  "headline": "Two new skills: `convene the board` for a multi-perspective review, and `forge my advisor profile` to share your archetype.",
+  "items": [
+    {
+      "id": "v3190_announce_boardroom",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New: I can convene a board on any decision. Say `convene the board on [subject]` and a CFO, COO, customer voice, a skeptic, and a strategy seat each weigh in from your real numbers and history — then I hand you back where they disagree, because that's where the risk hides. Say `configure my board` to change the seats.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v3190_announce_advisor_export",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New: say `forge my advisor profile` and I'll distill how you decide into a shareable pack a colleague can load into their own Command Room — so you can sit on their board. Or `model [name] as an advisor` to build your own read of how a colleague thinks (that one stays local to you).",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -1,13 +1,13 @@
 ---
 name: weekly-recap
-description: "Pulls 7 days of context across every connected source (Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, every meeting-transcript source — Granola/Fireflies/Otter/Read.ai/Zoom AI Companion/Microsoft Teams), writes interaction events to events.jsonl as it goes (passive backfill side-effect), runs scan-for-commitments on the freshly-captured meeting events, then synthesizes the week into both an inline chat summary and a saved `.docx` artifact at `_hq/meetings/Weekly_Recap_<YYYY-MM-DD>.docx`. Designed for the end-of-first-call demo (covers the gap between 'scheduled tasks fire on today only' and 'customer wants substantive output by end of call') and for any week-on-week retrospective. Triggers: `weekly recap`, `weekly summary`, `what happened last week`, `last week recap`, `recap of last week`, `summarize last week`, `give me a weekly recap`, `recap last week by project`, `recap last week by day`. DOES NOT fire on `cleanup` (that's `cleanup` — a workspace health check, different surface), `morning briefing` (that's `morning-briefing` — daily, not weekly), `process the call` / `process last meeting` (that's `meeting-notes` — single meeting). Idempotent — all events.jsonl appends dedup via `source_ref_hash`, safe to re-run on the same window."
+description: "Pulls 7 (or 30) days of context across every connected source — Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, and every meeting-transcript source — into one structured recap: what happened, decisions made over email, threads of note, new people, anomalies, and what Command Room chats produced. Fires on: 'weekly recap', 'what happened this week', 'recap my week', 'monthly recap', 'what happened this month', plus 'tune weekly-recap' and 'reset weekly-recap to defaults'. Runs as the Friday-wrap scheduled chat's engine and on demand. Does NOT fire on 'operator report' / 'show me the value' (operator-report — lift accounting), 'value receipt' (value-receipt), or 'weekly insights' (insight-generator — pattern synthesis, not events digest). Section list and source map: Routing section in the body."
 ---
 
 # Weekly Recap — 7-Day Cross-Connector Synthesis
 
 **For:** the end-of-first-call demo moment, weekly retrospectives, or any time the user wants a substantive look back at the last 7 days. Bridges the gap between scheduled tasks (which fire on today's window only) and the customer's reasonable expectation that the system has something meaningful to say about the last 7 days.
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use weekly-recap for:** a synthesis of the last 7 days across every connector, written as both an inline chat summary and a saved `.docx`. Auto-runs scan-for-commitments as a side effect so the recap's commitment counts are populated.
 - **Use `morning-briefing` for:** today's window (last 18h of email/Slack + today's calendar). Daily scan, not weekly.
@@ -46,6 +46,64 @@ Outputs must be substantively rich, not just longer. "Rich" means:
 5. **Every output ends with a clear "what now" line** — either next actions, a question, or a clean handoff to another skill. No outputs that just dump data without telling the user what to do with it.
 
 ---
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). Both
+decisions are **show-then-tune (STT)** — the recap renders first, then one-tap changes are offered.
+Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
+# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "lens": "theme_led",            # theme_led (narrative themes lead) | numbers_led (metrics lead)
+    "internal_backlog": "split",    # split (internal vs external split view) | external_only
+}
+cfg = get_config(workspace_root, "weekly-recap", DEFAULTS)
+```
+
+`lens` sets whether the recap opens with narrative themes or with the week's numbers.
+`internal_backlog=split` shows internal build work separately from external/client work;
+`external_only` hides the internal backlog section.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "weekly recap", scheduled Friday fire | render the recap with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "weekly-recap", DEFAULTS)` BEFORE rendering, then append the first-run block. |
+| **Show settings** | "show weekly-recap settings" | render current config in plain English; no recap. |
+| **Tune** | "tune my weekly recap", "tune weekly-recap" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-render. |
+| **Reset** | "reset weekly-recap to defaults" | `wipe_skill_config(workspace_root, "weekly-recap")` → next fire is a first-fire again. |
+
+**The first-run block (transport):** the on-demand fire ends in a chat summary + a `.docx` link
+(not an action widget), so it uses a 2–3 line FOOTER after the recap. The scheduled Friday fire
+(`orchestrator-friday-wrap.md`) appends the same footer (that orchestrator is a markdown post, not
+a widget — see its first-run note).
+
+> *First time recapping your week. I set 2 defaults: **I lead with the themes, not the numbers** ·
+> **I split what you owe into work for others vs your own projects**. Say "tune my weekly recap" to
+> change either, or just tell me ("lead with the numbers" / "external work only").*
+
+The footer renders exactly once ever (`is_configured` gate). Day/time of the scheduled fire is
+`change-schedule` (the friday-wrap task), not tune. The scheduled Friday Wrap fire follows
+`shared/RELIABILITY.md` (skip-don't-fail when the workspace isn't ready, OOO handling,
+missed-fire recovery, connector-timeout degradation) — the on-demand trigger is unaffected.
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "lead with the numbers" / "metrics first" | `lens = numbers_led` |
+| "lead with the themes" / "narrative first" | `lens = theme_led` |
+| "external work only" / "hide my internal backlog" | `internal_backlog = external_only` |
+| "show the internal/external split" | `internal_backlog = split` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + re-render + confirm in one line.
 
 ## Trigger interpretation
 
@@ -129,6 +187,17 @@ Generalize across all detected MCP connectors — no Granola hardcoding. Whichev
 - Body strategy: summaries by default; full text for the top-5 highest-signal (longest duration × canonical-attendee count).
 - Emit per transcript: `type: meeting`, `data: {title, start_ts, duration_min, attendee_person_ids, summary: <first 500 chars>, source_ref: "<connector>:<meeting_id>"}`.
 
+### Command Room chat sessions — what happened in your chats this week (R4)
+
+The connectors above cover meetings and mail, but a lot of the week's real work happens in the CEO's ad-hoc Command Room chats — a decision reasoned out, a commitment made, a deliverable produced. Add that as a recap source so the week reads complete.
+
+- Resolve the session-transcript MCP at runtime by tool-name (the server id is per-install — never hard-code it, same as the meeting-transcript sources above). List the sessions active in the last 7 days and read each transcript.
+- Window: last 7 days. Cap: 30 sessions; summaries only, never raw transcript text.
+- This is the SAME episodic layer the nightly `session-sweep` promotes into the event log (see `references/HOW_COMMAND_ROOM_WORKS.md` → the three-layer memory model). Read the already-recovered `session_sweep_run` history first: anything the sweep already logged is on file — surface it in the recap, don't re-append it. Only genuinely-new items get emitted, deduped via `source_ref_hash` like every other source (`source_ref: "session:<session_id>"`).
+- If no session-transcript MCP is wired, skip this source silently and footnote it — same skip-not-fail posture as every other connector.
+
+**Numeric verification (R6 — `shared/SUBAGENT_VERIFICATION.md`).** The recap fans out parallel reads and synthesizes; any count it renders (open commitments, briefs delivered, drafts written) comes from the canonical helper — `commitment_state.commitment_counts` for commitment totals, `value_receipt.compute_value_receipt` for delivered-work counts — never a hand-tally of the events a sub-read returned.
+
 ### Batched append
 
 After all connectors return, batch all captured events into a single `atomic_append_jsonl` call:
@@ -160,7 +229,19 @@ Build the recap structure from events.jsonl over the window. Grouping mode per t
 
 ### Sections (omit any with no real content — never pad)
 
-**1. Headline** — one sentence framing the week. Pull from the dominant signal: "Heavy week on [Project A] (47 events) and [Project B] (31 events); 3 new people surfaced; 4 commitments captured."
+> **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: the **Headline becomes the full exec header** (verdict = the synthesis-lead sentence — weekly-recap is a sanctioned synthesis-lead surface per the standard's synthesis rule — with CHANGED carrying **week-over-week money/time deltas**), and the **"What now" section becomes the ASK block** (the `asks` kwarg, one-tap on the Friday Wrap widget surface — one-ask-surface: the widget IS the ask, no prose twin). Both are SUBSUMED into those two EXEC1 surfaces, not rendered as duplicate standalone sections (net length must not increase).
+
+**1. Headline → exec-header VERDICT (EXEC1).** One sentence framing the week, as the verdict; CHANGED = week-over-week money/time deltas ("pipeline +$45K WoW; 2 deals slipped a week"). Pull from the dominant signal: "Heavy week on [Project A] (47 events) and [Project B] (31 events); 3 new people surfaced; 4 commitments captured." This is the exec header, not a standalone "Headline" section.
+
+Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md`. The headline names a dated anchor moment AND what changed — not a bare metric count.
+```
+GOOD: The May 14 CEO-group talk was the anchor — $45K early pipeline, two
+      booked demos, and it opened the non-profit logistics wedge now running
+      as a thread. Everything else this week supported it.
+BAD:  This week had a lot of activity. Closed some deals, shipped features.
+BAD:  This week saw 6 commitments, 4 decisions, 15 emails.   (metrics, no meaning)
+```
+Test: does the lead name a dated moment AND say what CHANGED? If the counts alone tell the same story, rewrite for shape, not numbers.
 
 **2. Top decisions made** — pull `type: decision` events from the window. Bullets, each with: decision text + project + date + who participated. Omit if zero.
 
@@ -170,7 +251,7 @@ Build the recap structure from events.jsonl over the window. Grouping mode per t
 
 **5. Email threads of note** — high-priority unresponded (>72h since last inbound from canonical person + project-tagged) + decisions made over email (threads where the body contains decision-language patterns). Cap at 5.
 
-**6. New people surfaced** — anyone interacting with canonical people during the window who isn't yet in `entities.json` as a person record. Flagged as `pending_review: true`. Surface name + how they appeared + suggested next action ("`update [name]` to pull a full profile").
+**6. New people surfaced** — anyone interacting with canonical people during the window who isn't yet in `entities.json` as a person record. Flagged as `pending_review: true`. Surface name + how they appeared + suggested next action ("`tell me about [name]` to pull a full profile").
 
 **7. Anomalies** — projects that went quiet vs. their normal cadence (no events but historical mean > 5/week), unusual cadence shifts on people (weekly→silent), new domains in email that don't map to known orgs.
 
@@ -179,7 +260,7 @@ Build the recap structure from events.jsonl over the window. Grouping mode per t
   - **By-project:** for each project with ≥3 events in the window, render: project name + event count + status badge + one-line "where it landed" + top open commitment. Sort by event count desc.
   - **By-day:** for each day (Mon → today), render: top 3 events (meetings, key emails, decisions) — one bullet each. Sort chronologically.
 
-**9. What now** — explicit handoff. Suggest 2-3 follow-ups: which Past Meeting deserves a follow-up call-prep, which commitment is closest to overdue, which project needs a deeper `go [project]` because something interesting surfaced.
+**9. What now → ASK block (EXEC1 element 4).** Explicit handoff, rendered as the `asks` close (0–3 reader-actions), not prose. Suggest up to 3 follow-ups: which Past Meeting deserves a follow-up call-prep, which commitment is closest to overdue, which project needs a deeper `go [project]`. On the Friday Wrap widget the widget IS the ask block — one-tap, no prose twin.
 
 ### Format constraints
 
@@ -202,16 +283,23 @@ Post the synthesized recap as a markdown chat turn body. Target ~30-60 lines for
 
 Generate the saved artifact via `shared/scripts/brief_writer.py` per the canonical brief-writer pattern (same as `call-prep` skill):
 
+The block below is self-contained: it resolves the workspace and today's date itself (Rule 22 discovery), falling back to `CR_WORKSPACE_ROOT` / `CR_TODAY` only when an orchestrator has already exported them — an on-demand fire with neither env var set must not crash:
+
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+export CR_WORKSPACE_ROOT="${CR_WORKSPACE_ROOT:-$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, os
 sys.path.insert(0, 'shared/scripts')
 from brief_path import get_brief_path, get_brief_artifact_url, ensure_brief_directory
 ws = os.environ['CR_WORKSPACE_ROOT']
 ensure_brief_directory(ws)
-date_iso = os.environ['CR_TODAY']  # YYYY-MM-DD in workspace TZ
+date_iso = os.environ.get('CR_TODAY')  # YYYY-MM-DD in workspace TZ (set on scheduled fires)
+if not date_iso:
+    from datetime import datetime, timezone
+    from tz import to_local
+    date_iso = to_local(datetime.now(timezone.utc), workspace_path=ws).strftime('%Y-%m-%d')
 path = get_brief_path(ws, 'weekly_recap', '', date_iso)
 url = get_brief_artifact_url(path)
 print(f'BRIEF_PATH={path}')
@@ -228,22 +316,35 @@ cd "$PLUGIN_ROOT" && python3 shared/scripts/brief_writer.py <<'JSON'
   "brief_kind": "weekly_recap",
   "title": "Weekly recap — <Mon DD> to <Mon DD>",
   "subtitle": "What happened this week and what's next",
+  "exec_header": {
+    "verdict": "<the synthesis-lead headline sentence — the dated anchor + what changed>",
+    "changed": "<week-over-week money/time deltas: 'pipeline +$45K WoW; 2 deals slipped a week'>",
+    "decide": "<the one decision this week needs, or 'Nothing — execution week.'>",
+    "needs": "<the single most important reader-action, or 'Nothing from you.'>"
+  },
   "sections": [
-    {"heading": "Headline", "body": "..."},
     {"heading": "Decisions this week", "body": "..."},
     {"heading": "What you owe (external)", "body": "..."},
-    {"heading": "What you owe (your own build / projects)", "body": "..."},
+    {"heading": "What you owe (internal projects)", "body": "..."},
     {"heading": "What they owe you", "body": "..."},
     {"heading": "Meetings worth noting", "body": "..."},
     {"heading": "Email threads worth noting", "body": "..."},
     {"heading": "New people who came up", "body": "..."},
     {"heading": "Things that look unusual", "body": "..."},
-    {"heading": "By project", "body": "..."},
-    {"heading": "What's next", "body": "..."}
+    {"heading": "By project", "body": "..."}
+  ],
+  "asks": [
+    {"text": "<follow-up call-prep / overdue commitment / deeper go [project]>"}
   ]
 }
 JSON
 ```
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "I made 2 calls: theme-led · internal/external split view"
+- Good: "I set 2 defaults: I lead with the themes, not the numbers · I split what you owe into work for others vs your own projects"
+
+The former `"Headline"` section is now `exec_header` (the verdict + CHANGED deltas); the former `"What's next"` section is now the `asks` ASK block (max 3). Neither is rendered as a standalone section — they are subsumed (no-duplication, net length must not increase).
 
 The last grouping section is `"By project"` for week-with-many-projects or `"By day"` for week-with-one-dominant-project — pick whichever fits and use it as the literal heading. Don't ship both. (Pre-v3.13.6 the example had `"By project" (or "By day")` as a parenthetical inside the JSON; that fails to parse.)
 
@@ -252,11 +353,11 @@ The `subtitle` field is REQUIRED by `brief_writer.make_brief_from_json` — omit
 **v3.13.0+ internal/external split rule (per M's 2026-05-20 feedback #23a):** pre-v3.13.0 the recap mixed the user's internal plugin backlog ("re-tune the cleanup rubric", "fix the dropped Daily Brief task") with external client/relationship commitments ("Send the packet") in a single "You Owe" section. Same scope-drift class as #6a (insight-generator) and #11 (memo-writer). v3.13.0 splits them:
 
 - **External (You Owe):** commitments to people OUTSIDE the user (clients, prospects, advisors, family-office portfolio, etc.). The default bucket.
-- **Internal (You Owe — build / self-development):** commitments to YOURSELF about a system you operate (Command Room plugin build, workspace cleanup, infrastructure improvements). Only applies when the user IS the builder/operator of the system producing the recap (M's case for now); regular client users have an empty Internal section and the rendered output omits it.
+- **Internal (You Owe — build / self-development):** commitments to YOURSELF about a system or platform you operate (an internal product build, workspace cleanup, infrastructure improvements). Only applies when `_hq/BUSINESS_CONTEXT.md` identifies the user as the builder/operator of an own platform or internal system; users without one have an empty Internal section and the rendered output omits it.
 
 Classification heuristic — a commitment is "Internal" when ALL of:
 - `data.owner_id == user_id` (the workspace's primary user, resolved via `entities.json` `workspace.user_id` or the legacy `is_primary_user: true` person record)
-- The topic / `primary_thread_id` is the OWN PLATFORM the user builds (e.g., for M: Command Room plugin, Cowork integration, Chalette infrastructure projects)
+- The topic / `primary_thread_id` matches one of the user's own-platform / internal-infrastructure projects as named in `_hq/BUSINESS_CONTEXT.md` (never a hardcoded project list)
 - No external counterparty named in the commitment data
 
 Otherwise the commitment is External (default). When in doubt, classify as External — losing an internal item into the external bucket is mild; surfacing internal-build noise alongside client work is the bug M flagged. The Internal section renders only if it has ≥1 item; otherwise omit per the "no empty sections" rule.
@@ -329,3 +430,9 @@ If the total budget overruns 60 sec on a heavy workspace, stop the in-progress c
 - Does not register or modify scheduled tasks.
 - Does not fire on `cleanup` (different skill, different surface).
 - Does not exceed a 30-day historical window even when explicitly asked — for longer pulls, route to `backfill [N] months on [project]` per-project.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Pulls 7 days of context across every connected source (Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, every meeting-transcript source — Granola/Fireflies/Otter/Read.ai/Zoom AI Companion/Microsoft Teams), writes interaction events to events.jsonl as it goes (passive backfill side-effect), runs scan-for-commitments on the freshly-captured meeting events, then synthesizes the week into both an inline chat summary and a saved `.docx` artifact at `_hq/meetings/Weekly_Recap_<YYYY-MM-DD>.docx`. Designed for the end-of-first-call demo (covers the gap between 'scheduled tasks fire on today only' and 'customer wants substantive output by end of call') and for any week-on-week retrospective. Triggers: 'monthly recap', 'what happened this month' (same recap engine over the last calendar month — set the window accordingly), 'weekly recap', 'weekly summary', 'what happened last week', 'last week recap`, `recap of last week`, `summarize last week`, `give me a weekly recap`, `recap last week by project`, `recap last week by day`. Also handles first-run personalization settings — use when the user says 'tune my weekly recap', 'tune weekly-recap', 'show weekly-recap settings', 'reset weekly-recap to defaults'. DOES NOT fire on `cleanup` (that's `cleanup` — a workspace health check, different surface), `morning briefing` (that's `morning-briefing` — daily, not weekly), `process the call` / `process last meeting` (that's `meeting-notes` — single meeting). Idempotent — all events.jsonl appends dedup via `source_ref_hash`, safe to re-run on the same window.

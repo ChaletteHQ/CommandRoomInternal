@@ -1,6 +1,6 @@
 ---
 name: level-up-command-room
-description: "Umbrella menu for optional Layer 2 sidebar dashboards. As of v3.11.0, no Layer 2 dashboards are currently shipped — the Commitment Cockpit was retired and folded into the Commitments scheduled chat. This skill remains as the canonical entry point so the trigger phrases keep working and so future Layer 2 additions have a home. Triggers: 'level up command room', 'level up my command room', 'show me dashboards', 'what dashboards can I install', 'show me what I can enable', 'add more dashboards', 'level me up'. DOES NOT fire on individual 'enable [X]' phrases (those route directly to the matching enable-* skill when one exists), 'rebuild [artifact]' (refresh, not enable), 'install command room' (that's command-room-onboarding)."
+description: "Umbrella menu for optional Layer 2 sidebar dashboards. As of an earlier version, no Layer 2 dashboards are currently shipped — the Commitment Cockpit was retired and folded into the Commitments scheduled chat. This skill remains as the canonical entry point so the trigger phrases keep working and so future Layer 2 additions have a home. Triggers: 'level up command room', 'level up my command room', 'show me dashboards', 'what dashboards can I install', 'show me what I can enable', 'add more dashboards', 'level me up'. DOES NOT fire on individual 'enable [X]' phrases (those route directly to the matching enable-* skill when one exists), 'rebuild [artifact]' (refresh, not enable), 'install command room' (that's command-room-onboarding)."
 ---
 
 # Level Up Command Room — Layer 2 umbrella router (v3.11.0 — empty menu state)
@@ -13,7 +13,7 @@ The two Layer 1 default dashboards (Workspace Map, Quick Commands) auto-install 
 
 ## Why the menu is empty (v3.11.0)
 
-Layer 2 historically housed opt-in dashboards that complemented the daily scheduled chats. The Commitment Cockpit was retired in v3.11.0 — its kanban surface (you owe / they owe / both stuck) fragmented the truth, since the Commitments scheduled chat (`commitments` taskId, fires 8:30 AM weekdays) is the single source for the same data. Pay Attention To was scoped but never shipped.
+Layer 2 historically housed opt-in dashboards that complemented the daily scheduled tasks. The Commitment Cockpit was retired in v3.11.0 — its kanban surface (you owe / they owe / both stuck) fragmented the truth, since the Commitments scheduled chat (`commitments` taskId, fires 8:30 AM weekdays) is the single source for the same data. Pay Attention To was scoped but never shipped.
 
 The architectural call: scheduled-task chat threads beat snapshot-only Live Artifacts for commitment-shaped surfaces, because the chat threads accumulate context over time and support inline action (resolved / not relevant / add to my list) — the Cockpit only rendered, requiring the user to bounce back to chat to act.
 
@@ -21,31 +21,37 @@ The architectural call: scheduled-task chat threads beat snapshot-only Live Arti
 
 ## Response to the trigger phrases
 
-When the user fires one of the trigger phrases, surface plain English:
+When the user fires one of the trigger phrases, first read the workspace's REGISTERED scheduled-task set (the schedule config in `_hq/workspace_config.json` / entities.json, plus `_hq/data/scheduled_tasks.json` when present). Never assume a fixed list — a fresh install that hasn't run `set up command room schedules` has zero registered tasks. Then surface plain English, rendering the task list dynamically from what is actually registered:
 
-> *"There aren't any extra dashboards to add right now — the menu is empty.*
+> *"There aren't any extra dashboards to add right now.*
 >
 > *Your two default dashboards (Workspace Map + Quick Commands) are already pinned to your sidebar.*
 >
-> *The places where you'll find your day-to-day action items are your scheduled chats: Morning Brief, Upcoming Meetings, Inbox, Commitments, Pulse, Past Meetings, and Friday Wrap. Open Cowork's Scheduled section to see them."*
+> *[If one or more scheduled tasks are registered:] The places where you'll find your day-to-day action items are your scheduled chats: [the registered tasks' display names, rendered from the config — never a hardcoded roster]. Open Cowork's Scheduled section to see them.*
+>
+> *[If none are registered:] Want a daily rhythm — a morning brief, inbox triage, a Friday recap? Open a new chat and say `set up command room schedules` and I'll set those up."*
 
 Stop. No menu, no numbered list, no install actions.
 
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- BAD: "There aren't any extra dashboards to add right now — the menu is empty."
+- GOOD: "There aren't any extra dashboards to add right now."
+
 If the user asks about the Commitment Cockpit specifically (because they had it pinned previously):
 
-> *"The Commitment Cockpit isn't a thing anymore — its content (what you owe / what they owe / what's stuck) now lives in your daily Commitments chat, where you can act on items inline. If it's still pinned to your sidebar, you can unpin it; it won't refresh anymore."*
+> *"The Commitment Cockpit has been retired — everything it showed (what you owe / what they owe / what's stuck) now lives in your daily Commitments chat, where you can act on items right there. If it's still pinned to your sidebar, feel free to unpin it; it won't refresh anymore."*
 
 ---
 
 ## Log the visit (optional, informational)
 
-Append one event to `_hq/data/events.jsonl` if you want to track menu visits in the empty-menu era — useful for `release-readiness` to detect "M visited the level-up menu, surfaced empty" patterns that might justify shipping a new Layer 2 dashboard:
+Append one event to `_hq/data/events.jsonl` if you want to track menu visits in the empty-menu era — a "the user visited the level-up menu, surfaced empty" pattern is the signal that might justify shipping a new Layer 2 dashboard:
 
 ```jsonl
 {"type":"levelup_session","picks":[],"skipped":[],"ran_at":"<ISO>","menu_state":"empty"}
 ```
 
-Skip the log if writes would error — this is informational, not load-bearing.
+Write it via the locked writer `atomic_append_jsonl(events_path, [event], holder="level-up-command-room")` (SPEC GATE1 / A1; omit `seq`/`ts` — auto-stamped), NOT a hand-rolled append. Skip the log if writes would error — this is informational, not load-bearing.
 
 ---
 

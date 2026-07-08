@@ -24,7 +24,7 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: morn
 
 2. **No narrating what's in the digest.** The user can see it. Don't follow with "Total scan results: X events" / "Files saved to..." / "Here's a summary of what I just posted."
 
-3. **No post-digest summary block.** The chat turn ends after the digest + Links section.
+3. **No post-digest summary block.** The chat turn ends after the digest + Links section. (EXCEPTION: the morning-briefing skill's one-time First-Run Personalization footer — see Phase 3 — is part of the defined digest tail, like the scan-for-commitments nudge; it is NOT a summary block and is allowed on the first fire only, gated by `is_configured`.)
 
 4. **No "regenerate with real data" mode.** If the user asks to re-fire, re-execute Phase 1 onward — don't switch to file-write mode.
 
@@ -52,15 +52,36 @@ The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and the orchestrator
 - Read `<WORKSPACE>/_hq/MASTER_TRACKER.md` (project list, statuses, next actions, waiting-on).
 - Discover available connectors: Calendar (native Google or Outlook MCP), Mail (Gmail or Outlook MCP — NEVER Zapier for read), Slack/Teams. Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE: Zapier is send-only; reads use native MCP.
 
+# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'morning-brief')))
+"
+```
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (Phase 4 — Post the digest): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+
 # Phase 3 — Execute the morning-briefing skill
 
 Read `skills/morning-briefing/SKILL.md`. Execute its Steps 1-5 verbatim against the current workspace + connectors:
 
 - **Step 1 — Load core context** (already done in Phase 2 above; do not re-read).
 - **Step 2 — Scan connected sources.** Calendar today + tomorrow's first event; Mail unread/important from last 18h, filtered by people in PEOPLE.md + project-related subjects + flagged; Slack/Teams unread DMs and mentions from last 18h, plus project channels. Per the skill's caps: top 10 emails, top 5 Slack items. **Self-reply filter (v3.11.1 — REQUIRED):** apply the skill's Step 2 "Self-reply filter" verbatim. For every email-thread candidate, fetch the thread's latest message and compare `From:` to the primary user's email (from `entities.json`'s `is_primary_user: true` record). If the latest message is FROM the primary user, DROP the thread from Needs Attention and Overnight Inbox — the user already responded. This filter applies to scheduled fires; the default `in:inbox` query alone is insufficient because Gmail surfaces earlier inbound messages in threads the user has since replied to.
-- **Step 3 — Check tracker for urgency.** Scan MASTER_TRACKER for overdue commitments, stale waiting-on items (7+ days), today's deadlines, urgent flags. Apply Step 3b commitments aggregation from `events.jsonl` (`type: commitment` not closed by a later `commitment_resolved` / `thread_resolved` event). Compute three counts: you owe / they owe / stuck. **Step 3a freshness overlay (v3.11.1 — REQUIRED):** apply the skill's Step 3a overlay verbatim — parse the tracker's `<!-- generated-at -->` stamp, and for every thread the digest will surface scan `events.jsonl` for events with `ts > tracker_stamp` and `primary_thread_id == thread.id`. Override `Last touched` / `Next Action` / `Waiting On` from those newer events. The tracker is a snapshot, not a live view; without this overlay a scheduled fire on a workspace whose tracker hasn't been regenerated in 10 days will surface stale "quiet since April 25" copy for threads that had activity today.
-- **Step 4 — Build the digest.** Apply the relationship-grouped thread layout from the skill's Step 4: every thread's `affiliation_id` resolves to its org; primary-focus orgs render prominently; non-primary roll up under "OTHER ORGS" with `relationship_type` badges. Section headers use `canonical_name`, not hardcoded labels. Five sections maximum, omit any with no content. SUGGESTED FIRST MOVE at the end — one sentence.
+- **Step 3 — Check tracker for urgency.** Scan MASTER_TRACKER for overdue commitments, stale waiting-on items (7+ days), today's deadlines, urgent flags. Apply Step 3b commitments aggregation from `events.jsonl` (`type: commitment` not closed by a later `commitment_resolved` / `thread_resolved` event). The header counts (you owe / they owe / stuck / total) come from `commitment_state.compute_brief_state(...)` per the skill's Step 3d — its `counts` block is `commitment_state.count_commitments(...)`, the one counting API (Phase 2 Stage A); never hand-compute them. **Step 3a freshness overlay (v3.11.1 — REQUIRED):** apply the skill's Step 3a overlay verbatim — parse the tracker's `<!-- generated-at -->` stamp, and for every thread the digest will surface scan `events.jsonl` for events with `ts > tracker_stamp` and `primary_thread_id == thread.id`. Override `Last touched` / `Next Action` / `Waiting On` from those newer events. The tracker is a snapshot, not a live view; without this overlay a scheduled fire on a workspace whose tracker hasn't been regenerated in 10 days will surface stale "quiet since April 25" copy for threads that had activity today.
+- **Step 4 — Build the digest.** Apply the relationship-grouped thread layout from the skill's Step 4: every thread's `affiliation_id` resolves to its org; primary-focus orgs render prominently; non-primary roll up under "OTHER ORGS" with `relationship_type` badges. Section headers use `canonical_name`, not hardcoded labels. Omit any section with no content — never pad. Number the Needs Attention items and keep the rendered order: the item→commitment-id mapping writes into the `pack_run` receipt as `needs_attention_ids` (Phase 5) so a later `mark done [n]` resolves. SUGGESTED FIRST MOVE at the end — one sentence. **Surface-preference filter (Phase 6 Loop 2):** before finalizing Needs Attention, drop any item the CEO has taught the system to stop surfacing — `from surface_preferences import load_surface_preferences, is_suppressed`; keep an item only if `not is_suppressed(prefs, "morning-brief", item_class=<class>, entity_id=<person/project id>)`. Missing store → no-op; the substrate is untouched.
 - **Step 5 — Deliver.** In scheduled mode (this is one), follow the saved-snapshot path: write the rendered digest to `<WORKSPACE>/_hq/briefings/morning-<YYYY-MM-DD>.md` per the skill's "save to file" branch, AND post the digest inline in this chat turn.
+- **First-Run Personalization (SPEC FRP1).** Apply the morning-briefing skill's "First-Run Personalization" section. Read the brief's knobs via `get_config(WORKSPACE, "morning-briefing", DEFAULTS)`. On the FIRST fire only (`not is_configured(WORKSPACE, "morning-briefing")`): `save_skill_config(WORKSPACE, "morning-briefing", DEFAULTS)` before rendering, then append the one-time **footer** form of the first-run block after the digest (this orchestrator is a markdown post, NOT a widget, so the footer — not fr-items — is the correct transport, and MUST-NOT rule 5 does not apply). The footer renders exactly once ever, gated by `is_configured`.
 
 Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/events.jsonl` per `shared/PASSIVE_CAPTURE.md`. Use `atomic_append_jsonl` from `shared/scripts/atomic_write.py` for batched appends. Dedup via `source_ref_hash` so re-fires don't double-count overnight email reads.
 
@@ -68,7 +89,7 @@ Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/eve
 
 Output the rendered markdown digest as the chat turn body. Follow the exact format from `skills/morning-briefing/SKILL.md` Step 4 — header line, optional commitments line, calendar section, NEEDS ATTENTION, OVERNIGHT INBOX, per-org thread sections, SUGGESTED FIRST MOVE.
 
-**Tone:** crisp, direct, no preamble. Per the skill: "this is a status board, not a conversation. No 'Good morning!' or 'Here's what's happening.' Just the data."
+**Tone:** crisp, direct. Opening order per the skill's Tone section: (1) the personified intro line (`"Morning, {first_name} — {brain_name} here with today's read."` — the ONLY greeting), (2) the digest header, (3) the synthesis lead. No other greeting ("Good morning!" / "Here's what's happening." — never). After that it's a status board, not a conversation.
 
 **Voice match:** if `<WORKSPACE>/_hq/.claude/brand-voice-guidelines.md` exists, match user voice for the SUGGESTED FIRST MOVE line. Otherwise neutral professional.
 
@@ -81,7 +102,7 @@ Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_tele
 Append one `pack_run` event to `events.jsonl` via `atomic_append_jsonl`:
 
 ```json
-{"type": "pack_run", "source_skill": "morning-brief", "primary_thread_id": null, "related_thread_ids": [], "classification_confidence": null, "data": {"task_id": "morning-brief", "fired_at": "<ISO>", "digest_path": "_hq/briefings/morning-<YYYY-MM-DD>.md", "sections_rendered": [<list>], "events_captured": <N>, "outcome": "complete", "telemetry": {...}}}
+{"type": "pack_run", "source_skill": "morning-brief", "primary_thread_id": null, "related_thread_ids": [], "classification_confidence": null, "data": {"task_id": "morning-brief", "fired_at": "<ISO>", "digest_path": "_hq/briefings/morning-<YYYY-MM-DD>.md", "sections_rendered": [<list>], "needs_attention_ids": [<the commitment data.id for each numbered Needs Attention item, render order — apply-choices resolves `mark done [n]` against this list; empty list if the section didn't render>], "events_captured": <N>, "outcome": "complete", "telemetry": {...}}}
 ```
 
 If the workspace has **zero commitment events** but ≥3 meeting events on file, the morning-briefing skill's Step 3b nudge ("💡 Commitments tab is empty even though you've had N meetings — say 'scan for commitments' to backfill") was already included in the digest tail. Do not duplicate it as a separate chat turn.

@@ -65,6 +65,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text, atomic_write_json_locked  # noqa: E402
+from event_time import event_time  # noqa: E402
 
 # Optional: tz module for timezone localization. Fall back to UTC if missing.
 try:
@@ -200,14 +201,14 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
                 supersedes_map.setdefault(orig_seq, []).append({
                     "new_seq": data.get("new_decision_seq"),
                     "reason": data.get("reason", ""),
-                    "reviewed_at": data.get("reviewed_at") or ev.get("ts") or ev.get("timestamp", ""),
+                    "reviewed_at": data.get("reviewed_at") or event_time(ev),
                 })
         elif t == "decision_reaffirmed":
             decision_seq = data.get("decision_event_seq") or data.get("original_decision_seq")
             if decision_seq is not None:
                 reaffirms_map.setdefault(decision_seq, []).append({
                     "reason": data.get("reaffirmation_reason") or data.get("reason", ""),
-                    "reviewed_at": data.get("reviewed_at") or ev.get("ts") or ev.get("timestamp", ""),
+                    "reviewed_at": data.get("reviewed_at") or event_time(ev),
                     "snooze_until": data.get("snooze_until"),
                 })
         elif t == "decision_revisit_scheduled":
@@ -272,7 +273,7 @@ def _format_decision_line(
     title = data.get("title") or data.get("decision") or "(untitled decision)"
     decided_by_id = data.get("decided_by") or data.get("decided_by_id") or ev.get("person_id")
     decided_by = _resolve_name(name_idx, decided_by_id) if decided_by_id else ""
-    decided_at = _localize_date(data.get("decided_at") or ev.get("ts") or ev.get("timestamp"))
+    decided_at = _localize_date(data.get("decided_at") or event_time(ev))
     rationale = data.get("rationale") or data.get("reasoning") or data.get("context") or ""
     # Trim rationale to ~120 chars for the inline summary
     if isinstance(rationale, str) and len(rationale) > 200:
@@ -325,19 +326,14 @@ def _format_decision_line(
     return line
 
 
-def regenerate(workspace_root: str | Path) -> dict[str, Any]:
-    """Read events.jsonl + entities.json, build the view, atomic-write to
-    _hq/views/DECISION_LOG.md. Returns a counts dict.
+def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
+    """Build the DECISION_LOG.md content + counts WITHOUT writing.
 
-    The renderer is the canonical owner of `_hq/views/DECISION_LOG.md`
-    (v3.13.0+ — pre-v3.13.0 the file was hand-edited or stale). Any skill
-    that writes a decision-related event should call this after the write
-    so the view never falls behind.
-    """
-    workspace_root = Path(workspace_root)
+    Factored out of regenerate() so the changed-only path
+    (regenerate_if_changed) can compare candidate content against the existing
+    view before deciding whether to write (SPEC CLEAN1 / D4 idempotence)."""
     events_path = _events_path(workspace_root)
     entities_path = _entities_path(workspace_root)
-    view_path = _view_path(workspace_root)
 
     events = _load_events(events_path)
     entities = _load_entities(entities_path)
@@ -360,7 +356,7 @@ def regenerate(workspace_root: str | Path) -> dict[str, Any]:
     def _decided_at_key(d_tuple):
         d, _, _ = d_tuple
         data = d.get("data") or {}
-        return data.get("decided_at") or d.get("ts") or d.get("timestamp") or ""
+        return data.get("decided_at") or event_time(d)
 
     for k in by_status:
         by_status[k].sort(key=_decided_at_key, reverse=True)
@@ -405,19 +401,74 @@ def regenerate(workspace_root: str | Path) -> dict[str, Any]:
 
     content = "\n".join(lines).rstrip() + "\n"
 
-    # Atomic write — no JSON lock needed (this is a .md view file, not the substrate),
-    # but use atomic_write_text for fsync + rename safety.
-    view_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(view_path, content)
-
-    return {
+    counts = {
         "total": total,
         "active": len(by_status["active"]),
         "reaffirmed": len(by_status["reaffirmed"]),
         "snoozed": len(by_status["snoozed"]),
         "superseded": len(by_status["superseded"]),
-        "view_path": str(view_path),
     }
+    return content, counts
+
+
+# Header lines that change on every render (timestamps) even when the decision
+# content is identical. Stripped before the changed-only comparison so a quiet
+# workspace is a true no-op write.
+def _strip_volatile(text: str) -> str:
+    out = []
+    for line in text.splitlines():
+        if "regenerated-at:" in line:
+            continue
+        if line.startswith("_") and "· regenerated " in line:
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def regenerate(workspace_root: str | Path) -> dict[str, Any]:
+    """Read events.jsonl + entities.json, build the view, atomic-write to
+    _hq/views/DECISION_LOG.md. Returns a counts dict.
+
+    The renderer is the canonical owner of `_hq/views/DECISION_LOG.md`
+    (v3.13.0+ — pre-v3.13.0 the file was hand-edited or stale). Any skill
+    that writes a decision-related event should call this after the write
+    so the view never falls behind.
+    """
+    workspace_root = Path(workspace_root)
+    view_path = _view_path(workspace_root)
+    content, counts = _build_content(workspace_root)
+
+    # Atomic write — no JSON lock needed (this is a .md view file, not the substrate),
+    # but use atomic_write_text for fsync + rename safety.
+    view_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(view_path, content)
+
+    counts["view_path"] = str(view_path)
+    return counts
+
+
+def regenerate_if_changed(workspace_root: str | Path) -> dict[str, Any]:
+    """Changed-only regeneration (SPEC CLEAN1 / D4). Build the candidate view,
+    compare it (ignoring volatile timestamp lines) against what's on disk, and
+    write ONLY if the decision content actually changed.
+
+    cleanup calls this every weekly run so a missed decision-log regen never
+    persists for weeks — while a workspace with no new decisions stays a true
+    no-op write (the idempotence guarantee, acceptance #7). Returns the counts
+    dict plus `changed` (bool: did the content differ / was a write made)."""
+    workspace_root = Path(workspace_root)
+    view_path = _view_path(workspace_root)
+    content, counts = _build_content(workspace_root)
+
+    old = view_path.read_text(encoding="utf-8") if view_path.exists() else ""
+    changed = _strip_volatile(old) != _strip_volatile(content)
+    if changed:
+        view_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(view_path, content)
+
+    counts["changed"] = changed
+    counts["view_path"] = str(view_path)
+    return counts
 
 
 def main(argv: list[str]) -> int:

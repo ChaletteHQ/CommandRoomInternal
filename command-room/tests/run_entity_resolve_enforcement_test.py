@@ -31,6 +31,7 @@ COVERED_SKILLS = [
     "email-writer",
     "dormant-customer-scan",
     "morning-briefing",
+    "research",  # A6 — added to covered skills (gate + usage mentions cite the protocol doc)
 ]
 
 

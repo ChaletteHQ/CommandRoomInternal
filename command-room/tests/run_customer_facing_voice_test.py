@@ -181,6 +181,12 @@ def extract_customer_blockquotes(text: str) -> list[str]:
 
 
 def main() -> int:
+    # Force UTF-8 stdout so the ✓/✗ status glyphs don't raise UnicodeEncodeError
+    # on a Windows console (cp1252). Best-effort; never fatal.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     if not RELEASES_DIR.exists():
         print(f"FAIL — releases dir not found at {RELEASES_DIR}")
         return 1
@@ -215,7 +221,7 @@ def main() -> int:
         ver = version_tuple(mpath.name)
         enforced = ver >= ENFORCE_FROM
         try:
-            data = json.loads(mpath.read_text())
+            data = json.loads(mpath.read_text(encoding="utf-8"))
         except Exception as e:
             (errors if enforced else warnings).append(
                 (mpath, "<parse>", "json-parse-error", str(e), "fix the manifest JSON")
@@ -253,7 +259,7 @@ def main() -> int:
     skills_clean = 0
     for sk in skill_files:
         skills_scanned += 1
-        text = sk.read_text()
+        text = sk.read_text(encoding="utf-8")
         blocks = extract_customer_blockquotes(text)
         file_violations = []
         for block in blocks:

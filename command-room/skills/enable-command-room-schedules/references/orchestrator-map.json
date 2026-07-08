@@ -1,0 +1,12 @@
+{
+  "_comment": "Canonical taskId -> orchestrator-file mapping. SINGLE SOURCE OF TRUTH, read by both the human-readable dict in SKILL.md and the Step 1.A registration verification snippet. v2.14.27+ uses bare taskIds (no cr- prefix) so Cowork's sidebar renders cleanly. cleanup/reconcile-sent are intentionally ABSENT — they are silent background tasks, not chat orchestrators, and register separately (Step 1.D). pulse maps to orchestrator-dont-forget.md (filename kept for events.jsonl source_skill back-compat; see source_skill_compat.py).",
+  "morning-brief": "orchestrator-morning-brief.md",
+  "upcoming-meetings": "orchestrator-upcoming-meetings.md",
+  "inbox": "orchestrator-inbox.md",
+  "commitments": "orchestrator-commitments.md",
+  "pulse": "orchestrator-dont-forget.md",
+  "past-meetings": "orchestrator-past-meetings.md",
+  "friday-wrap": "orchestrator-friday-wrap.md",
+  "relationship-moves": "orchestrator-relationship-moves.md",
+  "commitment-triage": "orchestrator-commitment-triage.md"
+}

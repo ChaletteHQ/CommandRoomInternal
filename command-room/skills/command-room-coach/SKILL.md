@@ -1,6 +1,6 @@
 ---
 name: command-room-coach
-description: "The customer's permanent home chat with their AI (default name `Penelope`). Fires in three contexts: (1) M1 handoff — Chat 4 of the M1 onboarding flow becomes the customer's coach surface as soon as Phase 6 wraps; subsequent visits to that chat re-enter this skill. (2) M2 anchor — the operator re-opens Chat 4 at the start of Meeting 2 to ground the projects-and-people deep dive. (3) Self-serve — the customer fires a trigger phrase any time to get the Mirror + Insights + Outputs render against current workspace data. Renders a three-phase proof: (A) Mirror — what the AI knows about the customer from their own substrate, (B) Insights — 2-3 generated observations the customer wouldn't sit down to compute themselves (capture-vs-close gaps, status-vs-reality mismatches, cadence anomalies on named people, future-self conditionals firing), (C) Outputs — 3-5 ready-to-produce deliverables, each a specific named deliverable about a specific named entity in this workspace. Most Outputs are 2-phrase chains (`go [project]` + downstream, or `tell me about [person]` + downstream) that compose substrate-deepening with a produce-now skill — picked from `references/deliverable-catalog.md`. Some are direct (single-trigger cross-workspace synthesis) once events.jsonl has accumulated. Closes with 'which one do you want to go after first?' Triggers: 'show me what's next', 'what should I focus on this week', 'what should I focus on this month', 'what should I focus on', 'show me around', 'what can you do for me', 'what wins can I get from command room', 'am I getting my money's worth', 'what should I be using command room for', 'how do I get more out of this', 'show me the value', 'what does this do for me', 'help me use this better', 'prove it', 'coach me', 'command room coach', '/command-room-coach'. Also fires when any of these is prefixed with the user's chosen AI name (default `Penelope`, else `workspace.brain_name` from entities.json) — for example, the customer addressing the AI by name and asking any coach-shaped question: `Penelope, what should I focus on this week?` / `Penelope, show me around` / `Penelope, what can you do for me?` / `Penelope, show me what's next`. The personal-name prefix is conversational sugar; the post-prefix CONTENT determines routing — so `Penelope, draft an email to Bo` still routes to email-writer, not coach. DOES NOT fire on 'tour command room' or 'walk me through' (those imply feature-tour mental model — push back and offer the coach render instead). DOES NOT fire on 'install command room' (that's command-room-onboarding) or 'level up command room' (that's level-up-command-room — Layer 2 dashboard menu). DOES NOT fire on 'cleanup' (that's the workspace health report, different lens). DOES NOT fire on `go [project]` / `tell me about [person]` / specific produce-now triggers (those route to workspace-manager / people-crm / their owning skill — coach surfaces them as chained-deliverable offers but doesn't execute them)."
+description: "The customer's permanent home chat with their named AI — the mirror-insights-outputs surface that shows what the system knows, what it noticed, and what it can produce next. Fires on: 'show me what's next', 'what should I focus on this week / this month', 'show me around', 'what can you do for me', 'coach me', 'command room coach', 'prove it', and the same phrases addressed to the AI by name. Renders three beats: Mirror (what it knows from the customer's own data), Insights (2-3 computed observations), Outputs (3-5 ready-to-produce deliverables from the catalog, each about a specific named entity), closing with 'which one do you want to go after first?'. Does NOT fire on 'set up command room' (command-room-onboarding), 'weekly insights' (insight-generator), or workspace lifecycle commands like 'let's work' (workspace-manager). Beat structure and deliverable catalog: Routing section in the body."
 ---
 
 # Command Room Coach — The customer's home chat with their AI
@@ -15,7 +15,7 @@ A three-phase proof, delivered to the CEO in one chat, that earns the answer to 
 
 **Not a feature tour. Not a menu. Not a tutorial.** Every phase is generated from THIS CEO's data — what makes it wow is that it could not have been written for anyone else.
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use `command-room-coach` for:** the periodic Mirror + Insights + Outputs render in the customer's home chat — the proof-of-value surface that offers named deliverables anchored to specific entities in the workspace.
 - **Use `command-room-onboarding` for:** first-install setup. Coach receives the customer at handoff; it does not run setup itself.
@@ -31,7 +31,7 @@ The catalog of deliverable shapes coach picks from lives in `references/delivera
 
 | Context | How it triggers |
 |---|---|
-| **M1 handoff (default)** | M1's Phase 6 hands the customer off here — Chat 4 (the AI's home chat) becomes the coach surface as soon as onboarding wraps. The customer triggers the first coach render mid-M1 by typing `show me what's next` (Phase 2b in the M1 spec) after the `cr-m1-backfill` async task completes. Every subsequent visit to Chat 4 re-enters this skill. |
+| **M1 handoff (default)** | M1's Phase 6 hands the customer off here — Chat 4 (the AI's home chat) becomes the coach surface as soon as onboarding wraps. The customer triggers the first coach render mid-M1 by typing `show me what's next` (Phase 2b in the M1 spec) — onboarding no longer runs a deep-read task, so this renders immediately from the 60-day metadata scan (the deeper last-week read is on demand via `weekly-recap`). Every subsequent visit to Chat 4 re-enters this skill. |
 | **M2 anchor** | The operator re-opens Chat 4 at the start of Meeting 2 to ground the projects-and-people deep dive. The Mirror reflects how the workspace has grown since M1; Insights surface what's changed; Outputs tee up the M2 deliverables. |
 | **Self-serve** | The customer fires one of the trigger phrases any time. Same 3-phase render, but pull fresh data — the workspace will have grown since the last coach run, and the Mirror should reflect that growth ("you've added 2 new active threads since we last did this"). |
 | **Refresh / re-run** | If a `coach_session` event already exists in events.jsonl from the last 14 days, open with "Here's what's changed since last time" and skip the Mirror lines that haven't changed. Insights and Outputs always regenerate fresh. |
@@ -76,16 +76,17 @@ Read these to power BOTH the Mirror (Phase 2A) and the Wins (Phase 2C):
 | Session notes recency per project | Which projects are running cold |
 | Most-recent `onboarding_checkpoint` event with `phase: "5"` (M1 first fire only) | Onboarding's pre-ranked deep-dive candidates list — top entities by signal density at M1 graduation. Use as the starting target set for chained-deliverable offers when no runtime ranking exists yet. |
 | Most-recent `coach_session` event (refresh mode) | Which arcs were offered + acted on last time. Used to skip stale Mirror lines and rotate offers. |
+| Most-recent `m1_training_prompt_shown` / `m1_training_prompt_fired` events (M1 graduates) | The onboarding training-prompt funnel — how many of the 3 trained commands the customer actually fired. Feeds the Phase 2C complexity gate. |
 
 **Important reality on scheduled tasks (don't assume what's installed):**
 
-Onboarding installs a minimal set — `upcoming-meetings` and `past-meetings` are the only scheduled chats safely assumed to exist post-onboarding. **Do NOT pitch wins that depend on the Commitments chat, Morning Brief, Friday Wrap, Inbox, or Pulse chats existing.** Those require explicit `enable my schedules` runs. If a win wants to reference one, route the CEO to `scan for commitments` / `triage my inbox` / `weekly recap` as on-demand commands, or offer `enable my schedules` to add the scheduled version.
+Onboarding registers NO scheduled tasks — a fresh post-onboarding workspace has zero scheduled chats until the customer runs `set up command room schedules` in its own chat. **Never assume any scheduled chat exists.** Read the registered set from the workspace's schedule state — `_hq/workspace_config.json` / the entities.json schedule config, plus `_hq/data/scheduled_tasks.json` when present (the Phase 1 reads above) — and pitch only against what is actually registered. If a win wants to reference an unregistered chat, route the CEO to `scan for commitments` / `triage my inbox` / `weekly recap` as on-demand commands, or offer `set up command room schedules` to turn on the scheduled versions.
 
 Compute these metrics (skip any you can't compute — never fabricate):
 
 - `meetings_last_30_days` — from past-meetings events or calendar
 - `meetings_this_week` — from calendar forward
-- `open_commitments` + `oldest_commitment_age_days` — from `cru_match.py::load_open_commitments`. **Hard count gate (v3.18.3+, Bug #85): `open_commitments` is EXACTLY `len(load_open_commitments(events.jsonl))` — the full open set.** This MUST equal the morning brief's header total, which is `brief_state.compute_brief_state(...).counts.total` (= `you_owe + they_owe + unowned`, NOT `you_owe + they_owe` — ownerless commitments are real open items and belong in the total; omitting them was the v3.18.4 A85 16-vs-18 split). Do NOT post-filter the headline down to "actionable" / "stale" / you-owe-only — that aggressive filtering is the original v3.18.1 failure (coach said 4, brief said ~18). Compute the count from the helper; highlight a subset (oldest / stuck) only as a SEPARATE call-out line, never by shrinking the headline.
+- `open_commitments` + `oldest_commitment_age_days` — from `cru_match.py::load_open_commitments`. **Hard count gate (v3.18.3+, Bug #85; Stage A 2026-07): `open_commitments` is EXACTLY `commitment_state.commitment_counts(workspace_root)["total"]` — the one counting API (equivalently `len(load_open_commitments(events.jsonl))`; same number by construction).** This MUST equal the morning brief's header total, which is `commitment_state.compute_brief_state(...).counts.total` (= `you_owe + they_owe + unowned`, NOT `you_owe + they_owe` — ownerless commitments are real open items and belong in the total; omitting them was the v3.18.4 A85 16-vs-18 split; `brief_state` remains a working import alias). Do NOT post-filter the headline down to "actionable" / "stale" / you-owe-only — that aggressive filtering is the original v3.18.1 failure (coach said 4, brief said ~18). Compute the count from the helper; highlight a subset (oldest / stuck) only as a SEPARATE call-out line, never by shrinking the headline.
 - `active_projects` + `dormant_projects`
 - `active_people` + `people_no_contact_90d`
 - `emails_triaged_last_30_days` (if instrumented)
@@ -93,6 +94,7 @@ Compute these metrics (skip any you can't compute — never fabricate):
 - `last_weekly_recap_days_ago` (or "never")
 - `skills_never_fired` — diff events.jsonl against the catalog of expected wins
 - `scheduled_tasks_missing` — which of the 7 standard tasks aren't registered
+- `training_prompts_fired` — count of distinct `command_slot`s carrying a `m1_training_prompt_fired` event (0–3). Default 0 when the events are absent; a pre-RET1 workspace (no `m1_training_prompt_shown` events at all) is treated as "no gate applied" — standard mix, never penalized for predating the instrumentation.
 - `prospect_conversion_candidates` — from `shared/scripts/prospect_conversion_detector.py::detect_prospect_conversion_candidates(workspace_root)`. Prospects that look like they've become clients (active client engagement / active project / signing language in recent events) but are still registered `relationship_type: prospect`. **Detect-and-nudge, NEVER auto-flip (Bug #92):** when there are candidates, surface a nudge — *"[Name] looks like a client now ([reason]) — say `[Name] is now a client` to convert."* The CEO confirms; the conversion runs through the Bug #91 typed-writer path. Lead with HIGH-confidence candidates. Do NOT change `relationship_type` yourself — only suggest.
 
 **Do not narrate the read.** The CEO should see the wins report appear, not a play-by-play.
@@ -103,18 +105,19 @@ Compute these metrics (skip any you can't compute — never fabricate):
 
 **This is the hook.** Before any win, demonstrate that the AI actually knows who they are — not from a stock profile, but from their own workspace.
 
-The mirror is 8-12 lines of prose (NOT bullets, NOT a list). Read them back to themselves in plain English. Specific names, specific workstreams, specific decisions. Match their voice register if BRAND_VOICE.md is rich enough — if they write Hemingway-short, mirror Hemingway-short.
+The mirror is 8-12 lines of prose (NOT bullets, NOT a list). Read them back to themselves in plain English. Specific names, specific projects, specific decisions. Match their voice register if BRAND_VOICE.md is rich enough — if they write Hemingway-short, mirror Hemingway-short.
 
 **Cover these dimensions (pick 6-8 — not all, not none):**
 
 1. **Who they are** — name, role, business(es). Co-founders / partners by name if known.
-2. **What they're working on right now** — their 3-4 most-active workstreams *by name*, the 2-3 paused ones *by name*. The contrast between active and paused proves you've read the whole portfolio.
+2. **What they're working on right now** — their 3-4 most-active projects *by name*, the 2-3 paused ones *by name*. The contrast between active and paused proves you've read the whole portfolio.
 3. **Who matters** — people with deep `_people/` profiles named explicitly. Demonstrates the relationship-memory.
 4. **How they work** — one line that captures their working principle in their own words (pulled from WORKING_STYLE.md or CLAUDE.md). E.g., "Speed over perfection — ship a working v1, iterate from there."
 5. **How they write** — one line on voice register. E.g., "Em-dashes as connective tissue, no 'hope you're well,' direct asks." Earns trust that future drafts will sound like them.
 6. **A recent decision or move** — a specific named call from DECISION_LOG.md or BUSINESS_CONTEXT.md ("last week you onboarded Acme Co at $22k/mo Month 1"). Proves the memory is real, not generic.
 7. **A volume cue** — total activity volume ("1,553 events in the last 30 days — this is a power-user workspace"). Calibrates the wins that follow.
 8. **A soft spot** — something specific that wouldn't show up in a generic scan ("the Northstar advisory thread hasn't had a session note in 36 days — that's notable given you formally merged it into the main Northstar project in April").
+9. **Personalization calls (SPEC FRP1)** — one line on how much they've made the skills theirs. Count `skill_first_run_configured` + `skill_reconfigured` events in events.jsonl whose `data.origin` is an *active* personalization (`first_fire_override`, `tune`, `m1_batch`, or `drift_reoffer` — NOT `first_fire_defaults`, which is silent default-acceptance). Render as: *"You've made N personalization calls; everything else is running on smart defaults."* If N is 0, frame it as headroom, not a gap ("everything's on smart defaults so far — say 'tune [skill]' on anything you want to shape"). This is a soft cue, never a nag.
 
 **Tone rules for the mirror:**
 
@@ -125,7 +128,7 @@ The mirror is 8-12 lines of prose (NOT bullets, NOT a list). Read them back to t
 
 **Example mirror shape (don't copy verbatim — render fresh from THEIR data):**
 
-> *"You're Sam Sample — you run Category Company as a solo-builder-scaling-to-agency consulting practice, and you co-founded a second venture (Northstar Partners) with Bo Sample in April. Right now you're moving on ten active workstreams: the three Acme Co sub-threads (Plugin, Business/GTM, Desktop App), the Rio Sample COO partnership you just onboarded May 13 at $22k Month 1, three secondary client engagements, the trading system project, and overhead. Four threads you've consciously paused. Your deepest relationship memory is built around Bo Sample and Rio Sample (both with full `_people/` profiles — every other contact is at the directory level). You ship the way you tell me to ship: 'speed over perfection — v1 fast, iterate from there.' You write em-dashes as connective tissue, no 'hope you're well,' direct asks, structured when there's more than one moving part. 1,553 events flowed through your workspace in the last 30 days — this is a power-user setup. One thing I notice: the Northstar advisory thread hasn't had a session note in 36 days — which makes sense given you merged it into the main Northstar project on April 15, but the folder's still active in your portfolio."*
+> *"You're Sam Sample — you run Category Company as a solo-builder-scaling-to-agency consulting practice, and you co-founded a second venture (Northstar Partners) with Bo Sample in April. Right now you're moving on ten active projects: the three Acme Co projects (Plugin, Business/GTM, Desktop App), the Rio Sample COO partnership you just onboarded May 13 at $22k Month 1, three secondary client engagements, the trading system project, and overhead. Four projects you've consciously paused. Your deepest relationship memory is built around Bo Sample and Rio Sample — the two people I know in real depth; every other contact is at a glance. You ship the way you tell me to ship: 'speed over perfection — v1 fast, iterate from there.' You write em-dashes as connective tissue, no 'hope you're well,' direct asks, structured when there's more than one moving part. 1,553 moments flowed through your workspace in the last 30 days — this is a power-user setup. One thing I notice: the Northstar advisory project hasn't had a session note in 36 days — which makes sense given you merged it into the main Northstar project on April 15, but the folder's still active in your portfolio."*
 
 That's a mirror. The CEO reads it and feels seen.
 
@@ -143,10 +146,10 @@ These four fire reliably for any workspace with enough data. Run all four comput
 
 | Class | What you compute | What it surfaces |
 |---|---|---|
-| **Substrate-integrity** | Capture-vs-close ratios on commitments / decisions / drafts. Detection events without response events. | The CEO's own product (or workflow) failing silently in their own workspace. E.g., "221 commitments captured, 11 resolved — 5% close rate. The substrate is catching things and you're not lifting the net out of the water." |
-| **Status-vs-reality mismatch** | Threads tagged `active` whose last-activity timestamp is identical to `paused` threads. Stated priorities (in CLAUDE.md / BUSINESS_CONTEXT.md) vs. actual event-volume distribution. | "Quinn is tagged active but is behaviorally identical to your paused threads (both at 50 days since last touch). The status field is performing aspiration, not reality." |
-| **Cadence anomaly on named person** | For each person in entities.json with last_interaction set, compute their normal cadence (median gap between events over prior 60d) and compare to current silence. Flag 3+ sigma deviations on high-stakes people only. | "Bo hasn't sent you anything in 28 days. Prior 60 days his cadence was 3-4 days. This is a 4-sigma silence on your most-important non-paying relationship." |
-| **Future-self conditional fired** | Scan session notes, CLAUDE.md, decision notes for past-tense conditionals: "if X by [date]...", "flag me if Y...", "kill if Z..." Check whether the condition has now fired. | "In your March 12 session notes you wrote 'kill the Acme Co auto-update if not shipped by May 1.' It's May 21. The conditional fires." |
+| **Substrate-integrity** | **Fires iff:** commitments captured ≥ 10 AND close rate < 15% (`commitment_resolved` ÷ `commitment`, all-time). The ≥ 10 floor is the fix for the n=2 false gut-puncher — a 2-captured/0-resolved day-2 workspace no longer fires a "0% close rate." | The CEO's own follow-through failing silently in their own workspace. E.g., "Command Room caught 221 things you committed to. Only 11 got marked done — a 5% close rate. The catching works; the closing muscle isn't firing." |
+| **Status-vs-reality mismatch** | **Fires iff:** a thread tagged `active` in entities.json has no event carrying that `primary_thread_id` in > 30 days. | "Quinn is marked active but looks exactly like your paused projects (both at 50 days since last touch). The label is performing aspiration, not reality." |
+| **Cadence anomaly on named person** | **Fires iff:** the person is in the top-15 contacts by 60d interaction volume AND has ≥ 4 interaction events in the prior 60d AND the current silence gap > median gap + 3σ (σ over the prior-60d gap distribution). The top-15 + ≥ 4-event floors keep this off thin contacts. | "Bo hasn't sent you anything in 28 days. Prior 60 days his cadence was 3-4 days. This is a 4-sigma silence on your most-important non-paying relationship." |
+| **Future-self conditional fired** | **Fires iff:** a dated conditional quoted verbatim from the customer's own session notes / CLAUDE.md / decision notes has a named date that has now passed ("if X by [date]", "flag me if Y", "kill if Z"). | "In your March 12 session notes you wrote 'kill the Acme Co auto-update if not shipped by May 1.' It's May 21. The conditional fires." |
 
 ### Stretch insight classes (v1.1+, if data supports)
 
@@ -170,8 +173,10 @@ Don't try to generate every class every run. Pick the 2-3 with the strongest spe
 
 **Examples (don't copy verbatim — render fresh from THEIR data):**
 
-> **You've captured 221 commitments. You've resolved 11.**
-> That's a 5% close rate — meaning 95% of what you've trained Command Room to capture is sitting in the substrate without a corresponding "done" event. Your capture surface is working. The close-the-loop motion is the muscle that's not firing. This is your own product failing silently in front of you — which means it's probably also failing silently for the clients you've sold it to.
+> **Command Room caught 221 things you committed to. Only 11 got marked done.**
+> That's a 5% close rate — 95% of what you committed to is still sitting open with nothing marking it finished. The catching works; the closing muscle isn't firing. Every one of those open items is a promise someone may still be waiting on.
+
+(Framing note: the "your own product failing silently — and for the clients you've sold it to" angle fits only a CEO who builds and sells this kind of tooling. Default to the workflow framing above; use the builder framing only when BUSINESS_CONTEXT shows they ship software to clients.)
 
 > **Bo hasn't sent you anything in 28 days. Your normal Bo cadence is 3-4 days.**
 > This is a 4-sigma silence on your most-important non-paying relationship. Either he's slammed (a 'you good?' message is the right move) or something shifted. You and Bo co-founded Northstar Partners in April. Four weeks without contact is the kind of gap that becomes structural if it goes another two weeks.
@@ -180,8 +185,8 @@ Don't try to generate every class every run. Pick the 2-3 with the strongest spe
 
 1. **Specific over general.** "You have stale relationships" is a feature. "Bo hasn't sent you anything in 28 days, 4-sigma below his normal cadence" is a wow.
 2. **Name names. Name dates. Name dollar/time/relationship cost.**
-3. **Interpretation, not just numbers.** "5% close rate" is data. "5% close rate is your own product failing silently in front of you" is the wow.
-4. **Cap at 3.** More than 3 dilutes — pick the gut-punchers. If 5 candidates compete, the tiebreaker is which one the CEO is most likely to deny ("no it's not that bad") — denial means you hit a nerve, which is exactly the wow signal.
+3. **Interpretation, not just numbers.** "5% close rate" is data. "5% close rate means 95% of what you promised is still open — and someone may be waiting on each one" is the wow.
+4. **Cap at 3 — deterministic rank when more than 3 fire.** Rank the fired classes and take the top 3: future-self conditionals first (oldest-passed date first), then cadence anomalies by σ-multiple descending, then substrate-integrity by close rate ascending (lower first), then status-vs-reality by quiet-days descending. Two coach fires on the same substrate surface the same insights — no guesswork tiebreaker.
 5. **No insight without an anchor.** If you can't compute it from their data, drop it.
 
 ---
@@ -207,11 +212,13 @@ Outputs are *not* picked from a fixed menu. The full library of deliverable shap
 
 **Don't try to teach the chain as a muscle.** Onboarding Phase 5 / Step 7a already teaches `go [project]` + `end session`. Coach just uses the chain — render the two phrases in order, the user types them, the output lands.
 
-**Selection rule (full algorithm in `references/selection-algorithm.md` when written):**
+**Selection rule (full algorithm in `references/selection-algorithm.md`):**
 
 - M1 first fire → eligible = catalog entries tagged `m1_handoff` or `either`. Entity slot for chained entries resolves from onboarding's Step 5b deep-dive candidates list (read from the most-recent `onboarding_checkpoint` event with `phase: "5"`). Direct deliverables suppressed except `2.6 Coverage gap memo`. Mix target: ~4 chained + 1 direct.
 - Post-onboarding → eligible = entries whose `data_tier` and per-entry accumulation threshold are met. Entity slot resolves from freshness-weighted event-density on events.jsonl. Mix tilts toward direct deliverables as runtime accumulates.
 - Refresh mode (last `coach_session` event <14 days ago) → suppress entries already offered and not acted on; acknowledge entries that WERE acted on (downstream events landed) with a one-line.
+
+**Training-complexity gate (M1 graduates — RET1).** Read `training_prompts_fired` (Phase 1). `fired ≥ 2` → standard mix (3-step project chains are fine). `fired ≤ 1` → offer at most one 3-step project chain; bias toward single-step and 2-step person chains (the customer hasn't yet built muscle memory for the longer chains). Absent (pre-RET1 workspace, no training events) → no gate, standard mix.
 
 ### Output render shapes — three templates
 
@@ -291,7 +298,7 @@ Outputs are *not* picked from a fixed menu. The full library of deliverable shap
 
 > **The Acme Co flagship-or-outlier one-pager**
 >
-> *Why now:* Acme is your biggest active client thread — 24 mentions across three sub-threads in the deep-scan week — and recurring sessions have circled the question of whether to widen scope into a flagship engagement or keep it as a one-off. The brief names the call you've been circling.
+> *Why now:* Acme is your biggest active client — 24 mentions across its three projects in the deep-scan week — and recurring sessions have circled the question of whether to widen scope into a flagship engagement or keep it as a one-off. The brief names the call you've been circling.
 >
 > **To produce it — three short steps:**
 > 1. Say `go Acme Co` to load the project's full context.
@@ -304,9 +311,9 @@ Outputs are *not* picked from a fixed menu. The full library of deliverable shap
 >
 > *Why now:* Three highly-active people without deep profiles yet, two active projects without session notes in 21+ days, one logged decision without rationale. The gaps name what your workspace can't yet help you with.
 >
-> **To produce it:** Say `coverage gaps` — the memo lands in the next message.
+> **To produce it:** Say `coverage gaps` right here — the memo lands in the next message.
 >
-> *Pattern:* Coverage gap memo — anytime, `coverage gaps`.
+> *Pattern:* Coverage gap memo — in this coach chat, `coverage gaps`. (Coach itself produces this one — it is not a standalone command in other chats, so never promise it "anytime, anywhere.")
 
 ### Hard rules for outputs
 
@@ -383,7 +390,7 @@ Skip the log if writes would error — informational, not load-bearing.
 The abstract "Wins catalog" (10 generic operational use cases) has been REMOVED. Outputs replace it. Reason: the wins catalog did educational work by listing what the CEO *could* ask for, but produced no proof. Outputs do the same educational work AND produce the proof, by pattern-tagging each output ("you can ask for this anytime with [trigger]"). The CEO learns the categories through the examples, not before them.
 
 If a future workspace genuinely has no data to anchor any insights or outputs (truly fresh install), the skill should fail gracefully:
-> *"Your workspace is fresh — I don't have enough data yet to do the wow show honestly. Come back in 7-14 days after the scheduled chats have run and we've logged a few meetings together."*
+> *"Your workspace is brand new — I don't know you well enough yet to show you anything honest. Give it 7-14 days of scheduled chats and a few meetings logged together, then ask me again."*
 
 Better to skip than to render generic.
 
@@ -408,7 +415,15 @@ Better to skip than to render generic.
 4. **The "wow bar" test.** Before rendering any insight, ask: "would the CEO read this and say 'huh, I didn't see that'?" If no, drop it.
 5. **One question at the end, not three.** CEOs don't pick from menus of menus.
 6. **If they pick an output, produce it in the NEXT message.** No "let me set up," no "I'll get started." Generate the full deliverable.
-7. **Plain English throughout.** No internal skill names (`morning-briefing`) in customer-facing text — say "your daily brief." Trigger phrases (`prep me for [X]`) are fine — the CEO needs to fire them.
+7. **Plain English throughout.** No internal skill names (`morning-briefing`) in customer-facing text — say "your daily brief." Trigger phrases (`prep me for [X]`) are fine — the CEO needs to fire them. **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. This applies to the EXAMPLE blocks in this file too — the model copies examples over rules.
+   - BAD: "95% of what you've captured is sitting in the substrate without a corresponding 'done' event."
+   - GOOD: "Command Room caught 221 things you committed to. Only 11 got marked done. The catching works; the closing muscle isn't firing."
 8. **Never narrate the silent read.** No "scanning your workspace…" status messages. The CEO sees the report, not the build.
 9. **Mirror length: 8-12 lines of prose. Insights: 2-3. Outputs: 3-5. Hold the proportions.** A wall of 8 insights and 1 output reverses the energy curve — the wow has to land in Phase 2B and the leverage has to land in Phase 2C.
 10. **The proportions are the choreography.** Mirror earns attention → Insights spend it on wow → Outputs cash it in for action. Skip any phase and the next one underdelivers.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> The customer's permanent home chat with their AI (default name `Penelope`). Fires at the M1 onboarding handoff (Chat 4 becomes the coach surface), at the operator's Meeting-2 re-open, or self-serve any time — and renders the three-phase proof (Mirror / Insights / Outputs — see the body) against current workspace data, closing with 'which one do you want to go after first?' Triggers: 'show me what's next', 'what should I focus on' (any window — week, month), 'show me around', 'what can you do for me', 'what wins can I get from command room', 'am I getting my money's worth', 'what should I be using command room for', 'how do I get more out of this', 'what does this do for me', 'help me use this better', 'prove it', 'coach me', 'command room coach', '/command-room-coach'. Also fires when any of these is prefixed with the AI's name — the name strips off and the remainder routes normally (a prefixed email ask still goes to email-writer, not coach). DOES NOT fire on 'tour command room' or 'walk me through' (feature-tour mental model — push back and offer the coach render instead). DOES NOT fire on 'install command room' (command-room-onboarding), 'level up command room' (level-up-command-room), or 'cleanup' (workspace health report — different lens). DOES NOT fire on `go [project]` / `tell me about [person]` / produce-now triggers (workspace-manager / people-crm / the owning skill — coach offers those chains but doesn't execute them). DOES NOT fire on 'what should I pay attention to' (insight-generator — backward-looking patterns; this skill is forward-looking priorities).

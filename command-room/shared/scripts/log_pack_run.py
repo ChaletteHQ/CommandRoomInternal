@@ -34,7 +34,7 @@ USAGE
         kind="commitments",
         surfaced=7,
         duration_ms=int((time.monotonic() - t0) * 1000),
-        source_skill="cr-commitments",
+        source_skill="commitments",  # bare since v2.14.27 (legacy history: cr-commitments)
         fired_via="scheduled",
     )
 """

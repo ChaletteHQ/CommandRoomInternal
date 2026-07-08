@@ -1,6 +1,6 @@
 ---
 name: enable-workspace-map
-description: "Install or refresh the Workspace Map sidebar artifact — a stripped-down navigation tree of orgs + projects pinned to the Cowork sidebar (v3.6.5+; pre-v3.6.5 also rendered inline key-people lists + per-org commitment counts, both removed to declutter). Manual `↻ Refresh` button on the artifact triggers an ad-hoc rebuild; the v2.14.11–v2.14.24 daily auto-refresh scheduled task was removed in v2.14.25. Triggers: `install workspace map`, `enable workspace map`, `re-install workspace map`, `rebuild workspace map`. Legacy aliases (backward compat for users with the artifact already pinned): `install orgs map`, `enable orgs map`, `rebuild orgs map` (skill name was `enable-orgs-map` pre-v3.5.0; artifact id is still `orgs-map`). Also called silently by `command-room-update-bridge` (initial install). Idempotent: if already installed, regenerates with current data."
+description: "Install or refresh the Workspace Map sidebar artifact — a stripped-down navigation tree of orgs + projects pinned to the Cowork sidebar. Manual `↻ Refresh` button on the artifact triggers an ad-hoc rebuild (no scheduled auto-refresh). Triggers: 'install workspace map', 'enable workspace map', 're-install workspace map', 'rebuild workspace map'. Legacy aliases (backward compat for users with the artifact already pinned): 'install orgs map', 'enable orgs map', 'rebuild orgs map' (the artifact id remains `orgs-map`). Also called silently by `command-room-update-bridge` (initial install). Idempotent: if already installed, regenerates with current data."
 ---
 
 # enable-workspace-map (Workspace Map artifact)
@@ -11,7 +11,11 @@ Installs or regenerates the **Workspace Map** Live Artifact via the v2.7.13+ ren
 
 If `mcp__cowork__create_artifact` is unavailable, abort cleanly:
 
-> *"Orgs Map only renders in Cowork's sidebar. The chat skills (`list active`, `go [project]`) work without it."*
+> *"The Workspace Map lives in your Cowork sidebar, so I can't show it here. You can still get everything in chat — try `list active` or `go [project]`."*
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- BAD: "The Orgs Map only renders in Cowork's sidebar."
+- GOOD: "The Workspace Map lives in your Cowork sidebar." (the customer-facing name is always **Workspace Map** — never "Orgs Map", which survives only as the internal artifact id)
 
 Log `plugin_update_deferred` with reason `"cowork-not-available"`. Stop.
 
@@ -19,7 +23,7 @@ Log `plugin_update_deferred` with reason `"cowork-not-available"`. Stop.
 
 Read the last 200 lines of `_hq/data/events.jsonl`. If `{"type":"artifact_installed","artifact":"orgs-map"}` already exists:
 
-- **Interactive mode** — confirm: *"Orgs Map is already installed. Want me to rebuild with fresh data? (y / no)"*. If yes → Phase 3, log `artifact_refreshed`. If no → exit silently.
+- **Interactive mode** — confirm: *"Your Workspace Map is already on your sidebar. Want me to refresh it with current data? (yes / no)"*. If yes → Phase 3, log `artifact_refreshed`. If no → exit silently.
 - **Silent mode** (called by bridge / onboarding) — skip the prompt. Regenerate. Log `artifact_refreshed`.
 
 ## Phase 3: Build via renderer pipeline

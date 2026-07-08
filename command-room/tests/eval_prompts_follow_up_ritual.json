@@ -1,0 +1,14 @@
+{
+  "skill": "follow-up-ritual",
+  "schema_version": "1.0",
+  "notes": "SPEC A8 — LLM-judgment layer for follow-up-ritual (routing + behavior). Gate 15 executor/grader; run_all.py ignores this file.",
+  "prompts": [
+    {"name": "route_draft_followups", "kind": "positive_routing", "input": "draft follow-ups from the pricing review", "assert": ["Fires follow-up-ritual, not meeting-notes"]},
+    {"name": "route_close_loop", "kind": "positive_routing", "input": "close the loop on my last call", "assert": ["Fires follow-up-ritual"]},
+    {"name": "negative_process_call", "kind": "negative_routing", "input": "process the call", "assert": ["Does NOT fire follow-up-ritual — routes to meeting-notes (post-meeting capture)"]},
+    {"name": "negative_prep", "kind": "negative_routing", "input": "prep me for the call", "assert": ["Does NOT fire follow-up-ritual — routes to call-prep (pre-meeting)"]},
+    {"name": "behavior_you_first", "kind": "behavior", "input": "follow up on the pricing review", "assert": ["Pack opens with what YOU committed to before others' items (EXEC1)"]},
+    {"name": "behavior_still_open", "kind": "behavior", "input": "draft follow-ups", "assert": ["Surfaces each attendee's still-open commitments from before"]},
+    {"name": "behavior_pack_event", "kind": "behavior", "input": "close the loop", "assert": ["Renders a followup_pack .docx and logs a followup_pack_drafted event with meeting_event_seq"]}
+  ]
+}

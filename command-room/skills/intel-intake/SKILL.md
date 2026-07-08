@@ -1,6 +1,6 @@
 ---
 name: intel-intake
-description: "Turn any link, article, video, or pasted content into structured intel that connects to specific named entities in the CEO's workspace — people, projects, dormant customers, open commitments — not abstract categories. Use when the CEO drops a YouTube URL, article link, tweet, or pastes raw content and says 'intel', 'intake', 'break this down', 'break down this', 'break down this youtube video', 'break down this youtube', 'break down this article', 'break down this video', 'parse this', 'what can I do with this', 'what can I do with this article', or just pastes a URL with no instructions. Reads entities.json + events.jsonl to surface real entity connections (e.g., 'this fits Mira Sample, dormant 47d') instead of generic ones ('this fits one of your dormant customers'). Saves to _hq/intel/ with cross-references into entities.json for relevant threads. DOES NOT fire on 'one-pager on [topic]' (that's one-pager-composer) or on the CEO's own outputs (session notes, briefings)."
+description: "Turn any link, article, video, or pasted content into structured intel connected to specific named entities in the CEO's workspace — people, projects, dormant customers, open commitments — not abstract summaries. Fires on: 'break down this youtube video', 'what can I do with this article', 'process this link', 'intel from this', 'what does this mean for [project/us]', or pasting a URL with an ask attached. Extracts the claims, maps each to affected workspace entities, files the intel with provenance, and proposes concrete next actions. Does NOT fire on 'research [topic]' (research — outbound multi-source investigation; this processes a source the CEO supplies), or bare pasted links with no ask (asks one clarifying question first). Extraction shape and entity mapping: Routing section in the body."
 ---
 
 ## Skill Boundary (v2.1)
@@ -27,7 +27,7 @@ You are the **primary writer** for: `_hq/intel/INDEX.md` (append), `_hq/intel/KN
 
 # Intel Intake
 
-You are the user's AI intelligence processor. The user consumes content about Claude, AI tools, and automation. Your job: turn raw content into actionable items for their business and knowledge that sharpens their thinking.
+You are the user's AI intelligence processor. Read the user's content diet from `[WORKSPACE_ROOT]/_hq/BUSINESS_CONTEXT.md` (industry, tools, topics they track — default to AI tooling + their industry if it lists none; never assume a specific diet). Your job: turn raw content into actionable items for their business and knowledge that sharpens their thinking.
 
 The user doesn't want summaries. They want to know what this means for them specifically — filtered through their setup, their clients, and their market position.
 
@@ -61,32 +61,32 @@ Before analyzing, load the workspace state so the analysis can connect to real n
 
 **1. Business framing (always required):**
 ```
-{SKILL_DIR}/../../_hq/BUSINESS_CONTEXT.md
+[WORKSPACE_ROOT]/_hq/BUSINESS_CONTEXT.md
 ```
 Tells you: tools/connectors installed, service lines, pricing model, business goals.
 
 **2. Entity substrate (v2.x workspaces — preferred):**
 ```
-{SKILL_DIR}/../../_hq/data/entities.json
-{SKILL_DIR}/../../_hq/data/aliases.json
+[WORKSPACE_ROOT]/_hq/data/entities.json
+[WORKSPACE_ROOT]/_hq/data/aliases.json
 ```
 The canonical source for every person, org, project, and their relationships. Hold the parsed structure in working memory — you'll cross-reference it during Step 3.
 
 **3. Recent activity (v2.x workspaces — preferred):**
 ```
-{SKILL_DIR}/../../_hq/data/events.jsonl
+[WORKSPACE_ROOT]/_hq/data/events.jsonl
 ```
 Last 90 days only. Use to detect: dormancy (no `interaction` events for a person/org), commitment status (`commitment` events without matching `commitment_resolved`), recent decisions (`decision` events), upcoming meetings (`meeting` events with future timestamps). Don't load the full file — `tail` to last 90 days by timestamp.
 
 **4. Knowledge base (always required, dedup):**
 ```
-{SKILL_DIR}/../../_hq/intel/KNOWLEDGE_BASE.md
+[WORKSPACE_ROOT]/_hq/intel/KNOWLEDGE_BASE.md
 ```
 Don't repeat what the user already knows.
 
 **5. Tag list (always required):**
 ```
-{SKILL_DIR}/reference/TOPIC_TAGS.md
+{SKILL_DIR}/references/TOPIC_TAGS.md
 ```
 
 **Degraded mode (v1.x workspaces).** If `_hq/data/entities.json` doesn't exist, the workspace hasn't migrated to v2.x yet. Skip steps 2 and 3 above, fall back to BUSINESS_CONTEXT.md alone, and add a note at the top of the analysis output: `_(Heads up — I don't have your people, projects, and orgs loaded yet, so the recommendations below are general rather than tied to specific names in your workspace.)_` Don't error or block. Don't try to read the JSON sources from a v1.x layout — they aren't there.
@@ -105,9 +105,11 @@ Before running the lenses, scan the content for entity hooks. This is the step t
 
 | Match strength | Criteria | Confidence label |
 |---|---|---|
-| Strong | Named entity in content matches a record in entities.json by canonical name or alias, AND has recent activity (≤90 days in events.jsonl) | `verified` |
-| Plausible | Topical pattern in content matches an obvious state in the workspace (e.g., dormancy + ≥1 dormant org), or named entity matches but with no recent activity | `likely_accurate` |
-| Speculative | Industry/vertical hook with no specific entity match, but pattern feels relevant | `unverified` |
+| Strong | Named entity in content matches a record in entities.json by canonical name or alias, AND has recent activity (≤90 days in events.jsonl) | verified |
+| Plausible | Topical pattern in content matches an obvious state in the workspace (e.g., dormancy + ≥1 dormant org), or named entity matches but with no recent activity | likely accurate |
+| Speculative | Industry/vertical hook with no specific entity match, but pattern feels relevant | unverified |
+
+Confidence labels are always rendered in plain English — "verified / likely accurate / unverified". The snake_case forms (`likely_accurate` etc.) exist only in file metadata JSON, never in anything the CEO reads.
 
 **Output of this step (held in working memory):** a list of entity hits, each with `{entity_id, entity_name, kind, why_it_matches, recent_state, confidence}`. Use this list when running the lenses in Step 4 — every recommendation should reference a specific entity by name when one is available.
 
@@ -124,7 +126,7 @@ Run the content through these six lenses. Skip any that aren't relevant, but alw
 Features, tools, techniques, or patterns that are genuinely new or that the user likely hasn't encountered. Flag version/date sensitivity — if the content references beta features or things that may have changed, say so.
 
 ### Lens 2: How Does This Affect Their Setup?
-Cross-reference against BUSINESS_CONTEXT.md AND the entity substrate. Does this improve, replace, or conflict with something the user already uses? Be specific: "This new MCP feature could replace how you're using Zapier for QuickBooks sync — affects Northstar Partners's invoice workflow specifically" not vague hand-waving. Tag each finding with confidence (`verified` / `likely_accurate` / `unverified`).
+Cross-reference against BUSINESS_CONTEXT.md AND the entity substrate. Does this improve, replace, or conflict with something the user already uses? Be specific: "This new Claude integration could replace how you're using Zapier for QuickBooks sync — affects Northstar Partners's invoice workflow specifically" not vague hand-waving. Tag each finding with confidence (verified / likely accurate / unverified).
 
 ### Lens 3: Which Client Benefits?
 Walk the entity hits from Step 3. For each strong or plausible match, write the recommendation as: "[Entity name] ([state, e.g., dormant 47d / open commitment / active project]) — [specific angle this content opens up]." Do not list clients that didn't match in Step 3 just to fill space. If nothing matched, say "No active client connection — content is general AI/operator intel" and move on. Tag each finding with confidence.
@@ -154,7 +156,7 @@ This is the user's full, unfiltered output. Present in this order:
 
 **How This Relates To You** — this is the lead, not the follow-up. Surface the top 1–3 entity hits from Step 3 with their specific angle. Format each as:
 
-> **[Entity name]** *(kind, current state — e.g., "Mira Sample, person, haven't talked in 47 days" or "Northstar Partners, project, active")* — [the specific angle this content opens up for that entity]. *(How sure I am: strong match / probably fits / worth a look)*
+> **[Entity name]** *(kind, current state — e.g., "Mira Sample, person, haven't talked in 47 days" or "Northstar Partners, project, active")* — [the specific angle this content opens up for that entity]. *(How sure I am: verified / likely accurate / unverified)*
 
 If Step 3 returned no matches, write `_No specific entity match in your workspace — analysis is at category level only._` and continue. Don't pad with weak matches just to fill the section. **One named entity hit beats five generic mentions** — this is the section that turns intel into action.
 
@@ -163,20 +165,24 @@ If Step 3 returned no matches, write `_No specific entity match in your workspac
 - Which client / person / project it applies to (or workspace-wide)
 - Effort: quick win / needs a session / significant build
 - Priority: do now / queue up / nice to have
-- How sure: strong match / probably fits / worth a look
+- How sure: verified / likely accurate / unverified
 
 **What's Good to Know** — concepts and patterns that sharpen thinking. Concise but substantive. Per-finding confidence labels where the finding is a factual claim.
 
 **Already Covered** — anything the user's setup already handles. Important for confirming they're on track.
 
-**Cowork Applicability** — what this enables inside Cowork. For each item:
-- What it is: new skill / skill enhancement / plugin / workflow / scheduled task
+**What I Could Set Up For You** (the Cowork-applicability section) — what this enables inside Cowork. For each item:
+- What it is: something new I could do for you / an upgrade to something I already do / a ready-made tool / an automation
 - What it lets the user do (or do better)
-- Effort: config tweak / skill edit / net-new build
-- Action offer: "Build this skill now" / "Search plugin registry" / "Update [existing skill]" / "Download [plugin name]"
+- Effort: quick change / an afternoon / a bigger build
+- Action offer, in plain words: "Want me to set this up now?" / "Want me to look for a ready-made tool?" / "Want me to upgrade [the thing I already do]?"
 - If it's client-packageable, say so
 
-This section must always appear — even if the answer is "Nothing new for Cowork here." That clarity is valuable too.
+Omit this section entirely when there's nothing new for Cowork — an empty section is noise, and the saved-analysis JSON field simply carries an empty string. (Pre-P1.8 the rule forced a "Nothing new for Cowork here" placeholder; that's retired.)
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "This new MCP feature could replace how you're using Zapier — flag as `likely_accurate`."
+- Good: "This new Claude integration could replace how you're using Zapier — likely accurate."
 
 **Synthesis** (multi-item only) — themes across sources.
 
@@ -184,7 +190,7 @@ This section must always appear — even if the answer is "Nothing new for Cowor
 
 ### 6a: Save the analysis
 ```
-{SKILL_DIR}/../../_hq/intel/[YYYY-MM-DD]-[slugified-title].md
+[WORKSPACE_ROOT]/_hq/intel/[YYYY-MM-DD]-[slugified-title].md
 ```
 
 Format:
@@ -205,18 +211,18 @@ Format:
 [Full analysis from Step 5]
 ```
 
-Validate tags against `{SKILL_DIR}/reference/TOPIC_TAGS.md` before saving. Don't create new tags unless genuinely needed.
+Validate tags against `{SKILL_DIR}/references/TOPIC_TAGS.md` before saving. Don't create new tags unless genuinely needed.
 
 ### 6b: Update the index
 ```
-{SKILL_DIR}/../../_hq/intel/INDEX.md
+[WORKSPACE_ROOT]/_hq/intel/INDEX.md
 ```
 
 Each entry: date, title, source type, tags, one-line summary, Reviewed (Yes/No), Shared (Yes/No). Most recent first.
 
 ### 6c: Update the knowledge base
 ```
-{SKILL_DIR}/../../_hq/intel/KNOWLEDGE_BASE.md
+[WORKSPACE_ROOT]/_hq/intel/KNOWLEDGE_BASE.md
 ```
 
 Organized by topic, not by source. Only add genuinely new or actionable insights — not filler. If a new insight contradicts or supersedes an older one, update the old entry.
@@ -251,7 +257,7 @@ Shape:
     "intel_file_path": "_hq/intel/<YYYY-MM-DD>-<slug>.md",
     "tags": ["<tag1>", "<tag2>"],
     "entity_match_count": <int — number of strong+plausible matches surfaced in Step 3>,
-    "cowork_applicability": "<one-line summary from Step 5 'Cowork Applicability' section, or empty string if 'Nothing new for Cowork here'>"
+    "cowork_applicability": "<one-line summary from Step 5's 'What I Could Set Up For You' (Cowork-applicability) section, or empty string when the section was omitted>"
   }
 }
 ```
@@ -266,7 +272,7 @@ After presenting the user's private analysis, if they have a shared intel channe
 
 1. Read the output format template:
    ```
-   {SKILL_DIR}/reference/OUTPUT_FORMAT.md
+   {SKILL_DIR}/references/OUTPUT_FORMAT.md
    ```
 
 2. Generate the shared post following that format exactly. Critical rules:
@@ -288,17 +294,16 @@ Once the user trusts the format, they can tell you to auto-post without confirma
 Suggest concrete follow-ups. Lead with entity-specific actions when Step 3 surfaced strong matches — these are the highest-leverage:
 
 - "Want me to draft a re-engagement email to [Person/Org from Step 3] using this angle?"
-- "Should I open [Project from Step 3] and add this as a new active thread / workflow?"
+- "Should I add this to [Project from Step 3]?"
 - "Want me to flag [Person from Step 3] for the next morning briefing with this hook?"
-- "Want me to implement [specific thing] right now?"
-- "Should I update [client skill/config] with this?"
-- "Want me to build a skill/workflow based on [pattern]?"
+- "Want me to set [specific thing] up right now?"
+- "Should I fold this into what I already do for [client]?"
+- "Want me to build this for you?"
 - "Should I draft a pitch around [capability] for [prospect]?"
-- "Want me to search the plugin registry for [relevant plugin]?"
-- "Want me to create a new Cowork skill for [capability]?"
-- "Should I update [existing skill] to incorporate this?"
+- "Want me to look for a ready-made tool that does this?"
+- "Should I change how I handle [existing task] to use this?"
 
-If the Cowork Applicability section identified a buildable skill or downloadable plugin, **always offer the specific action** — don't just mention it exists. If the "How This Relates To You" section named an entity, **always offer the entity-specific follow-up first** — that's where intel converts to action. The goal: zero gap between learning and doing.
+If the "What I Could Set Up For You" section identified something buildable or a ready-made tool, **always offer the specific action** — don't just mention it exists. If the "How This Relates To You" section named an entity, **always offer the entity-specific follow-up first** — that's where intel converts to action. The goal: zero gap between learning and doing.
 
 ---
 
@@ -326,7 +331,7 @@ Surface what hasn't been reviewed yet:
 
 Proactive research:
 
-1. Read `{SKILL_DIR}/reference/SOURCES.json`
+1. Read `{SKILL_DIR}/references/SOURCES.json`
 2. Search Tier 1 sources first using their `search_pattern` (replace `{topic}` with the query)
 3. If Tier 1 has results, process them. Then check Tier 2 for additional angles
 4. If Tier 1 is thin, search Tier 2 and Tier 3
@@ -337,10 +342,12 @@ Proactive research:
 
 ### "what do we know about [X]?"
 
+**Routing note:** as a standalone chat trigger, `what do we know about [X]` fires the `research` skill (which reads this same accumulated intel first and only goes to the web for gaps). This handler applies when the question arises inside an intel-intake flow, or when research delegates the workspace-side read.
+
 Search accumulated knowledge:
 
 1. Search KNOWLEDGE_BASE.md for matching entries
-2. Search processed intel files in `{SKILL_DIR}/../../_hq/intel/` for deeper context
+2. Search processed intel files in `[WORKSPACE_ROOT]/_hq/intel/` for deeper context
 3. Synthesize a consolidated answer with sources
 4. If nothing found, offer to run "go find intel on [X]"
 
@@ -373,7 +380,7 @@ Search accumulated knowledge:
 - **Date check**: Content older than 90 days flagged as potentially outdated
 - **Source tier**: Always displayed (from SOURCES.json)
 - **Verification**: Check official docs before recommending any feature/tool
-- **Confidence label** (per finding, not per item): `verified` (confirmed in official docs OR strong entity match in substrate) | `likely_accurate` (Tier 1-2, recent OR plausible entity match) | `unverified` (Tier 3, unconfirmed, OR speculative entity match)
+- **Confidence label** (per finding, not per item; always rendered plain): verified (confirmed in official docs OR strong entity match in the workspace) | likely accurate (Tier 1-2, recent OR plausible entity match) | unverified (Tier 3, unconfirmed, OR speculative entity match)
 - **Entity-match audit**: every named entity in the analysis must trace back to a record in `entities.json` or an alias in `aliases.json`. If you can't cite the source record, drop the name.
 - **Contradiction check**: If new intel conflicts with knowledge base entries, flag both
 - **Hype filter**: shipped | beta | announced | demo-only
@@ -399,13 +406,13 @@ Search accumulated knowledge:
 ### Tag inconsistency
 **What happens**: New tags created that overlap existing ones (e.g., "mcp-connectors" vs "connectors").
 **Why**: Tag list is long and not always checked before creating new ones.
-**Instead**: Always validate against `{SKILL_DIR}/reference/TOPIC_TAGS.md` before creating any new tag.
+**Instead**: Always validate against `{SKILL_DIR}/references/TOPIC_TAGS.md` before creating any new tag.
 **Added**: 2026-03-22
 
 ### Broken path references
 **What happens**: Skill references files that don't exist at the expected path.
 **Why**: Previous versions used hardcoded paths.
-**Instead**: Always use `{SKILL_DIR}` relative paths. BUSINESS_CONTEXT.md is at `{SKILL_DIR}/../../_hq/BUSINESS_CONTEXT.md`. Intel files are at `{SKILL_DIR}/../../_hq/intel/`.
+**Instead**: Two roots, two rules (CONTRACT Rule 22). Skill-shipped references live under `{SKILL_DIR}/references/`. Workspace data lives under `[WORKSPACE_ROOT]/_hq/` — resolve `[WORKSPACE_ROOT]` at runtime by finding `_hq/` under the mounted workspace (never a path relative to the plugin dir; `{SKILL_DIR}/../../_hq/` was the pre-P1.8 bug that pointed into the plugin install).
 **Added**: 2026-03-31
 
 ### Stale business context
@@ -417,7 +424,7 @@ Search accumulated knowledge:
 ### Shared channel format drift
 **What happens**: Shared posts don't match the expected format, breaking consumer skill parsing.
 **Why**: Claude rephrases section headers or skips fields.
-**Instead**: Always read `{SKILL_DIR}/reference/OUTPUT_FORMAT.md` before generating a shared post. Follow the template exactly — the consumer skill pattern-matches on the bold headers.
+**Instead**: Always read `{SKILL_DIR}/references/OUTPUT_FORMAT.md` before generating a shared post. Follow the template exactly — the consumer skill pattern-matches on the bold headers.
 **Added**: 2026-03-31
 
 ### Entity match false positives
@@ -441,3 +448,9 @@ Search accumulated knowledge:
 - Does not replace the CEO's original sources — stores references + summaries, never the raw content.
 - Does not auto-share or post intel anywhere — output lives in `_hq/intel/` until the CEO acts on it.
 - Does not fire on the CEO's own outputs (session notes, briefings) — only external content.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Turn any link, article, video, or pasted content into structured intel that connects to specific named entities in the CEO's workspace — people, projects, dormant customers, open commitments — not abstract categories. Use when the CEO drops a YouTube URL, article link, tweet, or pastes raw content and says 'intel', 'intake', 'break this down', 'break down this', 'break down this youtube video', 'break down this youtube', 'break down this article', 'break down this video', 'parse this', 'what can I do with this', 'what can I do with this article', or just pastes a URL with no instructions. Reads entities.json + events.jsonl to surface real entity connections (e.g., 'this fits Mira Sample, dormant 47d') instead of generic ones ('this fits one of your dormant customers'). Saves to _hq/intel/ with cross-references into entities.json for relevant threads. DOES NOT fire on 'one-pager on [topic]' (that's one-pager-composer) or on the CEO's own outputs (session notes, briefings).

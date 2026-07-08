@@ -25,6 +25,45 @@ from entity_resolve import resolve_all
 candidates = resolve_all(workspace_root, query)
 ```
 
+### The resolution ladder — decision table
+
+| Situation | You MUST | Returns |
+|---|---|---|
+| Any loose name (person/org/project) in input | `resolve_all(workspace_root, query)` FIRST | list[ResolveResult], confidence-sorted |
+| Need the single best match | `resolve(workspace_root, query)` | top result or None |
+| `go [name]` → want the linked project | `resolve_to_linked_project(workspace_root, query)` | linked project or None |
+| ≥2 candidates above the top tier | disambiguation widget — NEVER silent-first-pick | — |
+| `resolve_all` returns [] | substring grep allowed, MUST flag the fallback to the user | — |
+| Phonetic-only match (conf 0.75) | confirm "Did you mean [match]?" then load | — |
+
+Signature order is `(workspace_root, query)` — `query` is the SECOND argument. This is the ONLY place the ladder is explained; skills cite this doc and never restate the tiers.
+
+### Canonical invocation example (bash + python — standard pattern)
+
+This is the canonical resolver-invocation block. Skills cite this section rather than restating it.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
+cd "$PLUGIN_ROOT"
+python3 -c "
+import sys
+sys.path.insert(0, 'shared/scripts')
+from entity_resolve import resolve, resolve_to_linked_project
+# For 'go [name]' flows that want to load a project:
+result = resolve_to_linked_project('$WORKSPACE', 'Elon')
+# For pure name-mention flows that want the matched entity (person/org/project):
+# result = resolve('$WORKSPACE', 'Elon')
+if result:
+    print(f'{result.entity_type} {result.entity_id} ({result.display_name})')
+    print(f'  via: {result.matched_via} (conf {result.confidence:.2f})')
+    print(f'  reason: {result.reason}')
+else:
+    print('no match')
+"
+```
+
 `resolve_all()` runs a 3-tier resolver:
 
 - **Tier 1 — exact alias hit.** Instant, deterministic. If a query matches a
@@ -32,7 +71,7 @@ candidates = resolve_all(workspace_root, query)
 - **Tier 2 — fuzzy match (≥ 0.85 confidence).** Handles typos, minor
   reorderings ("Sample Sam" vs "Sam Sample"), abbreviation patterns
   (`SS` for `Sam Sample`).
-- **Tier 3 — phonetic / Soundex (≥ 0.65 confidence).** Catches "Smyth"
+- **Tier 3 — phonetic / Soundex (0.75 confidence).** Catches "Smyth"
   vs "Smith" / cross-locale spelling variants.
 
 If `resolve_all()` returns NO candidates, ONLY THEN may a skill fall back

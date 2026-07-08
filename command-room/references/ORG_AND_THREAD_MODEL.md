@@ -60,9 +60,9 @@ Canonical reference for how Command Room represents businesses, affiliations, th
 - `other` — escape hatch with `relationship_label`
 
 **`tier` enum** *(added v2.10.3)* — visual + filtering tier, independent of `relationship_type`:
-- `primary` — the CEO's own org(s): holding + operating units they run. Renders prominent in Orgs Map. Surfaces in every daily flow.
+- `primary` — the CEO's own org(s): holding + operating units they run. Renders prominent in Workspace Map. Surfaces in every daily flow.
 - `secondary` — active client / partner / advisor / portfolio company. High-signal external relationships. Renders normally. Surfaces in daily flows.
-- `external` — vendor / prospect / service_provider. Low-signal third parties. Renders smaller, under collapsed "External" section in Orgs Map. Only surfaces in daily flows when there's an open commitment or a meeting on the calendar.
+- `external` — vendor / prospect / service_provider. Low-signal third parties. Renders smaller, under collapsed "External" section in Workspace Map. Only surfaces in daily flows when there's an open commitment or a meeting on the calendar.
 - `passive` — dormant / archived / orphan. Historical reference only. Hidden from daily flows. Accessible by name.
 
 Tier is set automatically at onboarding via the primary-affiliation gate + interaction-volume thresholds (see Discovery section below), or explicitly by the user via `make [Org] primary` / `make [Org] external` / etc.
@@ -328,7 +328,7 @@ Every daily-flow surface filters by `status`:
 | Don't Forget | active (for dormancy detection) + dormant proposal-confirmation prompts |
 | Past Meetings | all (meeting processing happens regardless of project status) |
 | `go [name]` | all — works for any status, dormant/archived projects load their cached substrate |
-| Orgs Map | active prominent, dormant under collapsed "Dormant (N)" section, archived under collapsed "Archive (N)" section |
+| Workspace Map | active prominent, dormant under collapsed "Dormant (N)" section, archived under collapsed "Archive (N)" section |
 
 This means the v2.10.2 12-month historical backfill can auto-create projects for old activity without polluting the active workspace — those auto-created projects land as `dormant` (60+ days inactive) or `archived` (180+ days inactive) and stay invisible until the user opens them.
 

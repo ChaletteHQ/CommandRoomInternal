@@ -1,0 +1,18 @@
+{
+  "_comment": "Settings-layer C4 — per-skill allowed top-level config keys (FRP1 skill_config). save_skill_config() rejects unknown keys LOUDLY at write for any skill listed here (the commitment shape-drift lesson applied to config); a skill absent from this map is permissive (back-compat — validation only tightens where a schema is declared). cleanup's weekly config lint (lint_skill_configs) flags live-config keys not in this map. Keys are the top-level config keys from each skill's DEFAULTS block; nested structure (e.g. going_quiet.enabled) is not enforced here. Grow this map as a skill's knobs change — in the SAME commit that changes the DEFAULTS (CONTRACT Rule 29).",
+  "_schema_version": 1,
+  "skills": {
+    "email-writer": ["draft_posture", "sign_off", "length"],
+    "morning-briefing": ["depth", "leads_with", "going_quiet"],
+    "inbox-triage": ["discard_aggressiveness", "vip_seed", "default_action"],
+    "call-prep": ["depth", "auto_fire"],
+    "meeting-notes": ["commitment_capture", "verbosity", "new_person_handling"],
+    "follow-up-ritual": ["send_timing", "recipient_default"],
+    "weekly-recap": ["lens", "internal_backlog"],
+    "dormant-customer-scan": ["threshold", "revenue_weighting", "watch_list"],
+    "decision-log": ["auto_log", "revisit_reminders"],
+    "one-pager-composer": ["register", "signature"],
+    "memo-writer": ["register", "signature"],
+    "operator-report": ["length"]
+  }
+}

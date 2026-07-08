@@ -56,12 +56,16 @@ def main():
     print("[1] enable-command-room-schedules asserts cleanup before the Phase 6 early-exit")
     check("SKILL.md present", bool(enable), f"missing {ENABLE}")
     # The gate must live BEFORE Phase 6 in file order.
-    gate_idx = enable.find("Cleanup-registration assertion")
+    # Phase 3 / SPEC-2.3: the per-task "Cleanup-registration assertion" became the
+    # SILENT_TASKS registry-loop assertion — same gate, generalized so every silent
+    # task (cleanup / reconcile-sent / monthly-report / weekly-insights / future)
+    # is covered by one loop instead of one hand-written bullet each.
+    gate_idx = enable.find("Silent-task registration assertion")
     phase6_idx = enable.find("## Phase 6")
     check(
-        "a 'Cleanup-registration assertion' gate exists",
+        "a silent-task registration assertion gate exists",
         gate_idx != -1,
-        "no cleanup-registration assertion section found in enable-command-room-schedules",
+        "no silent-task registration assertion section found in enable-command-room-schedules",
     )
     check(
         "the gate is positioned before Phase 6 (early-exit can't skip it)",
@@ -74,24 +78,33 @@ def main():
         "gate must state it runs on every invocation, including the re-run early-exit",
     )
     check(
-        "the gate checks the literal 'cleanup' taskId and falls back to Step 1.D",
-        '"cleanup"' in enable and "Step 1.D" in enable and "list_scheduled_tasks" in enable,
-        "gate must list_scheduled_tasks, check taskId 'cleanup', and run Step 1.D when absent",
+        "the gate loops the SILENT_TASKS registry and falls back to Step 1.D",
+        "SILENT_TASKS" in enable and "Step 1.D" in enable and "list_scheduled_tasks" in enable,
+        "gate must list_scheduled_tasks, loop SILENT_TASKS, and run Step 1.D for any absent task",
     )
+    # cleanup must still be covered — via the registry, not prose
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.join(PLUGIN_ROOT, "shared", "scripts"))
+    try:
+        from schedule_config import SILENT_TASKS as _ST
+        check("'cleanup' is in the SILENT_TASKS registry the gate loops",
+              "cleanup" in _ST, repr(sorted(_ST)))
+    except ImportError as e:
+        check("'cleanup' is in the SILENT_TASKS registry the gate loops", False, repr(e))
     print()
 
     # --- command-room-update-bridge: cleanup generic-add path ---
     print("[2] command-room-update-bridge has a cleanup generic-add path")
     check("SKILL.md present", bool(bridge), f"missing {BRIDGE}")
     check(
-        "bridge references the v3_18_2_cleanup_missing detector",
-        "v3_18_2_cleanup_missing" in bridge and "is_cleanup_missing" in bridge,
-        "Phase 4.7 must drive the cleanup add via the release detector (mirror of friday-wrap)",
+        "bridge Phase 4.7 loops the SILENT_TASKS registry (covers cleanup)",
+        "SILENT_TASKS" in bridge and "cleanup" in bridge,
+        "Phase 4.7 must drive the silent-task adds via the SILENT_TASKS registry loop",
     )
     check(
-        "bridge registers cleanup with the canonical Sunday cron",
-        "0 18 * * 0" in bridge and "cleanup" in bridge,
-        "cleanup add path must use cron 0 18 * * 0",
+        "bridge still acknowledges the legacy cleanup detector as a valid helper",
+        "v3_18_2_cleanup_missing" in bridge,
+        "keep the detector reference — it remains a valid detection helper",
     )
     check(
         "bridge add path is silent (no question) per Rule 28",

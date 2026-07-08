@@ -56,7 +56,7 @@ If this contract is violated in any way, the affected customer's trust is lost. 
 
 ### 1. Plugin files contain NO customer data
 
-Every file under `plugin-source-v2/` (skills, shared, references, seed files) is identical across every customer install. It contains:
+Every file under `the plugin install directory (command-room/)` (skills, shared, references, seed files) is identical across every customer install. It contains:
 - Instructions
 - Schemas
 - Templates
@@ -73,7 +73,7 @@ Violation check: `grep` the plugin source for any known customer strings before 
 ### 2. Customer data writes stay in the customer workspace
 
 Every write by every skill lands under the customer's workspace root (resolved at runtime as `[WORKSPACE_ROOT]`). No skill writes to:
-- The plugin's own directory (`plugin-source-v2/...`)
+- The plugin's own directory (`the plugin install directory (command-room/) ...`)
 - Any path outside `[WORKSPACE_ROOT]`
 - Any shared location (cloud bucket, analytics pipeline, telemetry endpoint)
 
@@ -96,7 +96,7 @@ Any exfiltrating telemetry payload that could include customer data is a bug.
 ### 4. Plugin updates do not read customer data
 
 When a new plugin version is installed, the installer:
-- Replaces `plugin-source-v2/` with the new version.
+- Replaces `the plugin install directory (command-room/)` with the new version.
 - Does NOT read or transmit anything under `[WORKSPACE_ROOT]`.
 - Does NOT modify anything under `[WORKSPACE_ROOT]` (migrations, if any, run via the `migration-v2` skill on the customer's next session, logged locally).
 
@@ -150,7 +150,7 @@ The only runtime information about customer usage that crosses back out of the w
 
 `cleanup` runs these checks every Sunday:
 
-1. `grep` all files under `[WORKSPACE_ROOT]/.claude/plugins/.../plugin-source-v2/` for strings matching canonical person names from customer's entities.json. Any hit = violation, surface immediately.
+1. `grep` all files under `[WORKSPACE_ROOT]/.claude/plugins/.../the plugin install directory (command-room/)` for strings matching canonical person names from customer's entities.json. Any hit = violation, surface immediately.
 2. Check that no skill writes outside `[WORKSPACE_ROOT]` (by scanning for hard-coded paths in SKILL.md files).
 3. Check that no `telemetry_*` events are being EXFILTRATED by any source_skill in this plugin (the customer-facing `beta-telemetry` skill was retired v3.9.0; residual customer-facing telemetry writes indicate a stale install). Per-workspace `pack_run` telemetry events are workspace-local and expected.
 4. Check that connector results are not cached anywhere under plugin directory.

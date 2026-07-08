@@ -1,0 +1,13 @@
+{
+  "version": "4.2.0",
+  "headline": "Your Master Tracker and weekly insight views are self-maintaining again — both had silently stopped updating.",
+  "items": [
+    {
+      "id": "v420_announce_view_selfheal",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two of your generated views had quietly stopped refreshing — your Master Tracker and your weekly insight views (timeline, relationships, commitment-aging). Both are fixed and now self-maintain: the tracker rebuilds when you end a session and on your Sunday cleanup, and a new silent Weekly Insights task (Sundays 7 PM) keeps the analytical views current. Nothing for you to do — they catch up on their own. Want them refreshed right now? Say `rebuild views` for the tracker and `run insights` for the analytical views.",
+      "action": "announce_only"
+    }
+  ]
+}

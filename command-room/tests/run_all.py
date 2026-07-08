@@ -50,6 +50,9 @@ TESTS_DIR = Path(__file__).resolve().parent
 # Files in tests/ that are NOT themselves runnable test suites.
 NOT_A_SUITE = {
     "run_all.py",
+    # SPEC A8 — developer-loop aggregator; the six output exercises it wraps already
+    # run individually in the runtime tier, so this would double-run them.
+    "run_output_regression.py",
 }
 
 # Tier classification by filename. A file matches a tier if its name contains
@@ -57,6 +60,9 @@ NOT_A_SUITE = {
 # matches no guard/runtime pattern falls through to "unit".
 GUARD_MARKERS = (
     "run_no_",                       # privacy / hardcoded-drive / md / retired / jargon
+    "run_guard_",                    # G1-G10 ship-gate registry (tests/GUARDS.md)
+    "run_pl_banned_words_test",      # G5 — landed PR 3, wired into the gate here
+    "run_bootloader_size_gate_test", # G8 — landed Phase 3, wired into the gate here
     "run_event_contract_test",
     "run_customer_facing_voice_test",
     "run_personification_test",

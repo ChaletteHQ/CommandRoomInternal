@@ -1,9 +1,13 @@
 ---
 name: workspace-manager
-description: "Master workspace orchestrator and catch-all thinking partner. Fires on explicit lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project', 'new project in command room', 'build a new project in command room', 'start a new project', 'create a new project', 'add a new project', 'set up a new project', 'I want to start a new project', 'I want to add a new project', 'I want to create a new project', 'new client', 'start a new client', 'add a new client', 'is now a client', 'is a client now', 'promote to client', 'convert to client', 'now a client', 'new exploring', 'archive', 'prep call', 'quick task', 'deep clean', 'maintenance', 'hire', 'set my timezone to', 'change my timezone to', 'set workspace timezone to', 'set first-go to', 'set first go to', 'change first-go to', 'first-go default', 'name my AI', 'name my ai', 'set my AI name to', 'set ai name to', 'name my chief of staff', 'skip naming my AI' — AND on vocative addressing of the AI by its workspace.brain_name (default `Penelope`): the pre-comma name acts as a wake-word that strips off, and the post-comma remainder routes through normal trigger matching (v3.13.8.4+). Example shapes (documentation only — runtime detection is in the MUST-language gate body, NOT positive trigger phrases): `Penelope,` followed by any request; `Penelope —` followed by any request; `Penelope?` (bare wake call); `hey Penelope` / `hi Penelope` followed by anything. Coach-shaped questions like `Penelope, what should I focus on this week` route to command-room-coach via its own positive triggers. Non-coach-shaped post-comma requests like `Penelope, prep me for my 2pm` route to whichever specialist they normally match. Customers who renamed via `name my AI [Name]` fire on their custom name in the same shapes — AND on any loose input that mentions a tracked name (project, person, org alias) without a clean specialist trigger: 'pull up', 'status on', 'Bowie call in ten', 'catch me up'. Loads project/person context, maintains cross-session memory, tracks what's happening across the whole workspace, and routes to specialists when user intent clearly maps to one. Default handler for any turn that doesn't match a specialist cleanly. DOES NOT fire on 'help' alone (conversational fallback handled outside the skill system). DOES NOT fire on 'list projects', 'list active projects', 'active projects', 'project list', 'show projects', 'show me projects', 'what projects', 'what projects do I have', 'roster', 'project roster' — those go to list-active for zero-interaction tree render. DOES NOT fire on 'project proposals', 'new project proposals', 'review project proposals' — those go to insight-generator Pass 9. DOES NOT fire on 'draft an email', 'email to', 'write an email' — those go to email-writer. DOES NOT fire on 'decision memo on', 'decision memo for', 'tradeoff analysis', 'choosing between', 'help me decide between' — those go to decision-memo-composer (v3.8.0+; the structured tradeoff skill that owns the verb). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack', 'prep for the board meeting' — those go to board-pack-assembler (v3.8.0+)."
+description: "Master workspace orchestrator, navigator, and catch-all thinking partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' (fuzzy navigation to any project, org, or person; also 'go [org] all' / 'go [org] rollup'), 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org' (any phrasing), '[name] is now a client', 'archive [project]', 'pull up [name]' / 'status on [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', and vocative address by the workspace AI name (wake-word strips, remainder re-routes). Default handler for loose input naming a tracked entity when no specialist matches. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full trigger table, wake-word shapes, and all fences: Routing section in the body."
 ---
 
-# Workspace Manager — Command Room (v2.7.9)
+# Workspace Manager — Command Room
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- BAD: "✓ [Name] is now a client — engagement edge created from [your org]."
+- GOOD: "✓ [Name] is now a client — linked to [your org]."
 
 ## Silent precondition check (before every session-start turn)
 
@@ -14,7 +18,7 @@ Before responding to any session-start trigger (`let's work`, `lets work`, `what
 3. If no `plugin_update` event exists, infer the installed version from the most recent `onboarding_checkpoint` event with `status: "complete"` (its `last_writer` carries plugin version context).
 4. **Compare.** If current plugin version > last installed version, append ONE line at the END of the session-start response (after the briefing or status, not before — don't bury the lede):
 
-   > *"— v[CURRENT] available (you're on v[INSTALLED]). Say `update command room` to install the new dashboards."*
+   > *"— There's an update ready for your Command Room. Say `update command room` when you've got a minute."*
 
 5. If versions match (or inference is too uncertain), say nothing. The check is silent on the no-op path.
 
@@ -44,21 +48,21 @@ Non-match (name appears mid-message, not addressing) — these route through nor
 
 After the strip-and-re-dispatch, the routed specialist still gets the brain_name via its own `get_brain_name()` call for personification copy. The gate does NOT carry brain_name through as a parameter — every consumer reads it fresh from entities.json at render time so renames propagate instantly.
 
-This closes the Bug #82 routing miss (M's 2026-05-26 report): "now that you can name your Brain/command room chief of staff agent, whenever that name triggers, it should run it through command room automatically." Before v3.13.8.4, the SKILL.md description couldn't include the user's custom brain_name (descriptions are static at install time), so addressing the AI by name had no router signal and the turn fell to whichever specialist's substring trigger happened to match — usually nothing.
+Closes the Bug #82 vocative-routing miss (see references/HISTORY.md).
 
 ### MUST-language enforcement gate — new-project lifecycle (v3.13.8.4+)
 
 > **When the user's input matches any new-project trigger phrase — `new project`, `new project [Name]`, `new project in command room`, `build a new project in command room`, `start a new project`, `create a new project`, `add a new project`, `set up a new project`, `I want to start/add/create a new project`, `new client`, `start a new client`, `add a new client` — OR when the user describes the act of starting a new initiative and asks to track it ("I'm starting something new with X, can you set up a project?", "I just signed Y, add them"), you MUST execute the "new project [Name]" lifecycle command (full procedure in the section below). If the project name is not inline in the trigger, the FIRST follow-up question is "What's the project name?" — never "What do you want me to do?" / "How can I help?" / any open-ended re-prompt. The routing is locked the moment the trigger fires; only the name (and downstream details) are collected from there.**
 
-This closes the Bug #82 routing miss (M's 2026-05-26 report): "when I say 'new project' and then give information, a lot of times it doesn't build a new command room project until I say 'new project in command room' or 'build in command room.'" Before v3.13.8.4, the literal trigger `new project [Name]` expected an inline name; a bare "new project" followed by paste-of-context in the same or next turn didn't match, so the LLM treated the turn as freeform and the project creation never fired. The MUST-language gate makes the trigger a one-way door — once fired, the only remaining question is the name.
+Closes the Bug #82 new-project routing miss — the gate makes the trigger a one-way door; once fired, the only remaining question is the name (story in references/HISTORY.md).
 
 ### MUST-language enforcement gate (v3.13.7+ — canonical resolver dispatch)
 
 > **For any turn whose input could mention a person, org, or project name, you MUST invoke `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` FIRST. Only after the resolver returns NO candidates may you fall back to substring grep, ask clarifying questions, or treat the input as routing-ambiguous.**
 
-This closes Session-22 Bug #11: entity_resolve.py was shipped in v3.13.0 + hardened in v3.13.6, but live-trace verification across workspace-manager, people-crm, and transcript-search showed ZERO of the three stated consumers actually invoke it. The LLM substitutes substring grep under time pressure, queries work "by luck of grep" on M's matured alias graph, and new customers with empty alias graphs hit the worst experience from Day 1 (4 clarifying questions on every misspelled name).
+Closes Session-22 Bug #11 — the three stated consumers shipped without actually invoking the resolver; the LLM substituted grep (story in references/HISTORY.md).
 
-The resolver is NOT optional. The 3-tier ladder (exact alias → fuzzy ≥85% → Soundex phonetic) is the contract. Substring grep is the FALLBACK when the resolver returns nothing, not a shortcut to skip the resolver.
+The resolver is NOT optional. (The ladder, tiers, and fallback rules live in `shared/ENTITY_RESOLVE_PROTOCOL.md` — never re-explained here.) Substring grep is the FALLBACK when the resolver returns nothing, not a shortcut to skip the resolver.
 
 If you find yourself about to grep entities.json or aliases.json for a name match BEFORE calling `resolve_all`, stop. That's the exact bypass this gate exists to block.
 
@@ -66,13 +70,13 @@ Workspace-manager is the catch-all. When a turn doesn't cleanly fire a specialis
 
 1. **Explicit lifecycle command** (new project, end session, let's work, what's going on, prep call, archive, etc.) → execute the matching section below.
 2. **Specialist skill matched cleanly** → step aside, let that skill run. (workspace-manager still silently updates activity counters but doesn't take the turn.)
-3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware). The helper walks a 3-tier match ladder: (a) exact alias / canonical match → confidence 1.0; (b) fuzzy edit-distance match (≥85% similar) → confidence 0.85-1.0; (c) Soundex phonetic match (sound-alike, like `Elon` → `Elan` or `Denari` → `Dynarii`) → confidence 0.75. If a tier-1 or tier-2 match returns, load that context and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — the routing-miss class M reported on 2026-05-20 (asking 4 clarifying questions for "my conversation with Elon" when Elan was a known person) is exactly what this step exists to prevent.** Await the user's next instruction after loading.
+3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware). The helper returns a confidence-sorted match (tiers + confidences live in `shared/ENTITY_RESOLVE_PROTOCOL.md`, never re-explained here). If a tier-1 or tier-2 match returns, load that context and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — that's the 2026-05-20 routing-miss class this step exists to prevent (see references/HISTORY.md).** Await the user's next instruction after loading.
 4. **Name-mention + action signal** — phrases like "prep", "follow up on", "status", "draft", "what did we decide with" paired with a name → load the name's context and route to the matching specialist (call-prep / follow-up-ritual / etc.).
 5. **Ambiguous** (no name, no clear intent — "help", "catch me up", "what now") → see **"Step 5 — Ambiguity handling (strict shape)"** below. The bug shape this prevents: emitting 4 open-ended clarifying questions instead of ONE question with concrete options.
 
 ### Step 5 — Ambiguity handling (strict shape)
 
-When Step 5 fires, the response shape is constrained. This is the v3.13.1+ enforcement (per the 2026-05-20 routing-miss handoff). The 4-clarifying-question shape is a regression — do not produce it.
+When Step 5 fires, the response shape is constrained (v3.13.1+ enforcement). The 4-clarifying-question shape is a regression — do not produce it.
 
 **Rules — all must hold:**
 
@@ -84,37 +88,28 @@ When Step 5 fires, the response shape is constrained. This is the v3.13.1+ enfor
 
 **Self-check before emitting:** if you're about to ask more than one question, or any of your questions is open-ended, stop. Either (a) collapse to one question with concrete options, (b) take a default and tell the user what you did, or (c) you missed a substrate check — re-run step 3 against the input.
 
+### "customize command room" — the Layer 4 menu (SCL1)
+
+Adopting skills own their own qualified customization triggers (`customize <skill>`,
+`show <skill> customizations`, `reset <skill> customizations` — see
+`shared/SKILL_CUSTOMIZATION.md`), so no MUST-gate is needed here. Only the **no-skill**
+form falls to workspace-manager: when the user says **"customize command room"** with no
+skill named, don't guess — surface a one-question menu (`AskUserQuestion`, Step-5 shape) of
+the adopting skills the user actually uses ("Which one — your morning brief, your operating
+report, your memos, …?"), then hand the turn to that skill's `customize <skill>` path. A
+missing-hyphen skill-ish form ("customize email writer") is a Layer 3 name-mention — resolve
+to the skill and confirm ("Did you mean email-writer?"). Never write a directive from here;
+workspace-manager routes, the adopting skill writes.
+
 ### Name resolution rules
 
-- **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Walks exact alias → fuzzy → phonetic in that order; returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Elon' → Elan Torbati" or "phonetic match (sound-alike) to canonical 'Dynarii'"). Never re-implement the match ladder inline; this skill calls the helper.
+- **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Elon' → Elan Torbati" or "phonetic match (sound-alike) to canonical 'Dynarii'"). Never re-implement the match ladder inline; this skill calls the helper.
 - Match names case-insensitive, word-boundary only (don't match "Bowie" inside "bobcat") — the helper handles this.
 - On collision within the same affiliation, prefer recency (latest `last_activity` or most recent event) — use `resolve_all` and take the top result.
 - On collision across affiliations, disambiguate with one question: "Which Acme — the customer deal or the advisory gig?" Use `resolve_all` to enumerate candidates.
 - The most-recently-active primary-focus org (`is_primary_focus: true`) is the default conversational context. If the prior turn established a different org, that wins over primary-focus-by-recency.
 
-**Example invocation (bash + python — standard pattern):**
-
-```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
-cd "$PLUGIN_ROOT"
-python3 -c "
-import sys
-sys.path.insert(0, 'shared/scripts')
-from entity_resolve import resolve, resolve_to_linked_project
-# For 'go [name]' flows that want to load a project:
-result = resolve_to_linked_project('$WORKSPACE', 'Elon')
-# For pure name-mention flows that want the matched entity (person/org/project):
-# result = resolve('$WORKSPACE', 'Elon')
-if result:
-    print(f'{result.entity_type} {result.entity_id} ({result.display_name})')
-    print(f'  via: {result.matched_via} (conf {result.confidence:.2f})')
-    print(f'  reason: {result.reason}')
-else:
-    print('no match')
-"
-```
+**Example invocation:** use the canonical bash + python resolver-invocation block in `shared/ENTITY_RESOLVE_PROTOCOL.md` → "Canonical invocation example" (`resolve` for name-mention flows, `resolve_to_linked_project` for `go [name]`). Never restate it here.
 
 ### Router-miss logging
 
@@ -130,14 +125,16 @@ The brain-name vocative routing gate at the top of "Default Behavior on Every Tu
 
 ## Writer Contract
 
-Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes must follow the File Ownership Map, Write Protocol, and Append Format defined there. JSON sources live in `_hq/data/`; markdown views in `_hq/views/` are regenerated by the writer helper and must not be written directly. Violations go to `_hq/CONFLICTS.md`.
+Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes must follow the File Ownership Map, Write Protocol, and Append Format defined there. JSON sources live in `_hq/data/`; markdown views in `_hq/views/` are regenerated by their deterministic renderer scripts (`shared/scripts/render_*.py`) and must not be written directly. Violations go to `_hq/CONFLICTS.md`.
 
-**Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` / `events.jsonl` / `aliases.json` MUST go through `shared/scripts/atomic_write.py`. The helper handles fsync + atomic-rename + Drive-sync safety. Hand-rolled writes via `path.write_text()` / `open(path, "w")` / `open(path, "a")` are FORBIDDEN — they have produced truncated-file corruption incidents in v2.7-v2.10.4 (evidence: `_hq/data/_backups/entities.json.pre-rewrite-20260427-223852.backup`, the cracks-watch fire on Apr 28 that detected mid-file truncation, the bridge fire on Apr 29 that read a stale Drive-sync view of a partial-write state). Use `atomic_write_json` for entities.json / aliases.json. Use `atomic_append_jsonl` for events.jsonl appends — pass batches when you have multiple events. Full bash + python invocation patterns in `shared/WORKSPACE_API.md` § "Write atomically".
+**Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` / `events.jsonl` / `aliases.json` MUST go through `shared/scripts/atomic_write.py`. The helper handles fsync + atomic-rename + Drive-sync safety. Hand-rolled writes via `path.write_text()` / `open(path, "w")` / `open(path, "a")` are FORBIDDEN — they have produced truncated-file corruption incidents in v2.7-v2.10.4 (evidence in references/HISTORY.md). Use `atomic_write_json` for entities.json / aliases.json. Use `atomic_append_jsonl` for events.jsonl appends — pass batches when you have multiple events. Full bash + python invocation patterns in `shared/WORKSPACE_API.md` § "Write atomically".
 
 You are the **primary writer** for:
 
-- `_hq/data/entities.json` — project records (create / update / archive). The writer helper regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` after every change.
+- `_hq/data/entities.json` — project records (create / update / archive). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md.)
 - `_hq/data/events.jsonl` — append events of type `status_change`, `scope_change`, `commitment`, `commitment_resolved`, `meeting`, `decision` (when captured via end-session review), `briefing`, `note`, `org_proposed` (from Reactive Org Discovery — canonical top-level type per `shared/data-schemas/events.schema.json`, NOT wrapped inside a `note` event), `workspace_setting_changed` (timezone changes), plus `interaction` / `meeting` / `note` events emitted from passive-capture during Step 2a of "what's going on", Step 3a of "new project", and Step 1a of "end session".
+
+  **Commitment closures from the catch-all (Stage B 2026-07 — MANDATORY):** when a loose turn closes a commitment — "mark done", "that's handled", "I sent that", "X is done", or any end-session review confirming an item completed — the write goes through `shared/scripts/commitment_state.py::close_commitment(workspace_root, <id or the user's reference>, resolved_by=<user person_id>, evidence=<what the user said>, source_skill="workspace-manager", user_confirmed=True)`. NEVER hand-build a `commitment_resolved` (or `thread_resolved`-as-commitment-closer) append here: the hand-rolled catch-all writes were the source of the 52 `source_event_seq`-keyed dead-letter closures in the 2026-07-01 audit. close_commitment normalizes legacy id spellings (bare seq, `seq_86`, `event_086`, `commitment_seq_86`), raises `CommitmentIdError` when nothing matches (ask the user which item they meant instead of writing an orphan tombstone — offer `show my list`), and is idempotent over the full resolved-id set. Resolve WHICH commitment the user means via `load_open_commitments` + title match first; pass that commitment's `data.id` (or its seq) to close_commitment — never guess an id.
 - `_hq/data/entities.json` — provisional `person_*` records from project-creation scans (`pending_review: true`, handed off to people-crm), provisional `org_*` records from Reactive Org Discovery (`pending_review: true`, cleared on CEO confirm).
 - `_hq/data/aliases.json` — new candidate strings discovered during project/org scans.
 - `_hq/ORG_DISCOVERY_SKIP.md` and `_hq/ORG_DISCOVERY_QUEUE.md` — reactive-org-discovery state files.
@@ -190,7 +187,7 @@ The user has context in their head that won't make it into the system unless you
 ```
 [WORKSPACE_ROOT]/
 ├── _hq/                           # Headquarters
-│   ├── MASTER_TRACKER.md          # Central tracking (single source of truth)
+│   ├── MASTER_TRACKER.md          # Regenerated projection — never hand-edit
 │   ├── BUSINESS_CONTEXT.md        # Who you are, what you do, how you work
 │   ├── DECISION_LOG.md            # Every major decision + rationale
 │   ├── PEOPLE.md                  # Relationship tracker
@@ -293,7 +290,7 @@ Full briefing across everything. This is the daily entry point — it should ref
 
 **Step 1a: Overlay events.jsonl on top of the tracker (v3.11.4 — REQUIRED, per SOURCE_OF_TRUTH.md)**
 
-MASTER_TRACKER.md is a regenerated projection of `_hq/data/entities.json` + `_hq/data/events.jsonl`, not the source. A workspace that hasn't triggered a tracker regen for 10 days will report "quiet since April 25" for threads with activity today — the exact bug class the v3.11.3 morning-brief overlay fixed.
+MASTER_TRACKER.md is a regenerated projection of `_hq/data/entities.json` + `_hq/data/events.jsonl`, not the source — the overlay bug class (see references/HISTORY.md).
 
 Apply the same Step 3a overlay shape `morning-briefing` uses:
 
@@ -301,7 +298,7 @@ Apply the same Step 3a overlay shape `morning-briefing` uses:
 2. If the stamp is older than 24h, treat the tracker as stale.
 3. For every thread the briefing will surface (every primary-focus thread + every Needs Attention / Waiting On item), scan `_hq/data/events.jsonl` for events where `primary_thread_id == thread.id` AND `ts > tracker_stamp` AND `classification_confidence >= 0.40` (matches `computed_last_activity` in VIEW_GENERATION.md).
 4. Override the tracker's `Last touched` (max ts of newer events), `Next Action` (most recent `data.next_step` if any), and `Waiting On` (clear if a newer `commitment_resolved` / `thread_resolved` closes the waited-on item) from those newer events.
-5. Read-only overlay — workspace-manager does NOT regenerate the tracker mid-briefing. That's cleanup's job. If the tracker is severely stale (>7 days), surface a one-line nudge: "Your project list hasn't been refreshed in a few days — say 'rebuild views' when you've got a sec and I'll catch it up."
+5. Read-only overlay — workspace-manager does NOT regenerate the tracker mid-briefing. That's cleanup's job. If the tracker is severely stale (>7 days), surface a one-line nudge: "Your project list hasn't been refreshed in a few days — say 'refresh my project list' when you've got a sec and I'll catch it up." (The phrases `refresh my project list` and `rebuild views` both route here: regenerate the tracker view via the renderer. Advertise only the plain form to the customer.)
 
 If the tracker stamp can't be parsed, treat the tracker as stale and apply the overlay to every thread.
 
@@ -337,7 +334,7 @@ If the tracker stamp can't be parsed, treat the tracker as stale and apply the o
 12. If `_people/` exists: update profiles from source data (see references/workspace-detail.md → "Team Profile Update Procedures"). If `_people/` doesn't exist and Calendar/Gmail show likely direct reports, show one-time nudge: "Say 'discover my team' to get started." Don't repeat if ignored.
 
 **Step 5: Briefing maintenance + save snapshot**
-13. Prune briefings older than 30 days (Rule 4, silent). Save briefing log to `_hq/briefings/[YYYY-MM-DD].md`.
+13. Archive briefings older than 30 days to `_archive/briefings/` (Rule 4, silent — moved, never deleted). Save briefing log to `_hq/briefings/[YYYY-MM-DD].md`.
 14. If source checks found updates: present each briefly, ask which to push into tracker. Only update confirmed items. Flag "Waiting On" matches specifically.
 
 ### "let's work" / "I'm here"
@@ -415,14 +412,17 @@ All findings written to events.jsonl as `interaction` / `meeting` / `note` / `fi
 **Live State refresh — runs on EVERY `go [project]`, cold OR cached (v3.16+, brain-substrate-drift fix).** After resolving the project (and after the deep-load on first open), run the deterministic renderer so the brain's People + Status reflect current substrate instead of a frozen hand-copy:
 
 ```bash
-python shared/scripts/render_thread_live_state.py "<workspace_root>" "<thread_id>"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+cd "$PLUGIN_ROOT" && python3 shared/scripts/render_thread_live_state.py "<workspace_root>" "<thread_id>"
 ```
+
+(The Rule 22 discovery preamble is REQUIRED — run cold without it, the script path doesn't resolve and the render silently never happens.)
 
 It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-STATE:people -->` block — and only when a thread-tagged event newer than the block exists — byte-preserving every durable section outside the markers. High-signal members render directly; inherited (pre-split umbrella) / low-signal people render in the "Proposed — confirm to add" line for the weekly confirm-gate. NEVER hand-edit People or Status into the brain; the renderer owns that block. Full rules: `references/BRAIN_FILE_CONTRACT.md`.
 
-**Surface the rendered block — mandatory (v3.18.2+, Bug #86).** After the renderer runs, READ BACK the `<!-- LIVE-STATE:people -->` region from `PROJECT_BRAIN.md` and surface it in the **People** block of the first response (see the response shape below). v3.18.1 rendered the block into the brain file but never showed it to the CEO, which dead-ended the confirm-people workflow — proposed people (e.g. someone the renderer inferred from an umbrella split) were written to the brain but the CEO never saw the "Proposed — confirm to add" line, so they could never confirm them. The **"Proposed — confirm to add"** line in particular MUST appear in the response whenever the renderer produced one — it is the actionable handle for the confirm-gate. Surface the block from the brain region; do not re-derive the People list by hand.
+**Surface the rendered block — mandatory (v3.18.2+, Bug #86).** After the renderer runs, READ BACK the `<!-- LIVE-STATE:people -->` region from `PROJECT_BRAIN.md` and surface it in the **People** block of the first response (see the response shape below). The **"Proposed — confirm to add"** line in particular MUST appear in the response whenever the renderer produced one — it is the actionable handle for the confirm-gate; if it's rendered into the brain but not surfaced, the confirm-people workflow dead-ends (Bug #86 — see references/HISTORY.md). Surface the block from the brain region; do not re-derive the People list by hand.
 
-**Why default 1 month, not 12 (changed 2026-05-17, onboarding v2):** the v2.10.2 default was 12 months, which on a heavy CEO's busy project hits 250-400K tokens — context-window pressure during the first-call demo. New default is 1 month (~30-40K tokens) to keep the first-call demo light. Customers extend on demand with `backfill [N] months on [project]` (caps at 36 months — unchanged). Customers can also raise the global default via `set first-go to N months` lifecycle command (see below) or by editing `workspace.first_go_months` in entities.json directly.
+**Why default 1 month, not 12:** keeps the first-call demo light (~30-40K vs 250-400K tokens on a heavy project — see references/HISTORY.md). Customers extend on demand with `backfill [N] months on [project]` (caps at 36 months), raise the global default via `set first-go to N months` (see below), or edit `workspace.first_go_months` in entities.json directly.
 
 **First-`go` is intentionally slow on first open** (~5-15 seconds wall-clock at 1 month, longer for heavier defaults). Surface in plain English using the actual configured value: `(Loading [project] for the first time — pulling [N] months of context. Subsequent opens will be instant.)` where `[N]` is `workspace.first_go_months`. Subsequent `go` calls hit the 5-second target.
 
@@ -471,7 +471,7 @@ Create a new project — arrive smart, not blank.
 
 **v2.10.3 update — relationship_type pick at creation:** Before scaffolding, ASK what kind of engagement this is. Don't default to `operating` silently.
 
-> *"Quick — what is this? `1 my project` (operating, you run it) / `2 client engagement` (you're being paid) / `3 advisory` (you're advising) / `4 partner` (co-owned or co-founded) / `5 other`."*
+> *"Quick — what is this? `1 my project` (you run it) / `2 client engagement` (you're being paid) / `3 advisory` (you're advising) / `4 partner` (co-owned or co-founded) / `5 other`."*
 
 Maps to `relationship_type` for the new project's affiliation_id org. If the user picks `5 other`, ask for one-line description and store as `relationship_label`. If the user just types the project name without answering, default to the dominant relationship_type for the user's workspace shape (operating_business → operating; service_business → client; fund → portfolio_company; etc.).
 
@@ -500,7 +500,7 @@ Only proceed with creation if no match is found.
     - Every Drive doc matching → `interaction` event with `channel: drive`, `source_ref` = drive file id.
 3b. **Discovered people → provisional person records:** For every named entity surfaced from the scans that isn't already in `entities.json`, create a provisional record via `shared/scripts/people_writer.py::create_person(workspace_root, canonical_name="[Name]", needs_enrichment=True, source_skill="workspace-manager")` — do NOT hand-edit entities.json. The `needs_enrichment: true` flag is what triggers people-crm's enrichment pull on the next turn. (Forbidden `pending_review` / `inferred_from` are stripped by the writer; `needs_enrichment` is the canonical on-entity trigger — deep-audit #21.)
 3c. **Discovered orgs → reactive org discovery:** If the scan surfaces domains / Slack workspaces / Drive folders not tied to any known org, run the Reactive Org Discovery routine (see section below). Propose org creation with `inferred_from: [...]` populated from the signals that fired.
-4. Confirm: "Set up [Name] for you — pulled in [X]. I found [M] people connected to it; I'll fill in their details over the next turn. Anything missing?"
+4. Confirm: "Set up [Name] for you — pulled in [X]. I found [M] people connected to it; I'll fill in their details in a moment. Anything missing?"
 
 ### "new exploring [Name]"
 
@@ -519,22 +519,22 @@ Lighter-weight than `new project` / `new client`. Creates an org record for a th
 
 1. **Pre-check**: same fuzzy match as new project — if the org already exists, surface "[Name] is already in your workspace as `[relationship_type]`. Want to change its type?" Don't double-create.
 2. **Quick scan** (Gmail + Calendar, 10 seconds max): pull any existing signal so the org record is seeded with real contact info.
-3. **Ask one question only**: *"Quick — what kind? `1 vendor` (one-off purchase or product) / `2 service_provider` (recurring relationship — accountant, lawyer, agency) / `3 prospect` (active sales conversation, not yet a client)."* User picks.
+3. **Ask one question only**: *"Quick — what kind? `1 vendor` (one-off purchase or product) / `2 service provider` (recurring relationship — accountant, lawyer, agency) / `3 prospect` (active sales conversation, not yet a client)."* User picks (the pick maps to the `relationship_type` enum internally — `2` → `service_provider`).
 4. **Create the org record via the typed writer — do NOT hand-edit entities.json.** Call `shared/scripts/org_writer.py::create_org(workspace_root, canonical_name="[Name]", relationship_type=<pick>, tier="external", domains=<from scan>, inferred_from=["user_explicit"], source_skill="workspace-manager")`. It dedups, validates against the schema, writes through the wrapper-aware collection, and emits `org_created`. The fields map to its kwargs:
    - `relationship_type`: per the user's pick
    - `tier: external` (always — these aren't primary or secondary unless promoted later)
    - `domains`: from the scan
    - `inferred_from: ["user_explicit"]`
    - No `project_*` record. No folder. No session notes. The vendor lives in the org tree only.
-5. **For service_provider specifically**, also offer to set a recurring-meeting reminder if the relationship has cadence: *"Want me to flag if 60 days pass without contact?"* — y/n.
-6. Confirm: *"✓ Acme Logistics added as a vendor. Will surface in daily flows only when there's an open commitment or a meeting on the calendar."*
+5. **For service_provider specifically**, also offer to set a recurring-meeting reminder if the relationship has cadence: *"Want me to flag if 60 days pass without contact? (yes / no)"*
+6. Confirm: *"✓ Acme Logistics added as a vendor. You'll only see it in your daily briefings when there's an open commitment or a meeting on the calendar."*
 
 ### "new prospect [Name]" (v2.10.3+)
 
 Same shape as `new vendor` but with `relationship_type: prospect` defaulted. Use case: M just had a sales conversation with a potential client and wants the relationship tracked while it's pending — not yet a project, but more than a vendor.
 
 1. Same pre-check + quick scan.
-2. **Ask:** *"What's the deal status? `1 just started talking` / `2 in active discussion` / `3 close to closing` / `4 want me to schedule follow-ups?`"*. The deal status is recorded in the engagement's `label` — there is NO `prospect_stage` field in the schema (prospects aren't projects, and `$defs/engagement` has no stage field).
+2. **Ask:** *"What's the deal status? `1 just started talking` / `2 in active discussion` / `3 close to closing`"*. After recording the status, offer the follow-up action as its own question: *"Want me to schedule follow-ups? (yes / no)"* The deal status is recorded in the engagement's `label` — there is NO `prospect_stage` field in the schema (prospects aren't projects, and `$defs/engagement` has no stage field).
 3. **Create the records through the typed writers — this is a HARD gate, not prose (v3.18.2+, Bug #83). Run the EXACT block below.** Do NOT hand-write `entities.json`, do NOT copy the shape of an existing prospect org ("same shape as [other prospect]" is the exact v3.18.1 failure), and do NOT route through `track-prospect` or any `org_added`-only path — those skip the engagement edge entirely. **There is no `stage` field on an org** — deal status lives ONLY in the engagement `label`. If you find yourself writing `"stage"` onto an org, you are improvising around the writer: stop and run this block. The block creates BOTH records through the canonical writers (which validate, dedup, atomic-lock, and emit `org_created` + `engagement_created`) and asserts the result:
 
 ```bash
@@ -563,7 +563,7 @@ print('PROSPECT_CREATED org=' + org['id'] + ' engagement=' + eng['id'] + ' from=
 
 ### "[Name] is now a client" — prospect → client conversion (v3.18.6+, Bug #91)
 
-The closing move of the prospect lifecycle, and the target of the `new prospect` offer above. **Before v3.18.6 this was a dead promise** — offered but never implemented, so a prospect that actually closed stayed stuck at `relationship_type: prospect` with stale "interviewing vendors / proposal sent" notes and often no engagement edge at all. This section is the handler.
+The closing move of the prospect lifecycle, and the target of the `new prospect` offer above. This section is the handler (before v3.18.6 it was a dead promise — see references/HISTORY.md).
 
 Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to client`, `convert [Name] to client`, `[Name] signed`, `[Name] closed` — when `[Name]` resolves to an existing org that is NOT already a client.
 
@@ -600,7 +600,7 @@ print('CONVERTED org=' + org_id + ' -> client; engagement=' + eng['id'])
 ```
    The `CONVERTED` line is the proof (an `org_updated` event + an `engagement_created`/`engagement_updated` event). No `org_added`-only path, no `stage` field — same anti-improvisation contract as `new prospect`.
 3. **Refresh stale prospect framing.** If the org's `notes` still describe the pursuit phase ("interviewing vendors", "proposal sent"), replace them: `org_writer.update_org(ws, org_id, notes='<one-line current client status>', source_skill='workspace-manager')` — so daily flows stop surfacing the prospect narrative.
-4. **Offer the project scaffold (show-then-tune — convert FIRST, then offer).** *"✓ [Name] is now a client (was prospect) — engagement edge created from [your org]. Want me to set up the [Name] project (folder, brain, session notes)? (yes / not yet)"* On `yes`, run the `new project [Name]` flow with this org as the `affiliation_id` — **reuse `org_id`, do NOT create a second org**. On `not yet`, stop; the org is converted and tracked, and the project can be scaffolded later.
+4. **Offer the project scaffold (show-then-tune — convert FIRST, then offer).** *"✓ [Name] is now a client (was prospect) — linked to [your org]. Want me to set up the full [Name] project (folder, notes, running memory)? (yes / not yet)"* On `yes`, run the `new project [Name]` flow with this org as the `affiliation_id` — **reuse `org_id`, do NOT create a second org**. On `not yet`, stop; the org is converted and tracked, and the project can be scaffolded later.
 
 ### "new org [Name]" (v2.10.3+)
 
@@ -609,7 +609,7 @@ Explicit org-creation when none of the project / vendor / prospect / client shap
 1. Pre-check + quick scan.
 2. **Two-question gate:**
    - *"What scope? `1 holding` / `2 operating` / `3 division` / `4 brand` / `5 fund` / `6 other`"*
-   - *"Your relationship to it? Pick from the relationship_type list (operating / partner / board / advisory / investment / client / portfolio_company / beneficiary / vendor / prospect / service_provider / other)."*
+   - *"Your relationship to it? (you run it / partner / board seat / advisor / investor / client / portfolio company / beneficiary / vendor / prospect / service provider / other)"* — the answer maps to the `relationship_type` enum internally (e.g. "you run it" → `operating`, "portfolio company" → `portfolio_company`).
 3. **If scope = holding/operating AND relationship_type = operating/partner**, also ask: *"Make this primary focus? (i.e., one of YOUR orgs, not someone else's)"* — y/n. If yes, `tier: primary`. If no, `tier: secondary`.
 4. Create the org record only. No project scaffolding (use `new project [Name]` for that, with this org as the affiliation_id).
 
@@ -632,7 +632,7 @@ Capture and update everything. This is the save button — nothing persists with
 3. Before making any changes to the tracker, create a rolling backup per Rule 11 in references/maintenance-rules.md:
    - Copy `_hq/MASTER_TRACKER.md` → `_hq/_backups/MASTER_TRACKER_[YYYY-MM-DD_HHMM].md`
    - Create `_hq/_backups/` if it doesn't exist
-   - Keep only the 3 most recent backups, delete older ones
+   - Keep only the 3 most recent backups in `_hq/_backups/`; move older ones to `_archive/backups/` (archived, never deleted)
    - Silent — no user notification
 
 **Step 2: Capture session work**
@@ -643,9 +643,25 @@ Capture and update everything. This is the save button — nothing persists with
    - Update "Current Status" section at the top of the file
    - Update PROJECT_CONTEXT.md if anything material changed
    - **Update PROJECT_BRAIN.md** (create if missing). **People + Status are NOT hand-edited — they are generated** by `render_thread_live_state.py` into the `<!-- LIVE-STATE:people -->` block (see `references/BRAIN_FILE_CONTRACT.md`); run that renderer instead of appending people/status prose. Hand-update only the DURABLE sections: Gotchas, Custom Workflows, Key Context, Trigger Aliases (and Active Threads narrative). Append only, keep entries concise (1-2 lines), skip unchanged sections. See references/workspace-detail.md → "Brain Update Procedures" for section-by-section rules.
-5. Update MASTER_TRACKER.md: next actions, last-touched dates, any new commitments
-6. Update DECISION_LOG.md if decisions were made this session
-7. Update PEOPLE.md if new contacts were mentioned or interactions occurred
+5. Capture next actions, last-touched dates, and any new commitments **by writing to the substrate** — append `events.jsonl` (commitment / status_change / meeting / decision events) and update `entities.json` thread records. Do **not** hand-edit `MASTER_TRACKER.md`, `DECISION_LOG.md`, or `PEOPLE.md` — those are generated views (regenerated in Step 2.5).
+6. Decisions made this session → append `decision` events to `events.jsonl`.
+7. New contacts / interactions → update `entities.json` people + append `interaction` events.
+
+**Step 2.5: Regenerate the projected views (deterministic — never hand-rendered)**
+
+After the source writes in Step 2, regenerate the views from the substrate by running their renderer scripts. This is the step whose absence froze the tracker (v4.2.0 — see references/HISTORY.md). Run all three so no view drifts:
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'shared/scripts')
+import render_master_tracker, render_people_view, render_decision_log
+print(render_master_tracker.regenerate('<workspace_root>'))
+print(render_people_view.regenerate('<workspace_root>'))
+print(render_decision_log.regenerate('<workspace_root>'))
+"
+```
+
+Each renderer atomic-writes its `_hq/views/*.md` plus the back-compat `_hq/*.md` copy, is idempotent (content-stable apart from the timestamp header), and reads commitments shape-safely via `cru_match`. If a renderer raises, surface it in the session summary and log a `view-regen-failure` conflict — the source write already succeeded, so the view is recoverable on the next run or via cleanup Phase 3.5.
 
 **Step 3: Update team profiles (if `_people/` exists)**
 8. Check if `_people/` folder exists. If it doesn't, skip this step entirely. If it does: read `_people/_team-config.md` for the roster. If `_team-config.md` is missing but PERSON.md files exist, build roster from filenames and create `_team-config.md` with defaults. For each team member mentioned this session: update Interaction Log, check for new/delivered commitments, refresh Cross-Project Presence. Don't prompt about non-roster people during end session — the team skill handles that. See references/workspace-detail.md → "Team Profile Update Procedures" for field-by-field rules.
@@ -665,9 +681,9 @@ Capture and update everything. This is the save button — nothing persists with
 **Step 6: Process and Clear Session Buffer (v1.7.0+)**
 12. Check if `_hq/.buffer/session_buffer.md` exists and is non-empty. If it does:
     - Read and process each buffered fact
-    - Route facts to proper files: decisions to DECISION_LOG, commitments to MASTER_TRACKER + person profiles, new contacts to PEOPLE.md + person profiles, status changes to MASTER_TRACKER
+    - Route each fact to the SUBSTRATE, never to view files (the Writer Contract above forbids writing DECISION_LOG / MASTER_TRACKER / PEOPLE.md directly): decisions → `decision` events via `atomic_append_jsonl`; commitments → `commitment` events (the gate mints ids + requires `data.kind`); new contacts → `people_writer` calls; status changes → the project-status writer. Then run the affected renderers (the same regeneration path the tracker-refresh table below names) so the views catch up.
     - Clear the buffer file
-    - Include in the Step 9 summary: "Processed [N] buffered notes from earlier."
+    - Include in the Step 9 summary: "Processed [N] notes I'd captured earlier in the session."
 
 **Step 7: CLAUDE.md hot cache refresh (if exists)**
 13. If `CLAUDE.md` exists in workspace root:
@@ -709,10 +725,10 @@ Example:
 
 **"End session" consumes the buffer:**
 
-During normal "end session," before "Step 7: Micro-maintenance," process the buffer (see Step 2.5 above):
-- Facts get routed to proper files (SESSION_NOTES, MASTER_TRACKER, DECISION_LOG, PEOPLE.md, person profiles)
+During normal "end session," before "Step 8: Micro-maintenance," process the buffer (see Step 6 above):
+- Facts get routed to the substrate (events.jsonl appends + typed writers; SESSION_NOTES appends stay paired with their events) — the views regenerate from there
 - Buffer is cleared after successful processing
-- Include in summary: "Processed [N] buffered notes from earlier."
+- Include in summary: "Processed [N] notes I'd captured earlier in the session."
 
 **Crash recovery:**
 
@@ -770,13 +786,13 @@ Behavior:
 
 1. Parse `N` from the trigger. Reject if `N < 1` or `N > 36` — surface plain English: *"That needs to be a number between 1 and 36 months. You said `<input>` — what did you want?"* Stop.
 2. Read `entities.json`, set `workspace.first_go_months = N` (integer), bump version per the atomic-write contract, write via `atomic_write_json`.
-3. Confirm in plain English: *"Got it — next time you open a project for the first time, I'll pull in `N` months of context. (Projects you've already opened won't auto-update — say `backfill [M] months on [project]` if you want me to go further back on a specific one.)"*
+3. Confirm in plain English: *"Got it — next time you open a project for the first time, I'll pull in `N` months of context. (Projects you've already opened won't auto-update — say `backfill [N] months on [project]` if you want me to go further back on a specific one.)"*
 
 This is a global default. It does NOT retroactively re-fetch already-deep-loaded projects. The `backfill [N] months on [project]` command remains the per-project tool for extending depth.
 
 ### "backfill [N] months on [project]" (v2.10.2+)
 
-On-demand deeper backfill for a specific project. Useful when the default 12-month onboarding backfill isn't enough — long client relationships, multi-year initiatives, or projects where the first `go [project]` deep-load missed something the user knows is older.
+On-demand deeper backfill for a specific project. Useful when the default first-`go` deep-load (1 month, per `workspace.first_go_months`) isn't enough — long client relationships, multi-year initiatives, or projects where the first `go [project]` deep-load missed something the user knows is older.
 
 Behavior:
 
@@ -850,20 +866,20 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
    ```json
    {"type":"workspace_setting_changed","ts":"<ISO>","data":{"key":"user_timezone","old_value":"<prior>","new_value":"<new>","triggered_by":"user_explicit"}}
    ```
-4. Confirm in plain English: *"Done. Your timezone is now `[readable name]`. Every time and date you see from here on will be in `[that TZ]`, and your scheduled briefings will fire on `[that TZ]` too — say 'set schedule timezone to X' if you want the scheduled times to stay where they were."*
+4. Confirm in plain English: *"Done. Your timezone is now `[readable name]`. Every time and date you see from here on will be in `[that TZ]`. Your scheduled chats keep firing at their current clock times — say 'change my schedule' if you'd like to move any of them."* (Scheduled fires run on machine-local time; the workspace timezone is presentation-only. Never promise that a timezone change moves scheduled fires — cadence moves are change-schedule's job, per the Forbidden behaviors below.)
 
 **Forbidden behaviors:**
 - Do NOT touch `entities.json` schemas other than the `workspace` block.
 - Do NOT modify historical event timestamps in `events.jsonl` — they stay as-recorded; only future renders use the new TZ.
 - Do NOT modify any cron registration (Cowork's `mcp__scheduled-tasks__update_scheduled_task` does that — surface a one-line follow-up if the user wants schedule fires actually rescheduled, not just the displayed TZ).
 
-**Why this exists:** product-level requirement (M's Apr 29 directive) — every Command Room workspace has one canonical timezone. Display and schedule TZ default to the same value at install (set in `command-room-onboarding` Phase 0 widget Q3). Users can change it later via this command. Plumbing that reads the setting: `plugin-source-v2/shared/scripts/tz.py` `load_workspace_tz()` + `to_local()`.
+**Why this exists:** product-level requirement — every Command Room workspace has one canonical timezone; display + schedule TZ default to the same value at install (`command-room-onboarding` Phase 0 widget Q3). Plumbing that reads the setting: `shared/scripts/tz.py` `load_workspace_tz()` + `to_local()`. (Origin in references/HISTORY.md.)
 
 ---
 
 ### "name my AI [name]" / "set my AI name to [name]" / "name my AI skip" (v3.13.8.2 — Bug #72)
 
-Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onboarding (2026-05-23+) captures this via Phase 0 widget Q4. Upgrade customers (v3.11.x → v3.13.8.x) need this command because the v3.13.8 release manifest didn't include the spec'd `brain_name_prompt` migration (Bug #72 — surfaced 2026-05-24 during v3.13.8 verification session).
+Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onboarding (2026-05-23+) captures this via Phase 0 widget Q4. Upgrade customers (v3.11.x → v3.13.8.x) need this command (Bug #72 — see references/HISTORY.md).
 
 **Trigger phrases (case-insensitive):** `name my AI [name]`, `name my ai [name]`, `set my AI name to [name]`, `set ai name to [name]`, `name my chief of staff [name]`, `name my AI Penelope`, `name my AI skip`, `skip naming my AI`, `name my AI no name`.
 
@@ -879,7 +895,7 @@ Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onbo
      ```json
      {"type":"brain_name_captured","ts":"<ISO>","source_skill":"workspace-manager","data":{"brain_name":"<name>","via":"manual_trigger","prior_value":"<prior or null>"}}
      ```
-   - Confirm in plain English: *"Got it — I'll go by `[name]` from here on. You'll see this in your scheduled briefings, brief signatures, and coach interactions. To change it later, just say `name my AI [new name]`."*
+   - Confirm in plain English: *"Got it — I'll go by `[name]` from here on. You'll see it in your scheduled briefings, brief signatures, and our conversations. To change it later, just say `name my AI [new name]`."*
 
 3. **For a skip / decline:**
    - Do NOT write `workspace.brain_name` to entities.json (leave it unset so future bridges know not to re-prompt).
@@ -896,37 +912,15 @@ Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onbo
 - Do NOT modify historical event timestamps or rename brain_name in past events — `brain_name_captured` and `brain_name_declined` are append-only.
 - Do NOT auto-substitute the name into prior briefing text or .docx artifacts retroactively — the field is read at render time by skills that need it, so the change propagates forward only.
 
-**Read consumers (per master plan + M1 redesign + v3.13.8.4 personification sweep — these skills + surfaces read `workspace.brain_name` at render time via `shared/scripts/personification.py::get_brain_name(workspace_root)`, default "Penelope" if unset):**
+**Read consumers:** every brain_name consumer (scheduled-task orchestrators, onboarding, coach, and the customer-facing chat/deliverable surfaces across workspace-manager, morning-briefing, call-prep, meeting-notes, follow-up-ritual, cleanup, decision-memo-composer, board-pack-assembler, list-active) reads `workspace.brain_name` fresh at render time via `shared/scripts/personification.py::get_brain_name(workspace_root)` (default "Penelope" if unset). **Renames propagate forward only — no retroactive substitution into prior .docx artifacts or scheduled-task outputs already on disk.** Full per-surface consumer list in references/HISTORY.md → "Appendix — brain_name read consumers."
 
-Scheduled tasks + onboarding (original v3.13.8 / v3.13.8.2 set):
-- All five scheduled-task orchestrators (Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap) — signature line
-- `command-room-coach` chat intro
-- `command-room-onboarding` Phase 0–6 chat copy substitutions (`<BrainName>` template token)
-- `m1-backfill-orchestrator.md` recap copy
-
-Customer-facing chat + deliverables (v3.13.8.4 personification sweep):
-- `workspace-manager` session-start confirmation (`let's work` / `I'm here` / `what's going on`) — open with "[Name] here." framing
-- `workspace-manager` `go [project]` first-response header — author the loaded brief in voice
-- `workspace-manager` `end session` summary — sign off the wrap-up
-- `workspace-manager` `new project` confirmation ("Set up [X] for you" → "[Name] here — set up [X] for you")
-- `morning-briefing` chat intro line (in addition to the signature)
-- `call-prep` .docx cover line — "Prepared by [Name] for [M's first name]"
-- `meeting-notes` acknowledgment line after processing a meeting
-- `follow-up-ritual` draft signatures on outbound email drafts
-- `cleanup` summary intro
-- `decision-memo-composer` author byline in the .docx
-- `board-pack-assembler` intro paragraph in the .docx
-- `list-active` footer ("— [Name]")
-
-Renames propagate forward only — no retroactive substitution into prior .docx artifacts or scheduled-task outputs already on disk. Every consumer reads fresh from entities.json on each render.
-
-**Why this exists (v3.13.8.2 / Bug #72):** Master plan §5 spec'd a `brain_name_prompt` migration for the v3.13.8 update bridge, but the actual `shared/releases/v3.13.8.json` shipped 11 items and none was the brain-name prompt. Spec-vs-implementation drift caught during v3.13.8 verification — every v3.11.x → v3.13.8.x upgrade-customer kept the impersonal "Command Room" framing because the prompt never fired. v3.13.8.2 wires a new manifest item + this workspace-manager trigger to close the gap for both upgrade customers (via update-bridge prompt → user types this trigger → capture) and any direct customer-typed adoption.
+(Why this command exists: Bug #72 — see references/HISTORY.md.)
 
 ---
 
 ## Master Tracker Auto-Updates
 
-The MASTER_TRACKER.md is the single source of truth. It gets updated on these triggers:
+MASTER_TRACKER.md is a **regenerated projection** of `_hq/data/entities.json` + `_hq/data/events.jsonl` — never hand-edit it; `render_master_tracker.py` owns the file (per `references/SOURCE_OF_TRUTH.md`; the Writer Contract above already forbids writing it directly, and hand-updating it is the frozen-tracker bug v4.2.0 fixed). It REFRESHES on these triggers — each row means "the underlying events land, then the renderer regenerates", never a direct tracker edit:
 
 | Trigger | What Updates |
 |---------|-------------|
@@ -979,8 +973,8 @@ Org discovery is not onboarding-only. Whenever a new company / org name surfaces
 **Decision rules:**
 
 - **≥2 signals fired** → propose org creation to CEO inline:
-  > "Noticed [CandidateOrg] showing up — email with 4 people there, a Slack workspace, and it's in your Drive. Want me to start tracking it? (y: yes, add it / p: yes, and it's one of yours / n: skip / later: ask me again next week)"
-  On `y` or `p`: reserve `org_*` id, populate `canonical_name`, `domains[]`, `inferred_from[]` with the signal names that fired, set `is_primary_focus` from CEO answer, `relationship_type` = best-guess from signal mix (primary-focus → `operating`; email+calendar only → `client`; Slack workspace match → `partner`). On `n`: append to `_hq/ORG_DISCOVERY_SKIP.md` so the check doesn't re-fire for 90 days. On `later`: append to the cleanup queue.
+  > "Noticed [CandidateOrg] showing up — email with 4 people there, a Slack workspace, and it's in your Drive. Want me to start tracking it? (1 — yes, add it / 2 — yes, and it's one of mine / 3 — skip / 4 — ask me again next week)"
+  On `1` or `2`: reserve `org_*` id, populate `canonical_name`, `domains[]`, `inferred_from[]` with the signal names that fired, set `is_primary_focus` from CEO answer (`2` means primary focus), `relationship_type` = best-guess from signal mix (primary-focus → `operating`; email+calendar only → `client`; Slack workspace match → `partner`). On `3`: append to `_hq/ORG_DISCOVERY_SKIP.md` so the check doesn't re-fire for 90 days. On `4`: append to the cleanup queue.
 - **1 signal fired** → silent — append to `_hq/ORG_DISCOVERY_QUEUE.md` with timestamp + signal type. cleanup reviews the queue; if the same candidate accumulates a second signal within 30 days, the audit surfaces it then.
 - **0 signals fired** → it's just a name, not an org. Take no action.
 
@@ -1048,3 +1042,9 @@ When workspace-manager is already active in a session (e.g., during a "go [proje
 - Does not audit workspace health — that's `cleanup`.
 - Does not run migrations or workspace data ingest — that's `workspace-ingest` (which absorbed the legacy `migration-v2`), invoked once per workspace.
 - Does not make decisions on the CEO's behalf — surfaces state, asks when ambiguous, routes when clear.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.

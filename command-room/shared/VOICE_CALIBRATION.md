@@ -99,6 +99,8 @@ Strip or rewrite these phrases before returning any output. These are LLM tells 
 
 The client-specific voice block MAY override individual items in this list if the CEO demonstrably uses them. The override must be explicit (e.g., "Voice Block: CEO uses 'Hope this finds you well' — do not strip").
 
+**Sync rule (B2):** the canonical machine-readable encoding of this banned-phrase list lives in `shared/scripts/voice_tell_detector.py` (`_FAIL_PHRASES`), the save-time gate that enforces it. The two MUST change together — add a phrase here and add the matching rule there. `tests/run_voice_tell_detector_test.py` asserts the detector's fail-rule count is ≥ this list's bullet count, so a one-sided edit fails the battery loudly. The override carve-out above maps to the detector's `allow_phrases` hook (a Voice Block Taboo a client demonstrably uses is fed through and never hard-blocked).
+
 ---
 
 ## Correction log schema
@@ -150,8 +152,17 @@ Weekly or monthly (owner: `insight-generator` weekly, Chalette monthly for clien
 3. Identify patterns — e.g., "user corrected 7 instances of 'circle back' to 'following up on' in the last month."
 4. Propose voice-block updates: "Add to banned openers: 'wanted to circle back'. Add to preferred openers: 'Following up on [X]'."
 5. Present to user for approval.
-6. On approval, update the Voice Block in the skill's SKILL.md, version-bumped.
-7. For client installs, Chalette pushes the refreshed skill as a new private-plugin version.
+6. On approval, write the refreshed block to the **customer-side override store** `_hq/voice/voice-block-<skill>.md` (NOT the SKILL.md — the plugin directory is a managed clone overwritten on every update, so a block written into SKILL.md is lost on the next install). The override supersedes the baked-in `## Voice Block` **section-by-section** (a section present in the override replaces the same-named default; absent sections fall through to the SKILL.md default). Append a `voice_block_updated` event. Implementation: `shared/scripts/voice_corrections.py` `write_voice_block_override`.
+7. For a universal LLM tell (same pattern across 3+ skills), Chalette MAY also promote it plugin-side into this file's banned list and push a new private-plugin version — but the per-customer calibration always lives in the workspace override, never requiring a plugin push.
+
+### Detection + the override store (B1 — how the loop actually runs)
+
+The corrections are detected at two points, classified deterministically, and appended by `shared/scripts/voice_corrections.py`:
+
+1. **Widget-edit (synchronous):** apply-choices Step 3d snapshots the canonical body (`_hq/voice/draft-snapshots.jsonl`) at send/draft time, and when the user's `input.body` differs it runs `diff_and_classify` + `append_correction` immediately. Highest-fidelity signal.
+2. **Sent-mail (asynchronous):** reconcile-sent step 3b runs `reconcile_sent_against_snapshots` over the already-fetched Sent batch, matching by `gmail_message_id` then by recipient + normalized subject + a 7-day window.
+
+The monthly batch is **insight-generator Pass 11**. **Every writing skill, at draft time, reads its `_hq/voice/voice-block-<skill>.md` override (if present) and applies it over the baked-in block per step 6 above** — this is the customer-side write target that makes calibration take effect without a plugin push. Draft snapshots store real body text (workspace-private, same class as transcripts) and are pruned by `cleanup`.
 
 ### Universal pattern promotion
 
@@ -163,8 +174,8 @@ If the same correction pattern appears across 3+ writing skills, it's a universa
 
 A Voice Block is stale if ANY of:
 
-1. The skill's SKILL.md `voice_block_last_refreshed` frontmatter field is >12 months old.
-2. The skill's corrections log has >20 unreviewed corrections accumulated since last refresh.
+1. The block's `Last refreshed:` date is >12 months old. **Read the `_hq/voice/voice-block-<skill>.md` override's `Last refreshed:` header first when it exists; fall back to the SKILL.md `voice_block_last_refreshed` frontmatter otherwise.**
+2. The skill's corrections log has >20 unreviewed corrections accumulated since last refresh ("unreviewed" = rows with `timestamp` after the last `voice_calibration_review` event's `reviewed_through[skill]`; compute via `voice_corrections.unreviewed_counts`).
 
 Stale skills emit a notice at the top of their output:
 
@@ -255,6 +266,71 @@ When a writing skill ships with the public plugin (no client calibration yet), t
 - Bullets: acceptable for lists of 3+ items, avoided for flowing prose.
 
 This default works at ~60% quality — the product still functions on day 1 without calibration. The $10K Chalette calibration lifts this to ~90%.
+
+---
+
+## Plain-language glossary (PL 2026-07-02 — customer-visible strings, ALL skills)
+
+Internal vocabulary never appears in anything the CEO reads — chat copy, footers, briefs,
+document bodies, button labels. Enforced by `tests/run_pl_banned_words_test.py` over the
+customer-verbatim blockquotes (ship-gate guard G5 extends the same list to all extracted
+customer strings). Say the right-hand column instead:
+
+| Never (internal) | Say instead |
+|---|---|
+| substrate | your workspace / what I've captured about your business |
+| fire / fires / re-fire | runs / kicks in / sends when you click |
+| widget | the buttons / the cards (or just describe the action) |
+| orchestrator, taskId | scheduled chat (by its display name) |
+| connector | the tool by name ("your email", "your calendar", "Slack") |
+| render(s) | show / appear |
+| artifact | the document / the file (by its title) |
+| thread (as project), workstream | project |
+| person record / entity record | contact / profile (or the person's name) |
+| view(s) (as data-layer noun) | list / page (or the thing's name) |
+| cooldown | "I'll wait N days before bringing this up again" |
+| people graph / voice corpus / engagement edge | your contacts / your writing style / (describe the signal) |
+| buffered | saved / noted |
+| version numbers (v3.x) | nothing — versions live in verify diagnostics + changelogs ONLY |
+| raw paths (events.jsonl, _hq/…) | nothing — describe what the customer sees. (CLAUDE.md / BUSINESS_CONTEXT.md are customer-edited files and MAY be named in prose about editing them.) |
+| snake_case enums / config keys | the plain-English meaning ("paused" not `status_paused`) |
+| confidence decimals "(0.62)" | likely / not sure / strong match |
+
+Two register rules that ride with the glossary: command hints are **"Say X"** (never "Run X" /
+"type X") and advertise **natural trigger forms** ("weekly recap", "tune the dormant scan") —
+verified to route — never hyphenated skill IDs. The model copies examples over rules: any
+verbatim example block in a SKILL.md must itself pass this table (ban-in-rules + present-in-
+examples is worse than no rule).
+
+## Universal writing standards (all composer skills)
+
+PRECEDENCE: these govern structure, specificity, and floors, and override a
+skill's GENERIC default instructions. A client's calibrated per-skill Voice
+Block still wins on voice, tone, openers, and taboos (per VOICE_CALIBRATION.md)
+— never override a calibrated voice with these.
+
+STAKES: Before drafting, state internally WHO reads this and WHAT decision or
+action it drives. If you cannot answer both, ask the user one question first.
+Register follows audience: board/investor = conclusion first, tightest language;
+internal = more exploratory; customer-facing = warmer, more context on why.
+
+SPECIFICITY: Replace every abstract claim with a concrete instance.
+  BAD:  "Progress on the project" / "strong interest"
+  GOOD: "Sent the revised spec to Sam on May 18 covering the three API concerns
+         from the May 5 call" / "three inbound demos booked this week"
+When tempted to write significant/meaningful/strong/robust — delete the word
+and cite the evidence instead.
+
+CRITIQUE: Step-2 critiques use the skill's named checklist (binary, countable
+checks: opening states an action? any paragraph >150 words? banned phrases?).
+"Review for quality" is not a critique step.
+
+FLOORS: Content floors are counts and required elements, never adjectives.
+Verify by counting before returning. A floor without a count is not a floor.
+
+NO PADDING: A section with no source material is omitted entirely — never
+"(TBD)", never filler, never a restatement. A missing section is honest;
+a padded one erodes trust.
 
 ---
 

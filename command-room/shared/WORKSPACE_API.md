@@ -30,7 +30,7 @@ Every writable context file has exactly one primary owner skill. Other skills ma
 | File | Primary Writer | Readers |
 |---|---|---|
 | `_hq/data/entities.json` | `workspace-manager` (threads), `people-crm` (people + orgs), `command-room-onboarding` (initial seed, org tree inference), `migration-v2` (one-shot) | All skills (read) |
-| `_hq/data/events.jsonl` | Any skill may append (with source_skill tag); NEVER rewrite or mutate a prior event. Corrections use `supersedes_seq` on a new event. | All skills (read) |
+| `_hq/data/events.jsonl` | Any skill may append (with source_skill tag); NEVER rewrite or mutate a prior event. Corrections use `supersedes_seq` on a new event. **F4 (Phase 2 Stage C): flipping an existing commitment event's `data.status` in place is the FORBIDDEN mutation class** — the 2026-07-01 audit found 249 commitments closed that way (growing to 251 during the audit day), correlated with substrate corruption. Closure = a `commitment_resolved` tombstone appended via `commitment_state.close_commitment()`, nothing else. Readers honor the legacy in-place `status in (closed, resolved, superseded)` values forever (those rows stay readable); no NEW write may ever produce one. | All skills (read) |
 | `_hq/data/aliases.json` | `people-crm` (people mappings), `workspace-manager` (thread mappings), `meeting-notes` (append new mappings discovered) | All skills (read) |
 | `_hq/data/classifier_feedback.jsonl` | `insight-generator` (append-only, one row per user action in Pass 8 classification review) | `cleanup`, classifier routines (read) |
 | `CLAUDE.md` (workspace root) | `workspace-manager` (on "end session") | All skills (read) |
@@ -187,6 +187,8 @@ seq = next_seq("<workspace>/_hq/data/events.jsonl")
 
 **Every skill emitting events MUST populate**: `primary_thread_id` (or explicit null for workspace-level events like audit_run), `related_thread_ids[]` (empty array if none), `classification_confidence` (or null for event types where classification is not meaningful — audit_run, briefing, onboarding_step, classification_review).
 
+**Event-log sharding (SPEC A5).** `events.jsonl` is the **active file** and holds the current calendar year; **writers always append to it** (never to a shard). Once it grows past 5 MB / 10k lines with prior-year events, cleanup rotates the prior years into immutable `events-<year>.jsonl` siblings and rewrites the active file starting with a `shard_rotated` marker (carries `max_archived_seq` so seq never resets — `next_seq` + `atomic_append_jsonl` stay active-file-only). **Readers:** full-history consumers route through `events_io.iter_events` / `shard_paths`, or the two canonical loaders (`cru_match.load_events_defensively`, `event_refs.load_events`) which are shard-transparent — they include sibling shards automatically when handed an `events.jsonl` path. Recency/tail readers (last-200 idempotency, `next_seq`) correctly read only the active file. Shards are **immutable after creation** (backup/restore must include them; they're in scope for RELIABILITY's backup boundary). An unsharded workspace behaves exactly as before.
+
 **Reclassification is its own event type.** To correct a prior event's thread assignment, emit:
 ```json
 {
@@ -229,7 +231,18 @@ atomic_append_jsonl("_hq/data/events.jsonl", [event1, event2, event3])
 
 The cost is the read+rewrite, not the write itself — so once-per-batch beats once-per-event for any skill emitting >1 event per session.
 
-**Concurrent-write caveat (v3.6.1 — see `RELIABILITY.md` §3.3):** if two skills race to reserve the same seq, `atomic_append_jsonl` does NOT detect the collision. It reads the file fresh, appends in memory, and atomic-renames; there is no seq-collision retry. Two outcomes are possible: a duplicate seq in the file (`cleanup` flags as `schema-violation` on next run) or B's rename overwriting A's data (no flag, no log). The planned `_hq/.writer.lock` (v3.7.0 roadmap) closes this. Until then, avoid concurrent event-emitting skills — see `RELIABILITY.md` §3.3 for the practical exposure window.
+**Concurrent-write protection (shipped v3.19.x — see `RELIABILITY.md` §3):** for `events.jsonl`, `atomic_append_jsonl` runs the whole read → seq-stamp → atomic-rename behind a cross-process writer lock (`_hq/data/.writer.lock`), so two skills racing to append can no longer lose an event or duplicate a seq — seq reservation and the write are one critical section. The lock is an OS byte-range lock (`fcntl.flock` / `msvcrt.locking`) that the kernel releases on crash, with a sentinel fallback on mounts that refuse byte-range locks and best-effort contention telemetry. **Do not pre-reserve a seq and append it later** — pass events WITHOUT a `seq` field and let the helper auto-stamp it inside the lock (a reserve-then-append-later pattern is still racy; see `next_seq.py`). Read-check-then-append callers can wrap their critical section with `writer_lock.events_writer_lock`.
+
+**Append gate (Phase 1 Foundation, 2026-07 — see `shared/EVENT_TYPES.md`):** every events.jsonl append is gated inside this same single path — type drift is normalized (`commitment_update` → `commitment_updated`), `type: commitment` events get `data.id` minted as `cmt_<ulid>` and `data.kind` stamped/validated (promise | task | scheduling | agenda), an **id-less `commitment_resolved` is REJECTED** (EventGateError — pass the commitment's `data.id` verbatim), and the `type` is validated against the enum in `shared/data-schemas/events.schema.json`. New code should call the canonical named entry:
+
+```python
+from event_gate import append_event
+append_event("_hq/data/events.jsonl", [event_dict], holder="<your-skill>")
+```
+
+`append_event` applies the gate in strict mode (an unregistered event type rejects; the legacy `atomic_append_jsonl` entry warns on stderr during burn-in) and delegates the write to `atomic_append_jsonl` — there is exactly one append path.
+
+**Read-side timestamps:** writers emit `ts` only; history is never rewritten. Readers that order or filter events by time use `shared/scripts/event_time.py` (`event_time` / `event_dt`: `ts` → `timestamp` → `date` priority) — never a bare `ev.get("ts")`.
 
 `cleanup` flags any duplicate seq it finds as a `schema-violation`.
 
@@ -367,7 +380,7 @@ This contract is still file-based. No server, no IPC, no broker:
 - Version conflicts are detected at write time via re-read, not via a lock server.
 - View regeneration is performed by the skill making the source write, using the markdown-based rules in `references/VIEW_GENERATION.md`. No background process.
 
-The trade-off: if a skill ignores this contract, collisions return. Mitigation: (1) every new skill is reviewed against this file before shipping; (2) `cleanup` validates JSON schemas, checks seq monotonicity, and scans all SKILL.md files for the Writer Contract header.
+The trade-off: if a skill ignores this contract, collisions return. Mitigation: (1) every new skill is reviewed against this file before shipping; (2) `cleanup` validates JSON schemas, checks seq monotonicity, and runs the **Writer-Contract lint** (`shared/scripts/writer_contract_lint.py`). Per SPEC GATE1 the lint no longer just confirms the `## Writer Contract` header is present — it asserts the BODY of every event-appending skill names the locked writer `atomic_append_jsonl` (or a known append-routing helper script that does), because a header is not a write path: a skill can carry the header and still hand-roll a `next_seq`+`open('a')` append that dodges the A1 lock.
 
 ---
 

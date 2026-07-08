@@ -1,6 +1,6 @@
 ---
 name: report-bug
-description: "Diagnose a Command Room misfire end-to-end and either self-fix it or draft a fully-diagnosed support email to the maintainer. Auto-collects plugin version, last skill that fired, workspace state, and active connectors. Pattern-matches against known issues (references/known-issue-patterns.md) — half of reports never need to leave the user because the fix is a one-liner. Use when the user says: 'report bug', 'report a bug', 'this isn't working', 'something's wrong', 'it broke', 'report this', 'send this to support', 'tell the team about this', 'something is off', 'this is broken', 'why isn't this working'. Output is a Gmail draft pre-filled to matthew@chaletteholdings.com (the maintainer's public support address) with the full diagnosis — user reviews and sends. DOES NOT fire on conversational frustration ('this is annoying' / 'ugh') without an explicit report-it intent. DOES NOT fire on questions about how something works (that's the relevant skill, not a bug)."
+description: "Diagnose a Command Room misfire end-to-end and either self-fix it or draft a fully-diagnosed support email to the maintainer. Fires on: 'report bug', 'report a bug', 'this isn't working', 'something's wrong', 'it broke', 'something is off', 'this is broken', 'why isn't this working', 'report this', 'send this to support'. Auto-collects version, last skill fired, workspace state, and active connectors; pattern-matches known issues (about half of reports self-fix in-session); otherwise drafts the pre-diagnosed Gmail to the support address for your review and send — never auto-sent. Does NOT fire on conversational frustration without report-it intent, or how-does-this-work questions (the relevant skill answers those). Diagnostic flow and known-issue patterns: Routing section in the body."
 ---
 
 # report-bug
@@ -45,7 +45,7 @@ Surface NOTHING to the user during this step. The context collection is silent �
 
 ### Step 3 — Pattern-match against known issues
 
-Load `references/known-issue-patterns.md`. Each entry has:
+Load `{SKILL_DIR}/references/known-issue-patterns.md` (skill-local — it lives inside this skill's folder in the plugin, not in the workspace). Each entry has:
 - **Signature** — keywords / phrases / skill names that match the user's complaint + auto-collected context
 - **Likely cause** — one-line technical summary
 - **User-side fix** — what the user can try first (if any), in plain English
@@ -63,15 +63,15 @@ If the matched pattern's `User-side fix` is non-empty AND `escalate ∈ {no, try
 
 Surface the fix verbatim with a one-line explanation:
 
-> *"This matches a known pattern: [Likely cause].*
+> *"Here's what's probably going on: [Likely cause — rephrased in plain English; no skill names, file paths, or internal tokens].*
 >
 > *Try this first: [User-side fix].*
 >
-> *If that doesn't work, say `still broken` and I'll draft the email to the maintainer."*
+> *If that doesn't work, say `still broken` and I'll draft the email to support."*
 
 If the user replies `still broken` (or any equivalent — "didn't work", "same issue", "still doing it"), proceed to Step 4b. If the user replies positively ("fixed it", "thanks", "worked"), append a `bug_self_fixed` event to `events.jsonl` with the matched pattern's signature + `ts` and respond with one line:
 
-> *"Glad. Logged it. The pattern's already on the maintainer's radar."*
+> *"Glad. Logged it. The team already knows about this one."*
 
 ### Step 4b — Draft path (escalate=yes, or try-first didn't work)
 
@@ -108,17 +108,23 @@ LAST 5 EVENTS
 4. ...
 5. ...
 
-— [User's first name], via Command Room report-bug v3.3.0
+— [User's first name], via Command Room (plugin v[version from plugin.json — the Step 2 auto-collected value, read at runtime; never hardcode])
 ```
 
 After the draft is created, surface ONE line to the user:
 
-> *"Drafted in your Gmail — review and send when ready. Subject line: `[subject from above]`. The maintainer has everything they need to verify."*
+> *"Drafted in your Gmail — review and send when ready. Subject line: `[subject from above]`. Support has everything they need to verify."*
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees in CHAT (the email body's AUTO-DIAGNOSIS block is the one sanctioned diagnostic surface — versions and skill names live there, not in chat lines) — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "This matches a known pattern: stale orchestrator taskId cache."
+- Good: "Here's what's probably going on: my schedule needed a refresh."
 
 Then append a `bug_reported` event to `events.jsonl`:
 ```json
 {"type":"bug_reported","ts":"<ISO-now>","data":{"pattern_match":"<signature>","last_skill":"<skill>","plugin_version":"<version>"}}
 ```
+
+**Append through the locked writer (SPEC GATE1 / A1):** write this event — and the `bug_self_fixed` event in Step 4a — via `atomic_append_jsonl(events_path, [event], holder="report-bug")` (omit `seq`; it is auto-stamped inside the lock), NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`. See `shared/WORKSPACE_API.md` → Append Protocol §3.
 
 ### Step 5 — If anything in the pipeline itself fails
 
@@ -133,7 +139,7 @@ Then paste the full email body. Don't lose the diagnosis just because the connec
 1. **One question, never two.** The user already hit a frustrating bug — don't make them answer a quiz. One sentence each for trying / happened is the whole user-input surface.
 2. **Never invent fields.** If `plugin.json` isn't readable, write `(not detected)`. If `events.jsonl` is empty, write `(no events captured)`. Fabricated diagnoses are worse than honest gaps.
 3. **Pre-fill, don't pre-send.** The user reviews the draft in Gmail before it goes. The maintainer respects them; never auto-send.
-4. **Pattern file is the moat.** Every bug the maintainer fixes from real customer feedback should be added to `references/known-issue-patterns.md` so the next customer hits a one-line self-fix instead of an email.
+4. **Pattern file is the moat.** Every bug the maintainer fixes from real customer feedback should be added to `{SKILL_DIR}/references/known-issue-patterns.md` so the next customer hits a one-line self-fix instead of an email.
 5. **Silent context collection.** Don't narrate "I'm reading your plugin.json…" — the user answered one question, the draft appears, that's the surface. Internal steps stay internal.
 
 ## What it doesn't do
@@ -143,3 +149,9 @@ Then paste the full email body. Don't lose the diagnosis just because the connec
 - Does not invoke other skills (no `meeting-notes`, no `workspace-manager`). Single-purpose surface.
 - Does not log to telemetry or external systems. The `bug_reported` event in events.jsonl is the only side effect outside the Gmail draft.
 - Does not run if no Gmail connector is mounted AND `_hq/data/events.jsonl` is empty (no useful diagnosis possible — tell the user to email the maintainer directly with a one-liner).
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Diagnose a Command Room misfire end-to-end and either self-fix it or draft a fully-diagnosed support email to the maintainer. Auto-collects plugin version, last skill that fired, workspace state, and active connectors. Pattern-matches against known issues ({SKILL_DIR}/references/known-issue-patterns.md — skill-local, ships with the plugin) — half of reports never need to leave the user because the fix is a one-liner. Use when the user says: 'report bug', 'report a bug', 'this isn't working', 'something's wrong', 'it broke', 'report this', 'send this to support', 'tell the team about this', 'something is off', 'this is broken', 'why isn't this working'. Output is a Gmail draft pre-filled to matthew@chaletteholdings.com (the maintainer's public support address) with the full diagnosis — user reviews and sends. DOES NOT fire on conversational frustration ('this is annoying' / 'ugh') without an explicit report-it intent. DOES NOT fire on questions about how something works (that's the relevant skill, not a bug).

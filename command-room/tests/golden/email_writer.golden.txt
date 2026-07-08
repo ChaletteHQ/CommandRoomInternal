@@ -1,0 +1,13 @@
+{
+"commitment_refs": [
+4
+],
+"decision_refs": [
+8,
+12,
+14,
+20
+],
+"recipient_id": "person_002",
+"subject": "Sourcing spec + pricing sheet"
+}

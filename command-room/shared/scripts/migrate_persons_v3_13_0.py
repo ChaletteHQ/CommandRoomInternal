@@ -53,6 +53,7 @@ from pathlib import Path
 
 # Bring people_writer's helpers in scope
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from event_time import event_time  # noqa: E402
 from people_writer import (  # noqa: E402
     _normalize_legacy_keys,
     _validate_person,
@@ -131,8 +132,8 @@ def _build_first_seen_index(events_path: Path) -> dict[str, str]:
         if not candidates:
             continue
 
-        # Pull a date from the event. Prefer timestamp; fall back to ts; then date.
-        ts = ev.get("timestamp") or ev.get("ts") or ev.get("date")
+        # Pull a date from the event (canonical priority: ts → timestamp → date).
+        ts = event_time(ev)
         if not isinstance(ts, str) or not ts:
             continue
         date_part = ts[:10]  # ISO date portion

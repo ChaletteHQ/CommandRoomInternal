@@ -1,6 +1,6 @@
 ---
 name: insight-generator
-description: "Weekly synthesis pass that surfaces patterns the CEO wouldn't have seen. Fires on: 'weekly insights', 'what am I missing', 'run insights', 'synthesize the week', 'what should I pay attention to', 'cross-project patterns', 'what's drifting', 'show me the insight report', 'generate insights', 'classification review', 'review classifications', 'review my projects', 'review project proposals', 'new project proposals'. Also runs automatically on a weekly schedule (Sunday evening by default) via scheduled-tasks. Reads generated views (TIMELINE, RELATIONSHIPS, COMMITMENT_AGING, DORMANT, THEMES) + entities.json + events.jsonl and produces (a) a ranked list of observations worth the CEO's attention, (b) a batched classification review pass covering every provisional / low-confidence event from the prior week (Pass 8), (c) a batched project-proposal pass surfacing new projects when accumulated signal suggests outcomes will slip without a dedicated anchor (Pass 9), and (d) a batched org-proposal pass surfacing new orgs when capture events accumulate enough signal without an explicit attribution (Pass 10). Saves the synthesis to _hq/insights/[YYYY-MM-DD]_insights.docx (v3.13.0+) and surfaces a link at the bottom of the chat turn. Pass 8 appends `classification_review` + `reclassification` events and `classifier_feedback.jsonl` rows. Pass 9 appends `project_proposal` events + `classifier_feedback.jsonl` rows and delegates entities.json mutations to workspace-manager. Pass 10 appends `org_proposal` events + `classifier_feedback.jsonl` rows of `type: org_proposal`. Does NOT handle one-off questions — use workspace-manager for that."
+description: "Weekly synthesis pass that surfaces patterns the CEO wouldn't compute themselves and runs the product's learning reviews. Fires on: 'weekly insights', 'run insights', 'generate insights', 'what am I missing', 'synthesize the week', 'what should I pay attention to', 'cross-project patterns', 'what's drifting', 'show me the insight report', 'review project proposals' / 'new project proposals', 'review classifications', and as the Sunday scheduled weekly-insights task. Produces the analytical views (timeline, relationships, commitment aging, dormancy, themes) plus batched confirm/edit/skip proposals from the learning passes: classification and voice reviews, project/org proposals, sender-priority and dismissal-pattern rules, confidence calibration, chase policy, and extraction hints. Does NOT fire on 'list projects' (list-active) or coaching asks like 'what should I focus on' (command-room-coach). Pass-by-pass detail and fences: Routing section in the body."
 ---
 
 # Insight Generator — Command Room (v2.1)
@@ -30,6 +30,33 @@ The two interactive passes remain the main write paths:
 - One row per decision to `_hq/data/classifier_feedback.jsonl` with `type: org_proposal`.
 - For `created` and `merged` actions: the underlying `entities.json` mutation is delegated to `org_writer.py create_org / merge_org_into` per `shared/WORKSPACE_API.md`. This skill never writes to `entities.json` directly.
 
+**Pass 11 (voice calibration review, B1) — appends:**
+- One `voice_block_updated` event per approved proposal (`{skill, change_summary, correction_count, fingerprint}`); the refreshed block is written to `_hq/voice/voice-block-<skill>.md` via `voice_corrections.write_voice_block_override` (workspace-side — NEVER the plugin SKILL.md).
+- One `voice_calibration_review` event at end of pass (`{reviewed_through: {<skill>: <max-ts>}, proposed, approved, skipped}`).
+
+**Pass 13 (sender-priority proposals, Phase 6 Loop 1) — appends:**
+- One `sender_priority_proposal` event per user action (`{user_action: "applied" | "edited" | "declined", fingerprint, sender_or_domain}`).
+- The approved rule is written to `_hq/data/sender-priority-rules.json` via `triage_feedback.write_sender_priority_rules` (workspace-side). Decision + cooldown to `_hq/data/proposal_feedback.jsonl` via `proposal_ledger.append_decision`.
+
+**Pass 14 (surface-preference proposals, Phase 6 Loop 2) — appends:**
+- One `surface_preference_proposal` event per user action (`{user_action, fingerprint}`).
+- The approved suppression is written to `_hq/data/surface-preferences.json` via `surface_preferences.write_surface_preferences`. Decision + cooldown to `_hq/data/proposal_feedback.jsonl`.
+
+**Loop 4 (confidence calibration, Phase 6 Round 2) — appends:**
+- One `confidence_override_proposal` event per user action; the approved threshold is written to `_hq/data/confidence-overrides.json` via `confidence.write_overrides` (read back by `confidence.py` accessors). Decision + cooldown to `proposal_feedback.jsonl`.
+
+**Loop 6 (chase policy, Phase 6 Round 2) — Pass 7b propose-and-apply — appends:**
+- One `chase_policy_proposal` event per user action; the approved group is written to `_hq/data/chase-policy.json` via `chase_policy.write_chase_policy`. Decision + cooldown to `proposal_feedback.jsonl`.
+
+**S3 rider (commitment noise, Phase 6 Round 2) — appends:**
+- One `commitment_noise_proposal` event per user action; the approved rule appends to `_hq/config/commitment-rules.md` via `commitment_noise.append_never_track_rule` (additive; the capture floor reads it). Decision + cooldown to `proposal_feedback.jsonl`.
+
+**Pass 15 (prep section weights, Phase 6 Loop 3) — appends:**
+- One `prep_weight_proposal` event per user action; the approved weight is saved to the call-prep skill config (`skill_config_writer.save_skill_config`). Decision + cooldown to `proposal_feedback.jsonl`.
+
+**Loop 5 (extraction hints, Phase 6 Round 3) — appends:**
+- One `extraction_hint_proposal` event per user action; the approved hint appends to `_hq/data/extraction-hints.md` via `extraction_hints.append_extraction_hint`. Decision + cooldown to `proposal_feedback.jsonl`.
+
 All appends follow `shared/WORKSPACE_API.md` — reserve next seq, append atomically, regenerate affected views (MASTER_TRACKER, TIMELINE), log any failure to `_hq/CONFLICTS.md`.
 
 **Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` (the `dormancy_reviewed_at` field updates) MUST use `shared/scripts/atomic_write.py atomic_write_json`. ALL appends to `events.jsonl` and `classifier_feedback.jsonl` MUST use `atomic_append_jsonl`. Hand-rolled writes are forbidden — see `shared/WORKSPACE_API.md` § "Write atomically" + § "Append Protocol".
@@ -48,7 +75,8 @@ Allowed insight categories (every output item must fit one of these):
 - **Cross-project patterns:** "Both [Project A] and [Project B] are stuck on the same kind of input from [name]. Worth one consolidated ask?"
 - **Customer / pipeline signal:** "[Customer name] has gone quiet, but your historical pattern with them shows [their next-touch usually arrives at month-end]. Worth a check-in?"
 - **Decision drift:** "You committed to [X] on [date], but recent activity suggests [Y]. Worth re-confirming?"
-- **People drift:** "[Person] has been mentioned in [N] meetings without a record in your people graph yet — should they have one?"
+- **People drift:** "[Person] has come up in [N] meetings but isn't in your contacts yet — want me to add them?"
+- **Outcome patterns:** "Your investor emails get a reply in about [N] days; vendor threads go quiet [X]% of the time." Reply rate + median latency grouped by recipient relationship type, plus your own commitment punctuality (on-time vs late). Read-only over the `email_outcome` events; names groups, never whether one individual replied.
 
 **Forbidden insight categories (these belong in other skills, not here):**
 
@@ -94,7 +122,7 @@ Do NOT fire on a fresh workspace (<14 days of events). There's not enough data t
 | Dormant threads | entities.json threads × max ts of any event scoped to that thread; dormant if max-ts > 30 days | Pass 5 |
 | Theme recurrence | events.jsonl filtered to `theme`-kind threads, count distinct project mentions in last 14 days | Pass 3 |
 
-After synthesis, optionally write the rendered projections to `_hq/views/TIMELINE.md`, `_hq/views/RELATIONSHIPS.md`, `_hq/views/COMMITMENT_AGING.md`, `_hq/views/DORMANT.md`, `_hq/views/THEMES.md` for human-readability — but per `references/SOURCE_OF_TRUTH.md` those files are Tier 2 snapshots, not the source. The next run regenerates from canonical state. Never read these view files as input.
+After synthesis, write the rendered projections to `_hq/views/TIMELINE.md`, `_hq/views/RELATIONSHIPS.md`, `_hq/views/COMMITMENT_AGING.md`, `_hq/views/DORMANT.md`, `_hq/views/THEMES.md`. **On scheduled fires these writes are MANDATORY — keeping the Tier 2 snapshots fresh is part of the weekly task's job** (an "optional" write on a scheduled fire is how views freeze — the v4.2.0 frozen-views class). On explicit-trigger runs they're optional. Per `references/SOURCE_OF_TRUTH.md` the view files remain Tier 2 snapshots, not the source: the next run regenerates from canonical state, and this skill never reads them as input.
 
 ---
 
@@ -104,7 +132,7 @@ Run these passes. Each produces 0-N candidate insights. Rank and filter before o
 
 ### Pass 1 — Stale relationships worth reviving
 
-From RELATIONSHIPS.md "Overdue for Touch" section:
+From the inline relationships projection (the "Overdue for Touch" slice, computed per the v3.12.0 block above — never the view file):
 - For each person past cadence, check: was this person previously active (in the last 90 days of events)?
 - Have they been dormant before (check previous insight reports)?
 - Are they linked to any active high-stakes project (deal in stage 3+, initiative owned by user)?
@@ -113,7 +141,7 @@ An insight fires for a person if: overdue by ≥2x cadence AND linked to ≥1 ac
 
 ### Pass 2 — Commitment rot
 
-From COMMITMENT_AGING.md:
+From the inline commitment-aging projection (computed per the v3.12.0 block above):
 - Group by counterparty: any single person owing the CEO ≥3 things?
 - Group by project: any project accumulating ≥5 open commitments across both directions?
 - Identify "stuck" commitments: open >30 days with no related event activity (no follow-up interaction).
@@ -122,14 +150,14 @@ Fires: any person blocking 3+ items, any project with 5+ open, any single commit
 
 ### Pass 3 — Theme recurrence
 
-From THEMES.md + events.jsonl:
+From the inline themes projection + events.jsonl:
 - For each active theme, count distinct projects where the theme was mentioned in the last 14 days.
 - If ≥3 projects mentioned the same theme, fire an insight: "Theme X surfaced across N projects this week — [list]. Consider whether this is a systemic issue."
 - If a theme is referenced but has no dedicated theme project, suggest creating one.
 
 ### Pass 4 — Cross-kind collisions
 
-From TIMELINE.md + entities.json:
+From the inline timeline projection + entities.json:
 - Find people appearing in events across ≥3 different projects this week.
 - Find dates with ≥2 decisions on similar topics (keyword overlap in decision titles).
 - Find deals that reference the same blocker.
@@ -156,7 +184,7 @@ Fires: oscillating decisions, dead-letter decisions.
 
 ### Pass 7 — Dormant re-activation candidates
 
-From DORMANT.md + events.jsonl + **live connector probe** (v2.3):
+From the inline dormancy projection + events.jsonl + **live connector probe** (v2.3):
 - For each dormant project (no events in ≥30 days, status ≠ archived), run a two-layer check:
   1. **Internal signal:** any recent event (last 14 days, any project) mentions people or keywords from the dormant project — same as before.
   2. **External signal (v2.3 connector probe):** for each dormant project, issue targeted queries against connected tools for the project's people / aliases / domains:
@@ -172,6 +200,19 @@ From DORMANT.md + events.jsonl + **live connector probe** (v2.3):
 
 Fires: dormant projects with a faint pulse from elsewhere in the workspace OR fresh connector traffic that the CEO hasn't noticed.
 
+### Pass 7b — Outcome patterns (read-only, B6)
+
+Reply-rate + median-latency patterns from the `email_outcome` events (written silently by reconcile-sent's outcome watch), plus the user's own commitment punctuality. READ-ONLY — this pass writes no events.
+
+- **Compute** via `shared/scripts/email_outcomes.py`: reply rate and median `latency_days` grouped by the recipient's org `relationship_type` (recipient → person → org), and `commitment_punctuality(events, as_of_iso=...)` for the on-time/late split on the user's own commitments.
+- **Fire floors (small-n honesty — Quality principle 4):** surface this pass ONLY with **≥ 8 terminal outcomes** in the trailing 30-day window, and name a group ONLY with **≥ 3 outcomes in that group**. Below the floor, say nothing — a "100% reply rate" off n=2 is noise, and these numbers feed ROI receipts.
+- **Voice:** allowed-category phrasing, named groups not individuals. Example: *"Your investor threads reply in about 2 days; vendor threads go quiet roughly 40% of the time — worth front-loading the asks that matter there."* Punctuality example: *"You're closing about 7 in 10 of your own commitments on time."*
+- **Writes nothing in report mode.** The `email_outcome` events already exist; the read-and-report half writes nothing.
+
+**Pass 7b propose-and-apply (Phase 6 Loop 6 — chase policy).** When the report floors are met, Pass 7b ALSO proposes per-relationship-type chase windows via `shared/scripts/chase_policy.py`, so follow-ups fire when they actually get answered instead of on a fixed 7-day cadence. `load_email_outcomes(workspace_root, since_iso=<30d>)` → `group_outcomes(rows, relationship_of)` (resolve recipient → person → org.relationship_type) → `derive_chase_policy(groups, existing_policy=<store>, cooldown_fingerprints=<cooldowns>, cap=3)`. Same small-n floors as the report (**≥8 terminal total, ≥3 per group**). Render each proposal as a REVIEW item (`confirm`/`edit [change]`/`skip`): *"Your vendor threads go quiet ~40% of the time — chase at day 3 instead of 7, and suggest a call after 2 silent chases?"*. On `confirm`, write the group via `group_from_proposal` into `_hq/data/chase-policy.json` (`load_chase_policy` → set group → `write_chase_policy`), append a `chase_policy_proposal` event, and log the decision to `proposal_ledger` (`loop6_chase_policy`, 60-day cooldown). Consumers: the commitments orchestrator reads `get_chase_window(policy, rtype)` when bucketing; email-writer reads it for follow-up timing/escalation. Atomic-reject + rollback exactly as Pass 9.
+
+Fires: a workspace with ≥ 8 terminal email outcomes in the 30-day window; otherwise skipped.
+
 ### Pass 8 — Classification review (batched, silent-by-default)
 
 This is the **only user-interactive pass** in the skill. It exists because silent capture (per `shared/PASSIVE_CAPTURE.md`) deliberately never interrupts the CEO during the week — all provisional and low-confidence classifications are queued here. See `references/ORG_AND_THREAD_MODEL.md` for the full model.
@@ -185,29 +226,26 @@ This is the **only user-interactive pass** in the skill. It exists because silen
 
 Cap the review batch at **25 events** per session. If more exist, queue the excess for the next pass.
 
-**Review UX (NOT a wall of prompts).** Render a compact table inside the insight report under its own section. Each row carries a stable action key so the CEO can respond in a single short reply (e.g., "1c, 3 confirm, 5 skip"). Parsing the reply is this skill's responsibility, not the user's.
+**Review UX — a widget, not a typed-reply table (P1.1/P1.5 2026-07-02; the pre-v3.13.0 "reply with row-# + action" grammar is retired — it could never render through the validator).** Render via `render_chat_output_widget()` as REVIEW items, one per candidate. The layout below defines CONTENT only — what each item carries — never the transport:
 
 ```
-## Classification Review — [N] items
-
-Review: reply with row-# + action (confirm / change to <letter> / skip).
-Skipping an item keeps the current classification.
-
-| # | Event | Current project (conf.) | Alt A | Alt B | Action |
-|---|-------|------------------------|-------|-------|--------|
-| 1 | 2026-04-18 email from rio@example.com ("invoice batch") | Acme Restaurant (0.62) | Category Food Truck | Category Bakery | — |
-| 2 | 2026-04-19 meeting "Sam / vendor review" | Acme Co [holding] (0.58) | Acme Restaurant | Category Bakery | — |
-...
+Item content (per candidate):
+  event summary        e.g. "Apr 18 email from Rio ('invoice batch')"
+  current filing       "Filed under: Acme Restaurant — likely" (plain-English
+                       confidence word per the output rules below; NEVER a decimal)
+  alternatives         "Could also be: Category Food Truck / Category Bakery"
+                       (listed in the item body as context for the edit input)
 ```
 
-**On the user's reply:**
-1. Parse each row instruction.
-2. For `confirm`: no event emitted for that row (the confirmation is captured in the aggregate `classification_review` event at the end).
-3. For `change to X`: append a `reclassification` event referencing the original `seq`, and append a `classifier_feedback.jsonl` row marking `user_action: "changed"`, signals_used = what the original classifier relied on, so future passes can down-weight that signal.
-4. For `skip`: record `user_action: "skipped"` in classifier_feedback.
-5. After all rows are processed, append a single `classification_review` event summarizing `{reviewed_event_seqs[], confirmed_count, changed_count, skipped_count}` and triggering view regeneration.
+Actions per item (REVIEW cluster, all canonical): `confirm` (current filing is right) · `edit [change]` (the input names the correct project — replaces the old "change to <letter>") · `skip` (keep as-is, revisit later).
 
-**Confidence trend surfacing (for the insights body, not the review table):** if the last 4 weeks of `classifier_feedback.jsonl` show the user overriding a specific signal repeatedly (e.g., "email domain cluster" wrong >3 times for Acme Co), add a top-level note for the user: "I keep filing [signal] under [org/project] and you keep moving it. Want to help me set up an alias so I get it right next time?" This turns the feedback loop into a visible coaching signal, not a silent tune-up.
+**On dispatch (via apply-choices on this skill's `src`):**
+1. For `confirm`: no per-row event (the confirmation is captured in the aggregate `classification_review` event at the end).
+2. For `edit [change]`: resolve the typed project name against the item's alternatives first, then the full project list; append a `reclassification` event referencing the original `seq`, and a `classifier_feedback.jsonl` row marking `user_action: "changed"` with signals_used, so future passes can down-weight that signal.
+3. For `skip`: record `user_action: "skipped"` in classifier_feedback.
+4. After the batch, append a single `classification_review` event summarizing `{reviewed_event_seqs[], confirmed_count, changed_count, skipped_count}` and trigger view regeneration.
+
+**Confidence trend surfacing (for the insights body, not the review table):** if the last 4 weeks of `classifier_feedback.jsonl` show the user overriding a specific signal repeatedly (e.g., "email domain cluster" wrong >3 times for Acme Co), add a top-level note for the user: "I keep filing [signal] under [org/project] and you keep moving it. Want me to remember where it really belongs so I get it right next time?" This turns the feedback loop into a visible coaching signal, not a silent tune-up.
 
 **If there's nothing to review** (zero provisional + zero low-confidence events in window): skip the section entirely. Do not render an empty table.
 
@@ -238,17 +276,17 @@ This means the CEO has skipped or missed three-plus weekly passes. Behavior:
 4. If still no review after a second 30-day window (60+ days idle), downgrade Pass 8 to one-line summary mode: "I have [N] items I filed on my own without your review. Say 'resume classification review' anytime to go through them with me." This prevents the insight report from being dominated by a wall of stale review rows.
 
 **D. Malformed or ambiguous user reply:**
-- Never execute a partial batch on ambiguous input. If the reply contains any row that doesn't parse cleanly (missing action, unknown alt-letter, duplicate row number with conflicting actions, row number out of range), reply: "Couldn't parse: [the problem lines]. Reply with `<row> confirm`, `<row> change to <letter>`, or `<row> skip` — one per row. I'll hold the batch until I hear back." Do NOT emit any events for the good rows — atomicity over partial progress.
-- Empty reply / user says "skip all" / user says "done" without instructions → treat as skipping every row (append a `classification_review` with `confirmed_count: 0, changed_count: 0, skipped_count: <N>` and move on).
+- Never execute a partial batch on ambiguous input. If the Apply-all payload contains any tuple that doesn't dispatch cleanly (unknown item number, an `edit [change]` whose input resolves to no project, conflicting duplicate tuples), ack: "Couldn't place: [the problem items]. Fix those and Apply again — I'll hold the batch." Do NOT emit any events for the good tuples — atomicity over partial progress.
+- `skip all` (canonical bulk verb) → treat as skipping every item (append a `classification_review` with `confirmed_count: 0, changed_count: 0, skipped_count: <N>` and move on).
 
 **E. Stale row (event reclassified by another skill between render and reply):**
 - Before processing each row, re-read its event by `seq` from `events.jsonl`. If `primary_thread_id` differs from what the table showed, skip that row and include it in a "stale rows skipped" note at the bottom of the review confirmation. Do not reclassify based on stale evidence.
 
 **F. Duplicate row instructions in one reply:**
-- If the same row # appears twice with conflicting actions (e.g., `1 confirm, 1 change to A`), reject the whole reply per case D. If duplicates are identical (`1 confirm, 1 confirm`), accept the first and ignore the rest; do not emit duplicate events.
+- If the same item appears twice in the payload with conflicting actions, reject the whole batch per case D. If duplicates are identical, accept the first and ignore the rest; do not emit duplicate events.
 
 **G. Unknown alternative letter:**
-- If the user writes `3 change to D` but the row only offered A and B, reject per case D. Suggest the available letters in the error message.
+- If an `edit [change]` input names a project that resolves to nothing (not an alternative, not in the project list), reject that item per case D. Name the item's listed alternatives in the error line.
 
 **H. Session interrupted before reply:**
 - No `classification_review` event is ever emitted speculatively. If the user closes the session mid-review, nothing is persisted — the same candidates surface next run (they'll still be provisional).
@@ -257,7 +295,7 @@ This means the CEO has skipped or missed three-plus weekly passes. Behavior:
 - If two alternative projects have equal signal strength, render both as "A" and "B" in order of (a) most-recent `last_activity` on the project, (b) alphabetical `display_name`. Never render three alternatives — if more exist, collapse the 3rd+ into a footnote "(+N more; say `expand row <#>` to see)."
 
 **J. No alternatives exist (low-confidence event with no credible alt):**
-- Render the row with `Alt A: <create new project>` and `Alt B: <mark as workspace-level / no project>`. The user can then `change to A` to spawn a new project via workspace-manager (this skill hands off, doesn't create projects itself).
+- Render the item's alternatives as "Could also be: a new project / not tied to any project". An `edit [change]` input of "new project" spawns one via workspace-manager (this skill hands off, doesn't create projects itself); "no project" / "not tied to any project" files it workspace-level.
 
 **K. Pass 8 failure mid-write:**
 - If appending a `reclassification` event fails (disk, schema, lock contention), roll back: do not append the aggregate `classification_review`, discard any partial `classifier_feedback.jsonl` rows, and surface the error in `_hq/CONFLICTS.md` with the reviewed_seqs so the next run retries only those rows. Never leave a partial review in place — the learning loop depends on matched `classification_review` + `reclassification` + feedback triples.
@@ -321,37 +359,35 @@ The 3-cap is a deliberate UX constraint. Overwhelming the CEO with 10 new-projec
 
 For each proposal, also compute the best-match existing project (if any) using people overlap + semantic similarity of recent event summaries. If a candidate exists with match score ≥ 0.5, render a **Merge** option alongside the **Create** option. Often the right answer is "this is actually an extension of the Property Alpha job" — merge beats create.
 
-#### Review UX — render under its own section
+#### Review UX — a widget, not a typed-reply table (P1.1/P1.5 2026-07-02)
+
+Render via `render_chat_output_widget()` as REVIEW items, one per proposal. The layout below defines CONTENT only — never the transport:
 
 ```
-## Proposed Projects — [N]
-
-Review: reply with row-# + action (create / merge / ignore).
-Ignored proposals enter a 60-day cooldown.
-
-| # | Proposed name | Signal | People | Merge candidate | Action |
-|---|---------------|--------|--------|-----------------|--------|
-| 1 | ABC Supplier contract | recurring weekly call + 2 commitments | Rio, Avery | Acme Restaurant | — |
-| 2 | Q3 pricing revision | CEO created Slack #pricing-q3 + 5 exchanges | Sam, Rio | (no match — create only) | — |
-| 3 | [Client] property walkthrough series | recurring Thu calls, 3 sessions logged | [contact], [contact] | Acme Property › Property Alpha | — |
+Item content (per proposal):
+  proposed name    e.g. "ABC Supplier contract"
+  signal           "recurring weekly call + 2 commitments"
+  people           "Rio, Avery"
+  recommendation   "Fold into: Acme Restaurant" when a merge candidate scored
+                   >= 0.5, else "New project" (this is what `confirm` accepts)
 ```
 
-Reply format examples: `1 merge`, `2 create`, `3 ignore` — one line per row, comma or newline-separated.
+Actions per item (all canonical): `confirm` (accept the recommendation shown — merge when a fold-into target is named, create otherwise) · `edit [change]` (override: type "new project" to force create, or name the project to fold into) · `not relevant` (decline — the fingerprint enters its 60-day cooldown) · `skip` (defer; re-surfaces next run).
 
-#### On the user's reply
+#### On dispatch (via apply-choices on this skill's `src`)
 
-For `create`:
+For create (a `confirm` on a "New project" recommendation, or an `edit [change]` of "new project"):
 1. Hand off to `workspace-manager` with payload: `{action: "create_project", display_name, kind: inferred, affiliation_id: best_guess_org, stakeholder_person_ids: involved_people}`.
 2. workspace-manager creates the project record in `entities.json` and returns the new `project_id`.
 3. Back in this skill: append a `project_proposal` event (`{user_action: "created", new_project_id, fingerprint}`) and a `classifier_feedback.jsonl` row with `type: project_proposal, user_action: "created"`.
 4. The prior orphan events that fed the proposal are then eligible for reclassification in *next week's* Pass 8 — we don't auto-reclassify them now. (Separation of concerns: Pass 9 creates the container, Pass 8 fills it.)
 
-For `merge`:
+For merge (a `confirm` on a "Fold into: X" recommendation, or an `edit [change]` naming a project):
 1. Hand off to `workspace-manager` with payload: `{action: "reclassify_events", seqs: [the orphan event seqs that fed the proposal], new_primary_thread_id: merge_target}`.
 2. workspace-manager appends `reclassification` events (one per seq) and updates `last_activity` on the target.
 3. Back in this skill: append a `project_proposal` event (`{user_action: "merged", target_project_id, fingerprint}`) and a `classifier_feedback.jsonl` row.
 
-For `ignore`:
+For decline (`not relevant`):
 1. Append a `project_proposal` event (`{user_action: "declined", fingerprint, reason: null}`).
 2. Append a `classifier_feedback.jsonl` row with `type: project_proposal, user_action: "declined", fingerprint`.
 3. Fingerprint now carries a 60-day cooldown enforced by future Pass 9 scans.
@@ -367,20 +403,20 @@ Silently suppressed from the candidate list at scoring time. Does not consume on
 **C. >3 candidates score ≥ 8:**
 Render top 3 by score; queue remaining to `_hq/insights/.proposal_queue.jsonl` (one `{fingerprint, score, candidate_summary, ts}` per line, overwrite each run). Top-level note for the user: "I spotted [N] possible new projects this week and showed you the top 3 — the rest will surface next week. Looks like things are accelerating."
 
-**D. Malformed user reply:**
-Same atomicity rule as Pass 8 — if any row doesn't parse cleanly, reject the whole reply with: "Couldn't parse: [lines]. Reply with `<row> create`, `<row> merge`, or `<row> ignore` — one per row." Emit no events.
+**D. Malformed batch:**
+Same atomicity rule as Pass 8 — if any tuple doesn't dispatch cleanly (unknown item, an `edit [change]` naming an unresolvable project), ack "Couldn't place: [items]. Fix those and Apply again." Emit no events.
 
 **E. workspace-manager hand-off fails (for create or merge):**
 Rollback: do NOT append the `project_proposal` event, do NOT append the `classifier_feedback.jsonl` row. Surface in `_hq/CONFLICTS.md` with the fingerprint + attempted action. Next run will re-propose (fingerprint never entered cooldown because action didn't commit).
 
-**F. User says "create" but candidate has a strong merge target:**
+**F. User forces create (an `edit [change]` of "new project") when the candidate has a strong merge target:**
 Honor the user. Do not override or ask again. The learning loop via `classifier_feedback.jsonl` will note that the signal was correct (proposal fired) even though the merge suggestion was overridden — down-weights the merge-candidate scorer for similar future candidates with the same org cluster.
 
 **G. Two proposals resolve to the same underlying entity:**
 Before rendering, de-duplicate candidates whose fingerprints match (same people + same normalized name) or whose merge targets are identical. Keep the highest-scoring one; discard duplicates silently.
 
 **H. Proposal for a person-only relationship (no org anchor):**
-If a proposal is driven primarily by "high-engagement person" signals and has no org affiliation, render the `Merge candidate` column as `(person-relationship — people-crm may be the right home)`. This nudges the CEO to consider whether the right container is a project or just a people-crm relationship record. The create action still works but hints at the lighter-weight alternative.
+If a proposal is driven primarily by "high-engagement person" signals and has no org affiliation, render the recommendation line as `(person relationship — a contact record may be the right home)`. This nudges the CEO to consider whether the right container is a project or just a people-crm relationship record. The create action still works but hints at the lighter-weight alternative.
 
 **I. Session interrupted before reply:**
 No `project_proposal` event emitted speculatively. Candidates re-surface next run (fingerprints re-scored; cooldown doesn't start until a decline is committed).
@@ -472,13 +508,13 @@ Same fingerprint across both surfaces — if surfaced daily and acted on, weekly
 ## Proposed Orgs — [N]
 
 Review: reply with row-# + action (create / edit [type] / ignore).
-Ignored proposals enter a 60-day cooldown.
+If you ignore one, I won't suggest it again for 60 days.
 
-| # | Inferred name | Inferred type | Signal | Tier | Action |
-|---|---------------|---------------|--------|------|--------|
-| 1 | Acme Logistics | vendor (4 emails, 1 invoice) | 1-off purchase | external | — |
-| 2 | Acme Co | client (12 emails, 3 meetings) | recurring + reciprocal | secondary | — |
-| 3 | Northstar Partners | advisor (8 emails, 2 board references) | board language | secondary | — |
+| # | Inferred name | Inferred type | Signal | Action |
+|---|---------------|---------------|--------|--------|
+| 1 | Acme Logistics | vendor (4 emails, 1 invoice) | 1-off purchase | — |
+| 2 | Acme Co | client (12 emails, 3 meetings) | recurring + reciprocal | — |
+| 3 | Northstar Partners | advisor (8 emails, 2 board references) | board language | — |
 ```
 
 Reply format examples: `1 create`, `2 edit client → partner`, `3 ignore`.
@@ -515,6 +551,104 @@ For `ignore`:
 **G. Domain looks like an alias of an existing org:** suppress with -3 penalty AND surface a top-level note: "I see [N] emails to/from [new_domain]. Looks like it might be the same as [existing_org] — want me to link them?" One-line suggestion separate from the proposal table.
 
 **H. Proposed org would create a duplicate:** dedupe at proposal time. If two candidates (different signal sources) point to the same domain or workspace_id, merge to one proposal with combined signals.
+
+---
+
+### Pass 11 — Voice calibration review (monthly, interactive, B1)
+
+Batches accumulated voice corrections into proposed voice-block updates. Modeled on Pass 10 (gating, 3-cap, fingerprint cooldown, atomic-reject, rollback). The customer-side write target is `_hq/voice/voice-block-<skill>.md` — NEVER the plugin SKILL.md (it is overwritten on update).
+
+**Gating (all must hold):** run only when NO `voice_calibration_review` event exists in the last 28 days. If Pass 8's backlog overflow already triggered this Sunday fire, defer Pass 11 to next week. Zero candidate patterns → skip silently.
+
+**Candidates:** read corrections via `voice_corrections.load_corrections` + `group_correction_patterns`. A pattern is a candidate when **3+ corrections share the same normalized pattern** (per skill, per `correction_type`). Cap **3 proposals per session** (Pass 9 precedent); overflow to `_hq/voice/.calibration_queue.jsonl`. Skipped-proposal fingerprints get a 60-day cooldown.
+
+**Render (widget):** one proposal per row, actions `confirm` / `edit [text]` / `skip` (CANONICAL_ACTIONS). Each proposal names the pattern in plain English ("you've rewritten 'circle back' to 'following up on' 4 times — want me to stop using 'circle back'?").
+
+**On confirm:** call `voice_corrections.write_voice_block_override(workspace_root, skill, <updated block>, calibration_level=…, sample_count=…)` (atomic; bumps `Last refreshed:`), then append a `voice_block_updated` event. **Malformed reply → atomic reject** (no partial write). **Mid-write failure → rollback, append NO `voice_calibration_review`.**
+
+**Universal-pattern promotion:** when the same pattern appears across **3+ skills**, write the override into every affected skill's `voice-block-<skill>.md` AND add one ack line suggesting plugin-side promotion via `report bug` (so Chalette can fold it into `shared/VOICE_CALIBRATION.md`'s banned list for all installs).
+
+**At end of pass:** append one `voice_calibration_review` event `{reviewed_through: {<skill>: <max correction ts reviewed>}, proposed, approved, skipped}`. "Unreviewed" for staleness = corrections with `timestamp` after `reviewed_through[skill]` — the corrections log is NEVER rewritten.
+
+---
+
+### Pass 13 — Sender-priority proposals (weekly, interactive, Phase 6 Loop 1)
+
+The inbox is the highest-frequency surface in the product, and every action the CEO takes on it is the strongest triage-relevance signal it receives. `apply-choices` now captures each inbox action as a `triage_feedback` event at dispatch time (`{sender, domain, bucket_assigned, action_taken, draft_offered}`). This pass mines those to propose sender/domain priority rules where the CEO's behavior consistently contradicts the bucket the inbox orchestrator assigned. It is a generalization of the hand-coded financial-signal override (+30 for billing@) that shipped only after a $10,400 estimate was filtered out — a learned model catches the next one, for every sender class. Modeled on Pass 9/10 verbatim (3-cap, 60-day fingerprint cooldown, atomic-reject, silent-fire-queues-then-explicit-renders).
+
+All the deterministic work is in `shared/scripts/triage_feedback.py` — this pass orchestrates it:
+
+**Gating:** run only when NO `sender_priority_review` context is fresher than 7 days AND there are `triage_feedback` events in the 30-day window. Zero candidate rules → skip silently (no event, no empty widget).
+
+**Candidates:** `load_triage_feedback(workspace_root, since_iso=<30d>)` → `aggregate_sender_signals(rows)` → `propose_sender_rules(agg, existing_rules=<store>.rules, cooldown_fingerprints=<cooldowns>, cap=3)`. Cooldowns come from `proposal_ledger.active_cooldowns(workspace_root, "pass13_sender_priority", now_iso=…)` (declined fingerprints, 60 days). The floors are baked into the helper: **≥4 actions** on the same sender/domain in-window and **≥80% consistency** in one direction before anything is proposed — deliberately stricter than Pass 11's 3-correction floor because a wrong demotion could bury a real high-value sender. Domain rules are preferred over member-sender rules (one proposal fixes more).
+
+**Render (widget):** one proposal per REVIEW item via `render_chat_output_widget()`, actions `confirm` / `edit [change]` / `skip` (CANONICAL_ACTIONS). Each names the pattern in plain English (the helper's `plain` field: *"You've skipped 9 of the last 10 messages from newsletters@promo.example.com — stop surfacing them?"* / *"You act on almost everything from Rio Sample — always surface it near the top?"*). NEVER show the ±30 delta, a score, or an address as a raw token to a leak scanner — the plain string is the surface.
+
+**On dispatch (via apply-choices on this skill's `src`):**
+- `confirm` → `triage_feedback.rule_from_proposal(proposal, added_ts=<now>)`, append it to the `_hq/data/sender-priority-rules.json` store (`load_sender_priority_rules` → append → `write_sender_priority_rules`), append a `sender_priority_proposal` event `{user_action: "applied", fingerprint, sender_or_domain}`, and log the decision via `proposal_ledger.append_decision(workspace_root, pass_name="pass13_sender_priority", fingerprint=…, user_action="applied", summary=…)`.
+- `edit [change]` → apply the CEO's adjustment (e.g. flip demote→promote, or narrow a domain rule to one sender) then store + `user_action: "edited"`.
+- `skip` → defer (re-surfaces next run); `not relevant` / decline → `sender_priority_proposal` `{user_action: "declined", fingerprint}` + a `declined` ledger row → 60-day cooldown.
+- **Malformed batch → atomic reject** (Pass 8 rule, verbatim): if any tuple doesn't dispatch cleanly, ack "Couldn't place: [items]. Fix those and Apply again." and emit NO events. **Mid-write failure → rollback**, surface in `_hq/CONFLICTS.md`, append no proposal event.
+
+**Consumer:** the inbox orchestrator loads the store in Phase 4 scoring, AFTER the hardcoded rules + financial-signal override and BEFORE ranking, via `apply_rules_to_score(base, sender=…, domain=…, rules=…)`. The learning changes what surfaces — it NEVER auto-acts on mail.
+
+---
+
+### Pass 14 — Surface-preference proposals (weekly, interactive, Phase 6 Loop 2)
+
+`chat_dismissal` (24h) and `dont_forget_feedback` (14d) are re-surfacing timers, not preferences: skip the same chase for the same person every day and it returns every day, forever. This pass turns a repeated "no" into a durable suppression — the #1 trust-eroder in the daily loop (being re-asked what you already declined). Deterministic work is in `shared/scripts/surface_preferences.py`.
+
+**Gating:** run weekly; skip silently when no fingerprint clears the repeat floor.
+
+**Candidates:** `load_dismissals(workspace_root, since_iso=<30d>)` reads BOTH families across all 8 widget surfaces and normalizes each to a stable `(surface, item_class, entity_id)` fingerprint (Phase-6 writers stamp `data.fingerprint`; legacy events derive it best-effort). `count_repeats(rows, min_count=3)` keeps fingerprints dismissed **3+ times in 30 days**; `propose_suppressions(counts, entity_names=<resolved names>, existing_prefs=<store>.suppressions, cooldown_fingerprints=<cooldowns>, cap=3)`. Cooldowns via `proposal_ledger.active_cooldowns(workspace_root, "pass14_surface_preferences", now_iso=…)`.
+
+**Render (widget):** one proposal per REVIEW item, `confirm` / `edit [change]` / `skip`. Plain-English (`plain` field): *"You've skipped chasing Dana 6 times — never suggest chasing them?"* / *"You've dismissed 'Project Atlas is going stale' 4 weeks running — stop flagging it?"*. Declines get their own 60-day cooldown so the pass doesn't nag about the nag.
+
+**On dispatch:** `confirm`/`edit` → `suppression_from_proposal(...)` appended to `_hq/data/surface-preferences.json` + a `surface_preference_proposal` `{user_action, fingerprint}` event + `proposal_ledger` row. Decline → cooldown. Same atomic-reject + rollback rules as Pass 13.
+
+**Consumer:** EVERY widget orchestrator (inbox, commitments, pulse, past-meetings, upcoming-meetings, friday-wrap, relationship-moves, morning-brief) calls `is_suppressed(prefs, surface, item_class, entity_id)` to filter items BEFORE rendering — see each orchestrator's pre-render step. A suppression only hides a surfaced prompt; it never changes what's captured in the substrate.
+
+---
+
+### Global proposal cap (Phase 6 — passes 8–15 share one weekly widget)
+
+Passes 9, 10, 11, 13, 14 (and later 15) each keep their own 3-cap. On top of that, the weekly review honors ONE global ceiling so a busy week doesn't bury the CEO under a dozen prompts at once. `proposal_ledger.GLOBAL_PROPOSAL_CAP` (7) is that ceiling. Render the proposing passes in priority order — highest-leverage daily-surface passes first (13 sender-priority, 14 surface-preferences), then 9/10/11, then the Round-2 calibration passes below — and before rendering each pass call `proposal_ledger.remaining_global_slots(rendered_so_far)`; a pass renders at most `min(3, remaining)` proposals and queues the rest to its own `.*_queue.jsonl` for next week. The CEO sees a coherent short review, not five stacked widgets.
+
+---
+
+### Loop 4 — Confidence calibration (monthly, interactive, Phase 6 Round 2)
+
+The CRU match-score thresholds (`MATCH_SCORE_AUTO_RESOLVE` = 0.55, `MATCH_SCORE_PENDING_REVIEW` = 0.30) are one-size-fits-all constants, but every workspace records how accurate its own bands are: a `commitment_review_proposed` carries the `match_score`, and the CEO's later `resolved` / `not relevant` says whether that band was right. This pass tunes the dial per workspace. Deterministic work is in `shared/scripts/confidence_calibration.py`.
+
+**Cadence + discipline:** monthly (or on the weekly fire, gated to once/28-days). `load_review_outcomes(workspace_root)` joins proposals to their terminal outcome; `propose_calibration(outcomes, current_auto_resolve=confidence.match_score_auto_resolve(workspace_root), cooldown_fingerprints=…)`. **ONE proposal max per run** (Loop 4 spec), small-n floor **≥20 terminal outcomes in a band**. Two directions: LOOSEN (a pending sub-band confirmed ≥95% → lower auto-resolve to that floor) or TIGHTEN (auto-resolves getting reopened above ~10% → raise it).
+
+**Render:** one REVIEW item, `confirm`/`edit [change]`/`skip`, plain-English (*"You've confirmed 96% of the 22 'likely' matches I flagged for review — want me to just auto-close that strong a match instead of asking?"*). NEVER show a decimal threshold to the CEO. On `confirm`, `apply_calibration(workspace_root, proposal)` merges the value into `_hq/data/confidence-overrides.json` (read by `confidence.py` accessors → cru_match), append a `confidence_override_proposal` event, log to `proposal_ledger` (`loop4_confidence_calibration`). Decline → 60-day cooldown. Atomic-reject + rollback as Pass 9. The override only moves auto-resolution precision — it never changes what's captured.
+
+---
+
+### S3 rider — Commitment noise thresholds (weekly, interactive, Phase 6 Round 2)
+
+The Stage-D capture floor (clear owner + deliverable + consequence) that cut one workspace's open set 71→33 is a hardcoded global rule. This rider makes noise thresholds learnable: when a counterparty's captured commitments are mostly noise (repeatedly resolved `dropped`), propose a `never-track` rule the CEO approves — appended to `_hq/config/commitment-rules.md`, the SAME file the capture floor reads (and the `never track this` triage action already writes). Deterministic work is in `shared/scripts/commitment_noise.py`.
+
+`analyze_noise(workspace_root)` → per-counterparty drop stats; `propose_noise_rules(stats, existing_rules=commitment_noise.load_never_track_rules(workspace_root), cooldown_fingerprints=…, cap=3)` with floors **≥8 resolved commitments from a source and ≥50% dropped**. Render one REVIEW item per proposal (*"You've dropped 6 of the last 8 things I captured about Sample Vendor — want me to stop tracking low-stakes items from them?"*). On `confirm`, `append_never_track_rule(workspace_root, proposal["pattern"])` (additive; deduped), append a `commitment_noise_proposal` event, log to `proposal_ledger` (`s3_commitment_noise`). Decline → 60-day cooldown. This rides the same propose-approve machinery — never a silent capture change; every commitment producer picks up the new rule at its next capture.
+
+---
+
+### Pass 15 — Prep-brief section weights (monthly, interactive, Phase 6 Loop 3)
+
+call-prep writes a brief before a meeting; past-meetings grades it against the transcript afterward (`prep_feedback` events — see orchestrator-past-meetings). This pass turns that grading into sharper briefs: aggregate `prep_feedback` per meeting-type and propose dropping a section that's consistently rendered-but-empty. Deterministic work is in `shared/scripts/prep_grading.py`.
+
+**Monthly.** `load_prep_feedback(workspace_root, since_iso=<window>)` → `aggregate_section_stats(rows)` → `propose_section_weights(stats, existing_weights=<call-prep config>.section_weights, cooldown_fingerprints=…, cap=3)`. Floor: **≥6 meetings of that type** and the section empty **≥80%** of them. Render one REVIEW item per proposal (*"The Risks section came up empty in 8 of your last 9 internal 1:1s — drop it for those?"*), `confirm`/`edit [change]`/`skip`. On `confirm`, `set_section_weight(config, meeting_type, section, 0)` then `skill_config_writer.save_skill_config(workspace_root, "call-prep", config, is_reconfigure=True)`; append a `prep_weight_proposal` event; log to `proposal_ledger` (`pass15_prep_grading`). Decline → 60-day cooldown. call-prep reads `prep_grading.section_weight(config, meeting_type, section)` before rendering — a weight of 0 drops that section for that meeting-type.
+
+---
+
+### Loop 5 — Extraction-miss learning (monthly, interactive, Phase 6 Round 3)
+
+The substrate's front door improves from its own documented failures. Two miss classes plus the session-sweep's recoveries are collected, clustered, and — on approval — written as few-shot exemplars that meeting-notes and cru_match read. Deterministic work is in `shared/scripts/extraction_hints.py`.
+
+**Capture (writers tag; see the consumer skills):** decision-log tags a manually-logged decision `data.extraction_miss=True` when `extraction_hints.find_recent_meeting(new_event, meeting_events)` finds a processed meeting within 24h sharing an attendee (the manual commitment-log path uses the same helper); the inbound CRU leg (commitments orchestrator) marks `data.resolution_miss=True` when `is_resolution_miss(reply)` fires on a reply that carried NO CRU match — that leg already reads the reply body, so it is the privacy-correct home (reconcile-sent's outcome watch stays metadata-only); and the Phase-5 session-sweep's recoveries (`source_ref = "session:<id>"`) that overlap a processed meeting are consumed as extraction-miss signal too.
+
+**Monthly.** `load_misses(workspace_root, since_iso=<window>)` (all three sources) → `cluster_misses(rows, min_cluster=3)` → `propose_hints(clusters, existing_hints=extraction_hints.load_extraction_hints(workspace_root), cooldown_fingerprints=…, cap=3)`. Render one REVIEW item per proposal (*"I've missed 4 similar items you had to log by hand — want me to learn to catch that phrasing?"*), `confirm`/`edit [change]`/`skip`. On `confirm`, `append_extraction_hint(workspace_root, proposal["hint"])` (additive; deduped), append an `extraction_hint_proposal` event, log to `proposal_ledger` (`loop5_extraction_hints`). Decline → 60-day cooldown. Consumers: meeting-notes reads the hints at extraction time; cru_match reads them for resolution language.
 
 ---
 
@@ -570,6 +704,8 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 [1-3 short lines noting projects / relationships that are at their usual cadence. The absence of an insight is information too — surface it explicitly so M doesn't wonder "did the skill miss X?"]
 ```
 
+**Silent-fire rule (scheduled runs queue; explicit runs render).** The Sunday scheduled fire is SILENT: it computes and QUEUES Pass 8/9/10 candidates (`_hq/insights/.review_queue.jsonl` + the proposal fingerprints) and writes the .docx — it never renders interactive widgets into a chat nobody is looking at. The widgets render on the next EXPLICIT-trigger run ("weekly insights" / "review classifications" / workspace-manager's are-they-ready offer), reading the queue first.
+
 **Pass 8 (classification review) and Pass 9 (project proposals) — separate widgets, not embedded in the .docx body.** Pre-v3.13.0 the classification review and project proposals were rendered as tables inside the insight report. v3.13.0+: surface those as separate widgets per the standard chat-action-widget contract (with `confirm` / `edit [text]` / `skip` actions per CANONICAL_ACTIONS) so the user can act on them directly. The .docx itself contains observations + suggestions, not interactive surfaces.
 
 **Forbidden in the .docx body and the chat surface (per universal voice contract):**
@@ -583,7 +719,7 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 
 ---
 
-## Skill Boundary (What This Does Not Do)
+## Skill Boundary (v2.1)
 
 - **Read-only over the data layer for synthesis passes (1–7).** The exceptions are: Pass 8 (classification review), which appends `classification_review` + `reclassification` events and `classifier_feedback.jsonl` rows; Pass 9 (project proposals), which appends `project_proposal` events and `classifier_feedback.jsonl` rows (and delegates the actual `entities.json` mutation to workspace-manager for create/merge actions); and Pass 10 (org proposals, added in v3.12.0+), which appends `org_proposal` events and `classifier_feedback.jsonl` rows of `type: org_proposal`. Synthesis output (Passes 1–7) lands in `_hq/insights/<date>.docx` per v3.13.0+ (CONTRACT Rule 27 — no .md deliverables). Pass 8 and Pass 9 outputs surface as interactive widgets in the chat turn — NOT as separate .md files (pre-v3.13.0 the SKILL.md said they wrote to `_hq/insights/REVIEW_<date>.md` and `_hq/insights/PROPOSED_PROJECTS_<date>.md`; v3.13.0+ they're widgets, with the user's choices captured into the events above).
 - **Does not answer ad-hoc questions.** "Show me Bowie's recent activity" → workspace-manager, not insight-generator.
@@ -606,16 +742,7 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 
 ## Schedule Configuration
 
-When scheduled-tasks is available, register:
-
-```
-name: weekly-insights
-cadence: weekly
-day: sunday
-time: 19:00
-action: invoke insight-generator
-silent: true  # don't interrupt; drop output for next session
-```
+The `weekly-insights` task (silent, Sun 7 PM) is registered by **enable-command-room-schedules Step 1.G** and back-filled by **command-room-update-bridge**. Do not register it from this skill; cadence changes go through **change-schedule**.
 
 On the next session after a scheduled run, workspace-manager surfaces: "Your weekly insights from [date] are ready — want to see them?"
 
@@ -636,7 +763,8 @@ This skill runs as a scheduled task (Sunday 19:00, intentional — ready for Mon
 
 ## What It Doesn't Do
 
-- Does not write to entities.json directly. Writes to events.jsonl only via Pass 8 (classification review) and Pass 9 (project proposals), both of which require explicit user action on a review table — never silently. For Pass 9 create/merge actions, `entities.json` mutation is delegated to workspace-manager.
+- Does not write to entities.json directly — with the ONE declared Writer Contract exception: the `dormancy_reviewed_at` field Pass 7 stamps on dormant project records (atomic, cooldown-gating only). All other entities.json mutation is delegated (workspace-manager for Pass 9, `org_writer` for Pass 10).
+- Interactive writes (Pass 8 reclassifications, Pass 9/10 proposals, Pass 11 voice blocks) require explicit user action on the review widget — never silent. The declared silent writers are exactly two: Pass 7's passive-capture events and the projection/view refresh. The full write inventory lives in the Writer Contract above — this section defers to it.
 - Does not mutate prior events. Reclassification = new append with `supersedes_seq`, per schema.
 - Does not propose projects on a fresh workspace. Pass 9 inherits the ≥14-day minimum from the skill's overall gate; Pass 9 itself requires ≥30 days of data before proposing, since cadence signals need time to materialize.
 - Does not answer one-off questions ("why is NorthStar stuck?") — that's `workspace-manager` with connector context.
@@ -644,3 +772,9 @@ This skill runs as a scheduled task (Sunday 19:00, intentional — ready for Mon
 - Does not send or act on insights — every insight is a prompt for CEO attention, never an auto-action.
 - Does not interrupt mid-week to ask about classifications — that's the whole point of Pass 8 being batched and weekly.
 - Does not replace the cleanup — audit checks workspace health; insight-generator synthesizes patterns.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Weekly synthesis pass that surfaces patterns the CEO wouldn't have seen. Fires on: 'weekly insights', 'what am I missing', 'run insights', 'synthesize the week', 'what should I pay attention to', 'cross-project patterns', 'what's drifting', 'show me the insight report', 'generate insights', 'classification review', 'review classifications', 'review project proposals', 'new project proposals'. DOES NOT fire on 'review my projects' (list-active — a roster status read, not the classification pass) or 'what should I focus on' (command-room-coach — forward-looking priorities; this skill surfaces backward-looking patterns). Also runs automatically on a weekly schedule (Sunday evening by default) via scheduled-tasks. Reads generated views (TIMELINE, RELATIONSHIPS, COMMITMENT_AGING, DORMANT, THEMES) + entities.json + events.jsonl and produces (a) a ranked list of observations worth the CEO's attention, (b) a batched classification review pass covering every provisional / low-confidence event from the prior week (Pass 8), (c) a batched project-proposal pass surfacing new projects when accumulated signal suggests outcomes will slip without a dedicated anchor (Pass 9), and (d) a batched org-proposal pass surfacing new orgs when capture events accumulate enough signal without an explicit attribution (Pass 10). Saves the synthesis to _hq/insights/[YYYY-MM-DD]_insights.docx (v3.13.0+) and surfaces a link at the bottom of the chat turn. Pass 8 appends `classification_review` + `reclassification` events and `classifier_feedback.jsonl` rows. Pass 9 appends `project_proposal` events + `classifier_feedback.jsonl` rows and delegates entities.json mutations to workspace-manager. Pass 10 appends `org_proposal` events + `classifier_feedback.jsonl` rows of `type: org_proposal`. Phase 6 adds Pass 13 (sender-priority proposals from `triage_feedback` → `_hq/data/sender-priority-rules.json`) and Pass 14 (surface-preference/dismissal-suppression proposals → `_hq/data/surface-preferences.json`); both reuse the Pass 9/10 machinery (3-cap, 60-day cooldown, atomic-reject) and log decisions to `_hq/data/proposal_feedback.jsonl`. Does NOT handle one-off questions — use workspace-manager for that.

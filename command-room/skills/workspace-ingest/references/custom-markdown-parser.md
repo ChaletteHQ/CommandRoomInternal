@@ -36,7 +36,7 @@ Lifted from `migration-v2` Path C spec (see `Command Room/data/CommandRoom_PathC
 
 ## Detection entry point
 
-Orchestrator dispatches here when `_hq/MASTER_TRACKER.md` OR `_hq/MASTER_TRACKER.md` exists AND (`DECISION_LOG.md` missing OR PEOPLE.md is section-nested). See `../SKILL.md` → "Shape Detection".
+Orchestrator dispatches here when `_hq/MASTER_TRACKER.md` OR `_hq/MASTER_TRACKER.md` exists AND (`DECISION_LOG.md` missing OR PEOPLE.md is section-nested). See `../SKILL.md` → Phase 1 "Shape Detection".
 
 ## HQ path resolution
 

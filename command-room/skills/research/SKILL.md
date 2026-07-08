@@ -1,6 +1,6 @@
 ---
 name: research
-description: "Produce a verified, cited research brief on any company, person, market, or topic — then fold the findings into the CEO's workspace so they compound instead of evaporating. Reads entities.json + events.jsonl FIRST to frame the question through the CEO's own projects, people, and threads, then runs fan-out web search with source verification. Uses Tavily for deeper web search and clean page extraction when that connector is present, and the Vibe Prospecting enrichment tools to verify firmographics, surface funding / hiring / leadership trigger events, and identify real decision-makers when that connector is present; both are optional upgrades over built-in web search, and the brief honestly labels which sources were used. Hands verified findings to intel-intake to save and to people-crm to record any decision-makers. Use when the CEO says 'research [company]', 'look into [company]', 'dig into [company]', 'background on [person]', 'what do we know about [company]', 'pull together research on [topic]', 'do some research on [topic]', 'research brief on [topic]', 'research [person] before my call'. DOES NOT fire when the CEO already has the source in hand and says break this down or parse this — that is intel-intake; research is for when there is no source yet. DOES NOT fire on what did anyone say about [topic] or transcript search — that is transcript-search, which searches the CEO's own meetings, not the web. DOES NOT fire on prep me for my meeting (call-prep) or one-pager on [topic] (one-pager-composer)."
+description: "Produce a verified, cited research brief on any company, person, market, or topic — multi-source, adversarially checked — then fold the findings into the CEO's workspace so they compound. Fires on: 'research [company/person/topic]', 'deep dive on [topic]', 'what's the story on [company]', 'look into [topic]', 'recent sentiment on [topic]' / 'last 30 days on [topic]' (recency mode). Output: cited brief saved to the matching project folder, key facts written into the workspace records, honest source labeling throughout. Does NOT fire on 'prep me for [meeting]' (call-prep — meeting brief that consumes research where it exists), 'who is [name]' (people-crm — the relationship record), or 'break down this article' (intel-intake — processing a source the CEO supplies). Mode table and citation rules: Routing section in the body."
 ---
 
 ## Recommended Model
@@ -17,6 +17,7 @@ If the skill is invoked with a name-bearing trigger ("research [company]", "back
 
 - **Use research for:** when the CEO needs to learn something that is NOT already in the workspace or their meetings — go find it on the public web (plus optional enrichment), verify it, brief it, and save what matters.
 - **Use `intel-intake` for:** when the CEO already HAS the source — a link, a YouTube URL, a pasted article — and wants it structured. research delegates its save step to intel-intake; intel-intake is the one-way "source → intel" flow, research is the "no source yet → go find one" flow that precedes it.
+- **"what do we know about [X]" routes HERE (research), not intel-intake.** intel-intake carries an internal handler by the same name, but that handler searches ONLY the already-accumulated intel base from inside an intel flow. As a standalone chat trigger the phrase fires research — whose Step 1 reads the same accumulated workspace intel FIRST and goes to the web only for what's missing, so nothing is lost by this routing. A quick-lookup that the workspace fully answers stops there (no web pass needed).
 - **Use `transcript-search` for:** finding what was said inside the CEO's own meeting transcripts. research never searches the meeting corpus; it searches the world.
 - **Use `people-crm` for:** "who is [person]" / "tell me about [person]" lookups scoped to the existing workspace. research delegates to people-crm to RECORD newly-discovered decision-makers, but does not field the lookup intent itself.
 - **Use `call-prep` for:** assembling a pre-meeting brief from existing workspace context. If the CEO says "research [company] before my call", research runs (web + enrichment) and can hand its findings forward; "prep me for my meeting" with no research ask stays with call-prep.
@@ -29,7 +30,7 @@ research does NOT write substrate directly. It READS and DELEGATES every write t
 - **Saves findings via `intel-intake`:** verified brief content is handed to intel-intake, which writes the `intel_logged` event and the `_hq/intel/` artifact with entity cross-references. research adds no new event type.
 - **Records decision-makers via `people-crm`:** any person discovered through enrichment is passed to `people_writer` (dedup-first: `find_existing_person` → `update_person` or `create_person`). This is the ONLY place enriched contact PII lands — never loose notes.
 
-**Atomic-write enforcement:** research itself emits no raw writes. All persistence flows through `intel-intake` and `people_writer.py`, which use the atomic helpers (`atomic_append_jsonl`, `atomic_write_json`) per `cr-substrate-helpers.md`. No `open(...).write()` anywhere in this skill.
+**Atomic-write enforcement:** research itself emits no raw writes. All persistence flows through `intel-intake` and `people_writer.py`, which use the atomic helpers (`atomic_append_jsonl`, `atomic_write_json`) per `shared/WORKSPACE_API.md` → Append Protocol. No `open(...).write()` anywhere in this skill.
 
 **Source-of-truth honesty:** every claim in the brief carries its origin — `web`, `enrichment` (Vibe Prospecting), or `workspace`. The brief states which sources were available so the CEO can weigh confidence. Never present an unverified web claim as fact.
 
@@ -86,7 +87,9 @@ Use the fan-out research pattern: decompose the question into several angles, se
 
 ### Step 3 — Render the branded brief, then offer to save
 
-The default output is a **self-contained, Command-Room-branded HTML brief**, rendered into `shared/templates/research_brief.html` and surfaced in the preview panel (with an H2 link via `brief_path.get_brief_artifact_url()` — never a raw path). The template carries the brand inline, so it renders anywhere with no asset server.
+The default output is a **self-contained, Command-Room-branded HTML brief**, rendered from `shared/templates/research_brief.html` and **saved to `[WORKSPACE_ROOT]/_hq/intel/Research_Brief_[subject-slug]_[YYYY-MM-DD].html`** (the intel folder — same home the saved findings land in), then surfaced in the preview panel with an H2 link via `brief_path.get_brief_artifact_url()` — never a raw path. The template carries the brand inline, so it renders anywhere with no asset server.
+
+**Executive Output Standard (EXEC1, v3.20.0+) — header ties findings to the consuming event.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, the brief's top line (its bottom-line / verdict — already the lead of the HTML brief) is an exec-header verdict that names WHO this is FOR and the single most decision-relevant finding: *"For Thursday's call — Bo Stone (COO) owns ops tooling, not the homepage CEO."* This SUBSUMES a generic "Bottom line" restatement — the verdict IS the bottom line, don't render both (no-duplication rule). **Honest fallback:** when Step 1 found no consuming event (no upcoming call / thread the research feeds), drop the "For:" framing and lead with the plainest material conclusion — never invent a touchpoint. The Step 4 confidence line stays (element 5). When exporting the `.docx`, pass the same line as `exec_header.verdict` to `make_brief()`.
 
 **Adaptive depth — fill only the blocks that fit the ask:**
 - **Quick lookup** ("what do we know about Acme Co") → bottom line + a few cited key findings + sources. Omit the optional sections.
@@ -103,7 +106,14 @@ If the CEO wants a portable copy, also export the brief as a `.docx` via `brief_
 
 ### Step 4 — Confidence and honesty
 
-Close with a one-line confidence read tied to source coverage. Web-only firmographics are medium-confidence by default; enrichment-verified firmographics are high. Say which, and name the gaps the CEO should confirm.
+Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structure, specificity, floors).
+
+**Tag major claims inline, not just in the footer:**
+- **HIGH** = 2+ independent sources, or enrichment-verified, or stated by the company officially.
+- **MEDIUM** = one reputable source, or web-sourced and >3 months old.
+- **LOW** = single mention or inferred ("likely expanding — bilingual CS job posts").
+
+Close with a one-line confidence read tied to source coverage. Web-only firmographics are medium-confidence by default; enrichment-verified firmographics are high. **Always name the lowest-confidence major claim explicitly and what the CEO should confirm** — never bury it.
 
 ### Worked example — "research Acme Co before my call Thursday"
 
@@ -116,7 +126,13 @@ Same skill, same request. The branch simply turns on when the tools are there.
 
 ## Output
 
-- **Branded HTML brief (default):** a self-contained Command-Room-branded artifact rendered from `shared/templates/research_brief.html`, adaptive in depth, surfaced in the preview panel + an H2 link via `get_brief_artifact_url()`. Source badge + confidence chip always present; enrichment-only sections appear only when there's enrichment to show.
+- **Branded HTML brief (default):** a self-contained Command-Room-branded artifact rendered from `shared/templates/research_brief.html`, saved to `[WORKSPACE_ROOT]/_hq/intel/Research_Brief_[subject-slug]_[YYYY-MM-DD].html`, adaptive in depth, surfaced in the preview panel + an H2 link via `get_brief_artifact_url()`. Source badge + confidence chip always present; enrichment-only sections appear only when there's enrichment to show.
 - **Confirm-choice widget:** save-the-brief / add-decision-makers / skip, via `render_chat_output_widget`.
 - **Substrate (on save, delegated):** `intel_logged` + `_hq/intel/` artifact via intel-intake; `person_*` records via people-crm.
 - **Portable copy (on request):** a `.docx` via `brief_writer.make_brief()`, surfaced as a second H2 link.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Produce a verified, cited research brief on any company, person, market, or topic — then fold the findings into the CEO's workspace so they compound instead of evaporating. Reads entities.json + events.jsonl FIRST to frame the question through the CEO's own projects, people, and threads, then runs fan-out web search with source verification. Uses Tavily for deeper web search and clean page extraction when that connector is present, and the Vibe Prospecting enrichment tools to verify firmographics, surface funding / hiring / leadership trigger events, and identify real decision-makers when that connector is present; both are optional upgrades over built-in web search, and the brief honestly labels which sources were used. Hands verified findings to intel-intake to save and to people-crm to record any decision-makers. Use when the CEO says 'research [company]', 'look into [company]', 'dig into [company]', 'background on [person]', 'what do we know about [company]', 'pull together research on [topic]', 'do some research on [topic]', 'research brief on [topic]', 'research [person] before my call'. DOES NOT fire when the CEO already has the source in hand and says break this down or parse this — that is intel-intake; research is for when there is no source yet. DOES NOT fire on what did anyone say about [topic] or transcript search — that is transcript-search, which searches the CEO's own meetings, not the web. DOES NOT fire on prep me for my meeting (call-prep) or one-pager on [topic] (one-pager-composer).

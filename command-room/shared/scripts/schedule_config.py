@@ -106,12 +106,22 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "label": "5 PM weekdays",
         "enabled": True,
     },
-    # v3.11.0 — Friday Wrap: weekly recap via weekly-recap skill. Fires 4 PM Fridays.
-    # First weekly-rhythm scheduled task; all prior tasks are daily. Empty Friday-PM slot
-    # avoids collision with the AM-heavy block.
+    # v3.11.0 — Friday Wrap: weekly recap via weekly-recap skill. First
+    # weekly-rhythm scheduled task; all prior tasks are daily.
+    #
+    # Phase 3 / R4 (2026-07): default moved 16:00 -> 13:00 Fridays for NEW
+    # installs only. Live evidence: the 4 PM Friday slot was routinely missed
+    # (laptop closed for the weekend) and Cowork fired the wrap on Sunday —
+    # a >24h-late weekly recap, the exact case the R4 degrade tier suppresses.
+    # 1 PM Fridays is reliably inside working hours. EXISTING registrations
+    # are untouched: registration never re-anchors a live task's cron, and
+    # any user-customized cron (a schedule_config override) always wins. An
+    # existing install moves only when the chronic-late proposal
+    # (late_fire.detect_chronic_lateness -> cleanup Monday note) offers it
+    # and the user accepts via change-schedule.
     "friday-wrap": {
-        "cron": "0 16 * * 5",
-        "label": "4 PM Fridays",
+        "cron": "0 13 * * 5",
+        "label": "1 PM Fridays",
         "enabled": True,
     },
     # v3.17.0 — Cleanup: dedicated weekly self-maintenance + brain self-heal.
@@ -124,16 +134,91 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "enabled": True,
     },
     # v3.18.12 — Reconcile Sent: silent, single-purpose task that closes
-    # commitments the CEO completed by sending mail DIRECTLY from Gmail. Fires
-    # 6:45 AM weekdays — AFTER upcoming-meetings (6:30), BEFORE morning-brief
-    # (7:00) — so the brief reads an already-reconciled substrate instead of
-    # doing the work itself. Lives in its own task (not the brief) because an
-    # invisible substrate write loses to a visible deliverable when co-located:
-    # Bug #98-v3, the brief diagnosed this itself and recommended moving it out.
-    # Silent like cleanup; not a CEO-facing chat.
+    # commitments the CEO completed by sending mail DIRECTLY from Gmail. The
+    # first fire is 6:45 AM weekdays — AFTER upcoming-meetings (6:30), BEFORE
+    # morning-brief (7:00) — so the brief reads an already-reconciled substrate
+    # instead of doing the work itself. Lives in its own task (not the brief)
+    # because an invisible substrate write loses to a visible deliverable when
+    # co-located: Bug #98-v3, the brief diagnosed this itself and recommended
+    # moving it out. Silent like cleanup; not a CEO-facing chat.
+    #
+    # Phase 3 / SPEC-2.4 (2026-07): default cadence raised to 3× weekdays so
+    # midday and end-of-day sends reconcile the same day instead of waiting
+    # for the next morning. The spec's 6:45/12:30/17:30 was normalized to a
+    # single 5-field cron (one task = one cronExpression), keeping the 6:45
+    # anchor before morning-brief and placing the evening pass after
+    # past-meetings (17:00). NEW-REGISTRATIONS-ONLY: registration never
+    # re-anchors an already-registered task's cron (that is change-schedule's
+    # job), so existing installs keep their live cadence untouched.
     "reconcile-sent": {
-        "cron": "45 6 * * 1-5",
-        "label": "6:45 AM weekdays",
+        "cron": "45 6,12,17 * * 1-5",
+        "label": "6:45 AM, 12:45 PM, and 5:45 PM weekdays",
+        "enabled": True,
+    },
+    # C1 (value receipts) — the monthly report task. Fires 7 AM on the 1st of
+    # every month and runs BOTH the operator report (CEO-self-facing operating
+    # lift) and the value receipt (forwardable counts + conservative hours) for
+    # the previous calendar month; on a quarter boundary (Jan/Apr/Jul/Oct) it
+    # also runs the quarterly value-receipt roll-up. operator-report claimed a
+    # monthly fire that was never actually wired into DEFAULT_SCHEDULES — this
+    # single task is where that claim becomes real, folding both reports into one
+    # fire so the overlapping substrate read isn't paid twice. Silent background
+    # task (no widget, no chat-orchestrator), registered like cleanup /
+    # reconcile-sent via enable-command-room-schedules Step 1.D (SILENT_TASKS registry loop).
+    "monthly-report": {
+        "cron": "0 7 1 * *",
+        "label": "7 AM on the 1st",
+        "enabled": True,
+    },
+    # REL1 — Relationship Moves: weekly proactive outreach action pack. Fires
+    # 5 PM Sundays (output waits Monday AM, an hour before the 6 PM cleanup).
+    # NOT first-install — needs accumulated substrate for dormancy baselines, so
+    # it registers via change-schedule / Phase 6 add / command-room-update-bridge,
+    # same later-add posture as commitments / pulse.
+    "relationship-moves": {
+        "cron": "0 17 * * 0",
+        "label": "5 PM Sundays",
+        "enabled": True,
+    },
+    # Phase 2 Stage D (S4) — Commitment Triage: weekly full-open-set
+    # housekeeping chat (done / defer / drop / not mine / make task / promote /
+    # never-track + undo). Fires 3 PM Fridays — AFTER friday-wrap (13:00), so
+    # the wrap reads the week as it was and triage cleans the list before the
+    # weekend; S5's 30-day task staleness sweeps in here. NOT first-install —
+    # a fresh workspace's open set hasn't aged; registers via change-schedule /
+    # Phase 6 add / update-bridge, same later-add posture as relationship-moves.
+    "commitment-triage": {
+        "cron": "0 15 * * 5",
+        "label": "3 PM Fridays",
+        "enabled": True,
+    },
+    # v4.2.0 — Weekly Insights: silent Sunday synthesis that (re)computes the 5
+    # analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / DORMANT /
+    # THEMES) via the insight-generator skill. Fires 7 PM Sundays — AFTER
+    # relationship-moves (5 PM) and cleanup (6 PM), so the week's substrate is
+    # settled before synthesis. The insight-generator SKILL advertised a
+    # "Sunday 19:00 by default" schedule that was NEVER actually wired into
+    # DEFAULT_SCHEDULES — so every workspace that didn't manually run "run
+    # insights" had its analytical views frozen since install. This entry makes
+    # the long-claimed schedule real. Silent like cleanup / reconcile-sent /
+    # monthly-report; the skill self-guards on <14-day workspaces so a fresh
+    # install fire is a clean no-op.
+    "weekly-insights": {
+        "cron": "0 19 * * 0",
+        "label": "7 PM Sundays",
+        "enabled": True,
+    },
+    # Phase 5 / R1 — Session Sweep: silent nightly pass that promotes the
+    # episodic layer (session transcripts) into the canonical event log. Fires
+    # 10 PM DAILY — AFTER past-meetings (5 PM weekdays) so it catches whatever
+    # past-meetings and every writing skill missed, and daily (not weekday-only)
+    # so weekend ad-hoc chats are swept too. Off-hours because it is pure
+    # background maintenance. Silent like cleanup / reconcile-sent; auto-registered
+    # (background task, not a chat). Self-guards to a clean no-op on a fresh
+    # workspace with no recent sessions.
+    "session-sweep": {
+        "cron": "0 22 * * *",
+        "label": "10 PM daily",
         "enabled": True,
     },
     # cr-refresh-workspace-map removed v2.14.25.
@@ -156,7 +241,156 @@ FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "friday-wrap",   # v3.11.0 weekly rhythm; surfaced to customer as `weekly-recap`
     "cleanup",       # v3.17.0 — silent weekly self-maintenance + brain self-heal; auto-registered (background task, not a chat)
     "reconcile-sent",  # v3.18.12 — silent daily sent-mail reconciliation; auto-registered (background task, not a chat). Bug #98-v3.
+    "monthly-report",  # C1 — silent monthly operator-report + value-receipt fire (1st of month); auto-registered (background task, not a chat).
+    "weekly-insights",  # v4.2.0 — silent weekly analytical-view synthesis (insight-generator); auto-registered (background task, not a chat). Makes the never-wired "Sunday 19:00" schedule real; skill self-guards on <14-day workspaces.
+    "session-sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (memory layer); auto-registered (background task, not a chat). Self-guards to a no-op when no sessions were active in the window.
 })
+
+
+# -----------------------------------------------------------------------------
+# SILENT_TASKS registry (Phase 3 / SPEC-2.3, 2026-07)
+# -----------------------------------------------------------------------------
+# Data-driven registration for the silent (non-chat) background tasks. This
+# dict is the single source of truth the three registration paths loop over:
+#   1. enable-command-room-schedules Step 1.D (registration loop),
+#   2. enable-command-room-schedules Phase 5.9 (unconditional assertion loop),
+#   3. command-room-update-bridge Phase 4.7 (post-update back-fill loop).
+# Adding a new silent task here registers it via all three paths with zero
+# prose edits — the pre-registry design needed a new SKILL.md step (1.E/1.F/
+# 1.G...) plus a new Phase 5.9 bullet plus a bridge edit for every task, and
+# each of those was a place to forget one (Bug #82 was exactly that miss).
+#
+# Cron/label/enabled come from DEFAULT_SCHEDULES (derive, don't duplicate) —
+# an entry here without a DEFAULT_SCHEDULES row is a registration-time error.
+#
+# `reason` is the one-line customer-facing explanation the W2 install ritual
+# prints next to each silent task, because silent tasks never clear Cowork's
+# first-fire permission gate on their own: the customer has to Run Now each
+# one once, and they'll only do that if they know why it exists.
+#
+# `prompt` is the registered task prompt with a `{BASENAME}` placeholder for
+# the customer-confirmed workspace folder basename (compose via
+# compose_silent_task_prompt). These are skill-invoking prompts, not
+# bootloaders — the skill body is read from the installed plugin at fire
+# time, so plugin upgrades propagate without re-registration.
+SILENT_TASKS: dict[str, dict] = {
+    "cleanup": {
+        "description": "Weekly self-maintenance + brain self-heal (silent)",
+        "reason": "tidies the workspace and heals data drift every Sunday night",
+        "notify": False,
+        "prompt": (
+            "# Command Room — weekly cleanup (silent Sunday self-maintenance)\n\n"
+            "Run the cleanup skill end-to-end for the Command Room workspace whose folder "
+            "basename is {BASENAME}. Resolve the workspace per CONTRACT.md Rule 22 "
+            "(find _hq/ under the mount matching that basename), then follow EVERY phase of "
+            "skills/cleanup/SKILL.md in order: Phase 1 silent scan, Phase 2 auto-fix sweep, "
+            "Phase 3 substrate integrity (detect + heal), Phase 3.5 brain self-heal (Live State "
+            "render + idempotent migration), Phase 4 the three-beat Monday note "
+            "(what I tidied / what I handled for you / what is waiting on you), Phase 5 "
+            "(save the .docx only when substantive). Stay silent unless something needs the "
+            "CEO eyes. This is a maintenance note, NOT a chat-widget."
+        ),
+    },
+    "reconcile-sent": {
+        "description": "Daily sent-mail reconciliation (silent)",
+        "reason": "closes commitments you completed by sending mail straight from Gmail",
+        "notify": False,
+        "prompt": (
+            "# Command Room — reconcile sent mail (silent daily maintenance)\n\n"
+            "Run the reconcile-sent skill end-to-end for the Command Room workspace whose "
+            "folder basename is {BASENAME}. Resolve the workspace per CONTRACT.md "
+            "Rule 22 (find _hq/ under the mount matching that basename), then follow "
+            "skills/reconcile-sent/SKILL.md in order: read the cursor, do a REAL in:sent "
+            "fetch since the cursor, call reconcile_and_receipt, and self-validate via "
+            "validate_reconcile_ran that the sent_reconcile audit event actually landed. "
+            "Stay silent unless something closed (then one undo-affordance line). This is "
+            "silent maintenance, NOT a chat-widget."
+        ),
+    },
+    "monthly-report": {
+        "description": "Monthly operator report + value receipt (silent)",
+        "reason": "produces your monthly operating report and value receipt on the 1st",
+        "notify": False,
+        "prompt": (
+            "# Command Room — monthly report (silent, runs the operator report + value receipt)\n\n"
+            "Run the monthly reports end-to-end for the Command Room workspace whose "
+            "folder basename is {BASENAME}. Resolve the workspace per CONTRACT.md "
+            "Rule 22 (find _hq/ under the mount matching that basename). For the PREVIOUS "
+            "full calendar month: (1) follow skills/operator-report/SKILL.md to produce the "
+            "operating-lift report, then (2) follow skills/value-receipt/SKILL.md to produce "
+            "the forwardable value receipt (numbers from value_receipt.compute_value_receipt, "
+            "never hand-counted). If the 1st falls on a quarter boundary (January, April, "
+            "July, or October), ALSO run the quarterly value-receipt roll-up for the "
+            "previous full quarter (rollup=quarter). Save each .docx under "
+            "_hq/operator-reports/ and surface the deliverable links. Stay silent beyond the "
+            "links unless something needs the CEO eyes. These are reports, NOT chat-widgets."
+        ),
+    },
+    "weekly-insights": {
+        "description": "Weekly analytical-view synthesis (silent)",
+        "reason": "keeps your timeline, relationship, and aging views current every Sunday",
+        "notify": False,
+        "prompt": (
+            "# Command Room — weekly insights (silent Sunday synthesis)\n\n"
+            "Run the insight-generator skill end-to-end for the Command Room workspace "
+            "whose folder basename is {BASENAME}. Resolve the workspace per "
+            "CONTRACT.md Rule 22 (find _hq/ under the mount matching that basename). "
+            "Follow skills/insight-generator/SKILL.md: synthesize the week and recompute "
+            "the 5 analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / "
+            "DORMANT / THEMES) into _hq/views/ from current substrate. Self-guard: if the "
+            "workspace has <14 days of events, no-op silently (not enough signal to find "
+            "patterns). Stay silent unless something needs the CEO eyes — the result is "
+            "available on their next session. This is silent synthesis, NOT a chat-widget."
+        ),
+    },
+    "session-sweep": {
+        "description": "Nightly session sweep (silent)",
+        "reason": "catches commitments and decisions from your ad-hoc chats that never got logged",
+        "notify": False,
+        "prompt": (
+            "# Command Room — session sweep (silent nightly memory pass)\n\n"
+            "Run the session-sweep skill end-to-end for the Command Room workspace whose "
+            "folder basename is {BASENAME}. Resolve the workspace per CONTRACT.md "
+            "Rule 22 (find _hq/ under the mount matching that basename), then follow "
+            "skills/session-sweep/SKILL.md in order: resolve the session-transcript MCP at "
+            "runtime, list the sessions active since the last sweep (24h floor), read each "
+            "transcript, extract the commitments / decisions / interactions / deliverables "
+            "that never became events, and write them via session_sweep.sweep_and_receipt "
+            "(dedup + append_event + the session_sweep_run receipt in one call). "
+            "Self-validate with validate_sweep_ran. Self-guard: no active sessions in the "
+            "window is a clean silent no-op. Stay silent unless something needs the CEO "
+            "eyes. This is silent maintenance, NOT a chat-widget."
+        ),
+    },
+}
+
+
+def is_silent_task(task_id: str) -> bool:
+    """True when `task_id` is a silent (non-chat) background task. Class
+    membership is the SILENT_TASKS registry — never a hardcoded name list.
+    Late-fire degradation (Phase 3 R4) exempts this class; the W2 install
+    ritual lists this class explicitly with reasons."""
+    return task_id in SILENT_TASKS
+
+
+def compose_silent_task_prompt(task_id: str, workspace_basename: str) -> str:
+    """Compose the registered prompt for a silent task from the registry.
+
+    Raises KeyError on an unknown task and ValueError on a basename that
+    isn't a bare folder name — the same hard checks the bootloader
+    composition applies, so a registration path can't quietly register a
+    prompt with an unsubstituted or path-shaped basename.
+    """
+    basename = (workspace_basename or "").strip()
+    if not basename or "/" in basename or "\\" in basename:
+        raise ValueError(
+            f"workspace_basename must be a bare folder basename, got {basename!r}"
+        )
+    spec = SILENT_TASKS[task_id]
+    prompt = spec["prompt"].replace("{BASENAME}", basename)
+    if "{BASENAME}" in prompt:
+        raise ValueError(f"{task_id}: unsubstituted BASENAME placeholder after compose")
+    return prompt
 
 
 # Display names — taskId → user-facing name. Keep in sync with chat orchestrator
@@ -171,6 +405,11 @@ DISPLAY_NAMES: dict[str, str] = {
     "friday-wrap": "Friday Wrap",  # v3.11.0
     "cleanup": "Cleanup",  # v3.17.0 — silent weekly self-maintenance (not a CEO-facing chat)
     "reconcile-sent": "Reconcile Sent",  # v3.18.12 — silent daily sent-mail reconciliation (not a CEO-facing chat)
+    "relationship-moves": "Relationship Moves",  # REL1 — weekly Sunday outreach action pack
+    "commitment-triage": "Commitment Triage",  # Phase 2 Stage D (S4) — weekly Friday full-open-set housekeeping chat
+    "monthly-report": "Monthly Report",  # C1 — silent monthly operator-report + value-receipt fire (not a CEO-facing chat)
+    "weekly-insights": "Weekly Insights",  # v4.2.0 — silent weekly analytical-view synthesis (not a CEO-facing chat)
+    "session-sweep": "Session Sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (not a CEO-facing chat)
 }
 
 
@@ -400,6 +639,91 @@ def load_schedule_config(entities_json_path: str | Path) -> dict[str, dict]:
     return merged
 
 
+def later_add_task_ids() -> frozenset:
+    """Default tasks that are deliberately NOT first-install (commitments /
+    pulse / relationship-moves as of Phase 3) — they need accumulated
+    workspace signal before they fire well, and register via the existing
+    later-add paths (change-schedule Phase 6 `add` / update-bridge).
+
+    DERIVED, never duplicated: a DEFAULT_SCHEDULES entry outside
+    FIRST_INSTALL_TASK_IDS is a later-add by definition. A default entry
+    does NOT imply registration — that's the R1 ghost-task lesson
+    (relationship-moves rendered as an enabled Sunday task on workspaces
+    where it was never added).
+    """
+    return frozenset(DEFAULT_SCHEDULES) - FIRST_INSTALL_TASK_IDS
+
+
+def load_schedule_view(
+    entities_json_path: str | Path,
+    registered_ids,
+) -> dict[str, dict]:
+    """The registration-aware schedule view (Phase 3 / corrected R1).
+
+    `load_schedule_config` merges defaults + overrides but knows nothing
+    about what is actually registered in Cowork's scheduler — so later-add
+    tasks rendered as live scheduled tasks on workspaces where they were
+    never added (the relationship-moves ghost). This wrapper partitions the
+    merged view against the registered-task set.
+
+    Args:
+      registered_ids: the registered taskId set. The maintained offline-first
+        record is `_hq/workspace_config.json` `registered_taskIds` (written
+        by enable-command-room-schedules Phase 0.C and kept current through
+        its Phase 3 / Phase 6 flows); pass taskIds from
+        `mcp__scheduled-tasks__list_scheduled_tasks` instead when the caller
+        has them (fresher). Pass an empty set if neither exists — everything
+        then renders as available/not-added, which is the honest answer.
+
+    Returns {task_id: {cron, label, enabled, registered: bool,
+    later_add: bool, silent: bool}}. NO task should be rendered as a live
+    scheduled task unless `registered` is True.
+    """
+    registered = set(registered_ids or ())
+    later = later_add_task_ids()
+    view = {}
+    for task_id, spec in load_schedule_config(entities_json_path).items():
+        view[task_id] = {
+            **spec,
+            "registered": task_id in registered,
+            "later_add": task_id in later,
+            "silent": task_id in SILENT_TASKS,
+        }
+    return view
+
+
+def workspace_time_to_machine(
+    hour: int,
+    minute: int,
+    workspace_root,
+) -> tuple[int, int]:
+    """Convert a user-requested wall-clock time (workspace TZ — what the
+    user MEANS by "8am") to the machine-local time cron must carry (R8:
+    cron/fireAt evaluate in MACHINE-local time; workspace TZ is
+    presentation-only).
+
+    Uses the CURRENT offset between the two zones (a fixed cron can't track
+    DST transitions — when the offset shifts, the fire drifts by the DST
+    hour until re-registered; same limitation any fixed cron has). Falls
+    back to the unconverted time when the workspace TZ can't resolve —
+    machine == workspace is the common case.
+    """
+    import datetime as _dt2
+
+    try:
+        from tz import load_workspace_tz
+
+        ws_tz = load_workspace_tz(workspace_path=workspace_root)
+        now_machine = _dt2.datetime.now().astimezone()
+        # The instant at which the workspace-TZ wall clock reads hour:minute today:
+        ws_now = now_machine.astimezone(ws_tz)
+        ws_target = ws_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        machine_target = ws_target.astimezone(now_machine.tzinfo)
+        return machine_target.hour, machine_target.minute
+    except Exception:
+        return hour, minute
+
+
 def task_display_name(task_id: str) -> str:
     """Map taskId → user-facing display name. Falls back to taskId stripped
     of the `cr-` prefix if not in DISPLAY_NAMES.
@@ -412,6 +736,12 @@ def task_display_name(task_id: str) -> str:
 __all__ = [
     "DEFAULT_SCHEDULES",
     "FIRST_INSTALL_TASK_IDS",
+    "SILENT_TASKS",
+    "is_silent_task",
+    "compose_silent_task_prompt",
+    "later_add_task_ids",
+    "load_schedule_view",
+    "workspace_time_to_machine",
     "DISPLAY_NAMES",
     "CronParseError",
     "parse_cron",

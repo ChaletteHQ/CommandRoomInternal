@@ -114,6 +114,7 @@ NOT_EVENT_TOKENS = {
     "type", "event", "data", "ts", "timestamp", "id", "source_skill",
     "commitment_id", "thread_id", "target_id", "primary_thread_id",
     "open", "overdue", "complete", "status", "outcome", "kind",
+    "role",  # transcript message field (gate2_turn_sweep reads it), not an event type
 }
 
 # -----------------------------------------------------------------------------
@@ -126,6 +127,10 @@ NOT_EVENT_TOKENS = {
 DANGLING_READ_OK = {
     "commitment_superseded": "forward-compat closer accepted by load_open_commitments per people-crm Gate 2 contract; no writer emits it yet (v3.14.5)",
     "person_added": "benign defensive accept — read in a 3-type OR filter by backfill_org_attribution; the other two (person_proposal, person_pending_review) ARE produced, so the backfill works; no add-path emits person_added today",
+    "briefing": "value_receipt.compute_metrics reads `briefing` (SPEC C1 D4) to count briefs delivered, deduped against morning-brief pack_run by date; `briefing` is a canonical emit type per WORKSPACE_API.md but is written by scheduled-orchestrator/widget paths the code-shaped writer detector can't see — the read is a defensive secondary count behind the canonical pack_run signal",
+    "memo_drafted": "value_receipt.compute_metrics reads `memo_drafted` (SPEC C1 D4 'documents produced') as one of the document event types; memo-writer documents emitting it (memo-writer/SKILL.md) but in a prose shape the emit-verb+backtick detector doesn't match, so it reads as writer-less here",
+    "relationship_move_suggested": "REL1 — written by relationship_moves.compute_relationship_moves (rows built in a loop then atomic_append_jsonl'd, so the 'type literal next to the append' writer heuristic misses it); the read in relationship_moves._recently_excluded is the 7-day self-dedup check",
+    "dont_forget_snooze": "canonical Pulse snooze event written via the dont-forget orchestrator's prose/widget path (no code-shaped writer); REL1's relationship_moves._recently_excluded reads it to honor Pulse snoozes in the weekly outreach dedupe",
 }
 
 # Canonical types WRITTEN by production with no production reader that are OK —

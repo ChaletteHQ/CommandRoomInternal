@@ -1,9 +1,9 @@
 ---
 name: scan-for-commitments
-description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate `type: commitment` events in `_hq/data/events.jsonl`. Use this when the workspace has meetings/emails on file but no commitment events (the v2.7.13/14 commitment views show empty even though there's clearly work to track). Idempotent — re-running skips already-extracted commitments via (source_ref, title) dedup. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (just opens the commitments-tracker artifact)."
+description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate `type: commitment` events in `_hq/data/events.jsonl`. Use this when the workspace has meetings/emails on file but no commitment events (the an earlier version/14 commitment views show empty even though there's clearly work to track). Idempotent — re-running skips already-extracted commitments via (source_ref, title) dedup. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (just opens the commitments-tracker artifact)."
 ---
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use scan-for-commitments for:** retroactive bulk extraction. The workspace has meeting events / interaction events from past Granola transcripts / Gmail threads, but no `type: commitment` events. This is the migration path that backfills them.
 - **Use `meeting-notes` for:** real-time per-meeting commitment extraction going forward.
@@ -14,13 +14,13 @@ If the user's phrasing is ambiguous ("get my commitments going"), prefer this sk
 
 ---
 
-# Scan for Commitments (v2.7.15)
+# Scan for Commitments
 
 ## Why this exists
 
 The Workspace Map sidebar artifact + the daily Commitments scheduled chat both aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (Pre-v2.9.0 had a People Network + Commitments Tracker sidebar pair too; those were retired when the daily-chat surface absorbed their content. Workspace Map is the only surviving sidebar consumer.)
 
-Pre-v2.7.15, `meeting-notes` was supposed to write commitments but the contract was implicit (no schema doc, no explicit step). Many transcripts were processed without producing commitment events. `scan-for-commitments` is the one-shot fix.
+Earlier releases expected `meeting-notes` to write commitments but the contract was implicit (no schema doc, no explicit step). Many transcripts were processed without producing commitment events. `scan-for-commitments` is the one-shot fix.
 
 This skill is also useful for: a fresh workspace ingest (workspace-ingest emits sparse `meeting` events without commitments), users migrating from prior versions, and periodic re-scans if the user adds Granola/Gmail history that pre-dates the install.
 
@@ -28,7 +28,9 @@ This skill is also useful for: a fresh workspace ingest (workspace-ingest emits 
 
 ## Writer Contract
 
-This skill is a primary appender to `_hq/data/events.jsonl`. It emits `type: commitment` events using the canonical v2.7.15+ schema documented in `shared/COMMITMENT_SCHEMA.md`. **`source_skill` MUST be `"scan-for-commitments"`** so the events are distinguishable from per-meeting writes (some users may want to roll back a bad scan; that requires being able to filter by source_skill).
+This skill is a primary appender to `_hq/data/events.jsonl`. It emits `type: commitment` events using the canonical schema documented in `shared/COMMITMENT_SCHEMA.md`. **`source_skill` MUST be `"scan-for-commitments"`** so the events are distinguishable from per-meeting writes (some users may want to roll back a bad scan; that requires being able to filter by source_skill).
+
+**Append through the locked writer (SPEC GATE1 / A1).** Every commitment event MUST be written via `atomic_append_jsonl`, NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`. The helper reserves the seq and writes inside the cross-process writer lock (`_hq/data/.writer.lock`) so a concurrent append can't lose an event or duplicate a seq. Batch the whole scan into ONE call — `atomic_append_jsonl(events_path, [e1, e2, ...], holder="scan-for-commitments")` (the cost is the read+rewrite, so once-per-batch beats once-per-event). Omit `seq`/`ts` — auto-stamped. See `shared/WORKSPACE_API.md` → Append Protocol §3.
 
 This skill DOES NOT modify or remove existing events. Append-only is non-negotiable per the events schema. If a previous scan produced bad commitments, the user can either ignore them (they'll age out over time) or run `commitment_resolved` events to close them — but this skill never edits the past.
 
@@ -74,10 +76,10 @@ Here's what I'm seeing:
 - 4 commitments already closed (I'll leave those alone)
 
 I'll look across the 11 meetings and 47 email threads. Takes about 3-5 minutes.
-Want me to show you what I'd add first before I commit anything? (Y/N)
+Want me to show you the list first before I add anything? (yes / no)
 ```
 
-If the user says dry-run or doesn't answer in the affirmative, proceed in dry-run mode (Step 5).
+If the user answers **yes** (or says "dry-run"), run the Step 5 dry-run preview first. If they answer **no** — they don't want to see the list first — proceed straight to commit mode. If they don't answer, default to the dry-run preview (the safe path).
 
 ### Step 2 — Pull the source artifacts
 
@@ -93,12 +95,14 @@ If a source artifact is unavailable (transcript deleted, email purged), log to `
 
 ### Step 3 — Extract commitments per source
 
-Apply the trigger logic from `shared/COMMITMENT_SCHEMA.md` § "Extraction triggers":
-1. Forward-looking deliverable
-2. Specific artifact / decision (not vague)
-3. Identifiable named owner
+Apply the trigger logic from `shared/COMMITMENT_SCHEMA.md` § "Extraction triggers" — the capture floor (Stage D 2026-07):
+1. **Clear owner** — an identifiable named person
+2. **Clear deliverable** — a specific artifact / decision (not vague)
+3. **Real consequence** — someone is waiting, a date depends on it, or dropping it costs something
 
-For each qualifying match in a transcript or email body, prepare a `type: commitment` event in canonical shape. Resolve owner names via `aliases.json` to canonical `person_id`. If owner can't be resolved, prepare the event with `owner_id: ""` and surface the unresolved name in the post-scan summary.
+Below-floor items are skipped (they bury real promises — the rule that cut one live open set 71→33). If `_hq/config/commitment-rules.md` exists, read it BEFORE writing and skip any item matching a user-taught `never-track` pattern.
+
+For each qualifying match in a transcript or email body, prepare a `type: commitment` event in canonical shape. **Classify `data.kind` at capture (Stage D — REQUIRED; the gate rejects a kind-less commitment on the strict path):** counterparty determinable → `"promise"`; self-owed with no counterparty → `"task"`; scheduling intent → `"scheduling"`; genuinely ambiguous → `"promise"` + `data.pending_review: true`. **Counterparty receipts (Stage E, F5 — REQUIRED when determinable):** populate `data.counterparty_id` (and include it in `person_ids`) with who the deliverable is owed TO / who owes it; when the counterparty is named but has no person record, SHOULD set free-text `data.counterparty_name`. These feed the CRU candidacy gate directly (the Bug #103 recall fix); `requester_id` is retired for NEW writes (readers keep the alias chain forever). **Due-date nudge (S2):** propose a `due` from the source language OR set explicit `data.no_due: true` — undated items go to the weekly triage, not the aging view. Resolve owner names via `aliases.json` to canonical `person_id`. If owner can't be resolved, prepare the event with `owner_id: ""` and surface the unresolved name in the post-scan summary.
 
 ### Step 4 — Dedup before writing
 
@@ -122,33 +126,35 @@ From the "RE: Acme MSA" email thread:
 - They owe you: Aria — return redlined MSA (due 2026-04-30) — already overdue
 ...
 
-Say "commit" if you want me to add these. Otherwise nothing changes.
+Say "add them" and I'll put these in your tracker. Otherwise nothing changes.
 ```
 
-**Commit mode** — write events using the writer helper from `shared/WORKSPACE_API.md` (handles seq reservation, conflict logging, view regeneration). After all writes complete, regenerate `_hq/views/COMMITMENTS.md` (if the views generator exists) and surface a summary:
+(Accept "add them", "add these", or "commit" as the confirmation — but only ever advertise "add them"; never ask the CEO to speak git.)
+
+**Commit mode** — write the whole batch through the Writer Contract's single locked append: `atomic_append_jsonl(events_path, [e1, e2, ...], holder="scan-for-commitments")`, omitting `seq`/`ts` (auto-stamped inside the lock). One call for the whole scan — never per-event appends, never a hand-rolled writer. After the append completes, regenerate `_hq/views/COMMITMENTS.md` (if the views generator exists) and surface a summary:
 
 ```
 Done — added 14 commitments to your tracker.
 
 - 9 they owe you (5 from Mira, 2 from Aria, 1 from Bowie, 1 from Quinn)
 - 5 you owe (3 to Sam, 1 to Mira, 1 to Dustin)
-- 2 already overdue (flagged in red in your commitments view)
+- 2 already overdue (flagged in red in your commitments list)
 
-3 candidates were too ambiguous to call either way — I set those aside for you to look at.
+3 were too vague to call either way — I set those aside for you to look at.
 1 was already closed — I left it alone.
 
 Open your Workspace Map or your daily commitments chat to see them.
 ```
 
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "Want me to show you what I'd add first before I commit anything? (Y/N)"
+- Good: "Want me to show you the list first before I add anything? (yes / no)"
+
 ---
 
 ## Step 6 — Recovery & rollback
 
-If the user reviews the result and decides the scan produced bad data ("too many false positives", "wrong owner attribution"), they have two options:
-
-**Option A — close them with a single resolved event (preferred for partial bad batches).** Walk events.jsonl back, identify the bad commitments by `source_skill: "scan-for-commitments"` and the timestamp window, and emit a `commitment_resolved` event for each with `data.evidence: "scan-for-commitments rollback YYYY-MM-DD"`.
-
-**Option B — bypass the scan results in views (for total rollback).** Add a `_hq/data/scan_overrides.json` file with the scan timestamp; aggregator reads it and filters out commitments matching that source_skill + timestamp prefix. This is a v2.7.16 feature — currently Option A is the only path.
+If the user reviews the result and decides the scan produced bad data ("too many false positives", "wrong owner attribution"): **close the bad commitments with resolved events.** Walk events.jsonl back, identify the bad commitments by `source_skill: "scan-for-commitments"` and the timestamp window, and emit a `commitment_resolved` event for each with `data.evidence: "scan-for-commitments rollback YYYY-MM-DD"`.
 
 **Recommended:** dry-run first (Step 5). The cost of running the scan twice is small; the cost of polluting events.jsonl with bad commitments is meaningful.
 
@@ -187,21 +193,11 @@ Does NOT fire on:
 
 ---
 
-## Demo Beat
-
-User installs Command Room, ingests their workspace (workspace-ingest produces sparse meeting events). Opens orgs-map / people-network / commitments-tracker — sees mostly empty.
-
-Says: "Why don't I have any commitments?"
-
-This skill fires, runs the audit, previews the scan, gets confirmation, adds 14 commitments, and the views populate immediately. From "empty workspace" to "full commitment tracker" in one trigger phrase. That's the demo.
-
----
-
 ## What It Doesn't Do
 
-- Does not extract commitments from Slack — needs the slack connector wrapper that doesn't exist yet (v2.7.16 candidate).
+- Does not extract commitments from Slack — no Slack extraction path exists in this skill today.
 - Does not extract from raw text the user pastes — that's `meeting-notes` (paste-fallback path).
-- Does not auto-resolve commitments — resolution events are written by `follow-up-ritual` (when a meeting closes one) or by the user explicitly via the DCC's ✓ done batch.
+- Does not auto-resolve commitments — resolution events are written by `follow-up-ritual` (when a meeting closes one) or by the user explicitly clicking ✓ done in the daily Commitments chat widget (dispatched through apply-choices).
 - Does not run on a schedule — explicit-trigger only. The whole point is "one-shot bulk fix."
 - Does not modify or remove existing events. Append-only.
 - Does not invent commitments where the source language is ambiguous. If in doubt, skip and surface as "ambiguous candidate" in the conflict log.

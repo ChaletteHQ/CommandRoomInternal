@@ -4,7 +4,7 @@ This folder contains git hooks that ship with the Command Room plugin. The most 
 
 ## How to install (one-time per clone)
 
-On a fresh clone of `chaletteholdings/commandroom1`, run this once at the repo root:
+On a fresh clone of `ChaletteHQ/cr1`, run this once at the repo root:
 
 ```bash
 git config core.hooksPath command-room/.githooks

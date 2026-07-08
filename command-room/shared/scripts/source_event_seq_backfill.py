@@ -90,6 +90,7 @@ from atomic_write import (  # noqa: E402
     multi_write_context,
 )
 from cru_match import load_events_defensively  # noqa: E402
+from event_time import event_time  # noqa: E402
 from next_seq import next_seq  # noqa: E402
 
 
@@ -245,7 +246,7 @@ def _find_best_match(
         wrapper.get("data", {}).get("source_thread_id")
         if isinstance(wrapper.get("data"), dict) else None
     )
-    wrapper_ts = _parse_ts(wrapper.get("ts"))
+    wrapper_ts = _parse_ts(event_time(wrapper))
 
     best_score = 0.0
     best_candidate: dict | None = None
@@ -256,7 +257,7 @@ def _find_best_match(
 
         # Time filter — candidate must be BEFORE the wrapper (commitment
         # captured before it landed in the discuss list)
-        cand_ts = _parse_ts(cand.get("ts"))
+        cand_ts = _parse_ts(event_time(cand))
         if wrapper_ts and cand_ts and cand_ts > wrapper_ts:
             continue
         # Optional window filter

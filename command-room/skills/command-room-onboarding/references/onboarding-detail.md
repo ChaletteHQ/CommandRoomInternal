@@ -8,7 +8,7 @@ This file contains procedures, templates, examples, and calibration guides extra
 
 Two changes on top of the v2 compression:
 
-1. **Step 1c absorbed Step 1d + Step 1e.** All four setup questions (role / day-to-day note / email exclusions / timezone) now render as ONE chat-action widget via `widget_mode: "onboarding_setup"`. Pre-v3.4.1 they were three sequential markdown-list prompts (1c, 1d, 1e). Step 1 now has 3 sub-beats (1a-1c).
+1. **Step 1c absorbed Step 1d + Step 1e.** The setup questions now render as ONE chat-action widget via `widget_mode: "onboarding_setup"`. Pre-v3.4.1 they were three sequential markdown-list prompts (1c, 1d, 1e). Step 1 now has 3 sub-beats (1a-1c). (v5 / 2026-06-30: the email-exclusions question was removed; the widget is now role / timezone / AI name / email draft posture. The v3.4.1-era references to email exclusions below are historical.)
 2. **Schedules trigger moved from Step 4c → Step 2c2.** Operator opens Chat A (`set up command room schedules`) at the start of the scan instead of waiting until after the workspace build. Schedules registration needs only Step 1's data (timezone + workspace.first_go_months) — no value blocking on Step 2's scan or Step 4's build. Step 4c now recommends ONLY Workspace Map (Chat B).
 
 The Voice Block / Orientation Beats / Specific Finding Fallback Chain / Relationship Card Template / Guided First Run sections below are unchanged from v2.
@@ -39,8 +39,8 @@ This file was written against the pre-v2 8-step structure (Steps 0-7). Onboardin
 | Step 3 (Gap questions) — overall | DISTRIBUTED | content cut OR redistributed |
 | Step 3a (prompt restructuring) | DROPPED | default all workspaces to Yes-path CLAUDE.md template |
 | Step 3b (Test Me) | CUT — moves to Chat 3+ where it works against richer data |
-| Step 3c (email exclusions) | **Step 1c** (widget item 3) | v3.4.1+ delivered as item 3 of the Step 1 setup widget. |
-| Step 3d (timezone) | **Step 1c** (widget item 4) | v3.4.1+ delivered as item 4 of the Step 1 setup widget. |
+| Step 3c (email exclusions) | REMOVED | delivered as a widget item v3.4.1–v4; the exclusion question was cut in v5 (2026-06-30). Exclusions now set on demand via `workspace-manager`. |
+| Step 3d (timezone) | **Step 1c** (widget Q2) | delivered as the timezone question of the Step 1 setup widget. |
 | Step 4 (Build workspace) — overall | **Step 4 (Build workspace files)** | renumbered |
 | Step 4a (build files) | **Step 4a** | preserved |
 | Step 4b (show tracker) | **Step 4b** | preserved |
@@ -345,60 +345,82 @@ The key principle: Don't force all connectors at once. Let the user choose their
 
 ## Brand Voice Template
 
-When you capture their voice, structure it like this:
+**Calibration is the flagship of onboarding — go deep.** The voice profile is what makes every future draft sound like the customer instead of like an AI, and it's proven back to them at the end of onboarding (the "Brand voice calibration proof" beat: the profile is mirrored, then a generic email is shown beside a voice-calibrated one). So the profile has to be specific enough that a stranger could impersonate them from it.
+
+### How to derive it (before you write the file)
+
+Read the customer's **sent** mail (not received — sent is their voice), the last 60 days / up to ~30 emails, plus any meeting transcripts where they speak. As you read, measure and extract — don't summarize into adjectives:
+
+1. **Mechanics you can count** — median sentence length, median email length, exact greeting strings, exact sign-off strings, punctuation habits (em-dashes? exclamation points? Oxford comma? ellipses?), casing, emoji use, bullets-vs-prose. These are objective; capture the real numbers and the real strings.
+2. **Lexicon** — the phrases they actually reach for, and the words they never use. Pull verbatim.
+3. **Moves** — how they open, how they close, how they frame a decision, how they say no, how they show warmth.
+4. **Audience shift** — compare sent mail to clients vs. team vs. investors; note a real shift only if the corpus shows one.
+5. **Verbatim examples** — pull 2–3 real sentences from their sent mail that best show the voice. These anchor the profile and seed the calibrated email later.
+
+Rank the signature traits most-identifying first. Set a confidence flag (high ≥ 15 sent emails, medium 5–14, thin < 5) and record what it was learned from.
+
+### Structure the file like this
 
 ```markdown
 # Your Brand Voice
-> Learned from [X] emails and [Y] transcripts
-> Last Updated: [date]
+> Learned from [X] sent emails and [Y] transcripts, [date range]
+> Last Updated: [date] · Confidence: [high | medium | thin]
 
-## How You Sound
-[3-5 key characteristics with brief examples. Examples:
-- "Direct and concise — you get to the point in 1-2 sentences"
-- "Data-driven — you back up claims with numbers"
-- "Warm but professional — you use people's names and remember details"
-- "Skeptical of hype — you ask hard questions before committing"]
+## How You Sound (the one-paragraph read)
+[3–4 sentences a stranger could use to impersonate them. Register (direct/diplomatic,
+formal/conversational, warm/clinical) + density (terse vs. expansive) + the single most
+identifying habit. Example: "You're direct and unhedged — the ask is usually in the first
+two lines. Short sentences, em-dashes instead of semicolons, no pleasantries on the way in.
+Warm through specifics (you use first names and reference the last thing that happened),
+not through niceties."]
 
-## Specific Patterns
+## Signature Traits (ranked, most identifying first)
+1. [Trait — with a one-clause proof from their real email]
+2. [Trait — proof]
+3. [Trait — proof]
+4. [Trait — proof]
+5. [Trait — proof]
 
-### Opening Style
-[How they typically start emails/messages. Example: "I usually open with context or a question, not pleasantries"]
+## Mechanics (measured, not guessed)
+- **Greeting:** [exact string(s) — "Hi [first name]," / no greeting / "[Name] —"] · [when they skip it]
+- **Sign-off:** [exact string(s) — "Best," / "— [Initial]" / none] · [varies by audience?]
+- **Sentence length:** [median words/sentence; short-and-punchy vs. long-and-clausal]
+- **Email length:** [median words/email; typical paragraph count]
+- **Punctuation habits:** [em-dashes as connective tissue? exclamation points — never/rare/frequent? Oxford comma? ellipses?]
+- **Formatting:** [bullets vs. prose; bold for asks; numbered next-steps?]
+- **Capitalization / casing:** [sentence case, lowercase-casual, etc.]
+- **Emoji / GIFs:** [never / sparingly / channel-dependent]
 
-### Closing Style
-[How they typically end. Example: "I close with clear next steps or an explicit ask"]
+## Lexicon
+- **Reaches for:** [real phrases — "Let me be clear about X…", "the read is…", "net-net"]
+- **Never uses:** ["leverage", "synergy", "circle back", "hope this finds you well"]
 
-### Common Phrases & Patterns
-[Things they actually say. Examples:
-- "Let me be clear about X..."
-- "The numbers show us..."
-- "What's your thinking on...?"
-- "We should [action] by [date] because [reason]"]
+## Patterns in Motion
+- **Opening move:** [context-first? question-first? the ask up top?]
+- **Closing move:** [explicit next step? a clear ask? a deadline?]
+- **Decision language:** ["X is stronger because Y" vs. pros/cons list]
+- **How they say no / push back:** [direct decline? soft redirect?]
+- **How they show warmth:** [first names + remembered details, or all-business]
 
-### Tone by Audience
-[If they shift tone based on who they're talking to, note it. Example:
-- With clients: More formal, lots of context-setting
-- With team: More direct, assumes shared context
-- With executives: Numbers-first, brief]
-
-### Decision Language
-[How they frame choices and decisions. Example:
-- "I usually frame options as 'X is stronger because Y,' not as 'pros and cons'"
-- "I decide based on impact and timeline, not feelings"]
+## Tone by Audience
+[Only if the corpus shows a real shift:
+- With clients: more context-setting, more formal sign-off
+- With team: assumes shared context, faster, directive
+- With investors/board: numbers-first, brief]
 
 ## What NOT to Do
-[Things that would sound out of character. Examples:
-- Don't use corporate jargon ("leverage," "synergy," "alignment")
-- Don't be overly casual (they're professional)
-- Don't hedge excessively ("I think maybe possibly..." — they're more decisive)]
+[The fastest tells a draft isn't theirs — corporate jargon, over-hedging, pleasantries they'd never write.]
 
-## Examples
-
+## Examples (verbatim, from their real sent mail)
 ### Good (sounds like them):
-"I've been thinking about how we handle vendor negotiations. Here's what I'm seeing: the current process takes 6 weeks and we're losing deals. I'd recommend moving to a 3-week timeline with clear decision gates. It's a change, but the data supports it. When can we talk through the details?"
+"[Real sentence pulled from their recent sent emails that shows the voice]"
+"[A second real sentence showing a different trait — e.g., how they make an ask]"
 
 ### Bad (doesn't sound like them):
 "We should really focus on leveraging our vendor relationships to potentially achieve some synergistic outcomes that could tangentially benefit our overall strategic alignment going forward."
 ```
+
+**Thin-corpus rule:** with < 5 sent emails, fill only the sections the data supports (usually How You Sound + Mechanics greeting/sign-off + one example), set Confidence: thin, and say so in the file. Never fabricate traits to fill the template — an honest thin profile is better than a confident wrong one, and the profile sharpens on its own as the customer uses the product.
 
 ---
 

@@ -42,6 +42,7 @@ def test_basic_table_renders() -> None:
                 },
             },
         ],
+        contract="off",  # B3: this test verifies table RENDERING, not the contract
     )
     assert out.exists()
     xml = _extract_xml(out)
@@ -78,6 +79,7 @@ def test_matrix_with_star_renders() -> None:
                 },
             },
         ],
+        contract="off",  # B3: this test verifies matrix RENDERING, not the contract
     )
     assert out.exists()
     xml = _extract_xml(out)
@@ -100,6 +102,7 @@ def test_insights_kind_supported() -> None:
         sections=[
             {"heading": "Observation 1", "body": "Lorem ipsum."},
         ],
+        contract="off",  # B3: insights has no contract rules; placeholder text is intentional filler
     )
     assert out.exists()
     xml = _extract_xml(out)

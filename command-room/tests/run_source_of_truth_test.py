@@ -521,6 +521,12 @@ def check_dead_event_types():
 
 
 def main() -> int:
+    # Force UTF-8 stdout so the ✓/✗ status glyphs don't raise UnicodeEncodeError
+    # on a Windows console (cp1252). Best-effort; never fatal.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     print("=== source-of-truth convergence ===")
 
     tier2_violations = check_tier2_overlay()

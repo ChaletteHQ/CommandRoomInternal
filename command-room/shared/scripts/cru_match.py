@@ -109,9 +109,25 @@ from typing import Any, Iterable, Optional
 # v3.5.0+: canonical source in shared/scripts/confidence.py. Aliased here
 # for back-compat — existing callers can keep importing the old names.
 from confidence import MATCH_SCORE_AUTO_RESOLVE, MATCH_SCORE_PENDING_REVIEW
+import confidence as _confidence
+
+# Read-side timestamp normalization (Phase 1 Foundation) — ts → timestamp →
+# date. History is never rewritten; readers normalize.
+from event_time import event_time
 
 HIGH_CONFIDENCE_THRESHOLD = MATCH_SCORE_AUTO_RESOLVE   # 0.55
 PENDING_REVIEW_THRESHOLD = MATCH_SCORE_PENDING_REVIEW  # 0.30
+
+
+def _match_thresholds(workspace_root=None):
+    """(auto_resolve, pending_review) match thresholds, honoring a Loop-4
+    `_hq/data/confidence-overrides.json` when `workspace_root` is given, else the
+    shipped constants. Passing None reproduces pre-Phase-6 behavior exactly, so
+    every existing caller (and test) is unaffected."""
+    if workspace_root is None:
+        return HIGH_CONFIDENCE_THRESHOLD, PENDING_REVIEW_THRESHOLD
+    return (_confidence.match_score_auto_resolve(workspace_root),
+            _confidence.match_score_pending_review(workspace_root))
 
 
 # Common English stop-words. Keep this list tight — a commitment title like
@@ -323,6 +339,13 @@ def score_match(query_text: Optional[str], commitment_title: Optional[str]) -> f
 def detect_completion_signal(text: Optional[str]) -> bool:
     """True if `text` contains a phrase suggesting the commitment was
     fulfilled (`sent the`, `delivered`, `as promised`, etc.).
+
+    The baked `COMPLETION_PHRASES` are the deterministic floor. Phase 6 Loop 5
+    complements them: `_hq/data/extraction-hints.md` accumulates learned
+    resolution-language exemplars from documented `resolution_miss` cases, which
+    the LLM-driven CRU legs (meeting-notes Step 5e-bis, the inbound CRU pass)
+    consult alongside this scorer — a workspace teaches the matcher its own
+    "already done" phrasings without a code change here.
     """
     if not text:
         return False
@@ -387,15 +410,23 @@ def _is_pending_review(ev: dict) -> bool:
 
 
 def _parse_ts(value):
-    """Parse an ISO-8601 timestamp to an aware datetime for instant
+    """Parse an ISO-8601 timestamp to a tz-AWARE (UTC) datetime for instant
     comparison, tolerating both `...Z` and `...+00:00` offsets (the auto-stamp
     emits +00:00 while the build_* helpers emit Z). Returns None when the value
-    is missing or unparseable (deep-audit 2026-05-29, finding #17)."""
+    is missing or unparseable (deep-audit 2026-05-29, finding #17).
+
+    A date-only value (`2026-05-22`) parses to a NAIVE datetime, which then
+    raises "can't compare offset-naive and offset-aware" against the aware
+    `now` (real commitment dues are often date-only). So we ALWAYS attach UTC
+    when the parse came back naive — every result is aware-vs-aware safe."""
     if not value or not isinstance(value, str):
         return None
     try:
-        from datetime import datetime
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except (ValueError, TypeError):
         return None
 
@@ -582,38 +613,55 @@ def load_events_defensively(
     inline.
     """
     path = Path(events_jsonl_path)
-    if not path.exists():
+    # SPEC A5 — shard-transparent: when handed an `events.jsonl` path, read its sibling
+    # `events-<year>.jsonl` shards too, so full-history consumers see the whole timeline
+    # after a rotation. Unsharded workspace -> identical output to the pre-A5 single read.
+    # A non-events.jsonl path is read as-is (back-compat).
+    if path.name == "events.jsonl":
+        try:
+            from events_io import shard_paths
+            files = shard_paths(path)
+        except Exception:
+            files = [path] if path.exists() else []
+    else:
+        files = [path] if path.exists() else []
+    if not files:
         return [], []
 
     events: list[dict] = []
     skipped: list[dict] = []
 
-    with open(path, "r", encoding="utf-8") as f:
-        for i, raw in enumerate(f, 1):
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError as e:
-                skipped.append(
-                    {
-                        "line": i,
-                        "reason": f"JSONDecodeError: {e.msg}",
-                        "value": line[:80],
-                    }
-                )
-                continue
-            if not isinstance(ev, dict):
-                skipped.append(
-                    {
-                        "line": i,
-                        "reason": "non-dict",
-                        "value": repr(ev)[:80],
-                    }
-                )
-                continue
-            events.append(ev)
+    for fp in files:
+        if not fp.exists():
+            continue
+        with open(fp, "r", encoding="utf-8") as f:
+            for i, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError as e:
+                    skipped.append(
+                        {
+                            "line": i,
+                            "shard": fp.name,
+                            "reason": f"JSONDecodeError: {e.msg}",
+                            "value": line[:80],
+                        }
+                    )
+                    continue
+                if not isinstance(ev, dict):
+                    skipped.append(
+                        {
+                            "line": i,
+                            "shard": fp.name,
+                            "reason": "non-dict",
+                            "value": repr(ev)[:80],
+                        }
+                    )
+                    continue
+                events.append(ev)
     return events, skipped
 
 
@@ -631,6 +679,26 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
     The skipped list is currently consumed via logging only here; new
     callers should call `load_events_defensively()` directly when they
     need to render a recovery prompt to the user.
+
+    Phase 2 Stage C (2026-07, F3 read-side amnesty) — the closure-id chain is
+    extended with the seq aliases `data.commitment_seq` and
+    `data.source_event_seq` (both map seq → the commitment event at that
+    seq), keeping all existing aliases. ~252 of the 289 historic dead-letter
+    closures become readable through this chain with no history rewrite.
+    `commitment_state.close_commitment`'s idempotency chain mirrors this
+    extension exactly (the two always move together).
+
+    Phase 2 Stage A (2026-07) — `commitment_updated` deferrals are folded
+    into the returned events: when a later `commitment_updated` event carries
+    a new due date (`data.new_due`, the orchestrator `push to [date]` verb's
+    field; `data.due` / `data.due_date` accepted as variants), the returned
+    commitment's `data.due` is the EFFECTIVE due (latest update wins) and
+    `data.due_updated_by_seq` records the update event's seq. Before this
+    fold those events were write-only — nothing read them — so a deferred
+    commitment rendered overdue forever off its immutable original due. The
+    fold is read-side only (in-memory copies); events.jsonl history is never
+    rewritten. Consumers keep reading due via `_commitment_field(ev, "due")`
+    and are agnostic to whether it was deferred.
     """
     path = Path(events_jsonl_path)
     if not path.exists():
@@ -650,9 +718,36 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
         )
 
     open_evs: list[dict] = []
-    resolved_ids: set[str] = set()
+    # Closure state is ORDER-AWARE since Stage D's `commitment_reopened`
+    # (S4 undo): a commitment is closed iff its latest closure comes AFTER its
+    # latest reopen in append order. Each dict maps target → last file index.
+    # F3 amnesty (Stage C): closure seqs referencing the commitment EVENT's
+    # seq — `data.commitment_seq` and `data.source_event_seq` both map
+    # seq → the commitment at that seq. ~252 of the 289 historic dead-letter
+    # closures carry one of these (the 52 workspace-manager catch-all
+    # closures wrote ONLY source_event_seq).
+    closed_ids_at: dict[str, int] = {}
+    closed_seqs_at: dict[int, int] = {}
+    reopened_ids_at: dict[str, int] = {}
+    reopened_seqs_at: dict[int, int] = {}
+    # commitment id → latest due-shifting update (Stage A fold; see docstring).
+    due_updates: dict[str, dict] = {}
+    # commitment target → latest kind override (Stage D fold: the
+    # `commitment_reclassified` marker is ADDITIVE — promote/migrate never
+    # delete/recreate; the projector applies the label change read-side).
+    kind_overrides_by_id: dict[str, dict] = {}
+    kind_overrides_by_seq: dict[int, dict] = {}
 
-    for ev in events:
+    def _as_seq(value):
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    for idx, ev in enumerate(events):
         et = ev.get("type") or ev.get("event") or ""
         d = ev.get("data") or {}
         if et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
@@ -680,13 +775,120 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
                 or ev.get("id")
             )
             if cid:
-                resolved_ids.add(cid)
+                closed_ids_at[str(cid)] = idx
+            # F3 amnesty (Stage C): the seq aliases close the commitment at
+            # that seq REGARDLESS of whether an id field was also present. A
+            # seq pointing at a non-commitment event simply matches nothing.
+            for seq_field in ("commitment_seq", "source_event_seq"):
+                sv = _as_seq(d.get(seq_field))
+                if sv is not None:
+                    closed_seqs_at[sv] = idx
+        elif et == "commitment_reopened":
+            # Stage D (S4 undo): reopen the referenced commitment. Same target
+            # chain shape as closures; append order decides the final state.
+            target = (
+                d.get("commitment_id") or d.get("target_id")
+                or ev.get("commitment_id")
+            )
+            if target:
+                reopened_ids_at[str(target)] = idx
+            sv = _as_seq(d.get("commitment_seq"))
+            if sv is not None:
+                reopened_seqs_at[sv] = idx
+        elif et == "commitment_reclassified":
+            # Stage D fold (S5/S6): latest kind override wins; applied to the
+            # in-memory copy only — the original event is never rewritten.
+            target = d.get("target_id") or d.get("commitment_id")
+            new_kind = d.get("new_kind") or d.get("new_type")
+            if new_kind:
+                if target:
+                    kind_overrides_by_id[str(target)] = {
+                        "kind": new_kind, "seq": ev.get("seq")}
+                sv = _as_seq(d.get("target_seq"))
+                if sv is not None:
+                    kind_overrides_by_seq[sv] = {
+                        "kind": new_kind, "seq": ev.get("seq")}
+        elif et == "commitment_updated":
+            # Stage A fold: record the latest due-shifting update per target.
+            # Id chain mirrors the closer chain's data-first priority; updates
+            # that carry no new due (scope/summary-only changes) are ignored —
+            # they must not erase an earlier deferral.
+            target = (
+                d.get("commitment_id")
+                or d.get("target_id")
+                or ev.get("commitment_id")
+            )
+            new_due = d.get("new_due") or d.get("due") or d.get("due_date")
+            if target and new_due:
+                due_updates[str(target)] = {"due": new_due, "seq": ev.get("seq")}
         elif et == "commitment":
             status = _commitment_field(ev, "status") or "open"
             if status in ("open", "overdue"):
                 open_evs.append(ev)
 
-    return [c for c in open_evs if _commitment_id(c) not in resolved_ids]
+    out: list[dict] = []
+    for c in open_evs:
+        cid = _commitment_id(c)
+        seq = c.get("seq") if isinstance(c.get("seq"), int) else None
+        # Closed iff the LATEST closure (id chain or F3 seq alias) comes after
+        # the LATEST reopen (Stage D undo). Never closed → last_close = -1.
+        last_close = max(
+            closed_ids_at.get(cid, -1),
+            closed_seqs_at.get(seq, -1) if seq is not None else -1,
+        )
+        last_reopen = max(
+            reopened_ids_at.get(cid, -1),
+            reopened_seqs_at.get(seq, -1) if seq is not None else -1,
+        )
+        if last_close > last_reopen:
+            continue
+        patch: dict = {}
+        upd = due_updates.get(cid)
+        if upd:
+            # In-memory copy with the EFFECTIVE due — data.due is first in
+            # the alias chain, so it wins over a variant data.due_date or a
+            # flat top-level due. History on disk is untouched.
+            patch["due"] = upd["due"]
+            patch["due_updated_by_seq"] = upd["seq"]
+        ko = kind_overrides_by_id.get(cid) or (
+            kind_overrides_by_seq.get(seq) if seq is not None else None
+        )
+        if ko:
+            # Stage D fold: EFFECTIVE kind from the additive reclassification
+            # marker (S6 migration / S5 promote) — label change, never
+            # delete/recreate; original event untouched on disk.
+            patch["kind"] = ko["kind"]
+            patch["kind_overridden_by_seq"] = ko["seq"]
+        if patch:
+            c = {**c, "data": {**(c.get("data") or {}), **patch}}
+        out.append(c)
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Kind policy layer (Phase 2 Stage D — code-enforced per the 2026-07-01
+# ratification condition: "tasks never enter CRU" is a code-level kind
+# filter, not prose)
+# -----------------------------------------------------------------------------
+
+
+def _commitment_kind(ev: dict) -> str:
+    """Effective kind of a (projected) commitment event; missing → promise
+    (read-side default, forever). Mirrors commitment_state.commitment_kind —
+    kept local to avoid a circular import."""
+    kind = (ev.get("data") or {}).get("kind")
+    return kind if isinstance(kind, str) and kind else "promise"
+
+
+def cru_eligible(open_commitments: list[dict]) -> list[dict]:
+    """Stage D policy: TASK-kind commitments NEVER enter CRU matching. The
+    matchers only make sense with a counterparty — a self-owed task can't be
+    closed by an outbound email, an inbound delivery, a transcript mention,
+    or a calendar invite; scoring them produces false auto-closes and chase
+    noise. Every match_* path filters through this ONE function; a surface
+    that hands the matchers a raw event list still gets the filter because
+    the filter lives here, not at the call sites."""
+    return [c for c in (open_commitments or []) if _commitment_kind(c) != "task"]
 
 
 # -----------------------------------------------------------------------------
@@ -702,6 +904,7 @@ def match_send_to_commitments(
     subject: Optional[str],
     body: Optional[str],
     recipient_names: Optional[Iterable[str]] = None,
+    workspace_root=None,
 ) -> list[dict]:
     """Path 1 — score an outbound send against open commitments.
 
@@ -734,6 +937,7 @@ def match_send_to_commitments(
     """
     if not sender_person_id:
         return []
+    _hi, _pend = _match_thresholds(workspace_root)
     recipient_set = {r for r in recipient_person_ids if r}
     # Recipient-name tokens (>=3 chars) for the title fallback (Bug #103).
     recipient_name_tokens: set[str] = set()
@@ -749,22 +953,36 @@ def match_send_to_commitments(
     query = (subject or "") + " " + (body or "")
     results: list[dict] = []
 
-    for ev in open_commitments:
+    for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         if _commitment_field(ev, "owner_id") != sender_person_id:
             continue
         _d = ev.get("data") or {}
         person_ids = set(ev.get("person_ids") or []) | set(_d.get("person_ids") or [])
+        # Stage E (F5) extraction receipts: the counterparty the extractor
+        # linked at capture feeds the candidacy gate DIRECTLY — the structural
+        # fix for the Bug #103 recall class (the title-token fallback below
+        # stays for historic events that never got a receipt).
+        counterparty_id = _d.get("counterparty_id")
+        if counterparty_id:
+            person_ids.add(counterparty_id)
         title = _commitment_field(ev, "title") or ""
-        # Recipient is involved if a resolved id is in person_ids OR a recipient
-        # name token appears in the title (the #103 recall fallback).
+        counterparty_name = _d.get("counterparty_name") or ""
+        # Recipient is involved if a resolved id is in person_ids (incl. the
+        # Stage E counterparty receipt) OR a recipient name token appears in
+        # the title (the #103 recall fallback) OR matches the free-text
+        # counterparty_name receipt (Stage E — named-but-unresolved people).
         recipient_in_pids = bool(recipient_set & person_ids)
         recipient_in_title = bool(recipient_name_tokens & set(_tokenize(title)))
-        if not (recipient_in_pids or recipient_in_title):
+        recipient_in_cp_name = bool(
+            counterparty_name
+            and recipient_name_tokens & set(_tokenize(counterparty_name))
+        )
+        if not (recipient_in_pids or recipient_in_title or recipient_in_cp_name):
             continue
         score = score_match(query, title)
-        if score >= HIGH_CONFIDENCE_THRESHOLD:
+        if score >= _hi:
             rec = "auto_resolve"
-        elif score >= PENDING_REVIEW_THRESHOLD:
+        elif score >= _pend:
             rec = "pending_review"
         else:
             rec = "no_action"
@@ -793,6 +1011,7 @@ def match_transcript_to_commitments(
     open_commitments: list[dict],
     attendee_person_ids: Iterable[str],
     transcript_text: str,
+    workspace_root=None,
 ) -> list[dict]:
     """Path 3 — score a meeting transcript against open commitments where any
     meeting attendee is the owner.
@@ -822,22 +1041,23 @@ def match_transcript_to_commitments(
     attendee_set = {a for a in attendee_person_ids if a}
     if not attendee_set:
         return []
+    _hi, _pend = _match_thresholds(workspace_root)
 
     has_completion = detect_completion_signal(transcript_text)
     has_schedule_shift = detect_schedule_shift_signal(transcript_text)
     has_new_ask = detect_new_ask_signal(transcript_text)
 
     results: list[dict] = []
-    for ev in open_commitments:
+    for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         owner_id = _commitment_field(ev, "owner_id") or ""
         if owner_id not in attendee_set:
             continue
         title = _commitment_field(ev, "title") or ""
         score = score_match(transcript_text, title)
 
-        if score < PENDING_REVIEW_THRESHOLD:
+        if score < _pend:
             recommendation = "no_action"
-        elif score >= HIGH_CONFIDENCE_THRESHOLD:
+        elif score >= _hi:
             if has_schedule_shift and not has_completion:
                 recommendation = "commitment_updated"
             elif has_new_ask and not has_completion:
@@ -884,6 +1104,7 @@ def match_inbound_to_commitments(
     sender_person_id: str,
     subject: Optional[str],
     body: Optional[str],
+    workspace_root=None,
 ) -> list[dict]:
     """Path 4 — score an inbound email against open commitments where the
     SENDER is the owner.
@@ -930,21 +1151,22 @@ def match_inbound_to_commitments(
     if not query.strip():
         return []
 
+    _hi, _pend = _match_thresholds(workspace_root)
     has_completion = detect_completion_signal(query)
     has_schedule_shift = detect_schedule_shift_signal(query)
     has_new_ask = detect_new_ask_signal(query)
 
     results: list[dict] = []
-    for ev in open_commitments:
+    for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         owner_id = _commitment_field(ev, "owner_id") or ""
         if owner_id != sender_person_id:
             continue
         title = _commitment_field(ev, "title") or ""
         score = score_match(query, title)
 
-        if score < PENDING_REVIEW_THRESHOLD:
+        if score < _pend:
             recommendation = "no_action"
-        elif score >= HIGH_CONFIDENCE_THRESHOLD:
+        elif score >= _hi:
             if has_schedule_shift and not has_completion:
                 recommendation = "commitment_updated"
             elif has_completion and not has_schedule_shift:
@@ -1005,6 +1227,7 @@ def match_calendar_to_commitments(
     open_commitments: list[dict],
     user_person_id: str,
     calendar_events: Iterable[dict],
+    workspace_root=None,
 ) -> list[dict]:
     """Path 5 — resolve scheduling commitments OWED BY THE USER when a calendar
     event with the counter-party now exists.
@@ -1069,7 +1292,7 @@ def match_calendar_to_commitments(
         return []
 
     results: list[dict] = []
-    for ev in open_commitments:
+    for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         if _commitment_field(ev, "owner_id") != user_person_id:
             continue
         counterparties = _commitment_counterparties(ev, user_person_id)
@@ -1077,7 +1300,7 @@ def match_calendar_to_commitments(
             continue
         title = _commitment_field(ev, "title") or ""
         has_sched = detect_scheduling_intent(title)
-        commit_ts = ev.get("ts") or ""
+        commit_ts = event_time(ev)
 
         best: Optional[dict] = None
         best_score = -1.0
@@ -1119,7 +1342,7 @@ def match_calendar_to_commitments(
             # Report a high score for auto-resolves so they sort first; nudge
             # higher when the counter-party has accepted.
             score = 0.9 if best["accepted"] else 0.8
-        elif best["overlap"] >= HIGH_CONFIDENCE_THRESHOLD:
+        elif best["overlap"] >= _match_thresholds(workspace_root)[0]:
             recommendation = "pending_review"
             score = best["overlap"]
         else:
@@ -1169,8 +1392,14 @@ def build_commitment_resolved_event(
     evidence: str,
     next_seq: int,
 ) -> dict:
-    """Build a `commitment_resolved` event dict per shared/COMMITMENT_SCHEMA.md.
-    Caller is responsible for atomic_append_jsonl-ing it.
+    """LEGACY shape helper (pre-Stage-B). Build a `commitment_resolved` event
+    dict per shared/COMMITMENT_SCHEMA.md.
+
+    Phase 2 Stage B (F2): closures are WRITTEN through
+    `commitment_state.close_commitment` — the single closure path (legacy-id
+    normalization, loud no-match refusal, full-set idempotency, pending_review
+    floor, gated append). Do not build-and-append with this helper in new
+    code; it remains only for shape reference and pre-Stage-B callers/tests.
     """
     return {
         "seq": next_seq,
@@ -1310,7 +1539,7 @@ def load_open_review_proposals(
             et = ev.get("type") or ev.get("event") or ""
             d = ev.get("data") or {}
             if et == "commitment_review_proposed":
-                if (ev.get("ts") or "") >= cutoff_iso:
+                if event_time(ev) >= cutoff_iso:
                     review_proposed.append(ev)
             elif et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
                 cid = (
@@ -1340,7 +1569,7 @@ def load_open_review_proposals(
             continue
         out.append(ev)
 
-    out.sort(key=lambda e: e.get("ts") or "", reverse=True)
+    out.sort(key=lambda e: event_time(e), reverse=True)
     return out
 
 

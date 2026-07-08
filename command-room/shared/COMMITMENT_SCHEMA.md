@@ -61,11 +61,15 @@ Every skill that *produces* commitment events MUST follow this schema. Every ski
 
 | Field | When to include | Notes |
 |---|---|---|
-| `id` | when you want a stable, human-readable id for cross-references | Default if omitted: `commitment_seq_<seq>`. Use this for `commitment_resolved` events to point back. |
+| `id` | ALWAYS present after append (Phase 1, 2026-07) | The append gate mints `cmt_<ulid>` at write time when the producer omits it — ids are written, never synthesized-only. Producers MAY still set an explicit id (it is respected). Historic events without one keep resolving via the legacy synthesized `commitment_seq_<seq>` read-side alias. `commitment_resolved` events point back at this value verbatim. |
+| `kind` | REQUIRED AT CAPTURE (Stage D, 2026-07 — was gate-stamped from Phase 1) | Required discriminator, one of `promise` / `task` / `scheduling` / `agenda` (ratified 2026-07-01). **Producers classify at write time:** counterparty determinable → `promise`; self-owed, no counterparty → `task`; scheduling intent → `scheduling`; discuss items stay the separate `commitment_to_discuss` type; ambiguous → `promise` + `pending_review: true`. The strict `append_event()` path REJECTS a missing kind; the legacy burn-in path warns loudly + stamps `promise`. Historic events with no kind read as `promise` forever. **The kind POLICY is code-enforced:** `task` never enters CRU matching (`cru_match.cru_eligible`), tasks auto-stale at 30 days into the Friday triage (`commitment_state.stale_tasks`), never render in commitment aging, and never get chased. Promote/demote is an additive `commitment_reclassified` marker (`commitment_state.promote_task_to_commitment`) — a label change the projector applies read-side; never delete/recreate. |
+| `no_due` | when the extraction genuinely proposes no due date | Boolean (S2 due-date nudge). Every extraction proposes a `due` OR sets this explicitly — silence is not an option. Undated items surface in the weekly triage, not the aging view; target undated share < 30%. |
 | `urgency` | optional flag from extractor | `"high"` / `"normal"` / `"low"`. Currently consumed only by `morning-briefing`. |
 | `evidence` | when extracted from text | Raw quoted phrase (≤200 chars) — useful for "why did you log this?" debugging. Do NOT store full transcripts. |
 | `meeting_date` | when extracted from a meeting transcript | ISO date `"YYYY-MM-DD"` — the date the source meeting occurred (NOT the date the commitment was logged). Use ONLY as a derivation hint for resolving relative phrases ("tomorrow", "by Friday") at extraction time. **Authoritative due-date is `data.due`. Readers MUST compute "overdue/today/upcoming" against `data.due`, never against `data.meeting_date`.** |
 | `owner_external` | when the owner is named but has no entity record yet (`owner_id` is null) | Free-text name string (e.g., `"Rakesh"`) so the surface skill can render "owed to you by Rakesh — add as contact." When `owner_id` is non-null this field is omitted. v2.14.19+: enables the reachability-filter surfacing pattern. |
+| `counterparty_id` | REQUIRED when determinable (Stage E 2026-07, F5 — extraction receipts) | Canonical `person_NNN` of who the deliverable is owed TO (or, for owed-to-you items, who owes it). Also included in `person_ids`. Feeds the CRU candidacy gate DIRECTLY (`match_send_to_commitments`) — without it the matcher leans on the title-token fallback and misses real completions (the Bug #103 recall class; live yield was 4 closes / 644 scanned). **Retires `requester_id` / `requester_person_id` for NEW writes** — readers keep the `_COMMITMENT_FIELD_ALIASES` chain forever, so the 228 historic requester_* events stay readable. |
+| `counterparty_name` | SHOULD set when the counterparty is named but resolves to no person record | Free-text name (e.g., `"Rakesh"`, `"Jordan Lee"`). The matcher's candidacy gate matches recipient display names / email local-parts against it (Stage E), so a receipt survives even when entity resolution couldn't land an id. |
 | `pending_review` | when the commitment was extracted by a low-confidence pass | Boolean. If true, surface skill should flag for explicit user review. Bypasses auto-chase paths until confirmed. |
 | `review_reason` | when `pending_review` is true | One-line plain-English explanation of why review is needed (e.g., "Owner is external person — no entity record yet"). Used by Pulse and Commitments surfaces to compose review prompts. |
 
@@ -73,12 +77,14 @@ Every skill that *produces* commitment events MUST follow this schema. Every ski
 
 ## Extraction triggers (when to write a commitment event)
 
-A commitment exists when a person makes a forward-looking promise about a specific deliverable, and a reasonable third party reading the source would identify a clear owner. Producer skills MUST emit a commitment event when ALL of the following are true:
+A commitment exists when a person makes a forward-looking promise about a specific deliverable, and a reasonable third party reading the source would identify a clear owner. Producer skills MUST emit a commitment event when ALL of the following are true — **this is the capture floor (Stage D 2026-07: clear owner + clear deliverable + real consequence — the teachable rule that cut one live open set 71→33; below-floor items bury real promises):**
 
 1. **Forward-looking** — the deliverable is in the future, not a description of past action.
 2. **Specific** — there's a concrete artifact, decision, or action ("send the deck", "decide on pricing by Friday", "introduce me to your CFO"). Vague intentions ("we should think about that", "let's circle back") DO NOT qualify.
 3. **Owned** — there's an identifiable person taking it on. If the source uses "we" or "the team" without naming an individual, do NOT emit a commitment.
-4. **Not duplicate** — `(source_ref, title)` is unique. If the same source has been processed before and produced an equivalent commitment, skip.
+4. **Consequential** — someone is waiting on it, a date depends on it, or dropping it costs something. Musings with an owner and a deliverable but no stakes are noise.
+5. **Not duplicate** — `(source_ref, title)` is unique. If the same source has been processed before and produced an equivalent commitment, skip.
+6. **Not suppressed** — if `_hq/config/commitment-rules.md` exists, producers read it BEFORE writing and skip items matching a user-taught `never-track` pattern (appended by the triage surface's `never track this` action).
 
 ### Linguistic patterns that DO qualify
 
@@ -113,6 +119,8 @@ Producers do NOT need to update status over time; that's a re-scan/aggregation c
 
 ## Resolution (how commitments close)
 
+**THE closure path (Phase 2 Stage B, F2):** every closer writes through `shared/scripts/commitment_state.py::close_commitment(workspace_root, commitment_id, *, resolved_by, evidence, source_skill, resolution="done"|"dropped"|"superseded", user_confirmed=...)`. It normalizes legacy id spellings (bare int `86`, `seq_86`, `event_086`, `commitment_seq_86` → canonical via seq lookup), raises `CommitmentIdError` when nothing matches (no orphan tombstones — 74 existed in the live substrate), is idempotent over the FULL resolved-id set, never auto-resolves a `pending_review` item (`PendingReviewError` unless `user_confirmed=True` from an explicit user action), and appends through the Phase 1 gate. Matching logic (cru_match Paths 1–5) stays with the callers; only the write is centralized. Migrated closers: log-resolution, apply-choices, the workspace-manager catch-all, reconcile-sent, the Commitments orchestrator (2.5/2.6/2.7 + resolved/mark-received verbs), orchestrator-inbox 5.5, orchestrator-past-meetings, calendar-writer 3.5, meeting-notes, follow-up-ritual.
+
 A commitment closes when a `commitment_resolved` event references it:
 
 ```json
@@ -130,9 +138,15 @@ A commitment closes when a `commitment_resolved` event references it:
 }
 ```
 
-The aggregator removes the commitment from open queues when it sees a `commitment_resolved` event whose `data.commitment_id` matches an open commitment's `data.id` (or the synthesized `commitment_seq_<seq>` if no explicit id was set).
+The aggregator removes the commitment from open queues when it sees a `commitment_resolved` event whose `data.commitment_id` matches an open commitment's `data.id` (or the synthesized `commitment_seq_<seq>` if no explicit id was set). **Read-side amnesty (Phase 2 Stage C, F3):** the closer chain also honors the seq aliases `data.commitment_seq` and `data.source_event_seq` — both map seq → the commitment event at that seq — recovering ~252 of the 289 historic dead-letter closures with no history rewrite. `close_commitment`'s idempotency chain mirrors this exactly. What the read chain cannot recover is repaired ADDITIVELY, once, by `shared/scripts/repair_commitment_closures.py` (preview-by-default; snapshots to `_archive/` before any write; `source_skill: closure-repair-2026-07`; run supervised at dogfood time only).
+
+**In-place mutation is FORBIDDEN (F4, Phase 2 Stage C):** no write path may flip an existing commitment event's `data.status` — the 2026-07-01 audit found 249 commitments closed by in-place mutation (still growing during the audit day), a pattern that violates append-only and correlates with the observed substrate corruption. Closure is a tombstone append through `close_commitment()`, full stop. Readers keep honoring the legacy in-place `status in ("closed", "resolved", "superseded")` values forever — those 249 rows depend on it — and the repair script formalizes them with amnesty tombstones so the class can be retired.
+
+**Fail-loud (Phase 1, 2026-07):** the append gate REJECTS a `commitment_resolved` event that carries no readable id (none of `data.commitment_id` / `data.id` / `data.target_id` / `data.commitment_seq` / `data.source_event_seq`). An id-less closure is a dead letter — 291 of them existed in the live substrate when the gate shipped. Embed the commitment's `data.id` verbatim; never re-derive it.
 
 `thread_resolved` events also close commitments — that's the v2.7.13 batch-resolution path from the DCC's `✓ done` button. Producers can use either; aggregator treats them the same.
+
+**Deferral (`commitment_updated`, read since Phase 2 Stage A):** a commitment's due date moves via a `commitment_updated` event carrying `data.commitment_id` + `data.new_due` (the orchestrator `push to [date]` verb; `due` / `due_date` accepted as variants). The original commitment event is NEVER rewritten — `load_open_commitments` folds the latest due-carrying update into the returned commitment's effective `data.due` (with `data.due_updated_by_seq` provenance), so consumers reading `_commitment_field(ev, "due")` see the pushed date and a deferred item stops rendering overdue. Updates without a due field (scope/summary changes via `change_summary`) don't affect the effective due.
 
 ---
 

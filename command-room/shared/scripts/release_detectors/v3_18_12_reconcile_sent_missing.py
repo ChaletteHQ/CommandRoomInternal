@@ -6,7 +6,8 @@ Returns applies=True when:
 
 The silent daily `reconcile-sent` task (v3.18.12 — closes commitments the CEO
 completed by emailing someone directly) is NOT one of the 7 chat orchestrators —
-it registers separately via `enable-command-room-schedules` Step 1.E and is
+it registers separately via `enable-command-room-schedules` Step 1.D (the
+SILENT_TASKS registry loop, Phase 3 / SPEC-2.3) and is
 absent from `ORCHESTRATOR_MAP`. The update-bridge "are scheduled tasks
 configured?" check enumerates only the chat taskIds, so it is structurally blind
 to it — exactly the gap Bug #82 documented for `cleanup`. An existing customer who

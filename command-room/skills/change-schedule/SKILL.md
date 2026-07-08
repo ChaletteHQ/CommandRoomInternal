@@ -1,32 +1,43 @@
 ---
 name: change-schedule
-description: "Customize when each Command Room scheduled chat fires. Reads current schedule from entities.json, shows in plain English, accepts changes (move time, switch days, pause/resume, disable/enable), atomic-writes the config, re-registers tasks with the new cadence. Triggers: `change my schedule`, `change schedule`, `update my schedule`, `configure schedules`, `customize my schedules`, `set [task] to [time]`, `move [task] to [time]`, `pause [task]`, `resume [task]`, `disable [task]`, `enable [task]`, `show my schedule`, `what's my schedule`, `when do my chats fire`. Use when the user wants daily/weekly/cadence customization per task. DOES NOT fire on `set up command room schedules` (that's the registration skill — change-schedule modifies the config that registration reads)."
+description: "Customize when each Command Room scheduled chat fires — the user-facing schedule mutator. Fires on: 'change my schedule', 'show my schedule', 'when do my chats run', 'show my scheduled chats', 'configure my schedules', 'move [chat] to [time]', 'set [chat] to [time]', 'pause [chat]' / 'resume [chat]', 'disable [chat]' / 'enable [chat]', 'back to defaults'. Renders the registration-aware merged view (defaults + your changes + what's actually registered), converts requested times from your timezone to the machine clock at registration, and pushes cron changes to the live scheduler itself. Does NOT fire on 'set up command room schedules' (enable-command-room-schedules — first registration), 'what's my schedule today' (calendar / morning-briefing), or 'health check' (system-health). Command grammar and config semantics: Routing section in the body."
 ---
 
 # change-schedule
 
-Per-workspace schedule customization. Built v2.14.10+ alongside the schedule_config storage layer. Lets the operator (or the user) adjust per-task cron schedules without forking the plugin.
+Per-workspace schedule customization. Built v2.14.10+ alongside the schedule_config storage layer; registration-aware since Phase 3 (2026-07). Lets the operator (or the user) adjust per-task cron schedules without forking the plugin.
 
 ## What this skill does
 
-1. Reads the user's current schedule from `_hq/data/entities.json` (workspace.schedule_config) merged with built-in defaults via `shared/scripts/schedule_config.py`.
-2. Shows the current state in plain English (cron-to-english helper).
-3. Parses what the user wants to change — natural-language patterns, listed below.
+1. Reads the registration-aware schedule view: `load_schedule_view()` merges built-in defaults with the user's overrides from `_hq/data/entities.json` (`workspace.schedule_config` — a SPARSE override store: an entry means "the operator customized this"; missing means "default") and partitions against the registered-task set. **No task renders as scheduled unless it is actually registered** — a default entry alone does not imply registration (the pre-Phase-3 render showed relationship-moves as an enabled Sunday task on workspaces where it was never added: a ghost).
+2. Shows the current state in plain English (cron-to-english helper), in two groups: **Registered** and **Available, not added**.
+3. Parses what the user wants to change — natural-language patterns, listed below. User-requested times mean the WORKSPACE timezone (what "8am" means to the user); the stored cron is machine-local (R8 — Cowork evaluates cron on the machine clock), converted at write time.
 4. Atomic-writes the updated config to entities.json.
-5. Invokes `enable-command-room-schedules` silently to re-register tasks with the new values (the registration skill has v2.11.4+ self-refresh logic, so updates propagate immediately).
+5. **Pushes the new cadence to the live task itself** via `mcp__scheduled-tasks__update_scheduled_task` (Step 7). Cron re-anchoring is THIS skill's job; the registration skill deliberately never re-anchors a registered task's cron.
 
-## Read-only mode (`show my schedule` / `what's my schedule`)
+## Read-only mode (`list my schedules` / `show my scheduled chats`)
 
-When the trigger is read-only (`show my schedule`, `what's my schedule`, `when do my chats fire`), skip the change flow and render the current schedule with no prompt for changes:
+When the trigger is read-only (`list my schedules`, `show my scheduled chats`, `when do my chats fire`, `when do my chats run`), skip the change flow and render the current registration-aware view with no prompt for changes. Shape (names/times/flags come from Step 1's real output — the tasks below are illustrative, not a canonical list):
 
 ```
 Your current Command Room schedule:
 
+  Morning Brief       — 7 AM weekdays
   Upcoming Meetings   — 6:30 AM weekdays
-  Inbox               — 7 AM weekdays
-  Commitments         — 8:30 AM weekdays
-  Pulse               — 9 AM weekdays
+  Inbox               — 7:15 AM weekdays
   Past Meetings       — 5 PM weekdays
+  Friday Wrap         — 1 PM Fridays
+
+Background maintenance (runs quietly, no chat output):
+  Reconcile Sent      — 6:45 AM, 12:45 PM, and 5:45 PM weekdays
+  Cleanup             — 6 PM Sundays
+  Weekly Insights     — 7 PM Sundays
+  Monthly Report      — 7 AM on the 1st
+
+Available, not added yet:
+  Commitments         — say `add commitments` when you're ready
+  Pulse               — say `add pulse`
+  Relationship Moves  — say `add relationship moves`
 
 Say `change my schedule` to adjust any of these.
 ```
@@ -35,7 +46,7 @@ Stop. No changes, no prompt for input.
 
 ## Change mode (`change my schedule` and variants)
 
-### Step 1 — Discover plugin root + load current config
+### Step 1 — Discover plugin root + load the registration-aware view
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
@@ -44,33 +55,40 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null 
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
-from schedule_config import load_schedule_config, task_display_name
-config = load_schedule_config(f'$WORKSPACE/_hq/data/entities.json')
-for tid, spec in config.items():
+from schedule_config import load_schedule_view, task_display_name
+# Registered set: workspace_config.json registered_taskIds is the maintained
+# offline-first record (written by the registration skill's Phase 0.C and kept
+# current through its Phase 3 / Phase 6 flows). When you have fresh
+# mcp__scheduled-tasks__list_scheduled_tasks output in hand, pass those
+# taskIds instead — they're the live truth. Missing/empty -> empty set, and
+# everything honestly renders as not-added.
+try:
+    cfg = json.load(open(f'$WORKSPACE/_hq/workspace_config.json', encoding='utf-8'))
+    registered = set(cfg.get('registered_taskIds') or [])
+except Exception:
+    registered = set()
+view = load_schedule_view(f'$WORKSPACE/_hq/data/entities.json', registered)
+for tid, spec in view.items():
     name = task_display_name(tid)
-    status = '' if spec['enabled'] else ' [paused]'
-    print(f'{tid}|{name}|{spec[\"label\"]}|{spec[\"enabled\"]}')
+    print(f'{tid}|{name}|{spec[\"label\"]}|{spec[\"enabled\"]}|{spec[\"registered\"]}|{spec[\"later_add\"]}|{spec[\"silent\"]}')
 "
 ```
 
-Capture stdout — each line `taskId|display_name|label|enabled`.
+Capture stdout — each line `taskId|display_name|label|enabled|registered|later_add|silent`.
+
+**Live-cron precision:** for registered tasks, when you already have `list_scheduled_tasks` records in this conversation, render each task's LIVE `cronExpression` (via `cron_to_english`) rather than the merged config label — a default that changed in a later plugin version (e.g. friday-wrap 4 PM → 1 PM) does not move an existing registration, and the render must show what will actually fire. Don't make an extra MCP call just for the render; the config label is the designed offline default.
 
 ### Step 2 — Show current schedule + ask what to change
 
+Render the same three groups as read-only mode (Registered / Background maintenance / Available-not-added), then:
+
 ```
-Your current Command Room schedule:
-
-  Upcoming Meetings   — 6:30 AM weekdays
-  Inbox               — 7 AM weekdays
-  Commitments         — 8:30 AM weekdays
-  Pulse               — 9 AM weekdays   [paused]
-  Past Meetings       — 5 PM weekdays
-
 What would you like to change? Examples:
   · `set inbox to 8am`            move one task to a new time
   · `move pulse to noon mondays`  one task, specific day(s)
   · `pause past meetings`         temporarily disable one task
   · `resume pulse`                re-enable a paused task
+  · `add relationship moves`      turn on an available task
   · `everything daily`            run weekdays AND weekends for all
   · `back to defaults`            reset everything to shipped defaults
   · `done` / `nothing`            keep as-is
@@ -86,6 +104,7 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 - `set <task> to <time>` / `move <task> to <time>` / `<task> at <time>`
 - `<time>` accepts: `7am`, `7 am`, `7:30am`, `08:00`, `noon`, `midnight`
 - Default day-of-week stays `1-5` (weekdays) unless user specifies
+- **The user's time means their workspace timezone.** Before building the cron, convert via `schedule_config.workspace_time_to_machine(hour, minute, workspace_root)` — cron evaluates in MACHINE-local time (R8), and on a machine whose clock differs from the workspace TZ an unconverted "8am" fires an hour or more off. The stored `label` stays the USER's requested time (presentation is workspace-TZ); the stored `cron` carries the converted machine-local time. When the two differ, say so once in the Step 5 diff ("8 AM your time — 7 AM on this computer's clock").
 
 **Day changes:**
 - `<task> daily` / `<task> every day` → `* * *` for day fields
@@ -95,12 +114,15 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 - `<task> mon and fri` / `<task> mondays and fridays` → `1,5`
 
 **Combined time + day:**
-- `move pulse to 8am mondays` → `0 8 * * 1`
-- `inbox at 7am and 3pm weekdays` → `0 7,15 * * 1-5`
+- `move pulse to 8am mondays` → `0 8 * * 1` (after TZ conversion)
+- `inbox at 7am and 3pm weekdays` → `0 7,15 * * 1-5` (after TZ conversion)
 
 **Enable/disable:**
 - `pause <task>` / `disable <task>` / `turn off <task>` → `enabled: false`
 - `resume <task>` / `enable <task>` / `turn on <task>` → `enabled: true`
+
+**Add an available task (Phase 3 / R1 — routes through the EXISTING add path):**
+- `add <task>` on a task rendered under "Available, not added" → invoke `enable-command-room-schedules`'s Phase 6 `add` flow for that taskId (it composes the bootloader, registers with the config-merged cron, and updates `workspace_config.json`). This skill does not build a second registration mechanism — the add path stays owned by the registration skill.
 
 **Bulk changes:**
 - `everything daily` — all enabled tasks → `* * *` day fields
@@ -110,13 +132,29 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 
 **Task name matching:**
 
-Accept fuzzy matches: `inbox` / `Inbox` / `the inbox` → `cr-inbox`. `pulse` / `dont forget` / `don't forget` → `cr-dont-forget`. `commitments` / `commits` → `cr-commitments`. `upcoming` / `upcoming meetings` / `meetings prep` → `cr-upcoming-meetings`. `past meetings` / `past` / `meetings processed` → `cr-past-meetings`.
+Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both `schedule_config.DEFAULT_SCHEDULES` and `mcp__scheduled-tasks__update_scheduled_task` use — a legacy `cr-`-prefixed key would write an override that `load_schedule_config` silently ignores):
 
-If a task name doesn't match any known scheduled task, surface plain English: `"I don't recognize '<name>' as one of your scheduled chats. The 5 are: Upcoming Meetings, Inbox, Commitments, Pulse, Past Meetings. Reply with the chat name + change you want."`
+- `morning brief` / `morning briefing` / `brief` / `the brief` / `daily brief` → `morning-brief`
+- `upcoming` / `upcoming meetings` / `meetings prep` / `meeting prep` → `upcoming-meetings`
+- `inbox` / `Inbox` / `the inbox` / `inbox triage` → `inbox`
+- `commitments` / `commits` / `commitment chase` → `commitments`
+- `pulse` / `dont forget` / `don't forget` → `pulse`
+- `past meetings` / `past` / `meetings processed` → `past-meetings`
+- `friday wrap` / `friday` / `weekly wrap` / `weekly recap` → `friday-wrap`
+- `cleanup` / `clean up` / `maintenance` / `weekly maintenance` → `cleanup`
+- `reconcile sent` / `reconcile` / `sent reconciliation` → `reconcile-sent`
+- `monthly report` / `monthly` / `operator report schedule` / `value receipt schedule` → `monthly-report`
+- `weekly insights` / `insights` / `insight views` / `sunday insights` → `weekly-insights`
+- `relationship moves` / `relationship` / `outreach pack` / `weekly outreach` → `relationship-moves`
+- `commitment triage` / `triage my commitments schedule` / `friday triage` → `commitment-triage`
+
+(Workspaces upgraded from pre-v2.14.27 may still have a task registered under a legacy `cr-*` id; `enable-command-room-schedules` migrates those to the bare id on its next run. Resolve to the bare id regardless — that is what the live registration uses.)
+
+If a task name doesn't match any known scheduled task, surface plain English, rendering the names FROM Step 1's view (never a hardcoded list): `"I don't recognize '<name>' as one of your scheduled tasks. They are: [registered display names] — plus the background tasks [silent display names][, and available to add: [not-added display names]]. Reply with the task name + change you want."`
 
 ### Step 4 — Validate the new cron expression
 
-For each change, build the new cron expression and validate via `parse_cron()`:
+For each change, build the new cron expression (post TZ-conversion) and validate via `parse_cron()`:
 
 ```python
 from schedule_config import parse_cron, CronParseError
@@ -139,7 +177,7 @@ Here's what I'll change:
   Pulse          [paused]       →  active, 9 AM weekdays
   Past Meetings  5 PM weekdays  →  4:30 PM weekdays
 
-Proceed? (y / no / cancel)
+Proceed? (yes / no / cancel)
 ```
 
 If user says `y` / `yes` / `go` / `proceed` → Step 6.
@@ -154,8 +192,8 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null 
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
-from atomic_write import atomic_write_json, atomic_append_jsonl
-from next_seq import next_seq
+from atomic_write import atomic_write_json
+from event_gate import append_event
 from schedule_config import cron_to_english
 import datetime
 
@@ -164,13 +202,14 @@ with open(entities_path, 'r', encoding='utf-8') as f:
     data = json.load(f)
 ws = data.setdefault('workspace', {})
 sc = ws.setdefault('schedule_config', {})
-# Apply changes (stub — actual values come from skill parsing)
+# Apply changes (stub — actual values come from skill parsing). The config
+# stays SPARSE: only tasks the user actually customized get an entry.
 changes = <list of (task_id, cron, enabled) tuples from Step 3>
 for task_id, cron, enabled in changes:
     spec = sc.setdefault(task_id, {})
     if cron is not None:
         spec['cron'] = cron
-        spec['label'] = cron_to_english(cron)
+        spec['label'] = cron_to_english(cron)  # or the user's workspace-TZ phrasing when the TZ conversion shifted the cron
     if enabled is not None:
         spec['enabled'] = enabled
 data['version'] = data.get('version', 1) + 1
@@ -178,56 +217,68 @@ data['last_writer'] = 'change-schedule'
 data['last_updated'] = datetime.datetime.utcnow().isoformat() + 'Z'
 atomic_write_json(entities_path, data)
 
-# Log a schedule_config_changed event for audit trail
+# Audit event through the canonical gate (seq/ts auto-stamped inside the
+# writer lock — never hand-roll a next_seq + open-append; see WORKSPACE_API.md §3).
 events_path = f'$WORKSPACE/_hq/data/events.jsonl'
-event = {
-    'seq': next_seq(events_path),
-    'ts': datetime.datetime.utcnow().isoformat() + 'Z',
+append_event(events_path, {
     'type': 'schedule_config_changed',
     'source_skill': 'change-schedule',
     'data': {'changes': [{'task_id': t, 'cron': c, 'enabled': e} for t, c, e in changes]},
-}
-# Canonical append — atomic write + Drive-sync safety + view regen.
-# NEVER open(events_path, 'a') directly (see WORKSPACE_API.md §3).
-atomic_append_jsonl(events_path, [event])
+}, holder='change-schedule')
 print('CONFIG_WRITTEN')
 "
 ```
 
-### Step 7 — Re-register tasks via enable-command-room-schedules
+### Step 7 — Push the new cadence to the live task YOURSELF (Phase 3 / P0.1)
 
-Invoke `enable-command-room-schedules` silently. It reads the updated config and refreshes any registered tasks via the v2.11.4+ self-refresh path. Disabled tasks get their `enabled` flag updated; new cron values get propagated to Cowork's scheduled-tasks DB.
+For each changed task, call `mcp__scheduled-tasks__update_scheduled_task(taskId, cronExpression=<new cron>, enabled=<new enabled flag>)` — **never pass `prompt`** (the registered bootloader is registration's property; touching it here risks stomping a newer bootloader with nothing).
+
+**Cron re-anchoring is THIS skill's job.** The registration skill (`enable-command-room-schedules`) deliberately preserves whatever cron it finds on a registered task — its custom-cron-preservation rule exists so plugin updates never stomp an operator's chosen time. Pre-Phase-3, this step said "invoke enable-command-room-schedules silently... new cron values get propagated" while enable's Phase 3 said "NEVER pass cronExpression to update_scheduled_task... that is change-schedule's job" — a model honoring both wrote entities.json, left the live task on the old time, and then confirmed "✓ Inbox now fires at 8 AM" falsely. The two halves are now explicit: **this skill writes config AND re-anchors the live cron; registration writes prompts AND never touches a registered cron.**
+
+If a changed task turns out not to be registered at all (it was in the "Available, not added" group), there is nothing to re-anchor — the config write alone is correct; the value applies when the task is added.
 
 ### Step 8 — Confirm to user + STOP
 
-One-line confirmation per change. No CHANGELOG narration, no internal mechanics.
+One-line confirmation per change, only after Step 7's `update_scheduled_task` calls actually succeeded. No CHANGELOG narration, no internal mechanics.
 
 ```
-✓ Inbox now fires at 8 AM weekdays.
+✓ Inbox now runs at 8 AM weekdays.
 ✓ Pulse resumed.
-✓ Past Meetings now fires at 4:30 PM weekdays.
+✓ Past Meetings now runs at 4:30 PM weekdays.
 
-Cowork will use the new schedule starting tomorrow morning.
+Your new schedule starts tomorrow morning.
 ```
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- BAD: "✓ Inbox now fires at 8 AM weekdays."
+- GOOD: "✓ Inbox now runs at 8 AM weekdays."
 
 Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 
 ## Edge cases
 
-**No workspace set up yet.** Surface plain English: `"You haven't run onboarding yet — let's get the workspace set up first. Say `set up command room` to begin."` Stop.
+**No workspace set up yet.** Surface plain English: `"Your Command Room isn't set up yet — let's do that first. Say `set up command room` to begin."` Stop.
 
-**Re-registration fails after a successful config write.** The new schedule was saved but the live tasks didn't refresh. Surface: `"Saved your new schedule, but the live tasks didn't refresh just yet. Run `set up command room schedules` to retry."` Don't roll back the write — partial success is recoverable.
+**Live-task update fails after a successful config write (Step 7 error).** The new schedule was saved but the live task didn't re-anchor. Surface: `"Saved your new schedule, but the live task didn't pick it up just yet. Say `change my schedule` again in a minute to retry."` Don't roll back the write — partial success is recoverable, and the config value is what any future registration of that task will use.
 
 **User asks for an invalid cron value (e.g., `set inbox to 25am`).** Surface the parse error in plain English. Don't write. Ask again.
 
-**User wants to add a NEW task that doesn't exist in DEFAULT_SCHEDULES.** Reject — this skill only customizes the canonical 5 (or 6, post-Workspace Map). Adding new taskIds is a plugin-level concern.
+**User wants to add a task that exists in DEFAULT_SCHEDULES but isn't registered.** That's the `add <task>` flow (Step 3) — route through the registration skill's Phase 6 add path. **User wants a task that doesn't exist in DEFAULT_SCHEDULES at all** — reject: this skill customizes any task in `DEFAULT_SCHEDULES` (currently 13); brand-new taskIds ship via plugin updates, not user customization.
 
 **User says `everything daily` while one task is paused.** Apply the cron change but leave the paused task paused. They'd say `resume everything` separately to reactivate.
 
 ## Forbidden behaviors
 
 - **Do NOT write directly to entities.json without atomic_write_json.** Drive-sync corruption risk.
-- **Do NOT bypass `enable-command-room-schedules` for re-registration.** That skill has the v2.11.4 self-refresh logic; reinventing it here drifts.
+- **Do NOT pass `prompt` to `update_scheduled_task`.** Step 7 re-anchors `cronExpression`/`enabled` ONLY. Prompt content is registration's job (`set up command room schedules`).
+- **Do NOT render a task as scheduled unless it is registered.** The merged config alone is not evidence a task exists in Cowork's scheduler — that's the R1 ghost-task bug.
+- **Do NOT densify the config.** `workspace.schedule_config` is a sparse override store — an entry means "operator customized this." Never write default values for tasks the user didn't change (it would destroy the "non-default cron = user-set" signal every consumer relies on).
 - **Do NOT prompt for changes if the user asked for read-only mode.** `show my schedule` is read-only — render and stop.
-- **Do NOT introduce new taskIds via this skill.** The canonical 5 are defined in `schedule_config.py` `DEFAULT_SCHEDULES`. New tasks ship via plugin updates, not user customization.
+- **Do NOT introduce new taskIds via this skill.** Tasks are defined in `schedule_config.py` `DEFAULT_SCHEDULES`; the add flow only registers tasks that already exist there.
 - **Do NOT narrate event-type names or file paths in chat.** Per CONTRACT.md Rule 4 — no `schedule_config_changed event written` or `entities.json updated`. Just plain-English confirmation of what changed.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Customize when each Command Room scheduled chat fires. Reads current schedule from entities.json merged with defaults AND the registered-task set (so only tasks that actually exist in Cowork's scheduler render as scheduled — Phase 3/R1), shows it in plain English, accepts changes (move time, switch days, pause/resume, disable/enable), atomic-writes the config, and pushes the new cadence to the live tasks itself via update_scheduled_task (Phase 3/P0.1 — cron re-anchoring is THIS skill's job). Triggers: 'change my schedule', 'change schedule', 'update my schedule', 'configure schedules', 'configure my schedules', 'customize my schedules', 'set [task] to [time]', 'move [task] to [time]', 'pause [task]', 'resume [task]', 'disable [task]', 'enable [task]', 'list my schedules', 'show my scheduled chats', 'when do my chats fire', 'when do my chats run'. Use when the user wants daily/weekly/cadence customization per task. DOES NOT fire on 'set up command room schedules' (that's the registration skill — change-schedule modifies the config that registration reads), 'what's my schedule' / 'show my schedule' / 'what's on my calendar' (a calendar read — morning-briefing covers today; the calendar itself covers the rest; this skill only manages Command Room's scheduled chats).

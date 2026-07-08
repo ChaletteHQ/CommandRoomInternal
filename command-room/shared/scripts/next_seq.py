@@ -29,6 +29,16 @@ A single helper, `next_seq(events_jsonl_path)`, that:
   - returns max(human-counter seqs) + 1
 
 All event writers should call this rather than computing seq themselves.
+
+CONCURRENCY NOTE (SPEC A1, v3.19.x)
+-----------------------------------
+A caller that reserves a seq via `next_seq()` and THEN appends separately, in
+two steps, is still racy: a concurrent writer can take the same seq in the
+gap between reserve and append. The safe path is to pass events WITHOUT a
+`seq` field to `atomic_write.atomic_append_jsonl` — it auto-stamps `seq`
+inside the events.jsonl writer lock, so reservation and write are one atomic
+critical section. Use `next_seq()` only for read-only "what's the next seq"
+display / diagnostics, not as a reserve-then-write-later pattern.
 """
 
 from __future__ import annotations

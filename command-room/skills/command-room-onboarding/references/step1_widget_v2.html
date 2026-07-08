@@ -1,5 +1,6 @@
 <!--
-  Step 1 setup widget — v3 (2026-05-23, M1 redesign)
+  Step 1 setup widget — v5 (removes Q2 email exclusions; v4 was SPEC FRP1 email
+  draft-posture; v3 was 2026-05-23 M1 redesign)
 
   Self-contained HTML/JS. Loaded by skills/command-room-onboarding/SKILL.md
   Phase 0, passed verbatim to mcp__visualize__show_widget. Bypasses
@@ -9,19 +10,20 @@
 
   Four questions, progressive reveal:
     Q1 — Role (six top chips, sub-chip drill-down, optional refinement textbox)
-    Q2 — Email exclusions (none / exclude-with-textbox)
-    Q3 — Timezone (four US zones / Other-with-textbox)
-    Q4 — AI name (default "Penelope" / pick-your-own-with-textbox) — NEW v3
+    Q2 — Timezone (four US zones / Other-with-textbox)
+    Q3 — AI name (default "Penelope" / pick-your-own-with-textbox)
+    Q4 — Email draft posture (show_first / auto_queue) — the only ask-first
+         first-run decision batched into onboarding; written origin=m1_batch
 
-  Submission shape (fires on final Q4 Finish click):
+  Submission shape (fires on the final Q4 chip click):
     apply choices: [{"n":1,"action":"<top>","sub":"<sub>","input":"<text>"}, ...]
-    `sub` and `input` are optional per tuple. Four tuples total.
+    `sub` and `input` are optional per tuple. Four tuples total (n=4 is the posture).
 
   Routes via apply-choices to command-room-onboarding "Reply handling — Phase 0
-  setup". Fire-marker event widget_kind = step_1_setup_v3.
+  setup". Fire-marker event widget_kind = step_1_setup_v5.
 -->
 <div style="padding: 1rem 0;">
-<h2 class="sr-only">Phase 0 onboarding widget — four questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; final question names your AI</h2>
+<h2 class="sr-only">Phase 0 onboarding widget — four questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; the AI-name question precedes the final email draft-posture question</h2>
 
 <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1.25rem;">
 
@@ -63,31 +65,9 @@
   <div data-q="2" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px; opacity: 0.4;">
     <div class="qhead">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <i class="ti ti-lock" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
-        <span style="font-size: 14px; font-weight: 500;">Any email domains I should never read?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 4</span>
-      </div>
-      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
-        <button class="chip top simple" data-v="none" data-label="None — read everything" disabled>None &mdash; read everything</button>
-        <button class="chip top top-other" data-v="exclude" data-label="Exclude domains" data-ph="lawfirm.example.com, wife@example.com" disabled>Exclude domains&hellip;</button>
-      </div>
-      <div class="refine-row" style="display: none; margin-top: 10px;">
-        <textarea class="refine-input" style="width: 100%; min-height: 44px; padding: 8px 10px; font-size: 13px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); resize: vertical; box-sizing: border-box;"></textarea>
-        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Next <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
-      </div>
-    </div>
-    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
-      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
-      <span class="summary-label"></span>
-    </div>
-  </div>
-
-  <div data-q="3" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px;">
-    <div class="qhead">
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
         <i class="ti ti-clock" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">What timezone are you in?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 4</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 4</span>
       </div>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top simple" data-v="pacific" data-label="Pacific" disabled>Pacific</button>
@@ -107,12 +87,12 @@
     </div>
   </div>
 
-  <div data-q="4" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px;">
+  <div data-q="3" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px;">
     <div class="qhead">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
         <i class="ti ti-sparkles" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">What do you want to call your AI?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 4</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 4</span>
       </div>
       <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">Default is Penelope. Pick anything that feels right — Jarvis, Alfred, your own first name. She runs your Command Room and shows up by name in every chat (&ldquo;ask Penelope,&rdquo; &ldquo;Penelope said&rdquo;). Her workspace folder becomes <code>[Name]&rsquo;s Brain</code>.</p>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
@@ -121,7 +101,26 @@
       </div>
       <div class="refine-row" style="display: none; margin-top: 10px;">
         <input type="text" class="refine-input" maxlength="40" style="width: 100%; padding: 8px 10px; font-size: 13px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); box-sizing: border-box;" />
-        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Finish <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
+        <button class="next-btn" style="margin-top: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; border-radius: var(--border-radius-md);">Next <i class="ti ti-arrow-right" style="font-size: 13px; vertical-align: -2px;" aria-hidden="true"></i></button>
+      </div>
+    </div>
+    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
+      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
+      <span class="summary-label"></span>
+    </div>
+  </div>
+
+  <div data-q="4" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px;">
+    <div class="qhead">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+        <i class="ti ti-mail" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+        <span style="font-size: 14px; font-weight: 500;">How should I handle email drafts?</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 4</span>
+      </div>
+      <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">When you ask me to write an email, I can show you the draft first and only touch Gmail when you click &mdash; or drop every draft straight into your Gmail Drafts. You can change this anytime by saying &ldquo;tune email-writer.&rdquo;</p>
+      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button class="chip top simple" data-v="show_first" data-label="Show me first" disabled>Show me first</button>
+        <button class="chip top simple" data-v="auto_queue" data-label="Auto-queue to Gmail Drafts" disabled>Auto-queue to Gmail Drafts</button>
       </div>
     </div>
     <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
@@ -145,7 +144,7 @@
 <script>
   (function () {
     const root = document.currentScript.parentElement;
-    const labels = { 1: 'Your role', 2: 'Email privacy', 3: 'Timezone', 4: 'AI name' };
+    const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name', 4: 'Email drafts' };
     const selections = {};
 
     const subOptions = {

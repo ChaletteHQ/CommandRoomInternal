@@ -74,6 +74,12 @@ The `project` entity in the schema is a **generalized tracked unit of attention*
 - Dormant-scan flags threads of any kind that haven't been touched — a relationship gone cold matters differently from a stalled deal, but both get surfaced.
 - Commitment-aging applies across kinds — a commitment inside a ritual is still a commitment.
 
+## Onboarding Seed Pack (optional pre-install input)
+
+`onboarding_seed.schema.json` defines `ONBOARDING_SEED.json` — an optional file the operator drops at the client workspace root **before** install day, distilled from a recorded pre-onboarding interview with the client. It is input TO onboarding, not a workspace file: if present, Phase 1a ingests declared orgs/projects/people/aliases/priorities as **anchor truth** (same authority as the primary-affiliation gate — the connector scan enriches and adds, never overrides), pre-answers Phase 0 setup questions it covers (timezone, brain name), pre-loads aliases.json, feeds voice notes into BRAND_VOICE.md, then moves the file to `_hq/data/onboarding-seed.json` and appends an `onboarding_seed_ingested` event. Absent file = zero behavior change.
+
+Entities in the pack are referenced by **name**, not id — ids are minted during onboarding, and every name + alias becomes an aliases.json mapping.
+
 ## Seed files
 
 `seed/` contains empty starter versions of each file. Onboarding copies these to `_hq/data/` to initialize a new workspace:

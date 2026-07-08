@@ -383,6 +383,7 @@ __all__ = [
     "render_chat_output",
     "render_chat_output_widget",
     "scan_for_id_leaks",
+    "scan_for_generic_summary",
     "validate_chat_output",
     "validate_rendered_widget",
     "CANONICAL_ACTIONS",
@@ -441,6 +442,26 @@ CANONICAL_ACTIONS = frozenset({
 
     # Commitments self
     "mark done",
+
+    # Deliberation verb set (Phase 2 Stage D, S4; EXTENDED Phase 4 2026-07-02
+    # under the same ratified pre-authorization — one set, grown once, never a
+    # second. Everything respec-able respecs onto existing canonical verbs
+    # (P1.1: boardroom → `skip all`, stalled-projects → `draft re-engagement` /
+    # `mark paused`, decision-memo-composer → `decide [text]` / `edit [change]`
+    # / `skip`, scaffold-automation → `mark done`, insight-generator Passes
+    # 8-10 → the REVIEW cluster); the verbs below have no canonical equivalent
+    # without degrading the UX. Dispatch: apply-choices § "Commitment-triage
+    # dispatch" + the decision-revisit / scaffold-automation source entries.)
+    "drop",              # close with resolution=dropped (not done — deliberately let go)
+    "not mine",          # close with resolution=dropped + evidence "not the user's item" (cross-attendee capture)
+    "make task",         # reclassify promise → task (additive commitment_reclassified marker)
+    "promote",           # reclassify task → promise (S5 one-tap promote when a counterparty appears)
+    "never track this",  # append a suppression rule to _hq/config/commitment-rules.md + close (dropped)
+    "revisit",           # Phase 4 / decision-revisit — open deliberation on this decision (chains to decision-memo-composer pre-filled). Display: "Revisit now"
+    "still valid",       # Phase 4 / decision-revisit — reaffirm; writes decision_reaffirmed. Display: "Still valid"
+    "replace",           # Phase 4 / decision-revisit — supersede; chains to decision-log, writes decision_superseded (event type unchanged — friendly label is UI-only per audit-merge decision #6). Display: "Replace it"
+    "snooze 30d",        # Phase 4 / decision-revisit — fixed-duration snooze, same family as snooze 3d/14d. Display: "Snooze (30 days)"
+    "snooze 7d",         # Phase 4 / scaffold-automation deploy reminder — fixed-duration snooze. Display: "Snooze (7 days)"
 
     # Pulse person
     "investigate",
@@ -1270,6 +1291,48 @@ def scan_for_id_leaks(text):
 
 
 # ============================================================================
+# Generic-summary banned patterns (SPEC EXEC1 element 1 — the anti-washing
+# floor). These are washing shapes that defeat the 30-second contract: a header
+# line that says "Several important updates" instead of a named entity / number
+# / date. Per the EXEC1 spec these apply to EXEC-HEADER LINES ONLY (verdict /
+# CHANGED / DECIDE / NEEDED) — NOT to arbitrary body prose, which may legitimately
+# quote such phrases. So they are a SEPARATE, opt-in scan (run against header
+# lines), deliberately NOT folded into the blocking `_LEAK_PATTERNS` that scans
+# every chat post. Semantic verdict-quality (does the line carry a real
+# conclusion) lives in the per-skill checklists — this catches only the four
+# canonical washing shapes the spec enumerates, and nothing more.
+# ============================================================================
+
+_GENERIC_SUMMARY_PATTERNS = [
+    (_leak_re.compile(r"\bkey\s+developments?\b", _leak_re.IGNORECASE),
+     "generic-summary header (key developments)"),
+    (_leak_re.compile(r"\bseveral\s+(?:important\s+)?updates?\b", _leak_re.IGNORECASE),
+     "generic-summary header (several updates)"),
+    (_leak_re.compile(r"\bbusy\s+week\s+across\b", _leak_re.IGNORECASE),
+     "generic-summary header (busy week across)"),
+    (_leak_re.compile(r"\blots\s+of\s+movement\b", _leak_re.IGNORECASE),
+     "generic-summary header (lots of movement)"),
+]
+
+
+def scan_for_generic_summary(text):
+    """Return a list of (label, matched_substring) for every generic-summary
+    washing shape found. Run this against EXEC-HEADER LINES (verdict / CHANGED /
+    DECIDE / NEEDED) — not body prose. Empty list = clean.
+
+    SPEC EXEC1 element 1: an exec-header line must carry a named entity, number,
+    or date, OR use the explicit nothing-form. A line like "Several important
+    updates this week" is the washing shape this catches."""
+    if not text:
+        return []
+    findings = []
+    for pat, label in _GENERIC_SUMMARY_PATTERNS:
+        for m in pat.finditer(text):
+            findings.append((label, m.group(0)))
+    return findings
+
+
+# ============================================================================
 # Path-leak runtime guard (v3.6.0+) — runs against chat output / widget HTML to
 # catch absolute filesystem paths that do not fall under the user's
 # runtime-resolved workspace. Closes the v3.5.3 class of bug: literal absolute
@@ -1714,6 +1777,10 @@ def _render_onboarding_setup(data: dict, wrapper: str = "document") -> str:
     parts.append("</div>")
 
     js = _WIDGET_JS_TEMPLATE.replace("__TOTAL_ITEMS__", str(total))
+    # W4 (Phase 3) — bake the emitting surface's id into the widget so every
+    # Apply-all tuple carries {src}. Orchestrator data views pass source_skill;
+    # legacy/absent -> empty string -> apply-choices uses the fire-marker fallback.
+    js = js.replace("__CR_SRC__", _json_mod.dumps(str(data.get("source_skill") or "")))
     parts.append(f"<script>{js}</script>")
     if wrapper == "document":
         parts.append("</body></html>")
@@ -1908,6 +1975,23 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # the `add email then send` recovery verb instead.
     _validate_send_class_email_addresses(data)
 
+    # Gate 1e (SPEC GATE1, v3.20.x): turn-level voice-tell backstop. Scans every
+    # email-shaped item's body for banned voice tells even when no composer ran
+    # its Step-2 gate — this is the deterministic backstop for the email/chat
+    # surface that never reaches brief_writer.make_brief. NON-BLOCKING by design
+    # (stderr-warn only; the renderer has no per-client allow_phrases context, so
+    # blocking here would punish a calibrated voice). Best-effort + never raises.
+    try:
+        from turn_backstop import scan_data_view_for_tells
+        # workspace_root self-resolves inside the backstop (SPEC GATE2 D4) so the
+        # emit branch actually fires from the renderer call-site — the GATE1 wiring
+        # gap that left the backstop scanning but writing nothing detectable.
+        scan_data_view_for_tells(data, source_skill=data.get("source_skill"))
+    except Exception:
+        # The backstop must never break a render. The hard voice gate still lives
+        # in make_brief for the .docx surface.
+        pass
+
     sections = data.get("sections", [])
     total = _count_total_selectable_items(sections)
 
@@ -1961,6 +2045,10 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     parts.append("</div>")
 
     js = _WIDGET_JS_TEMPLATE.replace("__TOTAL_ITEMS__", str(total))
+    # W4 (Phase 3) — bake the emitting surface's id into the widget so every
+    # Apply-all tuple carries {src}. Orchestrator data views pass source_skill;
+    # legacy/absent -> empty string -> apply-choices uses the fire-marker fallback.
+    js = js.replace("__CR_SRC__", _json_mod.dumps(str(data.get("source_skill") or "")))
     parts.append(f"<script>{js}</script>")
     if wrapper == "document":
         parts.append("</body></html>")
@@ -2320,8 +2408,13 @@ _DISPLAY_LABEL_OVERRIDES = {
     # human-readable.
     "snooze 3d": "Snooze (3 days)",
     "snooze 14d": "Snooze (14 days)",  # v3.13.2+ — intro-followup check uses 14d for the "did the intro land?" recheck
+    "snooze 7d": "Snooze (7 days)",  # Phase 4 2026-07-02 — scaffold-automation deploy reminder
+    "snooze 30d": "Snooze (30 days)",  # Phase 4 2026-07-02 — decision-revisit re-eligibility window
     "not relevant": "Not relevant",  # default would also produce this; explicit so future edits don't regress the no-duration-in-UI rule
     "didnt land": "Didn't land",  # v3.13.2+ — apostrophe restored in display label only
+    "revisit": "Revisit now",  # Phase 4 2026-07-02 — decision-revisit deliberation set
+    "still valid": "Still valid",  # explicit so the two-word verb never gets mangled by the default pass
+    "replace": "Replace it",  # friendly label per audit-merge decision #6 ("[Replace it]" over "[Supersede]")
 }
 
 
@@ -2903,6 +2996,11 @@ button.cr-btn-secondary:hover { background: #3A3530 !important; border-color: #5
 _WIDGET_JS_TEMPLATE = """
 const crSelections = {};
 const crTotalItems = __TOTAL_ITEMS__;
+// W4 (2026-07) — widget source id. Stamped into every Apply-all
+// choice tuple as `src` so apply-choices can dispatch statelessly (no
+// 60-minute fire-marker window). Empty string on legacy data views that
+// don't pass source_skill — apply-choices falls back to the fire-marker.
+const crSrc = __CR_SRC__;
 
 function crUpdateCounter() {
   const count = Object.keys(crSelections).length;
@@ -3098,6 +3196,7 @@ function crSendPrompt(text) {
 function crApplyAll() {
   const choices = Object.entries(crSelections).map(function ([n, action]) {
     const choice = {n: n, action: action};
+    if (crSrc) choice.src = crSrc;  // W4 — stateless dispatch source id
     const inputWrapper = crFindInputWrapper(n, action);
     if (inputWrapper) {
       const inputType = inputWrapper.dataset.inputType;
@@ -3146,11 +3245,13 @@ function crApplyAll() {
     if (!v || !v.trim()) continue;
     if (seenNs.has(String(noteForN))) continue;  // already paired with an action — happy path
     // Orphan note. Synthesize an `add to my list` choice carrying just the context.
-    choices.push({
+    const orphanChoice = {
       n: noteForN,
       action: 'add to my list',
       context: v.trim()
-    });
+    };
+    if (crSrc) orphanChoice.src = crSrc;  // W4 — same source id as button choices
+    choices.push(orphanChoice);
     seenNs.add(String(noteForN));
   }
 

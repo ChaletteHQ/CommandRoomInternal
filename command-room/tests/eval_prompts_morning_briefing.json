@@ -1,0 +1,14 @@
+{
+  "skill": "morning-briefing",
+  "schema_version": "1.0",
+  "notes": "SPEC A8 — LLM-judgment layer for morning-briefing (routing + behavior). Gate 15 executor/grader; run_all.py ignores this file.",
+  "prompts": [
+    {"name": "route_brief_me", "kind": "positive_routing", "input": "brief me", "assert": ["Fires morning-briefing"]},
+    {"name": "route_start_my_day", "kind": "positive_routing", "input": "what do I need to know today", "assert": ["Fires morning-briefing"]},
+    {"name": "negative_triage", "kind": "negative_routing", "input": "triage my inbox", "assert": ["Does NOT fire morning-briefing — routes to inbox-triage"]},
+    {"name": "negative_prep_call", "kind": "negative_routing", "input": "prep me for my 2pm", "assert": ["Does NOT fire morning-briefing — routes to call-prep (single meeting)"]},
+    {"name": "behavior_brief_state", "kind": "behavior", "input": "brief me", "assert": ["Commitment header + needs-attention list come from compute_brief_state, not re-derived prose"]},
+    {"name": "behavior_count_parity", "kind": "behavior", "input": "morning briefing", "assert": ["The commitment header total equals the full open set (Bug #85 hard-count gate)"]},
+    {"name": "behavior_summary_only", "kind": "behavior", "input": "daily briefing", "assert": ["Email section is summary-only — no drafts (drafts are inbox-triage's job)"]}
+  ]
+}

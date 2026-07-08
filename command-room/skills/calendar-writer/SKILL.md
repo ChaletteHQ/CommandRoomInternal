@@ -1,13 +1,13 @@
 ---
 name: calendar-writer
-description: "Schedule meetings — find mutual availability, draft the invite with substrate-aware agenda (open commitments with attendee + recent project context), create the calendar event, optionally auto-fire call-prep 24h before. Use when the CEO says 'schedule a [length] with [name]', 'set up a [length] with [name]', 'set up a 30-min with [name]', 'book time with [name]', 'find time with [name]', 'book a meeting with [name]', 'put [name] on the calendar', 'add a meeting with [name]', 'block 90 min for [topic]', 'schedule [name] [time]', 'set up lunch with [name]', 'put it on my calendar'. Reads Calendar MCP for availability, entities.json for attendee emails + relationship context, events.jsonl for open commitments with each attendee (so the agenda surfaces what's already on the floor with them). Writes meeting_scheduled events. DOES NOT fire on 'cancel my meeting with' (different skill — calendar cancel), 'reschedule' (calendar-writer could handle but currently scoped to NEW invites), 'prep me for' (call-prep — pre-existing meeting), or 'process meeting' (meeting-notes — post-meeting). Closes the v3.5.0-flagged 'reads calendar but doesn't write events' gap."
+description: "Schedule meetings — find mutual availability, draft the invite with a context-aware agenda (open commitments with each attendee plus recent project context), create the calendar event, and optionally auto-arrange call prep before it. Fires on: 'schedule a [length] with [name]', 'set up a 30-min with [name]', 'book time with [name]', 'find time with [name]', 'book a meeting with [name]', 'put [name] on the calendar', 'block 90 min for [topic]', 'set up lunch with [name]', 'put it on my calendar'. Does NOT fire on 'cancel my meeting' or 'reschedule' (out of current scope — new invites only), 'prep me for [meeting]' (call-prep), or 'process meeting' (meeting-notes). Availability rules and agenda sourcing: Routing section in the body."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
 Before resolving the meeting attendee(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the substrate-aware agenda (open commitments with each attendee), call `shared/scripts/cru_match.py::load_open_commitments` and filter by attendee — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use calendar-writer for:** scheduling a NEW meeting. Finds mutual availability, drafts the invite, creates the event.
 - **Use `call-prep` for:** preparing for an EXISTING upcoming meeting.
@@ -99,7 +99,12 @@ Build a draft agenda by pulling:
 - "Since last touched" — summary of any interactions since the last meeting with this attendee
 - "[open for attendee]" placeholder
 
-### Phase 5 — Render widget for approval (v3.13.0+ — explicit-approval-before-write per CONTRACT Rule 3b)
+### Phase 5 — Render widget for approval (v3.13.0+ — explicit-approval-before-write per CONTRACT Rule 2)
+
+**Output guard (PL.10):** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+
+- ❌ "meeting_scheduled event written; agenda rendered from open commitment records"
+- ✅ "Invite's on your calendar — the agenda covers the two things you and Aria still owe each other."
 
 **Critical:** the calendar event is NOT created until the user explicitly clicks `send` via apply-choices. Per M's 2026-05-20 feedback #3, calendar-writer must confirm event details and get approval before writing to Google Calendar — no silent writes. The widget surfaces every field the user might want to edit (time, attendees, subject, body) so revisions happen in-place rather than requiring a regenerate.
 
@@ -154,14 +159,16 @@ This phase fires ONLY when apply-choices dispatches an `{n: 1, action: "send", .
 
 On dispatch:
 1. If the action carries an `input` object (from `edit then send`): override the corresponding fields (To/Subject/Body/Time/Duration/Location) before creating.
-2. Call Calendar MCP `mcp__google_calendar__create_event` with the (possibly edited) fields. Returns `calendar_event_id`.
+2. Discover the create tool via `shared/scripts/tool_discovery.py::discover_calendar_tool(tools, operation="create_event")` — works across Google Calendar AND Outlook (never hard-code a platform tool id; per CONTRACT Rule 8 calendar never goes through Zapier). Call the discovered tool with the (possibly edited) fields. Returns `calendar_event_id`.
 3. Append `meeting_scheduled` event with `{attendee_person_ids[], primary_thread_id, scheduled_at_ts, duration_minutes, calendar_event_id, agenda_summary, surfaced_commitment_seqs[]}` per atomic_write rules.
-3.5. **CRU real-time leg — auto-resolve the scheduling commitment this event fulfills (v3.14.7+).** Creating the event IS the fulfillment of any "set up the call with X / lock time with X / propose times to X" commitment the user owed. Run `shared/scripts/cru_match.py::match_calendar_to_commitments` with the just-created event so the commitment closes immediately, instead of waiting for the daily Commitments Phase 2.7 backstop:
+4. **CRU real-time leg — auto-resolve the scheduling commitment this event fulfills (v3.14.7+).** Creating the event IS the fulfillment of any "set up the call with X / lock time with X / propose times to X" commitment the user owed. Run `shared/scripts/cru_match.py::match_calendar_to_commitments` with the just-created event so the commitment closes immediately, instead of waiting for the daily Commitments Phase 2.7 backstop:
 
    ```python
    import sys
+   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
    sys.path.insert(0, "shared/scripts")
-   from cru_match import load_open_commitments, match_calendar_to_commitments, build_commitment_resolved_event, build_pending_review_event
+   from cru_match import load_open_commitments, match_calendar_to_commitments, build_pending_review_event
+   from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
    from atomic_write import atomic_append_jsonl
 
    opens = load_open_commitments("<events.jsonl>")
@@ -176,16 +183,22 @@ On dispatch:
            "calendar_event_id": calendar_event_id,
        }],
    )
-   # auto_resolve → build_commitment_resolved_event(resolved_by=<user>, source_skill="calendar-writer", evidence=r["evidence"], ...)
+   # Stage B (F2): auto_resolve → close_commitment(workspace_root, r["commitment_id"],
+   #   resolved_by=<user>, evidence=r["evidence"], source_skill="calendar-writer")
+   #   — THE closure path (catch CommitmentIdError/PendingReviewError → treat as
+   #   not-closed and fall through to the Phase 2.7 backstop). Matching unchanged.
    # pending_review → build_pending_review_event(source_skill="calendar-writer", ...)
+   # Capture each auto_resolved commitment's {title, due} so Phase 7 can surface it.
    ```
-   Silent per CONTRACT Rule 9 — do NOT narrate "resolved 1 commitment" in the Phase 7 confirm. Best-effort: if the scan errors, swallow and continue (the Phase 2.7 daily backstop will catch it). De-dups with Phase 2.7 by construction (both read `load_open_commitments`, which excludes already-closed commitments).
-4. If the user opted into call-prep auto-fire (via a secondary widget option or follow-up turn), write a scheduled-task entry for call-prep at `scheduled_at_ts - 24h`.
+   **Surface the closure — do NOT stay silent (v3.19.x — FIX1 item 23).** This is a user-initiated action, so a calendar-driven auto-close is a substrate change the user should SEE (unlike the scheduled-CRU silence the inbox/commitments orchestrators keep). In the Phase 7 confirm, add one plain-language line per auto-resolved commitment: `✓ This likely closes: '[commitment title]' (was due [date]). Say `undo` if that's wrong.` Plain language only — never print the `commitment_resolved` event-type name (CONTRACT Rule 4 forbids the event NAME in chat, not the fact that something closed). De-dups with Phase 2.7 by construction (both read `load_open_commitments`, which excludes already-closed commitments).
+
+   **On helper failure, do NOT swallow silently (FIX1 item 23).** If `match_calendar_to_commitments` (or the append) raises, log the error to `CONFLICTS.md` per `shared/RELIABILITY.md` AND add one line to the Phase 7 confirm: `(Couldn't verify whether this closed any open commitments — check tomorrow's Commitments list.)` The Phase 2.7 daily backstop is still the safety net, but the user is told the real-time leg didn't complete instead of being left to assume it did.
+5. If the user opted into call-prep auto-fire (via a secondary widget option or follow-up turn), write a scheduled-task entry for call-prep at `scheduled_at_ts - 24h`.
 
 On `1 skip`: abort. Write a `chat_dismissal` event for substrate visibility (so M can see in show-my-list that an invite was drafted but not sent). Do NOT call Calendar MCP.
 
 **The contract — never silently create:**
-- ❌ Phase 5 must not call `mcp__google_calendar__create_event` (event creation is the explicit user-action).
+- ❌ Phase 5 must not call the discovered calendar create tool (event creation is the explicit user-action).
 - ❌ Don't pre-create as draft. Calendar drafts aren't a first-class concept the way Gmail Drafts are; the user expects the click to BE the write.
 - ❌ Don't fire on free-text confirmation ("yes" / "go" / etc.) without an apply-choices payload. The widget IS the consent surface.
 
@@ -196,7 +209,9 @@ Render the result inline:
 Done — scheduled with Aria Sample, 30 min, Tue May 26 at 2:30 PM ET.
   Calendar event: [link]
   I'll have your prep brief ready Mon May 25 at 2:30 PM.
+  ✓ This likely closes: 'Set up the build call with Aria' (was due May 20). Say `undo` if that's wrong.
 ```
+(Render the `✓ This likely closes:` line only when Phase 6 Step 4 auto-resolved at least one commitment — one line per closure. If Step 4's helper errored, render the `(Couldn't verify…)` line instead, per Phase 6 Step 4 above.)
 
 ## DOES NOT
 
@@ -204,3 +219,9 @@ Done — scheduled with Aria Sample, 30 min, Tue May 26 at 2:30 PM ET.
 - Send a draft email instead of a calendar invite. The deliverable IS the calendar invite via Calendar MCP — Google sends the invite email natively. No `email-writer` chain.
 - Schedule recurring meetings via this surface. One-off meetings only in v3.8.0 (recurring would need a separate trigger like "set up weekly 1:1 with [name]").
 - Override busy time without explicit user confirmation. If no mutual-clear window exists, surface "no clear windows; closest matches with conflicts" and let user choose.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Schedule meetings — find mutual availability, draft the invite with substrate-aware agenda (open commitments with attendee + recent project context), create the calendar event, optionally auto-fire call-prep 24h before. Use when the CEO says 'schedule a [length] with [name]', 'set up a [length] with [name]', 'set up a 30-min with [name]', 'book time with [name]', 'find time with [name]', 'book a meeting with [name]', 'put [name] on the calendar', 'add a meeting with [name]', 'block 90 min for [topic]', 'schedule [name] [time]', 'set up lunch with [name]', 'put it on my calendar'. Reads Calendar MCP for availability, entities.json for attendee emails + relationship context, events.jsonl for open commitments with each attendee (so the agenda surfaces what's already on the floor with them). Writes meeting_scheduled events. DOES NOT fire on 'cancel my meeting with' or 'reschedule' (out of scope — no cancel/reschedule surface exists yet; calendar-writer is scoped to NEW invites), 'prep me for' (call-prep — pre-existing meeting), or 'process meeting' (meeting-notes — post-meeting).

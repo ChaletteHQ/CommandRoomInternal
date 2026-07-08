@@ -1,6 +1,6 @@
 ---
 name: workspace-ingest
-description: "Underlying pipeline for two intents: extract context from a source + (optionally) copy source files into workspace project folders. Two thin alias skills route to focused subsets of this pipeline — use ingest-context if you want context only (no file copies), use file-documents if you want both context + file copies into projects. Use workspace-ingest directly only for ambiguous intent — when you say 'ingest folder [path]' and want the skill to detect what makes sense from the source content. Both layers copy-only (never moves or deletes), back up source folder first, write an undo log. Direct triggers (intent-ambiguous): 'ingest folder [path]', 'ingest this folder'. Default mode AUGMENT (existing workspace preserved); BOOTSTRAP mode only when workspace is empty. DOES NOT fire on focused triggers 'ingest context from [path]' (routes to ingest-context), 'file documents from [path]' (routes to file-documents), single-URL intake (intel-intake), or new-customer setup (command-room-onboarding)."
+description: "Underlying two-layer ingest pipeline: extract context (people, projects, decisions, memories) from a source AND optionally copy the source's actual documents into workspace project folders. Fires on: 'ingest this folder' / 'ingest folder [path]', 'ingest [source] into my workspace', 'bootstrap my workspace from [source]'. Preview-and-confirm before any write; AUGMENT mode on workspaces with existing data (dedupe makes re-runs no-ops); undo is snapshot-based and only removes what its own log recorded as created. Routes: pure context extraction lands in ingest-context behavior; pure file filing lands in file-documents behavior; this skill runs the combined pipeline. Does NOT fire on 'scan my desktop' / 'sort my downloads' alone (file-documents). Mode table, undo contract, and safety rails: Routing section in the body."
 template_version: 2.0.0
 ---
 
@@ -41,17 +41,18 @@ You are the **one-time ingester + file migrator**. You write:
 **Report + audit trail:**
 - `_hq/INGEST_REPORT.md` (one-shot report of data + file migration — counts, file-by-file disposition, warnings, source shape, rollback path)
 - `_hq/_ingest-queue/` (low-confidence files the CEO must classify manually before they move to final homes)
-- `_hq/_ingest-undo.jsonl` (append-only log of every file copy, for rollback — one line per file with source path, destination path, sha256, timestamp)
-- `_archive/ingest_source_YYYY-MM-DD/` (full backup of the source folder for rollback)
+- `_hq/_ingest-undo.jsonl` (append-only log of every write this run makes — a `run_start` header line per run, then one line per file copy / merge / data write, with source path, destination path, sha256, timestamp, and whether the destination was CREATED by this run or already existed)
+- `_archive/ingest_source_YYYY-MM-DD/` (full backup of the source folder — reference copy; the source is never mutated, so this is belt-and-suspenders, not the rollback point)
+- `_archive/pre-ingest-data_[ts]/` (Phase 3.9 snapshot of the target workspace's `_hq/data/` taken BEFORE any data write — THIS is the rollback point for substrate; see Phase 3.9)
 
 **Critical rules:**
 - **Copy-first, never move.** Every file operation is a copy. The source folder is never mutated.
 - **Never delete.** Even after successful migration, the source stays pristine. The CEO decides when (if ever) to delete the source.
-- **Every file copy is logged** in `_ingest-undo.jsonl` so the CEO can ask "undo migration" and this skill can reverse every copy by deleting the destination (source is untouched, so no restore needed).
+- **Every write is logged** in `_ingest-undo.jsonl` so the CEO can ask "undo migration" and this skill can reverse the run: file copies reverse by deleting the destination (source is untouched), merges reverse by stripping the logged section, and substrate writes reverse from the Phase 3.9 snapshot + logged seq range. **Undo deletes ONLY what the undo log records as created by this run — never anything keyed on a file attribute like `last_writer`** (an AUGMENT merge stamps `last_writer` on the user's pre-existing substrate; deleting on that key destroys their data).
 - **Content-hash guard.** If a destination file already exists with the same sha256 as the source, skip (idempotent re-run). If different sha256, append `.conflict-[ts].ext` and log — never silently overwrite.
 - You **do not** modify anything in `[Project]/` folders other than writing the migrated files. You **do not** write views — that's view-generation's job. You **do not** delete the source folder.
 
-After successful ingest, ownership transfers per the File Ownership Map. Re-running on a workspace that already has `_hq/data/entities.json` detects the state and exits.
+After successful ingest, ownership transfers per the File Ownership Map. Re-running on a workspace that already has `_hq/data/entities.json` runs in AUGMENT mode — dedupe makes same-source re-runs no-ops (see Idempotency).
 
 ---
 
@@ -59,7 +60,7 @@ After successful ingest, ownership transfers per the File Ownership Map. Re-runn
 
 ### Primary entry — direct user trigger (post-onboarding)
 
-The most common case: a customer with an established workspace says one of the trigger phrases above (`ingest folder ~/Downloads/employee-files`, `scan my desktop`, `ingest my chatgpt export`, etc.) to augment their workspace with new material. The skill detects AUGMENT mode (existing entities.json present), shows a preview, and adds context + files on top.
+The most common case: a customer with an established workspace says one of the DIRECT trigger phrases (`ingest folder ~/Downloads/employee-files`, `ingest this folder`) to augment their workspace with new material. The focused phrases (`ingest context from [path]`, `scan my desktop`, `ingest my chatgpt export`, `file documents from [path]`) do NOT route here directly — they fire the `ingest-context` / `file-documents` alias skills per the alias split in the description, which enter this same pipeline with the layer pre-selected. Either way the skill detects AUGMENT mode (existing entities.json present), shows a preview, and adds context + files on top.
 
 ### Onboarding does NOT auto-invoke (as of v2.7.22 — preserved in v2.14.20)
 
@@ -83,17 +84,49 @@ The mode determines Phase 4's write semantics (see Phase 4 below).
 
 ### Phase 1: Accept source path + detect shape
 
-Accept a source path from onboarding (or prompt for one in direct-entry mode). Validate that it exists and is readable.
+Accept the source path from the user's trigger phrase (or prompt for one). Validate that it exists and is readable.
 
-Detect the source shape using the rules in **Shape Detection** below. If shape is ambiguous, ask the CEO: *"I'm seeing a couple of possibilities here — is this [guess A] or [guess B]?"* Pick based on response.
+Detect the source shape using the **Shape Detection** rules immediately below (run here in Phase 1). If shape is ambiguous, ask the CEO: *"I'm seeing a couple of possibilities here — is this [guess A] or [guess B]?"* Pick based on response.
 
-Announce detected shape to the CEO: *"Found your [v1.8 plugin workspace / custom markdown / etc.] at [path]. I'll pull it into your new Command Room — your originals stay where they are, untouched. About a minute."*
+> These rules inspect the **source folder being ingested** to identify its format (`MASTER_TRACKER.md`, `entities.json`, `conversations.json`, etc. found in the *source*) — orientation only. They are NOT reads of the workspace's own Tier 2 view and never drive a workspace surface decision.
+
+#### Shape Detection (order matters — take the first match)
+
+1. **v2.x plugin detected:** Source has `_hq/data/entities.json` (or `data/entities.json` at source root). Read the file; if orgs carry legacy `type` field of `home` | `side` | `personal`, it's v2.0/v2.1 (Parser B). If orgs already have `scope` field, announce "Already on v2.x — nothing to ingest" and exit (not our job to re-ingest already-structured data; re-run migration-v2 Path B-equivalent only if explicitly asked).
+
+2. **v1.x plugin detected:** Source has `_hq/MASTER_TRACKER.md` AND (`_hq/DECISION_LOG.md` OR ALIASES.md visible) AND PEOPLE.md exists with single-table shape (no section headers like `## Co-Owners`, `## Active Clients`, etc.). Also check for plugin-signature files: `WORKSPACE_SCHEMA.md`, `CHANGELOG.md`, a `.claude-plugin/plugin.json` at source root. These signal a plugin-built workspace.
+   - **Sub-detect v1.4 vs v1.7 vs v1.8:** check plugin.json version if present. If absent: presence of COMMUNICATION_PROFILE.md → v1.7+; presence of automation-scanner/morning-briefing/stress-test outputs (under `_hq/briefings/` or `_hq/audit-reports/`) → v1.8. Default to v1.4 if unclear.
+   - Route to **Parser A** — the parser handles v1.4 / v1.7 / v1.8 variation internally.
+
+3. **Custom markdown detected:** Source has ONE of: `_hq/MASTER_TRACKER.md`, `_hq/MASTER_TRACKER.md` with missing DECISION_LOG + section-nested PEOPLE.md, or any `MASTER_TRACKER.md` at source root. Also covers shapes with PROJECT_BRAIN.md files in project folders. Route to **Parser C**.
+
+4. **OpenAI ChatGPT export detected:** Source has `conversations.json` at the root, OR has both `chat.html` AND `user.json` at the root (the canonical OpenAI export bundle). The presence of `conversations.json` alone is the strongest signal. If source ALSO contains a `_hq/` directory or `MASTER_TRACKER.md`, do NOT route here — that's a Command Room shape that happens to have a stray `conversations.json` file; route to Parser A/B/C instead. Route to **Parser E** for clean ChatGPT-export folders.
+
+5. **Random folder of files detected (v2.14.20+ — was the standalone `context-ingestion` skill):** Source is a folder containing actual deliverable documents — `.docx`, `.pdf`, `.xlsx`, `.pptx`, `.md`, `.txt`, images — but no Command Room registry files (no MASTER_TRACKER, no entities.json, no `conversations.json`). Typical sources: `~/Desktop/`, `~/Downloads/`, a legacy project folder copied from a prior consultant, an unzipped client document drop. Route to **Parser F** (Folder Mode — see `references/folder-mode-parser.md`). Parser F does:
+   - Light Layer 1 context extraction: filename / metadata / content sniff to identify mentioned people, projects, orgs (low-confidence; everything flagged in INGEST_REPORT for the CEO to confirm).
+   - Heavy Layer 2 file filing: classify each readable file by which existing project it belongs to, present a preview-and-confirm widget, copy confirmed files into project folders. This is the primary value of folder-mode ingest.
+
+   AUGMENT mode required — Parser F refuses to run when `_hq/data/entities.json` doesn't exist (random files alone don't seed a viable workspace; the user should run onboarding first, then ingest).
+
+6. **Generic fallback (structured-but-unrecognized):** None of the above matched cleanly. Source has SOME structured signal (a stray entities.json, partial registry files, scattered project folders without the v1.x / v2.x markers) but doesn't fit a known shape. Route to **Parser D** for best-effort extraction. Low confidence output; flagged heavily in INGEST_REPORT. Parser D is the LAST resort — Parser F handles the more common "random folder of documents" case.
+
+**Ambiguity handling:** If two shapes match (e.g., both v1.x and custom-markdown signals present), ask the CEO which one it is. Show a 2-line summary of each interpretation and let them pick. Default choice is the shape with the most signals.
+
+**Parser F vs Parser D distinction (v2.14.20+):** Parser F is for pure document folders (employee files / 1:1 notes / contracts / decks — content-bearing files, no Command Room registry artifacts at all). Parser D is for partial-registry structured-but-unrecognized shapes (someone's hand-built attempt at a workspace that doesn't match v1.x / v2.x / custom-markdown signals). When in doubt, lean Parser F — the document-filing path is more useful day-to-day; Parser D is rare.
+
+Once the shape is detected, announce it to the CEO in PLAIN labels — never the internal shape names or version numbers. Map: v1.x/v2.x plugin workspace → "your older Command Room workspace"; custom markdown → "your folder of notes"; ChatGPT export → "your ChatGPT export"; document folder → "your folder of documents". Announce: *"Found [your older Command Room workspace / your folder of documents / your ChatGPT export] at [path]. I'll pull it into your new Command Room — your originals stay where they are, untouched. About a minute."*
 
 Wait for explicit confirmation ("yes" / "go" / "proceed"). If no, exit without writing.
 
-### Phase 2: Backup source
+### Phase 2: Size gate, then backup source
 
-Copy the entire source folder tree into `_archive/ingest_source_YYYY-MM-DD/` (today's date). This is the rollback point. Include every file — even ones the parser won't read — because the CEO may want to reference them later.
+**Size gate (v2.7.4+ — runs BEFORE the backup copy, not after).** Count the source folder's files and total bytes first. If the count exceeds **500 files** OR total bytes exceeds **500 MB** (whichever hits first), pause and ask the CEO before copying anything:
+
+> *"That folder is big — [N] files / [S] MB. Pulling all of it at once can sometimes stall. Want me to: (a) go through everything now (slower, more risk it gets interrupted), (b) just pull the files you've actually touched in the last year (faster, safer, catches what matters), or (c) point me at a smaller subfolder?"*
+
+Default recommendation is (b). If the CEO picks (b), restrict BOTH the backup below AND the Phase 5 discovery pass to files with `mtime ≥ now - 365d`. If (c), ask for the narrower path and re-run Phase 1 from the new root. Gating before the copy is the point — a 500 MB folder must not get fully backed up before the CEO has chosen a scope.
+
+Then copy the (scoped) source folder tree into `_archive/ingest_source_YYYY-MM-DD/` (today's date). Include every in-scope file — even ones the parser won't read — because the CEO may want to reference them later.
 
 Write `_archive/ingest_source_YYYY-MM-DD/.ingest-marker` with:
 - `source_path` (the path the CEO pointed at)
@@ -117,11 +150,11 @@ Dispatch to the correct parser based on detection:
 
 Each parser produces three in-memory collections: **orgs[]**, **people[]**, **threads[]**, **events[]**, **aliases[]**. These flow into Phase 4 writes.
 
-Each parser also runs the **connector-assisted inference pass** — for every org minted, probe connected Gmail / Calendar / Slack / Drive to populate `domains[]`, `slack_workspace_ids[]`, detect `parent_org_id` relationships, and refine `scope` + `relationship_type` + `is_primary_focus`. Inference rules shared across all parsers in `command-room-onboarding/SKILL.md` → "Infer the Org Tree". This amplifies whatever the parser extracted; it does not replace it.
+Each parser also runs the **connector-assisted inference pass** — for every org minted, probe connected Gmail / Calendar / Slack / Drive to populate `domains[]`, `slack_workspace_ids[]`, detect `parent_org_id` relationships, and refine `scope` + `relationship_type` + `is_primary_focus`. Inference rules are inline in THIS file — see the "Connector-Assisted Org Tree Inference (shared)" section below. This amplifies whatever the parser extracted; it does not replace it.
 
 ### Phase 3.5: Parse Completeness Check (hard gate)
 
-Before any JSON is written, verify the parser didn't silently drop entries. This is the fix for the v2.7.5-era bug where Parser C under-extracted section-nested PEOPLE.md entries (first production ingest lost 27 of 62 people before the check existed).
+Before any JSON is written, verify the parser didn't silently drop entries. This is the fix for the v2.7.5-era Parser C under-extraction bug (see references/HISTORY.md).
 
 **Procedure — run for each structured registry the parser consumed:**
 
@@ -149,9 +182,22 @@ Before any JSON is written, verify the parser didn't silently drop entries. This
 
 **Output:** either a clean "Parse completeness verified — N people, M threads, P aliases, Q events" log line, or a hard-abort with the diff prompt above. Never silently write incomplete data.
 
+### Phase 3.9: Snapshot the target substrate (hard gate — nothing writes before this)
+
+Before ANY Phase 4 write, snapshot the target workspace's data directory:
+
+1. Copy `_hq/data/` (entities.json, events.jsonl, aliases.json — every file present) to `_archive/pre-ingest-data_[ts]/` (ISO timestamp). If `_hq/data/` doesn't exist yet (BOOTSTRAP on a truly empty workspace), record that fact instead of copying — an empty snapshot is a valid snapshot.
+2. Record the run header as the first undo-log line for this run, appended to `_hq/_ingest-undo.jsonl`:
+
+```json
+{"action":"run_start","ts":"<now>","mode":"AUGMENT|BOOTSTRAP","source_path":"<source>","snapshot":"_archive/pre-ingest-data_[ts]/","pre_ingest_max_seq":<highest seq in events.jsonl, or null>,"preexisting_data_files":["entities.json","events.jsonl"]}
+```
+
+This snapshot — not the source backup in `_archive/ingest_source_*` (which backs up the SOURCE folder, not the target) — is what Rollback and Undo restore from. The snapshot is archived, never deleted; retention follows the workspace archive policy.
+
 ### Phase 4: Write JSON sources (mode-aware — v2.14.20+)
 
-All writes use `shared/scripts/atomic_write.py` (`atomic_write_json` for JSON files, `atomic_append_jsonl` for events.jsonl). v2.14.20 retired the hand-rolled tmp+rename pattern that was the lone holdout against the atomic_write contract — workspace-ingest is now consistent with every other writer in the plugin.
+All writes use `shared/scripts/atomic_write.py` (`atomic_write_json` for JSON files, `atomic_append_jsonl` for events.jsonl) — consistent with every other writer in the plugin (v2.14.20 retired the last hand-rolled tmp+rename holdout — see references/HISTORY.md).
 
 **BOOTSTRAP mode** (target workspace has no `_hq/data/entities.json` yet — fresh-install with prior data):
 
@@ -160,7 +206,7 @@ Write in order, each atomically:
 1. `_hq/data/entities.json` — canonical schema shape per `shared/data-schemas/entities.schema.json`: `{version: 1, last_updated: <ingest_ts>, last_writer: "workspace-ingest", entities: {people: [...], projects: [...], orgs: [...], engagements: [...]}, aliases: [...], workspace: {...}}`
 2. `_hq/data/events.jsonl` — one event per line, sorted by `ts` ascending then by parse order. Use `atomic_append_jsonl` even for the initial create.
 
-Validate each against `shared/data-schemas/*.schema.json` per the renderer-style validator pattern. On validation failure: roll back (restore from `_archive/`), abort with full error trace. No partial writes leak.
+Validate each against `shared/data-schemas/*.schema.json` per the renderer-style validator pattern. On validation failure: roll back (restore `_hq/data/` from the Phase 3.9 snapshot), abort with full error trace. No partial writes leak. Log each created file in `_ingest-undo.jsonl` with `"action":"data_create"` so undo knows these files did not pre-exist.
 
 **AUGMENT mode** (target workspace has existing entities.json + events.jsonl — typical post-onboarding case):
 
@@ -172,9 +218,9 @@ For each parsed entity / event collection, perform an additive merge against the
    - **Orgs:** match on `id` (canonical), then `domains[]` overlap (case-insensitive). New org → append. Existing → union `domains[]`, take latest `last_updated`.
    - **Projects (threads):** match on `id`, then `folder_name`, then `display_name` (case-insensitive). New project → append. Existing → union `stakeholder_person_ids[]`, take latest `last_activity`, preserve `status` and `stage` (don't overwrite from inferred lower-confidence values).
    - **Aliases:** key on `(raw, canonical_id)` tuple. Append new tuples; skip duplicates.
-3. **Append new events** to events.jsonl. Match against existing events by `data.source_ref` first (if both have it), then by `(type, ts, primary_thread_id, data.title)` fingerprint. Skip duplicates. Use `atomic_append_jsonl` for the new events.
-4. **Bump the entities.json `version` field** (monotonic) and set `last_writer: "workspace-ingest"`, `last_updated: <ingest_ts>`.
-5. **Validate** the merged result against the schema before atomic-writing. On failure: roll back to pre-merge state (restore from `_archive/`), abort.
+3. **Append new events** to events.jsonl. Match against existing events by `data.source_ref` first (if both have it), then by `(type, ts, primary_thread_id, data.title)` fingerprint. Skip duplicates. Use `atomic_append_jsonl` for the new events. After the batch, log the appended seq range in `_ingest-undo.jsonl`: `{"action":"events_append","first_seq":N,"last_seq":M,"count":K}` — undo strips exactly this range.
+4. **Bump the entities.json `version` field** (monotonic) and set `last_writer: "workspace-ingest"`, `last_updated: <ingest_ts>`. (Note: `last_writer` on a merged file means "last touched by", NOT "created by" — undo must never key on it.)
+5. **Validate** the merged result against the schema before atomic-writing. On failure: roll back to pre-merge state (restore `_hq/data/` from the Phase 3.9 snapshot), abort.
 
 **Idempotency:** re-running ingest on the same source folder is safe. Every parsed entity / event has a stable id or fingerprint; second run finds matches and skips. `_ingest-undo.jsonl` records what was added on each run so even if the source changes between runs, undo still works.
 
@@ -199,11 +245,7 @@ Skip:
 - OS clutter (`.DS_Store`, `Thumbs.db`, `desktop.ini`, `ehthumbs.db`)
 - Files already consumed as registries in Phase 3 (tracked by the parser)
 
-**Size gate (v2.7.4+).** If the discovered `files[]` count exceeds **500 files** OR total bytes exceeds **500 MB** (whichever hits first), pause and ask the CEO:
-
-> *"That folder is big — [N] files / [S] MB. Pulling all of it at once can sometimes stall. Want me to: (a) go through everything now (slower, more risk it gets interrupted), (b) just pull the files you've actually touched in the last year (faster, safer, catches what matters), or (c) point me at a smaller subfolder?"*
-
-Default recommendation is (b). If the CEO picks (b), filter `files[]` to `mtime ≥ now - 365d` before continuing. If (c), ask for the narrower path and re-run Phase 5 from the new root.
+**Size gate — already applied.** The size gate ran BEFORE the Phase 2 backup; `files[]` arrives here already scoped to whatever the CEO chose there. Do not re-ask.
 
 Produce an in-memory `files[]` array. No writes yet.
 
@@ -281,9 +323,13 @@ Skipping:                                  3 files
 
 Already filed differently:                 0 files
 
-Your source folder stays exactly as it is. If you change your mind, "undo migration" rolls everything back.
+Your source folder stays exactly as it is. If you change your mind, say "undo migration" and I'll roll everything back.
 Look good?
 ```
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary (parser names, shape labels, and version numbers are internal — the announcement uses the plain labels from Phase 1).
+- Bad: "Found your v1.8 plugin workspace — routing to Parser B."
+- Good: "Found your older Command Room workspace. I'll pull it into your new Command Room — your originals stay untouched."
 
 Allow three responses:
 - **"yes" / "proceed":** continue to Phase 8
@@ -349,9 +395,9 @@ After all file operations complete, append one `onboarding_step` event to `event
  "data": {"step": "file_migration_complete", "counts": {"copied": N, "queued": N, "skipped": N, "conflicts": N}}}
 ```
 
-### Phase 9: Write INGEST_REPORT + hand back to onboarding
+### Phase 9: Write INGEST_REPORT + finish
 
-Create `_hq/INGEST_REPORT.md` per the template below (covers both data ingest and file migration). Append one final `onboarding_step` event:
+Create `_hq/INGEST_REPORT.md` per the template in `references/ingest-report-template.md` (covers both data ingest and file migration). Append one final `onboarding_step` event:
 
 ```json
 {"seq": <next>, "ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
@@ -360,7 +406,7 @@ Create `_hq/INGEST_REPORT.md` per the template below (covers both data ingest an
 
 Surface the `_ingest-queue/` to the CEO: *"18 files want your eyes on them — I wasn't sure where they belonged. Say `review ingest queue` to walk through them together, or come back to it later. No rush."*
 
-Return control to the caller (onboarding or direct). Onboarding resumes Phase 2; direct-entry prints the report and exits.
+Print the report summary and exit.
 
 ---
 
@@ -368,144 +414,29 @@ Return control to the caller (onboarding or direct). Onboarding resumes Phase 2;
 
 On trigger: *"undo migration"*, *"undo ingest"*, *"roll back the migration"*, *"revert the ingest"*.
 
-1. Read `_hq/_ingest-undo.jsonl` in reverse order.
+**The one rule: undo reverses ONLY what the undo log records this run as having done.** It never deletes anything based on a file attribute (an AUGMENT merge stamps `last_writer: "workspace-ingest"` on the user's pre-existing, merged substrate — a delete keyed on that attribute destroys their data). If there is no `run_start` line for the run being undone, refuse: *"I don't have a record of that run, so I won't guess at what to remove."*
+
+1. Read `_hq/_ingest-undo.jsonl` in reverse order back to the run's `run_start` header line.
 2. For each `copy` or `queue` row, delete the destination file (the source was never touched).
 3. For each `conflict` row, delete the `.conflict-[ts]` destination file.
-4. After all deletes, remove now-empty destination folders (project `meetings/`, `deliverables/`, `_misc/`, `_ingest-queue/` subfolders).
-5. Delete `_hq/data/entities.json`, `_hq/data/events.jsonl`, `_hq/data/aliases.json` if they were created by this ingest (check `last_writer == "workspace-ingest"`).
-6. Delete `_hq/INGEST_REPORT.md` and rename `_hq/_ingest-undo.jsonl` → `_hq/_ingest-undo-reverted-[ts].jsonl` (preserve for audit).
-7. Announce: *"All set — rolled everything back. Your original folder is untouched, and I kept a backup copy just in case. Whenever you want to try again, just say the word."*
-
----
-
-## Shape Detection
-
-Runs on the source path during Phase 1. Order matters — take the first match.
-
-1. **v2.x plugin detected:** Source has `_hq/data/entities.json` (or `data/entities.json` at source root). Read the file; if orgs carry legacy `type` field of `home` | `side` | `personal`, it's v2.0/v2.1 (Parser B). If orgs already have `scope` field, announce "Already on v2.x — nothing to ingest" and exit (not our job to re-ingest already-structured data; re-run migration-v2 Path B-equivalent only if explicitly asked).
-
-2. **v1.x plugin detected:** Source has `_hq/MASTER_TRACKER.md` AND (`_hq/DECISION_LOG.md` OR ALIASES.md visible) AND PEOPLE.md exists with single-table shape (no section headers like `## Co-Owners`, `## Active Clients`, etc.). Also check for plugin-signature files: `WORKSPACE_SCHEMA.md`, `CHANGELOG.md`, a `.claude-plugin/plugin.json` at source root. These signal a plugin-built workspace.
-   - **Sub-detect v1.4 vs v1.7 vs v1.8:** check plugin.json version if present. If absent: presence of COMMUNICATION_PROFILE.md → v1.7+; presence of automation-scanner/morning-briefing/stress-test outputs (under `_hq/briefings/` or `_hq/audit-reports/`) → v1.8. Default to v1.4 if unclear.
-   - Route to **Parser A** — the parser handles v1.4 / v1.7 / v1.8 variation internally.
-
-3. **Custom markdown detected:** Source has ONE of: `_hq/MASTER_TRACKER.md`, `_hq/MASTER_TRACKER.md` with missing DECISION_LOG + section-nested PEOPLE.md, or any `MASTER_TRACKER.md` at source root. Also covers shapes with PROJECT_BRAIN.md files in project folders. Route to **Parser C**.
-
-4. **OpenAI ChatGPT export detected:** Source has `conversations.json` at the root, OR has both `chat.html` AND `user.json` at the root (the canonical OpenAI export bundle). The presence of `conversations.json` alone is the strongest signal. If source ALSO contains a `_hq/` directory or `MASTER_TRACKER.md`, do NOT route here — that's a Command Room shape that happens to have a stray `conversations.json` file; route to Parser A/B/C instead. Route to **Parser E** for clean ChatGPT-export folders.
-
-5. **Random folder of files detected (v2.14.20+ — was the standalone `context-ingestion` skill):** Source is a folder containing actual deliverable documents — `.docx`, `.pdf`, `.xlsx`, `.pptx`, `.md`, `.txt`, images — but no Command Room registry files (no MASTER_TRACKER, no entities.json, no `conversations.json`). Typical sources: `~/Desktop/`, `~/Downloads/`, a legacy project folder copied from a prior consultant, an unzipped client document drop. Route to **Parser F** (Folder Mode — see `references/folder-mode-parser.md`). Parser F does:
-   - Light Layer 1 context extraction: filename / metadata / content sniff to identify mentioned people, projects, orgs (low-confidence; everything flagged in INGEST_REPORT for the CEO to confirm).
-   - Heavy Layer 2 file filing: classify each readable file by which existing project it belongs to, present a preview-and-confirm widget, copy confirmed files into project folders. This is the primary value of folder-mode ingest.
-
-   AUGMENT mode required — Parser F refuses to run when `_hq/data/entities.json` doesn't exist (random files alone don't seed a viable workspace; the user should run onboarding first, then ingest).
-
-6. **Generic fallback (structured-but-unrecognized):** None of the above matched cleanly. Source has SOME structured signal (a stray entities.json, partial registry files, scattered project folders without the v1.x / v2.x markers) but doesn't fit a known shape. Route to **Parser D** for best-effort extraction. Low confidence output; flagged heavily in INGEST_REPORT. Parser D is the LAST resort — Parser F handles the more common "random folder of documents" case.
-
-**Ambiguity handling:** If two shapes match (e.g., both v1.x and custom-markdown signals present), ask the CEO which one it is. Show a 2-line summary of each interpretation and let them pick. Default choice is the shape with the most signals.
-
-**Parser F vs Parser D distinction (v2.14.20+):** Parser F is for pure document folders (employee files / 1:1 notes / contracts / decks — content-bearing files, no Command Room registry artifacts at all). Parser D is for partial-registry structured-but-unrecognized shapes (someone's hand-built attempt at a workspace that doesn't match v1.x / v2.x / custom-markdown signals). When in doubt, lean Parser F — the document-filing path is more useful day-to-day; Parser D is rare.
+4. For each `merge` row, open the target file and strip exactly the section under the logged `merged_section_header` (the rest of the file predates this run — leave it).
+5. **Substrate, by mode (from the `run_start` header):**
+   - **BOOTSTRAP** (header shows no pre-existing data files, `data_create` rows present): archive the created `_hq/data/` files to `_archive/ingest-undone-data_[ts]/`, then remove them from `_hq/data/`. Only files with a `data_create` row this run — nothing else.
+   - **AUGMENT:** restore `entities.json` and `aliases.json` from the `run_start` header's Phase 3.9 snapshot, and strip appended events from events.jsonl by the logged `events_append` seq range — but ONLY if no other writer has appended past the range since (check: current max seq == logged `last_seq`). If later events exist, do NOT rewrite events.jsonl (history is additive-only); instead restore entities.json/aliases.json from the snapshot and tell the user which N ingested events remain: *"I've restored your records to before the import. N imported history entries stay in the log because newer activity landed after them — they're deduped, so re-importing won't double them."*
+6. After all deletes, remove now-empty destination folders (project `meetings/`, `deliverables/`, `_misc/`, `_ingest-queue/` subfolders).
+7. Move `_hq/INGEST_REPORT.md` to `_archive/ingest-undone-data_[ts]/` and rename `_hq/_ingest-undo.jsonl` → `_hq/_ingest-undo-reverted-[ts].jsonl` (preserve for audit).
+8. Announce: *"All set — rolled everything back. Your original folder is untouched, and I kept a backup copy just in case. Whenever you want to try again, just say the word."*
 
 ---
 
 ## Parser contracts (shared across shapes)
 
-All four parsers emit the same in-memory collections with the same field contracts:
+All parsers (A/B/C/D/E/F) emit the same in-memory collections with the same field contracts — **orgs[]**, **people[]**, **threads[]**, **events[]**, **aliases[]**. Full JSON field examples for every collection: `references/parser-contracts.md`. The load-bearing contract:
 
-### orgs[]
-
-```json
-{
-  "org_id": "org_holding_co",
-  "canonical_name": "[Holding Co]",
-  "scope": "operating",
-  "relationship_type": "operating",
-  "is_primary_focus": true,
-  "parent_org_id": null,
-  "domains": [],
-  "slack_workspace_ids": [],
-  "inferred_from": ["people-md-section", "connector-gmail-domain"],
-  "first_seen": "2025-01-15",
-  "last_interaction": "2026-04-20",
-  "notes": ""
-}
-```
-
-`scope` ∈ {holding, operating, division, brand, fund, vendor, other}. `relationship_type` ∈ {operating, partner, board, advisory, investment, client, portfolio_company, beneficiary, vendor, referral, other}. `is_primary_focus` confirmed in onboarding Phase 2c, not here.
-
-### people[]
-
-```json
-{
-  "person_id": "person_001",
-  "canonical_name": "[CEO]",
-  "aliases": ["M", "Mira"],
-  "role": "Founder",
-  "email": "ceo@example.com",
-  "phone": null,
-  "primary_org_id": "org_holding_co",
-  "affiliation_ids": ["org_holding_co"],
-  "status": "active",
-  "communication_style": "",
-  "first_contact": null,
-  "last_interaction": "2026-04-21",
-  "last_interaction_channel": null,
-  "notes": "",
-  "project_ids": []
-}
-```
-
-### threads[]
-
-```json
-{
-  "thread_id": "project_001",
-  "display_name": "NorthStar margin analysis",
-  "folder_name": "NorthStar",
-  "kind": "advisory",
-  "stage": "active",
-  "status": "active",
-  "affiliation_id": "org_northstar",
-  "owner_person_id": "person_001",
-  "stakeholder_person_ids": [],
-  "last_activity": "2026-04-15",
-  "first_seen": "2026-01-10",
-  "next_step": "",
-  "notes": "",
-  "parent_thread_id": null,
-  "spawned_from_thread_id": null,
-  "cross_refs": []
-}
-```
-
-`project_` prefix on `thread_id` is retained for schema stability per the plugin-level `references/ORG_AND_THREAD_MODEL.md` (at `plugin-source-v2/references/ORG_AND_THREAD_MODEL.md`, not inside this skill's local `references/` folder); user-facing vocabulary is "project" (not "thread").
-
-### events[]
-
-Each event follows the v2.2 event schema in `shared/data-schemas/events.schema.json`. Every parsed event carries:
-
-- `primary_thread_id` = owning thread
-- `related_thread_ids[]` = secondary threads mentioned (empty unless entry spans multiple projects)
-- `classification_confidence` = 1.0 for historical data parsed from static markdown (ground truth); 0.95 for decisions parsed from PROJECT_BRAIN glossaries; 0.9 for entries with fuzzy text signals
-- `person_ids[]` = resolved from names in the entry
-- `org_ids[]` = affiliation of primary thread
-- `source_skill` = `"workspace-ingest"`
-- DEPRECATED `project_id` mirror of `primary_thread_id` for back-compat readers
-
-### aliases[]
-
-```json
-{
-  "raw": "M",
-  "canonical_id": "person_001",
-  "confidence": 1.0,
-  "added_ts": "2026-04-21T12:00:00Z",
-  "added_by": "workspace-ingest"
-}
-```
-
-Confidence bands:
-- **1.0** — explicit alias (parenthetical in name header, explicit "aka" / "also known as" phrase)
-- **0.9** — high-signal inference (email alias + name match, folder name vs display name)
-- **0.7** — weak inference (glossary mention, contextual usage)
+- **orgs[]:** `scope` ∈ {holding, operating, division, brand, fund, vendor, other}. `relationship_type` ∈ {operating, partner, board, advisory, investment, client, portfolio_company, beneficiary, vendor, referral, other}. `is_primary_focus` confirmed in onboarding Phase 2c, not at parse time.
+- **threads[]:** the `project_` prefix on `thread_id` is retained for schema stability per the plugin-level `references/ORG_AND_THREAD_MODEL.md`; user-facing vocabulary is "project" (not "thread").
+- **events[]:** each event follows the v2.2 schema in `shared/data-schemas/events.schema.json`. Every parsed event carries: `primary_thread_id` (owning thread); `related_thread_ids[]` (secondary threads mentioned, empty unless the entry spans multiple projects); `classification_confidence` = 1.0 for historical data parsed from static markdown (ground truth), 0.95 for decisions parsed from PROJECT_BRAIN glossaries, 0.9 for entries with fuzzy text signals; `person_ids[]` resolved from names in the entry; `org_ids[]` = affiliation of primary thread; `source_skill` = `"workspace-ingest"`; DEPRECATED `project_id` mirror of `primary_thread_id` for back-compat readers.
+- **aliases[]:** confidence bands — **1.0** explicit alias (parenthetical in name header, explicit "aka" / "also known as" phrase); **0.9** high-signal inference (email alias + name match, folder name vs display name); **0.7** weak inference (glossary mention, contextual usage).
 
 ---
 
@@ -536,122 +467,30 @@ If no connectors are available (cold start), skip this pass — source-parsed va
 
 ---
 
-## INGEST_REPORT.md Template
-
-```markdown
-# Command Room Ingest Report
-
-**Date:** YYYY-MM-DD HH:MM:SS
-**Source path:** [source path]
-**Detected shape:** [v1.x | v2.x | custom-markdown | generic]
-**Target plugin version:** [version]
-**Backup location:** _archive/ingest_source_YYYY-MM-DD/
-**Undo log:** _hq/_ingest-undo.jsonl
-
----
-
-## Data counts
-
-- **People parsed:** N (by section / group if applicable)
-- **Orgs minted:** N total, N primary_focus, N holdings, N operating, N vendors, N other
-- **Threads (projects) parsed:** N (by stage: active N, paused N, archived N)
-- **Events emitted:** N total
-  - decision: N
-  - meeting: N
-  - interaction: N
-  - commitment: N
-  - commitment_resolved: N
-  - status_change: N
-  - note: N
-- **Aliases captured:** N (high-confidence N, inferred N)
-
-## File migration counts
-
-- **Total files discovered:** N
-- **Copied (high confidence):** N
-  - Session notes: N
-  - Meeting transcripts: N
-  - Deliverables (.docx/.xlsx/.pptx/.pdf): N
-  - Intel / briefings: N
-  - Loose docs → project `_misc/`: N
-- **Queued for CEO review (`_hq/_ingest-queue/`):** N
-  - Low-confidence project match: N
-  - Unclassified: N
-- **Skipped:** N
-  - Too large (≥100 MB): N (list names)
-  - Unknown / unparseable: N
-- **Conflicts (destination existed, saved as `.conflict-[ts]`):** N (list)
-
-## Per-project migration map
-
-| Project | Session notes | Meetings | Deliverables | Misc | Total |
-|---|---|---|---|---|---|
-| NorthStar | 1 | 12 | 24 | 3 | 40 |
-| ... | | | | | |
-
----
-
-## Org Tree (as ingested; to be confirmed in onboarding Phase 2c)
-
-[Rendered ASCII tree]
-
----
-
-## Warnings
-
-- **Unresolved aliases:** [list with source file + line references]
-- **Missing person/org references:** [e.g., "MASTER_TRACKER row mentions 'Skyler Chen' but no PEOPLE.md entry"]
-- **Format drift:** [e.g., "SESSION_NOTES for NorthStar uses non-standard dated-entry format; 3 entries skipped"]
-- **Narrative-vs-structured contradictions:** [e.g., "MASTER_TRACKER shows project X as 'paused', but SESSION_NOTES shows active work last week"]
-- **Compressed history blocks:** [noted as lossy where encountered]
-- **Orphan events:** [events whose primary_thread_id didn't resolve to any thread record]
-
----
-
-## Post-Ingest Verification
-
-- [ ] Org tree confirmed by CEO (handled by onboarding Phase 2c)
-- [ ] Run `cleanup` in first week to validate data integrity
-- [ ] Spot-check views against source originals
-- [ ] Review `classifier_feedback.jsonl` after one week of passive capture
-- [ ] Walk `_hq/_ingest-queue/` and classify queued files ("review ingest queue")
-- [ ] Spot-check 5 migrated files against source originals to verify content integrity
-- [ ] Resolve any `.conflict-[ts]` files (pick winner, delete loser)
-
----
-
-## Rollback
-
-**Data only:** restore from `_archive/ingest_source_YYYY-MM-DD/` and re-run with a different shape detection or parser override.
-
-**Full undo (data + files):** run `undo migration`. Reads `_hq/_ingest-undo.jsonl`, deletes every copied destination file (source is untouched), removes the data substrate files, preserves the undo log as an audit trail. See "Undo" section in the skill.
-```
-
----
-
 ## Idempotency
 
 Re-running on a workspace that already has `_hq/data/entities.json`:
 
-1. Detect the target state → announce "Looks like you've already pulled data in here. If you want to start fresh, reset first — otherwise we're good." Exit without writing.
+1. **AUGMENT is the normal path** — an existing entities.json is the skill's stated primary use case, not a stop condition. Run the Phase 4 AUGMENT merge; the dedupe rules (stable ids / fingerprints / sha256 content-hash guard) make a same-source re-run a no-op. Announce what the dedupe found: *"Looks like most of this is already in — I added the N new items and skipped the rest."*
 
-Re-running after partial failure (some files written, not others):
+Re-running after partial failure (some files written, not others — detected via an undo log whose last run has a `run_start` header but no completion event):
 
-1. Detect the mixed state → announce "Something didn't finish cleanly last time. Best move is to roll it back and try again." Show backup path + exit without writing.
+1. Detect the mixed state → announce "Something didn't finish cleanly last time. Best move is to roll it back and try again — say 'undo migration' and I'll roll it back." Offer the Undo path (which restores from that run's Phase 3.9 snapshot) + exit without writing. This partial-failure state is the ONLY one that blocks a re-run.
 
 ---
 
 ## Rollback
 
-Any phase failure after Phase 2 (backup):
+Any phase failure after Phase 3.9 (snapshot):
 
-1. Delete any partially-written `_hq/data/**` files.
-2. Source folder was never touched — no restore needed.
-3. Delete any partially-written `_hq/INGEST_REPORT.md`.
-4. Append failure details to `_hq/CONFLICTS.md` (create if needed).
-5. Announce: *"Rolled it back. Your original folder is untouched, and I kept a backup just in case."*
+1. Restore `_hq/data/` from the Phase 3.9 snapshot (`_archive/pre-ingest-data_[ts]/` — recorded in the run's `run_start` undo-log line). Never blanket-delete `_hq/data/**`: in AUGMENT mode those files hold the user's pre-existing substrate.
+2. Delete only files the undo log records this run as having created (copies, queue files, `data_create` rows).
+3. Source folder was never touched — no restore needed.
+4. Move any partially-written `_hq/INGEST_REPORT.md` to `_archive/` rather than deleting.
+5. Append failure details to `_hq/CONFLICTS.md` (create if needed).
+6. Announce: *"Rolled it back. Your original folder is untouched, and I kept a backup just in case."*
 
-Phase 1 failures (source not found, detection ambiguous) exit cleanly without touching anything.
+A failure between Phase 2 and Phase 3.9 needs no data restore (nothing wrote yet). Phase 1 failures (source not found, detection ambiguous) exit cleanly without touching anything.
 
 ---
 
@@ -663,7 +502,7 @@ Phase 1 failures (source not found, detection ambiguous) exit cleanly without to
 - **Does not silently overwrite.** Destination conflicts get `.conflict-[ts]` suffix and go in the report.
 - **Does not touch cloud storage** (Dropbox, Google Drive, OneDrive) — NEXT RELEASE backlog item. Source must be local-filesystem accessible.
 - Does not write views (`_hq/views/*`) — that's view-generation's job after ingest writes the JSON sources.
-- Does not run automatically — invoked by onboarding Phase 1.5 or by explicit trigger phrase.
+- Does not run automatically — invoked only by an explicit trigger phrase (directly, or via the ingest-context / file-documents alias skills).
 - Does not re-ingest on repeat run — idempotent, detects existing state.
 - Does not skip connector inference — always runs the enrichment pass (unless no connectors are available).
 - Does not upgrade the plugin itself — that's the plugin update mechanism; this migrates customer data only.
@@ -674,3 +513,9 @@ Phase 1 failures (source not found, detection ambiguous) exit cleanly without to
 ---
 
 **End of workspace-ingest skill.** Parser details in `references/`.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Underlying pipeline for two intents: extract context from a source + (optionally) copy source files into workspace project folders. Two thin alias skills route to focused subsets of this pipeline — use ingest-context if you want context only (no file copies), use file-documents if you want both context + file copies into projects. Use workspace-ingest directly only for ambiguous intent — when you say 'review ingest queue', 'ingest folder [path]' and want the skill to detect what makes sense from the source content. Both layers copy-only (never moves or deletes), back up source folder first, write an undo log. Direct triggers (intent-ambiguous): 'ingest folder [path]', 'ingest this folder'. Default mode AUGMENT (existing workspace preserved); BOOTSTRAP mode only when workspace is empty. DOES NOT fire on focused triggers 'ingest context from [path]' (routes to ingest-context), 'file documents from [path]' (routes to file-documents), single-URL intake (intel-intake), or new-customer setup (command-room-onboarding).

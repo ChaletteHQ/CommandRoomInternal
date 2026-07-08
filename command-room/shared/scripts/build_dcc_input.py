@@ -201,7 +201,8 @@ def _project_matters_fallback(
 
     def _c_ts(c: dict[str, Any]) -> str:
         d = _c_data(c)
-        return c.get("ts") or d.get("timestamp") or c.get("timestamp") or c.get("created_at") or ""
+        from event_time import event_time
+        return event_time(c) or d.get("timestamp") or c.get("created_at") or ""
 
     def _c_id(c: dict[str, Any]) -> str:
         d = _c_data(c)

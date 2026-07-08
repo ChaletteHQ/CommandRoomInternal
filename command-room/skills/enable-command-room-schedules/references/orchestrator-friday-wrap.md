@@ -24,7 +24,7 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: frid
 
 2. **No narrating what's in the recap.** The user can see it. Don't follow with "Total events scanned: X" / "Files saved to..." / "Here's a summary of what I just posted."
 
-3. **No post-recap summary block.** The chat turn ends after the recap + Briefs section.
+3. **No post-recap summary block.** The chat turn ends after the recap + Briefs section. (EXCEPTION: the weekly-recap skill's one-time First-Run Personalization footer — see Phase 3 — is part of the defined recap tail; it is NOT a summary block and is allowed on the first fire only, gated by `is_configured`.)
 
 4. **No "regenerate with real data" mode.** If the user asks to re-fire, re-execute Phase 1 onward — don't switch to file-write mode.
 
@@ -52,6 +52,26 @@ The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and the orchestrator
 - Read `<WORKSPACE>/CLAUDE.md` if it exists (hot cache for people, projects, terms — supplies most quick references without per-file reads).
 - Discover available connectors: Mail (Gmail or Outlook MCP — NEVER Zapier for read), Calendar (native Google or Outlook), Slack/Teams, Drive/OneDrive/SharePoint, every meeting-transcript source MCP wired (Granola / Fireflies / Otter / Read.ai / Zoom AI Companion / Microsoft Teams summaries). Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE: Zapier is send-only; reads use native MCP.
 
+# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'friday-wrap')))
+"
+```
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (Phase 4 — Post the recap): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+
 # Phase 3 — Execute the weekly-recap skill (by-project mode, 7-day window)
 
 Read `skills/weekly-recap/SKILL.md`. Execute its Phases 1-6 verbatim against the current workspace + connectors, with these orchestrator-imposed defaults:
@@ -61,6 +81,8 @@ Read `skills/weekly-recap/SKILL.md`. Execute its Phases 1-6 verbatim against the
 - **Connector caps:** use the skill's defaults (250 received + 250 sent emails, 200 Slack messages, 100 Drive files, 50 transcripts, all calendar events that occurred).
 - **scan-for-commitments side effect:** run per the skill's Phase 3. Commitments captured from the week's meetings deepen the recap's commitment counts.
 - **Output surfaces:** inline chat (markdown recap) + saved `.docx` at `_hq/meetings/Weekly_Recap_<YYYY-MM-DD>.docx` per the skill's Phase 5.
+- **Surface-preference filter (Phase 6 Loop 2):** when the recap surfaces per-person/per-project callouts the CEO could act on, drop any the CEO has taught the system to stop surfacing — `from surface_preferences import load_surface_preferences, is_suppressed`; keep a callout only if `not is_suppressed(prefs, "friday-wrap", item_class=<class>, entity_id=<person/project id>)`. Missing store → no-op; the recap's counts and substrate are untouched.
+- **First-Run Personalization (SPEC FRP1).** Apply the weekly-recap skill's "First-Run Personalization" section. Read the recap's knobs via `get_config(WORKSPACE, "weekly-recap", DEFAULTS)`. On the FIRST fire only (`not is_configured(WORKSPACE, "weekly-recap")`): `save_skill_config(WORKSPACE, "weekly-recap", DEFAULTS)` before rendering, then append the one-time **footer** form of the first-run block after the recap (this orchestrator is a markdown post, NOT a widget — the footer, not fr-items, is the correct transport here, and MUST-NOT rule 5 does not apply). The footer renders exactly once ever, gated by `is_configured`.
 
 Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/events.jsonl` per `shared/PASSIVE_CAPTURE.md` and the weekly-recap skill's batched `atomic_append_jsonl` pattern. Dedup via `source_ref_hash` so re-fires don't double-count.
 
@@ -111,5 +133,5 @@ The single source of truth lives at `skills/weekly-recap/SKILL.md`. This orchest
 - Does NOT generate per-meeting prep briefs (that's `upcoming-meetings`).
 - Does NOT modify entities.json or aliases.json — weekly-recap only appends events. New people surfaced are queued for `people-crm` on the next turn via `pending_review: true` event annotations.
 - Does NOT fabricate data when a connector times out — per the weekly-recap skill's Phase 2 caps + footnote rule, output a footnote and continue without that source's data.
-- Does NOT fire on weekends if the cron is configured Friday-only (default `0 16 * * 5`). Manual trigger of `weekly recap` on any other day still works via the skill's on-demand path.
+- Does NOT fire on weekends if the cron is configured Friday-only (default `0 13 * * 5` — Phase 3/R4; pre-Phase-3 installs registered at `0 16 * * 5` keep their time). Manual trigger of `weekly recap` on any other day still works via the skill's on-demand path.
 - Does NOT replace `cleanup` (workspace health check) or `morning-brief` (daily digest). Different surfaces, different cadences.

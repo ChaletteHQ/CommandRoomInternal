@@ -1,9 +1,9 @@
 ---
 name: contract-review
-description: "Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Counterparty- and history-aware: if the counterparty has pushed for the same carve-out before, the review notes the pattern. Use when the CEO says 'review this contract', 'review this NDA', 'redline this contract', 'redline this NDA', 'contract review', 'check this contract', 'analyze this contract', 'review this MSA', 'redline this MSA', 'review this agreement', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Reads the contract PDF/docx, `_hq/contracts/standard-terms.md` (your standard), entities.json for counterparty context, events.jsonl for prior contract_reviewed events with the same counterparty or matching deviation classes. Writes contract_reviewed event with parties, deviation count, term hash, .docx artifact link. DOES NOT fire on 'write a contract' (out of scope — Command Room reviews, doesn't draft contracts), 'lawyer questions' (out of scope), or 'sign this contract' (use DocuSign / Adobe Sign MCP directly)."
+description: "Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Fires on: 'review this contract', 'review this NDA', 'redline this contract / NDA / MSA', 'contract review', 'check this contract', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Counterparty- and history-aware: repeated carve-out pushes from the same counterparty get noted as a pattern; every review is logged with parties and deviation classes. Does NOT fire on 'write a contract' (out of scope — Command Room reviews, never drafts contracts), legal-advice questions (out of scope), or e-signature sending (the connected signing tool). Deviation taxonomy and standard-terms contract: Routing section in the body."
 ---
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use contract-review for:** reviewing a contract / NDA / MSA the user has received. Extracts terms, compares against your standard, flags deviations.
 - **NOT for drafting** contracts from scratch.
@@ -18,7 +18,9 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/contracts/ContractReview_[Counterparty]_[YYYY-MM-DD].docx` — the structured review with key terms, flag list, suggested redlines, questions to ask. Per CONTRACT Rule 27 (no .md deliverables) the output is `.docx`.
 
 **Appends to:**
-- `_hq/data/events.jsonl` — event type `contract_reviewed` with `{counterparty_org_id, contract_title, term_summary_hash, deviation_count_by_color: {green, yellow, red}, artifact_path, source_file_path}`. The `term_summary_hash` allows detecting identical contracts across submissions. The `deviation_count_by_color` field is canonical-shape substrate that future consumers (insight-generator pattern detection, cleanup, board-pack-assembler) can aggregate over a period — no consumer reads it yet as of v3.12.0, but the event is shaped correctly for when one is built.
+- `_hq/data/events.jsonl` — event type `contract_reviewed` with `{counterparty_org_id, contract_title, term_summary_hash, deviation_count_by_color: {green, yellow, red}, artifact_path, source_file_path}`. The `term_summary_hash` allows detecting identical contracts across submissions — computed by the exact recipe in "The `term_summary_hash` recipe" below (deterministic: two runs over the same contract MUST produce the same hash, or the Phase 2 dedup never matches). The `deviation_count_by_color` field is canonical-shape substrate that future consumers (insight-generator pattern detection, cleanup, board-pack-assembler) can aggregate over a period — no consumer reads it yet as of v3.12.0, but the event is shaped correctly for when one is built.
+
+  **Append through the locked writer (SPEC GATE1 / A1):** write this event via `atomic_append_jsonl(events_path, [event], holder="contract-review")`, NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`. The helper reserves the seq and writes inside the cross-process writer lock so a concurrent append can't lose the event or duplicate a seq. Omit `seq`/`ts` — auto-stamped. See `shared/WORKSPACE_API.md` → Append Protocol §3.
 
 **Reads from:**
 - The contract file (PDF or docx). Uses PDF MCP or python-docx for parsing.
@@ -69,8 +71,22 @@ Trigger can reference a file path explicitly:
 
 If `_hq/contracts/standard-terms.md` doesn't exist:
 - Surface a brief explainer: "I review contracts against your standard terms — but I don't have yours on file yet. Want to set them up now (about 5 min), or should I just review this one and skip that comparison?"
-- If user chooses to create: walk through 6-question wizard (preferred IP ownership, term length, payment terms, termination notice, indemnification cap, governing law) → write `_hq/contracts/standard-terms.md`
-- If user skips: proceed without comparison pass; flag everything as "worth a closer look — no standard on file to compare against"
+
+**The 6-question wizard (run once, ~5 min):**
+1. Preferred term length for client engagements? (e.g., "12 months")
+2. Indemnification cap? (e.g., "12 months of fees")
+3. Standard payment terms? (e.g., "net 30")
+4. Termination notice required? (e.g., "30 days")
+5. IP ownership default? (e.g., "work product transfers on payment")
+6. Governing law? (e.g., "Texas")
+
+Write the answers to `_hq/contracts/standard-terms.md` as a YAML block (one key per answer) plus a one-paragraph narrative summary.
+
+**No-standard fallback (user skipped the wizard):** still assign colors against market-standard defaults — don't punt to "everything's yellow."
+- **RED:** uncapped or one-way indemnification; unlimited liability; IP assignment of pre-existing/background work.
+- **YELLOW:** term > 24 months; auto-renewal with no notice window; payment terms > net 45; unilateral change clauses.
+- **GREEN:** mutual, market-standard terms.
+Close every no-standard review with one line offering the wizard ("Want me to capture your standard terms so next time I compare against yours, not the market?").
 
 ### Phase 1 — Parse contract
 
@@ -92,8 +108,44 @@ Extract:
 ### Phase 2 — Load standard + history
 
 - Read `_hq/contracts/standard-terms.md` — your standard for each clause.
-- Read entities.json for the counterparty org record.
+- **Resolve the counterparty via the canonical resolver — never a hand-rolled name match.** The party name extracted in Phase 1 ("Acme Co", "ACME CORPORATION") must resolve through `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` (aliases.json → entities.json, per `shared/ENTITY_RESOLVE_PROTOCOL.md`) to a canonical `org_id`:
+
+  ```python
+  import sys
+  # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+  sys.path.insert(0, "shared/scripts")
+  from entity_resolve import resolve_all
+  matches = resolve_all(workspace_root, counterparty_name_from_contract)
+  # Single org match → use its org_id as counterparty_org_id (event + history reads).
+  # Ambiguous → surface disambiguation before proceeding.
+  # No match → counterparty_org_id = null; note in the review that this is a
+  #   first-time counterparty (and history sections are empty by construction).
+  ```
+
+- Read entities.json for the resolved counterparty org record (prior contract history, relationship tier).
 - Read `_hq/data/events.jsonl` for prior `contract_reviewed` events involving the counterparty OR matching deviation classes.
+- **Duplicate-contract check (ADV1).** Compute this contract's `term_summary_hash` (the same hash written on the `contract_reviewed` event) early, then scan prior `contract_reviewed` events for a matching `data.term_summary_hash`. On a hit, surface one line up front: *"Heads up — you reviewed this exact contract on [date of the prior event]. Want the diff against last time, or a fresh full review?"* This is what makes the otherwise-write-only `term_summary_hash` field earn its place.
+
+  **The `term_summary_hash` recipe (exact — do not improvise):** SHA-256 over the lowercased, whitespace-collapsed concatenation of the extracted key-term VALUES (the Phase 1 extraction results as short strings, never the raw contract text) in this FIXED field order, first 16 hex chars:
+
+  ```python
+  import hashlib, re
+
+  TERM_HASH_FIELDS = [
+      "parties", "term_length", "auto_renew", "fees", "payment_terms",
+      "ip_ownership", "confidentiality", "indemnification",
+      "termination", "governing_law", "non_compete",
+  ]  # FIXED order — reordering, adding, or removing a field breaks every prior hash
+
+  def term_summary_hash(terms: dict) -> str:
+      parts = []
+      for field in TERM_HASH_FIELDS:
+          value = str(terms.get(field) or "")          # absent term → empty string
+          parts.append(re.sub(r"\s+", " ", value).strip().lower())
+      return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+  ```
+
+  Determinism rules: each value is the extracted term summary rendered the same way every run (e.g. `"12 months"`, `"net 30"`, `"mutual, uncapped"`); absent terms contribute `""`; never include dates-of-review, file paths, or page counts. Two runs over the same contract MUST produce the same 16-hex-char hash — that identity is the entire point of the field.
 - Read `_hq/data/events.jsonl` for binding `decision` events about contract terms.
 
 ### Phase 3 — Flag each term
@@ -117,7 +169,16 @@ For each red flag, generate 1-2 questions probing the counterparty's underlying 
 - Render the .docx via `shared/scripts/brief_writer.py` with the contract-review template (Key Terms / Flags / Redlines / Questions sections).
 - Save to `_hq/contracts/ContractReview_[Counterparty]_[YYYY-MM-DD].docx`.
 - Append `contract_reviewed` event.
-- Surface the .docx link + 1-line summary in chat: "Reviewed the Acme Co MSA. Most of it lines up with your standard — two items to push back on, and one I'd want to negotiate before signing (uncapped indemnification). Suggested language and questions are in the brief."
+- Surface a 1-line summary in chat: "Reviewed the Acme Co MSA. Most of it lines up with your standard — two items to push back on, and one I'd want to negotiate before signing (uncapped indemnification). Suggested language and questions are in the brief."
+- **Then end the chat turn with the H2 doc link (CONTRACT Rule 3 — link LAST in the turn, never inline).** Build it with the canonical helpers — never hand-encode a `computer:///` URL:
+
+  ```python
+  import sys
+  sys.path.insert(0, "shared/scripts")
+  from chat_output_renderer import doc_headline_link
+  from brief_path import get_brief_artifact_url
+  print(doc_headline_link("Contract review — Acme Co MSA", get_brief_artifact_url(output_path)))
+  ```
 
 ## Output Structure (.docx)
 
@@ -166,3 +227,9 @@ QUESTIONS TO ASK BEFORE SIGNING
 - Auto-redline the contract file. Suggested redlines are in the review .docx; the user copies/edits into the contract via their own tooling.
 - Sign or send. Use DocuSign / Adobe Sign MCP for signature workflow.
 - Modify `_hq/contracts/standard-terms.md` mid-review. If a review reveals you want to update your standard, that's a separate explicit edit.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Counterparty- and history-aware: if the counterparty has pushed for the same carve-out before, the review notes the pattern. Use when the CEO says 'review this contract', 'review this NDA', 'redline this contract', 'redline this NDA', 'contract review', 'check this contract', 'analyze this contract', 'review this MSA', 'redline this MSA', 'review this agreement', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Reads the contract PDF/docx, `_hq/contracts/standard-terms.md` (your standard), entities.json for counterparty context, events.jsonl for prior contract_reviewed events with the same counterparty or matching deviation classes. Writes contract_reviewed event with parties, deviation count, term hash, .docx artifact link. DOES NOT fire on 'write a contract' (out of scope — Command Room reviews, doesn't draft contracts), 'lawyer questions' (out of scope), or 'sign this contract' (use DocuSign / Adobe Sign MCP directly).

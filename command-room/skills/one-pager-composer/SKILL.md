@@ -1,17 +1,32 @@
 ---
 name: one-pager-composer
-description: "Turn any topic, question, or pile of notes into a polished one-page executive brief in under 60 seconds. Produces a formatted .docx with headline, 3 key points, supporting data, and recommendation — saved to the project's deliverables/ folder, ready to send to a partner, customer, or board member. Use when the CEO says 'one-pager', 'one-pager on', 'write me a one-pager', 'make me a one-pager', 'I need a one-pager', 'need a one-pager', 'throw together a one-pager', 'single-page brief on', 'executive one-pager', 'turn these notes into a one-pager', 'one page summary', 'one page summary of', 'brief me on [topic] in one page'. Voice-calibrated via this skill's Voice Block per shared/VOICE_CALIBRATION.md. DOES NOT fire on requests for multi-page reports / recurring updates / decision memos (use memo-writer) or slide decks (use pptx / slide-deck). This is the shortest-form output skill — pick it when the answer fits on one page."
+description: "Turn any topic, question, or pile of notes into a polished one-page executive brief in under 60 seconds. Fires on: 'one-pager on [topic]', 'make me a one-pager', 'one page summary of [topic]', 'I need a one-pager on [topic]', 'throw together a one-pager for [audience]', plus 'tune one-pager-composer' and 'reset one-pager-composer to defaults'. Pulls evidence from the workspace when the topic names tracked entities, renders in the CEO's voice to the one-page discipline, output .docx routed to the matching project folder. Does NOT fire on 'memo on [topic]' (memo-writer — multi-page, directive), 'board pack' (board-pack-assembler), or 'research [topic]' (research — verified cited brief; the one-pager can consume its output). Section discipline and voice rules: Routing section in the body."
+
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default
 template_version: 2.7.1
 ---
 
+**Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-one-pager-composer.md` if it exists — it supersedes this SKILL.md's `## Voice Block` section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
+
+## Deliverable Render Gate (GATE1 — MUST, v3.20.x)
+
+This skill produces a `.docx` deliverable. It MUST be produced through the canonical chokepoint — no exceptions:
+
+- **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="one_pager", ...)`.** That single call runs the output-contract gate (B3), the voice-tell gate (B2), and the post-render leak scan, in that order, BEFORE the file is written.
+- **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents — this is the exact v3.20.0 failure mode (a "Command Room is great" sub-floor one-pager with a banned phrase reached disk via the generic docx skill).
+- **NEVER answer a deliverable request with a chat-only draft.** "Just give me a quick / minimal / one-line version" is still a one-pager request — produce the `.docx` through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then say plainly that the quality and voice checks only run on the file version, and offer to produce it.
+- **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A fire of this skill that yields a document with NO `gate_ran` event for that turn is a flagged bypass (an inferior path was substituted). Pass `workspace_root` to `make_brief` so the event lands in substrate.
+
+If anything below seems to contradict this gate (older "invoke the docx skill" prose, a "just draft it in chat" habit from a prior version), THIS GATE WINS.
+
 ## Skill Boundary (v2.1)
 
 - **Use one-pager-composer for:** single-page executive briefs. Fixed 6-part skeleton (headline / subhead / 3 key points / supporting data / recommendation / footer). Output is always .docx. Fits on one US Letter page or it gets cut.
-- **Use `memo-writer` for:** comparative tradeoffs OR longer recurring updates (decision docs, scope docs, strategy memos, board / investor narratives).
+- **Use `memo-writer` for:** longer recurring updates and narrative documents (decision docs, scope docs, strategy memos, board / investor narratives).
+- **Use `decision-memo-composer` for:** comparative tradeoffs — structured A-vs-B / multi-option analysis.
 - **Use `pptx`/`slide-deck` for:** visual/presentation format. Slides, not pages.
-- **Template pattern:** one-pager-composer establishes the shared "messy input → polished .docx" pattern. Parse → ground → structure → draft in voice → handoff to `docx` skill → save → return link.
+- **Template pattern:** one-pager-composer establishes the shared "messy input → polished .docx" pattern. Parse → ground → structure → draft in voice → render via `brief_writer.make_brief(brief_kind="one_pager", ...)` → save → return link.
 
 ## Voice Protocol (v3.0 — v2.7.1 architecture)
 
@@ -22,6 +37,16 @@ Every one-pager draft:
 2. Applies audience modifier based on the stated audience (board/customer/team/partner) or defaults to internal executive.
 3. Passes the Step 2 critique pass against the Voice Block + universal banned-phrase list.
 4. Strips any banned LLM tells before return.
+
+**Mechanical voice-tell gate (B2 — bash-gated, not prose).** The Step 2 critique is backstopped by the deterministic detector. After drafting (How It Works step 4) and before rendering, run the one-pager prose through it. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
+```
+
+On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The same gate fires again at save: `brief_writer.make_brief(brief_kind="one_pager", ...)` raises `VoiceTellError` PRE-`Document()` (no file written) on a fail-severity tell, so a one-pager that still trips the detector never reaches disk via the gated path. (That guarantee is conditional on routing through `make_brief`; for a doc hand-rolled outside it, SPEC GATE2's deliverable sweep — `shared/scripts/deliverable_sweep.py` — **detects and flags** the same tells/leaks after the fact, before the one-pager leaves your hands.) A phrase the client's calibrated Voice Block demonstrably allows is exempt via `allow_phrases`; never improvise the override.
 
 Corrections on user-edited drafts append to `_hq/voice/corrections-one-pager-composer.jsonl`. The corrections corpus drives the next Voice Block refresh when the operator runs the calibration protocol.
 
@@ -52,6 +77,57 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **For:** CEOs who need to produce a sharp, single-page brief fast — for a partner, customer, board member, or team — without spending 45 minutes wrestling with Word.
 
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). Both
+decisions are **show-then-tune (STT)** — the one-pager is produced first, then one-tap changes are
+offered. Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
+# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "register": "external_formal",  # external_formal | internal_direct
+    "signature": "signed",          # signed (footer sign-off) | unsigned
+}
+cfg = get_config(workspace_root, "one-pager-composer", DEFAULTS)
+```
+
+`register` sets the default tone (the Voice Block still governs voice). `signature` controls
+whether the one-pager footer carries a sign-off.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "one-pager on…" | produce the one-pager with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "one-pager-composer", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
+| **Show settings** | "show one-pager-composer settings" | render current config in plain English; no one-pager. |
+| **Tune** | "tune one-pager-composer" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-produce. |
+| **Reset** | "reset one-pager-composer to defaults" | `wipe_skill_config(workspace_root, "one-pager-composer")` → next fire is a first-fire again. |
+
+**The first-run block (footer — one-pager-composer ends in a chat link to the .docx, not a widget):**
+
+> *First time making a one-pager for you. I set 2 defaults: **formal tone (written for outside
+> readers)** · **signed footer**. Say "tune my one-pagers" to change either, or just tell me
+> ("internal/direct" / "unsigned").*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "keep one-pagers internal/direct" / "less formal" | `register = internal_direct` |
+| "make one-pagers external/formal" | `register = external_formal` |
+| "leave one-pagers unsigned" / "no sign-off" | `signature = unsigned` |
+| "sign my one-pagers" | `signature = signed` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + re-produce + confirm in one line.
+
 ## What It Does
 
 Turn any topic or question into a polished one-page document in under 60 seconds. Input can be a prompt ("one-pager on our China supply chain exposure"), a link, a pasted article, or a loose pile of notes. Output is a formatted .docx saved into the current project's `deliverables/` folder, ready to email or print.
@@ -72,14 +148,17 @@ If the user names an audience ("for the board", "for my sales team", "for a cust
 
 ## Output Structure
 
+**Deliverable link (CONTRACT Rule 3 — H2 heading link, LAST in the turn):** surface the .docx via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` as the final line of the chat response — after the widget/summary and Sources, never interspliced mid-body, never a plain-text path, never a hand-built `computer://` URL.
+
 Every one-pager uses this skeleton. No exceptions — consistency is the product.
 
-1. **Headline** (1 line) — The single conclusion the reader should take away. Active voice, specific, no hedging.
-2. **Subhead** (1 sentence) — Why this matters right now.
-3. **Three Key Points** — Each one a tight paragraph, 2-4 sentences max. Lead with the claim, follow with the evidence. Bolded lead-in phrase.
+> **Executive Output Standard (EXEC1, v3.20.0+) — decision-forward.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: the **Headline is the exec-header VERDICT** (it already IS the conclusion — the one-pager is the standard's model for "headline = conclusion"), the **Subhead folds into the exec header** (CHANGED / why-now), and the **Recommendation leads** (it moves directly under the header, before the Key Points / Supporting Data audit trail). `one_pager` is decision-shaped, so `make_brief` ENFORCES this — a Recommendation-headed section appearing only at section index > 2 raises. **The Recommendation gains a decide-by date and a cost-of-delay line ONLY when the arithmetic traces to substrate** (via `quantify.money_time_tag` / a logged figure); date alone otherwise — NEVER an estimated cost-of-delay.
+
+1. **Headline → exec-header VERDICT** (1 line) — The single conclusion the reader should take away. Active voice, specific, no hedging. (Subhead's why-now folds into the header's CHANGED line.)
+2. **Recommendation** — What the reader should do. One paragraph, specific and time-bound. *(EXEC1: leads the body, directly under the header.)* Gains a decide-by date always, and a cost-of-delay line when it traces to substrate ("every week of delay is ~$18K of exposure" — only when `quantify` returns it).
+3. **Three Key Points** — Each one a tight paragraph, 2-4 sentences max. Lead with the claim, follow with the evidence. Bolded lead-in phrase. *(The audit trail for the recommendation above.)*
 4. **Supporting Data** — 3-5 bullets with numbers, dates, sources. If data is estimated or unavailable, say so plainly.
-5. **Recommendation** — What should the reader do. One paragraph. Specific and time-bound.
-6. **Footer** — Author, date, 1-line source note.
+5. **Footer** — Author, date, 1-line source note.
 
 Total length: fits on one US Letter page with 1-inch margins, 11pt Calibri. If content is overflowing, cut — don't shrink type.
 
@@ -90,8 +169,14 @@ Total length: fits on one US Letter page with 1-inch margins, 11pt Calibri. If c
 3. If web research is needed and the user hasn't said "use my notes only," use the web research connector to pull 2-3 authoritative sources.
 4. Draft using the skeleton above. Voice comes from the baked-in `## Voice Block` in this SKILL.md (Voice Protocol v3.0) — do not read external `VOICE_SAMPLES.md` files.
 5. **Render via the canonical brief_writer (v3.13.8+ — Bug #53):** call `shared/scripts/brief_writer.py` `make_brief(brief_kind="one_pager", ...)`. Do NOT invoke the `docx` skill or hand-roll docx-js. brief_writer enforces canonical Calibri typography, navy heading hierarchy (Heading 1/2/3 per Bug #7), eyebrow label "ONE-PAGER", and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically. Use the v3.13.8 `table` / `matrix` section primitives for tabular comparisons rather than synthesizing bullets.
-6. Save to `[Current Project]/deliverables/` with filename `[Topic]_OnePager_[YYYY-MM-DD].docx`. If no current project context, save to `_hq/one-pagers/`.
+6. Save to `[Current Project]/deliverables/` with filename `[Topic]_OnePager_[YYYY-MM-DD].docx`. If no current project context, save to `_hq/deliverables/` (matches the Writer Contract — this is the ONLY fallback location).
 7. Return the file link + a 2-sentence summary of what's in it. Done.
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "I made 2 calls: external-formal register · signed"
+- Good: "I set 2 defaults: formal tone (written for outside readers) · signed footer"
+
+**Output-contract gate (B3 — pre-save, before the voice gate).** `make_brief(brief_kind="one_pager", ...)` validates the structured `sections` against `shared/scripts/output_contract_validator.py` `RULES_BY_KIND["one_pager"]` BEFORE `Document()` is built (canonical order: contract → voice → render → leak scan): headline (the `title`) ≤25 words, Supporting Data 3-5 bullets, total 120-480 words, and the no-placeholder rule. The allowed form `[Figure needed — confirm before sending]` passes; every other placeholder (TBD, `[PLACEHOLDER]`, etc.) fails. On a blocking violation it raises `OutputContractError` (no file written). Read each violation's `section` + `fix_hint`, rewrite ONLY the failing sections — cut the headline, right-size the supporting-data bullets, or replace stray placeholder text with the allowed form or real data — and call `make_brief` again. Maximum 2 retries, then surface the failure plainly instead of shipping a substandard one-pager. **Sync rule: if you change the 6-part skeleton's counts or the headline cap here, change the matching entry in `output_contract_validator.py` `RULES_BY_KIND["one_pager"]` in the same commit.**
 
 ## File Naming
 
@@ -158,7 +243,7 @@ The canonical `brief_writer.make_brief(brief_kind="one_pager", ...)` path alread
 ### Taboos (per-skill)
 - Never: "it is important to note that", "this document aims to", "in conclusion", "going forward", "synergies"
 - Never pad to fill the page. A strong half-page beats a bloated full page.
-- Never fabricate numbers to fill the supporting-data section. Mark `[PLACEHOLDER — confirm with the author]` and keep moving.
+- Never fabricate numbers to fill the supporting-data section. Mark `[Figure needed — confirm before sending]` and keep moving.
 - Never write a question as the headline. The headline is the answer.
 
 ### Examples
@@ -189,6 +274,37 @@ buffer by July 8. I'll chair a weekly Monday review until the second
 source is qualified.
 ```
 
+### Anti-examples (bad → good)
+
+Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structure, specificity, floors — they do not override this skill's Voice Block). Each one-pager element has a failure mode; the contrast is the test.
+
+**Headline** — bad states a topic or asks a question; good states the conclusion.
+```
+BAD:  A review of our Q3 margin performance.
+GOOD: Q3 margin dropped 17%. Three supplier concentration bets are why.
+```
+
+**Key point** — bad leans on adjectives; good leads with the claim, then the number.
+```
+BAD:  Supplier concentration is a significant and meaningful risk that
+      could materially impact our margins going forward.
+GOOD: Supplier concentration is the headline risk. 62% of Q3 hardware
+      COGS came from three suppliers; two raised prices 9-14% in September.
+```
+
+**Supporting data** — bad is a vague assertion; good is a number with a date and source.
+```
+BAD:  Margins have been under pressure recently.
+GOOD: Gross margin fell from 41% to 34% between Q2 and Q3 (internal P&L, Oct 3).
+```
+
+**Recommendation** — bad is a direction with no owner or date; good names the action, the owner, the deadline.
+```
+BAD:  We should look into diversifying our supplier base soon.
+GOOD: Dual-source the top three SKUs by August 15; Sam's team owns the
+      shortlist by July 1.
+```
+
 ## Triggers
 
 - "write me a one-pager"
@@ -205,28 +321,34 @@ source is qualified.
 - **If the topic is ambiguous, ask ONE question before drafting.** "One-pager on the lawsuit" → ask: "which lawsuit?" Don't guess.
 - **Don't pad to fill the page.** A strong half-page beats a bloated full page. If the topic genuinely doesn't need a full page, say so and deliver the shorter version.
 - **If the user asks for a one-pager on a topic with no available data, return a draft with clearly-labeled placeholders.** Do NOT fabricate numbers to fill the data section.
-- **Always invoke `docx` skill explicitly.** Never output the doc as markdown or inline text unless the user says "just draft it in chat."
+- **Always render via `make_brief(brief_kind="one_pager", ...)`** (see the Deliverable Render Gate at the top). Do NOT hand-roll a `.docx` via the generic `docx` skill, and do NOT answer a one-pager request with a chat-only draft — those bypass the gates. Output markdown/inline text ONLY if the user explicitly says "just draft it in chat," and flag plainly that the quality and voice checks only run on the file version.
 - **Check the audience.** A one-pager for the board reads differently than one for the sales team. If audience isn't stated and isn't obvious from project context, ask.
 
 ## What It Doesn't Do
 
 - Multi-page reports — use `memo-writer` (recurring updates / strategy memos) or a full report workflow
-- Decision frameworks — use `memo-writer` for comparative tradeoffs (decision docs / scope docs)
+- Decision frameworks / comparative tradeoffs — use `decision-memo-composer` (structured multi-option analysis); single-decision narrative capture is `memo-writer`'s decision doc
 - Slide decks — use `pptx` or the slide-deck skill
 
 ## Template Pattern for Other Composers
 
 This skill establishes the shared pattern for all output-layer skills:
 
-- Parse → Ground (project/web) → Structure → Draft in voice → Handoff to format skill → Save → Return link
+- Parse → Ground (project/web) → Structure → Draft in voice → Render via the canonical `brief_writer.make_brief` chokepoint → Save → Return link
 - Output skeletons are fixed — the value is consistency, not creativity
-- Always invoke the format skill (`docx`/`pptx`/`pdf`) rather than building files directly
+- Always render `.docx` deliverables through `brief_writer.make_brief` (GATE1) — never build files directly or via the generic `docx` skill
 - Always save into `deliverables/` with the naming convention
 - Always return a file link + 2-sentence summary, nothing more
 
 ## Connected Tools
 
-- **docx skill** — produces the Word file (MUST read SKILL.md first)
+- **`shared/scripts/brief_writer.py` `make_brief(brief_kind="one_pager", ...)`** — produces the Word file (the GATE1 chokepoint)
 - **Session Notes / PROJECT_CONTEXT** — project grounding
 - **Web research connector** — external data when needed
 - **Voice Block** (baked into this SKILL.md) — user voice calibration (v3.0)
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Turn any topic, question, or pile of notes into a polished one-page executive brief in under 60 seconds. Produces a formatted .docx with headline, 3 key points, supporting data, and recommendation — saved to the project's deliverables/ folder, ready to send to a partner, customer, or board member. Use when the CEO says 'one-pager', 'one-pager on', 'write me a one-pager', 'make me a one-pager', 'I need a one-pager', 'need a one-pager', 'throw together a one-pager', 'single-page brief on', 'executive one-pager', 'turn these notes into a one-pager', 'one page summary', 'one page summary of', 'brief me on [topic] in one page'. Voice-calibrated via this skill's Voice Block per shared/VOICE_CALIBRATION.md. Also handles first-run personalization settings — use when the CEO says 'tune my one-pagers', 'tune one-pager-composer', 'show one-pager-composer settings', 'reset one-pager-composer to defaults'. DOES NOT fire on requests for multi-page reports / recurring updates / decision memos (use memo-writer) or slide decks (use pptx / slide-deck). This is the shortest-form output skill — pick it when the answer fits on one page.

@@ -35,6 +35,13 @@ Verifies:
 
 from __future__ import annotations
 
+# This rig tests the stamping/write machinery BELOW the event gate with
+# synthetic fixture types; the gate (strict on both entries as of Phase 4
+# 2026-07-02) is covered by run_event_gate_test.py. Disable it here so the
+# fixtures don't need schema registration.
+import os
+os.environ["CR_EVENT_GATE"] = "0"
+
 import json
 import re
 import sys

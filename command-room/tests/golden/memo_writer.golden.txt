@@ -1,0 +1,20 @@
+MEMO
+Acme Co — Sourcing Bot — Pricing
+Strategy memo · <DATE> · Acme Co
+Decision
+Move Sourcing Bot to annual-only billing and lock the pricing tiers before the Northstar renewal.
+Context
+Pricing has been the recurring open question across three logged decisions. The Northstar renewal forces the question now.
+Options considered
+Option | Pros | Cons
+Per-seat monthly | Simple to explain | Revenue is lumpy
+Annual-only | Predictable revenue | Higher friction to close
+Usage-based | Scales with value | Hard to forecast
+Rationale
+Annual-only smooths revenue ahead of the renewal.
+Tiered seats keep the entry price honest.
+Locking tiers now removes a renewal-time negotiation variable.
+Next steps
+Ship the pricing page copy this week.
+Send the pricing sheet to the Northstar team.
+Command Room

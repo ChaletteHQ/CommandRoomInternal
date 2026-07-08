@@ -1,9 +1,9 @@
 ---
 name: list-active
-description: "Zero-interaction list of all projects in the workspace — the org tree with canonical names, aliases, and last-activity dates. Triggers: 'list projects', 'list active projects', 'list all projects', 'active projects', 'project list', 'show projects', 'show me projects', 'what projects', 'what projects do I have', 'show archived', 'roster', 'project roster'. DOES NOT fire on 'what's going on' or 'workspace status' (full daily briefing — workspace-manager) or 'lets work' (silent load — workspace-manager) or 'new project' (project creation — workspace-manager)."
+description: "Zero-interaction list of all projects in the workspace — the org tree with canonical names, aliases, and last-activity dates. Triggers: 'list projects', 'list active projects', 'list all projects', 'active projects', 'project list', 'review my projects', 'show projects', 'show me projects', 'what projects', 'what projects do I have', 'show archived', 'roster', 'project roster'. DOES NOT fire on 'what's going on' or 'workspace status' (full daily briefing — workspace-manager) or 'lets work' (silent load — workspace-manager) or 'new project' (project creation — workspace-manager)."
 ---
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use list-active for:** instant recall of what projects exist when you've forgotten a name. Renders the full org tree inline in chat. No classification, no briefing, no scan — just the list.
 - **Use `workspace-manager` for:** engaging a specific project ("go [project]"), starting/ending sessions, or the full "what's going on" daily briefing.
@@ -95,17 +95,21 @@ OTHER
 
 Personal · last Apr 5
 
-WORKSPACE-LEVEL
+NOT TIED TO A COMPANY
 
 (none)
 ```
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- BAD: "WORKSPACE-LEVEL" / "Total: 12 projects across 4 orgs."
+- GOOD: "NOT TIED TO A COMPANY" / "Total: 12 projects across 4 companies."
 
 Rules:
 - Canonical org/project name first.
 - Aliases in parens after the name when aliases.json has entries.
 - `scope` and/or `relationship_type` in parens when useful (e.g., "operating · client", "holding", "advisory").
 - Sub-projects (those with `parent_thread_id` set) nest under their parent using `├─`/`└─`.
-- `last [date]` on every line. Omit when no events exist for that project.
+- `last [date]` on every line. When no events exist for that project, render `last —` (see Edge Case B) — never omit the line.
 - Empty sections render as `(none)`. Do not omit the section header.
 
 ### Step 4: Folder fallback (no entities.json)
@@ -113,7 +117,7 @@ Rules:
 If `_hq/data/entities.json` doesn't exist:
 
 1. Scan `[WORKSPACE_ROOT]/` for top-level folders.
-2. Skip: `_hq`, `_archive`, `_people`, anything starting with `.` or `_hq`.
+2. Skip: `_hq`, `_archive`, `_people`, anything starting with `.` or `_`.
 3. For each folder, look for `SESSION_NOTES_*.md`. Use its mod time as the activity date.
 4. Render flat list (no org hierarchy available):
 
@@ -134,7 +138,7 @@ Fallback output always includes the onboarding hint at the bottom.
 ## Edge Cases
 
 **A. Empty workspace (no projects at all):**
-Render: `No projects found. Run "onboard me" to set up your workspace, or "new project [name]" to create one.`
+Render: `No projects found. Say "onboard me" to set up your workspace, or "new project [name]" to create one.`
 
 **B. Project exists in entities.json but has zero events:**
 Render the line with `last —` instead of a date. Do not omit.
@@ -149,7 +153,7 @@ If a project has more than 3 aliases, render the first 3 followed by `+N more` �
 Support arbitrary depth in the tree with indented `├─`/`└─`, but cap visible depth at 3. If deeper nesting exists, render `+N deeper — say 'expand [project]' to see` (workspace-manager handles the expand).
 
 **F. Very large workspace (>50 projects):**
-Render the full tree anyway — this is discovery, not briefing. Long output is the right answer. Add a footer: `Total: [N] projects across [M] orgs.`
+Render the full tree anyway — this is discovery, not briefing. Long output is the right answer. Add a footer: `Total: [N] projects across [M] companies.`
 
 **G. Archived vs active filter:**
 Default mode excludes projects with `status: archived`. When the user triggers with `list all projects` or `show archived`, include those with an `[archived]` suffix on the line.

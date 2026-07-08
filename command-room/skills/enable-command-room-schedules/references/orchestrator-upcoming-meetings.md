@@ -1,6 +1,6 @@
 # Orchestrator prompt — Upcoming Meetings
 
-This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: cr-upcoming-meetings`. Fires 6:30 AM weekdays local time. Replaces the v2.7-v2.10.1 `cr-meetings-today` task (renamed to make the user-facing meaning clearer).
+This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: upcoming-meetings`. Fires 6:30 AM weekdays local time. Replaces the v2.7-v2.10.1 `cr-meetings-today` task (renamed to make the user-facing meaning clearer). Events this file writes carry `source_skill='upcoming-meetings'` (bare since v2.14.27); workspaces with pre-rename history at `source_skill='cr-upcoming-meetings'` stay valid as append-only history.
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** every chat post follows `shared/CONTRACT.md`. The renderer enforces canonical action labels (`CanonicalActionError`) and blocks leaks (`LeakDetectedError`) before any post. Rules 1–18 are non-negotiable. The widget + Links section is the ENTIRE chat turn; STOP after that. No commentary, no narration.
 **Brief save path (v2.13.0+):** all `.docx` briefs save to `_hq/meetings/` via `shared/scripts/brief_path.py` `get_brief_path("call_prep", slug, date)`. NEVER hand-roll paths. NEVER save to `_hq/staging/<today>/` (that path is forbidden by the leak scanner).
@@ -36,6 +36,26 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Read M's primary email + first name from entities.json (`is_primary_user: true`).
 - **Discover NATIVE Calendar MCP tool ID** — look for `mcp__*google_calendar_*` tools (excluding any tool whose ID starts with `mcp__zapier_`). Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE: Zapier never handles calendar. If the only calendar tool exposed is Zapier-namespaced, ABORT with plain English: `(Native Calendar MCP not available — connect Google Calendar in Cowork → Settings → Connectors. Zapier Calendar isn't supported for this skill.)` Do NOT silently fall back to Zapier Calendar.
 
+# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'upcoming-meetings')))
+"
+```
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+
 # Phase 3 — Fetch today's calendar
 
 **Project status filter (v2.10.3+):** when resolving a meeting to a project (per PROJECT_MAPPING_RULES.md), if the resolved project has `status` in `{dormant, archived}`, still produce the brief BUT auto-revive the project to `active` when the meeting fires (per ORG_AND_THREAD_MODEL.md re-active detection in Pulse Phase 4d). Calendar events on a dormant project are activity signal — the project is no longer dormant.
@@ -51,9 +71,32 @@ Filter:
 - **Drop personal calls:** if no business-domain attendees, skip. (A "personal call" is one with NO business-domain attendees at all — e.g. a calendar block with just a personal Gmail address. Solo blocks where the only attendee is M himself ALSO surface — they may be deep-work blocks tied to an active project, in which case the brief loads project context as prep for the block.)
 - **Solo blocks (M is the only attendee):** generate a project-context brief if the meeting title or project mapping resolves to an active project. Brief content: what's open on the project, latest decisions, commitments due, what M previously said he'd do in the block. Skip the brief only if the solo block routes to no project AND title gives no signal (e.g. "Lunch", "Dentist") — those are personal time, not work blocks.
 
+# Phase 3.5 — Honor the call-prep auto_fire preference (settings-layer C2 #4)
+
+Before prepping anything, read call-prep's FRP1 `auto_fire` knob — the scheduled task
+MUST honor it (pre-settings-layer this orchestrator prepped every kept meeting
+unconditionally, ignoring the user's setting). Read via the canonical config helper
+(never the raw file); an unreadable config falls back to the `24h` default:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from skill_config_writer import get_config
+print(json.dumps(get_config('<workspace_root>', 'call-prep', {'auto_fire': '24h'})))
+"
+```
+
+Branch on `auto_fire`:
+
+- **`24h`** (default) — prep every kept meeting in the `[now, now + 24h]` window. Current behavior; nothing changes.
+- **`morning_of`** — prep ONLY meetings whose start time is TODAY in the user's local timezone (drop tomorrow's from the auto-prep set — they'll be prepped on tomorrow's fire). The dropped meetings still appear in the Upcoming Meetings list; they just don't get an auto-generated `.docx` brief yet.
+- **`off`** — auto-prep is disabled. Do NOT generate `.docx` briefs on this scheduled fire. Still render the Upcoming Meetings widget so the user sees what's ahead, and note once, in plain English, that they can pull a brief on demand ("Say 'prep me for [meeting]' for a full brief"). All substrate writes the task owes (events, view updates, the `pack_run` receipt) still happen — a suppressed deliverable must never drop a silent write (Bug #98 class).
+
+This gate governs the SCHEDULED auto-prep only. A manual "prep me for my 2pm" always runs call-prep regardless of `auto_fire` — the knob is about unattended firing, not on-demand use. Never narrate the config value or the knob name to the user.
+
 # Phase 4 — Per-meeting prep
 
-For each kept meeting, in time order:
+For each kept meeting the Phase 3.5 gate did not exclude, in time order:
 
 1. **Apply project mapping** per `PROJECT_MAPPING_RULES.md`. If the result is `unrouted`, the brief still gets generated — it just lands in `_hq/staging/<today>/_unrouted/` with the plain-English banner.
 2. **Run `call-prep` skill silently.** If call-prep asks a clarifying question, pick the most likely answer based on entities.json + recent events.jsonl, proceed. Do NOT wait for user input.
@@ -85,12 +128,18 @@ For each kept meeting, in time order:
      "brief_kind": "call_prep",
      "title": "<Attendee Full Name> — <Meeting topic>",
      "subtitle": "<Day, Mon D, YYYY> · <H:MM AM/PM TZ> · <Project Name OR plain-English routing note>",
+     "exec_header": {
+       "verdict": "<the walk-out objective — was the bottom-of-doc 'Suggested Outcome' (EXEC1 inversion): 'Walk out with: Apr 30 cutover confirmed'>",
+       "changed": "<lead of 'Since Your Last Brief', or 'Nothing new since <prior brief date>'>",
+       "decide": "<lead of 'Decisions Needed', or 'Nothing — execution call.'>",
+       "needs": "<the one reader-action, or 'Nothing from you.'>"
+     },
      "sections": [
        {"heading": "Meeting Details", "body": "<title, time, duration, location/link, attendees with roles, project routing>"},
        {"heading": "Relationship Context", "body": "<one paragraph per external attendee, 3-6 sentences each, separated by blank lines>"},
        {"heading": "Where We Left Off", "body": "<4-8 sentences; Granola quotes if available>"},
        {"heading": "Since Your Last Brief", "bullets": ["<delta event + date>", "..."]},
-       {"heading": "Accomplishments Since", "bullets": ["<specific deliverable + date>", "..."]},
+       {"heading": "Progress Since You Last Met", "bullets": ["<specific deliverable + date>", "..."]},
        {"heading": "Open Items & Blockers", "bullets": ["<item + owner + aging>", "..."]},
        {"heading": "Commitments Tracker", "body": "<You owe: ... | They owe: ... with aging>"},
        {"heading": "Talking Points", "bullets": ["<→ FirstName: framed point>", "..."]},
@@ -98,14 +147,13 @@ For each kept meeting, in time order:
        {"heading": "Decisions Already On The Record", "bullets": ["<decision — date>", "..."]},
        {"heading": "Decisions Needed", "bullets": ["<decision + tradeoff in one sentence>", "..."]},
        {"heading": "Cross-Project Insights", "body": "<only if pattern detected across active projects>"},
-       {"heading": "Risks / Watch-outs", "body": "<only if real friction signal exists>"},
-       {"heading": "Suggested Outcome", "body": "<one sentence>"}
+       {"heading": "Risks / Watch-outs", "body": "<only if real friction signal exists>"}
      ]
    }
    JSON
    ```
 
-   **Section list is the canonical call_prep set — `skills/call-prep/SKILL.md` "What You Get" is the source of truth.** Same ordering every fire. Omit any section that has no real signal (per call-prep `## Brief Format` "if a section has no signal, omit it entirely — don't write 'TBD'"). Don't paraphrase heading names; if you need to add or rename a section, update both `call-prep/SKILL.md` AND this template in the same commit — they MUST stay in sync.
+   **Section list is the canonical call_prep set — `skills/call-prep/SKILL.md` "What You Get" is the source of truth.** Same ordering every fire. **EXEC1 inversion (v3.20.0+):** the `exec_header` is the first block and carries the walk-out objective as its verdict; **"Meeting Details" is now section 2 (directly under the exec header), and the former bottom-of-document "Suggested Outcome" section is SUBSUMED into `exec_header.verdict` — do NOT also emit it as a trailing section (no-duplication; net length must not increase).** Omit any section that has no real signal (per call-prep `## Brief Format` "if a section has no signal, omit it entirely — don't write 'TBD'"). Don't paraphrase heading names; if you need to add or rename a section, update both `call-prep/SKILL.md` AND this template in the same commit — they MUST stay in sync.
 
    **Multi-attendee prefix rule:** Talking Points and Questions to Ask use `→ <FirstName>:` prefixes ONLY when the meeting has 2+ external attendees. Single external attendee = no prefix. Internal-only meetings follow the same rule for 2+ internal attendees.
 
@@ -113,7 +161,7 @@ For each kept meeting, in time order:
 
    **Decisions Already On The Record:** scan events.jsonl for `decision` events tied to this project's `primary_thread_id`. Cap at 5 most recent. Format: `<decision in one line> — <YYYY-MM-DD>`. Omit if zero priors.
 
-   **Internal-only meetings (per Phase 3 v2.14.36+):** use the internal-variant section list from `call-prep/SKILL.md` "Internal-meeting variant" subsection — drops Relationship Context, Cross-Project Insights, Risks/Watch-outs; replaces Commitments Tracker with "Open items between you"; renames Suggested Outcome to "Walk-out."
+   **Internal-only meetings (per Phase 3 v2.14.36+):** use the internal-variant section list from `call-prep/SKILL.md` "Internal-meeting variant" subsection — drops Relationship Context, Cross-Project Insights, Risks/Watch-outs; replaces Commitments Tracker with "Open items between you." The internal "Walk-out" objective is the `exec_header.verdict` (EXEC1 inversion — same as the external Suggested Outcome), not a trailing section.
 
    Verify with:
 
@@ -139,6 +187,8 @@ Append to events.jsonl:
 - One `pack_run` event with kind: upcoming_meetings, date, status, items_staged, errors, duration_ms, **telemetry** (v2.14.0+ — built via `shared/scripts/telemetry.py` `build_pack_run_telemetry()`, silent per Rule 9, aggregates in `usage report`)
 
 For each staged file, append to staging_emissions.jsonl. Telemetry writes silently — no chat narration of these per Rule 9.
+
+**Surface-preference filter (Phase 6 Loop 2 — before rendering).** Drop any surfaced meeting item the CEO has taught the system to stop showing: `from surface_preferences import load_surface_preferences, is_suppressed`; keep an item only if `not is_suppressed(prefs, "upcoming-meetings", item_class="prep", entity_id=<meeting id or lead attendee person_id>)`. Missing store → no-op. Hides the prompt only; the meeting + its prep brief are untouched. Same filter every widget orchestrator applies.
 
 # Phase 6 — Post the chat turn (v2.10.8+ — renderer-driven, ENFORCED)
 
@@ -175,6 +225,7 @@ from chat_output_renderer import render_chat_output_widget
 
 data_view = {
     "widget_mode": "all_batch_widget",
+    "source_skill": "upcoming-meetings",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
     "header": f"{day_name} {date_short} · {n_events} calendar events · {n_external} external · {n_internal} internal",
     "sections": [{"title": None, "count": None, "items": [item_for_meeting(m) for m in meetings]}],
     "save_confirmation": "Or: tell me about [name] for a deep cross-reference on any attendee.",

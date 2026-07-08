@@ -198,7 +198,17 @@ def main() -> int:
             continue
         fm = parse_frontmatter(skill_md)
         desc = fm.get("description", "")
-        pos, neg = extract_triggers(desc)
+        # v4.5.1: descriptions are budget-capped (G11) and carry only the
+        # front-loaded stems; the FULL trigger corpus lives in the body's
+        # '## Routing (full trigger corpus)' section. The mechanical matcher
+        # reads BOTH — the runtime router matches semantically on the
+        # description, while the declared family (and its fences) is the
+        # description + Routing section together.
+        body = skill_md.read_text(encoding="utf-8")
+        rm = re.search(r"^## Routing \(full trigger corpus\)\n(.*?)(?=^## |\Z)",
+                       body, re.S | re.M)
+        corpus = desc + ("\n" + rm.group(1) if rm else "")
+        pos, neg = extract_triggers(corpus)
         skills[folder] = {"positive": pos, "negative": neg}
 
     print(f"Loaded {len(skills)} skills.\n")
@@ -221,6 +231,20 @@ def main() -> int:
             name for name, tr in skills.items()
             if skill_matches(phrase, tr["positive"], tr["negative"])
         ]
+
+        # P2 2026-07-02: `expected: none` asserts NO skill fires — used for
+        # deliberately-unowned utterances (calendar reads, small talk,
+        # out-of-scope requests). A match here is a hijack regression.
+        if expected in ("none", None):
+            if len(matches) == 0:
+                passed += 1
+            else:
+                failed.append({
+                    "phrase": phrase, "expected": "none",
+                    "reason": f"HIJACK: {matches[0]} fired on an unowned utterance",
+                    "matched": matches,
+                })
+            continue
 
         if len(matches) == 0:
             failed.append({

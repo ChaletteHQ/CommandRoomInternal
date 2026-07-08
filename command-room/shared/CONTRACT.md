@@ -4,6 +4,8 @@
 
 This file is consumed by `chat_output_renderer.py` validators (canonical-action set, leak patterns, required fields) and by `apply-choices/SKILL.md` (apply-time enforcement chain). Orchestrators reference this contract in their Phase Setup; the renderer enforces it at render time.
 
+> **Peer contract — the Executive Output Standard.** Where this file governs *how* outputs are written (leak-clean, plain-English, widget-shaped), `shared/EXECUTIVE_OUTPUT_STANDARD.md` (EXEC1) governs *what an executive gets from the page* — the 30-second exec header, recommendation-before-analysis ordering, derivable-only money/time quantification (`shared/scripts/quantify.py`), the explicit ASK block, inline confidence honesty, and the detail ladder. It is enforced at the `brief_writer.make_brief()` chokepoint (`exec_header` / `asks` kwargs + ordering check) and adds generic-summary banned-header patterns to the leak scanner. The two contracts coexist; neither supersedes the other.
+
 ---
 
 ## Rule 1 — Widget format is the ONLY action surface
@@ -433,3 +435,59 @@ Every chat post — orchestrator widget, post-widget Links section, apply-time r
 7. **Apply-time response** (apply-choices) — runs the same chain. Same enforcement, no special path.
 
 If ANY gate fails, surface plain English to the user. Never silently degrade. Never improvise markdown. Never paraphrase.
+
+---
+
+## Appendix — Enforcement map (SPEC CON1)
+
+Honest classification of every rule above: **ENFORCED** = a test or a runtime validator binds it (a violation fails a build or raises at render); **GUIDANCE** = prose the model is asked to honor with no structural enforcement (a soft hint, not a hard floor). Re-verified 2026-06-21 against `tests/` + the renderer validators. Zero rules unclassified.
+
+| Rule | Subject | Status | Enforced by / honesty note |
+|---|---|---|---|
+| 1 | Widget is the only action surface | ENFORCED | `chat_output_renderer.render_chat_output_widget` + `chat_output_validator` (renderer-validator suite) |
+| 2 | Apply-time drafts return a widget | ENFORCED | apply-choices routes through the same render chain (Rule 28 §7) |
+| 3 | Documents clickable in Cowork | GUIDANCE | The `doc_headline_link` helper exists, but no test asserts skills *call* it vs hand-rolling a path. Soft convention. |
+| 4 | No technical language post-widget | ENFORCED | leak scanner (`validate_chat_output`) + `run_customer_facing_voice_test` + `run_no_*` guards |
+| 5 | Action labels: canonical set | ENFORCED | `render_chat_output_widget` raises `ValueError` on any non-`CANONICAL_ACTIONS` verb |
+| 6 | Plain-English clarity on every action | GUIDANCE | Label *legibility* is judgment; the canonical-set membership (Rule 5) is the enforced half. |
+| 7 | Free-text NL time inputs | GUIDANCE | Convention; no validator. |
+| 8 | Calendar HARD SCOPE: native only | GUIDANCE | `EMAIL_DRAFT_PROTOCOL.md` §3c states it; tool_discovery steers it, but no test blocks a Zapier calendar read. |
+| 9 | Tool discovery centralized | ENFORCED | `tool_discovery.discover_*` helpers + `run_ingest_substrate_sync_test` exercise the path |
+| 10 | Multi-person items split | ENFORCED | renderer `DataShapeError` on stacked person entities (Rule 19 validator) |
+| 11 | REVIEW items: explicit confirm | GUIDANCE | Convention; no validator. |
+| 12 | Sub-item summaries terse | GUIDANCE | Terseness is unmeasurable structurally — DEMOTED to guidance (SPEC CON1). |
+| 13 | Source-thread "Open in" link | ENFORCED | required-fields validator: every email-shaped item with `original_thread` must carry `url` (Rule 28 §3) |
+| 14 | Body content rules (Upcoming Meetings) | GUIDANCE | Surface-specific convention. |
+| 15 | Brief .docx forwardable-clean | ENFORCED | `docx_leak_scanner` (`run_docx_leak_scanner_test`) + the `make_brief` save gate |
+| 16 | Self-refresh after upgrade | GUIDANCE | `command-room-update-bridge` performs it; no test asserts every skill participates. |
+| 17 | Speed over perfection | GUIDANCE | Philosophy (CLAUDE.md global), not a structural rule. |
+| 18 | Session close writes to workspace | GUIDANCE | Convention; weakly testable — DEMOTED to guidance. |
+| 19 | Data-shape consistency per item | ENFORCED | renderer `DataShapeError` (`run_*` renderer suite) |
+| 20 | No surprise inputs behind labels | GUIDANCE | Input-bearing action set is documented in `CHAT_ACTION_WIDGET.md`; the canonical-action validator (Rule 5) covers the verb set, but placeholder/input pairing is convention. |
+| 21 | Native connector parity | ENFORCED | `tool_discovery` + the `discover_*` helper tests |
+| 22 | Plugin-root discovery deterministic | GUIDANCE | The bash preamble is a copy-paste convention; no test asserts every orchestrator uses it. |
+| 23 | Trailing finish-cluster on Pulse | GUIDANCE | Surface-specific convention. |
+| 24 | CRU layer is silent | GUIDANCE | Convention; the reconcile audit event (Bug #98-v3) is the closest structural backstop. |
+| 25 | Path output uses runtime `$WORKSPACE` | ENFORCED | `run_no_hardcoded_drive` guard + leak scanner |
+| 26 | No real customer/partner names | ENFORCED | `run_no_real_customer_names_test` (named-pattern + structural email-domain allowlist) |
+| 27 | No `.md` deliverables | ENFORCED | `run_no_md_deliverables_test` |
+| 28 | Plain-English customer surfaces | ENFORCED | the 6-gate render chain + `run_customer_facing_voice_test` |
+
+**Voice calibration coverage** (VOICE_CALIBRATION.md, not a CONTRACT rule but classified here for completeness): ENFORCED by `run_voice_block_coverage_test` (SPEC CON1) — every named composer carries the `voice_block_last_refreshed` frontmatter + either a `## Voice Block` section or the shared-register + voice-tell-gate path.
+
+The GUIDANCE rows are honest: they read as law but bind nothing structural. They stay as guidance deliberately — most are judgment calls (terseness, label legibility) or copy-paste conventions where a static guard would be brittle. If a GUIDANCE rule starts causing real misses, promote it to a guard then.
+
+## Rule 29 — Same-commit sediment sweep on model changes (Phase 4 G10, 2026-07-02)
+
+When a release changes a skill's core model (write path, render path, draft
+lifecycle, schedule shape), the SAME COMMIT must sweep that skill's Writer
+Contract, Gotchas, What-It-Doesn't-Do, and output templates for sentences the
+change supersedes — and **DELETE the superseded sentence, never annotate it**.
+Both 2026-07-01 audits independently identified stale-sediment-next-to-its-
+replacement as the #1 root cause of customer-facing contradictions (~a third
+of all findings). Incident narratives that justify a rule move to
+`references/HISTORY.md` with a one-line citation left in place; rules stay,
+stories archive, superseded facts die.
+
+Reviewer checklist form: "does this diff change behavior? → grep the skill for
+the OLD behavior's vocabulary before approving."

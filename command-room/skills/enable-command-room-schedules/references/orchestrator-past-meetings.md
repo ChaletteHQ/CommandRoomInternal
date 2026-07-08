@@ -1,6 +1,6 @@
 # Orchestrator prompt — Past Meetings
 
-This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: cr-past-meetings`. Fires 5:00 PM weekdays local. Replaces the v2.7-v2.10.1 `cr-meetings-processed` task (renamed for executive clarity).
+This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: past-meetings`. Fires 5:00 PM weekdays local. Replaces the v2.7-v2.10.1 `cr-meetings-processed` task (renamed for executive clarity). Events this file writes carry `source_skill='past-meetings'` (bare since v2.14.27); workspaces with pre-rename history at `source_skill='cr-past-meetings'` stay valid as append-only history.
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** every chat post follows `shared/CONTRACT.md`. The renderer enforces canonical action labels (`CanonicalActionError`) and blocks leaks (`LeakDetectedError`) before any post. Rules 1–18 are non-negotiable. The widget + Links section is the ENTIRE chat turn; STOP after that. No commentary, no narration.
 **Brief save path (v2.13.0+):** all `.docx` briefs save to `_hq/meetings/` via `shared/scripts/brief_path.py` `get_brief_path("past_meeting", slug, date)`. NEVER hand-roll paths. NEVER save to `[Project]/meetings/` (that path didn't always resolve in Cowork's sandbox).
@@ -34,6 +34,26 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Discover Granola MCP tool ID (`mcp__<uuid>__list_meetings` or similar).
 - Discover Gmail MCP IDs (or Outlook equivalents on M365).
 - M's `person_id` from entities.json.
+
+# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'past-meetings')))
+"
+```
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
 
 # Phase 3 — Find unprocessed meetings (last 24h)
 
@@ -124,7 +144,7 @@ For each meeting:
    If output is `MISSING`: the writer failed to save. EXCLUDE this meeting from the Meeting briefs section (no broken links). Surface plain-English: `(Brief for <meeting> couldn't be saved to _hq/meetings/. Re-fire `process the call <name>` to retry.)` Append a `brief_save_failed` event silently.
 
    On success: cache the BRIEF_PATH + BRIEF_URL on the meeting record. Phase 6 Step 3 uses BRIEF_URL as the `artifact_link.url` (inside widget) AND as the Briefs-section link target (below widget). Single source of truth — no path drift.
-8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. Shape: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "cr-past-meetings", primary_thread_id: <resolved or null>, person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees_external: [<names not in entities.json>]}}`. Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
+8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. Shape: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees_external: [<names not in entities.json>]}}`. Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
 
 9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist.
 
@@ -169,7 +189,7 @@ The append includes ALL meeting-notes-extracted content, both forwardable and in
 **Person-write canonical path (v3.2+ MANDATORY).** All entity creates and updates in this pass go through `shared/scripts/people_writer.py` — never direct `entities.json` writes. Memorialized failure: `person_063` Rio Sample (2026-04-30) and `person_064` Dustin Sample (2026-04-26 duplicate of `person_004`) were both written here with hand-rolled JSON shapes that drifted from the schema, and the Dustin Sample duplicate slipped past because no dedup ran. The contract:
 
 1. **Always dedup before creating.** Before emitting a `person_proposal` event for a newly-mentioned attendee, call `find_existing_person(workspace_root, name=<inferred name>, email=<inferred email or None>, aliases=<inferred aliases>)`. If a match returns, do NOT emit `person_proposal` — instead emit a single `person_update_proposal` event referencing the existing `person_id` with the proposed delta (new role, new last_interaction, new affiliation). The REVIEW widget surfaces this as "Update X — already in your network" instead of "Add X as new person."
-2. **Auto-apply path (confidence ≥ 0.85)** uses `update_person(workspace_root, existing_id, ...)` for matches and `create_person(workspace_root, canonical_name=..., primary_org_id=..., source_skill="cr-past-meetings")` for misses. The writer's internal dedup is a backstop — if it raises `DuplicatePersonError`, fall through to update_person.
+2. **Auto-apply path (confidence ≥ 0.85)** uses `update_person(workspace_root, existing_id, ...)` for matches and `create_person(workspace_root, canonical_name=..., primary_org_id=..., source_skill="past-meetings")` for misses. The writer's internal dedup is a backstop — if it raises `DuplicatePersonError`, fall through to update_person.
 3. **Pending-review path** writes a `person_proposal` (new) or `person_update_proposal` (existing) event to events.jsonl — NEVER an entity record with `pending_review: true` flag, which is the v3.0/v3.1 anti-pattern. The user's `IDX add [text]` reply at REVIEW time triggers the actual writer call via `apply-choices` Step 3a.
 
 See `apply-choices/SKILL.md` Step 3a and `people-crm/SKILL.md` Writer Contract for the full helper contract + bash gate snippet.
@@ -226,12 +246,13 @@ sys.path.insert(0, 'shared/scripts')
 from cru_match import (
     load_open_commitments,
     match_transcript_to_commitments,
-    build_commitment_resolved_event,
     build_commitment_updated_event,
     build_pending_review_event,
 )
+from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
 from atomic_write import atomic_append_jsonl
 
+workspace_root = '<absolute path to the workspace root>'
 events_path = '<absolute path to _hq/data/events.jsonl>'
 opens = load_open_commitments(events_path)
 results = match_transcript_to_commitments(
@@ -240,7 +261,10 @@ results = match_transcript_to_commitments(
     transcript_text='<full transcript text for THIS meeting>',
 )
 
-next_seq = <peek-next-seq>
+# Stage B (F2): auto-resolves close through commitment_state.close_commitment
+# — THE closure path. Matching (Path 3) is unchanged; only the write moved.
+n_resolved = 0
+next_seq = <peek-next-seq>  # for updated/pending events only
 to_append = []
 for r in results:
     rec = r['recommendation']
@@ -250,20 +274,22 @@ for r in results:
     # → pending_review for next Pulse fire to surface as one-click
     # confirm/skip.
     if rec == 'auto_resolve':
-        to_append.append(build_commitment_resolved_event(
-            commitment_id=r['commitment_id'],
-            resolved_by=r['owner_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='cr-past-meetings',
-            evidence=evidence,
-            next_seq=next_seq,
-        ))
-        next_seq += 1
+        try:
+            res = close_commitment(
+                workspace_root, r['commitment_id'],
+                resolved_by=r['owner_id'],
+                evidence=evidence,
+                source_skill='past-meetings',
+            )
+            if res['status'] == 'closed':
+                n_resolved += 1
+        except (CommitmentIdError, PendingReviewError) as e:
+            print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
     elif rec == 'commitment_updated':
         to_append.append(build_commitment_updated_event(
             commitment_id=r['commitment_id'],
             primary_thread_id=r['primary_thread_id'],
-            source_skill='cr-past-meetings',
+            source_skill='past-meetings',
             change_summary='Schedule shifted in transcript',
             evidence=evidence,
             next_seq=next_seq,
@@ -273,7 +299,7 @@ for r in results:
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
             primary_thread_id=r['primary_thread_id'],
-            source_skill='cr-past-meetings',
+            source_skill='past-meetings',
             proposed_resolution='auto_resolve',
             score=r['score'],
             evidence=evidence,
@@ -284,7 +310,7 @@ for r in results:
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
             primary_thread_id=r['primary_thread_id'],
-            source_skill='cr-past-meetings',
+            source_skill='past-meetings',
             proposed_resolution='supersede',
             score=r['score'],
             evidence=evidence,
@@ -293,7 +319,7 @@ for r in results:
         next_seq += 1
 if to_append:
     atomic_append_jsonl(events_path, to_append)
-print(f'CRU past-meetings: resolved={sum(1 for e in to_append if e[\"type\"]==\"commitment_resolved\")} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")}')
+print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")}')
 "
 ```
 
@@ -346,7 +372,7 @@ for transcript in <list of newly-processed transcripts>:
             to_append.append(build_decision_resolved_event(
                 decision_id=r['decision_id'],
                 primary_thread_id=r['primary_thread_id'],
-                source_skill='cr-past-meetings',
+                source_skill='past-meetings',
                 evidence=evidence,
                 next_seq=next_seq,
             ))
@@ -355,7 +381,7 @@ for transcript in <list of newly-processed transcripts>:
             to_append.append(build_decision_superseded_event(
                 decision_id=r['decision_id'],
                 primary_thread_id=r['primary_thread_id'],
-                source_skill='cr-past-meetings',
+                source_skill='past-meetings',
                 evidence=evidence,
                 next_seq=next_seq,
             ))
@@ -370,6 +396,26 @@ print(f'CRU decisions: resolved={sum(1 for e in to_append if e[\"type\"]==\"deci
 
 **Failure handling:** if the decision-CRU pass errors (helper import fails, transcript empty, JSON malformed), swallow silently and continue. Best-effort enrichment; the Phase 4 decision writes (newly-extracted decisions from this transcript) already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+): `{"phase": "4.6b_decision_cru", "reason": "<short>", "detail": "<truncated stderr>", "meeting_id": "<id>", "ts": "<ISO>"}`.
 
+# Phase 4.7 — Grade the prep brief against the transcript (Phase 6 Loop 3, silent)
+
+If a `Call_Prep_<slug>_*.docx` exists in `_hq/meetings/` for THIS meeting (join by calendar event id / slug — the same slug both call-prep and this orchestrator derive), grade it now: the product wrote a prediction before the meeting; the transcript is the answer key. Best-effort, silent, never blocks processing.
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from event_gate import append_event
+from prep_grading import grade_brief, build_prep_feedback_event
+# predicted_sections: {section: [items]} pulled from the prep brief's gradable
+#   sections (Talking Points / Risks — Watch-outs / Questions to Ask / Decisions Needed).
+# transcript_topics: the salient topics the model reads out of this transcript.
+grade = grade_brief(predicted_sections, transcript_topics)  # default token matcher; a smarter matcher may be supplied
+ev = build_prep_feedback_event(meeting_id="granola:<meeting_id>",
+                               meeting_type="<internal_1_1|external|board|…>",
+                               grade=grade, person_ids=[<attendee person_ids>])
+append_event("<abs workspace root>/_hq/data/events.jsonl", [ev], holder="past-meetings.prep_feedback")
+```
+
+Only meetings that HAD a prep brief are graded (no brief → no `prep_feedback`, nothing to learn from). insight-generator Pass 15 aggregates these monthly and proposes call-prep section-weight changes. On any error, swallow + append a `pack_run.data.errors[]` entry; grading never blocks the fire.
+
 # Phase 5 — Memory updates (silent per Rule 9)
 
 Append to events.jsonl:
@@ -380,6 +426,10 @@ Append to events.jsonl:
 - `pack_run` event with kind: past_meetings, date, status, errors, duration_ms, **telemetry** (v2.14.0+ — built via `shared/scripts/telemetry.py` `build_pack_run_telemetry()`, silent per Rule 9)
 
 Append to staging_emissions.jsonl per .docx generated. Telemetry writes silently — no chat narration.
+
+# Phase 5.9 — Surface-preference filter (Phase 6 Loop 2 — before rendering)
+
+Drop any surfaced item the CEO has taught the system to stop showing (insight-generator Pass 14 → `_hq/data/surface-preferences.json`): `from surface_preferences import load_surface_preferences, is_suppressed`; keep an item only if `not is_suppressed(prefs, "past-meetings", item_class=<the item's class, e.g. "decision_needed"|"open_item">, entity_id=<meeting or person id>)`. Missing store → no-op. Hides the prompt only; the processed meeting + its captured substrate are untouched. Same filter every widget orchestrator applies.
 
 # Phase 6 — Post the chat turn (v2.10.8+ — renderer-driven, ENFORCED)
 
@@ -418,6 +468,7 @@ from chat_output_renderer import render_chat_output_widget
 
 data_view = {
     "widget_mode": "all_batch_widget",
+    "source_skill": "past-meetings",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
     "header": f"Past meetings · last 24h · {n_processed} newly processed, {n_reprocessed} re-processed, {n_skipped} skipped",
     "sections": [{"title": None, "count": None, "items": [item_for_meeting(m) for m in meetings]}],
     "quick_read": quick_read,

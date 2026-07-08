@@ -10,7 +10,7 @@ Lower confidence by design than v1.x / v2.x plugin parsers because chat content 
 
 ## Entry point
 
-Orchestrator dispatches here when shape detection finds OpenAI-export-shaped files in the source folder. See `../SKILL.md` → "Shape Detection" — Parser E is checked before Parser D's generic fallback.
+Orchestrator dispatches here when shape detection finds OpenAI-export-shaped files in the source folder. See `../SKILL.md` → Phase 1 "Shape Detection" — Parser E is checked before Parser D's generic fallback.
 
 Parser E announces its approach to the CEO before parsing:
 

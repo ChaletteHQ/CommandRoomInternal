@@ -47,9 +47,19 @@ def _pack_artifact(data):
             return v
     return None
 
+# Client back-compat (FIX1 Batch A): live workspaces have events.jsonl history
+# written with the legacy cr-* source_skill (cr-inbox, cr-dont-forget→pulse, ...).
+# events.jsonl is append-only — never rewritten — so normalize BOTH sides before
+# comparing so an old `cr-inbox` pack_run still matches slug "inbox".
+from source_skill_compat import normalize_source_skill  # shared/scripts is on path
+
 def _is_for(e, slug):
     d = e.get("data") or {}
-    return slug in (e.get("source_skill"), d.get("task_id"), d.get("kind"))
+    target = normalize_source_skill(slug)
+    return any(
+        normalize_source_skill(v) == target
+        for v in (e.get("source_skill"), d.get("task_id"), d.get("kind"))
+    )
 
 def _is_complete(data):
     return (data.get("outcome") or data.get("status")) == "complete"

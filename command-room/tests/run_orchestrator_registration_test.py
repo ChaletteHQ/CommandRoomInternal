@@ -50,6 +50,7 @@ ORCHESTRATOR_MAP = {
     "pulse": "orchestrator-dont-forget.md",  # filename stays for events.jsonl source_skill back-compat
     "past-meetings": "orchestrator-past-meetings.md",
     "friday-wrap": "orchestrator-friday-wrap.md",  # v3.11.0 — first weekly-rhythm task (Fri 4 PM)
+    "relationship-moves": "orchestrator-relationship-moves.md",  # REL1 — weekly Sunday outreach pack
 }
 
 CHAT_EMITTING_TASKS = {
@@ -60,6 +61,7 @@ CHAT_EMITTING_TASKS = {
     "pulse",
     "past-meetings",
     "friday-wrap",
+    "relationship-moves",
 }
 
 SILENT_TASKS = set()  # cr-refresh-workspace-map removed in v2.14.25

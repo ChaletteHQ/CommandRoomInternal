@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""
+Save-time voice-tell detector (SPEC B2).
+
+WHY THIS EXISTS
+---------------
+
+`shared/VOICE_CALIBRATION.md` carries a universal banned-phrase list of LLM
+tells — generic-assistant language ("I'd be happy to…", "Hope this finds you
+well", "Best regards") that instantly breaks the illusion the CEO wrote the
+draft. For most of the plugin's life that list was prompt discipline only:
+declared in prose, enforced by NOTHING (the same enforcement gap
+`tests/run_lazy_draft_test.py` documents for the lazy-draft contract).
+
+This module turns the list into a deterministic, stdlib-only gate. It scans
+output text BEFORE it reaches disk and returns `fail / warn / pass` with the
+offending lines, wired into:
+  1. each composer's Step 2 critique as a bash-gated tool call, and
+  2. `brief_writer.make_brief()` PRE-save (before Document() is built) so no
+     .docx carrying an exact tell ever reaches disk.
+
+SEVERITY MODEL (SPEC B2 D1)
+---------------------------
+  fail  — exact banned phrases (openers / fillers / preambles / closers).
+          One rule per markdown bullet in VOICE_CALIBRATION.md's list.
+  warn  — structural tells (tri-colon, >2 em-dashes per paragraph, hedging
+          stacks, bullets-in-email). These are judgment calls; the markdown
+          itself hedges ("where prose fits"), so they advise, never block.
+  pass  — clean.
+Verdict = fail if any fail finding, else warn if any warn finding, else pass.
+
+CLIENT SAFETY
+-------------
+This gate can BLOCK a document save on live client workspaces, so it is built
+to never lose content and never fight a calibrated voice:
+  - `allow_phrases` feeds a client's demonstrably-used phrases (their Voice
+    Block Taboos) through untouched — those are NEVER reported. A real CEO who
+    signs "Best regards" passes once that phrase is in their Voice Block.
+  - `skip_quoted` ignores line-initial transcript quotes and reply blockquotes
+    so a banned phrase the COUNTERPARTY said in a pulled quote never blocks the
+    CEO's own save.
+  - The brief_writer wrapper hard-fails ONLY the canonical-voice outbound
+    kinds; everything else is warn-only. And it raises PRE-Document() so a
+    blocked save writes no partial file — the draft is rewritten, never dropped.
+
+SYNC RULE
+---------
+The fail-rule table below is the machine-readable encoding of
+VOICE_CALIBRATION.md's banned-phrase list. The two MUST change together —
+`tests/run_voice_tell_detector_test.py` asserts the detector's fail-rule count
+is >= the markdown list's bullet count, so adding a bullet without a code row
+fails the battery loudly.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Dict, List, Optional, Sequence
+
+
+class VoiceTellError(RuntimeError):
+    """Raised by the save-time gate when a fail-severity voice tell is present
+    in a hard-blocking context. Carries the structured findings so the caller
+    can report exactly which lines to rewrite.
+
+    Raised PRE-save by `brief_writer.make_brief()` — no partial file exists
+    when this fires, so the draft is rewritten, never silently dropped."""
+
+    def __init__(self, message: str, findings: Optional[List[dict]] = None) -> None:
+        super().__init__(message)
+        self.findings: List[dict] = findings or []
+
+
+# Brief kinds whose output is canonical CEO voice going OUTBOUND. A fail-
+# severity tell in one of these hard-blocks the save. Every other kind
+# (call_prep, past_meeting, insights, weekly_*, operator_report, dormant_scan,
+# automation_*, contract_review, stress_test) is warn-only — those are
+# internal-to-user briefs where a quoted tell is legitimate. Single source of
+# truth; brief_writer imports this set.
+FAIL_BLOCKING_KINDS = frozenset(
+    {"memo", "one_pager", "decision_memo", "board_pack", "followup_pack"}
+)
+
+
+def _phrase_pattern(phrase: str) -> "re.Pattern[str]":
+    """Compile a banned phrase into a case-insensitive, apostrophe-flexible,
+    whitespace-flexible, word-boundary-anchored pattern. Canonical phrases use
+    a straight apostrophe; both ' and the curly U+2019 match at runtime."""
+    parts: List[str] = []
+    for ch in phrase:
+        if ch in "'’":
+            parts.append("['’]")
+        elif ch == " ":
+            parts.append(r"\s+")
+        else:
+            parts.append(re.escape(ch))
+    return re.compile(r"\b" + "".join(parts), re.IGNORECASE)
+
+
+# Canonical fail rules — one per banned-phrase bullet in VOICE_CALIBRATION.md
+# (Openers / Filler phrases / Preambles / Closers). Order is display order
+# only; every rule runs regardless of which matches first.
+#
+# (rule_id, canonical_phrase, hint)
+_FAIL_PHRASES: List[tuple[str, str, str]] = [
+    # --- Openers to never use ---
+    ("opener_happy_to",        "I'd be happy to",        "open with the action, not your eagerness to do it"),
+    ("opener_love_to",         "I'd love to",            "state what you'll do, not that you'd love to"),
+    ("opener_happy_help",      "Happy to help",          "drop it — lead with the substance"),
+    ("opener_great_question",  "Great question",         "answer the question; don't praise it"),
+    ("opener_great_point",     "That's a great point",   "engage the point directly, no preamble"),
+    ("opener_thanks_reaching", "Thanks for reaching out","open on the topic unless a thank-you is genuinely apt"),
+    # --- Filler phrases to strip ---
+    ("filler_let_me_know",     "Let me know if",         "make the ask concrete or cut it"),
+    ("filler_feel_free",       "Feel free to",           "say plainly what they can do"),
+    ("filler_hope_helps",      "I hope this helps",      "trust the content; cut the hedge"),
+    ("filler_finds_well",      "Hope this finds you well","cut it unless the CEO demonstrably uses it (allow_phrases)"),
+    ("filler_dont_hesitate",   "Please don't hesitate to","say 'email me' / 'call me' directly"),
+    ("filler_circling_back",   "Circling back on",       "say 'following up on [X]'"),
+    ("filler_wanted_circle",   "I wanted to circle back", "say 'following up on [X]'"),
+    ("filler_check_in",        "Just wanted to check in", "state the actual reason for the message"),
+    ("filler_touching_base",   "Touching base",          "name the specific thing you're following up on"),
+    ("filler_per_last_email",  "As per my last email",   "restate the point plainly without the jab"),
+    # --- Preambles to strip ---
+    ("preamble_heres_draft",   "Here's a draft",         "deliver the content; drop the framing"),
+    ("preamble_heres_came_up", "Here's what I came up with","deliver the content; drop the framing"),
+    ("preamble_below_draft",   "Below is a draft for your review","deliver the content; drop the framing"),
+    ("preamble_put_together",  "I've put together",      "deliver the content; drop the framing"),
+    # --- Closers to never use ---
+    ("closer_best_regards",    "Best regards",           "use the CEO's calibrated sign-off (or none)"),
+    ("closer_warm_regards",    "Warm regards",           "use the CEO's calibrated sign-off (or none)"),
+    ("closer_looking_forward", "Looking forward to hearing back","cut unless it's in the Voice Block"),
+]
+
+# Per-rule pattern overrides (#v3200-2). A few banned phrases are routinely
+# INTERPOLATED — a word is dropped in the middle ("I hope this **email** finds
+# you well") — which defeats the literal whitespace-flexible pattern built by
+# `_phrase_pattern`. Where the canonical phrase has a common interpolation slot,
+# we override its compiled pattern with one that tolerates 0-2 inserted words.
+# The canonical phrase + hint are unchanged; only the matcher is widened.
+_PATTERN_OVERRIDES: Dict[str, "re.Pattern[str]"] = {
+    # "Hope this finds you well" → also catch "hope this email/message/note
+    # finds you well" (the single most common live form — v3.20.0 A2 fire).
+    "filler_finds_well": re.compile(
+        r"\bhope\s+this(?:\s+\w+){0,2}\s+finds\s+you\s+well",
+        re.IGNORECASE,
+    ),
+}
+
+# Compiled fail-rule table: (rule_id, canonical_phrase, compiled_pattern, hint).
+# Use the per-rule override when present, else the generic phrase pattern.
+_FAIL_RULES: List[tuple[str, str, "re.Pattern[str]", str]] = [
+    (rid, phrase, _PATTERN_OVERRIDES.get(rid, _phrase_pattern(phrase)), hint)
+    for rid, phrase, hint in _FAIL_PHRASES
+]
+
+# Number of exact-phrase fail rules. The test asserts this is >= the markdown
+# bullet count so the two can't drift silently.
+FAIL_RULE_COUNT = len(_FAIL_RULES)
+
+
+# --- Structural detectors (warn severity) ---
+
+_EM_DASH = "—"
+_TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
+_COLON_SEP_RE = re.compile(r"(?<=[A-Za-z])\s*:\s+(?=[A-Za-z])")
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?]+\s+")
+_HEDGE_RE = re.compile(
+    r"\b(?:i\s+think|might|perhaps|possibly|could\s+potentially|it\s+may\s+be)\b",
+    re.IGNORECASE,
+)
+_BULLET_LINE_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
+
+
+def _is_quoted_line(line: str) -> bool:
+    """A line is treated as a quote (and skipped under skip_quoted) when it
+    begins with a blockquote marker or a double-quote character. Covers
+    transcript pulls (`> …`) and reply blockquotes (`"…," she said`). Inline
+    quotes mid-line are NOT skipped (per SPEC B2 §8 — rewrite guidance is to
+    paraphrase or blockquote)."""
+    s = line.lstrip()
+    if not s:
+        return False
+    if s[0] == ">":
+        return True
+    if s[0] in '"“”«':
+        return True
+    return False
+
+
+def _normalize_allow(allow_phrases: Optional[Sequence[str]]) -> List[str]:
+    out: List[str] = []
+    for p in allow_phrases or []:
+        if not p:
+            continue
+        norm = re.sub(r"\s+", " ", p.strip().lower()).replace("’", "'")
+        if norm:
+            out.append(norm)
+    return out
+
+
+def _is_allowed(matched: str, allow_norm: List[str]) -> bool:
+    """A finding is suppressed when an allow_phrases entry covers the matched
+    text (either direction of containment, apostrophe/whitespace normalized).
+    This is the per-client Voice Block Taboos carve-out — a phrase the client
+    demonstrably uses is fed through and NEVER reported."""
+    if not allow_norm:
+        return False
+    m = re.sub(r"\s+", " ", matched.strip().lower()).replace("’", "'")
+    for a in allow_norm:
+        if a in m or m in a:
+            return True
+    return False
+
+
+def _iter_paragraphs(text: str):
+    """Yield (start_line_no, paragraph_text) for blank-line-delimited
+    paragraphs. start_line_no is 1-based into the original text."""
+    lines = text.split("\n")
+    buf: List[str] = []
+    start: Optional[int] = None
+    for idx, line in enumerate(lines, start=1):
+        if line.strip() == "":
+            if buf:
+                yield start, "\n".join(buf)
+                buf, start = [], None
+        else:
+            if start is None:
+                start = idx
+            buf.append(line)
+    if buf:
+        yield start, "\n".join(buf)
+
+
+def _scan_phrases(
+    text: str, *, allow_norm: List[str], skip_quoted: bool
+) -> List[dict]:
+    findings: List[dict] = []
+    for line_no, line in enumerate(text.split("\n"), start=1):
+        if skip_quoted and _is_quoted_line(line):
+            continue
+        for rule_id, phrase, pattern, hint in _FAIL_RULES:
+            for m in pattern.finditer(line):
+                matched = m.group(0)
+                if _is_allowed(matched, allow_norm):
+                    continue
+                findings.append(
+                    {
+                        "rule": rule_id,
+                        "severity": "fail",
+                        "line_no": line_no,
+                        "line": line.strip(),
+                        "match": matched,
+                        "hint": hint,
+                    }
+                )
+    return findings
+
+
+def _scan_structural(
+    text: str, *, context: str, skip_quoted: bool
+) -> List[dict]:
+    findings: List[dict] = []
+    for start, para in _iter_paragraphs(text):
+        first_line = para.split("\n", 1)[0]
+        if skip_quoted and _is_quoted_line(first_line):
+            continue
+
+        # Em-dash pile-up — >2 em-dashes in one paragraph.
+        em = para.count(_EM_DASH)
+        if em > 2:
+            findings.append(
+                {
+                    "rule": "structural_em_dash_pileup",
+                    "severity": "warn",
+                    "line_no": start,
+                    "line": first_line.strip(),
+                    "match": f"{em} em-dashes in one paragraph",
+                    "hint": "more than 2 em-dashes in a paragraph is a tell — break them up",
+                }
+            )
+
+        # Tri-colon construction — >=2 word:word colon separators in a line.
+        no_time = _TIME_RE.sub(" ", para)
+        if len(_COLON_SEP_RE.findall(no_time)) >= 2:
+            findings.append(
+                {
+                    "rule": "structural_tri_colon",
+                    "severity": "warn",
+                    "line_no": start,
+                    "line": first_line.strip(),
+                    "match": "tri-colon construction",
+                    "hint": "rewrite the colon-chained clauses as prose where prose fits",
+                }
+            )
+
+        # Hedging stack — >=2 hedge tokens in a single sentence.
+        for sentence in _SENTENCE_SPLIT_RE.split(para):
+            if len(_HEDGE_RE.findall(sentence)) >= 2:
+                findings.append(
+                    {
+                        "rule": "structural_hedging_stack",
+                        "severity": "warn",
+                        "line_no": start,
+                        "line": sentence.strip()[:120],
+                        "match": "hedging stack",
+                        "hint": "commit or cut — stacked hedges read as evasive",
+                    }
+                )
+                break
+
+        # Bullets-in-email — only meaningful when the surface is an email/Slack
+        # body. Brief composers legitimately use bullets, so this is gated on
+        # context=="email" to avoid false positives on memos/one-pagers.
+        if context == "email":
+            bullet_lines = [
+                ln for ln in para.split("\n") if _BULLET_LINE_RE.match(ln)
+            ]
+            if len(bullet_lines) >= 2:
+                findings.append(
+                    {
+                        "rule": "structural_bullets_in_email",
+                        "severity": "warn",
+                        "line_no": start,
+                        "line": bullet_lines[0].strip(),
+                        "match": f"{len(bullet_lines)} bullet lines in email body",
+                        "hint": "the CEO would write this as prose — collapse the bullets",
+                    }
+                )
+    return findings
+
+
+def _verdict(findings: List[dict]) -> str:
+    if any(f["severity"] == "fail" for f in findings):
+        return "fail"
+    if any(f["severity"] == "warn" for f in findings):
+        return "warn"
+    return "pass"
+
+
+def scan_text(
+    text: str,
+    *,
+    context: str = "email",
+    allow_phrases: Optional[Sequence[str]] = None,
+    skip_quoted: bool = True,
+) -> Dict:
+    """Scan `text` for voice tells.
+
+    Args:
+      text: the output text to scan (email body, brief paragraph, etc.).
+      context: "email" enables the bullets-in-email structural check; any
+        other value (e.g. "brief") leaves bullets alone.
+      allow_phrases: per-client calibrated phrases to feed through untouched
+        (Voice Block Taboos). A finding whose match is covered by one of these
+        is suppressed — NEVER reported. CLIENT SAFETY hook.
+      skip_quoted: when True, line-initial blockquotes and double-quoted lines
+        are ignored (transcript pulls, reply blockquotes).
+
+    Returns:
+      {"verdict": "fail"|"warn"|"pass", "findings": [ {rule, severity,
+       line_no, line, match, hint}, ... ]}
+    """
+    if text is None:
+        text = ""
+    allow_norm = _normalize_allow(allow_phrases)
+    findings = _scan_phrases(text, allow_norm=allow_norm, skip_quoted=skip_quoted)
+    findings += _scan_structural(text, context=context, skip_quoted=skip_quoted)
+    return {"verdict": _verdict(findings), "findings": findings}
+
+
+def _cell_strings(value) -> List[str]:
+    """Flatten an arbitrarily-nested table/matrix cell container into strings."""
+    out: List[str] = []
+    if value is None:
+        return out
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            out.extend(_cell_strings(v))
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            out.extend(_cell_strings(v))
+    else:
+        out.append(str(value))
+    return out
+
+
+def check_sections(
+    sections: Sequence[Dict],
+    *,
+    brief_kind: str,
+    allow_phrases: Optional[Sequence[str]] = None,
+) -> Dict:
+    """brief_writer adapter. Flattens `sections` (the same shape make_brief
+    receives) into scannable text and applies the gate.
+
+    Phrase rules run over ALL surfaced text — body paragraphs, bullets, and
+    table / matrix cells (a banned phrase hidden in a table cell is still
+    found). Structural rules run over `body` paragraphs ONLY — bullets and
+    table/matrix cells are legitimately list-shaped, so em-dash / tri-colon /
+    bullets-in-email checks would false-positive there (SPEC B2 §8).
+
+    Returns the same {"verdict", "findings"} shape as scan_text.
+    """
+    allow_norm = _normalize_allow(allow_phrases)
+    findings: List[dict] = []
+
+    # Phrase scan: every text surface in the section, including list/table cells.
+    phrase_lines: List[str] = []
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        heading = sec.get("heading")
+        if isinstance(heading, str):
+            phrase_lines.append(heading)
+        body = sec.get("body")
+        if isinstance(body, str):
+            phrase_lines.extend(body.split("\n"))
+        for bullet in sec.get("bullets") or []:
+            phrase_lines.extend(_cell_strings(bullet))
+        table = sec.get("table")
+        if isinstance(table, dict):
+            phrase_lines.extend(_cell_strings(table.get("headers")))
+            phrase_lines.extend(_cell_strings(table.get("rows")))
+        matrix = sec.get("matrix")
+        if isinstance(matrix, dict):
+            phrase_lines.extend(_cell_strings(matrix.get("headers_row")))
+            phrase_lines.extend(_cell_strings(matrix.get("headers_col")))
+            phrase_lines.extend(_cell_strings(matrix.get("cells")))
+
+    findings += _scan_phrases(
+        "\n".join(phrase_lines), allow_norm=allow_norm, skip_quoted=True
+    )
+
+    # Structural scan: body paragraphs only.
+    body_blob = "\n\n".join(
+        sec.get("body", "")
+        for sec in (sections or [])
+        if isinstance(sec, dict) and isinstance(sec.get("body"), str)
+    )
+    if body_blob.strip():
+        findings += _scan_structural(body_blob, context="brief", skip_quoted=True)
+
+    return {"verdict": _verdict(findings), "findings": findings}
+
+
+def summarize_findings(findings: List[dict], *, limit: int = 10) -> str:
+    """Compact human-readable summary for a VoiceTellError message or stderr."""
+    lines = []
+    for f in findings[:limit]:
+        lines.append(
+            f"  [{f['severity']}:{f['rule']}] line {f['line_no']}: "
+            f"{f['match']!r} — {f['hint']}"
+        )
+    if len(findings) > limit:
+        lines.append(f"  …and {len(findings) - limit} more")
+    return "\n".join(lines)
+
+
+__all__ = [
+    "scan_text",
+    "check_sections",
+    "summarize_findings",
+    "VoiceTellError",
+    "FAIL_BLOCKING_KINDS",
+    "FAIL_RULE_COUNT",
+]
+
+
+def _main(argv: List[str]) -> int:
+    import sys
+
+    context = "email"
+    paths: List[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--context":
+            i += 1
+            if i < len(argv):
+                context = argv[i]
+        else:
+            paths.append(a)
+        i += 1
+
+    if len(paths) != 1:
+        print(
+            "usage: voice_tell_detector.py <file|-> [--context email|brief]",
+            file=sys.stderr,
+        )
+        return 2
+
+    target = paths[0]
+    if target == "-":
+        text = sys.stdin.read()
+    else:
+        from pathlib import Path
+
+        p = Path(target)
+        if not p.exists():
+            print(f"file not found: {target}", file=sys.stderr)
+            return 2
+        text = p.read_text(encoding="utf-8", errors="replace")
+
+    result = scan_text(text, context=context)
+    verdict = result["verdict"]
+    findings = result["findings"]
+
+    if verdict == "pass":
+        print("OK: no voice tells detected")
+        return 0
+    if verdict == "warn":
+        print(f"WARN: {len(findings)} structural tell(s) — review, save not blocked")
+        print(summarize_findings(findings))
+        return 0
+    # fail
+    fails = [f for f in findings if f["severity"] == "fail"]
+    print(f"FAIL: {len(fails)} banned phrase(s) — rewrite before saving")
+    print(summarize_findings(findings))
+    return 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_main(sys.argv[1:]))

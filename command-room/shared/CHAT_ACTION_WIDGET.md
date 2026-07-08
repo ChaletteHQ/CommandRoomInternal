@@ -4,7 +4,7 @@
 
 ## Why this exists
 
-Pre-v2.10.9 each per-item action row was a typed-number text format: `▸ 1 send  ▸ 1 to drafts  ▸ 1 edit  ▸ 1 skip`. The user typed `1 send` to fire an action. M tested an inline-button alternative on Apr 29 (probe: `plugin-source-v2/skills/probe-widget/`) and found:
+Pre-v2.10.9 each per-item action row was a typed-number text format: `▸ 1 send  ▸ 1 to drafts  ▸ 1 edit  ▸ 1 skip`. The user typed `1 send` to fire an action. M tested an inline-button alternative on Apr 29 (a probe-widget skill in the pre-release tree) and found:
 
 - Buttons work in production Cowork chat (multi-click during streaming, post-response click, post-refresh click — all PASS).
 - Per-click `sendPrompt` triggers Cowork's auto-scroll to the response. For multi-item resolution flows (close 4 items in a row), this means click → scroll-down → scroll back up → click → repeat. Annoying.
@@ -66,6 +66,7 @@ Below the items, a counter shows `Selections so far: X of N`. Increments with ea
 ### What the widget does NOT do
 
 - **Does not pre-select anything.** Every item starts with no choice. M has to actively select.
+  - **DOCUMENTED EXCEPTION — first-run personalization items (SPEC FRP1).** First-run `fr1`/`fr2`/`fr3` items (the "Make this yours" section at the BOTTOM of a scheduled orchestrator's widget) render each fixed-option row with the **already-saved default in a "current" visual state**. This is NOT a pre-selected pending choice — the default is already applied + persisted (`save_skill_config` ran before the widget); the buttons are an OVERRIDE surface, and tapping one emits a normal `{n:"fr1", action, sub?, input?}` payload that apply-choices routes to `save_skill_config(..., is_reconfigure=True, origin="first_fire_override")`. The block renders exactly once ever (`is_configured` gate). On-demand skills use the footer micro-widget variant instead (never a second widget surface — that's what would break MUST-NOT rule 5). Full protocol: `shared/FIRST_RUN_PROTOCOL.md`.
 - **Does not auto-fire on click.** Per-button clicks are local state changes only. Submission is gated on the Apply all button.
 - **Does not persist state across refreshes.** If the user refreshes the chat page, all selections are lost (the widget re-renders with fresh state). This is acceptable per the all-batch design — M closes items in one sitting; if interrupted, he starts over.
 - **Does not show heavyweight action output inline.** Drafts, brief expansions, and email sends produce their visible output AFTER Apply, in the response chat turn. The widget itself stays compact.
@@ -75,10 +76,12 @@ Below the items, a counter shows `Selections so far: X of N`. Increments with ea
 When **Apply all** fires, the consolidated `sendPrompt` carries the canonical batch shape:
 
 ```
-apply choices: [{"n":1,"action":"send"},{"n":2,"action":"prep deep work"},{"n":3,"action":"push to 2026-05-05"},{"n":4,"action":"skip"}]
+apply choices: [{"n":1,"action":"send","src":"inbox"},{"n":2,"action":"prep deep work","src":"inbox"},{"n":3,"action":"push to 2026-05-05","src":"inbox"},{"n":4,"action":"skip","src":"inbox"}]
 ```
 
 The serialization is JSON inside the `apply choices:` prefix. The receiving skill (see "Receiving skill" below) parses the JSON, dispatches each choice through the same per-action handlers the typed-number row used to call.
+
+**`src` — stateless source dispatch (Phase 3 / W4, 2026-07).** Every tuple carries `src`: the emitting surface's id (the orchestrator/skill name the data view passed as `source_skill` — `inbox`, `commitments`, `pulse`, `past-meetings`, `upcoming-meetings`, `show-my-list`, `meeting-notes`, ...). apply-choices dispatches on `src` FIRST, so a widget click works no matter how much later it lands — scheduled chats are persistent threads the CEO opens hours later; the evening click on the 7:15 AM inbox widget is the normal case, not the edge. The fire-marker lookup (and its 60-minute TTL) applies ONLY as the fallback for legacy widgets whose tuples carry no `src`. The renderer stamps `src` automatically when the data view includes `source_skill`; orchestrators MUST pass it.
 
 For grouped items with sub-letters (e.g. `7a`, `7b` in commitments), the `n` field carries the full identifier:
 
@@ -88,9 +91,13 @@ apply choices: [{"n":"7a","action":"mark received"},{"n":"7b","action":"mark rec
 
 For actions that take a parameter (`push to [date]`, `resolved [reason]`, `context [text]`), the parameter is part of the `action` string. The widget collects the parameter via an inline input that appears when the user clicks the button (small popover with a date picker for date params; small text input for free-form params).
 
+### Commitment identity in widgets (Phase 2 Stage B, F2 — MANDATORY)
+
+Every surface that renders a ✓ / `resolved` / `mark received` / any commitment-closing action MUST embed the commitment's **`data.id` verbatim** in the item it renders (the per-item context cache the receiving skill reads, and any `log resolved: <id>` sendPrompt an artifact fires). No surface may re-derive, abbreviate, or substitute an id — not the seq, not a truncated ULID, not a title hash. The dispatch side closes through `commitment_state.close_commitment()`, whose normalizer accepts the legacy spellings still in flight (bare int `86`, `seq_86`, `event_086`, `commitment_seq_86`) and raises `CommitmentIdError` on anything that matches no commitment — but the normalizer is a safety net for HISTORIC emitters, not a license for new ones. Re-derived ids are how 74 orphan tombstones (closures that matched nothing) entered the live substrate. `pending_review` items may render a closing action only as an explicit confirm (dispatch passes `user_confirmed=True`); no widget path auto-resolves them.
+
 ## Receiving skill
 
-A new skill `apply-choices` lives at `plugin-source-v2/skills/apply-choices/SKILL.md`. (Not yet implemented as of 2026-04-29 evening — flagged in `HANDOFF_cr-plugin-feedback-v2-10-9_2026-04-29.md` as a v2.10.9 follow-on build.) Its job:
+The `apply-choices` skill (skills/apply-choices/SKILL.md — shipped v2.12.4) owns this. Its job:
 
 1. Parse the JSON array from the `apply choices:` prefix.
 2. For each `{"n", "action"}` tuple, dispatch through the same handler the original typed-number row would have called. The orchestrator that emitted the widget cached the per-item context (recipient, subject, draft body, etc.) — `apply-choices` reads that cache to know what `1 send` means in the current context.
@@ -113,9 +120,9 @@ After `mcp__visualize__show_widget` posts, emit a second chat turn with a markdo
 ```markdown
 **Links:**
 
-1. [Sam Sample — Framing the build](https://mail.google.com/mail/u/0/#all/198abc...) · [📄 brief](computer:///c%3A/Users/.../Past_Meeting_Sam_2026-04-30.docx)
+1. [Sam Sample — Framing the build](https://mail.google.com/mail/u/0/#all/198abc...) · [📄 brief](computer://C:\Users\...\Past_Meeting_Sam_2026-04-30.docx)
 2. [Lyra Sample — Acme Research](https://mail.google.com/mail/u/0/#all/198def...)
-3. [Adan Sample — Apr 14 kickoff call](https://notes.granola.ai/d/abc...) · [📄 brief](computer:///c%3A/Users/.../Past_Meeting_Adan_2026-04-14.docx)
+3. [Adan Sample — Apr 14 kickoff call](https://notes.granola.ai/d/abc...) · [📄 brief](computer://C:\Users\...\Past_Meeting_Adan_2026-04-14.docx)
 ```
 
 Numbering matches the widget's item numbering exactly so the user can map widget items → links.
@@ -197,6 +204,35 @@ When ONE person owes you multiple things in the same fire (e.g., five outstandin
 | `mark done` | Mark done | Same as `close` but for self-commitments. |
 | `skip` | Skip | 24h dismissal. |
 
+### Commitment Triage (Phase 2 Stage D, S4 — `triage my commitments` + the Friday opt-in chat)
+
+Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagged "still on your plate?"). `done`/`defer` respec onto the canonical verbs; the five triage-specific verbs are the ONE deliberation verb set added under the ratified pre-authorization. Every action dispatches through `close_commitment()` / `commitment_state` helpers via apply-choices — NO in-place mutation ever (F4); this surface exists so the next cleanup-chat doesn't rewrite history.
+
+| Action | Display | What it does |
+|---|---|---|
+| `resolved` | Done | Close via `close_commitment(..., resolution="done", user_confirmed=True)`. |
+| `push to [date]` | Defer | `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere). |
+| `drop` | Drop | Close via `close_commitment(..., resolution="dropped", user_confirmed=True)` — deliberately let go, distinct from done. |
+| `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. |
+| `make task` | Make it a task | `promote_task_to_commitment(..., new_kind="task")` — additive `commitment_reclassified` marker; drops off CRU/chase/aging, lives on the task surface. |
+| `promote` | Make it a commitment | `promote_task_to_commitment(..., new_kind="promise")` — S5 one-tap promote when a counterparty appears. |
+| `never track this` | Never track this | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). |
+| `skip` | Skip | 24h dismissal (unchanged). |
+
+**Send-vs-draft clarity (PL 2026-07-02):** wherever `send` and `draft` appear side by side on an email-shaped item, the widget's intro line (or the item's context tag) makes the difference visible in plain words — "**Send** delivers it now · **Draft** saves it to your Drafts to send later." Never assume the customer knows the distinction from the labels alone.
+
+### Deliberation extension (Phase 4 2026-07-02 — same pre-authorized set, grown once)
+
+| Action | Display | What it does |
+|---|---|---|
+| `revisit` | Revisit now | decision-revisit: opens `decision-memo-composer` pre-filled with the original decision's framing + the contradictory-signal pass. |
+| `still valid` | Still valid | decision-revisit: writes `decision_reaffirmed` referencing the original decision. |
+| `replace` | Replace it | decision-revisit: chains to `decision-log` to capture the new decision; writes `decision_superseded` linking the original (event type unchanged — the friendly label is UI-only). |
+| `snooze 30d` | Snooze (30 days) | decision-revisit: `decision_revisit_scheduled` with `snooze_until_ts = now + 30d`. |
+| `snooze 7d` | Snooze (7 days) | scaffold-automation: re-surface the deployed-yet? check in a week. |
+
+**Undo (S4 — delivered by this surface):** the post-Apply ack ends with *"Say `undo` to reverse this triage."* A follow-up `undo` (within the same chat) reopens every commitment the batch closed via `commitment_state.reopen_commitment` — an ADDITIVE `commitment_reopened` event per item; tombstones stay in history and a later re-close works normally. Reclassifications undo with a reverse `commitment_reclassified` marker. Never edit or delete prior events.
+
 ### Pulse — person dormancy/pattern-break
 
 | Action | Display | What it does |
@@ -205,7 +241,7 @@ When ONE person owes you multiple things in the same fire (e.g., five outstandin
 | `draft re-engagement` | Draft re-engagement | Generates a re-engagement email draft to the person. The draft surfaces in the apply-time widget with Send / Edit then send / etc. (v2.12.4+) |
 | `schedule catchup [when]` | Schedule catchup | Widget exposes a free-text natural-language input. User types "next Tuesday afternoon", "this Friday at 4pm", "sometime next week". Drafts the request email + creates tentative invite if a specific time was given. (v2.12.4+ — was no-input in earlier versions.) |
 | `resolved` | Resolved | State change. Suppresses the alert for 14 days. NO input affordance, NO textarea — clean one-click. (v2.14.1+ unified with Commitments YOU OWE `resolved`; v2.12.4 had `resolved [reason]` with a textarea, but Bo's Apr 30 testing flagged the surprise input as confusing — dropped per CONTRACT.md Rule 6 on action-label clarity.) Same display label, same behavior, same mental model as Commitments: "this isn't open anymore." |
-| `snooze [duration]` | Snooze | Snooze the alert for the picked duration (`7d`, `14d`, `30d`, etc.). |
+| `snooze [duration]` | Snooze | Snooze the alert for the picked duration (`7d`, `14d`, `30d`, etc.). **Emitted form:** v2.14.38+ widgets emit a fixed no-input `snooze 3d`; pre-v2.14.38 in-flight widgets may still emit `snooze [duration]` with a free-text duration — apply-choices accepts BOTH (see its Step 3 table). |
 | `skip` | Skip | 24h dismissal. |
 
 ### Pulse — stale-active project
@@ -285,7 +321,7 @@ When a meeting mentioned a commitment without a clear due date:
 
 | Action | Display | What it does |
 |---|---|---|
-| `context [text]` | Context | (v2.14.37+) Single unified context affordance — replaces `add more context [text]` + `ask question [text]`. Widget exposes a textarea; user types anything (background context, talking points, a question, an instruction). On Apply, the handler routes intent-aware: question-shaped input synthesizes an answer using prior meeting transcripts + recent emails with attendees + relevant decision-log entries (1-3 paragraphs with source citations); statement-shaped input re-runs call-prep with the added context folded in and regenerates the `.docx` brief. Per M's 2026-05-07 evening ask: *"we only need a 'Context' button… just one option that opens that up for you to interact how you wish."* |
+| `context [text]` | Context | (v2.14.37+) Single unified context affordance — replaces `add more context [text]` + `ask question [text]`. Widget exposes a textarea; user types anything (background context, talking points, a question, an instruction). On Apply, the handler routes intent-aware: question-shaped input synthesizes an answer using prior meeting transcripts + recent emails with attendees + relevant decision-log entries (1-3 paragraphs with source citations); statement-shaped input re-runs call-prep with the added context folded in and regenerates the `.docx` brief. **Intent heuristic:** treat the input as question-shaped if it ends with `?` OR its first word matches `(what|why|how|when|who|which|is|are|was|were|did|does|do|will|can|could|should|would)` (case-insensitive); otherwise statement-shaped (brief regeneration). Per M's 2026-05-07 evening ask: *"we only need a 'Context' button… just one option that opens that up for you to interact how you wish."* |
 | `add more context [text]` | Add more context | (v2.12.4 - v2.14.36 alias, retained for back-compat) Translates at apply time to `context [text]`. New widgets emit `context [text]`; pre-v2.14.37 widgets in flight at upgrade still dispatch correctly. |
 | `ask question [text]` | Ask question | (v2.14.14 - v2.14.36 alias, retained for back-compat) Translates at apply time to `context [text]`. |
 | `push meeting [date]` | Push meeting | Widget exposes a free-text natural-language input ("monday at 2", "tomorrow afternoon", "2026-05-12"). The reply handler parses the natural language at apply time. Drafts the reschedule email; surfaces in the apply-time widget with Send / Edit then send / etc. (v2.12.4+ — replaces strict date picker.) |

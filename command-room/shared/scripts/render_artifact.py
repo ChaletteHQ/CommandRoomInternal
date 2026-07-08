@@ -77,7 +77,10 @@ def main() -> int:
         return 2
 
     try:
-        raw_input = args.input.read_text(encoding="utf-8")
+        if str(args.input) == "-":
+            raw_input = sys.stdin.read()  # `--input -` reads JSON from stdin (heredoc)
+        else:
+            raw_input = args.input.read_text(encoding="utf-8")
     except OSError as exc:
         print(f"ERROR: could not read input {args.input}: {exc}", file=sys.stderr)
         return 2

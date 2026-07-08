@@ -1,6 +1,6 @@
 ---
 name: dormant-customer-scan
-description: "Surface the customers who've gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Scans CRM, email, and meeting notes for cadence breaks, produces a ranked list with last-touch date, gap vs baseline, historical revenue, and a suggested re-engagement angle for each. Use when the CEO says 'who went dark', 'gone dark', 'customers have gone dark', 'which customers have gone dark', 'dormant customer scan', 'dormant customer', 'who haven't I heard from', 'who hasn't replied', 'hasn't replied in a while', 'quiet customers', 'customer dormancy check', 'customers who stopped responding'. Runs on-demand or as a scheduled Sunday task. DOES NOT fire on 'follow up with [customer]' (that's follow-up-ritual or inbox-triage draft) or 'show me my customer list' (that's a tracker/RELATIONSHIPS.md read, not a scan)."
+description: "Surface the customers who have gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Fires on: 'which customers have gone dark', 'who went dark', 'dormant customer scan', 'who hasn't replied in a while', 'quiet customers', plus 'tune dormant-customer-scan' and 'show dormant-customer-scan settings'. Computes per-relationship cadence baselines in code, ranks by cooling severity with evidence, and offers one-tap re-engagement drafts; honors learned suppressions and per-person cadence overrides. Does NOT fire on 'who should I reach out to this week' (relationship-moves — the ranked action pack that CONSUMES this detection), 'warm threads to revive' (thread-resurrection — thread-level), or 'draft an email to [name]' (email-writer). Detection math and fences: Routing section in the body."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
@@ -11,7 +11,7 @@ If the scan is invoked with a name-bearing trigger ("dormant scan for [name's cu
 
 - **Use dormant-customer-scan for:** proactive detection of cadence breaks. Output is a ranked list of people/orgs the CEO should reach out to.
 - **Reads from:** `_hq/data/events.jsonl` (canonical Tier 1 source per `references/SOURCE_OF_TRUTH.md` — compute cadence directly from interaction/meeting events per person via `event_references_person` from `cru_match.py`, NOT from the `_hq/views/RELATIONSHIPS.md` projection, which is regenerated lazily by insight-generator and may be stale) + `_hq/data/entities.json` for people/org records + Gmail/Slack for recency confirmation.
-- **Does NOT draft outbound messages** — surfaces the list. If the CEO says "scan for dormant customers and draft re-engagement emails," this skill produces the list, then follow-up-ritual or a composer drafts.
+- **Does NOT draft outbound messages itself** — it surfaces the list; the top-3 `draft re-engagement` widget taps (EXEC1) dispatch through apply-choices to `email-writer` / `follow-up-ritual`, which do the drafting (lazy — nothing exists in Gmail until a further click there). If the CEO says "scan for dormant customers and draft re-engagement emails," this skill produces the list, then hands off the same way.
 
 ## Writer Contract
 
@@ -30,6 +30,61 @@ Scan CRM, email history, and meeting notes for customers whose cadence has broke
 Each dormant customer gets: last-touch date, cadence baseline, gap vs baseline, historical revenue, last interaction summary, suggested re-engagement angle. One markdown file. Scannable in under 2 minutes.
 
 Runs on demand. Also schedulable weekly as a recurring surface — the hook line for the Beta Tier retainer is "every week Claude tells you who's gone dark."
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). All
+three decisions are **show-then-tune (STT)** — the scan runs first, then one-tap changes are
+offered. Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
+# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "threshold": "2x_30d",      # 2x_30d (2x cadence AND 30-day floor) | 1.5x | 3x
+    "revenue_weighting": True,  # weight the ranking by historical revenue
+    "watch_list": True,         # keep a persistent watch-list across scans
+}
+cfg = get_config(workspace_root, "dormant-customer-scan", DEFAULTS)
+```
+
+`threshold` sets the cadence-break sensitivity. `revenue_weighting` weights the ranked list by
+historical revenue when True. `watch_list` keeps a persistent across-scan watch-list when True.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "who went dark", "dormant customer scan" | run the scan with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "dormant-customer-scan", DEFAULTS)` BEFORE rendering, then append the first-run footer. |
+| **Show settings** | "show dormant-customer-scan settings" | render current config in plain English; no scan. |
+| **Tune** | "tune dormant-customer-scan" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-run scan. |
+| **Reset** | "reset dormant-customer-scan to defaults" | `wipe_skill_config(workspace_root, "dormant-customer-scan")` → next fire is a first-fire again. |
+
+**The first-run block (footer of the chat surface — the widget carries the top-3 ask block per EXEC1 below; this settings footer is plain chat text under it):**
+
+> *First time scanning for dormancy. I set 3 defaults: **I flag a customer once they've been
+> quiet twice as long as their usual gap (and at least 30 days)** · **ranked by revenue** ·
+> **I keep a watch-list between scans**. Say "tune the dormant scan" to change any, or just
+> tell me ("be more sensitive" / "don't weight by revenue").*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "be more sensitive" / "flag them sooner" | `threshold = 1.5x` |
+| "be less sensitive" / "only the really cold ones" | `threshold = 3x` |
+| "don't weight by revenue" | `revenue_weighting = False` |
+| "rank by revenue again" | `revenue_weighting = True` |
+| "turn off the watch-list" | `watch_list = False` |
+| "keep a watch-list" | `watch_list = True` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + re-run scan + confirm in one line.
 
 ## How to Use
 
@@ -56,9 +111,11 @@ Before surfacing ANY dormancy flag — whether to the .docx report or the chat s
 
 > **No customer may be flagged dormant from substrate-only data. You MUST call `shared/scripts/live_contact_check.py::live_contact_check()` for every flagged candidate and respect its merged `last_contact_iso`. If the live check shows a recent touch the substrate missed, the customer is NOT dormant — drop the flag.**
 
+**REL1 — emit the normalized dormancy signal (AFTER the live-check gate).** For every candidate that passes the live check and stays dormant, also call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<org/person id>, entity_type='org' or 'person', gap_days=<current gap>, baseline_days=<12-month median gap>, source_skill='dormant-customer-scan')`. The ranked .docx report is unchanged — this is an ADDITIVE shared signal so relationship-moves reads one normalized dormancy story per relationship.
+
 This closes Bug #28 from Session-22 testing: Northstar Partners/Lyra was flagged as 44-days-dormant from substrate, while a Calendar event 31 days ago existed but had never been written to events.jsonl. Real CEO-trust miss ("you told me to chase someone I literally met with"). The helper unifies dormant-customer-scan with Pulse (Bug #5) — same call site, same merge math.
 
-If the live-check helper isn't available (sandbox / connector failure), you still must NOT silent-fall-through to substrate-only flags. Surface the gap honestly in the report ("Live Gmail/Calendar lookup unavailable — flags below are substrate-only; verify any flagged customer before reaching out").
+If the live-check helper isn't available (sandbox / connector failure), you still must NOT silent-fall-through to substrate-only flags. Surface the gap honestly in the report ("I couldn't check live email/calendar just now, so these flags are from saved history only — double-check before reaching out").
 
 1. **Locate the customer list.**
    - Priority: CRM connector (HubSpot/Salesforce if installed) > `_hq/CUSTOMERS.md` > **entities.json fallback (v3.13.6+)** > email thread analysis.
@@ -116,13 +173,35 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
    - Save to `_hq/dormant/DORMANT_SCAN_[YYYY-MM-DD].docx` (per CONTRACT Rule 27 — no .md deliverables). Route through `shared/scripts/brief_writer.py` for layout consistency.
    - Return file link + 1-line headline ("12 customers have gone quiet. Top 3 by revenue: Acme Co ($240K, last touch 89 days ago), Northstar Partners ($180K, 67 days), Acme Logistics ($120K, 52 days).")
 
-## Output Structure
+## Executive Output Standard (EXEC1, v3.20.0+)
+
+Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. Pass `make_brief(brief_kind="dormant_scan", ...)` an `exec_header`:
+- **verdict** = the headline total at stake: *"$540K of historical revenue has gone quiet across 12 customers."* (only the dollar part that quantify can derive — never an estimate; if no revenue is annotated, verdict states the count + cadence, no fabricated dollar).
+- **changed / decide / needs** = what shifted since the last scan · the one customer worth calling today · the one-tap re-engagement to approve.
+- **Subsumes** the old prose `## Summary` line ("Looked across [N]…") — that line is REPLACED by the exec header, not added on top (net length must not increase).
+
+**Top-3 one-tap (element 4 ASK block / one-ask-surface):** the top-3 dormant customers each get a one-tap `draft re-engagement` action (already in CANONICAL_ACTIONS; draft-never-send preserved per the Writer Contract). On the widget surface the widget IS the ask block — no prose twin.
+
+**Quantify (element 3):** per-item dollar tags come from `quantify.money_time_tag` (or the annotated `_hq/CUSTOMERS.md` revenue), never an estimate.
+
+Checklist (binary): header concrete-or-nothing · quantify tag only when non-None · top-3 asks one-tap, reader-actionable, one-surface.
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "Live lookup unavailable — flags below are substrate-only."
+- Good: "I couldn't check live email/calendar just now, so these flags are from saved history only — double-check before reaching out."
+
+## Output
+
+**Deliverable link (CONTRACT Rule 3 — H2 heading link, LAST in the turn):** surface the .docx via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` as the final line of the chat response — after the widget/summary and Sources, never interspliced mid-body, never a plain-text path, never a hand-built `computer://` URL. Structure
 
 ```
 # Customers worth reaching out to — [YYYY-MM-DD]
 
-## Summary
-Looked across [N] customers. [M] have gone quieter than their usual cadence. Top revenue worth a check-in: $[X].
+[Exec header (EXEC1) replaces the former "## Summary" line:]
+**[$X of historical revenue has gone quiet across N customers.]**
+CHANGED   [movement since last scan]
+DECIDE    [the one to call today, or "Nothing — list is current."]
+NEEDED    [approve the top re-engagement draft below, or "Nothing from you."]
 
 ## Top 20 to reach out to
 
@@ -175,11 +254,11 @@ After first successful run, offer: "Want me to run this every Monday morning and
 
 ## Reliability
 
-When configured as a recurring scan, this skill implements `shared/RELIABILITY.md`. Key rules: skip-not-fail when no CRM connector AND no `_hq/CUSTOMERS.md` exist (log to `_hq/logs/scheduled-task-skips.log`, exit clean — never invent a customer list), OOO defers the scan, 60s aggregate scan budget across Gmail / CRM / Granola / Slack with graceful degradation, last-known-good cache at `_hq/caches/dormant-customer-scan-last-good.json` when a connector fails, dedup via `source_ref` hash makes re-running idempotent. Output always lands at `_hq/insights/DORMANT_CUSTOMERS_[date].md` as the fallback delivery channel.
+When configured as a recurring scan, this skill implements `shared/RELIABILITY.md`. Key rules: skip-not-fail when no CRM connector AND no `_hq/CUSTOMERS.md` exist (log to `_hq/logs/scheduled-task-skips.log`, exit clean — never invent a customer list), OOO defers the scan, 60s aggregate scan budget across Gmail / CRM / Granola / Slack with graceful degradation, last-known-good cache at `_hq/caches/dormant-customer-scan-last-good.json` when a connector fails, dedup via `source_ref` hash makes re-running idempotent. If the .docx render fails, deliver the ranked summary INLINE in the chat turn (top 5, same content) and say the report file couldn't be written — never fall back to a `.md` file (CONTRACT Rule 27) and never write outside `_hq/dormant/`.
 
 ## What It Doesn't Do
 
-- Doesn't draft re-engagement emails (that's the user's job, or use `one-pager-composer` for a talking-points brief)
+- Doesn't draft re-engagement emails in its own path — the widget's `draft re-engagement` tap hands off to `email-writer` / `follow-up-ritual` (use `one-pager-composer` for a talking-points brief instead of an email)
 - Doesn't update CRM records
 - Doesn't auto-contact customers
 - Doesn't analyze email content — only metadata
@@ -193,3 +272,9 @@ When configured as a recurring scan, this skill implements `shared/RELIABILITY.m
 - **Web search** — news / funding / anniversary triggers for re-engagement angles
 - **_hq/CUSTOMERS.md** — local customer list + annotations
 - **schedule skill** — weekly recurring run
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Surface the customers who've gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Scans CRM, email, and meeting notes for cadence breaks, produces a ranked list with last-touch date, gap vs baseline, historical revenue, and a suggested re-engagement angle for each. Use when the CEO says 'who went dark', 'gone dark', 'customers have gone dark', 'which customers have gone dark', 'dormant customer scan', 'dormant customer', 'who haven't I heard from', 'who hasn't replied', 'hasn't replied in a while', 'quiet customers', 'customer dormancy check', 'customers who stopped responding'. Runs on-demand or as a scheduled Monday task. Also handles first-run personalization settings — use when the CEO says 'tune the dormant scan', 'tune dormant scan', 'tune dormant-customer-scan', 'show dormant scan settings', 'show dormant-customer-scan settings', 'reset dormant scan to defaults', 'reset dormant-customer-scan to defaults'. DOES NOT fire on 'follow up with [customer]' (email-writer — plain outbound draft; 'follow up on that call' is follow-up-ritual) or 'show me my customer list' (that's a tracker/RELATIONSHIPS.md read, not a scan). DOES NOT fire on 'who should I reach out to' / 'relationship moves' / 'weekly outreach' (that's relationship-moves — the ranked, pre-drafted action pack; this skill is the raw detection report it consumes).

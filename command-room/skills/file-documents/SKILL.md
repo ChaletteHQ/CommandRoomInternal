@@ -1,6 +1,6 @@
 ---
 name: file-documents
-description: "Copy deliverable documents (employee files, 1:1 notes, contracts, meeting transcripts, decks, PDFs, etc.) from a source folder into your workspace's project folders so the workspace becomes your filing cabinet over time. FILING intent only: this fires the workspace-ingest pipeline with full context extraction PLUS file migration. Always shows a preview-and-confirm before any file copy. Copy-only (never moves or deletes). Backs up source folder first, writes an undo log. Triggers: 'file documents from [path]', 'file these documents', 'sort my downloads', 'sort these into projects', 'organize my downloads', 'organize my [folder]', 'scan my desktop', 'scan my files', 'file my [folder] into projects'. Use this when you want both: the context layer updated (people/projects/decisions inferred from the source) AND the source files actually copied into the matching project folders. DOES NOT fire on 'ingest context from [path]' (that's ingest-context — same context extraction, no file copy)."
+description: "Copy deliverable documents — employee files, 1:1 notes, contracts, meeting transcripts, decks, PDFs — from a source folder into your workspace's project folders, so the workspace becomes your filing system. Fires on: 'scan my desktop', 'scan my files', 'organize my downloads', 'sort my downloads', 'sort these into projects', 'file these documents'. Preview-and-confirm mapping (document to project) before any copy; originals never deleted; unmatched files flagged for your call, never guessed. Does NOT fire on 'ingest my chatgpt export' / 'import context' (ingest-context — data extraction, not file filing) or 'ingest this folder' (workspace-ingest — the combined pipeline). Mapping rules and preview format: Routing section in the body."
 ---
 
 # file-documents
@@ -26,3 +26,9 @@ The actual pipeline lives in `workspace-ingest/SKILL.md`. This skill is a thin a
 - Does NOT modify entities for which workspace-manager / people-crm are the canonical writer. Routes proposals to those skills per `shared/WORKSPACE_API.md`.
 - Does NOT fire on a single-URL intake — that's `intel-intake`.
 - Does NOT replace `command-room-onboarding` for first-install setup.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Copy deliverable documents (employee files, 1:1 notes, contracts, meeting transcripts, decks, PDFs, etc.) from a source folder into your workspace's project folders so the workspace becomes your filing cabinet over time. FILING intent only: this fires the workspace-ingest pipeline with full context extraction PLUS file migration. Always shows a preview-and-confirm before any file copy. Copy-only (never moves or deletes). Backs up source folder first, writes an undo log. Triggers: 'file documents from [path]', 'file these documents', 'sort my downloads', 'sort these into projects', 'organize my downloads', 'organize my [folder]', 'scan my desktop', 'scan my files', 'file my [folder] into projects'. Use this when you want both: the context layer updated (people/projects/decisions inferred from the source) AND the source files actually copied into the matching project folders. DOES NOT fire on 'ingest context from [path]' (that's ingest-context — same context extraction, no file copy).

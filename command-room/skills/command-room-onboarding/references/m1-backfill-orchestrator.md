@@ -55,7 +55,7 @@ Load:
 Append a `m1_backfill_started` event to events.jsonl:
 
 ```jsonl
-{"type":"m1_backfill_started","ts":"<ISO>","data":{"window_start":"<ISO>","window_end":"<ISO>"},"source_skill":"cr-m1-backfill"}
+{"type":"m1_backfill_started","ts":"<ISO>","data":{"window_start":"<ISO>","window_end":"<ISO>"},"source_skill":"m1-backfill"}
 ```
 
 ---
@@ -163,7 +163,7 @@ Compute for the recap (skip any that can't be computed — never fabricate):
 
 Atomic-append all events from Phase 2 to `_hq/data/events.jsonl` per `shared/WORKSPACE_API.md`. Batch all appends — don't fire one at a time.
 
-Each event carries `source_skill: "cr-m1-backfill"` and original-source timestamp (not `fireAt`).
+Each event carries `source_skill: "m1-backfill"` (bare since v2.14.27; the registered taskId stays `cr-m1-backfill`, and any pre-rename history at `source_skill: "cr-m1-backfill"` remains valid append-only) and original-source timestamp (not `fireAt`).
 
 After append, regenerate views (`MASTER_TRACKER.md`, `DECISION_LOG.md`, `PEOPLE.md`) per `references/VIEW_GENERATION.md`.
 
@@ -231,7 +231,7 @@ After successful chat post, call `mcp__scheduled-tasks__update_scheduled_task(ta
 Append final event:
 
 ```jsonl
-{"type":"m1_backfill_complete","ts":"<ISO>","data":{"events_written":<N>,"input_tokens_used":<N>,"sampled":<bool>},"source_skill":"cr-m1-backfill"}
+{"type":"m1_backfill_complete","ts":"<ISO>","data":{"events_written":<N>,"input_tokens_used":<N>,"sampled":<bool>},"source_skill":"m1-backfill"}
 ```
 
 ---

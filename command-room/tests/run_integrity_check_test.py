@@ -79,6 +79,7 @@ def _build_workspace(tmp: Path) -> Path:
     clean.mkdir()
     (clean / "PROJECT_CONTEXT.md").write_text("ctx", encoding="utf-8")
     (clean / "PROJECT_BRAIN.md").write_text("brain", encoding="utf-8")  # complete
+    (clean / "SESSION_NOTES_Clean Co.md").write_text("notes", encoding="utf-8")  # complete
 
     badaff = tmp / "Bad Aff"
     badaff.mkdir()
@@ -121,6 +122,11 @@ def test_finds_planted_defects() -> None:
         # C11 — missing brains (Bad Aff + Mystery Folder), NOT Clean Co
         assert ("C11.missing_brain", "Bad Aff") in keys
         assert ("C11.missing_brain", "Clean Co") not in keys
+        # C11b — missing session notes: Mystery Folder (context only), NOT Bad Aff
+        # (has SESSION_NOTES.md) and NOT Clean Co (has SESSION_NOTES_Clean Co.md)
+        assert ("C11b.missing_session_notes", "Mystery Folder") in keys
+        assert ("C11b.missing_session_notes", "Bad Aff") not in keys
+        assert ("C11b.missing_session_notes", "Clean Co") not in keys
         # C12 — duplicate seq
         assert ("C12.duplicate_seq", "9") in keys
         print("PASS test_finds_planted_defects")

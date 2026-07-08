@@ -92,6 +92,16 @@ _XML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _decode_entities(text: str) -> str:
+    return (
+        text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&apos;", "'")
+    )
+
+
 def _normalize_for_scan(xml: str) -> str:
     """Collapse <w:r> run boundaries inside text runs, strip XML tags, normalize
     whitespace. This is what makes the scanner robust to Word's habit of
@@ -102,16 +112,63 @@ def _normalize_for_scan(xml: str) -> str:
     # Step 2: strip all remaining XML tags.
     text = _XML_TAG_RE.sub(" ", collapsed)
     # Step 3: decode common XML entities so &quot; doesn't break word-boundary scans.
-    text = (
-        text.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", '"')
-        .replace("&apos;", "'")
-    )
+    text = _decode_entities(text)
     # Step 4: collapse whitespace.
     text = _WHITESPACE_RE.sub(" ", text)
     return text
+
+
+_PARA_SPLIT_RE = re.compile(r"</w:p\s*>")
+
+
+def _docx_paragraph_text(xml: str) -> str:
+    """Reconstruct the document as newline-separated paragraphs.
+
+    `_normalize_for_scan` collapses the whole doc to ONE line — fine for the
+    word-boundary leak patterns, but it destroys the paragraph structure the
+    voice-tell detector's structural rules (tri-colon, em-dash pile-up, hedging
+    stacks) need. This splits on `</w:p>` first so each Word paragraph becomes
+    its own line, then run-collapses + tag-strips each piece. Paragraphs are
+    joined with a blank line so `voice_tell_detector._iter_paragraphs` sees
+    real paragraph boundaries.
+
+    (SPEC GATE2 D2 — needed so the unified scanner catches the SAME structural
+    tells voice_tell_detector finds in chat prose, in a hand-rolled .docx too.)
+    """
+    paras: List[str] = []
+    for chunk in _PARA_SPLIT_RE.split(xml):
+        collapsed = _RUN_BOUNDARY_RE.sub("", chunk)
+        line = _XML_TAG_RE.sub(" ", collapsed)
+        line = _decode_entities(line)
+        line = _WHITESPACE_RE.sub(" ", line).strip()
+        if line:
+            paras.append(line)
+    return "\n\n".join(paras)
+
+
+def scan_text_for_leaks(text: str) -> List[dict]:
+    """Run the canonical forbidden-token patterns over an arbitrary text blob
+    (a chat-rendered memo/email body, not a .docx). Same patterns the .docx
+    scanner uses, so a `Phase 3` / `project_020` / `leverage` leak is caught in
+    chat prose exactly as it is in a document. Never raises — returns findings.
+
+    (SPEC GATE2 D4 — the chat-prose path. The memo that freelanced as chat text
+    in the live test carried a `Phase N` leak; this catches it.)"""
+    if not text:
+        return []
+    findings: List[dict] = []
+    for name, pattern in _FORBIDDEN_PATTERNS:
+        for m in re.finditer(pattern, text):
+            start, end = m.span()
+            findings.append(
+                {
+                    "name": name,
+                    "pattern": pattern,
+                    "match": m.group(0),
+                    "context": text[max(0, start - 20) : min(len(text), end + 20)],
+                }
+            )
+    return findings
 
 
 def scan_docx_for_leaks(docx_path: str | Path) -> List[dict]:
@@ -177,9 +234,81 @@ def _scan_docx(docx_path: str | Path, raise_on_findings: bool) -> List[dict]:
     return findings
 
 
+def scan_docx_for_violations(docx_path: str | Path) -> dict:
+    """SPEC GATE2 D2 — the unified content scanner. Given a .docx PATH, return
+    EVERY voice tell + privacy/substrate leak in it, in one call, regardless of
+    how the file was produced.
+
+    This is the load-bearing detector. It opens the file (unzip → document.xml)
+    and reads the rendered text, so it catches a doc the LLM hand-rolled via
+    `python-docx` / the generic docx skill EXACTLY as well as one that went
+    through `brief_writer.make_brief`. Prevention is leaky (the LLM can always
+    pip-install docx); reading the produced file is not.
+
+    Returns:
+      {
+        "path": <str>,
+        "leaks":   [ {name, pattern, match, context}, ... ],   # forbidden tokens
+        "voice":   {"verdict": "fail"|"warn"|"pass", "findings": [...]},
+        "has_violation": bool,   # any leak OR any fail-severity voice finding
+        "has_voice_warn": bool,  # any warn-severity structural voice tell
+        "error": <str or absent>,  # set instead of the above on a read failure
+      }
+
+    NEVER raises — a sweep over a live client workspace must not crash on one
+    unreadable file. Read failures come back as {"error": ...} so the caller
+    can FLAG ("couldn't verify this doc") rather than silently pass it.
+    """
+    docx_path = Path(docx_path)
+    result: dict = {
+        "path": str(docx_path),
+        "leaks": [],
+        "voice": {"verdict": "pass", "findings": []},
+        "has_violation": False,
+        "has_voice_warn": False,
+    }
+    try:
+        if not docx_path.exists():
+            result["error"] = f"file not found: {docx_path}"
+            return result
+        xml = _read_document_xml(docx_path)
+        if not xml:
+            result["error"] = (
+                f"could not read word/document.xml from {docx_path.name} — "
+                f"unable to verify it is clean"
+            )
+            return result
+    except Exception as e:  # zip corruption, permission error, etc.
+        result["error"] = f"unreadable .docx ({type(e).__name__}): {docx_path.name}"
+        return result
+
+    # 1. Forbidden-token (leak) scan over the collapsed full text.
+    result["leaks"] = scan_text_for_leaks(_normalize_for_scan(xml))
+
+    # 2. Voice-tell scan over paragraph-structured text. context="brief" leaves
+    #    the bullets-in-email structural rule off (documents legitimately use
+    #    lists), but tri-colon / em-dash / hedging-stack + every exact banned
+    #    phrase still run. Lazy import + tolerance: if the detector isn't
+    #    installed (partial update), the leak scan still stands.
+    try:
+        from voice_tell_detector import scan_text  # type: ignore
+
+        result["voice"] = scan_text(_docx_paragraph_text(xml), context="brief")
+    except Exception:
+        result["voice"] = {"verdict": "pass", "findings": []}
+
+    voice_findings = result["voice"].get("findings", [])
+    has_voice_fail = any(f.get("severity") == "fail" for f in voice_findings)
+    result["has_voice_warn"] = any(f.get("severity") == "warn" for f in voice_findings)
+    result["has_violation"] = bool(result["leaks"]) or has_voice_fail
+    return result
+
+
 __all__ = [
     "scan_docx_for_leaks",
     "collect_docx_leaks",
+    "scan_text_for_leaks",
+    "scan_docx_for_violations",
     "LeakScanError",
 ]
 

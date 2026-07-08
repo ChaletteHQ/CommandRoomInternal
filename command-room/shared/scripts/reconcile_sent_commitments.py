@@ -19,7 +19,9 @@ confidence thresholds. It is pure (no connector I/O, no datetime.now()): the
 skill fetches Sent mail + resolves recipient person_ids, passes dicts in, and
 emits the returned `commitment_resolved` events. Auto-closes are surfaced with
 an undo affordance ("closed N you'd already sent — say `undo`"); the schema and
-the resolved-event shape are unchanged (reuses build_commitment_resolved_event).
+the resolved-event shape are unchanged. As of Phase 2 Stage B the closures are
+written through `commitment_state.close_commitment` — the single closure path
+(F2) — with matching logic here untouched.
 
 INPUT SHAPE (sent_messages)
   [{"message_id": str, "ts": iso-str, "recipient_person_ids": [str, ...],
@@ -137,12 +139,15 @@ def reconcile_sent(
 
 
 def to_resolved_events(closures, *, source_skill, seq_start):
-    """Turn auto_close proposals into commitment_resolved event dicts.
+    """LEGACY shape helper — construction only, superseded by
+    `commitment_state.close_commitment` (Phase 2 Stage B, F2).
 
-    Reuses cru_match.build_commitment_resolved_event so the event shape stays
-    canonical. `seq_start` is the first seq to assign (caller reserves a
-    contiguous block via next_seq); returns events with seqs
-    seq_start, seq_start+1, ... The caller atomic_append_jsonl's them.
+    `reconcile_and_receipt` no longer calls this: it closes through the single
+    closure path (`close_commitments`), which normalizes legacy ids, refuses
+    orphan tombstones loudly, is idempotent over the full resolved-id set, and
+    honors pending_review. Kept only so pre-Stage-B callers/tests that inspect
+    the event shape keep working; do NOT append these events directly in new
+    code.
     """
     events = []
     for i, c in enumerate(closures or []):
@@ -219,6 +224,7 @@ def reconcile_and_receipt(
     *,
     user_person_id,
     source_skill="morning-briefing",
+    outcome_watch_summary=None,
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -257,15 +263,71 @@ def reconcile_and_receipt(
     auto_close = res["auto_close"]
     pending = res["pending"]
 
-    # Write the HIGH-confidence closers as canonical commitment_resolved events.
+    # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
+    # legacy-id normalization, loud refusal of orphan tombstones, full-set
+    # idempotency, pending_review floor — matching above is unchanged, only
+    # event construction moved into close_commitment. (Proposal ids come from
+    # _commitment_id over the open set, so they are already canonical.)
     events_written = 0
     if auto_close:
-        from next_seq import next_seq
-        from atomic_write import atomic_append_jsonl
-        seq_start = next_seq(str(events_path))
-        events = to_resolved_events(auto_close, source_skill=source_skill, seq_start=seq_start)
-        atomic_append_jsonl(events_path, events)
-        events_written = len(events)
+        from commitment_state import close_commitments
+        results = close_commitments(
+            workspace_root,
+            [{
+                "commitment_id": c["commitment_id"],
+                "resolved_by": "sent_reconcile",
+                "evidence": c.get("evidence") or "matched an outbound send",
+                "primary_thread_id": c.get("primary_thread_id") or "",
+            } for c in auto_close],
+            source_skill=source_skill,
+        )
+        by_id = {str(c["commitment_id"]): c for c in auto_close}
+        closed_or_already: set[str] = set()
+        for r in results:
+            rid = str(r.get("commitment_id"))
+            if r["status"] == "closed":
+                events_written += 1
+                closed_or_already.add(rid)
+            elif r["status"] == "already_resolved":
+                closed_or_already.add(rid)
+            elif r.get("error") == "PendingReviewError" and rid in by_id:
+                # F2/F5: a pending_review commitment is never auto-resolved —
+                # demote it to the confirm list instead of closing it.
+                pending.append(by_id[rid])
+            # CommitmentIdError: logged loudly by close_commitments; the
+            # proposal is dropped rather than written as an orphan tombstone.
+        auto_close = [c for c in auto_close if str(c["commitment_id"]) in closed_or_already]
+
+    # Stage E (F5): the 0.30–0.55 pending band MUST NOT evaporate. Persist
+    # each pending proposal as a commitment_review_proposed event so the next
+    # Commitments chat surfaces it for one-click confirm/deny — before this,
+    # pending existed only inside the returned receipt (one brief line, then
+    # gone). Deduped against the OPEN proposal set (a still-open proposal for
+    # the same commitment is not re-written; confirmed/dismissed ones may be
+    # re-proposed by genuinely new sends). Cursor mechanics untouched.
+    reviews_written = 0
+    if pending:
+        from cru_match import load_open_review_proposals
+        from event_gate import append_event
+        already_proposed = {
+            (p.get("data") or {}).get("commitment_id")
+            for p in load_open_review_proposals(str(events_path))
+        }
+        for p in pending:
+            if p["commitment_id"] in already_proposed:
+                continue
+            append_event(events_path, [{
+                "type": "commitment_review_proposed",
+                "source_skill": source_skill,
+                "primary_thread_id": p.get("primary_thread_id") or "",
+                "data": {
+                    "commitment_id": p["commitment_id"],
+                    "proposed_resolution": "auto_resolve",
+                    "match_score": round(p.get("score") or 0, 3),
+                    "evidence": p.get("evidence") or "matched an outbound send",
+                },
+            }], holder=source_skill)
+            reviews_written += 1
 
     # Advance the cursor to the newest Sent ts we saw (never backwards).
     cursor_after = cursor_before
@@ -275,8 +337,9 @@ def reconcile_and_receipt(
         _write_cursor(workspace_root, raw, cursor_after, source_skill=source_skill)
 
     def _slim(items):
+        from event_time import event_time
         return [{"commitment_id": c["commitment_id"], "title": c.get("title") or "",
-                 "ts": c.get("ts") or ""} for c in items]
+                 "ts": event_time(c)} for c in items]
 
     n_auto = len(auto_close)
     n_pend = len(pending)
@@ -306,6 +369,15 @@ def reconcile_and_receipt(
             "n_pending": n_pend,
         },
     }
+    # B6: fold the outcome-watch counts (replies/no-reply/bounced) into the SAME
+    # audit event so one fire leaves one verifiable trace. Free-form `data`, so
+    # no schema change for the audit part. Co-locating two silent WRITES is fine
+    # (the Bug #98 anti-pattern was a silent write next to a visible deliverable).
+    if isinstance(outcome_watch_summary, dict):
+        audit_event["data"]["outcome_watch"] = {
+            k: outcome_watch_summary.get(k)
+            for k in ("checked", "replied", "no_reply_7d", "bounced", "still_pending")
+        }
     _append(events_path, [audit_event])
 
     if n_fetched == 0:
@@ -329,6 +401,9 @@ def reconcile_and_receipt(
         "n_auto_closed": n_auto,
         "n_pending": n_pend,
         "events_written": events_written,
+        # Stage E: pending proposals persisted this run (deduped) — the next
+        # Commitments chat's review section reads them back.
+        "reviews_written": reviews_written,
         "resolved": _slim(auto_close),
         "pending": _slim(pending),
         "summary": summary,

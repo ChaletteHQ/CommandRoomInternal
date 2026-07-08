@@ -14,7 +14,7 @@ Typical triggers for Parser D:
 
 ## Entry point
 
-Orchestrator dispatches here when shape detection fails to match Parsers A / B / C. See `../SKILL.md` → "Shape Detection".
+Orchestrator dispatches here when shape detection fails to match Parsers A / B / C. See `../SKILL.md` → Phase 1 "Shape Detection".
 
 Parser D announces its approach to the CEO before parsing:
 

@@ -90,7 +90,7 @@ Cap candidate list at 50 meetings. If the connector returns more, take the most 
 
 ### Step 2.5 — Entity-resolve the query BEFORE literal scoring (v3.13.0+ — closes the "Dynarii returns 0 results" gap; v3.13.7+ MUST-language enforcement + layer-on-top design)
 
-**MUST-language enforcement gate (v3.13.7+):** for every transcript-search invocation, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` in this step. The resolver runs LAYERED ON TOP of any Granola NL search, NOT as a replacement for it.
+**MUST-language enforcement gate (v3.13.7+):** for every transcript-search invocation, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` in this step, per `shared/ENTITY_RESOLVE_PROTOCOL.md` (the ladder, tiers, and fallback rules live there). The resolver runs LAYERED ON TOP of any Granola NL search, NOT as a replacement for it.
 
 > **Run entity_resolve in parallel with Granola NL. Take the UNION of attendee-matched meetings (from resolver) + content-matched meetings (from Granola NL / literal scoring). Both signals contribute to the candidate set. Never skip the resolver because Granola NL "looked sufficient" — that's exactly the bypass Session-22 Bug #11 documented.**
 
@@ -113,8 +113,8 @@ cd "$PLUGIN_ROOT"
 python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
-from entity_resolve import resolve
-result = resolve('$WORKSPACE', '<query>')
+from entity_resolve import resolve_all
+result = resolve_all('$WORKSPACE', '<query>')  # same call the MUST-gate mandates — never the single-entity resolve()
 if result:
     print(f'ENTITY_TYPE={result.entity_type}')
     print(f'ENTITY_ID={result.entity_id}')
@@ -124,11 +124,11 @@ if result:
 
 If the resolve returns a person/org/project:
 
-- **Person**: include EVERY meeting where this person was an attendee as a candidate, regardless of whether the literal token appears. Label each match with `matched via attendee: <name>` (per CONTRACT Rule 4 — use display name, not the `person_NNN` id).
+- **Person**: include EVERY meeting where this person was an attendee as a candidate, regardless of whether the literal token appears. Label each match with `from a meeting <name> was in` (per CONTRACT Rule 4 — use display name, not the `person_NNN` id).
 - **Org**: include every meeting where any LINKED PERSON (org members) was an attendee. Plus expand the search-term set with the org's aliases + the canonical names of its linked projects.
 - **Project**: include every meeting where the project's `key_contact_id` person was an attendee, OR any meeting tagged with this `primary_thread_id` in events.jsonl. Expand search terms with the project's aliases + the project's canonical name.
 
-The expanded candidate set goes through the same Step 3 scoring (`score_match`). Meetings that pass via attendee-only (not literal-token) are kept in the result set and labeled per Rule 4 — the user sees WHY they matched ("matched via attendee: Aria Sample") without leaking IDs/paths.
+The expanded candidate set goes through the same Step 3 scoring (`score_match`). Meetings that pass via attendee-only (not literal-token) are kept in the result set and labeled per Rule 4 — the user sees WHY they matched ("from a meeting Aria Sample was in") without leaking IDs/paths.
 
 If the resolve returns nothing AND the literal-token score also returns nothing in Step 3, the empty-state message in Step 4 should still be friendly ("I couldn't find...") rather than misleading. This is the 0-hit graceful-fallback from the handoff.
 
@@ -154,7 +154,7 @@ print(f'SCORE={score}')
 
 ### Step 4 — Rank and pick top 5
 
-Sort candidates by `score × recency_decay` where recency_decay is a simple linear factor: 1.0 for today, 0.5 for 90 days ago. Take top 5 with score ≥ 0.20 (keep the bar low — topic search is exploratory; the user filters mentally from results).
+Sort candidates by `score × recency_decay` where recency_decay is a simple linear factor: 1.0 for today, 0.5 for 90 days ago. Take top 5. The `score >= 0.20` floor applies to LITERAL-TOKEN candidates only (keep the bar low — topic search is exploratory); entity-expanded / attendee-matched candidates are EXEMPT from the floor, per Step 3's rule 4 — they're in the set by attendee match, not token score, and the 0.20 filter would silently undo that rule.
 
 If no candidate scores ≥ 0.20 → surface plain English: *"I couldn't find any meetings where '[topic]' came up in the last 90 days. Try a different phrasing, or ask me to look back further."*
 
@@ -236,13 +236,17 @@ beyond what the user is looking at):
 
    > *(2 of these meetings weren't in your workspace yet — I've captured them,
    > including 1 new person, Quinn Sample. Say `past meetings` or check your next
-   > Pulse to review what I logged.)*
+   > Pulse to see what I added.)*
 
    If every surfaced transcript was already in substrate, append nothing.
 
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "matched via attendee: person_014 — review what I logged"
+- Good: "from a meeting Aria Sample was in — check your next Pulse to see what I added"
+
 If `meeting-notes` errors on a transcript, swallow it silently and continue (the
-search results already stand). Append a `pack_run.data.errors[]`-style note is not
-required here; transcript-search has no pack_run. Just don't break the read.
+search results already stand). No error note is required — transcript-search has no
+pack_run. Just don't break the read.
 
 ### Step 6 — STOP
 

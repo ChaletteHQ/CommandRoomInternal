@@ -1,12 +1,23 @@
 ---
 name: board-pack-assembler
-description: "Assemble a multi-page board pack .docx from substrate signal — KPIs vs targets, period-over-period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials. The purest substrate consumer in the plugin; the pack writes itself from events.jsonl + decision-log + entities.json + QuickBooks MCP. Use when the CEO says 'build the board pack', 'assemble the board pack', 'board pack for [date]', 'prep for the [date] board meeting', 'generate this month's board update', 'put together the board deck', 'board package for', 'build board deck'. Reads ALL events in the reporting period aggregated by type, decision-log for period decisions, entities.json for project status + hiring slate, prior board packs for format consistency, QuickBooks MCP for financials. Writes board_pack_assembled event linking to the .docx artifact. DOES NOT fire on 'board update' as a short memo (memo-writer with memo_type=board_update — different scope, freeform narrative), 'monthly recap' (operator-report — CEO-self-facing, different audience), or 'investor update' (memo-writer with memo_type=investor_update — same shape but different audience-tuning)."
+description: "Assemble a multi-page board pack .docx from the workspace's own signal — KPIs vs targets, period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials via QuickBooks where connected. Fires on: 'build the board pack', 'prep the board pack', 'assemble the board pack', 'board pack for [date]', 'board package', 'build board deck', 'generate this month's board update'. Reads the full reporting period's events, the decision log, entity status, and prior packs for format consistency. Does NOT fire on 'board update' as a short memo (memo-writer), 'monthly recap' (weekly-recap), 'investor update' (memo-writer), or 'prep me for the board meeting' (call-prep — the meeting brief, not the pack). Section spec and data sources: Routing section in the body."
 voice_block_last_refreshed: 2026-05-19
 calibration_level: default
 template_version: 1.0.0
 ---
 
-## Skill Boundary
+## Deliverable Render Gate (GATE1 — MUST, v3.20.x)
+
+This skill produces a `.docx` (and optional `.pptx`) deliverable. The `.docx` MUST be produced through the canonical chokepoint — no exceptions:
+
+- **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="board_pack", ...)`.** That single call runs the output-contract gate (B3 — exec-summary cap, no blank KPI cells), the voice-tell gate (B2), and the post-render leak scan, in that order, BEFORE the file is written.
+- **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode). A board pack is the highest-stakes external surface — a bypass here is the worst case.
+- **NEVER answer a deliverable request with a chat-only draft.** A board-pack request always produces the rendered file through `make_brief`.
+- **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A board-pack fire that yields a document with NO `gate_ran` event for that turn is a flagged bypass. Pass `workspace_root` to `make_brief` so the event lands in substrate.
+
+If anything below seems to contradict this gate, THIS GATE WINS.
+
+## Skill Boundary (v2.1)
 
 - **Use board-pack-assembler for:** the multi-page board pack with KPIs, deltas, wins/concerns, decisions, asks, appendices. Structured deliverable for the board meeting itself.
 - **Use `memo-writer` (memo_type=board_update) for:** a shorter 1-2 page board narrative (freeform structure, between-meeting updates).
@@ -50,7 +61,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/data/entities.json` — project status (active/at-risk/paused), hiring slate (people records with `role: "open"`), org tier changes. **This is the canonical source for project state-of-the-world per `references/SOURCE_OF_TRUTH.md`.** Pre-v3.11.4 this skill also read `_hq/views/MASTER_TRACKER.md` for the same roll-up; that's been removed because the tracker is a Tier 2 projection that can lag entities.json + events.jsonl by hours-to-days. Reading both risks rendering inconsistent state in the same pack.
 - `_hq/board-packs/BoardPack_*.docx` (prior packs) — for format/voice consistency. The most recent prior pack defines the section ordering, KPI list, target lines that this pack continues.
 - `_hq/data/events.jsonl` — `type == "decision"` events about KPI targets (e.g., "Q1 MRR target = $450K" — surfaces in the KPIs vs Targets section).
-- QuickBooks MCP (if installed) — for financial detail. Specific tools to call: `mcp__*__qbo_accounting_get_balance_sheet` (for assets/liabilities/equity), `mcp__*__qbo_accounting_get_ap_aging_summary` + `mcp__*__qbo_accounting_get_ar_aging_summary` (AR/AP aging buckets), `mcp__*__qbo_accounting_get_sales_by_customer_summary` (revenue concentration). Use `mcp__*__profit-loss-quickbooks-account` if available for P&L; otherwise compose from balance-sheet + AR aging. **No-QB fallback:** if no `qbo_*` tool is discoverable in the session, skip §7C entirely and put a single line in §7C's place: *"Financials aren't in this pack yet — once QuickBooks is connected, AR/AP, runway, and P&L will fill in automatically."* Do NOT estimate financials from email/intel signal — the operator's board would rather see a missing-data note than inferred numbers.
+- QuickBooks MCP (if installed) — for financial detail. Specific tools to call: `mcp__*__qbo_accounting_get_balance_sheet` (for assets/liabilities/equity), `mcp__*__qbo_accounting_get_ap_aging_summary` + `mcp__*__qbo_accounting_get_ar_aging_summary` (AR/AP aging buckets), `mcp__*__qbo_accounting_get_sales_by_customer_summary` (revenue concentration). Use `mcp__*__profit_loss_quickbooks_account` if available for P&L; otherwise compose from balance-sheet + AR aging. **No-QB fallback:** if no `qbo_*` tool is discoverable in the session, skip §7C entirely and put a single line in §7C's place: *"Financials aren't in this pack yet — once QuickBooks is connected, AR/AP, runway, and P&L will fill in automatically."* Do NOT estimate financials from email/intel signal — the operator's board would rather see a missing-data note than inferred numbers.
 - Calendar MCP — to find the board meeting itself (if the trigger references a date, confirm the date matches the meeting on calendar; if it doesn't, ask).
 
 **Conflict boundary:** sole writer of `board_pack_assembled` events. The board pack is a pure substrate roll-up — almost every cell of every section comes from events.jsonl or entities.json. The skill does no substantive new inference; it composes existing signal.
@@ -92,8 +103,7 @@ For "build the board pack for 2026-05-28":
 ### Phase 1 — Resolve the meeting + period
 
 Parse trigger for board meeting date. If absent, query Calendar MCP for upcoming meetings with title matching `board|investor|directors`. Compute reporting period:
-- Default: from `previous_pack.reporting_period_end_ts` (read from prior `board_pack_assembled` event) to `now`
-- Fallback: last calendar month
+- Default: last calendar month, or from `previous_pack.reporting_period_end_ts` (read from the prior `board_pack_assembled` event) to `now` — whichever window is SHORTER. No prior pack → last calendar month.
 - If user specifies window in trigger, use that
 
 ### Phase 2 — Substrate pull (parallel)
@@ -112,7 +122,25 @@ In parallel:
 
 ### Phase 3 — Compose sections
 
-**§1 Executive Summary** — what changed since last board (≤6 bullets).
+Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structure, specificity, floors — they do not override this skill's voice).
+
+**Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-board-pack-assembler.md` if it exists — it supersedes the skill's default register (the matching Voice Block in the shared calibration layer — `shared/VOICE_CALIBRATION.md` + the workspace's calibrated blocks; this file carries no `## Voice Block` section of its own) section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
+
+**Mechanical voice-tell gate (B2 — bash-gated, not prose).** After composing each section's prose and before Phase 4 render, run the composed text through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+printf '%s' "$SECTION_TEXT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
+```
+
+On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The same gate fires again at save: `brief_writer.make_brief(brief_kind="board_pack", ...)` raises `VoiceTellError` PRE-`Document()` (no file written) on a fail-severity tell, so a board pack that still trips the detector never reaches disk via the gated path. (That guarantee is conditional on routing through `make_brief`; for a doc hand-rolled outside it, SPEC GATE2's deliverable sweep — `shared/scripts/deliverable_sweep.py` — **detects and flags** the same tells/leaks after the fact, before the pack leaves your hands.) A phrase the CEO's calibrated Voice Block demonstrably allows is exempt via `allow_phrases`; never improvise the override.
+
+**No-fabrication gate — run before rendering each section:** is every claim traceable to a specific event seq or entity record? Trend language ("velocity is accelerating", "relationship strengthened") with no event behind it = fabrication; cut it. Wins/concerns cite DATE + OUTCOME. Decisions copy the logged decision event — never inferred from circumstantial signal. KPI deltas name their baseline source. An empty section renders "(nothing logged this period)" — filler erodes board trust faster than a gap.
+
+> **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: **§1 becomes the exec-header shape** (board-pack §1 is a sanctioned synthesis-lead surface) and **the Asks move to PAGE 1 with dollar sizes** — "an ask on page 5 is an ask not made." Pass `make_brief(brief_kind="board_pack", ...)` an `exec_header` (verdict = the biggest move; CHANGED = what changed since last board; DECIDE = the decision the board must make; NEEDED = the top board ask with its dollar size). The page-1 ask summary carries dollar sizes via `quantify.money_time_tag` (or a logged target/envelope figure) — "$340K Q3 envelope" — ONLY when derivable, never estimated. **§6 keeps the ask DETAIL** (this is the one place a board-pack legitimately restates: §1/exec-header is the page-1 summary, §6 is the backing detail — not a washing duplicate).
+
+**§1 Executive Summary → exec-header shape (EXEC1).** What changed since last board (≤6 bullets) + the page-1 Asks summary with dollar sizes. The verdict/CHANGED/DECIDE/NEEDED of the exec header are drawn from here.
 
 **§2 KPIs vs Targets** — table with metric / current / target / vs-target / trend. KPI list inherited from prior pack unless a `decision` event in period adjusted it.
 
@@ -122,7 +150,7 @@ In parallel:
 
 **§5 Decisions Logged** — direct enumeration of `decision` events in period (rationale + date).
 
-**§6 Asks** — pulled from the prior session-notes pattern "ASK board:" if the user has been logging them, else surface as "[add asks here]" placeholder.
+**§6 Asks (detail)** — the full ask detail behind the page-1 summary (EXEC1: the ask SUMMARY with dollar sizes lives on page 1 / the exec header; §6 is the backing detail). Pulled from the prior session-notes pattern "ASK board:" if the user has been logging them, else surface as "[add asks here]" placeholder. Each ask carries its dollar size via `quantify` when derivable ("$340K Q3 envelope"), never estimated.
 
 **§7 Appendices** — pipeline by stage, hiring slate, QB financial detail.
 
@@ -130,16 +158,28 @@ In parallel:
 
 Compose the .docx via `shared/scripts/brief_writer.py` board-pack template. If user requested .pptx, also render a slide version where each section becomes 1-2 slides with key bullets.
 
+**Output-contract gate (B3 — pre-save, before the voice gate).** `make_brief(brief_kind="board_pack", ...)` validates the structured `sections` against `shared/scripts/output_contract_validator.py` `RULES_BY_KIND["board_pack"]` BEFORE `Document()` is built (canonical order: contract → voice → render → leak scan): Executive Summary is ≤6 bullets (§1), the KPI `table` has NO blank cells (render `(nothing logged)` rather than leaving a cell empty, per the no-fabrication gate above), and the no-placeholder rule applies. The allowed §6 form `[add asks here]` passes; every other placeholder fails. On a blocking violation it raises `OutputContractError` (no file written). Read each violation's `section` + `fix_hint`, rewrite ONLY the failing sections — trim the exec summary, fill or `(nothing logged)`-fill the KPI cell, or replace stray placeholder text — and call `make_brief` again. Maximum 2 retries, then surface the failure plainly instead of shipping a substandard pack. **Sync rule: if you change the exec-summary bullet cap or the no-blank-KPI-cells rule here, change the matching entry in `output_contract_validator.py` `RULES_BY_KIND["board_pack"]` in the same commit.**
+
 ### Phase 5 — Surface + event
 
-Render in chat:
+Render in chat — summary first, links LAST in the turn as H2 heading links per CONTRACT Rule 3 (never inline mid-summary):
+
 ```
 Board pack ready for the May 28 meeting (covering April 28 – May 28).
-  Pack: [link]
-  Slides: [link]   (if generated)
 
   Inside: 3 wins, 2 concerns, 5 decisions, 2 asks for the board.
   Biggest move: MRR up 13% over last month — $478K against a $470K target.
+```
+
+Then, at the BOTTOM of the turn, the H2 link(s) built with the canonical helpers — never a hand-encoded `computer:///` URL:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from chat_output_renderer import doc_headline_link
+from brief_path import get_brief_artifact_url
+print(doc_headline_link("Board pack — May 28", get_brief_artifact_url(docx_path)))
+# If the .pptx companion was generated, add a second line the same way.
 ```
 
 Append `board_pack_assembled` event with section counts.
@@ -147,7 +187,7 @@ Append `board_pack_assembled` event with section counts.
 ## Output Structure (.docx, ~6-8 pages)
 
 ```
-CHALETTE HOLDINGS — BOARD PACK
+ACME CO — BOARD PACK
 Board: 2026-05-28 (Tue, 2 PM ET) | Period: April 28 – May 28
 
 TABLE OF CONTENTS
@@ -200,3 +240,9 @@ APPENDICES (auto)
 - Modify entities.json beyond `last_pack_received_ts` (and only when user explicitly marks the pack as shared).
 - Override the KPI list arbitrarily. KPI list is inherited from prior pack unless an explicit `decision` event in period adjusted it.
 - Run if no prior board pack AND no explicit KPI list defined. First-use bootstrap: ask the user to define the KPI list (5-question wizard) → write a `decision` event capturing it → then proceed.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Assemble a multi-page board pack .docx from substrate signal — KPIs vs targets, period-over-period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials. The purest substrate consumer in the plugin; the pack writes itself from events.jsonl + decision-log + entities.json + QuickBooks MCP. Use when the CEO says 'build the board pack', 'assemble the board pack', 'board pack for [date]', 'prep the board pack', 'prep the board pack for [date]', 'generate this month's board update', 'put together the board deck', 'board package for', 'build board deck'. Reads ALL events in the reporting period aggregated by type, decision-log for period decisions, entities.json for project status + hiring slate, prior board packs for format consistency, QuickBooks MCP for financials. Writes board_pack_assembled event linking to the .docx artifact. DOES NOT fire on 'prep me for the board meeting' / 'prep for the board meeting' (call-prep — that's meeting prep for YOU, not the pack for THEM). DOES NOT fire on 'board update' as a short memo (memo-writer with memo_type=board_update — different scope, freeform narrative), 'monthly recap' (operator-report — CEO-self-facing, different audience), or 'investor update' (memo-writer with memo_type=investor_update — same shape but different audience-tuning).

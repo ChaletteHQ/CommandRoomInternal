@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "advisor_profile.schema.json",
+  "title": "Advisor Profile (portable persona pack)",
+  "description": "A portable, workspace-independent distillation of how a person thinks, decides, and argues — forged in one Command Room and seatable as a 'persona' board member in another. MUST be free of workspace-local internal IDs (no person_NNN / project_NNN / org_NNN / event seqs): the pack travels between workspaces where those IDs are meaningless and would leak source-workspace structure. Stored locally at `_hq/data/advisors/<slug>.json` (imported or modeled) and exported (self-fidelity only) as `_hq/advisors/exported/AdvisorProfile_<Name>_<YYYY-MM-DD>.json`.",
+  "type": "object",
+  "required": ["schema_version", "profile", "provenance"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "profile": {
+      "type": "object",
+      "required": ["display_name", "headline", "mandate_default"],
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "description": "Human name as it should appear at the board table (e.g., 'Sam Sample'). NOT an internal ID."
+        },
+        "role": {
+          "type": ["string", "null"],
+          "description": "Functional role/title as a human string (e.g., 'Co-founder & CFO'). No org IDs."
+        },
+        "org_label": {
+          "type": ["string", "null"],
+          "description": "Human org label (e.g., 'Acme Co'). Free string, never an org_NNN id."
+        },
+        "headline": {
+          "type": "string",
+          "description": "One line: who this person is at the table and the lens they bring."
+        },
+        "mandate_default": {
+          "type": "string",
+          "description": "What this seat naturally optimizes for — the question they always come back to (e.g., 'Can we afford it, and what does it do to cash?')."
+        },
+        "decision_heuristics": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "How they decide — the rules of thumb they apply ('always wants unit economics before vision')."
+        },
+        "priorities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What they weight heavily when judging a plan."
+        },
+        "risk_posture": {
+          "type": ["string", "null"],
+          "description": "Their stance toward risk, in their own shape (e.g., 'aggressive on growth, conservative on cash')."
+        },
+        "known_positions": {
+          "type": "array",
+          "description": "Stated positions on recurring topics. Topic + position as human strings; no source-event IDs.",
+          "items": {
+            "type": "object",
+            "required": ["topic", "position"],
+            "additionalProperties": false,
+            "properties": {
+              "topic": { "type": "string" },
+              "position": { "type": "string" }
+            }
+          }
+        },
+        "pushback_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What they reliably challenge or refuse to let slide."
+        },
+        "communication_style": {
+          "type": ["string", "null"],
+          "description": "How they argue and what convinces them (cadence, directness, evidence they respect). Voice of reasoning, not a writing-voice clone."
+        },
+        "blind_spots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Where this lens is weak — what they systematically underweight. Surfaced honestly so a board doesn't over-trust one seat."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["fidelity", "shareable", "forged_on"],
+      "additionalProperties": false,
+      "properties": {
+        "fidelity": {
+          "type": "string",
+          "enum": ["self", "observed"],
+          "description": "'self' = forged by the person themselves from their own rich substrate (high fidelity, shareable). 'observed' = modeled by another operator from their own notes/transcripts of this person (lower fidelity, NEVER shareable out)."
+        },
+        "shareable": {
+          "type": "boolean",
+          "description": "Whether this pack may be written to an exportable file. MUST be false when fidelity == 'observed'. The writer refuses to export a non-shareable pack."
+        },
+        "forged_by_label": {
+          "type": ["string", "null"],
+          "description": "Human label of who forged it (e.g., the operator's first name or brain name). NEVER an email or internal ID."
+        },
+        "source_signal_summary": {
+          "type": ["string", "null"],
+          "description": "Counts only, no content: e.g., '14 logged decisions, 9 1:1 transcripts, voice profile'. Lets an importer judge fidelity without leaking source material."
+        },
+        "forged_on": {
+          "type": "string",
+          "description": "ISO date (no time) the pack was forged."
+        },
+        "workspace_origin_label": {
+          "type": ["string", "null"],
+          "description": "Optional human label of the originating workspace (e.g., \"Sam Sample's Command Room\"). Free string, no machine identifiers."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "version": "4.5.0",
+  "headline": "The consolidated trust wave — commitments that actually close, schedules that can't fail silently, and a workspace that learns your preferences.",
+  "items": [
+    {
+      "id": "v450_announce_commitment_triage",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your commitments list got a deep upgrade: checking something off now closes it everywhere, for good, and to-dos are tracked separately from promises so they don't get chased. Say `clean up my commitments` for a one-pass review of anything stale — every action has an undo.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v450_announce_system_health",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New: say `health check` any time for a status view of your scheduled chats — including anything that quietly stopped running. Late or missed runs are now detected automatically and noted in your Monday summary.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v450_announce_customize",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "You can now set standing preferences in plain words — say things like `customize morning-briefing: keep it under one page`. I'll remember it every time. `show morning-briefing customizations` lists what I've saved; removing one is one tap.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v450_reregister_schedules",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "This update added new background upkeep (including a nightly step that catches anything from your chats that should have been remembered). To switch it on, say `set up command room schedules` once — it takes about a minute and keeps all your existing times.",
+      "action": "instruct_user"
+    }
+  ]
+}

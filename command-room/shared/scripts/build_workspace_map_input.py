@@ -283,7 +283,8 @@ def _aggregate_commitments(
         is_overdue = status_val == "overdue"
         title = (_commitment_field(c, "title") or "").strip()
         due = _commitment_field(c, "due") or ""
-        ts = c.get("ts") or d.get("timestamp") or c.get("timestamp") or c.get("created_at") or ""
+        from event_time import event_time
+        ts = event_time(c) or d.get("timestamp") or c.get("created_at") or ""
 
         # Aggregate counts on the owning project
         if pid:

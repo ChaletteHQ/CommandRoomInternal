@@ -1,13 +1,13 @@
 ---
 name: intro-broker
-description: "Draft introductions between two people you know — voice-calibrated to your past intros, tuned to both sides' context, and logged into the relationship graph so future people-crm queries surface 'you connected them on [date]'. Use when the CEO says 'intro [A] to [B]', 'intro [A] and [B]', 'connect [A] and [B]', 'make an intro between [A] and [B]', 'introduce [A] to [B]', 'broker an intro', 'set up an intro', 'introduce [name] and [name]'. Produces two drafts (double-opt-in and direct-forward) so the CEO can pick the right intro shape. Reads both people's full records from people-crm + recent interactions with each + past intro_made events as voice samples. Writes intro_made event linking both people, updates entities.json connections graph, scheduled intro_followup_check 30d out to verify landing. DOES NOT fire on 'email [name] about [topic]' (email-writer — single recipient), 'follow up with the intro' (email-writer or follow-up-ritual), or 'who should I introduce to whom' (no skill yet — could be insight-generator pass)."
+description: "Draft introductions between two people you know — voice-calibrated to your past intros, tuned to both sides' context, and logged into the relationship graph. Fires on: 'intro [name] to [name]', 'introduce [name] and [name]', 'draft an intro between [A] and [B]', 'connect [name] with [name]', 'make the intro'. Checks both sides' history, drafts the double-opt-in ask where appropriate, and always lands as a draft for your review — never sends on its own. Does NOT fire on 'draft an email to [name]' (email-writer — single-recipient drafting), 'who do I know at [company]' (people-crm — the search that often precedes an intro), or 'who should I reach out to' (relationship-moves). Intro patterns and logging contract: Routing section in the body."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
 Before resolving the two people in the intro request, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` for EACH name. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates for a name may you fall back to grep, and that fallback MUST be flagged to the user. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use intro-broker for:** drafting an introduction email between two people you know. Two-sided draft work with relationship-graph writes.
 - **Use `email-writer` for:** single-recipient email drafts (no intro framing).
@@ -21,6 +21,8 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/data/events.jsonl` — event type `intro_made` with TOP-LEVEL `person_ids: [person_a_id, person_b_id]` (canonical Event shape per events.schema.json) plus `data: {person_a_id, person_b_id, draft_style, why_intro_summary, email_drafted_event_seq, scheduled_followup_check_ts}`. The top-level `person_ids` array is what apply-choices reads when the Pulse intro-followup-check resolves to `landed` / `didnt land`; the `data.person_a_id` / `data.person_b_id` scalars are preserved for downstream skills that want explicit A/B roles. v3.13.6+ — pre-v3.13.6 only the scalars were written; the missing top-level array silently severed the relationship-graph closure (apply-choices Step 3c read `parent["person_ids"]` and got `None`).
 - `_hq/data/events.jsonl` — event type `intro_followup_check` scheduled 30 days out (writes a future-dated event Pulse picks up). Carries `{intro_event_seq, scheduled_for, check_question: "did either reply / did the meeting happen"}`. The check event itself does NOT carry person_ids — they live on the parent `intro_made` event (apply-choices Step 3c fetches them via the `intro_event_seq` reference).
 - `_hq/data/entities.json` — both people's records get a `connections[]` entry pointing at the other's `person_id`, with `connection_source: "intro_made"`, `connection_event_seq`, `connected_ts`. Both records bump `last_touched_at`.
+
+**Append through the locked writer (SPEC GATE1 / A1).** Both events.jsonl appends above MUST go through `atomic_append_jsonl` (NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`) — the helper reserves the seq and writes inside the cross-process writer lock so a concurrent append can't lose an event or duplicate a seq. Omit `seq`/`ts` (auto-stamped); pass `holder="intro-broker"`. See `shared/WORKSPACE_API.md` → Append Protocol §3.
 
 **Reads from:**
 - `_hq/data/entities.json` — both people's full records: org, role, relationship strength tier, prior interactions, decision context where they appear.
@@ -95,6 +97,18 @@ Extract patterns: opener style, length, signoff, "vouching" language, whether yo
 
 Voice-calibrated via past intros (Phase 3) + this skill's Voice Block fallback.
 
+**Mechanical voice-tell gate (B2 — bash-gated, not prose).** After drafting each intro email (both styles, plus the double-opt-in companion note) and before surfacing them, run each body through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn:
+
+**Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-intro-broker.md` if it exists — it supersedes the skill's default register (the matching Voice Block in the shared calibration layer — `shared/VOICE_CALIBRATION.md` + the workspace's calibrated blocks; this file carries no `## Voice Block` section of its own) section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
+```
+
+On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0 (`pass`/`warn`). Never surface a draft the detector still fails. A phrase the CEO's calibrated Voice Block (or a past-intro sample) demonstrably uses is exempt via `allow_phrases`; never improvise the override.
+
 ### Phase 5 — Render widget + capture choice
 
 **v3.13.0+ — surface via the canonical chat action widget per `shared/EMAIL_DRAFT_PROTOCOL.md` (universal scope as of v3.13.0).** Both drafts go into a single widget as two items so the user picks one (or edits before sending). Data view shape:
@@ -152,7 +166,22 @@ On send:
 3. Update both people's `connections[]` in entities.json
 4. Schedule `intro_followup_check` 30d out
 
+### Phase 6.5 — Log the double-opt-in second stage (v3.19.x — FIX1 item 22)
+
+When the double-opt-in path is used (Draft 1 = "ask the first side first"), the companion email that loops in the OTHER side ships AFTER A says yes — a second stage that, pre-FIX1, never reached the substrate. The 30-day `intro_followup_check` could therefore only see A's half and would mis-read a fully-completed intro as half-done. When that companion note is sent:
+
+1. **Chain the actual send through `email-writer`** (writes `email_drafted` + `email_sent`) — never hand-send. Same canonical dispatch order as Phase 6.
+2. On the companion note's `email_drafted` event, set `data.companion_to_intro_event_seq = <seq of the Phase 6 `intro_made` event>` so the two halves are explicitly linked.
+3. `intro_followup_check` (30d) now reads BOTH halves: an intro counts as fully made only when the Phase 6 `intro_made` AND this companion `email_sent` both exist. If only A's half is present after 30 days, surface: *"You asked [A] about the intro to [B] but never looped [B] in — want me to finish it?"*
+
+For the Direct-forward path (Draft 2), both sides are connected in one send, so there is no second stage — Phase 6 alone fully records it and `companion_to_intro_event_seq` is not used.
+
 ## Output Structure (widget)
+
+**Output guard (PL.10):** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+
+- ❌ "Logged intro_made; connections graph updated; intro_followup_check scheduled 30d out"
+- ✅ "Logged the intro — I'll check back in a month to see if it landed."
 
 ```
 Intro: Bo Sample ↔ Rio Sample
@@ -196,3 +225,9 @@ Bo's building. Specific, not generic.
 - Auto-send. All drafts go to Gmail Drafts via `email-writer`; user reviews and clicks Send.
 - Create a person record. If A or B isn't in entities.json, the user must add them via `people-crm` first.
 - Re-introduce two people already connected. If both already have each other in `connections[]`, surface "you already connected them on [date]" and ask whether to re-introduce.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Draft introductions between two people you know — voice-calibrated to your past intros, tuned to both sides' context, and logged into the relationship graph so future people-crm queries surface 'you connected them on [date]'. Use when the CEO says 'intro [A] to [B]', 'intro [A] and [B]', 'connect [A] and [B]', 'make an intro between [A] and [B]', 'introduce [A] to [B]', 'broker an intro', 'set up an intro', 'introduce [name] and [name]'. Produces two drafts (double-opt-in and direct-forward) so the CEO can pick the right intro shape. Reads both people's full records from people-crm + recent interactions with each + past intro_made events as voice samples. Writes intro_made event linking both people, updates entities.json connections graph, scheduled intro_followup_check 30d out to verify landing. DOES NOT fire on 'email [name] about [topic]' (email-writer — single recipient), 'follow up with the intro' (email-writer or follow-up-ritual), or 'who should I introduce to whom' (out of scope — this skill drafts a SPECIFIC intro you've already decided on; it doesn't propose pairings).

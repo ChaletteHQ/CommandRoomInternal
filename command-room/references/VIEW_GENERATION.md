@@ -25,6 +25,8 @@ Views are produced by the skill that made the triggering source write. There is 
 
 Projected from: `entities.json` (threads array + orgs array) + `events.jsonl` (activity events)
 
+**Generator (v4.2.0+):** `shared/scripts/render_master_tracker.py` — `regenerate(workspace_root)` / `regenerate_if_changed(workspace_root)`. Dual-writes the canonical `_hq/views/MASTER_TRACKER.md` + back-compat `_hq/MASTER_TRACKER.md`, atomic + idempotent, reads commitments shape-safely via `cru_match`. Mirrors `render_people_view.py` / `render_decision_log.py`. Wired into end-session (`workspace-manager` Step 2.5) and cleanup Phase 3.5d2 (changed-only weekly backstop). Before v4.2.0 there was no renderer — the tracker was hand-rendered by the LLM at end-session and silently froze when that lapsed.
+
 **Regenerated when:**
 - Any write to `entities.json` affecting threads OR orgs
 - Any `events.jsonl` append with `type` in `{status_change, scope_change, meeting, commitment, commitment_resolved, decision, reclassification}` (these update "last activity", "next step", or the thread's affiliation)
@@ -34,7 +36,7 @@ Projected from: `entities.json` (threads array + orgs array) + `events.jsonl` (a
 ```markdown
 <!-- generated-from: _hq/data/entities.json, _hq/data/events.jsonl -->
 <!-- generated-at: YYYY-MM-DD HH:MM -->
-<!-- generator: workspace-manager -->
+<!-- generator: render_master_tracker.py -->
 <!-- source-version: entities@<N>, events@<seq> -->
 
 # Master Tracker
@@ -111,6 +113,8 @@ Projected from: `entities.json` (threads array + orgs array) + `events.jsonl` (a
 ```
 
 **Shape-aware reads (v3.4.4+ — REQUIRED):** every commitment field read in this section MUST go through `shared/scripts/cru_match.py::_commitment_field` (handles 5 shape variants: canonical, flat-new, legacy `owner`, `owner_person_id`-variant, pending-review). Confidence threshold uses `_commitment_confidence` to coerce string-label confidences ("HIGH" / "medium") into floats. Closed-commitment filter mirrors `load_open_commitments` — subtract any commitment whose id appears as `data.commitment_id` on a later `commitment_resolved` or `thread_resolved` event. Direct reads of `data.owner_person_id` / `data.description` (legacy field names) silently drop ~42% of commitments in production workspaces; this is the v3.4.4 bug class extended to view-regen.
+
+**Headline count — the one counting API (Phase 2 Stage A, REQUIRED):** the tracker's "N open commitments" headline (header line + `<!-- totals -->` comment) is `commitment_state.count_commitments(load_open_commitments(...))["total"]` — the FULL open set, NOT the confidence-filtered row count above. The ≥0.40 floor only decides which rows render in the table; provisional items stay in the headline (they are open commitments) and are called out in the blockquote note. Reporting the filtered count as the headline made the tracker one of the three diverging aggregators in the 2026-07-01 audit (tracker 54 vs live replay 105). `render_master_tracker.py` implements this; the projector's loader also folds `commitment_updated` deferrals into the effective `due`, so a pushed item renders its new date.
 
 **Helper — `threads_table_for_org(org_id, include_descendants=true)`:**
 
@@ -551,6 +555,10 @@ Sorted by days-open desc. Flag threshold: 7 days = 🟡, 21 days = 🔴.
 
 **Shape-aware reads (v3.4.4+ — REQUIRED):** every commitment field read in both sections MUST go through `shared/scripts/cru_match.py::_commitment_field`. Same rationale as the MASTER_TRACKER "Open Commitments" section above — direct field-name reads silently drop the 4 non-canonical shape variants. Use `_commitment_confidence` for the threshold check (coerces string-label confidences into floats). Open-status check mirrors `load_open_commitments` (filter out commitments closed by a subsequent `commitment_resolved` / `thread_resolved` event).
 
+**Open set + counts — the projector (Phase 2 Stage A, REQUIRED):** the open set both sections iterate is EXACTLY `load_open_commitments(events.jsonl)` (never a hand-rolled scan), which folds `commitment_updated` deferrals into the effective `due` — a deferred commitment ages against its pushed date, not the immutable original (pre-Stage-A it rendered overdue forever). Any headline/summary count this view states comes from `commitment_state.count_commitments(opens, ...)` / `commitment_counts(workspace_root)` — the one counting API shared with MASTER_TRACKER, the morning brief, the coach, and the Commitments orchestrator. COMMITMENT_AGING reporting 104 while MASTER_TRACKER said 54 and a live replay said 105 (2026-07-01 audit) is the divergence class this closes.
+
+**Task kind never ages here (Phase 2 Stage D, S5 — REQUIRED):** filter both sections to effective `kind != "task"` (the projector has already applied `commitment_reclassified` overrides to the copies it returns). Tasks are self-owed items with no counterparty; they age on the Commitment Triage surface as "still on your plate?" (30-day staleness via `commitment_state.stale_tasks`), are never chased by CRU (`cru_match.cru_eligible` excludes them at the matcher layer), and rendering them here as 🔴-flagged rot is exactly the noise the kind split removes.
+
 ## Recently Resolved (last 14 days)
 
 <for each commitment_resolved event where ts > today-14, sorted ts desc, top 10>
@@ -715,7 +723,9 @@ For ease of migration and user habit, the v1.8 paths remain accessible:
 - `_hq/DECISION_LOG.md` ← copy of `_hq/views/DECISION_LOG.md`
 - `_hq/ALIASES.md` ← copy of `_hq/views/ALIASES.md`
 
-The writer helper updates both the `views/` file and the `_hq/` copy atomically. Users querying either path get the same content. In v2.1 we may deprecate the backward-compat copies once all client skills are confirmed to prefer `_hq/views/`.
+Each view's renderer updates both the `views/` file and the `_hq/` copy atomically (`render_master_tracker.py`, `render_people_view.py`, `render_decision_log.py` all dual-write). Users querying either path get the same content.
+
+**Legacy-path deprecation — DECISION (v4.2.0): DEFERRED to v5.0.** As of v4.2.0 the legacy flat `_hq/<view>.md` paths are still read ~2:1 over the canonical `_hq/views/` paths, and three tier-1 skills read them as PRIMARY source: `morning-briefing` (`_hq/MASTER_TRACKER.md`), `inbox-triage` (`_hq/PEOPLE.md` VIP tiering), and `command-room-coach` (`_hq/PEOPLE.md` + `_hq/DECISION_LOG.md`). Retiring the legacy paths now would break the daily driver. Plan: keep dual-writing through the v4.x line; in a dedicated v5.0 pass, run a reader-migration audit that moves those three skills (and any remaining readers) to `_hq/views/`, THEN retire all three views' legacy copies in one coordinated release — never piecemeal.
 
 ---
 

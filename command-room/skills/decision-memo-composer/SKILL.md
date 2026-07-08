@@ -1,12 +1,23 @@
 ---
 name: decision-memo-composer
-description: "Walk through a structured tradeoff analysis between options and produce a decision memo .docx with framing / options / weighted criteria / comparison / recommendation. Forward-looking decision support (vs decision-revisit which is backward-looking). Use when the CEO says 'decision memo on', 'decision memo for', 'tradeoff analysis', 'tradeoff analysis for', 'I'm choosing between [A] and [B]', 'I'm deciding between', 'help me decide between', 'weigh [A] vs [B]', 'comparative memo on', 'choose between options for', 'should I [A] or [B]'. Three-pass interactive: (1) framing + ask criteria weights, (2) draft memo, (3) optional stress-test integration. Reads project context, decision-log for prior related decisions, intel-intake for the topic, people-crm for trusted opinions on the topic. Writes decision_memo_drafted event; on 'Log decision' click chains to decision-log to write the canonical decision event. DOES NOT fire on 'log decision' (decision-log — capture only), 'what should I decide' (advisory query, route to workspace-manager), 'decision memo about a past decision' (rephrase as decision-revisit), or 'stress test this plan' (stress-test — failure-mode mapping, distinct verb)."
+description: "Walk through a structured tradeoff between options and produce a decision memo .docx — framing, options, weighted criteria, comparison, recommendation. Fires on: 'decision memo on [topic]', 'decision memo for [topic]', 'help me decide between [A] and [B]', 'tradeoff analysis', 'choose between [options]', 'compare [A] vs [B] for [decision]'. Interactive criteria weighting with the CEO, evidence pulled from the workspace where entities are named, one-tap chain to stress-test for the inversion pass, and 'log decision' on the way out. Does NOT fire on 'we decided X' / 'what did we decide' (decision-log — logging/retrieval), 'revisit the [topic] decision' (decision-revisit), 'deal memo on [target]' (single-opportunity evaluation), or 'convene the board' (boardroom). Memo structure and chain points: Routing section in the body."
 voice_block_last_refreshed: 2026-05-19
 calibration_level: default
 template_version: 1.0.0
 ---
 
-## Skill Boundary
+## Deliverable Render Gate (GATE1 — MUST, v3.20.x)
+
+This skill produces a `.docx` deliverable. It MUST be produced through the canonical chokepoint — no exceptions:
+
+- **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="decision_memo", ...)`.** That single call runs the output-contract gate (B3 — required sections, no blank comparison cells), the voice-tell gate (B2), and the post-render leak scan, in that order, BEFORE the file is written.
+- **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode).
+- **NEVER answer a deliverable request with a chat-only draft.** "Just give me a quick tradeoff" is still a decision-memo request — produce the `.docx` through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then say plainly that the gates only run on the rendered file, and offer to produce it.
+- **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A fire of this skill that yields a document with NO `gate_ran` event for that turn is a flagged bypass (an inferior path was substituted). Pass `workspace_root` to `make_brief` so the event lands in substrate.
+
+If anything below seems to contradict this gate, THIS GATE WINS.
+
+## Skill Boundary (v2.1)
 
 - **Use decision-memo-composer for:** structured tradeoff analysis between 2-4 options. Forward-looking — you have a decision pending and need to think it through.
 - **Use `decision-log` for:** CAPTURING a decision you've already made.
@@ -34,7 +45,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **Appends to:**
 - `_hq/data/events.jsonl` — event type `decision_memo_drafted` with `{topic, primary_thread_id, options[], weighted_criteria, recommendation, source_decision_ids[], source_intel_ids[], artifact_path}`. Distinct from `memo_drafted` (which memo-writer emits) — this event is structured tradeoff specifically, with the comparison matrix captured.
-- **On "Log decision" click** → chains to `decision-log` which writes the canonical `decision` event with the memo .docx as rationale link. Mirrors memo-writer's v3.7.1 auto-fire pattern.
+- **On the `decide [text]` click** → chains to `decision-log` which writes the canonical `decision` event with the memo .docx as rationale link. Mirrors memo-writer's v3.7.1 auto-fire pattern.
 
 **Reads from:**
 - `_hq/data/entities.json` — project context if a project is referenced.
@@ -43,6 +54,8 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/intel/*.md` — captured intel on the topic (e.g., for a hiring decision, any captured intel on the role / market).
 - `_hq/data/entities.json` people-crm records of trusted-advisor people + their stated opinions on the topic from past 1:1 transcripts (via `transcript-search` invocation if needed).
 - This skill's Voice Block + `shared/VOICE_CALIBRATION.md`.
+
+**Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-decision-memo-composer.md` if it exists — it supersedes the skill's default register (the docs-and-deliverables Voice Block in the shared calibration layer — `shared/VOICE_CALIBRATION.md` + the workspace's calibrated blocks; this file carries no `## Voice Block` section of its own) section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
 
 **Conflict boundary:** sole writer of `decision_memo_drafted` events. Chained `decision-log` invocation writes the canonical `decision` event (no direct write here).
 
@@ -106,6 +119,8 @@ Inject all of this into the draft prompt as ambient context.
 
 Render the .docx through `shared/scripts/brief_writer.py` `make_brief(brief_kind="decision_memo", ...)`. Eyebrow label "DECISION MEMO". Do NOT hand-roll python-docx or use docx-js — brief_writer applies canonical typography, Heading 1/2/3 hierarchy (Bug #7), and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically.
 
+**Executive Output Standard (EXEC1, v3.20.0+) — RECOMMENDATION ABOVE COMPARISON.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md` element 2, the analysis-first document order (Framing → Options → Criteria → Comparison → Recommendation) is INVERTED at the document level: **the Recommendation section moves ABOVE Comparison** (it now sits right after Framing). Analysis exists so the reader can AUDIT the recommendation, not for suspense. **The interactive Phase-1/2 weight-setting FLOW is UNCHANGED — only the rendered document order flips.** `decision_memo` is decision-shaped, so `make_brief` ENFORCES this: a Recommendation/Decision-headed section first appearing at section index > 2 raises `ValueError`. The `exec_header.verdict` carries the rec + condition + decide-by: *"Option A — hire now, gated on Sales Playbook v0 — decide by Jun 15."*
+
 Use the v3.13.8 `table` + `matrix` section primitives for the criteria + comparison sections rather than synthesizing bullets (this was the Bug #58 precondition):
 
 ```python
@@ -115,8 +130,15 @@ make_brief(
     brief_kind="decision_memo",
     title="<decision topic>",
     subtitle="<decision-required line>",
+    exec_header={
+        "verdict": "<picked option + condition + decide-by, one bold sentence>",
+        "changed": "<what triggered/shifted, or nothing-form>",
+        "decide": "<the choice to make — by <date>>",
+        "needs": "<the ask (e.g. 'Approve the hire'), or 'Nothing from you.'>",
+    },
     sections=[
         {"heading": "Framing", "body": "<decision required, trigger, deadline, scope>"},
+        {"heading": "Recommendation", "body": "<picked option + 1-paragraph why, naming the tiebreaker>"},
         {"heading": "Options", "bullets": ["A. ...", "B. ...", "C. ..."]},
         {"heading": "Criteria & weights",
          "table": {"headers": ["Criterion", "Weight", "Why it matters"], "rows": [...]}},
@@ -127,43 +149,74 @@ make_brief(
              "cells": [["★★★", "★★★★", "★★"], ...],
              "star_col_idx": <recommended option's column index>,
          }},
-        {"heading": "Recommendation", "body": "<picked option + 1-paragraph why>"},
         # "What Kills This Decision" added only if Phase 5 stress-test ran
     ],
 )
 ```
 
-Section structure:
+Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structure, specificity, floors — they do not override this skill's Voice Block).
+
+**Mechanical voice-tell gate (B2 — bash-gated, not prose).** Before calling `make_brief`, run the composed memo prose through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
+```
+
+On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The same gate fires again at save: `make_brief(brief_kind="decision_memo", ...)` raises `VoiceTellError` PRE-`Document()` (no file written) on a fail-severity tell, so a memo that still trips the detector never reaches disk via the gated path. (That guarantee is conditional on routing through `make_brief`; for a doc hand-rolled outside it, SPEC GATE2's deliverable sweep — `shared/scripts/deliverable_sweep.py` — **detects and flags** the same tells/leaks after the fact, before the memo leaves your hands.) A phrase the CEO's calibrated Voice Block demonstrably allows is exempt via `allow_phrases`; never improvise the override.
+
+**Evidence-anchor every cell.** Each Criterion × Option cell is evidence-anchored, not opinion-anchored: score it, then one sentence citing something concrete (vendor spec, prior logged decision, named constraint). "Option A is faster" fails; "A delivers in 6 weeks per vendor spec vs B's 12 incl. customization" passes.
+
+**The Recommendation MUST name the tiebreaker in the user's specific context** (runway, team size, board pace) — never "best overall choice." The memo is not a comparison; it is a decision with trade-offs explained.
+
+Section structure (EXEC1-ordered — Recommendation above Comparison):
 - **Framing** — decision required, trigger, deadline, scope
+- **Recommendation** — picked option + 1-paragraph why, naming the tiebreaker. *(EXEC1: moved above Comparison; also surfaced as the `exec_header.verdict`.)*
 - **Options** — 2-4 named options with one-line descriptions
 - **Criteria & weights** — `table` primitive
-- **Comparison** — `matrix` primitive with `star_col_idx` highlighting the recommendation
-- **Recommendation** — picked option + 1-paragraph why
+- **Comparison** — `matrix` primitive with `star_col_idx` highlighting the recommendation; no blank cells (the audit trail for the recommendation above)
 - **What Kills This Decision** — only if stress-test was integrated (Phase 5)
+
+**Output-contract gate (B3 — pre-save, before the voice gate).** `make_brief(brief_kind="decision_memo", ...)` validates the structured `sections` against `shared/scripts/output_contract_validator.py` `RULES_BY_KIND["decision_memo"]` BEFORE `Document()` is built (canonical order: contract → voice → render → leak scan): the required sections (Framing, Options, Criteria & weights, Comparison, Recommendation) must all be present, Options carries 2-4 bullets, and the Comparison `matrix` has NO blank cells (every Criterion × Option cell scored — use "n/a" if a criterion truly doesn't apply, never blank). On a blocking violation it raises `OutputContractError` (no file written). Read each violation's `section` + `fix_hint`, rewrite ONLY the failing sections — add the missing section, right-size the options, or fill the blank cell with a score + evidence — and call `make_brief` again. Maximum 2 retries, then surface the failure plainly instead of shipping a substandard memo. **Sync rule: if you change the required-section list, the options count, or the no-blank-cells rule here, change the matching entry in `output_contract_validator.py` `RULES_BY_KIND["decision_memo"]` in the same commit.**
 
 ### Phase 5 — Optional stress-test integration
 
-Surface widget action: `Stress-test this`. If clicked, chain to `stress-test` skill with the picked recommendation. Fold its 3-5 failure modes + safeguards into the "What Kills This Decision" section.
+After the memo renders, offer the chain as ONE plain chat line under the widget: *"Say `stress test this` and I'll pressure-test the recommendation."* (No widget button — `Stress-test this` is not a canonical action, and the typed trigger routes to stress-test directly.) When the user says it, chain to `stress-test` skill with the picked recommendation — stress-test detects the decision-memo context and returns its top 3-5 safeguards as a **structured list** (`{title, failure_mode, safeguard, trigger_date}`, ranked by L×S; see stress-test's "Called from decision-memo-composer" section). Fold those rows directly into the "What Kills This Decision" section — title + failure mode + the safeguard, and the trigger_date when one applies (the compound-drift hard-rethink date).
 
 ### Phase 6 — Log decision
 
-Widget actions: `Save draft`, `Log decision`, `Edit weights`, `Cancel`.
+The memo .docx is saved and the `decision_memo_drafted` event written when Phase 4 renders — there is no save button; the draft already exists on disk (H2-linked in the widget). Widget actions (all canonical — dispatch in apply-choices' `decision-memo-composer` source entry):
 
-- `Save draft` — saves the .docx, writes `decision_memo_drafted` event.
-- `Log decision` — saves the .docx + writes `decision_memo_drafted` + chains to `decision-log` to write the canonical `decision` event with the memo as rationale link.
-- `Edit weights` — re-runs Phase 4 with new weights.
+- `decide [text]` (displays "Decide") — chains to `decision-log` to write the canonical `decision` event with the memo as rationale link; non-empty text folds into the rationale.
+- `edit [change]` (displays "Edit") — re-runs Phase 4 with the new weights from the input.
+- `skip` (displays "Skip") — no write; the memo stays a draft on disk.
 
 ## Output Structure (.docx)
+
+**Deliverable link (CONTRACT Rule 3 — H2 heading link, LAST in the turn):** surface the .docx via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` as the final line of the chat response — after the widget/summary and Sources, never interspliced mid-body, never a plain-text path, never a hand-built `computer://` URL.
 
 ```
 DECISION MEMO: Hire Head of Sales — Now vs Q4 vs Defer
 Sam Sample | 2026-05-19 | Status: Draft v1
+
+[EXEC HEADER — the 30-second contract, first block]
+Option A — hire now, gated on Sales Playbook v0 — decide by Jun 15.
+CHANGED   $400K MRR threshold crossed ($478K April); 3 deals stuck >30d.
+DECIDE    Timing of the first sales hire — by Jun 15 (board).
+NEEDED    Approve the hire (one tap) — or Edit weights.
 
 FRAMING
   Decision required: timing of first dedicated sales hire.
   Trigger: April $42K MRR jump driven by inbound; founder sales
   at capacity. 3 conversations stuck >30d. Deadline: 2026-06-15
   (board).
+
+RECOMMENDATION  (EXEC1 — above Comparison; the verdict's audit trail follows)
+  Option A — hire now, with one condition: gate the offer on
+  completing the Sales Playbook v0 (~3 days work). Closes the
+  Org Readiness gap, shifts A risk grade from ★★ to ★★★, weighted
+  score rises to 3.25 — clearly ahead.
 
 OPTIONS
   A. Hire now           (decision in 2w, started Aug 1)
@@ -191,12 +244,6 @@ PRIOR DECISIONS ON THIS TOPIC
     has now been crossed ($478K April).
   - 2026-02-20: Decided "founder-led sales through Q1" — Q1 over.
 
-RECOMMENDATION
-  Option A — hire now, with one condition: gate the offer on
-  completing the Sales Playbook v0 (~3 days work). Closes the
-  Org Readiness gap, shifts A risk grade from ★★ to ★★★, weighted
-  score rises to 3.25 — clearly ahead.
-
 WHAT KILLS THIS DECISION  (stress-test integration — optional)
   1. Inbound dries up in 60 days; new hire has no warm pipe.
      → Mitigation: 90-day ramp metric tied to OUTBOUND.
@@ -210,3 +257,9 @@ WHAT KILLS THIS DECISION  (stress-test integration — optional)
 - Auto-log the decision. Logging requires explicit "Log decision" click.
 - Re-litigate a previously-decided topic without surfacing the prior decision. If a `decision` event already exists for this exact topic in the last 90 days, the Phase 3 substrate pass surfaces it prominently as "you already decided this; this memo would supersede" — and the user has to explicitly confirm.
 - Capture user-edited weights silently. If user adjusts weights via "Edit weights," the new weights are saved in the `decision_memo_drafted` event for future-self reference.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Walk through a structured tradeoff analysis between options and produce a decision memo .docx with framing / options / weighted criteria / comparison / recommendation. Forward-looking decision support (vs decision-revisit which is backward-looking). Use when the CEO says 'decision memo on', 'decision memo for', 'tradeoff analysis', 'tradeoff analysis for', 'I'm choosing between [A] and [B]', 'I'm deciding between', 'help me decide between', 'weigh [A] vs [B]', 'comparative memo on', 'choose between options for', 'should I [A] or [B]'. Three-pass interactive: (1) framing + ask criteria weights, (2) draft memo, (3) optional stress-test integration. Reads project context, decision-log for prior related decisions, intel-intake for the topic, people-crm for trusted opinions on the topic. Writes decision_memo_drafted event at render; the widget's `decide [text]` action chains to decision-log to write the canonical decision event. DOES NOT fire on 'log decision' (decision-log — capture only), 'what should I decide' (advisory query, route to workspace-manager), 'decision memo about a past decision' (rephrase as decision-revisit), or 'stress test this plan' (stress-test — failure-mode mapping, distinct verb).

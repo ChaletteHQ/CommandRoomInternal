@@ -1,13 +1,13 @@
 ---
 name: thread-resurrection
-description: "Surface conversations (email threads, Slack threads, meeting follow-ups) that went silent but had high-value context worth reviving — different from dormant-customer-scan which finds dormant PEOPLE. This skill finds dormant THREADS specifically. Use when the CEO says 'what conversations went silent', 'warm threads to revive', 'thread resurrection', 'threads to revive', 'conversations to restart', 'what's gone quiet that I should restart', 'find warm conversations'. Reads interaction events from events.jsonl, cross-references with entities.json (which people/projects/orgs the thread touches) and open commitment events (so threads with open commitments owed to you get surfaced with 'use commitment chase instead' alternative). Writes thread_resurrected events on revival action. DOES NOT fire on 'who went dark' (dormant-customer-scan — people not threads), 'follow up with [name]' (follow-up-ritual or email-writer), or 'show my open threads' (workspace-manager). The granularity is the differentiator — dormant-customer-scan asks 'which person has gone quiet vs their cadence'; this skill asks 'which specific live conversation died mid-step'."
+description: "Surface conversations — email threads, Slack threads, meeting follow-ups — that went silent but carried high-value context worth reviving. Fires on: 'thread resurrection', 'warm threads to revive', 'dead threads worth reviving', 'what conversations went quiet', 'threads I dropped'. Ranks by value signals (deal language, decision proximity, seniority, thread depth) against silence duration, and offers one-tap revival drafts in the CEO's voice. Different from dormant-customer-scan, which finds dormant PEOPLE — this finds dormant CONVERSATIONS; a person can be active while a thread died. Does NOT fire on 'who went dark' (dormant-customer-scan), 'who should I reach out to' (relationship-moves), or 'follow up with [name]' (follow-up-ritual / email-writer). Ranking signals and fences: Routing section in the body."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
 Before resolving any person / org / project from loose input in your trigger phrase or arguments, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Only after the resolver returns NO candidates may you fall back to substring grep — and that fallback MUST be flagged to the user, not silently surfaced as a single result. For commitment / event surface, call `shared/scripts/cru_match.py::load_open_commitments` — do NOT hand-roll an `events.jsonl` scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract + rationale (the bug class this closes).
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use thread-resurrection for:** finding specific high-context THREADS (email or Slack) that died mid-discussion. The unit of analysis is the thread.
 - **Use `dormant-customer-scan` for:** finding PEOPLE (or customer orgs) that have gone quiet vs their historical cadence. Different unit of analysis.
@@ -74,6 +74,10 @@ Read `_hq/data/events.jsonl` for `type == "interaction"` events. Group by thread
 
 Filter to `days_silent >= 14` AND no `thread_resolved` event on the thread_ref.
 
+**Live-check gate (MANDATORY — defined here; REL1 below assumes it).** For each surviving thread, call `shared/scripts/live_contact_check.py::live_contact_check()` on the thread's counterparty (same helper and MUST-language as dormant-customer-scan): overlay live Gmail + Calendar signal on the substrate math BEFORE surfacing. If the live check finds a touch newer than `last_activity_ts` (a reply the substrate missed, a meeting on the calendar), the thread is not silent — DROP it and emit no dormancy signal. Substrate-only resurrection pitches for threads that already resumed are the failure mode this gate closes.
+
+**REL1 — emit the normalized dormancy signal (absolute tier).** For each thread that passes this filter (and its live-check), call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<thread_ref>, entity_type='thread', gap_days=<days_silent>, baseline_days=None, source_skill='thread-resurrection')` — null baseline maps to the absolute 14/30/60-day tiers. The legacy `days_silent >= 14` filter is unchanged.
+
 ### Phase 2 — Score for high-context
 
 For each candidate:
@@ -89,11 +93,11 @@ Threshold: `total >= 4` to enter the surface set. Top 5 by score.
 
 ### Phase 3 — Build revival hooks
 
-For each surfaced thread, compose a revival hook tuned to thread context:
-- Open-commitment thread: "Wanted to circle back on [commitment topic]. Any movement?"
+For each surfaced thread, compose a revival hook tuned to thread context. Every hook is SENDABLE text — a message the user could fire as-is, never a strategy note ("nudge them with X" is a note, not a hook). Hooks must also pass the voice-tell gate — "circle back" / "touching base" are banned phrases:
+- Open-commitment thread: "Where did we land on [commitment topic]? Any movement?"
 - Project-tagged thread: "Where did we land on [topic]?"
-- High-value person thread: "Wanted to follow up on our [date] conversation — [last-message-paraphrase]"
-- Multi-turn died-mid-discussion: "Looping back to your [date] note on [topic] — [reframe]"
+- High-value person thread: "Following up on our [date] conversation — [last-message-paraphrase]"
+- Multi-turn died-mid-discussion: "Coming back to your [date] note on [topic] — [reframe]"
 
 ### Phase 4 — Render widget (v3.13.2+ — canonical action widget per CONTRACT Rule 5)
 
@@ -136,7 +140,7 @@ for i, thread in enumerate(candidate_threads, start=1):
 data_view = {
     "widget_mode": "all_batch_widget",
     "header": f"{len(items)} conversation{'s' if len(items)!=1 else ''} worth reviving",
-    "sub_header": "Pick which threads to revive — I'll draft each one.",
+    "sub_header": "Pick which conversations to revive — I'll draft each one.",
     "sections": [{"title": None, "count": None, "items": items}],
 }
 ```
@@ -173,32 +177,36 @@ The widget renders as a Cowork action card. Conceptually, what the user sees:
 
 ```
 3 conversations worth reviving
-Pick which threads to revive — I'll draft each one.
+Pick which conversations to revive — I'll draft each one.
 
   💬 1.  Bo Sample — partnership exploration
         Quiet for 23 days
         Last from Bo: "Let me think about the structure and revert"
         Last from you: discovery questions about their distribution
-        Suggested opener: Bo — wanted to circle back on the structure question. Any movement?
+        Suggested opener: Bo — where did we land on the structure question? Any movement?
         [Draft]  [Resolved]  [Add to my list]  [Skip]
 
   💬 2.  Rio Sample — investor intro thread
         Quiet for 31 days
         Last from her: intro to 2 partners at Northstar Partners
         Last from you: thank-you reply
-        Suggested opener: Northstar partners still warm — nudge with new traction.
+        Suggested opener: Rio — those Northstar intros are still warm on my side. We just landed [new traction] — worth me pinging them with that?
         [Draft]  [Resolved]  [Add to my list]  [Skip]
 
   💬 3.  Sam Sample — Acme Co pilot
         Quiet for 18 days
         Last from Sam: "let me get back to you with the brief"
         Last from you: kickoff scope outline
-        Suggested opener: Sam — circling back on the pilot brief. Any movement?
+        Suggested opener: Sam — any movement on the pilot brief?
         Sam still owes you: pilot brief (11 days past)
         [Draft]  [Resolved]  [Add to my list]  [Skip]
 ```
 
 The bracket-style button labels above are illustrative — the actual rendered display labels come from the renderer's `_action_display_label` (e.g., `draft` → `Draft`, `add to my list` → `Add to my list`).
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. In this widget the customer-facing noun is "conversations" (email/Slack threads may be called "threads" only when literally naming an email or Slack thread).
+- Bad: "Pick which threads to revive — thread_resurrected event will be written."
+- Good: "Pick which conversations to revive — I'll draft each one."
 
 ## DOES NOT
 
@@ -206,3 +214,9 @@ The bracket-style button labels above are illustrative — the actual rendered d
 - Re-surface a thread within 30 days of the last `thread_resurrected` event for it.
 - Touch threads with `thread_resolved` events (those are explicitly closed).
 - Surface threads where the user's last message was unanswered for less than 14 days (that's too early — would harass).
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Surface conversations (email threads, Slack threads, meeting follow-ups) that went silent but had high-value context worth reviving — different from dormant-customer-scan which finds dormant PEOPLE. This skill finds dormant THREADS specifically. Use when the CEO says 'what conversations went silent', 'warm threads to revive', 'thread resurrection', 'threads to revive', 'conversations to restart', 'what's gone quiet that I should restart', 'find warm conversations'. Reads interaction events from events.jsonl, cross-references with entities.json (which people/projects/orgs the thread touches) and open commitment events (so threads with open commitments owed to you get surfaced with 'use commitment chase instead' alternative). Writes thread_resurrected events on revival action. DOES NOT fire on 'who went dark' (dormant-customer-scan — people not threads), 'who should I reach out to' / 'relationship moves' / 'weekly outreach' (relationship-moves — the ranked action pack that CONSUMES this skill's detections), 'follow up with [name]' (email-writer — plain outbound draft; meeting-shaped follow-ups are follow-up-ritual), or 'show my open threads' (workspace-manager). The granularity is the differentiator — dormant-customer-scan asks 'which person has gone quiet vs their cadence'; this skill asks 'which specific live conversation died mid-step'.

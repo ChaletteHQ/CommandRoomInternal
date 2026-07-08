@@ -1,0 +1,35 @@
+{
+"counts": {
+"by_kind": {
+"promise": 5
+},
+"stuck": 3,
+"they_owe": 3,
+"total": 5,
+"undated": 1,
+"unowned": 0,
+"you_owe": 2
+},
+"dropped": [],
+"needs_attention": [
+{
+"commitment_id": "c2",
+"due": "<DATE>",
+"overdue": true,
+"owner_id": "person_001",
+"reconcile_stale": true,
+"thread_id": "project_001",
+"title": "Send Northstar the pricing sheet"
+},
+{
+"commitment_id": "c6",
+"due": "<DATE>",
+"overdue": false,
+"owner_id": "person_001",
+"reconcile_stale": true,
+"thread_id": "project_001",
+"title": "Ship the pricing page copy"
+}
+],
+"reconcile_stale": true
+}

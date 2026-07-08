@@ -19,7 +19,7 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$(pwd)"
 
 # The plugin's tests live under command-room/tests/ in the marketplace
-# repo layout (chaletteholdings/commandroom1 root → command-room/ subdir).
+# repo layout (ChaletteHQ/cr1 root → command-room/ subdir).
 # In the staging-clone canonical edit surface they're at the same depth.
 if [ -f "$REPO_ROOT/command-room/tests/run_no_real_customer_names_test.py" ]; then
   TEST_DIR="$REPO_ROOT/command-room"

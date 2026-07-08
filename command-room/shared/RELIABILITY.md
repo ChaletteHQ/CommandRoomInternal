@@ -7,7 +7,7 @@
 - Touches a connector (Gmail, Calendar, Slack, Granola, Drive).
 - Writes to workspace files (every skill, effectively).
 
-**Read with:** `WORKSPACE_API.md`, `PASSIVE_CAPTURE.md`.
+**Read with:** `WORKSPACE_API.md`, `PASSIVE_CAPTURE.md`, `SUBAGENT_VERIFICATION.md` (any orchestrator that fans out subagents re-verifies numeric claims through canonical helpers before rendering — R6).
 
 ---
 
@@ -46,11 +46,20 @@ Before producing output, check `_hq/BUSINESS_CONTEXT.md` for an "Out of office" 
 - insight-generator: fires Sunday 19:00 (intentional — ready for Monday).
 - dormant-customer-scan: weekly Sunday (same reason).
 
-### 4. Missed-fire recovery
+### 4. Missed-fire recovery + late-fire tiers (Phase 3 / R4)
 
-If a scheduled task was due but didn't fire (user's machine off, etc.), on the next session launch:
-- morning-briefing: produces one catch-up briefing covering the gap window (max 3 missed days; beyond that, surface as "you were offline N days — want a full catch-up?").
-- cleanup: runs at next opportunity; no catch-up needed — audit is a point-in-time snapshot.
+When Cowork fires a missed slot late (machine was off/asleep), every CHAT orchestrator computes its lateness at the top of the run via `shared/scripts/late_fire.py::check_lateness` — machine-local math (cron evaluates on the machine clock; workspace TZ is presentation-only) — and branches:
+
+- **< 3h late** — run normally, no mention.
+- **3–24h late** — run normally; the output opens with one plain line naming the scheduled time (sleep named as the likely cause).
+- **> 24h late** — degrade: the stale surface is NOT rendered, but every substrate write the task owes (events, view updates, the pack_run receipt) still lands silently, then one line tells the CEO the full surface was skipped and the next morning brief folds in what mattered.
+- **Silent task classes are EXEMPT** (membership = the `SILENT_TASKS` registry in `schedule_config.py`, never a name list): late is fine for cleanup / reconcile-sent / monthly-report / weekly-insights — they always run in full.
+
+A `late_fire` event logs on the 3h+ tiers; `late_fire.detect_chronic_lateness` (consumed by cleanup's Monday note) proposes a better default time after >24h-late fires in 3 of 4 weeks — the actual move always goes through change-schedule.
+
+Legacy per-skill recovery notes (still true, now subordinate to the tiers above):
+- morning-briefing: a next-session catch-up briefing may cover up to 3 missed days; beyond that, surface as "you were offline N days — want a full catch-up?".
+- cleanup: runs at next opportunity; no catch-up needed — the audit is a point-in-time snapshot.
 - insight-generator: reruns once if the missed fire was <7 days ago; otherwise defers to next scheduled fire.
 
 ### 5. Scheduled task output delivery
@@ -73,6 +82,8 @@ Every connector read follows this error protocol:
 - Single connector read timeout: 15 seconds.
 - Full skill connector-scan timeout: 60 seconds (aggregate across all connectors).
 - If budget exceeded, abort remaining reads, return partial output with a `⚠️ [Connector] skipped — timeout` line.
+
+> **Honest mechanism (SPEC CON1):** these are **targets the skill self-polices**, not a hard ceiling — there is no shared timeout wrapper around connector/MCP calls, and the runtime does not interrupt a slow call at 15s. The numbers are a budget the model is asked to honor (stop scanning past ~60s and return partial output) plus the shape of the `connector-timeout` event a skill logs when it gives up. Treat them as a service-level *intent*, not an enforced limit. A real shared wrapper is future work; until it exists, do not claim these are guaranteed.
 
 ### 2. Graceful degradation
 
@@ -119,35 +130,30 @@ Every event append includes a dedup hash (see `PASSIVE_CAPTURE.md` rule on hashi
 
 This makes re-running any skill safe. A user can "run morning-briefing" three times and still have one set of events captured.
 
-### 3. Concurrent-write protection — known gap (v3.6.1)
+### 3. Concurrent-write protection — events.jsonl writer lock (shipped v3.19.x, SPEC A1)
 
-**Current state, plainly:** the atomic-write helper (`shared/scripts/atomic_write.py`) guarantees no reader sees a torn or partial file. It does NOT guarantee that two concurrent writers both land in the final file. `atomic_append_jsonl` reads the existing file, appends in memory, and atomic-renames — it is not an O_APPEND write, despite the name. Two callers that race produce a last-writer-wins outcome.
+**Current state, plainly:** `atomic_append_jsonl` writes to `events.jsonl` inside a cross-process **writer lock**, so the whole read → seq-stamp → atomic-rename sequence is one critical section. Two concurrent callers can no longer lose an event or duplicate a seq. The atomic-write helper already guaranteed no reader sees a torn/partial file; the lock now also guarantees both racing writers land.
 
-**Failure mode:**
+**The race this closes (pre-A1 behavior):**
 
 1. Skill A reads `events.jsonl` tail (seq=42), computes its new event with seq=43.
 2. Skill B reads the same tail before A writes, also computes seq=43.
 3. A's `atomic_append_jsonl` reads the file, appends, renames.
-4. B's `atomic_append_jsonl` reads the file (with or without A's event depending on timing), appends with its stale seq=43, renames.
+4. B's `atomic_append_jsonl` reads the file, appends with its stale seq=43, renames.
 
-Outcome is either a duplicate seq (`cleanup` flags as `schema-violation` next Sunday) or B's rename overwrites A's renamed content — A's event is gone, no flag, no log.
+Outcome was either a duplicate seq or B's rename silently overwriting A's event (no flag, no log). On Windows the racing `os.replace` could additionally raise `PermissionError [WinError 5]`. Measured pre-A1: 8 processes × 25 concurrent appends produced **25 of 200** events (175 lost). With the lock: 200/200, seq 1..200, zero duplicates.
 
-**Practical exposure today:**
+**How the lock works** (`shared/scripts/writer_lock.py`, `events_writer_lock`):
 
-The plugin's default scheduled-task cron expressions in `enable-command-room-schedules` stagger most fires to non-overlapping minutes (6:30, 7:00, 8:30, 9:00, 17:00 weekdays). There is a known 7:00 collision between `morning-brief` and `inbox` once both are registered — the operator shifts one via `change schedule` per that skill's Phase 3 note.
+- **Primary mechanism:** an OS byte-range lock (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows) on a dedicated, never-rewritten file `_hq/data/.writer.lock`. The kernel releases the lock automatically when the holder process dies, so **a crashed writer recovers with zero manual cleanup** (measured reacquire < 0.01s).
+- **Cloud-sync safe:** the lock file's content (a single byte) never changes and the file is never renamed/deleted — zero OneDrive/Drive sync churn. Holder diagnostics go to a sibling `.writer.lock.info` file that the locking logic never reads.
+- **Fallback:** if the OS lock syscall raises `OSError` (some network/virtual mounts refuse byte-range locks), it falls back to the sentinel lock (`.writer.lock.sentinel`, 30s stale timeout + pid-liveness reclaim). The write still lands.
+- **Timeout + jitter:** 30s default timeout, jittered retry to avoid lockstep contention. On timeout `atomic_append_jsonl` raises `TimeoutError` with an actionable message.
+- **Reentrant** per process+thread, so a skill that appends while already holding the lock never deadlocks itself.
 
-The overlap that DOES happen in practice: on-demand event-emitting skills (`go [project]`, `process meeting`, `follow-up ritual`, anything captured via `passive_capture.py`) firing at any time, including during a scheduled-task window. CEO running `process the call` at 7:01 while `morning-briefing` is still in flight is the realistic scenario.
+**Contention telemetry:** best-effort counters in `_hq/.system/lock_stats.json` (`waits`, `total_wait_ms`, `timeouts`, `fallback_sentinel_acquires`, `last_timeout`), written only when a wait exceeded 100ms (no write on the uncontended fast path). `cleanup` surfaces these in its Monday note and resets them. Telemetry failures are always swallowed — they can never break a write.
 
-**Mitigations available today:**
-
-- Avoid on-demand event-emitting skills during scheduled-task windows (6:30–9:00 and 17:00 weekdays on default cron).
-- Run `cleanup` — duplicate-seq detection won't recover lost events but acts as a canary.
-
-**Roadmap (deferred indefinitely as of v3.11.1):**
-
-A `_hq/.writer.lock` with cross-platform serialization (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows, 30-second stale-lock timeout) has been on the backlog since v3.6.1. Originally tracked for v3.7.0; carried through v3.7–v3.11 without shipping. Honest status today: **not actively scheduled.** The exposure window is real — overlapping on-demand event writers + scheduled-task fires can silently overwrite — but bounded in practice (most workspaces fire one scheduled task at a time, and the mitigations below cover the common case). Shipping a lock that doesn't actually protect would be worse than the current honest gap; closing it requires testing against real concurrent-write + cloud-sync scenarios (Google Drive, OneDrive, iCloud), which has not been prioritized over the v3.7–v3.11 product work.
-
-If you hit an actual events.jsonl corruption traced to overlapping writes, file a `report bug` — that's the trigger to actually schedule this. Until then, treat it as known-deferred risk.
+**Scope note:** the lock is cooperative and covers `events.jsonl` only. `entities.json` / `aliases.json` keep their own sentinel lock (`atomic_write.acquire_write_lock`); a process holding both must acquire the events lock **second** to avoid an ordering deadlock. Writers that bypass `atomic_append_jsonl` entirely (forbidden per `WORKSPACE_API.md`) remain unprotected — the event-contract guard tests are the enforcement layer there.
 
 ### 4. Corrupted file recovery
 

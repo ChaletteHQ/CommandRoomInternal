@@ -271,7 +271,10 @@ def exercise_brief_writer_e2e() -> None:
         title="Whether to hire a Head of Sales now",
         subtitle="Decision required by 2026-06-15",
         sections=[
+            # EXEC1 element 2: Recommendation is above Comparison (decision-forward).
             {"heading": "Framing", "body": "Inbound is growing 30%/mo. Founder sales is at capacity. 3 conversations stuck >30d."},
+            {"heading": "Recommendation",
+             "body": "Hire now. Pipeline coverage outweighs runway risk at current burn."},
             {"heading": "Options", "bullets": ["A. Hire now (start Aug 1)", "B. Hire Q4 (start Jan 1)", "C. Defer 12 months"]},
             {"heading": "Criteria",
              "table": {"headers": ["Criterion", "Weight", "Why it matters"],
@@ -293,9 +296,12 @@ def exercise_brief_writer_e2e() -> None:
                  ],
                  "star_col_idx": 0,
              }},
-            {"heading": "Recommendation",
-             "body": "Hire now. Pipeline coverage outweighs runway risk at current burn."},
         ],
+        # B3: this exercise validates table/matrix RENDERING + the leak gate,
+        # not the output contract (the "Criteria" heading intentionally differs
+        # from the contract's "Criteria & weights"). Opt out of the contract
+        # gate so it doesn't preempt what this test verifies.
+        contract="off",
     )
 
     if decision.exists() and decision.stat().st_size > 5000:
@@ -328,6 +334,7 @@ def exercise_brief_writer_e2e() -> None:
             title="Test memo with leak",
             subtitle="should be blocked",
             sections=[{"heading": "Body", "body": "We're shipping project_020 next week."}],
+            contract="off",  # B3: isolating the leak gate, not the contract gate
         )
         _fail("leak scanner gate", "expected LeakScanError but make_brief succeeded")
     except LeakScanError as e:
@@ -345,6 +352,7 @@ def exercise_brief_writer_e2e() -> None:
             title="Substrate-path test",
             subtitle="should be blocked",
             sections=[{"heading": "Body", "body": "See events.jsonl for the full history."}],
+            contract="off",  # B3: isolating the leak gate, not the contract gate
         )
         _fail("leak scanner — substrate path", "expected LeakScanError")
     except LeakScanError as e:
@@ -362,6 +370,7 @@ def exercise_brief_writer_e2e() -> None:
             title="Marketing-speak test",
             subtitle="should be blocked",
             sections=[{"heading": "Body", "body": "The ecosystem of partners is leveraging the synergy."}],
+            contract="off",  # B3: isolating the leak gate, not the contract gate
         )
         _fail("leak scanner — marketing", "expected LeakScanError")
     except LeakScanError:

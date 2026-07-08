@@ -42,6 +42,26 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Discover NATIVE Gmail MCP IDs for re-engagement / status-check / catchup-request drafts (`search_threads`, `create_draft`, `send_draft`).
 - Discover Zapier-threaded-send tool per `EMAIL_DRAFT_PROTOCOL.md` §3c (limit to tools whose name OR description contains `Send Threaded Email`; never any other Zapier tool). Cached for the session. If none, fall back to native Gmail at send time.
 
+# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'pulse')))
+"
+```
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+
 # Phase 3 — Per-person dormancy scan
 
 For each person in entities.json (excluding M, excluding flagged-orphan / left-company):
@@ -57,6 +77,8 @@ For each person in entities.json (excluding M, excluding flagged-orphan / left-c
    **Why this step exists:** the 2026-05-20 Cowork handoff #27 verified that Pulse computed `last_interaction_date` from events.jsonl alone, with no live connector read at fire time. The user emailed two contacts within the last 48 hours, but those sent messages never entered the substrate (inbox-triage hadn't run yet that day), so cadence math saw 6-day and 12-day gaps and flagged both as dormant. Pulse was arithmetically correct on stale data; the user experience was "you're telling me to nudge people I just talked to." v3.13.7 Session-22 testing also surfaced the parallel Calendar gap: meeting-heavy contacts (board members, recurring 1:1s, executive coaching) whose contact cadence was calendar-based hit the same false-dormancy class because the v3.13.0 Step 1b only queried Gmail.
 
    **The fix:** before emitting `pattern_break_detected` for any person, invoke `live_contact_check`. It returns a merged `last_contact_iso` that respects substrate + Gmail + Calendar. If the merged value is more recent than the substrate-only date, the person is NOT actually dormant — skip the flag.
+
+   **REL1 — emit the normalized dormancy signal alongside `pattern_break_detected`.** When you emit `pattern_break_detected` for a person (after this live-check gate), ALSO call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<person_id>, entity_type='person', gap_days=<days_since>, baseline_days=<typical_cadence or None>, source_skill='pulse')`. `pattern_break_detected` is unchanged (header math + operator-report counters depend on it); the signal is additive.
 
    ```bash
    SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
@@ -118,6 +140,7 @@ For each person in entities.json (excluding M, excluding flagged-orphan / left-c
 
    **Excluded event types (do NOT count — internal mechanics):**
    - `pattern_break_detected`, `dont_forget_run`, `dont_forget_feedback`, `dont_forget_snooze`, `cracks_watch_*`
+   - `dormancy_signal`, `relationship_move_suggested` (REL1 — internal relationship-mechanics signals; never count as interactions)
    - `pack_run`, `connector_read`, `scheduled_task_failure`, `errors`
    - `person_record_update`, `person_record_update_rejected`
    - `tier_change`, `tier_validated`, `org_proposal_*`
@@ -130,6 +153,7 @@ For each person in entities.json (excluding M, excluding flagged-orphan / left-c
 2. Compute `typical_cadence_days`:
    - If <3 historical interactions → use absolute thresholds (>14d silence flags).
    - If ≥3 → mean inter-interaction days from last 12 events. (Read from people-crm's existing dormancy logic — don't re-derive.)
+   - **Phase 6 Quick Win B — floor with the user-taught baseline.** If the person record carries `cadence_override_days` (written when the CEO previously cleared this person's "going quiet" flag as "just busy"), widen the computed cadence with it: `typical_cadence_days = dormancy.effective_baseline(computed, dormancy.cadence_override_days(person_record))`. This is why "just busy" stops the flag from simply returning every 14 days — the model of the relationship actually moved. Legacy records without the field read as no override (`effective_baseline` is None-safe).
 3. `days_since = today - last_interaction_date`.
 4. Flag as **dormant** if `days_since > typical_cadence × 2.5`.
 5. Flag as **pattern-break** (low signal) if `days_since > typical_cadence × 1.8` (between 1σ and 2σ).
@@ -304,6 +328,20 @@ Score the dormancy/pattern-break/stale-project signals from Phases 3-4:
 
 Sort by combined score. Take **top 5**. Diversify: prefer mix of person/project items rather than 5 dormant people.
 
+**Surface-preference filter (Phase 6 Loop 2 — before rendering).** Drop any item the CEO has taught the system to stop surfacing (insight-generator Pass 14 → `_hq/data/surface-preferences.json`):
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from surface_preferences import load_surface_preferences, is_suppressed
+prefs = load_surface_preferences("<abs workspace root>")   # treat-as-empty-if-missing
+items = [i for i in items
+         if not is_suppressed(prefs, "pulse",
+                              item_class=("dormancy" if i.is_person else "stale_project"),
+                              entity_id=i.person_id or i.project_id)]
+```
+
+Missing store → no-op. This only hides a surfaced prompt; nothing about the underlying relationship/project state changes. (Same filter every widget orchestrator applies.)
+
 # Phase 7 — Memory updates (silent per Rule 9)
 
 Append to events.jsonl:
@@ -360,6 +398,7 @@ from chat_output_renderer import render_chat_output_widget
 # go in sub_items under appropriate parent sections (or as a closing review section)
 data_view = {
     "widget_mode": "all_batch_widget",
+    "source_skill": "pulse",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
     "header": f"{n_cracks} things worth not forgetting this morning.",
     "sections": [
         {"title": None, "count": None, "items": [item_for_crack(c) for c in top_cracks]},
@@ -647,7 +686,9 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 - `N investigate` → fire `tell me about [name]` chat skill. Cross-reference report.
 - `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — Send / Edit then send / To drafts / Edit then draft / Skip available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Noah's email — missing in entities.json, fill before send]`. The user can fill the To field via the multi-field edit affordance.
 - `N schedule catchup [when]` (v2.12.4+ free-text input) → parse the user's typed natural-language window (`next Tuesday afternoon`, `this Friday at 4pm`, `sometime next week`). If parseable to a specific time, create a tentative calendar invite at that time + draft the request email; if just a window, draft the request asking for the user's stated availability. Draft surfaces in the consolidated response widget.
-- `N resolved` (v2.14.1+ — dropped `[reason]`; v2.14.38+ unified verb across all surfaces) → state change, suppress alert for 14 days. NO input affordance — clean one-click action. Display label: `Resolved`. Confirmation: `✓ Resolved — <name>'s alert suppressed for 14 days.`
+- `N resolved` (v2.14.1+ — dropped `[reason]`; v2.14.38+ unified verb across all surfaces) → the "expected / just busy" outcome on a person-dormancy item. NO input affordance — clean one-click action. Display label: `Resolved`. Confirmation: `✓ Resolved — <name>'s alert suppressed for 14 days.` Writes:
+  1. **The 14-day suppression (made explicit, Phase 6).** Write a `dont_forget_feedback` event `{data: {person_id, feedback: "just_busy"}}` — this is the event Phase 3 step 6 already reads to skip the person for 14 days, and the event insight-generator Pass 14 mines. (Historically the 14-day suppression was implied; Phase 6 names the writer so the read/write contract is one thing. Also stamp `data.fingerprint`/`surface`/`item_class` per apply-choices Step 3f so Loop 2 can key on it.)
+  2. **Quick Win B — widen the cadence baseline (the model update on top of the suppression).** Call `dormancy.record_just_busy(workspace_root, person_id, observed_gap_days=days_since, source_skill="pulse")`. This persists `cadence_override_days = max(existing, days_since)` on the person record via the canonical people writer, so the SAME gap no longer trips the flag in 14 days — the relationship model improves instead of being re-overridden. Never a direct entities.json write; `record_just_busy` returns None (silent no-op) on any error and never blocks the reply.
 - `N snooze 3d` (v2.14.38+) → write `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Person won't re-surface in Pulse until the date passes. Replaces v2.14.5 `snooze [duration]` (textarea version retained as deprecated back-compat alias only).
 - `N add to my list` (v2.14.38+) → write `commitment_to_discuss` event with `data.person_id` set so it surfaces grouped under that person in `show my list`. Use when the user wants to bring this person up next time they connect.
 
@@ -684,7 +725,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 
 Each CRU review item is a single MEDIUM-confidence match between an outbound signal (Cowork send / native mail send / meeting transcript) and an open commitment. The user resolves it, dismisses it as not relevant, OR defers.
 
-- `[r1/r2/...] resolved` (v2.14.38+) → write a `commitment_resolved` event for the underlying commitment_id with `resolved_by` = the commitment owner. The original commitment drops from "you owe / they owe" on the next Commitments fire. Confirm: `✓ Marked '<commitment title>' as resolved.`
+- `[r1/r2/...] resolved` (Stage E 2026-07 — THE closure path; supersedes the v2.14.38 direct write) → `commitment_state.close_commitment(workspace_root, <underlying commitment_id verbatim>, resolved_by=<the commitment owner>, evidence=<the review proposal's evidence>, source_skill="pulse", user_confirmed=True)` — the explicit click IS user confirmation, so this closes even a `pending_review`-flagged commitment. Never hand-build the `commitment_resolved` append. The original commitment drops from "you owe / they owe" on the next Commitments fire. Confirm: `✓ Marked '<commitment title>' as resolved.`
 - `[r1/r2/...] not relevant` (v2.14.38+) → write `commitment_review_dismissed` event with 60-day cooldown referencing this commitment_id. The underlying commitment STAYS OPEN in Commitments (user explicitly rejected this signal as fulfillment). Confirm: `✓ Skipped — the commitment stays open in your Commitments view.`
 - `[r1/r2/...] add to my list` (v2.14.38+) → defer the review decision. Writes `commitment_to_discuss` so the user can come back to it.
 

@@ -86,11 +86,13 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 
 **Action (on "what's going on", before saving new briefing):**
 1. Check `_hq/briefings/` for files older than 30 days
-2. Delete files older than 30 days
-3. Keep the most recent 30 briefings regardless of age (safety net)
+2. Move files older than 30 days into `_archive/briefings/` (archived, never deleted — preserve the filename)
+3. Keep the most recent 30 briefings in place regardless of age (safety net)
 4. No logging needed — this is silent housekeeping
 
-**Exception:** If a briefing filename contains "important" or "keep", never delete it.
+**Archive-only policy (Command Room build, 2026-06):** nothing here is ever deleted. Aged caches are *moved* to `_archive/` so a non-technical CEO is never surprised by a vanished file.
+
+**Exception:** If a briefing filename contains "important" or "keep", leave it in place (don't even archive it).
 
 ---
 
@@ -101,8 +103,8 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 **Threshold:** Audit reports older than 90 days.
 
 **Action (during cleanup, before saving new report):**
-1. Keep the 12 most recent audit reports (roughly quarterly coverage)
-2. Delete older ones silently
+1. Keep the 12 most recent audit reports in place (roughly quarterly coverage)
+2. Move older ones into `_archive/cleanup-reports/` silently (archived, never deleted)
 3. No logging needed
 
 ---
@@ -114,8 +116,8 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 **Threshold:** Prep files older than 14 days.
 
 **Action (during team-intelligence 1:1 prep, before saving new prep):**
-1. Delete prep files older than 14 days
-2. Keep the 3 most recent preps per person regardless of age
+1. Move prep files older than 14 days into `_archive/people-prep/` (archived, never deleted)
+2. Keep the 3 most recent preps per person in place regardless of age
 3. No logging needed — preps are point-in-time snapshots, not permanent records
 
 ---
@@ -166,12 +168,12 @@ interaction_tier3_months: 18     # default: 12
 **Problem:** Completed Quick Tasks and Recently Archived sections grow indefinitely.
 
 **Thresholds:**
-- Completed Quick Tasks older than 60 days → remove
-- Recently Archived entries older than 90 days → remove (the archived project folder still exists)
+- Completed Quick Tasks older than 60 days → move to the tracker's `## Archived (history)` section
+- Recently Archived entries older than 90 days → move to the tracker's `## Archived (history)` section (the archived project folder still exists)
 
 **Action (on "end session"):**
-1. Check both sections. Remove entries past threshold.
-2. Log once in session summary if anything was cleaned: "Cleaned [X] old entries from tracker."
+1. Check both sections. Move entries past threshold into a `## Archived (history)` section at the bottom of MASTER_TRACKER.md (create it if missing) — never delete a row; the tracker keeps its own history in place.
+2. Log once in session summary if anything was cleaned: "Filed [X] old entries into the tracker's archive section."
 
 ---
 
@@ -207,7 +209,9 @@ This is a read optimization, not a cleanup rule. It doesn't delete anything — 
 
 This is the manual trigger for comprehensive maintenance. Runs all rules above PLUS interactive judgment calls:
 
-0. **Substrate integrity check (v3.16+).** Before anything else, run `python3 shared/scripts/integrity_check.py <workspace_root>` and fold its findings into the report. This is the deterministic version of the consistency checks cleanup describes in prose — it catches orphan folders (`C10`), threads whose `folder_name` no longer exists on disk (`C9`, e.g. a project moved/archived without updating its record), missing `PROJECT_BRAIN.md` (`C11`), dangling event references (`C7`), dead aliases (`C8`), unresolved affiliations/cycles (`C2`/`C3`/`C4`), and duplicate event `seq` collisions (`C12`, a real multi-machine append hazard). ERROR-severity findings (duplicate seq, unresolved required refs) MUST be surfaced prominently — they indicate possible data loss. The checker is strictly read-only; it never fixes. Feed its `C10`/`C11`/`C9` output into steps 2 and the brain-backfill rule below so the fixes target exactly what's broken.
+0. **Substrate integrity check (v3.16+; weekly since v3.19.x / SPEC CLEAN1).** Before anything else, run `python3 shared/scripts/integrity_check.py <workspace_root>` and fold its findings into the report. This is the deterministic version of the consistency checks cleanup describes in prose — it catches orphan folders (`C10`), threads whose `folder_name` no longer exists on disk (`C9`, e.g. a project moved/archived without updating its record), missing `PROJECT_BRAIN.md` (`C11`), missing `SESSION_NOTES` (`C11b`), dangling event references (`C7`), dead aliases (`C8`), unresolved affiliations/cycles (`C2`/`C3`/`C4`), and duplicate event `seq` collisions (`C12`, a real multi-machine append hazard). ERROR-severity findings (duplicate seq, unresolved required refs) MUST be surfaced prominently — they indicate possible data loss. The checker is strictly read-only; it never fixes. Feed its `C10`/`C11`/`C11b`/`C9` output into step 2, the brain-backfill rule (Rule 15), and the session-notes backfill (Rule 16) so the fixes target exactly what's broken.
+
+   > **Weekly vs. deep clean (D2).** The structural-folder subset of these checks — orphan folders (`C10`), missing brains (`C11`), missing session notes (`C11b`) — is **NOT deep-clean-only**. The weekly `cleanup` fire runs it on every pass via its Phase 1.0 code block (`integrity_check.scan_project_structure`), because orphans and missing files accumulate seven days a week. Deep clean keeps the fuller pass above (the complete `integrity_check` run plus the interactive judgment steps below). The pre-CLEAN1 model — full integrity_check only on deep clean — let drift stay invisible between rare deep-clean runs.
 1. Run all automatic rules (1-9) and report what was cleaned
 2. **Project review:** For each project, show last activity date + stage. Ask: "Still active? Archive? Change stage?"
 2.5. **PROJECT_BRAIN backfill (Rule 15).** For every active project folder the integrity check flagged `C11.missing_brain`, scaffold a `PROJECT_BRAIN.md` from `references/project-brain-template.md` — see Rule 15 for the procedure. A project without a brain has no institutional memory layer; this closes the gap for projects that were created outside the "new project" lifecycle (filed-into folders, hand-created folders, legacy migrations).
@@ -226,17 +230,17 @@ This is the manual trigger for comprehensive maintenance. Runs all rules above P
 
 **Problem:** MASTER_TRACKER.md is the single source of truth for the entire workspace. A bad edit, accidental overwrite, or corruption can cascade across every skill. There's no recovery without a backup.
 
-**Principle: Keep 3 timestamped copies. Delete anything older. Simple rolling window.**
+**Principle: Keep 3 timestamped copies in the live backup folder. Archive anything older — never delete. Simple rolling window.**
 
 **Action (on "end session", BEFORE any tracker updates):**
 1. Check if `[WORKSPACE_ROOT]/_hq/_backups/` exists. Create it if not.
 2. Copy `_hq/MASTER_TRACKER.md` to `_hq/_backups/MASTER_TRACKER_[YYYY-MM-DD_HHMM].md` (24-hour time, e.g., `MASTER_TRACKER_2026-04-14_0930.md`).
 3. List all files in `_hq/_backups/` matching the `MASTER_TRACKER_*.md` pattern.
 4. Sort by filename (which sorts by date since the format is chronological).
-5. If more than 3 backup files exist, delete everything except the 3 most recent.
+5. If more than 3 backup files exist, move everything except the 3 most recent into `_archive/backups/` (archived, never deleted).
 6. No logging to the user unless asked. This is silent infrastructure.
 
-**Why 3 copies:** Enough to recover from a bad session (today's backup), compare against yesterday, and have one more safety net. More than 3 is clutter with no practical benefit — if you didn't catch the problem within 3 sessions, a backup won't help.
+**Why 3 copies live:** Enough to recover from a bad session (today's backup), compare against yesterday, and have one more safety net, all close at hand. Older copies aren't clutter to throw away — they're moved to `_archive/backups/` so the recovery trail is never broken.
 
 **Why before updates, not after:** The backup should capture the state BEFORE this session's changes. If the current session corrupts the tracker, the most recent backup is the clean pre-session state.
 
@@ -392,9 +396,8 @@ This filter cannot be disabled via CUSTOM_CONFIG.md. It is always on. The exclus
 
 ## Override via CUSTOM_CONFIG.md
 
-All thresholds can be overridden:
+All thresholds can be overridden (override list at the bottom of this section). The two backfill rules below — symmetric brain (Rule 15) and session-notes (Rule 16) backfills — are documented here adjacent to the override config.
 
-```markdown
 ## Rule 15: PROJECT_BRAIN Backfill (v3.16+)
 
 **Problem:** `PROJECT_BRAIN.md` is created only by the "new project" lifecycle (workspace-manager) and updated only on "end session." Any project folder that came into existence another way — filed into by workspace-ingest, hand-created, carried in from a legacy migration — has no brain. A project without a brain has no institutional-memory layer: "go [project]" loads nothing, gotchas and trigger aliases are lost. On the live workspace this affected 8 of 13 projects.
@@ -411,6 +414,22 @@ All thresholds can be overridden:
 
 ---
 
+## Rule 16: SESSION_NOTES Backfill (v3.19.x / SPEC CLEAN1 — D3)
+
+**Problem:** the symmetric gap to Rule 15. `integrity_check` had `C11.missing_brain` + a brain backfill (Rule 15), but no missing-session-notes check and no backfill for the reverse direction. A project folder created outside the "new project" lifecycle (filed-into by ingest, hand-created, legacy migration) can have a brain or context but no `SESSION_NOTES` file — so the next "end session" has nowhere to roll its notes and the project has no running log.
+
+**Trigger:** runs inside the weekly `cleanup` fire (Phase 3c), driven by the structural scan's `C11b.missing_session_notes` findings. Also runs on deep clean (step 2.5 alongside Rule 15) and standalone on "backfill session notes" / "missing notes".
+
+**Action:**
+1. For each flagged project folder, call `cleanup_actions.backfill_session_notes(workspace_root, folder_name)`.
+2. The helper scaffolds `SESSION_NOTES_[NAME].md` from `references/session-notes-template.md`: a minimal header, the provenance line *"Backfilled by cleanup on [date] — no prior session notes existed,"* and empty `## Current Status` / `## Active Work Items` sections.
+3. **Never overwrite.** The helper refuses (returns None, writes nothing) if ANY `SESSION_NOTES*.md` — live, archive, or index — already exists in the folder. This rule only *creates* missing files; ongoing maintenance of existing notes is Rule 1. On the 5 live client workspaces this is the guarantee that hand-written notes are never clobbered.
+
+**Why scaffold-not-skip:** mirrors Rule 15 — a backfilled notes file converts the project to the same model as every other, so the next "end session" rolls into it normally.
+
+---
+
+```markdown
 ## Maintenance Overrides
 session_notes_rollover_lines: 200      # default: 150
 brain_thread_compress_days: 45         # default: 30

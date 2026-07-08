@@ -1,5 +1,7 @@
 # Orchestrator prompt — Workspace Map refresh
 
+> LATE-FIRE EXEMPT (on-demand artifact refresh): this is not a recurring reader-facing chat, so the shared lateness tiers do not apply — run in full whenever fired. Documented v4.5.1-era hygiene so the omission reads as a contract, not a gap.
+
 This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: cr-refresh-workspace-map`. Default cron: `0 16 * * 1-5` (4 PM weekdays local). Per-workspace override via `workspace.schedule_config` in entities.json.
 
 **Purpose (v2.14.11+):** silently rebuild the Workspace Map sidebar artifact with current data so the user wakes up to a fresh map. Solves the v2.7.x stale-artifact problem without making the artifact live.

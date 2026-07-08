@@ -149,9 +149,18 @@
 - phrase: "weekly audit"
   expected: cleanup
 - phrase: "health check"
-  expected: cleanup
+  expected: system-health
+  notes: "Moved from cleanup in Phase 3/W1 — health check = the scheduled-task watchdog (system-health); cleanup keeps the tidying/audit vocabulary."
 - phrase: "system review"
   expected: cleanup
+
+# System health — scheduled-task watchdog (Phase 3 / W1)
+- phrase: "is everything running"
+  expected: system-health
+- phrase: "system health"
+  expected: system-health
+- phrase: "are my tasks running"
+  expected: system-health
 
 # =========================================================
 # ANALYZER PHRASES
@@ -454,7 +463,8 @@
 
 # Audit — casual
 - phrase: "run a health check on the workspace"
-  expected: cleanup
+  expected: system-health
+  notes: "health-check vocabulary owns the watchdog surface (Phase 3/W1); workspace tidying phrases (weekly audit / scan everything / system review) stay with cleanup."
 
 # =========================================================
 # NEGATIVE TESTS — must NOT mis-fire
@@ -466,9 +476,9 @@
   expected: call-prep
   notes: "generic meeting prep → call-prep, NOT people-crm even though 'prep me for' is ambiguous"
 
-- phrase: "hire a new head of ops"
-  expected: workspace-manager
-  notes: "'hire' is out-of-scope for team-intelligence — should fall to workspace-manager"
+# ('hire' trigger removed P0.11 2026-07-02 — it was advertised with no handler
+# anywhere in workspace-manager's body. Hiring talk falls to workspace-manager
+# at runtime via its catch-all role, not via a positive trigger.)
 
 - phrase: "decision memo on the pricing change"
   expected: decision-memo-composer
@@ -485,3 +495,350 @@
 - phrase: "pull up the NorthStar status"
   expected: workspace-manager
   notes: "name-drop engagement — must NOT fire list-active"
+
+# =========================================================
+# NAVIGATION — "go [name]" (FIX1 Batch D item 17)
+# =========================================================
+# go [name] / go [org] all / go [org] rollup route to workspace-manager's
+# fuzzy entity navigation. Must NOT collide with verb-uses of "go"
+# (go through my email → inbox-triage, what could go wrong → stress-test,
+# go with X → decision-log), which workspace-manager disclaims.
+- phrase: "go Acme Co"
+  expected: workspace-manager
+  notes: "go [name] — load the org/thread by fuzzy match"
+- phrase: "go Sam Sample"
+  expected: workspace-manager
+- phrase: "go Northstar Partners all"
+  expected: workspace-manager
+  notes: "go [org] all — cross-thread rollup view"
+
+# =========================================================
+# COACH DELIVERABLE-CATALOG TRIGGERS (FIX1 Batch D items 15-16)
+# =========================================================
+# Every catalog trigger must route to a skill that claims it.
+- phrase: "commitment forensics"
+  expected: memo-writer
+  notes: "catalog 2.1 — workspace-wide capture-vs-close report renders via memo-writer"
+- phrase: "portfolio velocity"
+  expected: operator-report
+  notes: "catalog 2.3 — project-momentum scorecard rendered from events.jsonl"
+- phrase: "show me the value"
+  expected: operator-report
+  notes: "v4.0.0 re-verify Open Q5 — operator-report owns it; coach + value-receipt disclaim it"
+- phrase: "where am I leaking time"
+  expected: automation-scanner
+  notes: "catalog 2.5 — hidden time-cost report; automation-scanner's extractive-meeting scan"
+
+# =========================================================
+# VALUE RECEIPT (SPEC C1) — forwardable ROI receipt
+# =========================================================
+# Must NOT collide with operator-report (CEO-self-facing operating lift) or
+# usage-report (developer token/connector spend).
+- phrase: "value receipt"
+  expected: value-receipt
+- phrase: "monthly value receipt"
+  expected: value-receipt
+- phrase: "roi receipt"
+  expected: value-receipt
+- phrase: "quarterly value receipt"
+  expected: value-receipt
+- phrase: "show me the receipt"
+  expected: value-receipt
+
+# =========================================================
+# CHECK DELIVERABLES (SPEC GATE2-v2) — on-demand voice/privacy sweep
+# =========================================================
+# Must NOT collide with automation-scanner ('automation scan' / 'scan
+# everything' / 'where am I wasting time'), cleanup ('clean up my workspace'),
+# value-receipt, or dormant-customer-scan ('dormant customer scan').
+- phrase: "check my deliverables"
+  expected: check-deliverables
+- phrase: "scan my deliverables"
+  expected: check-deliverables
+- phrase: "scan before I send"
+  expected: check-deliverables
+- phrase: "scan before sending"
+  expected: check-deliverables
+- phrase: "scan this before I send"
+  expected: check-deliverables
+- phrase: "check my output before I send"
+  expected: check-deliverables
+- phrase: "voice and privacy check"
+  expected: check-deliverables
+- phrase: "did this pass the quality check"
+  expected: check-deliverables
+- phrase: "scan my output for voice tells"
+  expected: check-deliverables
+
+# =========================================================
+# RELATIONSHIP MOVES (SPEC REL1) — weekly proactive outreach pack
+# =========================================================
+# Must NOT collide with dormant-customer-scan (detection report) or
+# thread-resurrection (thread-granularity).
+- phrase: "relationship moves"
+  expected: relationship-moves
+- phrase: "who should I reach out to"
+  expected: relationship-moves
+- phrase: "who should I reach out to this week"
+  expected: relationship-moves
+- phrase: "weekly outreach"
+  expected: relationship-moves
+# Boundary: detection phrases still route to dormant-customer-scan
+- phrase: "who went dark"
+  expected: dormant-customer-scan
+- phrase: "dormant customer scan"
+  expected: dormant-customer-scan
+
+# =========================================================
+# FIRST-RUN PERSONALIZATION — tune / show settings / reset (SPEC FRP1 S5)
+# Each adopting skill owns its own skill-name-specific trigger family.
+# The phrases are fully skill-qualified (e.g. "tune email-writer") so the
+# word-boundary containment matcher routes each to exactly one skill.
+# =========================================================
+- phrase: "tune email-writer"
+  expected: email-writer
+- phrase: "show email-writer settings"
+  expected: email-writer
+- phrase: "reset email-writer to defaults"
+  expected: email-writer
+- phrase: "tune morning-briefing"
+  expected: morning-briefing
+- phrase: "show morning-briefing settings"
+  expected: morning-briefing
+- phrase: "tune inbox-triage"
+  expected: inbox-triage
+- phrase: "reset inbox-triage to defaults"
+  expected: inbox-triage
+- phrase: "tune call-prep"
+  expected: call-prep
+- phrase: "show call-prep settings"
+  expected: call-prep
+- phrase: "tune meeting-notes"
+  expected: meeting-notes
+- phrase: "reset meeting-notes to defaults"
+  expected: meeting-notes
+- phrase: "tune follow-up-ritual"
+  expected: follow-up-ritual
+- phrase: "show follow-up-ritual settings"
+  expected: follow-up-ritual
+- phrase: "tune weekly-recap"
+  expected: weekly-recap
+- phrase: "reset weekly-recap to defaults"
+  expected: weekly-recap
+- phrase: "tune dormant-customer-scan"
+  expected: dormant-customer-scan
+- phrase: "show dormant-customer-scan settings"
+  expected: dormant-customer-scan
+- phrase: "tune decision-log"
+  expected: decision-log
+- phrase: "reset decision-log to defaults"
+  expected: decision-log
+- phrase: "tune memo-writer"
+  expected: memo-writer
+- phrase: "show memo-writer settings"
+  expected: memo-writer
+- phrase: "tune one-pager-composer"
+  expected: one-pager-composer
+- phrase: "reset one-pager-composer to defaults"
+  expected: one-pager-composer
+- phrase: "stalled projects"
+  expected: stalled-projects
+  notes: primary phrase (added v4.5.1 with the G11 front-load guard)
+- phrase: "what's stalled"
+  expected: stalled-projects
+  notes: primary phrase (added v4.5.1)
+- phrase: "tune stalled-projects"
+  expected: stalled-projects
+- phrase: "show stalled-projects settings"
+  expected: stalled-projects
+- phrase: "tune operator-report"
+  expected: operator-report
+- phrase: "show operator-report settings"
+  expected: operator-report
+- phrase: "reset operator-report to defaults"
+  expected: operator-report
+# Reset disambiguation (SPEC FRP1 §6): the skill-pref reset REQUIRES the
+# "to defaults" suffix and routes to the skill — it must NOT collide with the
+# morning-brief scheduled task (the dangerous near-name). The suffix + the
+# "briefing" vs "brief" word-boundary are what keep them distinct.
+- phrase: "reset morning-briefing to defaults"
+  expected: morning-briefing
+  notes: "suffix-form skill-pref reset; does not collide with the morning-brief task"
+
+# =========================================================
+# SKILL CUSTOMIZATION LAYER — customize / show customizations / reset
+# customizations (SPEC SCL1 §6.4). Each Wave-1 adopting skill owns its own
+# skill-qualified family; both directions tested per the reset-morning-brief
+# precedent. The customize/tune split and the three-way reset disambiguation
+# route to the SAME skill — the SKILL.md dispatches by verb (customize =
+# freeform directive; tune = FRP1 knobs; reset ... customizations = SCL1 wipe;
+# reset ... to defaults = FRP1 reset).
+# =========================================================
+# Wave-1 pilot: morning-briefing
+- phrase: "customize morning-briefing"
+  expected: morning-briefing
+- phrase: "show morning-briefing customizations"
+  expected: morning-briefing
+- phrase: "reset morning-briefing customizations"
+  expected: morning-briefing
+  notes: "SCL1 wipe; the 'customizations' suffix keeps it distinct from FRP1 'reset ... to defaults' and the morning-brief scheduled task"
+# Wave-1 pilot: operator-report
+- phrase: "customize operator-report"
+  expected: operator-report
+- phrase: "show operator-report customizations"
+  expected: operator-report
+- phrase: "reset operator-report customizations"
+  expected: operator-report
+# Wave-1 pilot: memo-writer
+- phrase: "customize memo-writer"
+  expected: memo-writer
+- phrase: "show memo-writer customizations"
+  expected: memo-writer
+- phrase: "reset memo-writer customizations"
+  expected: memo-writer
+  notes: "customize/tune split verified: 'tune memo-writer' (FRP1) already asserted above routes to the same skill; verb-dispatched inside"
+# no-skill form → workspace-manager Layer 4 menu
+- phrase: "customize command room"
+  expected: workspace-manager
+  notes: "no skill named → Layer 4 menu of adopting skills; must NOT hijack any single adopting skill"
+
+# =========================================================
+# COMMITMENT TRIAGE (Phase 2 Stage D, S4)
+# =========================================================
+- phrase: "triage my commitments"
+  expected: commitment-triage
+- phrase: "commitment triage"
+  expected: commitment-triage
+- phrase: "review my open commitments"
+  expected: commitment-triage
+  notes: "housekeeping pass over the full open set — NOT the daily commitments chat; 'clean up ...' phrasings stay with cleanup"
+
+# =========================================================
+# P2 ROUTING LATTICE (Phase 4 2026-07-02) — both directions
+# per fence, per the reset-morning-brief precedent.
+# `expected: none` = deliberately unowned; a match is a hijack.
+# =========================================================
+
+# 1. schedule-vs-calendar
+- phrase: "what's my schedule"
+  expected: none
+  notes: "calendar read — unowned by design; change-schedule fenced off"
+- phrase: "show my schedule"
+  expected: none
+- phrase: "when do my chats run"
+  expected: change-schedule
+- phrase: "show my scheduled chats"
+  expected: change-schedule
+
+# 2. register vs customize
+- phrase: "configure my schedules"
+  expected: change-schedule
+- phrase: "set up command room schedules"
+  expected: enable-command-room-schedules
+- phrase: "register my scheduled chats"
+  expected: enable-command-room-schedules
+
+# 3. board meeting prep vs board pack
+- phrase: "prep me for the board meeting"
+  expected: call-prep
+- phrase: "prep the board pack"
+  expected: board-pack-assembler
+- phrase: "build the board pack"
+  expected: board-pack-assembler
+
+# 4. 1:1 prep split
+- phrase: "prep me for my 1:1 with Aria"
+  expected: team-intelligence
+- phrase: "prep me for the Acme call"
+  expected: call-prep
+
+# 5. decision retrieval owner
+- phrase: "what did we decide about pricing"
+  expected: decision-log
+- phrase: "let's go with option B"
+  expected: decision-log
+  notes: "the go-with decision shape workspace-manager's go-fence points at"
+
+# 6. deep clean / maintenance
+- phrase: "deep clean"
+  expected: cleanup
+- phrase: "maintenance"
+  expected: cleanup
+
+# 7. commitment logging split
+- phrase: "log a commitment"
+  expected: workspace-manager
+- phrase: "log commitment for Aria"
+  expected: team-intelligence
+
+# 8. scan everything (retired audit phrase)
+- phrase: "scan everything"
+  expected: cleanup
+
+# 9. follow-up split
+- phrase: "follow up with Sam about the invoice"
+  expected: email-writer
+- phrase: "follow up on that call"
+  expected: follow-up-ritual
+
+# 10. brief-me scoping
+- phrase: "brief me on the Acme deal"
+  expected: none
+  notes: "topic brief — workspace-manager catch-all handles semantically; morning-briefing fenced off"
+
+# 11. focus vs attention
+- phrase: "what should I focus on this week"
+  expected: command-room-coach
+- phrase: "what should I pay attention to"
+  expected: insight-generator
+
+# 12. review-my-projects unhijacked
+- phrase: "review my projects"
+  expected: list-active
+- phrase: "review classifications"
+  expected: insight-generator
+
+# 13. what's-new scoping
+- phrase: "whats new in command room"
+  expected: command-room-update-bridge
+  notes: "apostrophe form matches at the LLM layer; the mechanical suite needs the escaped-quote form the parser can extract"
+- phrase: "what's new"
+  expected: none
+  notes: "small talk — version check fenced off"
+
+# 14. prep call
+- phrase: "prep call"
+  expected: call-prep
+
+# 15. tell-me-about (person forms; project/org routing is LLM-level via the DOES-NOT fences)
+- phrase: "tell me about Mira from the board"
+  expected: people-crm
+
+# Unowned high-frequency utterances — explicit out-of-scope
+- phrase: "cancel my meeting with Sam"
+  expected: none
+  notes: "calendar-writer scoped to NEW invites only"
+- phrase: "reschedule my 2pm"
+  expected: none
+- phrase: "post-mortem on the launch"
+  expected: none
+  notes: "stress-test is pre-mortem only; event retrospectives unowned"
+- phrase: "draft a Slack message to Sam"
+  expected: none
+  notes: "email-writer is email-only by fence"
+
+# monthly recap un-hijacked
+- phrase: "monthly recap"
+  expected: weekly-recap
+- phrase: "what happened this month"
+  expected: weekly-recap
+- phrase: "operator report"
+  expected: operator-report
+
+# decision-log new ownership
+- phrase: "show me the decision log"
+  expected: decision-log
+
+# commitments list owner
+- phrase: "show me my commitments"
+  expected: commitment-triage

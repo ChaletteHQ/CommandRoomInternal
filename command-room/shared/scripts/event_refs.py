@@ -68,11 +68,17 @@ def persons_of(ev: dict) -> set[str]:
 
 
 def event_ts(ev: dict) -> str:
-    """Best-effort ISO timestamp string for ordering/recency (top-level `ts`,
-    else nested). Returns '' when absent — callers compare lexically, which is
-    correct for ISO-8601."""
+    """Best-effort ISO timestamp string for ordering/recency (canonical
+    `ts` → `timestamp` → `date` via event_time, else nested). Returns '' when
+    absent — callers compare lexically, which is correct for ISO-8601."""
     d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-    return ev.get("ts") or d.get("ts") or ev.get("created_ts") or d.get("created_ts") or ""
+    try:
+        from event_time import event_time
+    except ImportError:  # pragma: no cover
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from event_time import event_time
+    return event_time(ev) or d.get("ts") or ev.get("created_ts") or d.get("created_ts") or ""
 
 
 def event_seq(ev: dict):
@@ -83,21 +89,36 @@ def event_seq(ev: dict):
 
 def load_events(events_jsonl_path: str | Path) -> list[dict]:
     """Defensively load events.jsonl, skipping blank/unparseable/non-dict
-    lines. (Mirrors the cru_match defensive loader; kept dependency-free.)"""
+    lines. (Mirrors the cru_match defensive loader; kept dependency-free.)
+
+    SPEC A5 — shard-transparent: when handed a path to an `events.jsonl`, this also
+    includes any sibling `events-<year>.jsonl` shards so full-history callers see the
+    whole timeline after a rotation. On an unsharded workspace the result is identical
+    to the pre-A5 single-file read (no siblings exist). A non-`events.jsonl` path is
+    read as-is (back-compat for callers pointing at a custom file)."""
     path = Path(events_jsonl_path)
-    if not path.exists():
-        return []
-    out: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    if path.name == "events.jsonl":
         try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
+            from events_io import shard_paths
+            paths = shard_paths(path)
+        except Exception:
+            paths = [path] if path.exists() else []
+    else:
+        paths = [path] if path.exists() else []
+    out: list[dict] = []
+    for p in paths:
+        if not p.exists():
             continue
-        if isinstance(ev, dict):
-            out.append(ev)
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict):
+                out.append(ev)
     return out
 
 

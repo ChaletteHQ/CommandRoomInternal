@@ -86,6 +86,119 @@ MATCH_SCORE_PENDING_REVIEW = 0.30
 DECISION_MATCH_AUTO_RESOLVE = 0.65
 
 
+# ---------------------------------------------------------------------------
+# Workspace-side overrides (Phase 6 Loop 4 — confidence calibration)
+# ---------------------------------------------------------------------------
+#
+# The constants above are the SHIPPED defaults. insight-generator's Loop 4
+# calibration pass measures the confirm-rate of each confidence band from a
+# workspace's own `commitment_review_proposed` / `commitment_review_dismissed`
+# / `commitment_resolved` outcomes and, when a band is consistently right (or
+# consistently reversed) over a small-n floor, proposes a per-workspace override
+# — user-approved through the review widget, written to
+# `_hq/data/confidence-overrides.json`. These accessors are the read side: same
+# pattern as the voice-block overrides over baked-in blocks. They ALWAYS fall
+# back to the shipped constant, so a workspace with no override behaves exactly
+# as before (every existing caller that imports the constant directly is
+# unaffected; callers opt into calibration by calling the accessor with a
+# workspace root).
+import json as _json
+from pathlib import Path as _Path
+from typing import Optional as _Optional
+
+_BAKED = {
+    "CONFIDENCE_SURFACE_MIN": CONFIDENCE_SURFACE_MIN,
+    "CONFIDENCE_AUTOCOMMIT": CONFIDENCE_AUTOCOMMIT,
+    "CONFIDENCE_AUTOAPPLY_PEOPLE": CONFIDENCE_AUTOAPPLY_PEOPLE,
+    "MATCH_SCORE_AUTO_RESOLVE": MATCH_SCORE_AUTO_RESOLVE,
+    "MATCH_SCORE_PENDING_REVIEW": MATCH_SCORE_PENDING_REVIEW,
+    "DECISION_MATCH_AUTO_RESOLVE": DECISION_MATCH_AUTO_RESOLVE,
+}
+
+
+def _overrides_path(workspace_root) -> _Path:
+    return _Path(workspace_root) / "_hq" / "data" / "confidence-overrides.json"
+
+
+def load_overrides(workspace_root) -> dict:
+    """The `{name: value}` override map, or {} when absent/unreadable. Never
+    raises. Only known threshold names with sane [0,1] values are honored."""
+    if workspace_root is None:
+        return {}
+    path = _overrides_path(workspace_root)
+    if not path.exists():
+        return {}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    thresholds = data.get("thresholds") if isinstance(data, dict) else None
+    if not isinstance(thresholds, dict):
+        return {}
+    out = {}
+    for k, v in thresholds.items():
+        if k in _BAKED and isinstance(v, (int, float)) and 0.0 <= float(v) <= 1.0:
+            out[k] = float(v)
+    return out
+
+
+def get_threshold(name: str, workspace_root=None) -> float:
+    """A threshold by name, honoring a workspace-side override when present, else
+    the shipped constant. Unknown name → KeyError (a typo should fail loud)."""
+    if name not in _BAKED:
+        raise KeyError(f"unknown confidence threshold {name!r}")
+    if workspace_root is not None:
+        ov = load_overrides(workspace_root)
+        if name in ov:
+            return ov[name]
+    return _BAKED[name]
+
+
+# Named convenience accessors (workspace_root=None → shipped constant).
+def surface_min(workspace_root=None) -> float:
+    return get_threshold("CONFIDENCE_SURFACE_MIN", workspace_root)
+
+
+def autocommit(workspace_root=None) -> float:
+    return get_threshold("CONFIDENCE_AUTOCOMMIT", workspace_root)
+
+
+def autoapply_people(workspace_root=None) -> float:
+    return get_threshold("CONFIDENCE_AUTOAPPLY_PEOPLE", workspace_root)
+
+
+def match_score_auto_resolve(workspace_root=None) -> float:
+    return get_threshold("MATCH_SCORE_AUTO_RESOLVE", workspace_root)
+
+
+def match_score_pending_review(workspace_root=None) -> float:
+    return get_threshold("MATCH_SCORE_PENDING_REVIEW", workspace_root)
+
+
+def decision_match_auto_resolve(workspace_root=None) -> float:
+    return get_threshold("DECISION_MATCH_AUTO_RESOLVE", workspace_root)
+
+
+def write_overrides(workspace_root, thresholds: dict) -> _Optional[_Path]:
+    """Atomically persist the override store `{version, thresholds:{name:value}}`.
+    Only known, in-range names are written. Never touches the plugin directory."""
+    clean = {k: float(v) for k, v in (thresholds or {}).items()
+             if k in _BAKED and isinstance(v, (int, float)) and 0.0 <= float(v) <= 1.0}
+    try:
+        from atomic_write import atomic_write_json
+    except Exception:  # pragma: no cover
+        import sys as _sys
+        _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+        from atomic_write import atomic_write_json  # type: ignore
+    path = _overrides_path(workspace_root)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, {"version": 1, "thresholds": clean})
+        return path
+    except Exception:
+        return None
+
+
 __all__ = [
     "CONFIDENCE_SURFACE_MIN",
     "CONFIDENCE_AUTOCOMMIT",
@@ -93,4 +206,13 @@ __all__ = [
     "MATCH_SCORE_AUTO_RESOLVE",
     "MATCH_SCORE_PENDING_REVIEW",
     "DECISION_MATCH_AUTO_RESOLVE",
+    "load_overrides",
+    "get_threshold",
+    "surface_min",
+    "autocommit",
+    "autoapply_people",
+    "match_score_auto_resolve",
+    "match_score_pending_review",
+    "decision_match_auto_resolve",
+    "write_overrides",
 ]

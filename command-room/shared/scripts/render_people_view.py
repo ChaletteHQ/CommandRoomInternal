@@ -34,6 +34,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text  # noqa: E402
+from event_time import event_time  # noqa: E402
 
 CONFIDENCE_FLOOR = 0.40
 REL_TYPE_ORDER = [
@@ -122,7 +123,7 @@ def _last_interaction(person_id: str, events: list[dict], first_seen: str) -> st
         pids = ev.get("person_ids") or (ev.get("data") or {}).get("person_ids") or []
         if person_id not in pids:
             continue
-        ts = ev.get("ts") or ev.get("timestamp")
+        ts = event_time(ev)
         if ts and (latest is None or ts > latest):
             latest = ts
     return (latest or first_seen or "")[:10]

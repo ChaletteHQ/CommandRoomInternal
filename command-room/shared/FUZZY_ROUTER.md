@@ -56,6 +56,8 @@ Every user turn goes through these layers, in order:
 If the user said one of the clean triggers ("triage my inbox", "follow up on that call", "brief me"), the corresponding skill fires directly. No fuzzy routing needed.
 
 ### Layer 2 — Semantic intent match
+Re-baselined against the live frontmatter 2026-07-02 (P2 routing lattice) — when a fence changes in a skill's description, update the matching row here IN THE SAME COMMIT; this file arbitrates ties and must never contradict the frontmatter it arbitrates.
+
 If the user's phrasing isn't exact but clearly maps to a single skill's intent clause ("clean up my email" → inbox-triage; "draft the post-call emails" → follow-up-ritual), the skill fires via Claude's natural description matching.
 
 ### Layer 3 — Name-mention routing (workspace-manager)
@@ -96,12 +98,14 @@ Once a name is detected, check the rest of the sentence for intent signals:
 | If the sentence contains... | Route to... |
 |---|---|
 | "prep", "ahead of", "before the call", "what do I need" | `call-prep` |
-| "follow up", "recap", "send a note", "close the loop" | `follow-up-ritual` |
+| "follow up on that call/meeting", "close the loop", "recap the call" | `follow-up-ritual` |
+| "follow up with [name] about [topic]", "send a note" (no meeting in context) | `email-writer` |
 | "status", "where are we", "what's going on", "pull up", "show me" | `workspace-manager` (project load only, no further routing) |
-| "write", "draft", "email", "message" | default composer (one-pager-composer or inline draft) |
+| "email", "draft an email", "reply", "message [name]" | `email-writer` (owns ALL email drafting) |
+| "one-pager", "leave-behind", "write up a note on" | `one-pager-composer` |
 | "last call", "meeting with", "what did we discuss" | `meeting-notes` |
 | "stress test", "what could go wrong", "risk" | `stress-test` |
-| "competitors", "landscape", "how do we compare" | `competitive-intel` |
+| "competitors", "landscape", "how do we compare" | `research` (no competitive-intel skill ships in this plugin) |
 | (no action verb, just a name) | `workspace-manager` (context-load only) |
 
 ### Examples
@@ -111,8 +115,8 @@ Once a name is detected, check the rest of the sentence for intent signals:
 | "pull up the NorthStar stuff" | project: NorthStar | Load NorthStar context. No further action. |
 | "what's Acme doing" | project: Acme | Load Acme context. Show 1-paragraph status. |
 | "Bowie call in ten, what do I need" | person: Bowie + intent: prep | Route to call-prep with Bowie as subject. |
-| "follow up with Skyler on pricing" | person: Skyler + intent: follow-up | Route to follow-up-ritual with Skyler + pricing context. |
-| "what did we decide with Sam last week" | person: Sam + intent: meeting recap | Route to meeting-notes for Sam meetings in last 7 days. |
+| "follow up with Skyler on pricing" | person: Skyler + intent: outbound draft | Route to email-writer (no meeting in context — meeting-shaped follow-ups go to follow-up-ritual). |
+| "what did we decide with Sam last week" | person: Sam + intent: decision retrieval | Route to decision-log, scoped to decisions involving Sam in the last 7 days. |
 | "NorthStar" (just the word) | project: NorthStar | Load context, await next instruction. |
 
 ---

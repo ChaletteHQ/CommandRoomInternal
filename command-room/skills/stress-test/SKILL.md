@@ -1,6 +1,6 @@
 ---
 name: stress-test
-description: "Systematically map every path a plan, decision, or launch could fail down — then reverse each failure mode into a structural safeguard. Charlie Munger's inversion method. Use when the CEO says 'stress test', 'stress test this', 'stress test this plan', 'pre-mortem', 'pre mortem', 'pre-mortem on', 'what could go wrong', 'red team', 'red team this', 'poke holes', 'poke holes in this', 'poke holes in this launch plan', 'devil's advocate', 'what kills this'. Works on business plans, rollouts, hires, pricing changes, acquisitions, product launches — anything with a defined desired outcome. Produces a failure-mode-to-safeguard .docx. DOES NOT fire on 'what should I decide' (use decision-memo-composer — forward-looking tradeoffs) or 'retrospective on [event]' (post-mortem is different from pre-mortem)."
+description: "Systematically map every path a plan, decision, or launch could fail — then reverse each failure mode into a structural safeguard. Fires on: 'stress test this plan', 'what could go wrong', 'pre-mortem' / 'pre-mortem on [topic]', 'poke holes in this', 'red team this', 'inversion pass on [plan]'. Munger-style inversion over the plan's own claims plus workspace evidence where entities are named; output is the failure-mode map with safeguards, chat-first with optional .docx. Does NOT fire on 'convene the board' (boardroom — multi-perspective deliberation; this is single-lens failure mapping), 'decision memo' (decision-memo-composer — this chains FROM it as the inversion pass), or 'review this contract' (contract-review). Method and output shape: Routing section in the body."
 ---
 
 ## Skill Boundary (v2.1)
@@ -49,12 +49,13 @@ Be specific. "Poor execution" isn't a finding. Name the actual decision, the act
 
 ### Pass 2: Hostile Analyst
 
-You've been hired to destroy this plan. Not dramatically — your job is to engineer the most efficient path to slow, plausible, undetected failure that looks like progress until it's too late.
+You've been hired to destroy this plan. Not dramatically — your job is to engineer the most efficient path to slow, plausible, undetected failure that looks like progress until it's too late. Run three steps, in order — this is a procedure, not a brainstorm.
 
-- Which assumptions, if quietly wrong, would make everything downstream look productive but actually be worthless?
-- Where are the feedback loops that would normally catch problems? How do they get corrupted or delayed?
-- What does "success theater" look like — activity that feels like progress but produces no durable value?
-- What's the most likely way this dies while everyone still thinks it's going well?
+**2a. Feedback-loop corruption.** For each major decision point in the plan: name the feedback mechanism that would normally catch failure, then name three ways it gets corrupted — (i) signal too small to read, (ii) signal lagged past the response window, (iii) signal suppressed by someone's incentives. For each corruption: "How long until discovery?" — that number is the **silent-failure window**.
+
+**2b. Success-theater diagnosis.** For each milestone: does completion mean the right thing happened, or just that an artifact exists? Describe the **minimum viable fake version** — the cheapest thing that satisfies everyone except the actual user. If you can describe it, the milestone needs a harder definition of done.
+
+**2c. Compound-drift detection.** Name the boring failure: 2-3 metrics each drifting slightly (a number declining 2%/month the plan assumes flat; a timeline gaining 1-2 weeks per checkpoint; a key person's capacity eroding). Identify the **earliest date all of them are simultaneously off-track** — that's the hard-rethink trigger date. Write it into the safeguards.
 
 This is the most important pass. Most people can brainstorm obvious risks. The value here is catching the failures that look like success.
 
@@ -85,9 +86,19 @@ Reverse the complete failure map. Every failure mode becomes a structural safegu
 - **Structural safeguard**: the specific mechanism
 - **Implementation**: one sentence on how to put it in place
 
-Prioritize by likelihood x severity. The top 3-5 safeguards are what matters.
+**Score, don't vibe.** Rate each failure mode `L` (likelihood 1-3) × `S` (severity 1-3), sort by the product descending, take the top 3-5. **Show the L×S score next to each safeguard in the doc** so the CEO can challenge the inputs, not the ranking.
+
+## Called from decision-memo-composer (ADV1 integration)
+
+When stress-test is invoked with a decision-memo context (the user clicked "Stress-test this" in `decision-memo-composer` Phase 5), return the top 3-5 safeguards as a **structured list** — each `{title, failure_mode, safeguard, trigger_date}` (trigger_date from the 2c compound-drift date when one applies, else null) — instead of the freeform doc. The memo folds this into its "What Kills This Decision" section. Keep the same L×S ranking; just hand back structured rows.
 
 ## Output Structure
+
+## Deliverable Render Gate (GATE1 — MUST, P1.9)
+
+- **Render ONLY via `make_brief(brief_kind="stress_test", ...)`** — the one call that runs the voice-tell gate and post-render leak scan before the file exists.
+- **NEVER hand-roll a `.docx`** (generic docx skill, `python-docx`, docx-js) and **never substitute a chat-only draft** for the file unless the user explicitly asks.
+- **Detectability:** `make_brief` emits a `gate_ran` audit event — a stress-test doc with no `gate_ran` event that turn is a flagged bypass. Pass `workspace_root`.
 
 **Rendering (v3.13.8+ — Bug #53):** render the `.docx` via `shared/scripts/brief_writer.py` `make_brief(brief_kind="stress_test", ...)`. Eyebrow label "STRESS TEST". Do NOT hand-roll python-docx or use docx-js. brief_writer applies canonical typography, Heading 1/2/3 hierarchy, and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically. Use the v3.13.8 `table` primitive for the safeguard-ranking section.
 
@@ -122,3 +133,9 @@ Have opinions. Some failure modes are much more likely than others. Rank them. D
 - Does not advocate against the plan — it maps failure paths so the path to success becomes explicit.
 - Does not require the plan to be written down formally — works from a rough description or a linked doc.
 - Does not replace judgment — the CEO still decides which safeguards are worth the cost.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Systematically map every path a plan, decision, or launch could fail down — then reverse each failure mode into a structural safeguard. Charlie Munger's inversion method. Use when the CEO says 'stress test', 'stress test this', 'stress test this plan', 'pre-mortem', 'pre mortem', 'pre-mortem on', 'what could go wrong', 'red team', 'red team this', 'poke holes', 'poke holes in this', 'poke holes in this launch plan', 'devil's advocate', 'what kills this'. Works on business plans, rollouts, hires, pricing changes, acquisitions, product launches — anything with a defined desired outcome. Produces a failure-mode-to-safeguard .docx. DOES NOT fire on 'what should I decide' (use decision-memo-composer — forward-looking tradeoffs), 'post-mortem on [event]' / 'retrospective on [event]' (out of scope — this skill is pre-mortem only; for re-examining a past DECISION use decision-revisit, and say plainly that event retrospectives have no owner yet), or 'convene the board' / 'what would my board say' (boardroom — multi-seat deliberation; this skill is single-lens failure-mode mapping).

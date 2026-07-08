@@ -1,6 +1,6 @@
 ---
 name: show-my-list
-description: "Surfaces the user's curated 'discuss / follow-up later' list — items captured via the `add to my list` action across scheduled tasks. Read-only review surface. Triggers: `show my list`, `whats on my list`, `what to discuss`, `what do i need to discuss`, `discuss list`, `show discuss list`, `my list`. Use this when you want a batch view of everything you've flagged for later conversation, instead of context-switching when each item was originally captured."
+description: "Surfaces the user's curated 'discuss / follow-up later' list — items captured via the `add to my list` action across scheduled tasks. Read-only review surface. Triggers: 'show my list', 'whats on my list', 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list'. Use this when you want a batch view of everything you've flagged for later conversation, instead of context-switching when each item was originally captured."
 ---
 
 # show-my-list
@@ -65,18 +65,39 @@ open_items = [e for e in discuss_items
               if e.get('seq') not in resolved_seqs
               and e.get('seq') not in dismissed_seqs]
 
-# Group by person (who you'd discuss with) — use data.person_id or attendee context
-# ... (groups items so the user sees 'next time you talk to X, mention these' rather than chronological order)
+# Group by person (who you'd discuss with). Person resolution order per
+# item — first hit wins:
+#   1. data.person_id present -> display name from entities.json people
+#   2. no person_id: resolve the captured name string via aliases.json
+#      (exact match) to a person id, then entities.json for the display name
+#   3. still unresolved: fuzzy-match the name string against entities.json
+#      people display names
+#   4. no match at all: group under the literal captured name (never drop
+#      the item just because the person didn't resolve)
+# (groups items so the user sees 'next time you talk to X, mention these' rather than chronological order)
 print(f'OPEN_COUNT={len(open_items)}')
 "
 ```
 
 Capture stdout. Then build a data view:
 
+**Executive Output Standard (EXEC1, v3.20.0+) — queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue, so the synthesis-lead rule FORBIDS a narrative lead — **the header is a quantified count line**, not a theme. Compute it from the open items: total · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field — only figures that derive from substrate, never an estimate) · the oldest age. Each item carries its own quantify tag when `money_time_tag` returns non-None; otherwise no tag (never a fabricated dollar). No "what this list says about your week" sentence — the reader's next act is triage.
+
 ```python
+from quantify import money_time_tag  # EXEC1: the only sanctioned source of $ tags
+
 data_view = {
     "widget_mode": "all_batch_widget",
-    "header": f"Your list — {n_open} things to bring up later",
+    "source_skill": "show-my-list",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
+    # EXEC1 quantified count line (triage math, no narrative). Plain English —
+    # "{n} tied to revenue", never "{n} touch revenue" (reads broken), and ages
+    # spelled out ("12 days"), never cryptic "12d". Two degraded renders when
+    # revenue doesn't derive — never leave a dangling "—":
+    #   (a) items touch revenue but no dollar derives from substrate ->
+    #       "Your list — {n_open} to discuss · {n_revenue} tied to revenue · oldest {oldest_days} days"
+    #   (b) nothing touches revenue (n_revenue == 0) -> drop the clause entirely:
+    #       "Your list — {n_open} to discuss · oldest {oldest_days} days"
+    "header": f"Your list — {n_open} to discuss · {n_revenue} tied to revenue (${total_k}K) · oldest {oldest_days} days",
     "sub_header": "Stuff you set aside earlier. Click to clear when handled, or skip.",
     "sections": [{
         "title": None,
@@ -87,7 +108,9 @@ data_view = {
                 "n": i,
                 "icon": "💬",
                 "name": person_name,
-                "context_tag": f"next time you talk to {person_name} ({item_count})",
+                # Per-item quantify tag appended ONLY when non-None (never an estimate).
+                "context_tag": f"next time you talk to {person_name} ({item_count})"
+                               + (f" · {tag}" if (tag := money_time_tag(items_for_person[0], entities)) else ""),
                 "body_lines": [f"- {item['data']['summary']}" for item in items_for_person],
                 "actions": [f"{i} resolved", f"{i} skip"],
             }
@@ -109,7 +132,7 @@ The canonical renderer applies all v2.13.0+ validators (action verbs in CANONICA
 
 ### Step 3 — Write a fire-marker event so apply-choices can identify this surface (v2.14.19+)
 
-Before posting the widget, append a `pack_run` event to events.jsonl with:
+Before posting the widget, append a `pack_run` event to events.jsonl. **Use the canonical helper `log_pack_run` (`shared/scripts/log_pack_run.py`), which routes through the locked writer `atomic_append_jsonl` (SPEC GATE1 / A1) — do NOT hand-roll a `next_seq`+`open('a')` append or a raw `>>`.** The event shape:
 
 ```python
 {
@@ -130,16 +153,20 @@ apply-choices reads the most recent fire-marker (within 60 min) to identify whic
 
 Widget IS the post. No commentary.
 
-If 0 items match: surface plain English `Your list is empty — nothing set aside right now. Things land here when you click "Add to my list" on a daily check-in.` No widget, no fire-marker (nothing to dispatch).
+If 0 items match: surface plain English `Your list is empty — nothing set aside right now. Things land here when you click "Add to my list" in one of your scheduled chats.` No widget, no fire-marker (nothing to dispatch).
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary (these are **scheduled chats** to the customer — never "scheduled tasks" or "daily check-ins" in rendered copy).
+- BAD: "Your list — 5 to discuss · 3 touch revenue — $45K · oldest 12d"
+- GOOD: "Your list — 5 to discuss · 3 tied to revenue ($45K) · oldest 12 days"
 
 ## What this skill does NOT do
 
-- Does NOT modify events.jsonl directly (read-only — clicking widget actions writes new events through apply-choices, that's separate)
+- Writes exactly ONE event per fire: the Step 3 `pack_run` fire-marker (via `log_pack_run` → the locked writer). Beyond that single append it does not modify events.jsonl — clicking widget actions writes new events through apply-choices, that's separate
 - Does NOT cross-reference against open commitments (that's CRU layer scope, v2.14.5+)
 - Does NOT auto-surface based on calendar (the user pulls when they want; not pushed)
 - Does NOT touch connectors (no Gmail / Calendar / Granola fetches)
 
-Pure local read of events.jsonl + render through canonical pipeline.
+Local read of events.jsonl + the one Step 3 fire-marker append + render through canonical pipeline.
 
 ## Trigger pattern
 

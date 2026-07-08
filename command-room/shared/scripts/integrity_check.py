@@ -155,6 +155,80 @@ def _detect_cycle(node_id: str, parent_of: dict[str, str | None]) -> bool:
     return False
 
 
+def _project_folders(root: Path) -> list[str]:
+    """Top-level folders that could be project threads (excludes infra + hidden).
+
+    Mirrors the C10/C11 skip rules: `_`-prefixed infra folders, the product's own
+    collateral folder, and dotfiles are never project threads."""
+    out = []
+    for d in root.iterdir():
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if d.name in _NON_PROJECT_FOLDERS or d.name.startswith("_"):
+            continue
+        out.append(d.name)
+    return out
+
+
+def _has_session_notes(folder: Path) -> bool:
+    """True if the folder carries any SESSION_NOTES file (live, archive, or index).
+
+    Session notes live at the folder root as `SESSION_NOTES[_NAME].md` (per the
+    cleanup gotcha — not a subfolder). An archive/index alone still proves notes
+    existed, so it counts as present (we never re-scaffold over real history)."""
+    for _ in folder.glob("SESSION_NOTES*.md"):
+        return True
+    return False
+
+
+def _folder_structure_findings(root: Path, threads: list[dict]) -> list[Finding]:
+    """C10 (orphan folder) / C11 (missing brain) / C11b (missing session notes).
+
+    Folder <-> thread reconciliation, strictly read-only. Shared by run_checks
+    and the scan_project_structure() entry point that cleanup's Phase 1 calls
+    directly (SPEC CLEAN1 / D1)."""
+    findings: list[Finding] = []
+    folder_to_thread = {_norm(t.get("folder_name")): t for t in threads if t.get("folder_name")}
+    for name in _project_folders(root):
+        folder = root / name
+        # C10 — disk project folder has no thread record (orphan folder).
+        if _norm(name) not in folder_to_thread:
+            findings.append(Finding("C10.orphan_folder", WARN,
+                f"folder '{name}/' has no thread record in entities (orphan — register or archive)", name))
+        has_context = (folder / "PROJECT_CONTEXT.md").is_file()
+        has_brain = (folder / "PROJECT_BRAIN.md").is_file()
+        has_notes = _has_session_notes(folder)
+        # Only flag folders that look like real scaffolded projects (have a
+        # context, brain, or session-notes file) — bare folders are orphans, not
+        # incomplete projects.
+        looks_like_project = has_context or has_brain or has_notes
+        if not looks_like_project:
+            continue
+        # C11 — missing PROJECT_BRAIN.md.
+        if not has_brain:
+            findings.append(Finding("C11.missing_brain", WARN,
+                f"project '{name}/' has scaffolding but no PROJECT_BRAIN.md (backfill from template)", name))
+        # C11b — missing SESSION_NOTES (mirror of C11; backfill a scaffold —
+        # never overwrite an existing notes file). SPEC CLEAN1 / D3.
+        if not has_notes:
+            findings.append(Finding("C11b.missing_session_notes", WARN,
+                f"project '{name}/' has scaffolding but no SESSION_NOTES file (backfill a scaffold)", name))
+    return findings
+
+
+def scan_project_structure(workspace_root: str | Path) -> list[Finding]:
+    """Deterministic Phase-1 structural scan for cleanup (SPEC CLEAN1 / D1).
+
+    Loops top-level project folders, cross-references entities.json threads, and
+    returns orphan_folder / missing_brain / missing_session_notes findings.
+    Strictly READ-ONLY — the caller (cleanup) decides what to flag vs. remediate;
+    orphan folders are always FLAGGED, never removed. This replaces cleanup's
+    prose-only Phase 1 scan, which five real runs proved did not execute."""
+    root = Path(workspace_root)
+    threads = load_entities(root)["threads"]
+    return _folder_structure_findings(root, threads)
+
+
 def run_checks(root: Path) -> list[Finding]:
     ent = load_entities(root)
     events, skipped = load_events(root)
@@ -277,10 +351,6 @@ def run_checks(root: Path) -> list[Finding]:
                 findings.append(Finding("C8.dead_alias", WARN,
                     f"alias '{m.get('raw') or m.get('alias') or '?'}' -> '{cid}' which no longer resolves", str(cid)))
 
-    # C9 / C10 — folder <-> thread reconciliation.
-    folder_to_thread = {_norm(t.get("folder_name")): t for t in threads if t.get("folder_name")}
-    # disk folders
-    disk_folders = [d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")]
     # C9 — active thread folder_name exists on disk.
     for t in threads:
         if (t.get("status") or "active") in ("archived",):
@@ -290,27 +360,10 @@ def run_checks(root: Path) -> list[Finding]:
             findings.append(Finding("C9.thread_folder_missing", WARN,
                 f"thread '{t.get('id')}' folder_name '{fn}' not found on disk (moved/renamed/archived without record update?)",
                 str(t.get("id"))))
-    # C10 — disk project folder has no thread record (orphan folder).
-    for name in disk_folders:
-        if name in _NON_PROJECT_FOLDERS or name.startswith("_"):
-            continue
-        if _norm(name) not in folder_to_thread:
-            findings.append(Finding("C10.orphan_folder", WARN,
-                f"folder '{name}/' has no thread record in entities (orphan — register or archive)", name))
-
-    # C11 — active project folders missing PROJECT_BRAIN.md.
-    for name in disk_folders:
-        if name in _NON_PROJECT_FOLDERS or name.startswith("_"):
-            continue
-        folder = root / name
-        has_context = (folder / "PROJECT_CONTEXT.md").is_file()
-        has_brain = (folder / "PROJECT_BRAIN.md").is_file()
-        # Only flag folders that look like real scaffolded projects (have a
-        # context or session-notes file) but are missing their brain.
-        looks_like_project = has_context or (folder / "SESSION_NOTES.md").is_file()
-        if looks_like_project and not has_brain:
-            findings.append(Finding("C11.missing_brain", WARN,
-                f"project '{name}/' has scaffolding but no PROJECT_BRAIN.md (backfill from template)", name))
+    # C10 / C11 / C11b — folder <-> thread reconciliation (orphan folder, missing
+    # brain, missing session notes). Shared with scan_project_structure() so the
+    # weekly cleanup Phase 1 and the deep-clean integrity pass agree exactly.
+    findings.extend(_folder_structure_findings(root, threads))
 
     # C12 — duplicate event seq.
     seqs: dict[Any, int] = {}
@@ -359,6 +412,42 @@ def run_checks(root: Path) -> list[Finding]:
         findings.append(Finding("C15.confidence_out_of_range", WARN,
             f"{bad_conf} event(s) have classification_confidence outside [0.0, 1.0] "
             f"or non-numeric — breaks confidence-band comparisons", ""))
+
+    # C17 — commitment write-contract violations (Phase 2 Stage D, S4: the
+    # Monday-note flag for the F4 in-place-mutation class). Two symptoms of a
+    # hand-rolled events.jsonl edit:
+    #   (a) any event carrying a `_cleanup_*` key (the 2026-05-28 cleanup-chat
+    #       sessions annotated events in place while mutating them);
+    #   (b) a commitment event whose data.status is outside the schema values
+    #       {open, overdue} — the closed-family values (closed/resolved/
+    #       superseded/done) are READ forever (legacy 249) but no NEW write
+    #       may produce one: closure is a close_commitment() tombstone append.
+    # Read-only: cleanup surfaces these in the Monday note as contract
+    # violations; it never rewrites the rows (F4 applies to us too).
+    _closed_family = ("closed", "resolved", "superseded", "done")
+    cleanup_keys = 0
+    mutated_status = 0
+    for ev in events:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if any(str(k).startswith("_cleanup_") for k in list(ev.keys()) + list(d.keys())):
+            cleanup_keys += 1
+        et = ev.get("type") or ev.get("event") or ""
+        if et == "commitment":
+            status = d.get("status") or d.get("state") or ev.get("status")
+            if status and status not in ("open", "overdue") and status in _closed_family:
+                mutated_status += 1
+    if cleanup_keys:
+        findings.append(Finding("C17.cleanup_keys", ERROR,
+            f"{cleanup_keys} event(s) carry _cleanup_* keys — a hand-rolled "
+            f"in-place edit touched events.jsonl (F4 contract violation; "
+            f"closure/annotation must be an APPEND)", ""))
+    if mutated_status:
+        findings.append(Finding("C17.inplace_status", WARN,
+            f"{mutated_status} commitment event(s) carry a closed-family "
+            f"data.status — legacy rows are readable forever, but a GROWING "
+            f"count means an active in-place mutation writer (F4). Compare "
+            f"against last week's Monday note; growth = contract violation",
+            ""))
 
     # C16 — Live State block staleness (brain-substrate-drift fix). A rendered
     # people block older than the newest thread-tagged event means the render

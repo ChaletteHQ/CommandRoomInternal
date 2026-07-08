@@ -234,30 +234,60 @@ Simple knowledge base structure for content they capture:
 
 ## BRAND_VOICE.md (if brand voice captured)
 
-For detailed guidance on synthesizing voice from emails and transcripts, see **onboarding-detail.md** → "Brand Voice Template".
+For detailed guidance on synthesizing voice from emails and transcripts, see **onboarding-detail.md** → "Brand Voice Template". Fill every section that the sent-email corpus supports — a thin corpus fills fewer sections, but never leave a section as a placeholder. The calibration is only as good as its specificity: exact greeting/sign-off strings, real measured numbers, and verbatim example sentences beat adjectives.
 
 ```markdown
 # Your Brand Voice
-> Learned from [X] emails and [Y] transcripts
-> Last Updated: [date]
+> Learned from [X] sent emails and [Y] transcripts, [date range]
+> Last Updated: [date] · Confidence: [high | medium | thin]
 
-## How You Sound
-(Characteristics: direct/diplomatic, formal/conversational, verbose/concise, etc.)
+## How You Sound (the one-paragraph read)
+[3–4 sentences that a stranger could use to impersonate them. Name the register
+(direct/diplomatic, formal/conversational, warm/clinical), the density (terse vs.
+expansive), and the single most identifying habit.]
 
-## Specific Patterns
-- Opening style: [how they typically start]
-- Close style: [how they typically end]
-- Common phrases or favorites: [things they say]
-- Tone with clients: [how they shift with different audiences if relevant]
-- Decision language: [how they frame choices]
+## Signature Traits (ranked, most identifying first)
+1. [Trait — with a one-clause proof from their real email]
+2. [Trait — proof]
+3. [Trait — proof]
+4. [Trait — proof]
+5. [Trait — proof]
+
+## Mechanics (measured, not guessed)
+- **Greeting:** [exact string(s) they open with — "Hi [first name]," / no greeting / "[Name] —"] · [when they skip it]
+- **Sign-off:** [exact string(s) — "Best," / "— [Initial]" / none] · [does it vary by audience?]
+- **Sentence length:** [median words/sentence; short-and-punchy vs. long-and-clausal]
+- **Email length:** [median words/email; typical paragraph count]
+- **Punctuation habits:** [em-dashes as connective tissue? exclamation points — never/rare/frequent? Oxford comma? ellipses?]
+- **Formatting:** [bullets vs. prose; bold for asks; numbered next-steps?]
+- **Capitalization / casing:** [sentence case, lowercase-casual, etc.]
+- **Emoji / GIFs:** [never / sparingly / channel-dependent]
+
+## Lexicon
+- **Reaches for:** [words/phrases they actually use — "Let me be clear…", "net-net", "the read is…"]
+- **Never uses:** [jargon or filler that would sound wrong — "leverage", "synergy", "circle back", "hope this finds you well"]
+
+## Patterns in Motion
+- **Opening move:** [context-first? question-first? the ask up top?]
+- **Closing move:** [explicit next step? a clear ask? a deadline?]
+- **Decision language:** [how they frame choices — "X because Y" vs. pros/cons list]
+- **How they say no / push back:** [direct decline? soft redirect?]
+- **How they show warmth:** [uses first names, remembers details, or all-business]
+
+## Tone by Audience
+[Only if the corpus shows a real shift. Example:
+- With clients: more context-setting, more formal sign-off
+- With team: assumes shared context, faster, more directive
+- With investors/board: numbers-first, brief]
 
 ## What NOT to Do
-(Things that would sound wrong coming from them)
+[Things that would sound out of character — the fastest tells that a draft isn't theirs.]
 
-## Examples
+## Examples (verbatim, from their real sent mail)
 ### Good (sounds like them):
-[Real sentence from their recent emails that shows the voice]
+"[Real sentence pulled from their recent sent emails that shows the voice]"
+"[A second real sentence showing a different trait — e.g., how they make an ask]"
 
 ### Bad (doesn't sound like them):
-[Contrast example]
+"[Contrast example — a generic/corporate version of the same intent]"
 ```

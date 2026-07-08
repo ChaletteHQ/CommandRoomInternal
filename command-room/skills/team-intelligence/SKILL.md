@@ -1,6 +1,6 @@
 ---
 name: team-intelligence
-description: "Never walk into a 1:1 cold again. Owns the leadership-team layer — direct report profiles, what they're working on, their open commitments, and pattern detection (who's overloaded, who's drifting, who has three overdue asks). Use when the CEO says 'my team', 'team status', 'prep for 1:1', 'prep for 1 1', 'prep for my 1:1', 'prep for my 1 1', 'who owns', 'who owns the', 'log commitment', 'log commitment for', 'discover my team', 'who's overloaded', 'has delivered', 'what has delivered', 'delivered this quarter'. Produces 1:1 briefs, weekly team rollups, and commitment tracking. This is the CEO's private chief-of-staff layer for people — NOT an HR system. DOES NOT fire on 'who is' (that's people-crm — e.g. 'who is Jessica'), compensation/performance review requests (out of scope), 'hire' (out of scope — routes to workspace-manager), 'who hasn't replied' (dormant-customer-scan), 'who competes with' (competitive-intel)."
+description: "Never walk into a 1:1 cold again — the team layer: who owns what, who's overloaded, what each person delivered, and a prep brief per direct report. Fires on: 'my team', 'team status', 'prep for 1:1 with [name]' / 'prep me for my 1:1 with [name]', 'who owns [project/deliverable]', 'who's overloaded', 'what has [name] delivered this quarter', 'log commitment for [name]', 'discover my team'. Builds and maintains per-person delivery records from meetings, commitments, and threads. Does NOT fire on 'prep me for the [external] call' / 'prep me for my 2pm' (call-prep — external meeting brief), 'who is [name]' (people-crm — relationship record), or 'who should I reach out to' (relationship-moves). Team model and 1:1 brief spec: Routing section in the body."
 ---
 
 ## Skill Boundary (v2.1)
@@ -12,11 +12,12 @@ description: "Never walk into a 1:1 cold again. Owns the leadership-team layer �
 ## Writer Contract
 
 - **Reads from:** `_hq/data/entities.json` person records filtered to `reports_to_id = CEO` or members of any primary-focus org (`is_primary_focus: true`).
-- **Writes (scoped extension of people-crm):** commitment-tracking fields on direct-report person records — `open_commitments[]`, `delivered_commitments[]`, `overload_signal`, `drift_signal`. These are separate field namespaces from people-crm's core person fields, so no collision.
-- **Writes:** `commitment` events (and `commitment_resolved` on delivery) to `_hq/data/events.jsonl` with v2.2 shape (`primary_thread_id` + `org_ids[]`). Overdue is a derived state, not an event type.
-- **Produces (not data-layer writes):** 1:1 brief .docx files saved to `[project]/meetings/` folders, team-pulse reports saved to `_hq/briefings/`.
+- **Writes:** `commitment` events (and closures through `commitment_state.close_commitment`) to `_hq/data/events.jsonl` with v2.2 shape (`primary_thread_id` + `org_ids[]`). This is the ONLY commitment write this skill performs — per-person commitment/overload/drift signal is DERIVED from those events at read time, never stored on person records (the pre-P1.7 contract listed `open_commitments[]` / `delivered_commitments[]` / `overload_signal` / `drift_signal` person-record fields no step ever wrote — a phantom write path). Overdue is a derived state, not an event type.
+- **Produces (not data-layer writes):** 1:1 brief .docx files at `_hq/meetings/` via `brief_path.get_brief_path(workspace_root, "call_prep", "1-1 <name>", date)` — the one home for all meeting-prep briefs, shared with call-prep; team-pulse reports saved to `_hq/briefings/`.
 - **Does not write to:** `aliases.json`, `classifier_feedback.jsonl`. Does not create new person records — that's people-crm's job; team-intelligence only extends existing records it has scope authority over.
-- **Conflict boundary:** shares `person` entity with people-crm. people-crm owns core fields (name, role, emails, orgs, last-interaction); team-intelligence owns commitment fields on direct-report subset. Writes are namespaced so they can't collide.
+- **Conflict boundary:** shares `person` entity with people-crm. people-crm owns record lifecycle and core fields; team-intelligence adds NO person-record fields — its signal lives in events.
+
+**Person-record ownership (canonical paragraph — IDENTICAL in people-crm and team-intelligence; edit both or neither):** `_hq/data/entities.json` person records are the ONE canonical person store. **people-crm** owns record lifecycle and core fields (create, name, role, emails, orgs, last-interaction) for EVERY person, internal or external. **team-intelligence** is a scoped extension over the direct-report subset: it never creates person records, and its commitment signal lives in `events.jsonl` `commitment` events (owner_id = the report), not in person-record fields. `_hq/views/PEOPLE.md` and the `_people/` PERSON.md profiles are Tier 2 projections — orientation reading, never writes, never state.
 
 ---
 
@@ -115,6 +116,11 @@ If `_people/` doesn't exist or is empty, proceed with full discovery:
 
 ### "prep me for my 1:1 with [name]" / "prep [name]" / "1:1 prep [name]"
 
+**Output guard (PL.10):** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+
+- ❌ "Derived from events.jsonl via load_open_commitments (owner_id filter)"
+- ✅ "Here's what Aria owes you and what she's delivered, from everything I've tracked."
+
 This is the flagship command. Output a brief the CEO reads in 60 seconds before walking into the room.
 
 **Step 1: Load person context**
@@ -129,6 +135,7 @@ This is the flagship command. Output a brief the CEO reads in 60 seconds before 
 
    ```python
    import sys
+   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
    sys.path.insert(0, "shared/scripts")
    from cru_match import load_open_commitments, _commitment_field
 
@@ -142,10 +149,10 @@ This is the flagship command. Output a brief the CEO reads in 60 seconds before 
 7. Check flags from PERSON.md (the `Flags` section is fine to read directly — it's static profile data, not state).
 
 **Step 3: Check connected sources for fresh intel**
-6. **Gmail** (if connected): Last 5 emails to/from this person since last interaction logged
-7. **Calendar** (if connected): Any upcoming meetings with this person beyond this 1:1
-8. **Slack** (if connected): Recent messages from/mentioning this person
-9. **Granola** (if connected): Any unprocessed meeting transcripts involving this person
+8. **Gmail** (if connected): Last 5 emails to/from this person since last interaction logged
+9. **Calendar** (if connected): Any upcoming meetings with this person beyond this 1:1
+10. **Slack** (if connected): Recent messages from/mentioning this person
+11. **Transcript connector** (if connected — via `discover_transcript_tool()`): Any unprocessed meeting transcripts involving this person
 
 **Step 4: Build the brief**
 
@@ -172,7 +179,7 @@ Present in this order:
 - [Based on what came in from email/Slack since last meeting]
 ```
 
-Save to `[WORKSPACE_ROOT]/_people/prep/Prep_[name]_[DATE].md` (create `prep/` folder if needed).
+Save as .docx (CONTRACT Rule 27 — never .md) at `brief_path.get_brief_path(workspace_root, "call_prep", "1-1 [name]", date)` → `_hq/meetings/`, and surface it as the H2 heading link at the bottom of the chat turn per CONTRACT Rule 3 (`doc_headline_link` + `get_brief_artifact_url`).
 
 ### "what's [name] working on?" / "status on [name]" / "how's [name] doing?"
 
@@ -198,6 +205,7 @@ Aggregate view across all tracked people.
 ```
 
 4. Flag anyone past staleness threshold (no interaction in X days)
+   - **REL1 — emit the normalized dormancy signal.** For each member flagged past the staleness threshold, call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<person_id>, entity_type='person', gap_days=<days since interaction>, baseline_days=None, source_skill='team-intelligence')` (absolute 14-day tier). The team-overview flag is unchanged.
 5. Flag anyone with overdue commitments
 6. End with: "Want to prep for any upcoming 1:1s?"
 
@@ -333,3 +341,9 @@ The CEO can always directly update person files:
 - Does not share team data externally — all team intelligence is the CEO's private view.
 - Does not replace 1:1s — prepares briefs for them and tracks commitments between them.
 - Does not generate coaching plans or development paths — surfaces patterns; the CEO decides.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Never walk into a 1:1 cold again. Owns the leadership-team layer — direct report profiles, what they're working on, their open commitments, and pattern detection (who's overloaded, who's drifting, who has three overdue asks). Use when the CEO says 'my team', 'team status', 'prep for 1:1', 'prep for 1 1', 'prep for my 1:1', 'prep for my 1 1', 'prep me for my 1:1', 'prep me for my 1 1', 'who owns', 'who owns the', 'log commitment for', 'log commitment for [name]', 'discover my team', 'who's overloaded', 'what has [name] delivered', 'delivered this quarter'. Produces 1:1 briefs, weekly team rollups, and commitment tracking. This is the CEO's private chief-of-staff layer for people — NOT an HR system. DOES NOT fire on 'prep me for the Acme call' / 'prep me for my 2pm' — external-attendee meeting prep (call-prep; this skill owns DIRECT-REPORT 1:1s only), bare 'log a commitment' with no direct report named (workspace-manager), 'who is' ('who is Jessica' — people-crm), 'who hasn't replied' (dormant-customer-scan), 'who competes with' (research — no competitive-intel skill ships in this plugin), or 'hire' / compensation / performance reviews (out of scope).

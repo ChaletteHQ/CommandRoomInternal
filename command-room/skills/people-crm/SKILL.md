@@ -1,14 +1,14 @@
 ---
 name: people-crm
-description: "Never walk into a meeting or dinner wondering who-is-this-again. Owns the CEO's relationship layer — auto-builds person records from every meeting, email, and Slack thread, and answers relationship queries instantly. Use when the CEO says 'who is', 'who is Aria', 'who is again', 'who do I know at', 'who do I know', 'add to my contacts', 'to my contacts', 'what did Bowie and I last discuss', 'last discuss', 'what did we last discuss', 'prep me for dinner', 'prep me for dinner with', 'tell me about Mira', 'tell me about', 'tell me about Mira from the board'. Writes to the person records in entities.json (canonical ownership) and regenerates _hq/views/PEOPLE.md. DOES NOT fire on 'prep me for my 2pm' (that's call-prep, which reads people-crm records) or 'team status / my direct reports' (that's team-intelligence, which extends people-crm for direct reports)."
+description: "Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]', 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Builds and reads per-person records from email, meetings, and notes; proposes new person records when unknowns recur. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export). Record shape and resolution rules: Routing section in the body."
 ---
 
-## Skill Boundary (v2.2)
+## Skill Boundary (v2.1)
 
 - **Use people-crm for:** maintaining and querying the relationship layer — person records, last-interaction dates, notes, project + org connections.
 - **Use `team-intelligence` for:** direct reports and leadership team specifically — extends people-crm with commitment tracking, 1:1 prep, and team-wide cadence.
 - **Use `call-prep` for:** meeting-specific context that reads from people-crm.
-- **Org-tree aware:** person records carry `org_ids[]` (an array — people can belong to multiple orgs) and `primary_org_id` (the most specific operating org for default context). Email domain, Slack workspace, and calendar attendee signals feed org inference; see `onboarding/references/org-discovery.md`.
+- **Org-tree aware:** person records carry `org_ids[]` (an array — people can belong to multiple orgs) and `primary_org_id` (the most specific operating org for default context). Email domain, Slack workspace, and calendar attendee signals feed org inference (reactive discovery state lives in `_hq/ORG_DISCOVERY_SKIP.md` / `_hq/ORG_DISCOVERY_QUEUE.md`).
 
 ## Writer Contract
 
@@ -33,7 +33,7 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from people_writer import create_person, update_person, find_existing_person, merge_person_into, DuplicatePersonError; print('OK')"
 ```
 
-If stdout is not exactly `OK`, ABORT and surface plain English: `(Person-write helper unavailable — operation deferred. Diagnostic: <error>.)` Do NOT fall back to direct `entities.json` edits.
+If stdout is not exactly `OK`, ABORT and surface plain English: `(I couldn't save that contact just now — I'll flag it and retry next time.)` Log the diagnostic detail to `_hq/CONFLICTS.md`, never into chat. Do NOT fall back to direct `entities.json` edits.
 
 ### Writer call shape
 
@@ -88,9 +88,11 @@ CLI form for bash callers is documented in the docstring of `people_writer.py`.
 
 ## What It Does
 
-Maintains a lightweight but comprehensive relationship database at `[WORKSPACE_ROOT]/_hq/PEOPLE.md`. Every person you interact with gets a profile so you can instantly answer "who is this person?" or "what did we last discuss?"
+**Person-record ownership (canonical paragraph — IDENTICAL in people-crm and team-intelligence; edit both or neither):** `_hq/data/entities.json` person records are the ONE canonical person store. **people-crm** owns record lifecycle and core fields (create, name, role, emails, orgs, last-interaction) for EVERY person, internal or external. **team-intelligence** is a scoped extension over the direct-report subset: it never creates person records, and its commitment signal lives in `events.jsonl` `commitment` events (owner_id = the report), not in person-record fields. `_hq/views/PEOPLE.md` and the `_people/` PERSON.md profiles are Tier 2 projections — orientation reading, never writes, never state.
 
-The database auto-updates from:
+Maintains the relationship layer in the person records of `_hq/data/entities.json` — `_hq/views/PEOPLE.md` is the human-readable view regenerated after every write, never the store. Every person you interact with gets a record so you can instantly answer "who is this person?" or "what did we last discuss?"
+
+The records auto-update from:
 - Meeting notes (new attendees get added automatically)
 - Email threads (Gmail connections pull sender/recipient data)
 - Manual entry when you meet someone new
@@ -103,7 +105,7 @@ Tracks what matters: company, role, how you know them, projects they're connecte
 
 People-CRM has TWO canonical helpers that the read paths MUST invoke. Bypassing either was flagged in Session-22 testing (Bugs #11 + #23) as the root cause of "queries work by luck of grep" behavior.
 
-> **Gate 1 — Name resolution.** Before answering any "who is X" / "tell me about X" / "people at Y" / "prep me for [person]" query, you MUST invoke `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` FIRST to resolve the name. Only after the resolver returns NO candidates may you fall back to substring grep on entities.json. The 3-tier ladder (exact alias → fuzzy ≥85% → Soundex phonetic) is the contract.
+> **Gate 1 — Name resolution.** Before answering any "who is X" / "tell me about X" / "people at Y" / "prep me for [person]" query, you MUST invoke `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` FIRST to resolve the name. Only after the resolver returns NO candidates may you fall back to substring grep on entities.json. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the ladder, tiers, and fallback rules.
 >
 > **Gate 2 — Commitment surface.** Before surfacing ANY commitment-related state for a person ("what's owed to them," "what they owe me," "what's open with them"), you MUST invoke `shared/scripts/cru_match.py::load_open_commitments(events_jsonl_path)` and filter the resulting list by the resolved `person_id`. Raw grep on events.jsonl is NOT acceptable — it doesn't apply closure-event suppression (commitments closed via `commitment_resolved` / `thread_resolved` / `commitment_superseded`) and produces stale or inflated commitment surfaces.
 
@@ -168,7 +170,7 @@ Manually add new contacts or update existing ones.
 
 ## Person Profile Format
 
-Each person in the database has this structure:
+Each person profile has this structure:
 
 ```markdown
 ### [Full Name]
@@ -176,7 +178,7 @@ Each person in the database has this structure:
 - **Other Orgs:** [any additional orgs this person is associated with, with relationship_type tags]
 - **Role:** [job title / role]
 - **How We Know Them:** [context — met at X, introduced by Y, worked together at Z, client contact]
-- **Threads:** [linked thread display_names separated by commas]
+- **Projects:** [linked project display_names separated by commas]
 - **Last Interaction:** [date] — [brief context of what you discussed]
 - **Key Notes:** [what to remember about this person — personality, preferences, context, open items]
 - **Contact:** [email and/or phone if known]
@@ -190,13 +192,17 @@ Each person in the database has this structure:
 - **Other Orgs:** Acme Holdings (holding, parent of Acme Tech)
 - **Role:** VP of Product
 - **How We Know Them:** Introduced by Sam Sample; met at Product Leaders conference in 2025
-- **Threads:** Acme Tech Partnership, Product Strategy Review
+- **Projects:** Acme Tech Partnership, Product Strategy Review
 - **Last Interaction:** 2026-03-15 — Discussed roadmap priorities; she's interested in Q3 roadmap for our integration feature
 - **Key Notes:** Fast decision-maker, prefers async over meetings, cares deeply about user onboarding, mentioned team is 6 months behind on mobile. Open item: send her the feature spec.
 - **Contact:** skyler@example.com / 415-555-0100
 ```
 
 Rendered view groups people by primary-focus org first (per `morning-briefing` Step 4 layout rules), then other orgs rolled up by `relationship_type`.
+
+**Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
+- Bad: "Threads: project_012, project_020 (person record updated)"
+- Good: "Projects: Acme Tech Partnership, Product Strategy Review"
 
 ## Key Queries
 
@@ -281,7 +287,7 @@ You get their full context plus suggested conversation starters.
 - **Contact Info Completeness:** Email is usually available; phone is often not. Use what you have, ask for what you don't.
 - **Key Notes Can Grow:** These can get long over time. Keep them useful by trimming stale notes and surfacing what actually matters.
 - **Duplicate Detection:** If you interact with someone under different names (shortened name, nickname, formal name), the skill asks if it's the same person before creating duplicates.
-- **Cross-Source Enrichment Doesn't Auto-Save:** When you run "who is [person]?", the parallel scan from Gmail, Calendar, Slack, Drive, and Granola shows up in "Fresh from your tools:" but doesn't auto-update PEOPLE.md. You decide what's worth saving. This keeps the profile clean and intentional.
+- **Cross-Source Enrichment Doesn't Auto-Save:** When you run "who is [person]?", the parallel scan from Gmail, Calendar, Slack, Drive, and the transcript connector shows up in "Fresh from your tools:" but doesn't auto-update the person record. You decide what's worth saving. This keeps the profile clean and intentional.
 - **Enrichment Requires Connected Sources:** If Gmail or Slack is not connected, those sections will be empty. The enrichment is only as good as your connected tools.
 - **Team Member Enrichment Caches During Briefing:** For `_people/` contacts, enrichment runs silently and caches during "what's going on". If you've just had a meeting or email that hasn't synced yet, the cache may be slightly behind real-time.
 
@@ -318,7 +324,7 @@ When you ask "who is [person]?" or any person-first query, the skill runs a para
 
 **How It Presents**
 
-Profile from PEOPLE.md displays first (the source of truth). Then a "Fresh from your tools:" section appends anything new from the live scan. You decide what to save back to the profile — no auto-updates to PEOPLE.md.
+The stored profile (the entities.json person record, read via the PEOPLE.md view) displays first. Then a "Fresh from your tools:" section appends anything new from the live scan. You decide what to save back — nothing auto-writes to the record from an enrichment scan.
 
 **Staleness Indicator**
 
@@ -418,3 +424,9 @@ When ANY skill (workspace-manager during "new project," meeting-notes when a new
 - Use **people-crm** data in **cleanup (`--summary`)** to surface relationship activity
 - Reference people in **decision-log** if they influenced decisions
 - Use for **MASTER_TRACKER** project context (who's involved, who to loop in)
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Never walk into a meeting or dinner wondering who-is-this-again. Owns the CEO's relationship layer — auto-builds person records from every meeting, email, and Slack thread, and answers relationship queries instantly. Use when the CEO says 'who is', 'who is Aria', 'who is again', 'who do I know at', 'who do I know', 'add [name] to my contacts', 'to my contacts', 'refresh aliases', 'rebuild my aliases', 'what did Bowie and I last discuss', 'last discuss', 'what did we last discuss', 'prep me for dinner', 'prep me for dinner with', 'tell me about' — a PERSON ('tell me about Mira', 'tell me about Mira from the board'), resolved against your contacts. Writes to the person records in entities.json (canonical ownership) and regenerates _hq/views/PEOPLE.md. DOES NOT fire on 'prep me for my 2pm' (that's call-prep, which reads people-crm records) or 'team status / my direct reports' (that's team-intelligence, which extends people-crm for direct reports). DOES NOT fire on 'tell me about [a project or org you track]' (workspace-manager — 'go [name]' context load) or 'tell me about [an unknown company]' (research).

@@ -15,6 +15,12 @@ stdlib only.
 
 from __future__ import annotations
 
+# This rig tests the writer-lock/seq machinery BELOW the event gate with
+# synthetic fixture types; the gate (strict on both entries as of Phase 4
+# 2026-07-02) is covered by run_event_gate_test.py.
+import os
+os.environ["CR_EVENT_GATE"] = "0"
+
 import json
 import sys
 import tempfile

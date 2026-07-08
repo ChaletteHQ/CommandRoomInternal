@@ -189,7 +189,7 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
             "suggested_command": f"{name} is now a client",
             "render_line": (
                 f"🔄 {name} looks like a client now ({reason}) — "
-                f"say `{name} is now a client` to convert"
+                f"say `{name} is now a client`"
             ),
         })
 

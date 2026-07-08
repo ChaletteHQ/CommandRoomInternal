@@ -123,12 +123,27 @@ def atomic_append_jsonl(
     path: str | Path,
     events: list[dict[str, Any]] | dict[str, Any],
     encoding: str = "utf-8",
+    holder: str = "atomic_append_jsonl",
 ) -> None:
     """Append one or more JSON-line records to a JSONL file atomically.
 
     Reads the existing file (if any), constructs the full new content, and
     writes it via atomic_write_text. This is more expensive than O_APPEND but
     guarantees no concurrent reader sees a partial line.
+
+    WRITER LOCK FOR events.jsonl (SPEC A1, v3.19.x):
+    For writes to a file named `events.jsonl` specifically, the entire
+    read -> auto-stamp -> atomic-rename sequence runs inside the cross-process
+    `writer_lock.events_writer_lock` so seq reservation and the write are one
+    critical section. This closes the last-writer-wins race documented in
+    RELIABILITY.md §3 (two racing callers losing an event or duplicating a
+    seq; on Windows the racing os.replace could even raise PermissionError).
+    The lock is an OS byte-range lock on `_hq/data/.writer.lock` (kernel
+    releases it on crash — zero manual cleanup), with a sentinel fallback on
+    unsupported mounts and best-effort contention telemetry. `holder` is an
+    optional caller label recorded in the lock diagnostics + any timeout
+    message; it defaults so every existing call site keeps working unchanged.
+    Non-events.jsonl writes take NO lock (they have their own contracts).
 
     Use for events.jsonl, staging_emissions.jsonl, classifier_feedback.jsonl,
     .backfill_cursor — anything Cowork or cross-machine sync reads.
@@ -183,75 +198,145 @@ def atomic_append_jsonl(
             )
 
     path = Path(path)
-    existing = ""
-    existing_max_seq = 0
-    if path.exists():
-        existing = path.read_text(encoding=encoding)
-        if existing and not existing.endswith("\n"):
-            existing = existing + "\n"
-        # v3.13.8.3 Bug #74 — scan tail for max human-counter seq while we
-        # already have the content read. Mirrors next_seq.py contract:
-        # ignore non-dict / non-numeric / nano-epoch (>=1e10) seqs.
-        if path.name == "events.jsonl":
+    is_events = path.name == "events.jsonl"
+
+    # EVENT GATE (Phase 1 Foundation F1, 2026-07) — the append_event()
+    # gatekeeper runs INSIDE this single append path so every event family is
+    # gated from day one, caller-agnostic (same doctrine as the auto-stamp
+    # below): type-drift normalization, cmt_<ulid> minting + data.kind on
+    # commitments, fail-loud rejection of id-less commitment_resolved, and
+    # schema-enum validation. STRICT on both entries as of Phase 4 (2026-07-02)
+    # — the F1 burn-in ended with the Phase 1-3 writer migrations: an
+    # unregistered event type or kind-less commitment now rejects here too,
+    # identical to event_gate.append_event. Gate failures RAISE — they must
+    # never be swallowed. CR_EVENT_GATE=0 disables (emergencies only).
+    if is_events:
+        try:
+            from event_gate import gate_events
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from event_gate import gate_events
+        events = gate_events(events, strict_enum=True, holder=holder)
+
+    def _read_stamp_write(evs: list[dict[str, Any]]) -> None:
+        existing = ""
+        existing_max_seq = 0
+        if path.exists():
+            existing = path.read_text(encoding=encoding)
+            if existing and not existing.endswith("\n"):
+                existing = existing + "\n"
+            # v3.13.8.3 Bug #74 — scan tail for max human-counter seq while we
+            # already have the content read. Mirrors next_seq.py contract:
+            # ignore non-dict / non-numeric / nano-epoch (>=1e10) seqs.
+            if is_events:
+                EPOCH_THRESHOLD = 10**10
+                for line in existing.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    s = entry.get("seq")
+                    if (
+                        isinstance(s, (int, float))
+                        and not isinstance(s, bool)
+                        and s < EPOCH_THRESHOLD
+                        and s > existing_max_seq
+                    ):
+                        existing_max_seq = int(s)
+
+        # v3.13.8.3 Bug #74 + #75 — auto-stamp seq + ts for events.jsonl writes.
+        # Shallow-copy each event to avoid mutating caller's dicts.
+        if is_events:
+            import datetime as _dt
             EPOCH_THRESHOLD = 10**10
-            for line in existing.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
+            evs = [{**ev} for ev in evs]
+            next_seq_val = existing_max_seq + 1
+            now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            for ev in evs:
+                current_seq = ev.get("seq")
+                seq_is_valid_human_counter = (
+                    isinstance(current_seq, (int, float))
+                    and not isinstance(current_seq, bool)
+                    and current_seq < EPOCH_THRESHOLD
+                )
+                if current_seq is None or not isinstance(current_seq, (int, float)) or isinstance(current_seq, bool):
+                    ev["seq"] = next_seq_val
+                    next_seq_val += 1
+                elif seq_is_valid_human_counter and int(current_seq) >= next_seq_val:
+                    # Explicit human-counter seq in this batch — bump counter past it
+                    # so subsequent missing-seq events stamp monotonically. Nano-epoch
+                    # seqs are NOT considered (would jump next_seq to 1.77e18+1).
+                    next_seq_val = int(current_seq) + 1
+                elif seq_is_valid_human_counter and int(current_seq) < next_seq_val:
+                    # Explicit but STALE human-counter seq — a value the caller
+                    # peeked before a concurrent append overtook it. Honoring it
+                    # would write a DUPLICATE seq, corrupting supersedes_seq /
+                    # source_event_seq / _commitment_id back-references (and letting
+                    # one resolution close two commitments). Reassign it like a
+                    # missing seq so the ledger stays monotonic + collision-free
+                    # (deep-audit 2026-05-29, finding #7).
+                    ev["seq"] = next_seq_val
+                    next_seq_val += 1
+                current_ts = ev.get("ts")
+                if current_ts is None or not isinstance(current_ts, str) or not current_ts.strip():
+                    ev["ts"] = now_iso
+
+        new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs)
+        atomic_write_text(path, existing + new_lines, encoding=encoding)
+
+        # SPEC A3 — maintain the source_ref dedup index while still holding the
+        # writer lock (events branch only). Best-effort: an index failure must
+        # NEVER fail the event write. Mirrors the auto-stamp caller-agnostic
+        # pattern — LLM-driven writers can't forget the index because they never
+        # touch it. path = <ws>/_hq/data/events.jsonl → workspace root is 3 up.
+        if is_events:
+            try:
+                from source_ref_index import record_keys
+            except ImportError:
+                import sys as _sys
+                _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from source_ref_index import record_keys
+            try:
+                record_keys(path.parent.parent.parent, evs)
+            except Exception:
+                pass
+
+            # SPEC EVT1 — WARN-ONLY payload validation. Surfaces payload drift on
+            # stderr for the burn-in; NEVER blocks the write (promotion to
+            # blocking is a later release after zero-warning burn-in). Disable
+            # with CR_PAYLOAD_CHECK=0.
+            import os as _os
+            if _os.environ.get("CR_PAYLOAD_CHECK", "1") != "0":
                 try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                s = entry.get("seq")
-                if (
-                    isinstance(s, (int, float))
-                    and not isinstance(s, bool)
-                    and s < EPOCH_THRESHOLD
-                    and s > existing_max_seq
-                ):
-                    existing_max_seq = int(s)
+                    from event_payload_check import check_payload
+                    import sys as _sys
+                    for _e in evs:
+                        _viol = check_payload(_e)
+                        if _viol:
+                            _sys.stderr.write("[event_payload] " + "; ".join(_viol) + "\n")
+                except Exception:
+                    pass
 
-    # v3.13.8.3 Bug #74 + #75 — auto-stamp seq + ts for events.jsonl writes.
-    # Shallow-copy each event to avoid mutating caller's dicts.
-    if path.name == "events.jsonl":
-        import datetime as _dt
-        EPOCH_THRESHOLD = 10**10
-        events = [{**ev} for ev in events]
-        next_seq_val = existing_max_seq + 1
-        now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        for ev in events:
-            current_seq = ev.get("seq")
-            seq_is_valid_human_counter = (
-                isinstance(current_seq, (int, float))
-                and not isinstance(current_seq, bool)
-                and current_seq < EPOCH_THRESHOLD
-            )
-            if current_seq is None or not isinstance(current_seq, (int, float)) or isinstance(current_seq, bool):
-                ev["seq"] = next_seq_val
-                next_seq_val += 1
-            elif seq_is_valid_human_counter and int(current_seq) >= next_seq_val:
-                # Explicit human-counter seq in this batch — bump counter past it
-                # so subsequent missing-seq events stamp monotonically. Nano-epoch
-                # seqs are NOT considered (would jump next_seq to 1.77e18+1).
-                next_seq_val = int(current_seq) + 1
-            elif seq_is_valid_human_counter and int(current_seq) < next_seq_val:
-                # Explicit but STALE human-counter seq — a value the caller
-                # peeked before a concurrent append overtook it. Honoring it
-                # would write a DUPLICATE seq, corrupting supersedes_seq /
-                # source_event_seq / _commitment_id back-references (and letting
-                # one resolution close two commitments). Reassign it like a
-                # missing seq so the ledger stays monotonic + collision-free
-                # (deep-audit 2026-05-29, finding #7).
-                ev["seq"] = next_seq_val
-                next_seq_val += 1
-            current_ts = ev.get("ts")
-            if current_ts is None or not isinstance(current_ts, str) or not current_ts.strip():
-                ev["ts"] = now_iso
-
-    new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
-    atomic_write_text(path, existing + new_lines, encoding=encoding)
+    if is_events:
+        # SPEC A1 — serialize the whole read->stamp->rename behind the writer
+        # lock so concurrent appends can't lose an event or duplicate a seq.
+        # Lazy import avoids an import cycle (writer_lock imports atomic_write).
+        try:
+            from writer_lock import events_writer_lock
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from writer_lock import events_writer_lock
+        with events_writer_lock(path, holder=holder):
+            _read_stamp_write(events)
+    else:
+        _read_stamp_write(events)
 
 
 def acquire_write_lock(
@@ -261,6 +346,11 @@ def acquire_write_lock(
     stale_after_s: float = 60.0,
 ) -> Path:
     """Acquire a cooperative cross-process write lock on `path` (v3.13.0+).
+
+    NEW CODE: for events.jsonl use `writer_lock.events_writer_lock` (SPEC A1) —
+    an OS byte-range lock that the kernel releases on crash. This sentinel
+    variant remains the canonical lock for entities.json / aliases.json (its
+    mtime-staleness + mv-aside semantics are load-bearing for those callers).
 
     Creates a sentinel file at `{path}.lock` containing the current PID +
     timestamp + caller-provided holder name. If the lock file already exists

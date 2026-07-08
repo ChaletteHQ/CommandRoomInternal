@@ -105,7 +105,7 @@ Every closure event MUST use one of these exact shapes:
 
 | Event type | Required id field | Canonical writer helper |
 |---|---|---|
-| `commitment_resolved` | `data.commitment_id` | [`cru_match.build_commitment_resolved_event`](../shared/scripts/cru_match.py) |
+| `commitment_resolved` | `data.commitment_id` | [`commitment_state.close_commitment`](../shared/scripts/commitment_state.py) — THE closure path (Stage B, F2). `cru_match.build_commitment_resolved_event` is the legacy shape helper: construction-only, never build-and-append in new code. |
 | `thread_resolved` | `data.id` (preferred) OR `data.thread_id` | `log-resolution` SKILL.md |
 | `decision_resolved` | `data.decision_id` (or `data.id`) | decision-log SKILL.md |
 | `decision_superseded` | `data.supersedes_seq` (NOT a data.id field — points at original event seq) | decision-log SKILL.md |
@@ -148,7 +148,7 @@ When in doubt, follow this checklist before merging any read or write surface:
 **Writes:**
 
 4. ☐ Does the skill emit a closure event (commitment_resolved / thread_resolved / decision_resolved)?
-   - **Yes** → use the canonical helper (`cru_match.build_commitment_resolved_event` etc.). Use the canonical id field (`data.commitment_id` for commitments, `data.id` or `data.thread_id` for threads). Never invent a new field name.
+   - **Yes** → for COMMITMENTS, close through `commitment_state.close_commitment(workspace_root, <data.id verbatim>, ...)` (Stage B, F2) — it owns id normalization, loud no-match refusal, full-set idempotency, and the pending_review floor; never build-and-append a `commitment_resolved` yourself. For threads/decisions, use the type-appropriate canonical helper with the canonical id field (`data.id` or `data.thread_id` for threads, `data.decision_id` for decisions). Never invent a new field name.
    - **No** → continue.
 5. ☐ Does the skill emit any new event type, field name, or schema variant?
    - **Yes** → verify a consumer exists. Per [`feedback_verify_consumers_before_ship.md`](../../../../memory/feedback_verify_consumers_before_ship.md) — recurring bug class May 2026: "did I just ship a feature nobody reads?" If no consumer reads the new field, you have either dead code OR you're about to ship a bug. Resolve before merge.

@@ -1,0 +1,64 @@
+{
+  "_comment": "SPEC EVT1 — per-type `data` payload shapes for the load-bearing event types. events.schema.json constrains only the `type` enum; `data` was free-form, so two skills could emit the same type with different shapes and readers crashed or silently dropped fields. This is a CUSTOM mini-schema (no jsonschema dependency): each type maps to {required, properties, description}. `required` is a list of ALIAS-GROUPS — a group is satisfied if ANY key in it is present (absorbs the documented drift: due~due_date, status~state, owner~owner_id~owner_person_id, the resolver closer-id chain). `properties` type-checks declared keys when present. Unknown keys are always allowed (permissive forward-compat). Enforced WARN-ONLY at write time (never blocks); promotion to blocking is a later release after a zero-warning burn-in. Canonical for the consumers in cru_match.py / brief_state.py / value_receipt.py / render_decision_log.py.",
+
+  "commitment": {
+    "description": "An open promise. Aliases tolerated by cru_match._commitment_field: due~due_date, status~state, owner_id~owner_person_id~owner, id (minted cmt_<ulid> at write time by the append gate when absent; read by _commitment_id). kind (promise|task|scheduling|agenda) is REQUIRED AT CAPTURE (Stage D; strict path rejects, legacy path warns+stamps promise). Stage E receipts: counterparty_id (REQUIRED when determinable — feeds the CRU candidacy gate; retires requester_* for new writes) + counterparty_name (free-text fallback). Closers reference it via data.commitment_id.",
+    "required": [["title"]],
+    "properties": {"title": "string", "id": "string", "kind": "string", "due": "string", "due_date": "string", "no_due": "boolean", "status": "string", "state": "string", "owner_id": "string", "owner_person_id": "string", "owner": "string", "counterparty_id": "string", "counterparty_name": "string", "source_ref": "string"}
+  },
+  "commitment_resolved": {
+    "description": "Closes a commitment. WRITTEN ONLY via commitment_state.close_commitment() (Phase 2 Stage B, F2 — the single closure path: id normalization, loud no-match, full-set idempotency, pending_review floor). References the commitment via one of the closer-id aliases (cru_match closer chain): commitment_id~thread_id~id~target_id, or a seq alias (commitment_seq~source_event_seq, F3 amnesty chain). The append gate REJECTS closures carrying none of these (Phase 1). close_commitment writes data.commitment_id (canonical) + resolved_by + evidence (≤200 chars) + resolution (done|dropped|superseded).",
+    "required": [["commitment_id", "thread_id", "id", "target_id", "commitment_seq", "source_event_seq"]],
+    "properties": {"commitment_id": "string", "thread_id": "string", "id": "string", "target_id": "string", "commitment_seq": "number", "source_event_seq": "number", "resolved_by": "string", "evidence": "string", "resolution": "string"}
+  },
+  "commitment_reclassified": {
+    "description": "Kind override marker (Phase 2 Stage D, S6/S5) — additive; the projector applies data.new_kind to the referenced commitment read-side (history never rewritten). Written by the S6 migration script (promise→task partition) and promote_task_to_commitment (task→promise, one-tap promote when a counterparty appears). Never delete/recreate.",
+    "required": [["target_id", "commitment_id", "target_seq"]],
+    "properties": {"target_id": "string", "commitment_id": "string", "target_seq": "number", "new_kind": "string", "reason": "string"}
+  },
+  "commitment_reopened": {
+    "description": "Reopens a closed commitment (Phase 2 Stage D, S4 undo) — additive; the projector honors the LATEST of closure vs reopen in append order. Written by the triage undo path via commitment_state.reopen_commitment.",
+    "required": [["commitment_id", "target_id", "commitment_seq"]],
+    "properties": {"commitment_id": "string", "target_id": "string", "commitment_seq": "number", "reason": "string", "reopened_by": "string"}
+  },
+  "decision": {
+    "description": "A logged decision. The decision text lives under one of: decision~summary~title.",
+    "required": [["decision", "summary", "title"]],
+    "properties": {"decision": "string", "summary": "string", "title": "string", "rationale": "string", "context": "string"}
+  },
+  "meeting": {
+    "description": "A meeting record. Has a title or summary.",
+    "required": [["title", "summary"]],
+    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "primary_thread_id": "string"}
+  },
+  "meeting_processed": {
+    "description": "A processed meeting. References the meeting and carries a summary/title.",
+    "required": [["meeting_id", "title", "summary", "source_ref"]],
+    "properties": {"meeting_id": "string", "title": "string", "summary": "string", "source_ref": "string", "person_ids": "array"}
+  },
+  "interaction": {
+    "description": "A passive-capture touchpoint. Carries a source_ref (dedup key) or a summary.",
+    "required": [["source_ref", "summary"]],
+    "properties": {"source_ref": "string", "summary": "string", "direction": "string", "dedup_hash": "string", "person_ids": "array", "primary_thread_id": "string"}
+  },
+  "email_drafted": {
+    "description": "A draft produced by email-writer (event fires from apply-choices on click).",
+    "required": [["recipient"]],
+    "properties": {"recipient": "string", "topic": "string", "gmail_draft_id": "string", "draft_event_seq": "number", "commitment_refs": "array", "decision_refs": "array"}
+  },
+  "email_sent": {
+    "description": "A sent email; closure event linking back via draft_event_seq. gmail_thread_id (B6) when the send response provides it.",
+    "required": [["recipient"]],
+    "properties": {"recipient": "string", "topic": "string", "gmail_message_id": "string", "gmail_thread_id": "string", "draft_event_seq": "number"}
+  },
+  "pack_run": {
+    "description": "Audit/telemetry trail of a scheduled-task / orchestrator fire.",
+    "required": [["task_id"]],
+    "properties": {"task_id": "string", "digest_path": "string", "sections_rendered": "array"}
+  },
+  "pattern_break_detected": {
+    "description": "A person whose contact cadence broke (Pulse). Carries the person and the diagnostic counts.",
+    "required": [["person_id"]],
+    "properties": {"person_id": "string", "eligible_event_count": "number", "most_recent_eligible_event_seq": "number"}
+  }
+}

@@ -145,7 +145,7 @@ def build_tree(
             continue
         orgs_by_id[oid] = OrgNode(
             id=oid,
-            display_name=org.get("display_name") or org.get("name") or oid,
+            display_name=org.get("display_name") or org.get("canonical_name") or org.get("name") or oid,
             scope=org.get("scope", "operating"),
             relationship_type=org.get("relationship_type"),
             parent_org_id=org.get("parent_org_id"),
@@ -172,7 +172,7 @@ def build_tree(
             continue
         projects_by_id[pid] = ProjectNode(
             id=pid,
-            display_name=proj.get("display_name") or proj.get("name") or pid,
+            display_name=proj.get("display_name") or proj.get("canonical_name") or proj.get("name") or pid,
             status=status,
             kind=proj.get("kind", "initiative"),
             affiliation_id=proj.get("affiliation_id"),
@@ -309,7 +309,7 @@ def render(
     _section("ADVISORY", advisory)
     _section("OTHER", other)
 
-    lines.append("WORKSPACE-LEVEL")
+    lines.append("NOT TIED TO A COMPANY")
     lines.append("")
     if workspace_projects:
         for i, p in enumerate(workspace_projects):
@@ -320,7 +320,7 @@ def render(
 
     total_projects = _count_projects(root_orgs) + len(workspace_projects)
     total_orgs = _count_orgs(root_orgs)
-    lines.append(f"Total: {total_projects} projects across {total_orgs} orgs.")
+    lines.append(f"Total: {total_projects} projects across {total_orgs} companies.")
 
     return "\n".join(lines).rstrip() + "\n"
 

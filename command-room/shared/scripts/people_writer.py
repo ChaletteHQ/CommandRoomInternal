@@ -137,6 +137,7 @@ ALLOWED_PERSON_FIELDS = {
     "reports_to_id",       # string | null
     "status",              # "active" | "archived"
     "needs_enrichment",    # bool — provisional record awaiting the people-crm enrichment pull (v3.16+, deep-audit #21). The ON-ENTITY enrichment flag; REPLACES the forbidden pending_review/inferred_from trigger (which this writer strips). people-crm clears it (sets false) after enriching.
+    "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: Pulse "just busy" widens it so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
 }
 
 REQUIRED_PERSON_FIELDS = {"id", "canonical_name", "first_seen"}

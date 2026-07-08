@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command-room://schemas/onboarding_seed.schema.json",
+  "title": "Onboarding Seed Pack",
+  "description": "Optional pre-onboarding seed produced by the operator from a recorded pre-onboarding interview with the client. Dropped at the client workspace root as ONBOARDING_SEED.json before install day. If present, command-room-onboarding Phase 1a ingests it as anchor truth (same authority as the primary-affiliation gate): the connector scan validates and enriches declared entries but never overrides them, and may add undeclared entities alongside. After ingest, onboarding moves the file to _hq/data/onboarding-seed.json and appends an onboarding_seed_ingested event. Entities are referenced by name, not id — ids are minted during onboarding, and every name plus its listed aliases becomes an aliases.json mapping.",
+  "type": "object",
+  "required": ["version", "created_ts", "created_by", "interview", "client"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "created_ts": { "type": "string", "format": "date-time" },
+    "created_by": {
+      "type": "string",
+      "description": "Operator who ran the interview and produced this pack."
+    },
+    "interview": {
+      "type": "object",
+      "required": ["call_date"],
+      "properties": {
+        "call_date": { "type": "string", "format": "date" },
+        "transcript_source": {
+          "type": "string",
+          "description": "Where the transcript lives on the operator side (e.g. 'granola: Acme pre-onboarding 2026-07-08'). Not resolvable from the client workspace — provenance only."
+        },
+        "duration_minutes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "client": {
+      "type": "object",
+      "required": ["canonical_name"],
+      "properties": {
+        "canonical_name": { "type": "string" },
+        "role_title": { "type": "string" },
+        "seniority": {
+          "type": "string",
+          "enum": ["owner", "exec"],
+          "description": "Drives the Phase 1a primary-affiliation gate: 'exec' means the primary org is the company they work FOR, not one they own."
+        },
+        "timezone": {
+          "type": "string",
+          "description": "IANA timezone. Pre-answers the Phase 0 setup widget."
+        },
+        "brain_name_preference": {
+          "type": "string",
+          "description": "If the client picked an AI name during the interview. Pre-answers Phase 0; omit to let the widget ask."
+        }
+      }
+    },
+    "orgs": {
+      "type": "array",
+      "description": "Orgs the client named directly. Declared structure wins over domain-pattern inference.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "scope": { "type": "string", "enum": ["holding", "operating", "division", "brand", "fund", "other"] },
+          "parent_org_name": {
+            "type": "string",
+            "description": "Name of the parent org in this same pack, if nested."
+          },
+          "relationship_type": {
+            "type": "string",
+            "enum": ["operating", "partner", "board", "advisory", "investment", "client", "portfolio_company", "beneficiary", "vendor", "prospect", "service_provider", "other"]
+          },
+          "is_primary_focus": { "type": "boolean" },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "What the client actually calls it ('the AZ deal', 'ATC'). Each becomes an aliases.json mapping at ingest."
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "projects": {
+      "type": "array",
+      "description": "Workstreams the client named directly. kind/status vocabulary matches entities.schema.json threads.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "org_name": { "type": "string", "description": "Affiliated org by name (most specific level)." },
+          "kind": {
+            "type": "string",
+            "enum": ["initiative", "deal", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"]
+          },
+          "status": { "type": "string", "enum": ["active", "paused", "blocked", "archived"] },
+          "priority": {
+            "type": "string",
+            "enum": ["top", "high", "normal"],
+            "description": "'top' = one of the client's declared top-3 focuses. Drives briefing ordering from day one."
+          },
+          "description": { "type": "string" },
+          "aliases": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "people": {
+      "type": "array",
+      "description": "People the client named directly — team, key externals, board.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "org_name": { "type": "string" },
+          "role": { "type": "string" },
+          "relationship": {
+            "type": "string",
+            "description": "Freeform relationship to the client ('co-founder', 'EA', 'lead investor', 'biggest customer')."
+          },
+          "email": { "type": "string" },
+          "deep_track": {
+            "type": "boolean",
+            "description": "Client flagged this person as someone to track closely, regardless of email volume."
+          },
+          "aliases": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "priorities": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "The client's declared current focuses, in their words, ordered. Connector scans see volume; this sees importance.",
+      "items": {
+        "type": "object",
+        "required": ["statement"],
+        "properties": {
+          "statement": { "type": "string" },
+          "linked_entity_name": { "type": "string", "description": "Org/project/person name in this pack it maps to, if any." }
+        }
+      }
+    },
+    "voice": {
+      "type": "object",
+      "description": "Feeds BRAND_VOICE.md / COMMUNICATION_PROFILE.md alongside the sent-mail scan. The interview transcript itself is spoken voice — treat as secondary to written-voice evidence (the spoken-secondary principle lives in command-room-onboarding/SKILL.md's Phase-1 voice-scan step, NOT in VOICE_CALIBRATION.md).",
+      "properties": {
+        "self_described": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "How the client says they write ('short, no pleasantries', 'always warm openers')."
+        },
+        "operator_observations": { "type": "array", "items": { "type": "string" } },
+        "sample_phrases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Verbatim phrases the client reaches for, pulled from the transcript."
+        }
+      }
+    },
+    "sensitivities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Topics, threads, or people to exclude or handle carefully (legal matters, a departing employee, personal threads). Onboarding respects these during the scan and never surfaces them in demo beats."
+    },
+    "directives": {
+      "type": "array",
+      "description": "Workspace-directive answers captured in the interview (per-client skill customization layer). Applied as workspace directives at ingest.",
+      "items": {
+        "type": "object",
+        "required": ["directive"],
+        "properties": {
+          "directive": { "type": "string" },
+          "applies_to": { "type": "string", "description": "Skill name or 'workspace'." }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What the interview didn't answer. Onboarding surfaces these to the operator on install day; they are NOT asked to the client mid-demo."
+    }
+  }
+}

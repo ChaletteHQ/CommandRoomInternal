@@ -4,7 +4,7 @@ Adapted for onboarding-v2 (2026-05-17). Same 5-step structure as the connected f
 
 If no tools are connected and the customer chose to proceed without them:
 
-1. **Step 1 runs unchanged** — the v3.4.1+ Step 1c setup widget (role / day-to-day / email exclusions / timezone) renders identically; cold start has no connector dependency, so all 4 items work the same way.
+1. **Step 1 runs unchanged** — the Step 1c setup widget (role / timezone / AI name / email draft posture) renders identically; cold start has no connector dependency, so all questions work the same way.
 2. **Step 2 — Scan becomes Scan-by-interview.**
    - 2a connector inventory still fires: surface the "Not detected: Gmail, Calendar, Slack, Drive, [transcript source]" line explicitly so the customer knows what they're working without.
    - 2b extract is skipped (nothing to extract).

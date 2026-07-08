@@ -1,9 +1,9 @@
 ---
 name: scaffold-automation
-description: "Generate real working artifacts (Zapier zap config, Python script skeleton, n8n flow JSON, setup recipe) for an automation opportunity that automation-scanner surfaced. Pairs with automation-scanner: scanner identifies opportunities and writes automation_opportunity_surfaced events; this skill scaffolds the picked opportunity and writes automation_scaffolded events. Use when the CEO says 'scaffold the [opportunity name]', 'scaffold automation #N', 'build the automation for X', 'build the automation', 'scaffold the [tool] automation', 'create the automation', 'build out [opportunity]', 'set up the automation for X'. Reads the referenced automation_opportunity_surfaced event from events.jsonl, entities.json for current tool stack, and prior automation_deployed events to avoid duplicates. Writes automation_scaffolded events (and automation_deployed when user marks deployed). DOES NOT fire on 'automation scan' (that's automation-scanner — runs the scan), 'what automations do I have' (that's a query — workspace-manager), or 'fix my zap' (out of scope — troubleshooting)."
+description: "Generate real working artifacts — Zapier zap config, Python script skeleton, n8n flow JSON, or a setup recipe — for an automation opportunity automation-scanner surfaced (or one the CEO names). Fires on: 'scaffold that automation', 'build the automation for [opportunity]', 'set up that zap', 'generate the script for [task]', 'make the automation recipe'. Output is deploy-ready scaffolding with a setup checklist, saved to the matching project; deployment itself stays with the CEO (mark it deployed when live). Does NOT fire on 'what can be automated' / 'automation scan' (automation-scanner — the detection and ranking this consumes), or 'schedule a meeting' (calendar-writer). Artifact types and recipe format: Routing section in the body."
 ---
 
-## Skill Boundary
+## Skill Boundary (v2.1)
 
 - **Use scaffold-automation for:** generating the actual artifacts for an automation opportunity (zap config, Python skeleton, n8n flow, setup recipe). Pairs with automation-scanner.
 - **Use `automation-scanner` for:** identifying opportunities (the upstream scan).
@@ -190,7 +190,6 @@ Built: QuickBooks estimates to Sheets
 
 I put everything in one folder for you. Open the setup recipe first — it walks you through it.
   - zap-config.json     (the Zap, ready to import)
-  - sheet-template.csv  (the columns, pre-built)
   - setup-recipe.docx   (step-by-step — start here)
   - rollback.docx       (how to undo it if you need to)
 
@@ -204,12 +203,14 @@ Setup takes about 10 minutes:
 
 This should save you about 36 minutes a week — roughly 30 hours a year.
 
-[Open setup recipe]  [Mark it deployed]  [Remind me in a week]
+Open the setup recipe: [setup-recipe.docx H2 link — Rule 3 doc link, not a button]
+
+[Mark done]  [Snooze (7 days)]
 ```
 
-### Phase 6 — On "Mark deployed"
+### Phase 6 — On `mark done` (displays "Mark done" — the deployed confirmation; P1.1 respec, dispatch in apply-choices' `scaffold-automation` source entry)
 
-Append `automation_deployed` event. The 30-day verification fires automatically (cleanup picks up the event and at day 30 checks "did your manual QB→Sheets pattern stop?" by comparing pre/post event signal).
+Append `automation_deployed` event. **No verifier consumes it yet** (true state per the Writer Contract above): the event records the deployment so a future 30-day verification pass — planned for cleanup or insight-generator — can check "did the manual pattern stop?" without re-shaping existing events. Never tell the user a verification will fire; it doesn't yet. `snooze 7d` (displays "Snooze (7 days)") re-surfaces the deployed-yet? check in a week.
 
 ## DOES NOT
 
@@ -217,3 +218,9 @@ Append `automation_deployed` event. The 30-day verification fires automatically 
 - Scaffold an opportunity that's already been deployed (filter via `automation_deployed` events).
 - Generate arbitrary code. Must reference an opportunity surfaced by automation-scanner OR an explicit user-provided pattern description that follows the same shape.
 - Modify or override existing automations under `<workspace>/automations/<slug>/`. New automations get a new slug.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Generate real working artifacts (Zapier zap config, Python script skeleton, n8n flow JSON, setup recipe) for an automation opportunity that automation-scanner surfaced. Pairs with automation-scanner: scanner identifies opportunities and writes automation_opportunity_surfaced events; this skill scaffolds the picked opportunity and writes automation_scaffolded events. Use when the CEO says 'scaffold the [opportunity name]', 'scaffold automation #N', 'build the automation for X', 'build the automation', 'scaffold the [tool] automation', 'create the automation', 'build out [opportunity]', 'set up the automation for X'. Reads the referenced automation_opportunity_surfaced event from events.jsonl, entities.json for current tool stack, and prior automation_deployed events to avoid duplicates. Writes automation_scaffolded events (and automation_deployed when user marks deployed). DOES NOT fire on 'automation scan' (that's automation-scanner — runs the scan), 'what automations do I have' (that's a query — workspace-manager), or 'fix my zap' (out of scope — troubleshooting).
