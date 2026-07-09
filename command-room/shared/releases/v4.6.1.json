@@ -1,5 +1,5 @@
 {
   "version": "4.6.1",
-  "headline": "Marketplace install hotfix — removes the hooks-config field that blocked v4.6.0 install/update fleet-wide. No user-visible behavior change.",
+  "headline": "Install hotfix — I fixed a packaging setting that was quietly blocking new installs and updates for everyone. Nothing about how the workspace behaves changed.",
   "items": []
 }
