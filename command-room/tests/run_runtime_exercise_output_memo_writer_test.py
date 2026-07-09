@@ -87,7 +87,7 @@ def main() -> int:
         fail("source_decision_ids derivation", f"expected [8,14,20], got {decision_ids}")
 
     section("render (real make_brief)")
-    out_dir = ws / "Acme Co — Sourcing Bot" / "deliverables" / "memos"
+    out_dir = ws / "Acme Co - Sourcing Bot" / "deliverables" / "memos"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{DATE}_pricing.docx"
     clean_decision = ("Move Sourcing Bot to annual-only billing and lock the pricing "

@@ -81,8 +81,8 @@ def main() -> int:
 
     # ---- project folder present ----
     check("project folder exists with PROJECT_BRAIN + SESSION_NOTES",
-          (FIXTURE / "Acme Co — Sourcing Bot" / "PROJECT_BRAIN.md").exists()
-          and (FIXTURE / "Acme Co — Sourcing Bot" / "SESSION_NOTES.md").exists())
+          (FIXTURE / "Acme Co - Sourcing Bot" / "PROJECT_BRAIN.md").exists()
+          and (FIXTURE / "Acme Co - Sourcing Bot" / "SESSION_NOTES.md").exists())
 
     # ---- integrity_check subprocess (read-only) ----
     proc = subprocess.run(
