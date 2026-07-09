@@ -48,14 +48,15 @@ Before producing output, check `_hq/BUSINESS_CONTEXT.md` for an "Out of office" 
 
 ### 4. Missed-fire recovery + late-fire tiers (Phase 3 / R4)
 
-When Cowork fires a missed slot late (machine was off/asleep), every CHAT orchestrator computes its lateness at the top of the run via `shared/scripts/late_fire.py::check_lateness` — machine-local math (cron evaluates on the machine clock; workspace TZ is presentation-only) — and branches:
+When Cowork fires a missed slot late (machine was off/asleep), every CHAT orchestrator determines its run mode (`shared/RECEIPT_CONTRACT.md` § Run-mode detection) and computes its lateness at the top of the run via `shared/scripts/late_fire.py::check_lateness` — machine-local math (cron evaluates on the machine clock; workspace TZ is presentation-only) — and branches:
 
+- **Manual fire (typed trigger / Run Now / re-run)** — never late: no tier math, no banner, no event (v4.5.2 R2 — F-47 P1a wrote three false late_fires in one afternoon before this gate).
 - **< 3h late** — run normally, no mention.
-- **3–24h late** — run normally; the output opens with one plain line naming the scheduled time (sleep named as the likely cause).
+- **3–24h late** — run normally; the output opens with one plain line naming the scheduled time. Facts only — no cause is ever asserted (the "computer was likely asleep" narratives were fabrications, F-47/F-50).
 - **> 24h late** — degrade: the stale surface is NOT rendered, but every substrate write the task owes (events, view updates, the pack_run receipt) still lands silently, then one line tells the CEO the full surface was skipped and the next morning brief folds in what mattered.
 - **Silent task classes are EXEMPT** (membership = the `SILENT_TASKS` registry in `schedule_config.py`, never a name list): late is fine for cleanup / reconcile-sent / monthly-report / weekly-insights — they always run in full.
 
-A `late_fire` event logs on the 3h+ tiers; `late_fire.detect_chronic_lateness` (consumed by cleanup's Monday note) proposes a better default time after >24h-late fires in 3 of 4 weeks — the actual move always goes through change-schedule.
+Lateness is scored ONLY against an UNSERVED slot (v4.5.2 R2): the task's newest substrate receipt is the served-slot marker — a slot with a receipt after it never produces a second late_fire; a slot older than the task's latest `schedule_config_changed` was minted by the change (F-51) and is never scored; scheduler `lastRunAt` stamps are never consulted (they land without execution — F-39). A `late_fire` event logs on the 3h+ tiers with `fired_via: catchup`; `late_fire.detect_chronic_lateness` (consumed by cleanup's Monday note) proposes a better default time after >24h-late fires in 3 of 4 weeks — the actual move always goes through change-schedule, and a schedule change never fires the task.
 
 Legacy per-skill recovery notes (still true, now subordinate to the tiers above):
 - morning-briefing: a next-session catch-up briefing may cover up to 3 missed days; beyond that, surface as "you were offline N days — want a full catch-up?".

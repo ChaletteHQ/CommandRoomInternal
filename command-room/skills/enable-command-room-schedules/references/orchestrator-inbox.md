@@ -60,25 +60,28 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
   **No agent improvisation:** the orchestrator does NOT scan Zapier tools itself. The helper is the source of truth. Same enforcement model as `CANONICAL_ACTIONS` for action labels.
 - Read M's primary email from entities.json.
 
-# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'inbox')))
+print(json.dumps(check_lateness('<workspace_root>', 'inbox', fired_via='<scheduled|manual>')))
 "
 ```
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Fetch unread mail
 
@@ -165,6 +168,8 @@ Skip entirely if:
 - Zero inbound threads fetched this fire (nothing to cross-reference).
 - Open-commitment count is zero (helper returns `[]`).
 
+**These skips are exhaustive — the run mode never adds one (v4.5.2 R2).** Scheduled and manual fires BOTH run this scan in full; "autonomous run, no connector fetch" is improvisation (FINDINGS F-47 P1a's class).
+
 Otherwise, for EACH inbound thread, resolve the sender's email to a `person_id` (via entities.json + aliases.json — already loaded in Phase 2; skip the thread if the sender can't be resolved to a known person, since Path 4 pre-filters by owner == sender) and execute via bash:
 
 ```bash
@@ -244,7 +249,7 @@ print(f'CRU inbox: resolved={n_resolved} updated={sum(1 for e in to_append if e[
 
 **Why pre-filter by sender, not recipient:** on outbound (Path 1) the USER is the owner and we resolve what the user owed. On inbound (Path 4) the SENDER is the owner — their email is evidence THEY delivered on what they owed the user. New-ask language ("can you also send X") is intentionally NOT acted on here: that's the counter-party asking the user for something new (inbox-triage's job to spawn a user-owed commitment), not a resolution of the sender's own commitment.
 
-**Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, sender unresolvable, JSON malformed), swallow silently and continue — this is best-effort enrichment and must NEVER block the inbox render. **Append a `pack_run.data.errors[]` entry** (per Phase 7): `{"phase": "5.5_inbound_cru", "reason": "<short>", "detail": "<truncated stderr>", "thread_id": "<id>", "ts": "<ISO>"}`.
+**Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, sender unresolvable, JSON malformed), swallow silently and continue — this is best-effort enrichment and must NEVER block the inbox render. **Append a `pack_run.data.errors[]` entry** (per Phase 7): `{"phase": "5.5_inbound_cru", "reason": "<short>", "detail": "<truncated stderr>", "thread_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
 **Threshold tuning:** same `HIGH_CONFIDENCE_THRESHOLD = 0.55` / `PENDING_REVIEW_THRESHOLD = 0.30` as the other paths. Conservative for launch; tighten/loosen once Pulse pending-review confirmation telemetry exists.
 
@@ -281,12 +286,11 @@ Per `EMAIL_DRAFT_PROTOCOL.md`: do NOT create email drafts at fire time. Generate
 
 Append to events.jsonl:
 - `connector_read` for the mail fetch
-- One `pack_run` event with kind: inbox, date, status, items_drafted_text, items_persisted_to_gmail: 0 (lazy), errors, duration_ms, **telemetry** (v2.14.0+)
-
-**Telemetry capture (v2.14.0+ Phase 1 — measure where spend goes):** the `pack_run.data.telemetry` sub-dict carries usage metrics for the `usage report` skill to aggregate. Build via `shared/scripts/telemetry.py` `build_pack_run_telemetry`:
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, contract in `shared/RECEIPT_CONTRACT.md` — v4.5.2 R1). NEVER hand-roll the receipt JSON**: hand-rolled shapes are exactly how the id/field drift that broke health-check and usage-report happened (FINDINGS F-10b/F-49).
 
 ```python
 from telemetry import build_pack_run_telemetry
+from receipts import log_receipt
 
 # Track connector calls during the fire (append to a list as each call fires)
 connector_calls = [
@@ -303,19 +307,18 @@ tel = build_pack_run_telemetry(
     duration_ms=elapsed_ms,
 )
 
-pack_run_event = {
-    "type": "pack_run",
-    "ts": now_iso,
-    "data": {
-        "kind": "inbox",
-        "status": "complete",
-        "items_drafted_text": n_drafts,
-        "items_persisted_to_gmail": 0,
-        "errors": [],
-        **tel,    # merges {"telemetry": {...}}
-    }
-}
+log_receipt(
+    WORKSPACE_ROOT, "inbox",
+    fired_via=lateness["receipt_fired_via"],  # from Phase 2.9 — manual | scheduled | catchup; never guess it
+    surfaced=n_drafts,
+    duration_ms=elapsed_ms,
+    late_tier=lateness["tier"] if lateness["tier"] in ("note", "degrade") else None,
+    extra_data={"items_drafted_text": n_drafts, "items_persisted_to_gmail": 0,
+                "errors": [], **tel},
+)
 ```
+
+The helper stamps the canonical field set (task_id + kind, status, fired_via, machine) and validates the vocabulary; seq/ts are auto-stamped inside the locked writer.
 
 Telemetry writes silently per CONTRACT.md Rule 9 — NEVER surfaced to chat. The `usage report` skill is the on-demand path that aggregates and displays.
 

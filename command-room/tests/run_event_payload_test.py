@@ -27,6 +27,7 @@ VALID = [
     {"type": "commitment", "data": {"title": "Send the deck", "due_date": "2026-06-01T00:00:00Z", "state": "open"}},  # alias shape (Sam 2026-05-17 class)
     {"type": "commitment_resolved", "data": {"commitment_id": "c1"}},
     {"type": "commitment_resolved", "data": {"target_id": "c7"}},  # closer alias
+    {"type": "commitment_superseded", "data": {"commitment_id": "c1", "superseded_by": "c2", "resolution": "duplicate", "merged_source_refs": ["gmail:g1"]}},  # C4 merge closer
     {"type": "decision", "data": {"decision": "Picked vendor A"}},
     {"type": "decision", "data": {"summary": "Picked vendor A"}},  # alias
     {"type": "meeting", "data": {"title": "Acme sync"}},
@@ -36,6 +37,9 @@ VALID = [
     {"type": "email_sent", "data": {"recipient": "a@example.com", "gmail_thread_id": "t1", "draft_event_seq": 5}},
     {"type": "pack_run", "data": {"task_id": "morning-brief"}},
     {"type": "pattern_break_detected", "data": {"person_id": "person_4", "eligible_event_count": 12}},
+    {"type": "reminder", "data": {"id": "rem_1", "summary": "renew filing", "remind_from": "2026-07-10", "personal": True, "origin": "user_explicit"}},
+    {"type": "reminder_updated", "data": {"reminder_id": "rem_1", "action": "push", "remind_from": "2026-07-20", "origin": "user_explicit"}},
+    {"type": "reminder_cleared", "data": {"reminder_id": "rem_1", "origin": "user_explicit"}},
     {"type": "some_unconstrained_type", "data": {"anything": True}},  # no schema -> pass
 ]
 
@@ -64,15 +68,22 @@ def test_type_mismatch_flagged():
     check("wrong-typed property flagged", any("draft_event_seq" in x for x in v))
 
 
-def test_coverage_is_12_types():
+def test_coverage_is_20_types():
     types = set(epc.covered_types())
     # 10 original load-bearing types + the Phase 2 Stage D commitment-family
-    # additions (commitment_reclassified / commitment_reopened, registered per
-    # EVENT_TYPES.md with named consumers).
+    # additions (commitment_reclassified / commitment_reopened) + the v4.5.2
+    # S1 per-brief prep receipt (prep_brief) + the v4.6.0 W4a reminder lane
+    # (reminder / reminder_updated / reminder_cleared) + the v4.6.0 C4 merge
+    # closer (commitment_superseded) + the v4.6.0 S4 lifecycle verbs
+    # (commitment_updated wording/due shapes, commitment_reassigned,
+    # chat_dismissal_cleared) - each registered per EVENT_TYPES.md with
+    # named consumers.
     expected = {"commitment", "commitment_resolved", "decision", "meeting", "meeting_processed",
                 "interaction", "email_drafted", "email_sent", "pack_run", "pattern_break_detected",
-                "commitment_reclassified", "commitment_reopened"}
-    check("exactly the 12 load-bearing types are covered", types == expected)
+                "commitment_reclassified", "commitment_reopened", "prep_brief",
+                "reminder", "reminder_updated", "reminder_cleared", "commitment_superseded",
+                "commitment_updated", "commitment_reassigned", "chat_dismissal_cleared"}
+    check("exactly the 20 load-bearing types are covered", types == expected)
 
 
 def test_warn_only_hook_never_blocks():
@@ -94,7 +105,7 @@ def main():
     test_valid_payloads_pass()
     test_missing_required_fails_with_named_key()
     test_type_mismatch_flagged()
-    test_coverage_is_12_types()
+    test_coverage_is_20_types()
     test_warn_only_hook_never_blocks()
     print()
     if _failures:

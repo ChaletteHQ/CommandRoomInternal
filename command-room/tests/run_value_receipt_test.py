@@ -11,7 +11,9 @@ Asserts the value-receipt compute core + the audit-event enforcement:
     has a rubric key;
   - compute_value_receipt appends exactly ONE value_receipt_generated event with
     numbers byte-equal to the receipt; validate_receipt_ran ok=False before /
-    ok=True after; a second run appends a second event and mutates nothing;
+    ok=True after; a verbatim re-run inside the idempotency guard (v4.5.2 R4 /
+    F-36) SKIPS the second write and notes the skip; changed numbers or a
+    different rollup still write; prior events are never mutated;
   - quarterly per-month rows sum to the totals;
   - half-open window edges (start included, end excluded); empty window -> all
     zeros, honest summary, event still written;
@@ -233,21 +235,64 @@ def test_audit_event_and_validator():
     shutil.rmtree(root, ignore_errors=True)
 
 
-def test_second_run_immutable():
-    print("\n[8] a second run appends a second event and does NOT mutate prior events")
+def test_second_run_idempotency_guard():
+    print("\n[8] v4.5.2 R4 / F-36 idempotency guard: verbatim re-run inside the "
+          "guard interval skips the write; changed numbers still write")
     root = _build_ws(_may_fixture())
-    compute_value_receipt(root, MAY_START, MAY_END)
+    r1 = compute_value_receipt(root, MAY_START, MAY_END)
+    check("first run writes (guard note says not skipped)",
+          r1["duplicate_guard"] == {"skipped": False}, r1.get("duplicate_guard"))
     rows_before = _read_events(root)
     first_vrg = [r for r in rows_before if r.get("type") == "value_receipt_generated"][0]
-    compute_value_receipt(root, MAY_START, MAY_END)
+
+    # The F-36 repro: the same window+rollup re-emitted seconds later with
+    # byte-identical numbers (reproduced Jul 1 / Jul 7 / Jul 8). The guard
+    # must skip the second append and note the skip on the receipt.
+    r2 = compute_value_receipt(root, MAY_START, MAY_END)
     rows_after = _read_events(root)
     vrg = [r for r in rows_after if r.get("type") == "value_receipt_generated"]
-    check("two value_receipt_generated events after two runs", len(vrg) == 2, len(vrg))
+    check("verbatim duplicate within guard -> still ONE event", len(vrg) == 1, len(vrg))
+    check("skip noted on the returned receipt",
+          r2["duplicate_guard"].get("skipped") is True, r2.get("duplicate_guard"))
+    check("skip note carries the prior receipt's ts",
+          r2["duplicate_guard"].get("prior_receipt_ts") == first_vrg.get("ts"),
+          r2.get("duplicate_guard"))
+    check("skipped run still returns the full receipt (numbers identical)",
+          r2["metrics"] == r1["metrics"] and r2["hours_estimate"] == r1["hours_estimate"], r2)
+    v = validate_receipt_ran(root, window=r1["window"])
+    check("validator still ok for the window after a skipped duplicate", v["ok"] is True, v)
     # The original event line is untouched (same seq + same data).
     still_there = [r for r in rows_after if r.get("type") == "value_receipt_generated"
                    and r.get("seq") == first_vrg.get("seq")]
     check("the first event is unchanged (append-only, point-in-time)",
           still_there and still_there[0]["data"] == first_vrg["data"], still_there)
+
+    # A different rollup is NOT a duplicate (the real Jul 1/7 fires wrote
+    # month + quarter pairs — the pair is legitimate; only the re-emit isn't).
+    rq = compute_value_receipt(root, MAY_START, MAY_END, rollup="quarter")
+    check("different rollup writes its own event",
+          rq["duplicate_guard"] == {"skipped": False}, rq.get("duplicate_guard"))
+    rq2 = compute_value_receipt(root, MAY_START, MAY_END, rollup="quarter")
+    check("quarter re-emit skipped too (the F-36 pair pattern)",
+          rq2["duplicate_guard"].get("skipped") is True, rq2.get("duplicate_guard"))
+    vrg = [r for r in _read_events(root) if r.get("type") == "value_receipt_generated"]
+    check("two events total (month + quarter), not four", len(vrg) == 2, len(vrg))
+
+    # New substrate activity inside the window changes the numbers -> a re-run
+    # is a genuinely new snapshot and MUST write.
+    from atomic_write import atomic_append_jsonl
+    atomic_append_jsonl(
+        os.path.join(root, "_hq", "data", "events.jsonl"),
+        [_ev(999, "meeting_processed", ts="2026-05-20T09:00:00")],
+    )
+    r3 = compute_value_receipt(root, MAY_START, MAY_END)
+    check("changed numbers within guard interval still write",
+          r3["duplicate_guard"] == {"skipped": False}, r3.get("duplicate_guard"))
+    check("changed-numbers receipt reflects the new event",
+          r3["metrics"]["meetings_processed"] == r1["metrics"]["meetings_processed"] + 1,
+          r3["metrics"])
+    vrg = [r for r in _read_events(root) if r.get("type") == "value_receipt_generated"]
+    check("three events after the genuine new snapshot", len(vrg) == 3, len(vrg))
     shutil.rmtree(root, ignore_errors=True)
 
 
@@ -328,7 +373,7 @@ def main():
     test_empty_window()
     test_malformed_lines()
     test_audit_event_and_validator()
-    test_second_run_immutable()
+    test_second_run_idempotency_guard()
     test_quarterly_rollup()
     test_brief_docx_passes_leak_scan()
     print(f"\n=== Summary: {passed} passed, {failed} failed ===\n")

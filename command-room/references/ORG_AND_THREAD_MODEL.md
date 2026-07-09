@@ -90,13 +90,20 @@ Still stored as `project_NNN` ids for schema stability; user-facing language is 
   "stakeholder_person_ids": ["person_042", "person_055"],
   "owner_person_id": "person_033",
   "stage": "active",                   // active | dormant | paused | blocked | archived | exploring (v2.10.3+ adds dormant)
-  "last_activity": "2026-04-18",
+  "last_activity": "2026-04-18",      // DEPRECATED — unmaintained fossil; derive from events (see below)
   "success_criteria": [],
   "status": "active"
 }
 ```
 
 **`kind` enum** (thread kinds): `initiative` · `deal` · `advisory` · `investment` · `board` · `relationship` · `theme` · `concern` · `ritual` · `personal` · `other`.
+
+**`last_activity` is DEPRECATED (v4.5.2, FINDINGS F-54/F-61).** The 2026-07-08 cleanup autopsy proved NO code path maintains this field — a full successful cleanup run (projection refresh included) left it byte-identical. It froze at whatever the last ingest wrote. The rule:
+
+- **Never rank, sort, or compute staleness from it.** Recency derives from EVENTS at read time via `shared/scripts/thread_activity.py::derive_thread_activity()` (top-level `primary_thread_id` + `related_thread_ids` + legacy spellings, `classification_confidence >= 0.40`). Consumers: `stall_detector` / stalled-projects, pulse Phase 4, and every view that already follows the `computed_last_activity` rule in VIEW_GENERATION.md.
+- **Zero-event fallback only:** a thread with NO events (fresh ingest carries a record stamp before any event exists) may be read at the field as a floor — it may never override or blend with derived activity.
+- **Writers keep it write-tolerated, not write-required:** `thread_writer` still accepts it (ingest parsers set it once), but no skill is obligated to update it and no reader may assume it's current. If a future release wants the field live, it must be maintained write-side by cleanup WITH a receipt — half-maintained is the forbidden state.
+- Known remaining readers (display/tiebreak only, tracked for the 4.6 sweep): `entity_resolve` candidate-recency tiebreak, `build_workspace_map_input` / `build_dcc_input` last-touched display.
 
 **Thread-to-org link**: `affiliation_id` points to the most specific org that owns the thread. For Sam's restaurant sourcing thread, that's `org_acme_restaurant`, not `org_acme_co` (the holding). Renderers roll up via the org tree.
 
@@ -276,7 +283,7 @@ The classifier reads this file on each run and weights future classifications. O
 | File | Primary writer |
 |---|---|
 | `entities.json` — orgs | `command-room-onboarding`, `workspace-ingest` (folder-mode discovery, v2.14.20+); `workspace-manager` (updates) |
-| `entities.json` — threads | `workspace-manager` (lifecycle); `meeting-notes` (last_activity updates) |
+| `entities.json` — threads | `workspace-manager` (lifecycle). (Pre-v4.5.2 this row claimed `meeting-notes` maintained `last_activity` — the F-61 autopsy proved no writer does; the field is deprecated, see the thread-record section.) |
 | `entities.json` — people | `people-crm`, `team-intelligence` |
 | `events.jsonl` | All passive-capture-emitting skills |
 | `classifier_feedback.jsonl` | `insight-generator` (weekly review writes), `workspace-manager` (explicit reclassification writes) |

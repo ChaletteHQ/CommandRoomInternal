@@ -52,10 +52,10 @@ Load:
 - The `workspace.brain_name` field from entities.json — for chat copy ("Penelope read your last 7 days…"; default "Penelope" if unset)
 - The customer's last-event timestamp in events.jsonl — defines the END of the 7-day window (now), so the window is `[now - 7d, now]` in workspace timezone
 
-Append a `m1_backfill_started` event to events.jsonl:
+Append a `m1_backfill_started` event to events.jsonl (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 
 ```jsonl
-{"type":"m1_backfill_started","ts":"<ISO>","data":{"window_start":"<ISO>","window_end":"<ISO>"},"source_skill":"m1-backfill"}
+{"type":"m1_backfill_started","data":{"window_start":"<ISO>","window_end":"<ISO>"},"source_skill":"m1-backfill"}
 ```
 
 ---
@@ -228,10 +228,10 @@ That's the raw recap. <BrainName> is now using all of this in your home chat —
 
 After successful chat post, call `mcp__scheduled-tasks__update_scheduled_task(taskId="cr-m1-backfill", enabled=false)`. This is a one-shot — re-firing wastes tokens and re-extracts the same week.
 
-Append final event:
+Append final event (same seq/ts omission rule):
 
 ```jsonl
-{"type":"m1_backfill_complete","ts":"<ISO>","data":{"events_written":<N>,"input_tokens_used":<N>,"sampled":<bool>},"source_skill":"m1-backfill"}
+{"type":"m1_backfill_complete","data":{"events_written":<N>,"input_tokens_used":<N>,"sampled":<bool>},"source_skill":"m1-backfill"}
 ```
 
 ---

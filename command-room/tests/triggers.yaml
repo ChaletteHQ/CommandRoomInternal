@@ -842,3 +842,41 @@
 # commitments list owner
 - phrase: "show me my commitments"
   expected: commitment-triage
+
+# =========================================================
+# REMINDER LANE (v4.6.0 W4a) — show-my-reminders + the
+# show-my-list fence ("my reminders" vs "my list" must
+# never cross-fire; date-pinned nags vs discuss-later queue)
+# =========================================================
+- phrase: "show my reminders"
+  expected: show-my-reminders
+- phrase: "what are my reminders"
+  expected: show-my-reminders
+- phrase: "remind me about the Pedro invoice on Friday"
+  expected: show-my-reminders
+- phrase: "remind me to call the bank next Tuesday"
+  expected: show-my-reminders
+- phrase: "done with the reminder"
+  expected: show-my-reminders
+- phrase: "push the reminder to Friday"
+  expected: show-my-reminders
+- phrase: "show my list"
+  expected: show-my-list
+  notes: "fence: the discuss-later queue, not reminders"
+- phrase: "whats on my list"
+  expected: show-my-list
+
+# =========================================================
+# MUTE LEDGER (v4.6.0 S4) — show-my-list's second surface:
+# every live snooze/mute with remaining TTL + Unmute
+# =========================================================
+- phrase: "show muted"
+  expected: show-my-list
+  notes: "S4 mute ledger — routes via show-my-list's Routing corpus (description is G11-capped)"
+- phrase: "show snoozed"
+  expected: show-my-list
+- phrase: "what did I snooze"
+  expected: show-my-list
+- phrase: "remind me to revisit the pricing decision"
+  expected: decision-revisit
+  notes: "fence: revisit phrasing stays with decision-revisit, not the reminder lane"

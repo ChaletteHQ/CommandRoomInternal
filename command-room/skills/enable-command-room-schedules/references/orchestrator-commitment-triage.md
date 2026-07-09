@@ -40,35 +40,38 @@ The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and this orchestrato
 - Read `<WORKSPACE>/_hq/data/entities.json` — primary user + people (for owner display names).
 - No connector reads — this surface is pure substrate.
 
-# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'commitment-triage')))
+print(json.dumps(check_lateness('<workspace_root>', 'commitment-triage', fired_via='<scheduled|manual>')))
 "
 ```
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the triage set is computed from the live substrate, so unlike digest surfaces it does NOT go stale; still, per the shared contract, post the returned `banner`-equivalent context by running normally on `note`, and on `degrade` post ONLY the returned `degrade_notice` line and STOP after the Phase-final `pack_run` (the next Friday fire carries the triage; nothing is lost — the open set persists in events.jsonl).
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers — do not append a second one, and never narrate the event or the tier name to the user.
+The helper already appended the `late_fire` telemetry on note/degrade tiers — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Execute the commitment-triage skill verbatim
 
 Run `skills/commitment-triage/SKILL.md` Steps 1–4 against this workspace:
 
 1. Load the PROJECTED open set via `cru_match.load_open_commitments` (deferrals + reclassification markers already applied); header counts via `commitment_state.count_commitments` (the one counting API); stale tasks via `commitment_state.stale_tasks`.
-2. Sort by age, oldest first; paginate at the transmission ceiling with `show more`; annotate stale tasks with "still on your plate?"; `pending_review` rows per the skill's Step 2.
+2. Sort by age, oldest first into the FULL-LIST layout (header stat tiles from `counts["headline"]` via `counters`, `30+ DAYS OLD` section, `reduced_verbs_reason` on pending_review rows) — the one triage design per the skill's Step 2 (F-18). Chunk with `show more` ONLY when the transmission ceiling forces it; annotate stale tasks with "still on your plate?".
 3. Render ONE `all_batch_widget` with the triage verb set (every row embeds `data.id` VERBATIM; `source_skill: "commitment-triage"` for `src` dispatch).
 4. Dispatch happens later via apply-choices § `commitment-triage` — including the `undo` contract.
 
 # Phase 4 — Audit + STOP
 
-Append one `pack_run` event to `_hq/data/events.jsonl` via `atomic_append_jsonl` with `data.task_id: "commitment-triage"`, the open-set total, and the stale-task count. Then STOP — the widget is the whole turn.
+Append the fire receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1 — **NEVER hand-roll the receipt JSON**, and never skip it: the dogfood caught this task writing a receipt one day and zero events the next, FINDINGS F-56): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "commitment-triage", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=open_set_total, extra_data={"stale_tasks": stale_count})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed. Then STOP — the widget is the whole turn.

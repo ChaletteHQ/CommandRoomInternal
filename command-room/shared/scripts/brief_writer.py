@@ -556,6 +556,92 @@ def _add_matrix(
     spacer.paragraph_format.space_after = Pt(6)
 
 
+def _add_stat_tiles(doc, tiles: List[Dict[str, str]]) -> None:
+    """v4.5.2 S1 — the stat-tile band (visual layer, M directive).
+
+    Renders 1-5 tiles as a single borderless row: big value over a small-caps
+    accent label. REFUSES an empty tile — the drop rule ("a tile with no data
+    is dropped, never rendered as an empty frame") is enforced by the builder
+    (prep_pipeline.build_prep_tiles) AND here at the render chokepoint, so an
+    empty frame is structurally impossible whichever path called us.
+    """
+    if not isinstance(tiles, list) or not tiles:
+        raise ValueError("tiles must be a non-empty list of {label, value}")
+    if len(tiles) > 5:
+        raise ValueError(f"at most 5 tiles per band (got {len(tiles)})")
+    for t in tiles:
+        if not isinstance(t, dict) or not str(t.get("label") or "").strip() \
+                or not str(t.get("value") or "").strip():
+            raise ValueError(
+                f"tile with no data must be DROPPED by the caller, never "
+                f"rendered as an empty frame: {t!r}"
+            )
+
+    table = doc.add_table(rows=1, cols=len(tiles))
+    per_col = 6.0 / len(tiles)
+    for i in range(len(tiles)):
+        table.rows[0].cells[i].width = Inches(per_col)
+    for i, t in enumerate(tiles):
+        cell = table.rows[0].cells[i]
+        _shade_cell(cell, "F5F2EE")
+        for p in cell.paragraphs:
+            p.text = ""
+        value_p = cell.paragraphs[0]
+        value_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = value_p.add_run(str(t["value"]).strip())
+        _set_run(run, font=HEADING_FONT, size=16, color=HEADING, bold=True)
+        value_p.paragraph_format.space_before = Pt(4)
+        value_p.paragraph_format.space_after = Pt(0)
+        label_p = cell.add_paragraph()
+        label_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = label_p.add_run(str(t["label"]).strip().upper())
+        _set_run(run, font=HEADING_FONT, size=8, color=ACCENT, bold=True)
+        label_p.paragraph_format.space_before = Pt(0)
+        label_p.paragraph_format.space_after = Pt(4)
+
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_before = Pt(0)
+    spacer.paragraph_format.space_after = Pt(6)
+
+
+def _add_timeline(doc, points: List[Dict[str, str]]) -> None:
+    """v4.5.2 S1 — the relationship timeline strip (visual layer).
+
+    Compact one-line-per-point strip: accent date + label, the current
+    meeting bold with an em-dash marker. Requires >= 2 points — a one-point
+    strip is an empty frame; the builder (prep_pipeline) already drops it,
+    and this render-chokepoint check makes the rule bypass-proof.
+    """
+    if not isinstance(points, list) or len(points) < 2:
+        raise ValueError(
+            "timeline needs >= 2 points; the caller drops the section when "
+            "the substrate has fewer (never render an empty strip)"
+        )
+    for pt in points:
+        if not isinstance(pt, dict) or not str(pt.get("date") or "").strip() \
+                or not str(pt.get("label") or "").strip():
+            raise ValueError(f"timeline point needs 'date' and 'label': {pt!r}")
+
+    for pt in points:
+        is_current = bool(pt.get("current"))
+        p = doc.add_paragraph()
+        date_run = p.add_run(str(pt["date"]).strip() + "   ")
+        _set_run(date_run, font=HEADING_FONT, size=9, color=ACCENT, bold=True)
+        label_text = str(pt["label"]).strip()
+        if is_current:
+            label_text += "  — this meeting"
+        label_run = p.add_run(label_text)
+        _set_run(label_run, font=BODY_FONT, size=9,
+                 color=INK if is_current else MUTED, bold=is_current)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(1)
+        p.paragraph_format.line_spacing = 1.1
+
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_before = Pt(0)
+    spacer.paragraph_format.space_after = Pt(6)
+
+
 def _add_bullets(doc, bullets: List[str]) -> None:
     for line in bullets:
         line = line.strip()
@@ -694,8 +780,15 @@ def make_brief(
             highlight_row_idx?: int, column_widths?: list[float]}
           - "matrix": dict (optional) — {cells: 2D list or {(r,c): v} dict,
             headers_row?: list, headers_col?: list, star_col_idx?: int}
-        A section may mix body / bullets / table / matrix. Render order is:
-        body → bullets → table → matrix.
+          - "tiles": list[{label, value}] (optional, v4.5.2 S1) — stat-tile
+            band (1-5 tiles). Empty tiles are REFUSED — the caller drops a
+            tile with no data (prep_pipeline.build_prep_tiles), never renders
+            an empty frame.
+          - "timeline": list[{date, label, current?}] (optional, v4.5.2 S1) —
+            relationship timeline strip; >= 2 points required (the caller
+            drops the section below that).
+        A section may mix body / bullets / table / matrix / tiles / timeline.
+        Render order is: tiles → body → bullets → table → matrix → timeline.
       footer_text: centered footer text on every page. Defaults to
         "Command Room". NEVER include provenance metadata
         (Source / Fired / meeting_id / TTL) per CONTRACT.md Rule 15.
@@ -953,6 +1046,12 @@ def make_brief(
         bullets = sec.get("bullets")
         table = sec.get("table")
         matrix = sec.get("matrix")
+        tiles = sec.get("tiles")
+        timeline = sec.get("timeline")
+        if tiles:
+            if not isinstance(tiles, list):
+                raise ValueError(f"section 'tiles' must be a list: {sec!r}")
+            _add_stat_tiles(doc, tiles)
         if body:
             if not isinstance(body, str):
                 raise ValueError(f"section 'body' must be a string: {sec!r}")
@@ -981,9 +1080,15 @@ def make_brief(
                 headers_col=matrix.get("headers_col"),
                 star_col_idx=matrix.get("star_col_idx"),
             )
-        if not body and not bullets and not table and not matrix:
+        if timeline:
+            if not isinstance(timeline, list):
+                raise ValueError(f"section 'timeline' must be a list: {sec!r}")
+            _add_timeline(doc, timeline)
+        if not body and not bullets and not table and not matrix \
+                and not tiles and not timeline:
             raise ValueError(
-                f"section needs 'body', 'bullets', 'table', or 'matrix': {sec!r}"
+                f"section needs 'body', 'bullets', 'table', 'matrix', "
+                f"'tiles', or 'timeline': {sec!r}"
             )
 
     # SPEC EXEC1 element 4 — the ASK block renders last, after all sections.

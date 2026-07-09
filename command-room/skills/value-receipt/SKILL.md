@@ -101,6 +101,13 @@ The returned `receipt` carries: `metrics` (the counts), `hours_estimate`
 chat line). Calling this ALSO appended the `value_receipt_generated` audit event
 — you do not write any event yourself.
 
+**Duplicate guard (v4.5.2 R4 / F-36):** if `receipt["duplicate_guard"]["skipped"]`
+is `true`, an identical receipt for this window+rollup was already recorded
+moments ago and no second audit event was written (the helper suppressed the
+double-emit bug). Render the returned receipt normally — the numbers are the
+receipt of record either way. Never call `compute_value_receipt` a second time
+in the same fire to "double-check"; the first call's return value IS the receipt.
+
 ### Step 3 — Render the chat surface
 
 Render the counts and the hours figure from `receipt["sections"]` and paste

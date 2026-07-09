@@ -58,6 +58,11 @@ from event_gate import append_event  # noqa: E402
 from event_types import KIND_VALUES  # noqa: E402
 import source_ref_index  # noqa: E402
 
+try:
+    from confidence import CONFIDENCE_SURFACE_MIN  # noqa: E402
+except Exception:  # pragma: no cover
+    CONFIDENCE_SURFACE_MIN = 0.7
+
 # The event families the sweep may recover. Deliberately a small, closed set of
 # ALREADY-REGISTERED types — the sweep recovers real history, it does not mint a
 # new vocabulary. `deliverable` is an INPUT alias the skill may use; it is stored
@@ -116,6 +121,95 @@ class SweepItemError(ValueError):
     visible, not silently dropped."""
 
 
+def _parse_iso_date(value) -> bool:
+    """True iff `value` is a string whose first 10 chars parse as an ISO date."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    import datetime as _d
+
+    try:
+        _d.date.fromisoformat(value.strip()[:10])
+        return True
+    except ValueError:
+        return False
+
+
+def _gate_commitment(data: dict, raw: dict, session_id) -> None:
+    """Stage-D / S2 / Stage-E capture parity for a recovered commitment
+    (v4.5.2 C1, F-31): the sweep runs the SAME capture block as
+    scan-for-commitments Step 3. meeting-notes and past-meetings both comply;
+    the Jul 7 sweep wrote 7 items with 0/7 due, empty counterparties, and 5
+    promises misclassified as task — all invisible on the exact day they
+    mattered (F-44). Mutates `data` in place (pending_review stamping);
+    raises SweepItemError on anything the extraction must go back and do.
+    """
+    kind = data.get("kind")
+    if kind not in KIND_VALUES:
+        raise SweepItemError(
+            f"recovered commitment (session {session_id}) needs data.kind, "
+            f"one of {sorted(KIND_VALUES)} — classify it at extraction "
+            f"(counterparty promise -> promise; self-owed -> task; "
+            f"scheduling intent -> scheduling; discuss item -> agenda). "
+            f"'send X to [person]' has a counterparty — it is a promise, "
+            f"not a task."
+        )
+
+    # S2 due-date nudge: every capture proposes a `due` from the source
+    # language (resolve relative phrases — "before tomorrow's call",
+    # "Thursday" — against the session's date) OR sets data.no_due: true.
+    # Silence is not an option; an undated capture sinks in every ranking
+    # at exactly the moment it matters (F-31 -> F-44).
+    due = data.get("due")
+    no_due = data.get("no_due")
+    if no_due is True:
+        if due:
+            raise SweepItemError(
+                f"recovered commitment (session {session_id}) sets BOTH "
+                f"data.due={due!r} and data.no_due: true — pick one"
+            )
+    elif not _parse_iso_date(due):
+        raise SweepItemError(
+            f"recovered commitment (session {session_id}) needs a due date: "
+            f"propose data.due as YYYY-MM-DD from the source language "
+            f"(resolve relative phrases like 'tomorrow'/'Thursday' against "
+            f"the session's date) or set data.no_due: true explicitly "
+            f"(S2 due-nudge; got due={due!r})"
+        )
+
+    # Stage-E counterparty receipts + the promise-vs-task rule. A task is
+    # self-owed with NO counterparty by definition — a counterparty makes it
+    # a promise (F-31: "send briefs to collaborator" is a promise).
+    cp_id = data.get("counterparty_id")
+    cp_name = data.get("counterparty_name")
+    if kind == "task" and (cp_id or cp_name):
+        raise SweepItemError(
+            f"recovered commitment (session {session_id}) is kind 'task' but "
+            f"carries a counterparty ({cp_id or cp_name!r}) — a deliverable "
+            f"owed to/by a named person is a promise, not a task; reclassify"
+        )
+
+    # Safety inversion (v4.5.2): pending_review defaults ON whenever
+    # attribution is not confidently resolved — absence of the flag is not
+    # consent (CRU auto-resolution gates on it; a low-confidence capture
+    # that forgets the flag would auto-resolve with no human gate). The
+    # sweep already refuses to guess person_ids; this stamps the flag those
+    # refusals imply. Never unsets an extractor-set True.
+    reasons = []
+    if cp_name and not cp_id:
+        reasons.append(f"counterparty '{cp_name}' has no person record")
+    if kind == "promise":
+        if not cp_id and not cp_name:
+            reasons.append("no counterparty identified for a promise")
+        if not data.get("owner_id"):
+            reasons.append("no resolved owner")
+    conf = raw.get("classification_confidence")
+    if isinstance(conf, (int, float)) and conf < CONFIDENCE_SURFACE_MIN:
+        reasons.append(f"extraction confidence {conf} below threshold")
+    if reasons:
+        data["pending_review"] = True
+        data.setdefault("review_reason", "; ".join(reasons))
+
+
 def _normalize_item(raw: dict, source_skill: str) -> tuple[dict, str]:
     """Turn one raw extracted item into a gated-ready event dict + its dedup
     hash. Raises SweepItemError on anything the sweep cannot safely write."""
@@ -151,25 +245,35 @@ def _normalize_item(raw: dict, source_skill: str) -> tuple[dict, str]:
     if recovered_kind:
         data.setdefault("recovered_kind", recovered_kind)
 
-    # Commitments must classify kind at capture (the gate rejects a kindless
-    # commitment) and carry a title (the payload contract). Set title from the
-    # summary when the extraction didn't; fail loud on a missing kind.
+    # Commitments must run the full capture block at extraction — kind
+    # classification, S2 due-nudge, Stage-E counterparty receipts, and the
+    # pending_review safety inversion (v4.5.2 C1 / F-31 parity with
+    # scan-for-commitments Step 3). Title defaults from the summary.
     if etype == "commitment":
         data.setdefault("title", summary)
-        kind = data.get("kind")
-        if kind not in KIND_VALUES:
-            raise SweepItemError(
-                f"recovered commitment (session {session_id}) needs data.kind, "
-                f"one of {sorted(KIND_VALUES)} — classify it at extraction "
-                f"(counterparty promise -> promise; self-owed -> task; "
-                f"scheduling intent -> scheduling; discuss item -> agenda)"
-            )
+        _gate_commitment(data, raw, session_id)
 
     event = {"type": etype, "source_skill": source_skill, "data": data}
     for field in _TOPLEVEL_REF_FIELDS:
         if raw.get(field) is not None:
             event[field] = raw[field]
+
+    # Stage-E: a resolved counterparty_id is also a person reference — the
+    # schema requires it in person_ids so the dual-layer reader links it.
+    cp_id = data.get("counterparty_id") if etype == "commitment" else None
+    if cp_id:
+        pids = list(event.get("person_ids") or [])
+        if cp_id not in pids:
+            pids.append(cp_id)
+        event["person_ids"] = pids
     return event, dedup_hash
+
+
+# Canonical task identity per receipt type (v4.5.2 R1 receipt contract).
+_RECEIPT_TASK_IDS = {
+    "session_sweep_run": "session-sweep",
+    "session_backfill_run": "session-sweep",
+}
 
 
 def _sweep(
@@ -181,6 +285,7 @@ def _sweep(
     sessions_scanned: int,
     window_desc: str,
     extra_receipt: Optional[dict] = None,
+    fired_via: str = "scheduled",
 ) -> dict:
     """Dedup + write + receipt. The one write path shared by the nightly sweep
     and the historical backfill. Returns a receipt dict the skill renders."""
@@ -209,12 +314,26 @@ def _sweep(
         append_event(events_path, recovered, holder=source_skill)
 
     receipt_data = {
+        # v4.5.2 R1 receipt-contract fields (shared/RECEIPT_CONTRACT.md):
+        # canonical task identity + fired_via + machine on every receipt.
+        "task_id": _RECEIPT_TASK_IDS.get(receipt_type, source_skill),
+        "kind": _RECEIPT_TASK_IDS.get(receipt_type, source_skill),
+        "status": "complete",
+        "fired_via": fired_via,
         "sessions_scanned": int(sessions_scanned),
         "events_recovered": len(recovered),
         "skipped_dedup": skipped,
         "by_type": dict(by_type),
         "window": window_desc,
     }
+    try:
+        from receipts import _machine_name
+
+        machine = _machine_name()
+        if machine:
+            receipt_data["machine"] = machine
+    except Exception:
+        pass
     if extra_receipt:
         receipt_data.update(extra_receipt)
     append_event(
@@ -239,18 +358,27 @@ def sweep_and_receipt(
     sessions_scanned: int,
     source_skill: str = "session-sweep",
     window_hours: int = 24,
+    window_desc: Optional[str] = None,
+    fired_via: str = "scheduled",
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
     `session_sweep_run` receipt. `items` is the skill's extraction; every write
-    is idempotent, so a re-run over the same window is a clean no-op."""
+    is idempotent, so a re-run over the same window is a clean no-op.
+
+    Pass `window_desc` when the real window is a since-cursor span — the
+    default `last-Nh` label on a cursor-scoped run is the F-08 P2c / F-33
+    receipt-metadata inaccuracy (record the real window, not a default).
+    `fired_via`: "scheduled" on the nightly cron; "manual" on a chat-phrase
+    or Run Now fire (v4.5.2 receipt contract)."""
     return _sweep(
         workspace_root,
         items,
         receipt_type=RECEIPT_SWEEP,
         source_skill=source_skill,
         sessions_scanned=sessions_scanned,
-        window_desc=f"last-{int(window_hours)}h",
+        window_desc=window_desc or f"last-{int(window_hours)}h",
         extra_receipt={"window_hours": int(window_hours)},
+        fired_via=fired_via,
     )
 
 
@@ -397,6 +525,7 @@ def backfill_and_receipt(
         sessions_scanned=sessions_scanned,
         window_desc=f"last-{int(days)}d",
         extra_receipt={"days": int(days), "snapshot": str(snap) if snap else None},
+        fired_via="manual",  # backfill is always CEO-confirmed / supervised
     )
     result["snapshot"] = str(snap) if snap else None
     return result

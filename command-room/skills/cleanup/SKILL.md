@@ -224,7 +224,7 @@ FLAG only — never auto-edit a SKILL.md. If the count is non-zero, add ONE plai
 ### 3e. Append the run record + conflicts
 
 - Append schema/integrity violations to `_hq/CONFLICTS.md` (same as the old audit).
-- Append ONE `cleanup_run` event to `events.jsonl` with `{actions_taken: [...], items_flagged_for_user: [...], tail_hash: "..."}`.
+- Append ONE `cleanup_run` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — **this receipt is REQUIRED on every run, even a nothing-to-do run**: cleanup fired receiptless for ~6 weeks during the v4.5.1 dogfood and its silent failures were indistinguishable from silent successes (FINDINGS F-39/F-43/F-54). One line: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "cleanup", receipt_type="cleanup_run", fired_via="scheduled", extra_data={"actions_taken": [...], "items_flagged_for_user": [...], "tail_hash": "..."})` — `"manual"` for fired_via on `run cleanup` chat fires.
 - **tail_hash backward compatibility:** when computing the append-only mutation check, look up the previous run's `tail_hash` from the most recent `cleanup_run` **OR** legacy `audit_run` event (accept either type). New events are always written as `cleanup_run`. Never rewrite old `audit_run` events.
 
 ## Phase 3.5: Brain self-heal (Live State render + one-time migration)
@@ -398,14 +398,15 @@ import sys, json; sys.path.insert(0, 'shared/scripts')
 import task_watchdog as tw
 ws = '<workspace_root>'
 records = <the list_scheduled_tasks result, as a Python list of task dicts>
-reports = tw.check_tasks(ws, task_records=records)
-binding = tw.check_workspace_binding(ws)
-lines = tw.plain_english_lines(reports, binding=binding)
-print(json.dumps({'lines': lines, 'reports': reports}))
+verdict = tw.health_verdict(ws, task_records=records)
+print(json.dumps({'vantage': verdict['vantage'], 'lines': verdict['lines'],
+                  'info_lines': verdict['info_lines'], 'reports': verdict['reports']}))
 "
 ```
 
-`task_records` gives the watchdog the scheduler's `lastRunAt` per task, which is what detects the R5 class — a task that silently skipped >=2 expected fires (`late`), a task registered but never authorized (`never_authorized`), and the fired-but-wrote-nothing case (`receipt_gap`: fresh `lastRunAt`, stale substrate receipt — the render-without-write class). Fold every returned line into the Monday note's "worth a glance" tier verbatim (they're already plain English). If `list_scheduled_tasks` is unavailable in this fire, run receipts-only (`tw.check_tasks(ws)`) — degraded but never skipped.
+`task_records` gives the watchdog the scheduler's `lastRunAt` per task, which is what detects the R5 class — a task that silently skipped >=2 expected fires (`late`), a task registered but never authorized (`never_authorized`), and the fired-but-wrote-nothing case (`receipt_gap`: fresh `lastRunAt`, stale substrate receipt — the render-without-write class). Fold every returned `lines` entry into the Monday note's "worth a glance" tier verbatim, and any `info_lines` entry (dated late catch-ups, tasks still waiting on a first run — v4.5.2 R3) as one-liners in the same tier (they're already plain English). If `list_scheduled_tasks` is unavailable in this fire, run receipts-only (`tw.health_verdict(ws)`) — degraded but never skipped.
+
+**Vantage guard (F-40):** if `vantage` is non-null, this session cannot see the machine-local scheduler (cloud/remote chat, or a different computer than the one the tasks run on) — the Monday note carries the single `vantage['line']` sentence instead of any per-task registration claims, and layers 2–4 are skipped for this fire. Never report tasks as unregistered from a blind vantage.
 
 **2. Registered-prompt drift (W4).** With the same records in hand, read the installed plugin version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` and run `tw.check_prompt_versions(records, installed_version)`. Any `stale: True` finding → one Monday-note line: *"Your scheduled chats were set up under an older version — say 'update command room' once and they'll refresh themselves."* (One line total, not per task; unstamped legacy prompts are informational and add nothing.)
 
@@ -538,7 +539,7 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 - **Stale insight views** (Phase 3.5e, D5): the single line — *"A few of your insight pages are behind — say `run insights` and I'll bring them current."* Add the >14-day insight-generator nudge when `insight_nudge.stale` is True.
 - **Lock files archived** (Phase 2 Rule 9, D6): fold the count into the "tidied up" line — *"…tidied away [N] leftover lock files."* Plain English; never say "lock.stale" or surface a path. (They're moved to `_archive/`, never deleted — but don't burden the CEO with that detail unless asked.)
 - **Deliverable voice/privacy flags** (Phase 3f, GATE2): when the sweep flagged docs, surface its plain-English `summary` verbatim — *"[N] documents produced recently didn't pass the quality gate — worth a glance before any go out: • [filename] — language that doesn't sound like you ('leverage')…"*. Filenames only, never `_hq/` paths or token jargon. When only `suspected_bypass` is non-zero, use the softer "produced without the quality check" line. Omit entirely on a clean sweep.
-- **Scheduled-task watchdog findings** (Phase 3e-bis, W1/R5/R10): surface each returned line verbatim under the "worth a glance" tier — dead task, never-authorized task, folder rename, prompt drift, render-without-write. These lead the tier when present (a dead schedule starves every other surface). Omit entirely when the watchdog returns nothing (the common case).
+- **Scheduled-task watchdog findings** (Phase 3e-bis, W1/R5/R10 + R3 truth rules): surface each returned line verbatim under the "worth a glance" tier — dead task, never-authorized task, folder rename, prompt drift, render-without-write, plus the R3 info lines (dated late catch-ups, first-run-pending). These lead the tier when present (a dead schedule starves every other surface). If the vantage guard fired (F-40), its single line replaces ALL per-task schedule claims. Omit entirely when the watchdog returns nothing (the common case). A task named in any of these lines is never simultaneously described as running normally elsewhere in the note.
 - **Events-lock contention** (Phase 2 Rule 10, A1): include ONLY when there were waits or timeouts this week — *"A few things tried to save to your activity log at the same moment this week — everything saved fine, nothing was lost."* Omit the line entirely on a quiet week (the common case). Never surface file paths, "lock_stats", wait/timeout counts, or lock vocabulary; the point is reassurance that it was handled, not a metric dump. The counters reset after this report.
 
 ### Beat 2 — What I handled for you (the value, this week)

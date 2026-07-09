@@ -125,8 +125,10 @@ NOT_EVENT_TOKENS = {
 # nonetheless OK — e.g. emitted by an external system (Cowork runtime) or a
 # legacy/defensive accept-list kept for old substrate.
 DANGLING_READ_OK = {
-    "commitment_superseded": "forward-compat closer accepted by load_open_commitments per people-crm Gate 2 contract; no writer emits it yet (v3.14.5)",
-    "person_added": "benign defensive accept — read in a 3-type OR filter by backfill_org_attribution; the other two (person_proposal, person_pending_review) ARE produced, so the backfill works; no add-path emits person_added today",
+    # commitment_superseded: RESOLVED (v4.6.0 C4) — the dead-path closer got
+    # its writer: commitment_state.supersede_commitment (the merge verb). The
+    # code-shaped type literal is detected, so no allowlist entry is needed.
+    "person_added":"benign defensive accept — read in a 3-type OR filter by backfill_org_attribution; the other two (person_proposal, person_pending_review) ARE produced, so the backfill works; no add-path emits person_added today",
     "briefing": "value_receipt.compute_metrics reads `briefing` (SPEC C1 D4) to count briefs delivered, deduped against morning-brief pack_run by date; `briefing` is a canonical emit type per WORKSPACE_API.md but is written by scheduled-orchestrator/widget paths the code-shaped writer detector can't see — the read is a defensive secondary count behind the canonical pack_run signal",
     "memo_drafted": "value_receipt.compute_metrics reads `memo_drafted` (SPEC C1 D4 'documents produced') as one of the document event types; memo-writer documents emitting it (memo-writer/SKILL.md) but in a prose shape the emit-verb+backtick detector doesn't match, so it reads as writer-less here",
     "relationship_move_suggested": "REL1 — written by relationship_moves.compute_relationship_moves (rows built in a loop then atomic_append_jsonl'd, so the 'type literal next to the append' writer heuristic misses it); the read in relationship_moves._recently_excluded is the 7-day self-dedup check",

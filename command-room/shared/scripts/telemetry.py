@@ -187,7 +187,16 @@ def aggregate_pack_run_telemetry(events: Iterable[dict]) -> dict:
         if ev.get("type") != "pack_run":
             continue
         data = ev.get("data") or {}
-        kind = data.get("kind", "unknown")
+        # v4.5.2 R1 — bucket by the CANONICAL task id so legacy spellings
+        # (`cr-commitments`, `past_meetings`, `dont_forget`) and kind-less
+        # task_id-only receipts (F-47 P2a's two-shapes-one-day) aggregate
+        # into one row instead of fragmenting the table (F-49).
+        kind = data.get("kind") or data.get("task_id") or data.get("taskId") or "unknown"
+        try:
+            from receipts import normalize_task_id
+            kind = normalize_task_id(kind) or "unknown"
+        except ImportError:
+            pass
         tel = data.get("telemetry") or {}
         if not tel:
             continue

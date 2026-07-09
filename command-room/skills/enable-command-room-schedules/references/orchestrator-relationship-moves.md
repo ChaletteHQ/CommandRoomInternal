@@ -41,25 +41,28 @@ The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and this orchestrato
 - Read `<WORKSPACE>/CLAUDE.md` if present (hot cache for people/projects/terms).
 - Discover connectors for the live-contact check (Mail native MCP — never Zapier for reads).
 
-# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'relationship-moves')))
+print(json.dumps(check_lateness('<workspace_root>', 'relationship-moves', fired_via='<scheduled|manual>')))
 "
 ```
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Execute the relationship-moves skill verbatim
 
@@ -73,4 +76,4 @@ Run `skills/relationship-moves/SKILL.md` end to end against this workspace:
 
 # Phase 4 — Audit + STOP
 
-Append one `pack_run` event to `_hq/data/events.jsonl` via `atomic_append_jsonl` with `data.task_id: "relationship-moves"` and the candidate count. Then STOP — the widget + Links section is the whole turn.
+Append the fire receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1 — **NEVER hand-roll the receipt JSON**): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "relationship-moves", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=candidate_count)` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed. Then STOP — the widget + Links section is the whole turn.

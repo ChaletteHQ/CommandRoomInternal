@@ -96,7 +96,8 @@ user_id = resolve_primary_user("<abs workspace root>")   # deterministic — do 
 receipt = reconcile_and_receipt("<abs workspace root>", sent_messages,
                                 user_person_id=user_id,
                                 source_skill="reconcile-sent",
-                                outcome_watch_summary=summary)   # from Step 2b
+                                outcome_watch_summary=summary,   # from Step 2b
+                                fired_via="scheduled")  # "manual" on a chat-phrase / Run Now fire (v4.5.2 receipt contract)
 ```
    **Resolve the user via `resolve_primary_user`, never by guessing** — on real workspaces the `is_primary_user` flag is often unset, so a hand-resolved user can come back wrong/None and the matcher's owner gate (`owner_id == user`) then matches nothing (Bug #102, the other half of why reconciliation closed 0).
 

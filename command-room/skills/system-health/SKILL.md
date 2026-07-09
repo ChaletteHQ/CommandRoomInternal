@@ -31,17 +31,25 @@ import sys, json; sys.path.insert(0, 'shared/scripts')
 import task_watchdog as tw
 ws = '<workspace_root>'
 records = <the list_scheduled_tasks result, as a Python list of task dicts>
-reports = tw.check_tasks(ws, task_records=records)
-binding = tw.check_workspace_binding(ws)
+verdict = tw.health_verdict(ws, task_records=records)
 installed = json.loads(open('.claude-plugin/plugin.json', encoding='utf-8').read()).get('version', '')
 drift = tw.check_prompt_versions(records, installed)
 print(json.dumps({
-    'lines': tw.plain_english_lines(reports, binding=binding),
-    'reports': reports,
+    'vantage': verdict['vantage'],
+    'summary_line': verdict['summary_line'],
+    'lines': verdict['lines'],
+    'info_lines': verdict['info_lines'],
+    'reports': verdict['reports'],
     'stale_prompts': [f for f in drift if f.get('stale')],
 }))
 "
 ```
+
+`health_verdict` (v4.5.2 R3) is the ONE verdict source: it runs the F-40
+vantage guard, partitions every task into exactly one bucket (problem /
+caught-up late / waiting on first run / on schedule), and computes
+`summary_line` from that partition in code. Never recompute, restate, or
+"round up" its counts in prose — the counts ARE the truth rules.
 
 ## Step 3 — Render the answer
 
@@ -49,13 +57,21 @@ print(json.dumps({
 - BAD: "(3) a connector needs to be reconnected"
 - GOOD: "(3) access to one of your tools — email, calendar, Slack — needs to be re-approved"
 
-**Everything healthy (empty `lines`, no stale prompts):** one line and stop —
+**Vantage blocked (`vantage` non-null — F-40):** render `summary_line` and STOP. This chat cannot see the machine-local scheduler (cloud/remote session, or a different computer); the line already says so and points to a local chat. NEVER report tasks as unregistered, NEVER name 'set up command room schedules' from here — running it in this chat would register everything into the wrong place and create duplicates.
 
-> *"Everything's running. All [N] of your scheduled chats and background tasks ran on their normal schedule, most recently [most recent display name] at [local time]."*
+**Everything healthy (empty `lines` + empty `info_lines`, no stale prompts):** render `summary_line` verbatim and stop — it is the "Everything's running. All [N]…" one-liner, with the count computed from tasks that actually have on-schedule receipts.
 
-**Something's wrong:** the healthy one-liner is replaced by the finding lines, verbatim, one per problem (they're already plain English with the fix named — never re-narrate with taskIds, cron strings, or event names). Then, when the status is `late`, add the stall-diagnosis line so the CEO can self-serve the cause (merged from SPEC-3.2 — grounded in the 2026-06 support calls: a lid-closed stall read as "Claude broke", a session lost to an org usage pool):
+**Anything else:** render `summary_line`, then every `info_lines` entry, then every `lines` entry — all verbatim, one per line (they're already plain English with dates and the fix named — never re-narrate with taskIds, cron strings, or event names).
 
-> *"Most common reasons a task stops running, in order: (1) the computer was asleep or the lid closed when it was due — it runs at the next chance; (2) your Claude usage limit was reached — it resets on its own, check the usage meter; (3) access to one of your tools — email, calendar, Slack — needs to be re-approved: open the chat once and approve any prompt; (4) after a plugin update, Cowork sometimes needs a full quit-and-reopen."*
+**Truth rules (R3 — binding on this render, F-43/F-40/F-10):**
+- A task only "ran on its normal schedule" if it has a run receipt on time — `summary_line` already encodes this; never widen its claim.
+- A task named in ANY line (catch-up, first-run, problem) is already excluded from the on-schedule count — never re-add it or summarize the report as "everything's fine except…" with different numbers.
+- Off-schedule catch-ups are reported with their dates (the info line carries them) — a task that caught up late is not "on schedule."
+- Never state a CAUSE for a missing or late run. What is known is what the lines say; when a gap is unexplained, say what's known and stop.
+
+When any `late` problem line renders, you may add the generic self-serve list below — it is framed as common possibilities, NOT a diagnosis of this task (grounded in the 2026-06 support calls; the watchdog cannot know which applies, and says so):
+
+> *"I can't tell from here which applies, but the most common reasons a task stops running: (1) the computer was asleep or the lid closed when it was due — it runs at the next chance; (2) your Claude usage limit was reached — it resets on its own, check the usage meter; (3) access to one of your tools — email, calendar, Slack — needs to be re-approved: open the chat once and approve any prompt; (4) after a plugin update, Cowork sometimes needs a full quit-and-reopen."*
 
 If `stale_prompts` is non-empty, add ONE line total: *"Your scheduled chats were set up under an older version — say 'update command room' once and they'll refresh themselves."*
 
@@ -69,7 +85,8 @@ The Tue/Thu `waiting-on chase` shipped Phase 4 (2026-07-02) as the Commitments o
 
 - **Machine-local time is the scheduler's clock.** Cron evaluates in the machine's timezone, not the workspace timezone — the watchdog's math is machine-local by design. Don't "correct" a fire time against the workspace TZ; `tz.py` localization is presentation-only.
 - **A later-add task rendering as "not registered" is not a failure** — relationship-moves / commitments / pulse are deliberately not first-install. The watchdog stays quiet about them; change-schedule owns that render.
-- **Don't fabricate a diagnosis.** If the watchdog returns a finding you can't explain, surface the finding and the named fix — never speculate about causes beyond the stall-diagnosis list.
+- **Don't fabricate a diagnosis.** If the watchdog returns a finding you can't explain, surface the finding and the named fix — never speculate about causes beyond the generic self-serve list (which is possibilities, not a diagnosis). "The computer was likely asleep" as an asserted cause is the exact fabricated-narrative class the 2026-07 dogfood catalogued (F-10/F-43/F-47).
+- **An empty scheduler list is a vantage question before it is a finding.** `health_verdict` checks the substrate's registration history first (F-40); trust its `vantage` verdict. A cloud/remote chat reading an empty machine-local registry and reporting "nothing is registered" is the false total-outage failure this skill exists to never repeat.
 
 ## Routing (full trigger corpus)
 

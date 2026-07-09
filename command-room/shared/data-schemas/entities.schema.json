@@ -232,7 +232,8 @@
         },
         "last_activity": {
           "type": ["string", "null"],
-          "format": "date"
+          "format": "date",
+          "description": "DEPRECATED (v4.5.2, F-54/F-61): no writer maintains this field — an ingest-era stamp. Never rank or compute staleness from it; derive recency from events via shared/scripts/thread_activity.py. Zero-event fallback only."
         },
         "next_step": {
           "type": ["string", "null"]

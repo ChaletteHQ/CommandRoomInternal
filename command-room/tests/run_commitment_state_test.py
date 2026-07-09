@@ -231,8 +231,20 @@ def main():
             for ev in events:
                 f.write(json.dumps(ev) + "\n")
         wc = commitment_counts(ws, now_iso=NOW)
-        check("workspace-level counts match the pure math", wc == c,
-              f"workspace={wc} pure={c}")
+        # v4.6.0 MC2: the wrapper self-derives the movement map, so its
+        # headline additionally carries the real stuck/blocked keys. The pure
+        # call above passed no movement — compare on the shared keys and
+        # assert the MC2 keys exist (their VALUES are covered by
+        # run_commitment_activity_test.py).
+        wc_headline = dict(wc["headline"])
+        has_mc2_keys = ("stuck" in wc_headline and "blocked" in wc_headline)
+        wc_headline.pop("stuck", None)
+        wc_headline.pop("blocked", None)
+        wc_cmp = {**wc, "headline": wc_headline}
+        check("workspace-level counts match the pure math", wc_cmp == c,
+              f"workspace={wc_cmp} pure={c}")
+        check("wrapper headline carries the MC2 stuck/blocked keys",
+              has_mc2_keys, wc["headline"])
 
     # ------------------------------------------------------------------
     print("\n[6] brief_state.py stays a working compat shim")

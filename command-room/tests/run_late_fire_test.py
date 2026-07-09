@@ -66,8 +66,11 @@ def main():
               r["tier"] == "none" and r["banner"] is None, repr(r))
         r = lf.check_lateness(ws, "morning-brief", now=dt.datetime(2026, 7, 1, 12, 30), emit=False)
         check("5.5h late -> note with banner", r["tier"] == "note" and r["banner"], repr(r))
-        check("banner is plain English (display name + sleep, no jargon)",
-              "Morning Brief" in r["banner"] and "asleep" in r["banner"]
+        # v4.5.2 R2 (F-47/F-50): the banner states facts, never a cause —
+        # the dogfood logged four fabricated "computer was likely asleep"
+        # narratives in one day. Pre-R2 this assertion REQUIRED "asleep".
+        check("banner is plain English facts (display name, no invented cause, no jargon)",
+              "Morning Brief" in r["banner"] and "asleep" not in r["banner"]
               and not any(tok in r["banner"] for tok in ("cron", "taskId", "late_fire")),
               r["banner"])
         # Friday 13:00 slot fired Sunday morning — the friday-wrap-on-Sunday case

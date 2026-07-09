@@ -516,7 +516,12 @@ def resolve_to_linked_project(
                     candidates.append(proj)
         if not candidates:
             return None
-        # Sort by last_activity descending
+        # Sort by last_activity descending.
+        # NOTE (v4.5.2 C3): last_activity is DEPRECATED — an unmaintained
+        # ingest-era stamp (ORG_AND_THREAD_MODEL.md deprecation rule).
+        # Tolerated here as a static disambiguation TIEBREAK only, never a
+        # staleness claim; 4.6's incremental event index should replace it
+        # with derived recency. Do not copy this read into new code.
         candidates.sort(key=lambda p: p.get("last_activity") or p.get("first_seen") or "", reverse=True)
         proj = candidates[0]
         return ResolveResult(
@@ -543,6 +548,7 @@ def resolve_to_linked_project(
                     candidates.append(proj)
         if not candidates:
             return None
+        # Deprecated-field tiebreak — same caveat as the sort above.
         candidates.sort(key=lambda p: p.get("last_activity") or p.get("first_seen") or "", reverse=True)
         proj = candidates[0]
         return ResolveResult(

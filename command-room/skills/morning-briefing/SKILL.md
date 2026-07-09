@@ -5,7 +5,7 @@ description: "Proactive daily digest — calendar, important email summary, over
 
 ## Deterministic state computer (mandatory, v3.14.8+)
 
-> **The commitment header counts ("you owe / they owe / stuck") and the "ball is on you" Needs-Attention list MUST come from `shared/scripts/commitment_state.py::compute_brief_state(...)` (promoted from brief_state.py in Phase 2 Stage A; `brief_state` remains a working import alias) — NOT from re-deriving the open/overdue/whose-turn/drop rules in prose. Its `counts` block delegates to `commitment_state.count_commitments` — the ONE counting API every surface shares. This is the single source of truth for that computation; Steps 3b/3c/3c-bis below document the rules the function already implements and tell you how to gather its inputs. Your job at runtime is to FETCH the inputs (open commitments, per-thread latest-sender, calendar events, per-thread last-activity) and pass them in, then RENDER what comes back. Do not recompute the drops yourself — the function decides, and it is unit-tested (`tests/run_brief_state_test.py`).**
+> **The commitment header counts (`counts["headline"]`: you owe / owed to you / unowned / unconfirmed, plus overdue — v4.5.2 R4, the one bucket export) and the "ball is on you" Needs-Attention list MUST come from `shared/scripts/commitment_state.py::compute_brief_state(...)` (promoted from brief_state.py in Phase 2 Stage A; `brief_state` remains a working import alias) — NOT from re-deriving the open/overdue/whose-turn/drop rules in prose. Its `counts` block delegates to `commitment_state.count_commitments` — the ONE counting API every surface shares. This is the single source of truth for that computation; Steps 3b/3c/3c-bis below document the rules the function already implements and tell you how to gather its inputs. Your job at runtime is to FETCH the inputs (open commitments, per-thread latest-sender, calendar events, per-thread last-activity) and pass them in, then RENDER what comes back. Do not recompute the drops yourself — the function decides, and it is unit-tested (`tests/run_brief_state_test.py`).**
 
 The drop logic drifts when re-derived in prose (the v3.14.7 calendar-close bug was one instance — see references/HISTORY.md). `compute_brief_state` collapses it into one tested function so the same inputs always produce the same surfaced list. See Step 3d for the call.
 
@@ -162,6 +162,8 @@ Check each available connector. Skip gracefully if not connected — never error
 - **Do not reuse this narrow pull for the scheduling-verification gate.** Step 3c-bis needs a *much wider* window (~7 days back through ~30 days forward) to see that a "book/lock/propose time" item is already on the calendar days out. Reusing this today/tomorrow pull there starves the gate — a meeting four days from now looks unbooked and the brief tells the CEO to redo it (Bug #93). Step 3c-bis issues its own wide `list_events`.
 - For each event: title, time, attendees, project association (match against tracker)
 - Flag: meetings with no prep brief, back-to-back blocks, meetings with people who have overdue commitments. The "overdue commitments by attendee" check derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id in <attendee_person_ids>` (per `references/SOURCE_OF_TRUTH.md` — never from PERSON.md commitment tables, which can lag).
+- **The "no prep" flag reads receipts, ONLY receipts (v4.5.2 S1 — F-29):** for each of today's meetings, `from receipts import prep_exists_for_meeting; prep_exists_for_meeting(workspace_root, <calendar event id>)`. The `⚠️ no prep` flag may render ONLY when that returns False. NEVER answer "was this meeting prepped?" from folder globs, filename/slug guesses, or memory — that detector/writer mismatch is how the brief claimed "no prep brief" for the 9:15 Michele call while the prep file AND its fire receipt were both on disk (reproduced 2-for-2 days in the v4.5.1 dogfood). Both prep paths now write a per-brief `prep_brief` receipt via `receipts.log_prep_receipt`; the receipt is the contract. A meeting the calendar gives no id for (rare) gets NO flag rather than a guessed one.
+- **Build the `todays_meetings` input for Step 3d (v4.5.2 C1 — REQUIRED when the calendar is connected):** for each of today's events, resolve attendee emails to person_ids via `entities.json`/`aliases.json` and collect attendee display names PLUS their alias spellings from `aliases.json` — `{"meeting_id": <event id>, "title": <event title>, "attendee_person_ids": [...], "attendee_names": [...]}`. Step 3d passes this to `compute_and_log_brief_state`, which matches open commitments to today's meetings by counterparty OR name-mention in the item's own text (`commitment_state.match_commitments_to_meetings`). **A missing due date must not make a meeting-relevant item invisible** — the F-44 failure was sweep-recovered items about that morning's 9:15 appearing nowhere in the brief because every ranking bucket keyed on `due`.
 
 ### Email (if connected)
 - Search for unread or important emails from the last 18 hours
@@ -267,7 +269,7 @@ Counts come from `commitment_state.compute_brief_state(...).counts` — which is
 - **You owe:** `owner_id == <user_id>`
 - **They owe:** `owner_id` non-empty and `!= <user_id>`
 - **Unassigned:** `owner_id` null/missing — an extraction gap, but still an open commitment
-- **Stuck (overdue):** `due` parses to a past date (re-evaluated at read time)
+- **Overdue:** `due` parses to a past date (re-evaluated at read time). NOT "stuck" — stuck is the movement metric (headline["stuck"], v4.6.0 MC2), a different number.
 
 **Canonical-total parity (v3.18.5+, Bug #85 A85-followup — MANDATORY).** The header total the brief reports MUST equal `counts.total` (= `you_owe + they_owe + unowned` = `len(load_open_commitments(...))`) — the SAME number the coach reports. Do NOT report `you_owe + they_owe` as the total: that silently drops ownerless commitments (the v3.18.4 16-vs-18 split — see references/HISTORY.md § Bug #85). Surface the unassigned items rather than hiding them — in customer copy the word is plain: "2 with no clear owner", never "2 unassigned" (e.g. "13 you owe · 3 they owe · 2 with no clear owner" → 18 total). The coach reports `len(load_open_commitments)`; this reconciliation is what makes the two agree.
 
@@ -326,6 +328,7 @@ Gather (this is the connector work — only the FETCH is yours, not the decision
 - `threads` = for each linked thread you expanded in Step 3c, `{thread_id: {"latest_sender_is_user": <bool from the get_thread latest-message From: check>}}`.
 - `calendar_events` = the native-Calendar `list_events` results from Step 3c-bis, each resolved to `{attendee_person_ids, summary, created_ts, accepted_by, calendar_event_id}` (attendee emails → person_ids via `aliases.json`/`entities.json`).
 - `thread_activity` = `{thread_id: <max ts of any event on that thread>}` from the Step 3b events.jsonl scan (drives the 7-day stopgap).
+- `todays_meetings` = the list built in Step 2's calendar scan (meeting_id / title / attendee_person_ids / attendee_names incl. alias spellings). Omit only when the calendar is unavailable.
 
 ```python
 import sys
@@ -352,10 +355,26 @@ state = compute_and_log_brief_state(
     calendar_events=<list built above>,
     thread_activity=<dict built above>,
     sent_reconcile_cursor=<workspace.sent_reconcile_cursor from entities.json, or None>,
+    todays_meetings=<list built in Step 2>,
 )
 # Render from state — do NOT recompute:
-#   state["counts"]  → the "Commitments: Y you owe · Z they owe · S stuck" line
+#   state["counts"]["headline"] → the commitments line's numbers (you_owe /
+#     owed_to_you / unowned / unconfirmed / overdue / stuck / blocked —
+#     v4.5.2 R4 + v4.6.0 MC2, the ONE bucket export every surface renders;
+#     F-47 P2b / F-56). Never fold unowned or unconfirmed into a direction.
+#     headline["stuck"]/["blocked"] are the REAL movement metric (MC2 —
+#     commitment_activity.py; compute_and_log_brief_state derives the
+#     movement map automatically). The deprecated TOP-LEVEL counts["stuck"]
+#     key is still overdue-by-due-date and still never renders (R1b).
 #   state["needs_attention"] → the "ball is on you" items under Needs Attention
+#   state["meeting_linked"] → open items relevant to TODAY's meetings, matched
+#     by counterparty or name-mention (v4.5.2 C1 / F-44). Render under the
+#     matched calendar event (Step 4 "you two have open business" sub-lines).
+#     These carry no due-date requirement and are NOT subject to the drops —
+#     never suppress one because it is undated, task-kind, or on a recently
+#     active thread. Items flagged pending_review render as needing a
+#     confirm ("captured from a chat — confirm it's yours"), never as
+#     settled fact and never with an auto-chase affordance.
 #   state["dropped"] → diagnostic only; never shown to the user (Rule 4/9)
 #   state["reconcile_stale"] → Bug #98-v2 floor. If True (cursor absent or >1 day
 #     old), reconciliation is behind: render EVERY needs_attention item softened
@@ -379,6 +398,33 @@ The rule, concretely:
 3. **Non-owing moves are unaffected.** "Read [doc] before the 2pm", "prep for the Acme call", "decide on the pricing" — moves that don't assert the CEO owes a *reply/booking/send* to a counter-party — are normal Top-3-moves and don't go through the drops. The gate governs *ball-is-on-you* actionables specifically.
 
 When in doubt, drop: a missed "you already did this" costs nothing; a false "go redo this" costs trust. This gate is the single chokepoint — there is no second, ungated path to a "ball is on you" line.
+
+### Step 3f: Load active reminders (v4.6.0 W4a — the user's own pins)
+
+Reminders are the user's explicit "remind me about X on [day]" pins — their own event lane (`reminder` / `reminder_updated` / `reminder_cleared`), **never commitments**. They do NOT enter `compute_brief_state`, the commitment counts, Needs Attention, chase, or triage — do not fold them in, do not count them anywhere. Load them with the canonical pure reader; never hand-scan events.jsonl for reminder types:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from reminders import load_active_reminders
+
+rems = load_active_reminders(
+    "<workspace root>",
+    "<today, workspace TZ date>",
+    surface="m_facing",   # the brief is an owner-facing surface — personal reminders render here
+)
+# Each row: {id, summary, due, personal, ref, repeat, remind_from,
+#            status: pinned|upcoming|scheduled, days_pinned,
+#            escalation: none|bold|top, last_touch}
+```
+
+Render rules (M's four settled choices, 2026-07-08):
+
+- **Pinned** (`status == "pinned"`): renders EVERY day until cleared or pushed — a pinned reminder never auto-fades. Each row carries the three affordances as plain chat phrases — done (*"done with the reminder"*), defer (*"defer it to [day]"* / *"push it to [day]"* — same move, and the taxonomy's widget label is **Defer**), keep — plus the daily ask ("Still want this pinned?" phrasing varies naturally). Rows with `escalation == "bold"` render bold (pinned + ignored 3 days); rows with `escalation == "top"` (7 days) LEAVE this section and render at the very top of the brief (see the template). A reminder with `ref` renders its context inline ("about: the Pedro chase") but done/push/keep only ever write reminder events — never a commitment closure. If the user ALSO says the underlying item is done, that closes separately through the canonical closure path.
+- **Upcoming reminders** (`status == "upcoming"`, within 3 days): lighter render — one line each, no ask, no affordance row.
+- `status == "scheduled"` rows do NOT render in the brief (they show in `show my reminders`).
+- Both sections render only when non-empty (never pad). Reminder rows never mention `personal`, event names, ids, or the word "reminder lane" — plain English only.
+- These phrases route to the `show-my-reminders` skill's writer helpers (`shared/scripts/reminders.py`) — the brief itself stays read-only (its one write remains the pack_run receipt).
 
 ## Step 4: Build the Digest
 
@@ -415,6 +461,9 @@ Test: does the lead name a dated moment AND say what CHANGED in the business? If
 ```
 Morning briefing — [Day, Month DD, YYYY]
 
+[Escalated reminders — ONLY rows with escalation == "top" (pinned + ignored 7 days). Renders FIRST, above the synthesis lead, per M's escalation choice. Skip entirely when none.]
+📌 **You've been carrying this [N] days: [summary]** — done, defer it to a day, or say keep.
+
 [Synthesis lead — one-line theme = the exec-header VERDICT (EXEC1 element 1).] Distill the day in a single sentence:
 "Today is gated by the 4:45 negotiation with Acme; everything else is supporting cast."
 "Heavy on Acme ops review; the plugin work is the asynchronous backbone."
@@ -427,11 +476,34 @@ DECIDE    [Your one decision today: X — when a decision-shaped item exists (a 
 NEEDED    [the single most important reader-action today, OR "Nothing from you."]
 [Concreteness floor: each line carries a named entity, number, or date, OR uses the explicit nothing-form. The generic-summary shapes ("key developments", "several updates", "busy week across", "lots of movement") are banned — run scan_for_generic_summary on these lines.]
 
-[Commitments with context, not raw counts.]
-Commitments: [Y] you owe (+[delta] since [last_brief_date], [closed_yesterday] closed) · [Z] they owe · [S] stuck
-[Inline define "stuck" on first mention:]
-("stuck" = no movement in 21+ days OR blocked on a named person)
-[Omit the line if all three are 0.]
+[Pinned — Step 3f rows with status == "pinned" (minus the escalation-top rows already rendered up top). EVERY active pin renders EVERY day until cleared or pushed. escalation == "bold" rows render bold. Skip the section when empty.]
+Pinned
+📌 [summary] [— about: [ref context]] [· due [date]] — day [days_pinned+1]. Done, push, or keep?
+📌 **[summary]** — [days_pinned] days now. Done, push it to a day, or keep?
+
+[Upcoming reminders — Step 3f rows with status == "upcoming" (remind_from within 3 days). One light line each, NO ask, no affordances. Skip when empty.]
+Upcoming reminders
+· [summary] — from [Weekday]
+
+[Reminders are the user's own pins — NOT commitments. They never appear in the commitments line below, Needs Attention, or Top 3 moves, and nothing chases them.]
+
+[Commitments with context, not raw counts. Every number comes verbatim from
+state["counts"]["headline"] — the one bucket export (v4.5.2 R4). ONE line,
+ONE template — the pre-R4 "they owe · stuck" form is retired.]
+Commitments: [Y] you owe (+[delta] since [last_brief_date], [closed_yesterday] closed) · [Z] owed to you · [U] unowned · [C] unconfirmed · [O] overdue · [S] stuck
+[Omit a zero bucket from the line (never pad); omit the whole line when headline["total"] is 0.]
+[The overdue number is exactly what it says — items past their due date; never
+attach a movement definition to it (R1b).]
+[The stuck number is headline["stuck"] — the REAL movement metric (v4.6.0 MC2:
+commitment_activity.py derives last movement per commitment from state-change
+events, capture ts as floor; compute_and_log_brief_state supplies it
+automatically). Inline define it on first mention — legitimate again because
+the code now computes exactly this:
+("stuck" = no movement in 21+ days, or blocked on a named person)
+When headline["blocked"] > 0, say who the wait is on in plain English, e.g.
+"2 of them waiting on people you've already chased". If headline carries NO
+"stuck" key (movement derivation unavailable), OMIT the segment — never render
+0 for a number that wasn't computed.]
 
 [Top 3 moves before noon — the answer to "what should I do." This is the most important section. Surface it right after commitments so it's seen in the first 15 seconds.]
 Top 3 moves today
@@ -452,6 +524,14 @@ references/HISTORY.md § v3.13.0).]
 
 Today's calendar ([X] events)
 • [TIME] — [Event title] ([attendees]) [⚠️ no prep / 🔗 related to Project X / ✓ already wrapped]
+    ↳ open with [name]: [commitment title] [— due [date] / no date set] [· needs a quick confirm]
+[The ↳ sub-lines are state["meeting_linked"] rows rendered under their matched
+event (v4.5.2 C1 / F-44) — every open item whose counterparty is in the room or
+whose text names someone in the room, INCLUDING undated ones; a missing due
+date must not hide an item on the day of the meeting. "no date set" renders
+plainly, never as a blank. pending_review rows carry the "needs a quick
+confirm" tag and are asks-to-confirm, not settled facts. Omit the sub-line
+only when the row is already rendered verbatim in Needs Attention.]
 [H2 link to the call-prep brief if one was generated, per CONTRACT Rule 3 — clickable, opens in side panel.]
 
 [Week-ahead horizon.]

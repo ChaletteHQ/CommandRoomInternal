@@ -76,12 +76,13 @@ def test_snooze_3d_display_label():
     )
 
 
-def test_not_relevant_display_label_no_duration():
-    """Critical: the 60-day TTL is internal mechanics; the user UI never shows it."""
-    print("test_not_relevant_display_label_no_duration")
+def test_not_relevant_display_label_states_duration():
+    """v4.5.2 S2 (F-59) REVERSES the v2.14.38 hide-the-TTL decision: every
+    mute states its duration on the button. The hidden 60-day cooldown was
+    the one-way-door trap M's dogfood flagged."""
+    print("test_not_relevant_display_label_states_duration")
     label = _action_display_label("not relevant")
-    _check("renders as 'Not relevant'", label == "Not relevant", f"got: {label!r}")
-    _check("does NOT contain '60' / '60d' / 'days'", "60" not in label and "day" not in label)
+    _check("renders as 'Not relevant (60 days)'", label == "Not relevant (60 days)", f"got: {label!r}")
 
 
 def test_add_text_display_label():
@@ -143,7 +144,6 @@ def test_renderer_accepts_pulse_person_with_new_deferral_cluster():
     html = render_chat_output_widget(data)
     _check("renders without raising on new Pulse cluster", isinstance(html, str))
     _check("widget HTML includes 'Snooze (3 days)' label", "Snooze (3 days)" in html)
-    _check("widget HTML does NOT include any '60' near 'Not relevant'", True)  # baseline: no not_relevant action here
 
 
 def test_renderer_accepts_inbox_email_with_not_relevant():
@@ -168,8 +168,7 @@ def test_renderer_accepts_inbox_email_with_not_relevant():
     }
     html = render_chat_output_widget(data)
     _check("inbox shape with new dismissal cluster renders", isinstance(html, str))
-    _check("button label reads 'Not relevant' (no duration)", "Not relevant" in html)
-    _check("widget does NOT leak '60 days' or '60-day' anywhere", "60 days" not in html.lower() and "60-day" not in html.lower())
+    _check("button label states the duration (F-59)", ">Not relevant (60 days)<" in html)
 
 
 def test_renderer_accepts_calendar_invite_minimal_cluster():
@@ -260,9 +259,10 @@ def test_e2e_pulse_review_with_unified_action_set():
     _check("multi-REVIEW-item batch renders", isinstance(html, str))
     # All three flavors of the unified verb set should appear in the rendered buttons
     _check("'Add' button rendered", ">Add<" in html)
-    _check("'Not relevant' button rendered", ">Not relevant<" in html)
+    _check("'Not relevant (60 days)' button rendered", ">Not relevant (60 days)<" in html)
     _check("'Add to my list' button rendered", ">Add to my list<" in html)
-    _check("'Resolved' button rendered (CRU review)", ">Resolved<" in html)
+    # v4.5.2 S2 (F-59): the `resolved` wire id displays "Done" everywhere.
+    _check("'Done' button rendered (CRU review)", ">Done<" in html)
 
 
 def main():
@@ -272,7 +272,7 @@ def main():
         test_add_text_canonical,
         test_snooze_duration_kept_as_backcompat,
         test_snooze_3d_display_label,
-        test_not_relevant_display_label_no_duration,
+        test_not_relevant_display_label_states_duration,
         test_add_text_display_label,
         test_renderer_accepts_review_item_with_new_action_set,
         test_renderer_accepts_pulse_person_with_new_deferral_cluster,

@@ -18,9 +18,10 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 
 ## Writer Contract
 
-- **Reads from:** `_hq/data/entities.json` (projects), `_hq/data/events.jsonl` (filtered by `primary_thread_id` + activity event types from config), `_hq/data/skill_config/stalled-projects.json` (first-run questionnaire answers).
-- **Writes to:** two declared, narrow paths — (1) `_hq/data/skill_config/stalled-projects.json` on first fire, tune, and reset, always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`); (2) a snooze-suppression event (the `snooze 14d` action's `dont_forget_snooze`-style append, dispatched through apply-choices) via `atomic_append_jsonl`. Detection itself persists nothing — it surfaces flags only. The stall-state write side (emitting `project_stalled_flagged` events on state change) lands in v3.14.2 when Pulse + cleanup integration adds the once-weekly recording call.
-- **No raw substrate writes.** Every write above (and the v3.14.2 write side when it ships) goes through the canonical writer helpers — `skill_config_writer` / `atomic_append_jsonl` (per Bug #81 architectural fix). Hand-rolled writes are forbidden.
+- **Reads from:** `_hq/data/entities.json` (projects), events via `shared/scripts/thread_activity.py::derive_thread_activity` (shard-transparent; top-level `primary_thread_id` + `related_thread_ids` + legacy id spellings, filtered by activity event types from config), `_hq/data/skill_config/stalled-projects.json` (first-run questionnaire answers), and the prior `pack_run` receipt (nag-dedup, below).
+- **NEVER from `thread.last_activity`.** The field is DEPRECATED (v4.5.2, FINDINGS F-54/F-61): the cleanup autopsy proved no code path maintains it — ranking by it reported "43 days quiet" on a project with two same-day meetings. Staleness derives from events at read time; `stall_detector` consults the stored field only for threads with zero event history. See `references/ORG_AND_THREAD_MODEL.md` § last_activity deprecation.
+- **Writes to:** three declared, narrow paths — (1) `_hq/data/skill_config/stalled-projects.json` on first fire, tune, and reset, always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`); (2) a snooze-suppression event (the `snooze 14d` action's `dont_forget_snooze`-style append, dispatched through apply-choices) via `atomic_append_jsonl`; (3) a `pack_run` scan receipt at the end of every Detect fire via `receipts.log_receipt` (v4.5.2 C3 — see "Scan receipt" below). Detection itself persists nothing else — it surfaces flags only. The stall-state write side (emitting `project_stalled_flagged` events on state change) lands in v3.14.2 when Pulse + cleanup integration adds the once-weekly recording call.
+- **No raw substrate writes.** Every write above (and the v3.14.2 write side when it ships) goes through the canonical writer helpers — `skill_config_writer` / `atomic_append_jsonl` / `receipts.log_receipt` (per Bug #81 architectural fix). Hand-rolled writes are forbidden.
 
 ## What It Doesn't Do
 
@@ -87,8 +88,18 @@ is_first_fire = (config is None)
 # Detect uses defaults if no config saved (stall_detector handles this internally)
 flags = detect_stalled_projects(workspace_root)
 
-# Render widget with flags (or "nothing's stalled — nice work" if empty)
-render_chat_output_widget(flags, ...)
+# LIVE-CHECK GATE (v4.5.2 C3 — REQUIRED, see "Live-check gate" below):
+# live-check every flagged project against Gmail + Calendar, then
+flags, dropped = apply_live_check(flags, live_signals)
+
+# Render widget with flags (or "nothing's stalled — nice work" if empty);
+# mention dropped false-positives in one honest line each
+
+# SCAN RECEIPT (v4.5.2 C3 — REQUIRED, every Detect fire; see "Scan receipt")
+log_receipt(workspace_root, "stalled-projects", fired_via="manual",
+            surfaced=len(flags),
+            extra_data={"flagged_thread_ids": [f["thread_id"] for f in flags],
+                        "live_check_dropped": len(dropped)})
 
 if is_first_fire:
     # Auto-save defaults so subsequent fires skip this branch
@@ -106,7 +117,36 @@ which setting that maps to.
 """)
 ```
 
-**Subsequent fires:** config exists → load it → run detection → render widget. No footer, no nag.
+**Subsequent fires:** config exists → load it → run detection → live-check gate → render widget → scan receipt. No footer, no nag.
+
+### Live-check gate (v4.5.2 C3 — MUST, before anything renders as quiet)
+
+> **No project may be flagged stalled from substrate-only data. You MUST live-check every flagged candidate against Gmail + Calendar before rendering it, and respect the result.** This is the same enforcement gate dormant-customer-scan and Pulse Step 1b carry (FINDINGS F-57 proved the discipline; F-54 is what shipping without it looks like).
+
+For every flag `detect_stalled_projects` returns:
+
+1. Discover connector tools ONCE per fire via `shared/scripts/live_contact_check.py::discover_live_check_tools(available_tools)`.
+2. Query Gmail + Calendar for the most recent touch since the flag's baseline, scoped to the project: search by the project's org/display name and the email addresses of its `stakeholder_person_ids` / `owner_person_id` (resolve via entities). Cost-bound it — you need only "is there anything newer than the baseline," not a full history.
+3. Build `live_signals = {thread_id: {"live_last_iso": "<ISO date>", "source": "gmail"|"calendar", "detail": {...}} | {}}` and call `stall_detector.apply_live_check(flags, live_signals)`. The helper enforces the merge: a live touch under the threshold DROPS the flag (with the reason); a live touch newer than substrate but still over threshold corrects the day-count.
+4. **Dropped flags get one honest line each in the chat output** — "Set aside N that looked quiet in saved history but aren't: [Project] — emailed 2 days ago." Silent drops hide the discipline; per F-57, visible drops are what earn trust.
+5. **Connector unavailable ≠ skip the honesty.** If neither Gmail nor Calendar can be checked (sandbox, connector failure), you still must NOT silently render substrate-only flags as fact. Render them with the caveat: "I couldn't check live email/calendar just now, so these are from saved history only — double-check before acting."
+
+A project with same-day substrate activity never reaches this gate — the event-scan baseline already excludes it. The gate exists for the opposite hole: activity that happened live but was never written to the substrate (the Bug #28 class).
+
+### Scan receipt (v4.5.2 C3 — REQUIRED, every Detect fire)
+
+The dogfood found the sibling scan (dormant customers, F-57) surfacing flags and leaving zero substrate trace — the next scan couldn't dedup its own nags and value receipts couldn't count the work. Same contract here, one line via the canonical helper:
+
+```python
+from receipts import log_receipt
+log_receipt(WORKSPACE_ROOT, "stalled-projects",
+            fired_via="manual",            # "scheduled" on a scheduled fire
+            surfaced=len(flags),
+            extra_data={"flagged_thread_ids": [f["thread_id"] for f in flags],
+                        "live_check_dropped": len(dropped)})
+```
+
+**Nag-dedup rule:** before rendering, read the previous `stalled-projects` receipt (`receipts.iter_receipts(WORKSPACE_ROOT, task_ids=["stalled-projects"])`, newest first). A project in the prior receipt's `flagged_thread_ids` that is flagged again is a REPEAT — render it with "still quiet — flagged last scan too" instead of a fresh alarm, and honor any active snooze regardless. Empty scans write the receipt too (`surfaced=0`) — a scan that finds nothing still happened.
 
 ### Tune mode — re-run questionnaire with current values pre-filled
 
@@ -199,30 +239,35 @@ else:
 import sys
 # Rule 22: run from $PLUGIN_ROOT (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
 sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
-from stall_detector import detect_stalled_projects
+from stall_detector import detect_stalled_projects, apply_live_check
 
 flags = detect_stalled_projects(workspace_root)
+# ... live-check gate (see above), then apply_live_check(flags, live_signals)
 ```
 
 `flags` is a list of dicts, one per stalled project:
 
 ```python
 {
-    "project_id": "project_NNN",
-    "project_status": "active",
-    "days_since_activity": 18,
-    "last_event_seq": 4203,         # None if zero-history fallback
-    "last_event_type": "meeting",   # None if zero-history fallback
-    "baseline_source": "activity",  # or "first_seen"
+    "thread_id": "project_NNN",
+    "thread_status": "active",
+    "days_since_activity": 18,      # derived from EVENTS at read time (C3)
+    "threshold_days": 14,           # the threshold this status was judged against
+    "last_event_seq": 4203,         # None unless baseline_source == "event_scan"
+    "last_event_type": "meeting",   # None unless baseline_source == "event_scan"
+    "baseline_source": "event_scan",  # "last_activity" (zero-event record-stamp
+                                      # fallback) | "first_seen" (zero history)
     "recommended_action": "18 days since last activity — worth a touch this week."
 }
 ```
+
+The day-count here and Pulse Phase 4's stale-active day-count come from the SAME derivation (`thread_activity.derive_thread_activity`, same activity-type set) — the two surfaces can never quote different numbers for the same project on the same day (F-54's 21d-vs-37d split).
 
 ### Rendering the surface
 
 Render flags as a widget via `render_chat_output_widget()` per CONTRACT.md Rule 1.
 
-**Executive Output Standard (EXEC1, v3.20.0+) — queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue/ranked list, so the synthesis-lead rule FORBIDS a narrative lead — **the lead is a quantified count line**, not a theme: *"6 stalled · 2 touch revenue — $292K · oldest 47d."* Compute it from the flags: total count · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field — ONLY the figures that derive from substrate, never an estimate) · the oldest age. Each item then carries its own quantify tag (`"47d quiet · $180K"`) when `money_time_tag` returns non-None; date-only otherwise. No manufactured "what this means about your portfolio" sentence — the reader's next act is triage.
+**Executive Output Standard (EXEC1, v3.20.0+) — queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue/ranked list, so the synthesis-lead rule FORBIDS a narrative lead — **the lead is a quantified count line**, not a theme: *"6 stalled · 2 touch revenue — $292K · oldest 47d."* Compute it from the flags: total count · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field — ONLY the figures that derive from substrate, never an estimate) · the oldest age. When building the item dict for `money_time_tag`, set its `last_activity` key from the flag's DERIVED baseline (today − `days_since_activity`) — never from the thread record's deprecated `last_activity` field, or the tile contradicts the row it sits on. Each item then carries its own quantify tag (`"47d quiet · $180K"`) when `money_time_tag` returns non-None; date-only otherwise. No manufactured "what this means about your portfolio" sentence — the reader's next act is triage.
 
 Per-item action set (all canonical — P1.1 respec 2026-07-02; dispatch in apply-choices' `stalled-projects` source entry):
 - `draft re-engagement` (displays "Draft re-engagement") — opens `email-writer` or `follow-up-ritual` for that project (lazy draft — nothing sends)
@@ -252,6 +297,8 @@ If the workspace has zero projects (new install, or all archived), the skill res
 ## Versioning
 
 This skill ships in v3.14.1. The `stall_detector.py` helper it calls is the canonical detector. v3.14.2 adds the once-weekly recording call (`record_stall_state_changes`) wired into cleanup, plus pulse Phase 9 integration. This skill itself remains the on-demand surface across all v3.14.x releases.
+
+v4.5.2 (C3, FINDINGS F-54): staleness now derives from events at read time via `thread_activity.derive_thread_activity` — the deprecated `thread.last_activity` record stamp can never override events. Adds the mandatory live-check gate (`apply_live_check`, F-57 discipline) and the `pack_run` scan receipt with nag-dedup.
 
 ## Routing (full trigger corpus)
 

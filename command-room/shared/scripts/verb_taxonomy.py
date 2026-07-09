@@ -1,0 +1,477 @@
+"""Canonical action-verb taxonomy — ONE table, every widget renders from it.
+
+v4.5.2 S2 (F-59 — M directive "clean this all up"; F-13 P2a; F-58; F-17).
+
+The dogfood found the same event wearing two names on different surfaces
+(Resolved vs Done, Push to vs Defer), two mute verbs that never stated their
+duration (Skip = 24h, Snooze = 3d), and a spec'd verb (`promote`) that
+rendered nowhere. This module is the fix: one machine-readable row per
+canonical action verb — wire id, THE display label, what it dispatches,
+where it renders, and its mute duration when it is a mute.
+
+Contract:
+
+- `chat_output_renderer` builds `CANONICAL_ACTIONS` and every button's
+  display label FROM this table. Nothing renders a verb that has no row;
+  no surface may relabel a verb locally.
+- Prose is the same vocabulary: a SKILL.md that names an action names the
+  row's `verb`, letter for letter (F-13 P2a — users looked for a "done"
+  button that didn't exist because chat prose and button labels diverged).
+- Mute verbs SAY their duration on the button ("Snooze (1 day)",
+  "Not relevant (60 days)", "Never track (permanent)") — no more
+  one-way-door clicks with invisible TTLs.
+- Wire ids (`action_id`, the `data-action` attribute + apply-choices
+  payload token) are FROZEN for back-compat with in-flight widgets and the
+  dispatch handlers. Renames happen at the display layer only: `resolved`
+  displays "Done", `push to [date]` displays "Defer", `skip` displays
+  "Snooze (1 day)". apply-choices keeps dispatching on the wire id.
+
+Adding a verb: add a row here + a handler in skills/apply-choices/SKILL.md
++ (if it writes a new event type) register the type in
+shared/data-schemas/events.schema.json. `shared/CHAT_ACTION_WIDGET.md`'s
+action-reference tables are the human-readable view of THIS table — update
+them together; the table wins on conflict.
+
+Row fields:
+  action_id      wire token (lowercase, brackets mark an input placeholder)
+  verb           THE display label — buttons AND prose use exactly this
+  event          primary event type the dispatch writes (None when the
+                 action produces no substrate event — e.g. `send` sends
+                 mail; `investigate` is a read)
+  effect         one plain-English line of what happens (always present)
+  surfaces       source_skill ids the verb renders on ("*" = every
+                 all-batch surface)
+  mute_ttl_days  int days for mutes, "permanent" for never-track,
+                 None for non-mutes. The verb label must state it.
+  input          "none" | "optional" | "required" — `required` means the
+                 selection is invalid until the input has a value; the
+                 widget must say what is missing and hold Apply with the
+                 reason visible (F-17: a Defer without a date silently
+                 blocked a whole batch; M concluded the button was dead)
+  family         verb family for tests/grouping
+  notes          per-surface variance, history, hand-off pointers
+"""
+from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# The table.
+# ---------------------------------------------------------------------------
+
+def _row(action_id, verb, event, effect, surfaces, *, mute_ttl_days=None,
+         input="none", family, notes=""):
+    return {
+        "action_id": action_id,
+        "verb": verb,
+        "event": event,
+        "effect": effect,
+        "surfaces": tuple(surfaces),
+        "mute_ttl_days": mute_ttl_days,
+        "input": input,
+        "family": family,
+        "notes": notes,
+    }
+
+
+VERB_TAXONOMY = (
+    # --- Commitment lifecycle (F-59 core) ----------------------------------
+    _row("resolved", "Done", "commitment_resolved",
+         "Close the item as completed (single closure path, undo-able).",
+         ("commitments", "commitment-triage", "show-my-list", "dont-forget"),
+         family="commitment",
+         notes="Display was 'Resolved' on the daily chat and 'Done' on triage "
+               "— same event, two names (F-59). 'Done' wins everywhere. On the "
+               "Pulse surface the same click means 'this alert isn't open "
+               "anymore' (14-day suppression, no commitment event)."),
+    _row("mark done", "Done", "commitment_resolved",
+         "Close a self-commitment as completed.",
+         ("commitments", "scaffold-automation"),
+         family="commitment",
+         notes="Self-commitment twin of `resolved`; scaffold-automation's "
+               "deployed-yet check writes automation_deployed instead."),
+    _row("push to [date]", "Defer", "commitment_updated",
+         "Move the due date; the item stays open and re-ranks on the new date.",
+         ("commitments", "commitment-triage"),
+         input="required", family="commitment",
+         notes="Display was 'Push to' on the daily chat and 'Defer' on triage "
+               "(F-59). 'Defer' wins. Date is REQUIRED — an empty date is the "
+               "F-17 silent-block; the widget names the missing date and holds "
+               "Apply with the reason visible."),
+    _row("drop", "Drop", "commitment_resolved",
+         "Close as deliberately let go (resolution: dropped) — distinct from Done.",
+         ("commitment-triage",), family="commitment"),
+    _row("not mine", "Not mine", "commitment_resolved",
+         "Close as someone else's item (cross-attendee capture).",
+         ("commitment-triage",), family="commitment",
+         notes="Bare 'not mine' (no name) still closes as dropped. When the "
+               "user NAMES the real owner ('that's actually Erick's'), the "
+               "item ROUTES instead via `reassign to [name]` (S4) — W4b's "
+               "Theirs → [name] confirm verb dispatches the same event."),
+    _row("fix wording [text]", "Fix wording", "commitment_updated",
+         "Correct a mis-extracted title/summary; the item re-renders with "
+         "the new text and the original stays in history.",
+         ("commitments", "commitment-triage"), input="required",
+         family="commitment",
+         notes="S4. Dispatch: commitment_state.edit_commitment_wording — the "
+               "projector folds data.new_title/new_summary, newest wins per "
+               "field. Chat phrase: 'fix the wording on #N: <text>'."),
+    _row("reassign to [name]", "Reassign", "commitment_reassigned",
+         "Route the item to its real owner — it leaves your list and lands "
+         "on theirs; nothing is chased until the new owner is confirmed.",
+         ("commitments", "commitment-triage"), input="required",
+         family="commitment",
+         notes="S4 — 'not mine' used to DISCARD; this ROUTES. Dispatch: "
+               "commitment_state.reassign_commitment (confirmed=True only "
+               "for an explicit user action naming the person — the chat "
+               "phrase or W4b's Theirs → [name] confirm verb; anything "
+               "inferred stays pending_review and never enters chase)."),
+    _row("split into [items]", "Split", "commitment_superseded",
+         "Split one captured item into its real parts — each becomes its own "
+         "commitment; the original closes with a note naming them.",
+         ("commitment-triage",), input="required", family="commitment",
+         notes="S4 (M decision 2026-07-09): extraction pre-split stays the "
+               "doctrine; this is the MANUAL correction path. Dispatch: "
+               "commitment_state.split_commitment. Chat phrase: 'split that "
+               "into A / B / C'."),
+    _row("make task", "Make task", "commitment_reclassified",
+         "Reclassify promise → task: stays open, stops being chased, ages on "
+         "the triage surface only.",
+         ("commitment-triage",), family="commitment"),
+    _row("promote", "Make it a commitment", "commitment_reclassified",
+         "Reclassify task → promise when a counterparty appears; enters chase.",
+         ("commitment-triage",), family="commitment",
+         notes="F-59 flagged this verb as spec'd-but-rendered-nowhere. It "
+               "SHIPS (task rows on triage render it); W4b's confirm flow "
+               "reuses it for kind auto-promotion proposals."),
+    _row("never track this", "Never track (permanent)", "commitment_resolved",
+         "Close the item AND append a suppression rule so extractors never "
+         "capture this shape again. Permanent — not a timed mute.",
+         ("commitment-triage",), mute_ttl_days="permanent", family="mute",
+         notes="The label says (permanent) — the ONLY remaining one-way door "
+               "by design (a suppression rule, not a timed mute; edit "
+               "_hq/config/commitment-rules.md to lift it). Every TIMED mute "
+               "is reversible via the S4 ledger: `show muted` + Unmute."),
+    _row("set date [when]", "Set date", "commitment_updated",
+         "Give a vague-timing capture a concrete due date.",
+         ("past-meetings", "meeting-notes"), input="required",
+         family="commitment"),
+    _row("mark received", "Mark received", "thread_resolved",
+         "The counterparty delivered — close the owed-to-you item.",
+         ("commitments",), family="commitment"),
+    _row("mark received all", "Mark received all", "thread_resolved",
+         "Close every sub-item of a grouped chase at once.",
+         ("commitments",), family="commitment"),
+    _row("add to my list", "Add to my list", "commitment_to_discuss",
+         "Flag for later review — no state change; grouped by person under "
+         "`show my list`.",
+         ("commitments", "past-meetings", "dont-forget"),
+         family="commitment",
+         notes="Deliberately NOT on triage: capture-then-curate design "
+               "(M, v2.14.4; reaffirmed in the F-59 answers)."),
+
+    # --- Mutes (every label states its duration — F-59) ---------------------
+    _row("skip", "Snooze (1 day)", "chat_dismissal",
+         "Mute this item for 1 day; it resurfaces tomorrow.",
+         ("*",), mute_ttl_days=1, family="mute",
+         notes="Wire id `skip` frozen (in-flight widgets + crSkipAll + every "
+               "dispatch handler). F-59: Skip never said it was a 24h mute — "
+               "now the label does. One mute verb, visible durations."),
+    _row("skip all", "Snooze rest (1 day)", "chat_dismissal",
+         "Mute every unselected item for 1 day (bulk).",
+         ("*",), mute_ttl_days=1, family="mute",
+         notes="Also the footer bulk button (was 'Dismiss rest'/'Skip all')."),
+    _row("snooze 3d", "Snooze (3 days)", "chat_dismissal",
+         "Mute this alert for 3 days.",
+         ("dont-forget",), mute_ttl_days=3, family="mute"),
+    _row("snooze 7d", "Snooze (7 days)", "chat_dismissal",
+         "Re-surface the deployed-yet check in a week.",
+         ("scaffold-automation",), mute_ttl_days=7, family="mute"),
+    _row("snooze 14d", "Snooze (14 days)", "chat_dismissal",
+         "Check back in two weeks.",
+         ("dont-forget", "stalled-projects"), mute_ttl_days=14, family="mute",
+         notes="On the intro-followup check this writes intro_followup_check "
+               "(a scheduled re-emit, not a dismissal) — see apply-choices."),
+    _row("snooze 30d", "Snooze (30 days)", "decision_revisit_scheduled",
+         "Push the decision-revisit window out 30 days.",
+         ("decision-revisit",), mute_ttl_days=30, family="mute"),
+    _row("not relevant", "Not relevant (60 days)", "chat_dismissal",
+         "Reject the proposal / dismiss the item; it won't re-surface for 60 days.",
+         ("dont-forget", "inbox", "past-meetings"), mute_ttl_days=60,
+         family="mute",
+         notes="The 60-day cooldown was previously hidden by design "
+               "('duration NEVER shown') — F-59 reverses that: every mute "
+               "states its TTL at click time, AND the apply-time ack repeats "
+               "it (S4: 'Muted for 60 days — say show muted to bring it "
+               "back early')."),
+    _row("unmute", "Unmute", "chat_dismissal_cleared",
+         "Lift a mute before its time runs out — the item re-surfaces on its "
+         "next scheduled chat.",
+         ("show-my-list",), family="mute",
+         notes="S4 mute ledger — renders on `show muted` / `show snoozed` "
+               "rows (each row states its remaining time). Dispatch: "
+               "mute_ledger.clear_dismissal. The triage batch-undo clears "
+               "its batch's mutes the same way (F-20 P3a)."),
+
+    # --- Reminders (W4a deferred the widget verbs to this table) ------------
+    _row("reminder done", "Done", "reminder_cleared",
+         "Clear the reminder — it leaves the brief's Pinned block. Clearing "
+         "never touches a referenced commitment.",
+         ("morning-brief", "show-my-reminders"), family="reminder"),
+    _row("reminder push [date]", "Defer", "reminder_updated",
+         "Move the pin date; the reminder re-pins from the new day (re-arms a "
+         "cleared one-shot).",
+         ("morning-brief", "show-my-reminders"), input="required",
+         family="reminder",
+         notes="Chat phrase 'push it to Friday' keeps working; the button "
+               "says Defer — same word as the commitment lane's move-the-date "
+               "verb. Dispatch: reminders.build_reminder_updated_event("
+               "action='push', remind_from=<date>)."),
+    _row("reminder keep", "Keep", "reminder_updated",
+         "Acknowledge without clearing — resets the escalation clock, stays "
+         "pinned.",
+         ("morning-brief", "show-my-reminders"), family="reminder",
+         notes="Dispatch: reminders.build_reminder_updated_event("
+               "action='keep')."),
+
+    # --- Email-shaped --------------------------------------------------------
+    _row("send", "Send", None,
+         "Send the draft as-is (Zapier first, native Gmail fallback).",
+         ("inbox", "commitments", "dont-forget"), family="email"),
+    _row("edit then send", "Edit then send", None,
+         "Open To/Cc/Subject/Body inline, edit, then send.",
+         ("inbox", "commitments", "dont-forget"), input="optional",
+         family="email"),
+    _row("draft", "Draft", None,
+         "Review/edit, then save to Gmail Drafts (consolidated v2.14.4 verb).",
+         ("inbox", "commitments", "dont-forget"), input="optional",
+         family="email"),
+    _row("add email then send", "Add email then send", "contact_email_captured",
+         "Type the recipient's address (none is on file), then send.",
+         ("inbox", "commitments"), input="required", family="email",
+         notes="Bug #44 recovery verb. Address is REQUIRED — an empty field "
+               "holds Apply with the reason, same F-17 contract as dates."),
+    _row("escalate to memo", "Escalate to memo", None,
+         "Promote to memo-writer when an email reply isn't enough.",
+         ("inbox",), family="email"),
+    _row("accept", "Accept", None, "Accept the calendar invite.",
+         ("inbox",), family="email"),
+    _row("propose [time]", "Propose", None,
+         "Propose a different meeting time.",
+         ("inbox",), input="required", family="email"),
+    _row("decline", "Decline", None, "Decline the calendar invite.",
+         ("inbox",), family="email"),
+    _row("decline [reason]", "Decline", None,
+         "Decline with a short note.",
+         ("inbox",), input="optional", family="email"),
+
+    # --- Work / deep-context -------------------------------------------------
+    _row("prep deep work", "Prep deep work", None,
+         "Generate a context-loaded prompt for doing the work yourself.",
+         ("commitments", "dont-forget"), family="work"),
+    _row("follow-up call", "Follow-up call", None,
+         "Draft a 15-min sync invite instead of an email chase.",
+         ("commitments",), family="work"),
+    _row("investigate", "Investigate", None,
+         "Read-only cross-reference pull ('tell me about …').",
+         ("dont-forget",), family="work"),
+    _row("draft re-engagement", "Draft re-engagement", None,
+         "Draft a re-engagement email (nothing sends until you do).",
+         ("dont-forget", "stalled-projects"), family="work"),
+    _row("schedule catchup [when]", "Schedule catchup", None,
+         "Draft the request (+ tentative invite when you type a time).",
+         ("dont-forget",), input="optional", family="work"),
+    _row("status check", "Status check", None,
+         "Draft an internal status-check email to the project owner.",
+         ("dont-forget", "stalled-projects"), family="work"),
+    _row("mark paused", "Mark paused", None,
+         "Move the project to paused status (via workspace-manager's writer).",
+         ("dont-forget", "stalled-projects"), family="work"),
+
+    # --- Review / proposal confirmations -------------------------------------
+    _row("confirm", "Confirm", None,
+         "Apply the proposed change to the person record.",
+         ("dont-forget",), family="review"),
+    _row("edit [change]", "Edit", None,
+         "Type the corrected value; it applies instead of the proposal.",
+         ("dont-forget", "decision-memo-composer"), input="optional",
+         family="review"),
+    _row("add [text]", "Add", None,
+         "Accept the proposal (empty) or fold in your corrections (typed).",
+         ("dont-forget",), input="optional", family="review"),
+    _row("confirm [type]", "Confirm", None,
+         "Confirm the entity proposal; override inferred details if typed.",
+         ("dont-forget",), input="optional", family="review"),
+    _row("edit [type]", "Edit", None,
+         "Flip the inferred relationship type before confirming.",
+         ("dont-forget",), input="optional", family="review"),
+    _row("active", "Active", None,
+         "Keep the project active (14-day re-propose cooldown).",
+         ("dont-forget",), family="review"),
+    _row("keep paused", "Keep paused", None, "Already paused — no change.",
+         ("dont-forget",), family="review"),
+    _row("archive", "Archive", None,
+         "Archive the project outright (skip the dormant step).",
+         ("dont-forget",), family="review"),
+    _row("add as person to [org]", "Add as person to org", None,
+         "Create a person record under the org you type.",
+         ("past-meetings", "meeting-notes"), input="required", family="review"),
+    _row("add as new org", "Add as new org", None,
+         "Create the candidate org as a new tracked entity.",
+         ("past-meetings", "meeting-notes"), family="review",
+         notes="Specific-name variants ('add as person to <Org>', 'add as "
+               "new org <Org>') resolve to these rows — see "
+               "is_canonical_action in the renderer."),
+    _row("add context [text]", "Add context", None,
+         "Seed an interactive entity-creation flow with your free-form note.",
+         ("past-meetings", "meeting-notes"), input="optional", family="review"),
+
+    # --- Decisions ------------------------------------------------------------
+    _row("revisit", "Revisit now", None,
+         "Open deliberation — decision-memo-composer pre-filled with the "
+         "original framing.",
+         ("decision-revisit",), family="decision"),
+    _row("still valid", "Still valid", "decision_reaffirmed",
+         "Reaffirm the original decision.",
+         ("decision-revisit",), family="decision"),
+    _row("replace", "Replace it", "decision_superseded",
+         "Capture the new decision and supersede the original.",
+         ("decision-revisit",), family="decision"),
+    _row("decide [text]", "Decide", "decision",
+         "Log the decision (your text folds into the rationale).",
+         ("decision-memo-composer", "past-meetings"), input="optional",
+         family="decision"),
+
+    # --- Intro follow-up (domain verbs) ---------------------------------------
+    _row("landed", "Landed", "intro_followup_check",
+         "The intro connected — feeds the relationship graph.",
+         ("dont-forget",), family="review"),
+    _row("didnt land", "Didn't land", "intro_followup_check",
+         "The intro didn't connect — pattern data for future framing.",
+         ("dont-forget",), family="review"),
+
+    # --- Meetings --------------------------------------------------------------
+    _row("context [text]", "Context", None,
+         "Add context or ask a question — routed intent-aware at apply time.",
+         ("upcoming-meetings",), input="optional", family="meeting"),
+    _row("push meeting [date]", "Push meeting", None,
+         "Draft the reschedule email (proposes the time you type, or asks "
+         "for availability when blank).",
+         ("upcoming-meetings",), input="optional", family="meeting"),
+
+    # --- Bulk row ---------------------------------------------------------------
+    _row("send all", "Send all", None,
+         "Sequential sends across all non-noise items.", ("*",), family="bulk"),
+    _row("to drafts all", "To drafts all", None,
+         "Bulk save to Gmail Drafts.", ("*",), family="bulk"),
+    _row("show more", "Show more", None,
+         "Re-render with the next chunk of items.", ("*",), family="bulk"),
+)
+
+# Deprecated wire-id aliases: accepted at dispatch/validation for in-flight
+# widgets, NEVER emitted by new renders. Maps alias → replacement action_id.
+DEPRECATED_ALIASES = {
+    "snooze [duration]": "snooze 3d",           # pre-v2.14.38 free-text snooze
+    "add more context [text]": "context [text]",  # v2.12.4–v2.14.36
+    "ask question [text]": "context [text]",      # v2.14.14–v2.14.36
+}
+
+# Display labels that MUST NOT appear on any newly rendered button — the
+# pre-taxonomy names the dogfood caught wearing two hats (F-59 / F-13 P2a /
+# F-18). The rendered-widget regression scan enforces this list.
+LEGACY_DISPLAY_LABELS = frozenset({
+    "Resolved",        # → Done
+    "Push to",         # → Defer
+    "Skip",            # → Snooze (1 day)
+    "Skip all",        # → Snooze rest (1 day)
+    "Dismiss rest",    # old footer bulk label
+    "Snooze",          # bare snooze without a stated duration
+    "Never track this",  # → Never track (permanent)
+    "Not relevant",    # → Not relevant (60 days) — bare form hides the TTL
+    "Make it a task",  # → Make task
+})
+
+# ---------------------------------------------------------------------------
+# Derived lookups (what the renderer imports).
+# ---------------------------------------------------------------------------
+
+_BY_ID = {row["action_id"]: row for row in VERB_TAXONOMY}
+if len(_BY_ID) != len(VERB_TAXONOMY):
+    raise RuntimeError("verb_taxonomy: duplicate action_id rows")
+
+CANONICAL_ACTION_IDS = frozenset(_BY_ID) | frozenset(DEPRECATED_ALIASES)
+
+# action_id → THE display label (aliases resolve to their replacement's label)
+DISPLAY_LABELS = {aid: row["verb"] for aid, row in _BY_ID.items()}
+for _alias, _repl in DEPRECATED_ALIASES.items():
+    DISPLAY_LABELS[_alias] = _BY_ID[_repl]["verb"]
+
+# action_ids whose input is REQUIRED before Apply may fire (F-17 contract)
+REQUIRED_INPUT_ACTION_IDS = frozenset(
+    row["action_id"] for row in VERB_TAXONOMY if row["input"] == "required"
+)
+
+# What a required input IS, in the user's words — the inline reason says
+# "<Verb> needs a <thing>". Derived from the bracket placeholder.
+_PLACEHOLDER_THING = {
+    "[date]": "date", "[when]": "time", "[time]": "time",
+    "[org]": "org name",
+}
+
+
+_THING_OVERRIDES = {
+    "add email then send": "email address",
+    "set date [when]": "date",
+    "reminder push [date]": "date",
+    "fix wording [text]": "corrected wording",
+    "reassign to [name]": "name",
+    "split into [items]": "list of items",
+}
+
+
+def required_input_thing(action_id: str) -> str:
+    """Plain word for what a required-input action is missing ('date',
+    'time', 'email address', …) — used in the inline validation reason."""
+    a = (action_id or "").lower()
+    if a in _THING_OVERRIDES:
+        return _THING_OVERRIDES[a]
+    for ph, thing in _PLACEHOLDER_THING.items():
+        if ph in a:
+            return thing
+    return "value"
+
+
+def taxonomy_row(action_id: str):
+    """The row for a wire id (aliases resolve to their replacement).
+    Returns None for unknown ids — callers decide whether that's an error."""
+    a = (action_id or "").lower()
+    if a in _BY_ID:
+        return _BY_ID[a]
+    if a in DEPRECATED_ALIASES:
+        return _BY_ID[DEPRECATED_ALIASES[a]]
+    return None
+
+
+def display_label(action_id: str):
+    """THE display label for a wire id, or None when the id has no row
+    (specific-name variants like 'add as person to <Org>' fall back to the
+    renderer's default label pass)."""
+    return DISPLAY_LABELS.get((action_id or "").lower())
+
+
+def mute_ttl_days(action_id: str):
+    """Mute duration for a wire id: int days, 'permanent', or None."""
+    row = taxonomy_row(action_id)
+    return row["mute_ttl_days"] if row else None
+
+
+__all__ = [
+    "VERB_TAXONOMY",
+    "DEPRECATED_ALIASES",
+    "LEGACY_DISPLAY_LABELS",
+    "CANONICAL_ACTION_IDS",
+    "DISPLAY_LABELS",
+    "REQUIRED_INPUT_ACTION_IDS",
+    "taxonomy_row",
+    "display_label",
+    "mute_ttl_days",
+    "required_input_thing",
+]

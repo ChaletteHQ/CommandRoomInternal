@@ -72,10 +72,10 @@ If verification fails, log `artifact_install_failed` with reason and STOP. Do NO
 
 # Phase 6 — Memory updates (silent per Rule 9)
 
-Append a single `pack_run` event to events.jsonl:
+Append a single `pack_run` event to events.jsonl (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 
 ```jsonl
-{"type":"pack_run","ts":"<ISO>","data":{"kind":"refresh_workspace_map","status":"complete","duration_ms":<N>,"telemetry":{...}}}
+{"type":"pack_run","data":{"kind":"refresh_workspace_map","status":"complete","duration_ms":<N>,"telemetry":{...}}}
 ```
 
 Use `shared/scripts/telemetry.py` `build_pack_run_telemetry()` for the telemetry block — same pattern as the other 5 orchestrators. Silent — never narrate to chat.

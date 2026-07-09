@@ -1,5 +1,27 @@
 # Command Room — Changelog
 
+## v4.6.0 — 2026-07-09 — The dogfood release (16 items from the 2026-07-07/08 live dogfood)
+
+Two days of interactive dogfooding on M's live workspace produced 60+ findings (FINDINGS_M_v451.md); this release ships the entire fix batch plus the first 4.6 feature wave. Battery grew 161 → 177 suites, all green. Sixteen items, each independently built, adversarially reviewed against the findings' disk evidence, and merged in dependency order.
+
+### The trust layer (R1, R1b, R1c, R2, R3, R4)
+One receipt contract — one schema, one writer (`receipts.py`), one reader; canonical task ids; every legacy shape parses forever. Lateness ledger — `late_fire` only on scheduled fires against genuinely unserved slots (receipts are the only served-truth; scheduler stamps are untrusted); manual fires and schedule changes can no longer fabricate lateness or trigger phantom runs. Health-check truth — `health_verdict()` partitions every task into exactly one bucket; no receipt = no history claim; cloud chats that can't see the scheduler say so instead of reporting an outage; fabricated causes ("computer was asleep") are structurally banned. One bucket export — every surface renders identical commitment counts from one loader call (the four-different-counts day is impossible); value receipts are idempotent; the false "stuck" caption is dead, replaced (MC2) by a real movement-based stuck/blocked metric; closure is lock-spanned and duplicate-tombstone-proof.
+
+### The capture→surface chain (C1, C2, C3, C4)
+Session-sweep runs the full Stage-D/S2/Stage-E capture block (code-enforced, fail-loud). meeting-notes writes decisions, person proposals, and its processed receipt — and every closing summary is claim-audited against disk (surfaces may only enumerate verified writes). stalled-projects derives staleness from events with dormant-scan's live-check discipline; the fossil `last_activity` field is deprecated (the 2026-07-08 cleanup autopsy proved nothing maintains it). Cross-writer semantic dedup: the same commitment captured from meeting + email + sweep lands flagged for a merge decision — `commitment_superseded` finally has its writer. Meeting-linked ranking: undated commitments about today's attendees surface on the day they matter.
+
+### Surfaces (S1, S2, S4)
+Meeting-prep v2 — one generator for scheduled and on-demand briefs (the 209-word template is dead): walk-out-with, changed-since-last-touch (incl. overnight attendee-scoped Gmail), decisions, owed-both-ways as a table, sourced talking points, stat tiles + relationship timeline (the visual-deliverables standard), refresh-in-place per meeting id, per-brief receipts feeding an honest no-prep detector. One verb taxonomy (`verb_taxonomy.py`) — machine-readable, renderer-derived; pressed-states + live selection counter; inline validation with disable-with-reason (silent Apply blocks are gone); mute TTLs visible on buttons. Lifecycle verbs — fix the wording, reassign, split, merge, and a mute ledger (`show muted` + unmute; batch undo clears its mutes).
+
+### Features (W4a, MC2, MC3)
+Reminders v1 — `remind me about X on [day]`: pinned in the brief daily until cleared, 3-day upcoming ramp, escalation when ignored, personal flag, repeat option, `show my reminders`; user-explicit-only origin enforced at three layers. Real stuck metric + ~32x loader shard pruning. Slack commitment capture with the full capture contract and skip-not-fail connector doctrine.
+
+### Customer migration impact
+No re-registration, no schema migration, no data repair required. All history remains readable (reader back-compat everywhere; events.jsonl never rewritten). Announce items in `shared/releases/v4.6.0.json`. Supervised one-time tools shipped NOT run: `normalize_timestamps_dryrun.py`, `audit_closure_integrity.py` (both report-only by construction).
+
+### What's NOT in this ship (4.6.1, deferred at the usage pause)
+W4b confirm flow · W4c capture relevance gate/observed tier · S3 language sweep · MC1 multi-counterparty · capture-gate consolidation (two code copies) · morning-brief light watchdog pass (R3 discovery).
+
 ## v4.5.1 — 2026-07-06 — Skill-description compliance (the runtime-cap patch)
 
 Every skill description now fits the Agent Skills 1,024-character cap with headroom (≤980), with tested trigger phrases front-loaded inside the 250-character listing window. Strict Cowork runtime builds silently DROP over-cap skills at load — one install was down to 28 of 50 skills. 39 of 59 were over the cap at v4.5.0; catalog routing payload cut 31% (68.6k → 47.2k chars).

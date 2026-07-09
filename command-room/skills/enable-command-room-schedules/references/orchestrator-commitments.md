@@ -46,6 +46,8 @@ Path 2 catches what Path 1 (apply-choices in-Cowork sends) and Path 3 (past-meet
 - No mail send tool was discovered in Phase 2 (degraded — proceed without scan).
 - No open commitments where the user is the owner (helper returns `[]`).
 
+**These skips are exhaustive — the run mode never adds one (v4.5.2 R2, applies equally to 2.6 and 2.7).** A scheduled fire is NOT "an autonomous run with no connector fetch," and a manual fire is interactive by definition — BOTH run these scans in full. The dogfood's improvised skip ("CRU pre-render scans skipped this fire — scheduled autonomous run, no connector fetch", FINDINGS F-47 P1a) left "no email on file" on a chase row for a contact who had emailed that very day.
+
 Otherwise, execute via bash:
 
 ```bash
@@ -58,13 +60,14 @@ from cru_match import load_open_commitments
 events_path = '<absolute path to _hq/data/events.jsonl>'
 opens = load_open_commitments(events_path)
 
-# Determine the time window: max(last Commitments pack_run ts, today - 7 days).
+# Determine the time window: max(last Commitments receipt ts, today - 7 days).
 # First fire ever defaults to last 7 days. Provided as <newer_than_iso> below.
-# Back-compat: identify the prior fire by data.kind=commitments OR
-# source_skill_compat.normalize_source_skill(source_skill)=='commitments' so a
-# workspace whose history predates the v2.14.27 rename (legacy source_skill of
-# cr-commitments) still finds its last fire. events.jsonl is append-only — never rewritten.
-last_fire_ts = '<ISO ts of most recent pack_run with kind=commitments (legacy: source_skill cr-commitments), or today-7d>'
+# v4.5.2 R1 — find the prior fire through the shared receipt reader (parses
+# every legacy shape: cr-commitments, kind-only, task_id-only — forever):
+#   from receipts import last_receipt_times
+#   last_fire_dt = last_receipt_times(WORKSPACE_ROOT, ["commitments"])["commitments"]
+# events.jsonl is append-only — never rewritten.
+last_fire_ts = '<ISO of last_receipt_times(...)["commitments"], or today-7d>'
 print(f'WINDOW={last_fire_ts}')
 print(f'OPEN_COUNT={len(opens)}')
 "
@@ -146,7 +149,7 @@ print(f'CRU commitments pre-render: resolved={n_resolved} pending={len(to_append
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: CRU event-type names never appear in chat. The user sees the resolution effect via Phase 3's filter — auto-resolved commitments simply don't appear in today's widget.
 
-**Failure handling:** if the CRU pre-render scan errors (mail search failure, helper import fails), swallow silently and continue to Phase 3. The pre-render scan is best-effort enrichment; the Commitments widget still surfaces the open commitments either way (just possibly including ones already resolved-but-undetected). **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "2.5_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr or exception message>", "ts": "<ISO>"}`. Pre-v3.5.0 these failures were truly silent; if the helper import has been raising in production no one would have known.
+**Failure handling:** if the CRU pre-render scan errors (mail search failure, helper import fails), swallow silently and continue to Phase 3. The pre-render scan is best-effort enrichment; the Commitments widget still surfaces the open commitments either way (just possibly including ones already resolved-but-undetected). **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "2.5_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr or exception message>", "ts": "<UTC ISO — never the local wall clock>"}`. Pre-v3.5.0 these failures were truly silent; if the helper import has been raising in production no one would have known.
 
 # Phase 2.6 — CRU pre-render scan: auto-resolve OWED-TO-YOU commitments from inbound mail since last fire (v3.14.5+)
 
@@ -245,7 +248,7 @@ print(f'CRU commitments inbound pre-render: resolved={n_resolved} updated={sum(1
 
 **De-dup with Phase 5.5:** both legs check `load_open_commitments`, which already excludes anything closed by a prior `commitment_resolved` / `thread_resolved`. If the morning inbox fire (Phase 5.5) already resolved a commitment, it won't be in `opens` here, so Phase 2.6 won't double-write. Idempotent by construction.
 
-**Failure handling:** identical to Phase 2.5 — swallow silently, continue to Phase 3, append a `pack_run.data.errors[]` entry `{"phase": "2.6_inbound_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<ISO>"}`.
+**Failure handling:** identical to Phase 2.5 — swallow silently, continue to Phase 3, append a `pack_run.data.errors[]` entry `{"phase": "2.6_inbound_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
 # Phase 2.7 — CRU pre-render scan: auto-resolve SCHEDULING commitments from calendar events since last fire (v3.14.7+)
 
@@ -328,27 +331,30 @@ print(f'CRU commitments calendar pre-render: resolved={n_resolved} pending={len(
 
 **De-dup with the calendar-writer real-time leg:** both call `load_open_commitments`, which excludes anything already closed by a prior `commitment_resolved` / `thread_resolved`. If calendar-writer already resolved a commitment when it created the event, it won't be in `opens` here. Idempotent by construction.
 
-**Failure handling:** identical to Phases 2.5/2.6 — swallow silently, continue to Phase 3, append a `pack_run.data.errors[]` entry `{"phase": "2.7_calendar_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<ISO>"}`.
+**Failure handling:** identical to Phases 2.5/2.6 — swallow silently, continue to Phase 3, append a `pack_run.data.errors[]` entry `{"phase": "2.7_calendar_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
-# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'commitments')))
+print(json.dumps(check_lateness('<workspace_root>', 'commitments', fired_via='<scheduled|manual>')))
 "
 ```
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Find commitments in 6 buckets (3 per direction)
 
@@ -373,10 +379,33 @@ Read events.jsonl. Apply base filter to every commitment event (every field read
 - No active `chat_dismissal` event with target_id matching this commitment id, where "active" means:
   - if the event has `data.snooze_until` set, the date hasn't passed yet (v3.5.0+ — honors the duration the user actually picked when they clicked `snooze 3d` / `snooze [N]`. Pre-v3.5.0 every dismissal expired at 24h regardless, so `snooze 3d` effectively only snoozed for 1 day — verified in the 2026-05-17 audit)
   - else, the event is within the last 24h (legacy default — covers dismissals written without a snooze_until field)
+  - AND no later `chat_dismissal_cleared` references it (v4.6.0 S4 — the Unmute verb / triage batch undo; an unmuted dismissal is INACTIVE regardless of remaining TTL). Don't hand-roll this three-way check — `mute_ledger.active_dismissal_target_ids(events, now_iso)` is THE liveness filter and encodes all three conditions.
 - **(v2.10.3)** Commitment's primary_thread_id resolves to a project with `status` in `{active, paused, blocked}` — exclude commitments tied to `dormant` or `archived` projects (those are accessible via `show more` + `go [project]` but don't surface in the daily commitments flow). If the user wants visibility on dormant-project commitments, they can run `show more` to see everything regardless of status.
 - **Aging cap (Sam Apr 29):** for `aging_undated` items only, exclude commitments logged ≥ 60 days ago with NO related event activity (no outreach_sent, no commitment_update, no chat_dismissal, no thread reply touching the commitment) in the last 30 days. These are ghost items that almost certainly resolved outside the system; surfacing them daily as "wrong person" / "really old" pollutes the widget. The user can still see them via `show more`. `overdue` and `due_near` items are unaffected — those have an explicit due date that gives the user a concrete reason to keep seeing them.
 
-**Header counts — the one counting API (Phase 2 Stage A, MANDATORY).** The widget-header numbers (`n_total` / `n_you_owe` / `n_owed_to_you`, and the all-clear counters `n_open_total` / `n_you_owe` / `n_owed_to_you`) MUST come from `commitment_state.count_commitments(opens, user_person_id=<M's person_id>, now_iso=<now>)` over the FULL `load_open_commitments` set — `n_total = counts["total"]`, `n_you_owe = counts["you_owe"]`, `n_owed_to_you = counts["they_owe"] + counts["unowned"]` (ownerless items are real open items; dropping them from the total was the Bug #85/A85 class). The confidence / dismissal / project-status / aging filters above decide which items SURFACE as actionable rows — they never shrink the header counts. This is the same number the morning brief, the coach, and `commitment_counts(workspace_root)` report; the 2026-07-01 audit found three surfaces disagreeing (104 vs 54 vs 105) because each hand-rolled this math. Note `load_open_commitments` now folds `commitment_updated` deferrals into the effective `data.due` (a `push to [date]` item stops rendering overdue) — never re-derive due from the raw original event.
+**Header counts — the one bucket export (Phase 2 Stage A + v4.5.2 R4 + v4.6.0 MC2, MANDATORY).** The widget-header numbers (and the all-clear counters) MUST come from `commitment_state.count_commitments(opens, user_person_id=<M's person_id>, now_iso=<now>, movement=movement)["headline"]` over the FULL `load_open_commitments` set — `n_total = headline["total"]`, `n_you_owe = headline["you_owe"]`, `n_owed_to_you = headline["owed_to_you"]`, `n_unowned = headline["unowned"]`, `n_unconfirmed = headline["unconfirmed"]`, `n_stuck = headline["stuck"]`, `n_blocked = headline["blocked"]` — where `movement = commitment_activity.derive_commitment_movement("<WORKSPACE>/_hq/data/events.jsonl")` (v4.6.0 MC2: the REAL stuck metric — no movement 21+ days, or blocked on a named person; `blocked ⊆ stuck`. Derive the map ONCE per fire and pass the SAME map everywhere a movement-based number or row renders — the F-54 cross-surface-split rule. If `headline` carries no `stuck` key the derivation was unavailable: omit the segment, never render 0). **Never fold unowned or unconfirmed into a direction** — the pre-R4 rule here (`n_owed_to_you = they_owe + unowned`) is exactly why one dogfood day produced four different open counts across surfaces (F-47 P2b / F-56: this chat said 52 owed-to-you while triage said 40 + 18 unowned, from the same substrate). Unowned and unconfirmed render as their own numbers, identical on the morning brief, this chat, and commitment-triage. The confidence / dismissal / project-status / aging filters above decide which items SURFACE as actionable rows — they never shrink the header counts. This is the same export the morning brief and commitment-triage render; the 2026-07-01 audit found three surfaces disagreeing (104 vs 54 vs 105) because each hand-rolled this math. Note `load_open_commitments` now folds `commitment_updated` deferrals into the effective `data.due` (a `push to [date]` item stops rendering overdue) — never re-derive due from the raw original event.
+
+## MEETING TODAY — relevance bucket, renders FIRST in each direction (v4.5.2 C1 / F-44)
+
+Before the date buckets, build the meeting-relevance set. F-44's failure: sweep-recovered items about that very morning's 9:15 were invisible on every chase surface because all three buckets key on the due date (and the confidence floor drops confidence-less recovered captures besides). Relevance to a meeting happening TODAY is its own reason to surface — **a missing due date must not make a meeting-relevant item invisible on the day of the meeting.**
+
+1. Pull TODAY's calendar events (native Calendar MCP `list_events`, timeMin = start of today, timeMax = end of today, machine-local — a dedicated narrow fetch; do NOT reuse Phase 2.7's created/updated-since-window pull). Calendar unavailable → skip this bucket entirely (skip-not-fail); the date buckets below are unaffected.
+2. Resolve each event to `{"meeting_id", "title", "attendee_person_ids", "attendee_names"}` — attendee emails → person_ids via `entities.json`/`aliases.json`; attendee_names include display names PLUS alias spellings from `aliases.json`.
+3. Match in code — never hand-derive:
+
+```python
+from commitment_state import match_commitments_to_meetings
+meeting_today = match_commitments_to_meetings(opens, todays_meetings,
+                                              user_person_id="<M's person_id>")
+```
+
+Rows match by counterparty (`counterparty_id` / `owner_id` is an attendee) OR name-mention (an attendee's name appears in the item's own text — catches counterparty-less legacy captures whose title names the person). Split rows into the two directions by `owner_id` as usual and render each as the FIRST bucket of its direction, labeled with the meeting ("you see [name] at [time] — this is open between you").
+
+**Exemptions (deliberate, all four):** the meeting_today bucket bypasses (a) the due-date requirement — undated items render "no date set", never a blank; (b) the `aging_undated` ≥ 7-day floor — a fresh undated capture that matters today surfaces today; (c) the confidence floor — recovered captures carry no confidence score and would otherwise never surface here; (d) the kind ≠ task filter — a meeting-linked task renders with the self-commitment action set (`prep deep work` / `push to [date]` / `resolved` / `snooze 3d` / `add to my list`), never a chase draft. Everything else holds: closed/dismissed/suppressed items never enter (they are not in `opens`), and the surface-preference filter still applies.
+
+**pending_review rows render as a confirm, not a chase:** tag `(captured from a chat — confirm it's yours)` and use the REVIEW action cluster (`confirm` / `not relevant` / `add to my list`, dispatching exactly like Phase 3.6's rows). Never pre-stage a chase email on an unconfirmed item — no auto-email on a guessed owner.
+
+**Caps:** meeting_today takes priority INSIDE the existing 7-item total cap (cap 3 meeting_today rows per fire, soonest meeting first; the date buckets fill the remainder). No double-surfacing: an item already rendering in meeting_today is excluded from the date buckets below for this fire. Header counts are untouched — this bucket changes SURFACING only.
 
 Then split surviving commitments into TWO directions × THREE buckets:
 
@@ -406,13 +435,13 @@ Per M's v2.14.18 testing: an owed-to-you commitment due today with no contact in
 - **`due_near`** — same. Cap top 5.
 - **`aging_undated`** — same. Cap top 5.
 
-**Total cap across all 6 date buckets (× 2 reachability sub-buckets where applicable): 7 items per fire (v3.13.7+).** Empty buckets are omitted entirely (no "0 items" placeholders).
+**Total cap across all buckets — meeting_today plus the 6 date buckets (× 2 reachability sub-buckets where applicable): 7 items per fire (v3.13.7+).** meeting_today rows count toward the 7 and take priority (max 3, see above). Empty buckets are omitted entirely (no "0 items" placeholders).
 
 **Why 7, not 16 (v3.13.7 transmission-ceiling fix — Bug #14):** Session 22 testing surfaced that M's workspace at 218 open commitments → 11 surfaced items produced an 81KB+ widget that exceeded `mcp__visualize__show_widget`'s transmission ceiling and silently failed on every fire. The v3.13.0 widget boilerplate floor is ~31KB and per-item averages ~5-9KB (depending on `original_thread` body length); 11 items consistently exceeded the working limit. Capping at 7 items per fire keeps a typical commitments widget under 60KB with margin to spare.
 
 **For overflow ("I have more than 7"):** the `show more` bulk action stays canonical and triggers paginated re-render of the next 7 items via apply-choices dispatch (see Bulk actions section at the bottom of this file). The original 16-cap is preserved as the OVERALL pagination ceiling across all `show more` pages combined — pages of 7 until either 16 items shown or all items exhausted, whichever comes first. Beyond that, the user runs the substrate query directly via `show my list` (which is page-tolerant by design).
 
-**"Needing action" counter (v2.14.19+):** the visible counter at the top of the widget counts every item that survives ANY of the 6 buckets — including B-unreachable items. The previous behavior (counter excluded unreachable) confused users when a date-pressing item appeared in the list but wasn't reflected in the counter.
+**"Needing action" counter (v2.14.19+):** the visible counter at the top of the widget counts every item that survives ANY bucket — meeting_today included (v4.5.2 C1) — including B-unreachable items. The previous behavior (counter excluded unreachable) confused users when a date-pressing item appeared in the list but wasn't reflected in the counter.
 
 **Surface-preference filter (Phase 6 Loop 2 — before rendering).** After the buckets are built and capped, drop any commitment the CEO has taught the system to stop chasing (insight-generator Pass 14 → `_hq/data/surface-preferences.json`):
 
@@ -495,9 +524,22 @@ For each external OWED TO YOU (or grouped): run `email-writer` with the tier voi
 
 Append to events.jsonl:
 - `connector_read` for events.jsonl scan
-- One `pack_run` event with kind: commitments, date, status, items_drafted_text per direction, errors, duration_ms, **telemetry** (v2.14.0+)
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1). NEVER hand-roll the receipt JSON** — this exact skill wrote two different receipt shapes in one day during the dogfood (`{task_id: 'cr-commitments', fired_at, outcome}` in the morning, `{kind, date, status, late_tier}` in the afternoon — FINDINGS F-47 P2a):
 
-**Telemetry capture (v2.14.0+ Phase 1):** Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_telemetry()` (same pattern as orchestrator-inbox.md Phase 7). Track connector calls + prompt/response sizes + duration. Merge into `pack_run.data` as `telemetry: {...}`. Silent — never narrated to chat.
+```python
+from receipts import log_receipt
+log_receipt(
+    WORKSPACE_ROOT, "commitments",
+    fired_via=lateness["receipt_fired_via"],  # from Phase 2.9 — manual | scheduled | catchup; never guess it
+    surfaced=n_surfaced,
+    duration_ms=elapsed_ms,
+    late_tier=lateness["tier"] if lateness["tier"] in ("note", "degrade") else None,
+    extra_data={"items_drafted_text": {...per direction...}, "errors": [],
+                "telemetry": {...}},
+)
+```
+
+**Telemetry capture (v2.14.0+ Phase 1):** Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_telemetry()` (same pattern as orchestrator-inbox.md Phase 7). Track connector calls + prompt/response sizes + duration. Pass it through `extra_data` as `telemetry: {...}`. Silent — never narrated to chat.
 
 NO `draft_created` events at fire time (lazy creation). Append to staging_emissions.jsonl per item drafted.
 
@@ -548,10 +590,17 @@ data_view = {
     "header": "Commitments — nothing needs your attention this morning",
     "sub_header": f"{day_full}, {month_short} {day_num} · {fire_time} check",
     "counters": [
+        # v4.5.2 R4: values verbatim from counts["headline"] (n_open_total =
+        # headline["total"], directions = headline["you_owe"]/["owed_to_you"]).
+        # Unowned/unconfirmed items are in Open total but neither direction —
+        # never fold them into Owed to you.
         {"label": "Open total", "value": n_open_total},
         {"label": "You owe", "value": n_you_owe},
         {"label": "Owed to you", "value": n_owed_to_you},
         {"label": "Needing action", "value": n_needing_action},  # MUST include B-unreachable items per the v2.14.19 reachability rule above
+        # v4.6.0 MC2: append {"label": "Stuck", "value": n_stuck} ONLY when
+        # headline carries the key and it is > 0 — an all-clear morning with
+        # stuck items should still show the honest number.
     ],
     "summary_line": "Nothing overdue, nothing due in the next 3 days, and nothing has been sitting open long enough to be aging. The N things on the books were either recently captured or have downstream dates further out.",
     "tracked_items": [
@@ -605,7 +654,12 @@ if you_owe_buckets:
 data_view = {
     "widget_mode": "all_batch_widget",
     "source_skill": "commitments",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
-    "header": f"Commitments — {n_total} total open · {n_owed_to_you} owed to you · {n_you_owe} you owe",  # v2.14.38+ order matches section order: owed to you first
+    # v4.5.2 R4 + v4.6.0 MC2: all numbers verbatim from counts["headline"] —
+    # never fold unowned/unconfirmed into a direction. Omit a bucket segment
+    # when it is 0 (never pad); order matches section order: owed to you first
+    # (v2.14.38+). "stuck" is the real movement metric (MC2) — omit the
+    # segment entirely when headline has no stuck key (not computed ≠ 0).
+    "header": f"Commitments — {n_total} total open · {n_owed_to_you} owed to you · {n_you_owe} you owe · {n_unowned} unowned · {n_unconfirmed} unconfirmed · {n_stuck} stuck",
     "sections": sections,
     "quick_read": quick_read,           # 1-3 sentences when N>2 and clustering signal exists
 }
@@ -910,7 +964,7 @@ Parse `N action` (with or without period). Dispatch by direction:
 - `N edit then send` (v2.12.2+) → replace body with input, then send via `N send` handler.
 - `N draft` (consolidated v2.14.4+) → widget exposes textarea pre-populated; user edits; Apply saves to Gmail Drafts.
 - `N follow-up call` → drafts a calendar-invite request via email-writer ("Quick 15 min sometime this week?"). If Calendar MCP supports tentative invite, create that too. Stage email draft.
-- `N mark received` (singleton) → close through `commitment_state.close_commitment(workspace_root, <item's data.id verbatim>, resolved_by=<user person_id>, evidence="counterparty delivered — marked received", source_skill="commitments", user_confirmed=True)` (Stage B — supersedes the bare `thread_resolved` write; the canonical `commitment_resolved` shape is what every consumer's closure filter reads first). Confirm.
+- `N mark received` (singleton) → close through `commitment_state.close_commitment(workspace_root, <item's data.id verbatim>, resolved_by=<user person_id>, evidence="counterparty delivered — marked received", source_skill="commitments", user_confirmed=True)` (Stage B — supersedes the bare `thread_resolved` write; the canonical `commitment_resolved` shape is what every consumer's closure filter reads first). Confirm. If it returns `already_resolved`, write NOTHING and say so plainly ("that one was already marked received earlier") — never append a second closure (v4.5.2 R1c).
 - `N mark received all` (grouped) → same close_commitment call per sub-item (batch via `commitment_state.close_commitments`). Suppress the parent.
 - `N escalate to memo` → fire memo-writer through standard chat invocation. Memo-writer produces .docx via the docx skill and surfaces the link the standard Cowork way. Do NOT emit `file://` links yourself. Re-prompt in plain English: "Want to send this as the email body, attach it to the reply, or send it standalone?"
 - `N snooze 3d` (v2.14.38+) → same as YOU OWE — `chat_dismissal` with 3-day TTL.
@@ -923,6 +977,16 @@ For `7a`, `7b`, `7c` style sub-items inside a grouped chase email:
 - `Na mark received` → write `thread_resolved` for that specific commitment id. Update parent's chase draft to drop the now-received item.
 - `Na not relevant` → write `chat_dismissal` with `data.target_id: <sub-commitment-id>`, `data.reason: "not_relevant"`, 60-day TTL. Sub-commitment suppressed for 60 days; parent stays open if other sub-items remain.
 - `Na add to my list` → write `commitment_to_discuss` for that sub-commitment. Surfaces later via `show my list` grouped by counterparty.
+
+## Lifecycle corrections (v4.6.0 S4 — typed chat phrases, both directions)
+
+Three correction verbs for captures that landed WRONG, all registered in `verb_taxonomy` and dispatched through `commitment_state` (apply-choices § commitment-triage documents the exact calls — same handlers here):
+
+- `N fix wording: <text>` / "that should say <text>" → `commitment_state.edit_commitment_wording(workspace_root, <item's data.id verbatim>, new_summary=<text>, edited_by=<user person_id>, source_skill="commitments")`. The item re-renders with the corrected text on every surface; the original stays in history. Confirm with the corrected line, e.g. `✓ Fixed — "send Michele the positioning brief".`
+- `N reassign to [name]` / "that's actually [name]'s" → resolve the name via the standard entity path (ambiguous → ask in one line, never guess), then `commitment_state.reassign_commitment(workspace_root, <id>, new_owner_id=<resolved person_id>, new_owner_name=<display name>, reassigned_by=<user person_id>, reason="user reassigned", source_skill="commitments", confirmed=True)`. The item leaves the user's you-owe and lands on the named owner — `not mine` DISCARDS, reassign ROUTES. Confirm: `✓ Routed to [name] — off your list.` (Unconfirmed/inferred reassignments — never from a typed name — stay in the unconfirmed bucket and are NEVER chased; no auto-email on a guessed owner.)
+- `N split into: A / B / C` (2+ parts, separated by newlines / semicolons / " / ") → `commitment_state.split_commitment(workspace_root, <id>, [{"title": ...}, ...], split_by=<user person_id>, source_skill="commitments", user_confirmed=True)`. Each part becomes its own commitment carrying the original's provenance; the original closes with a "split into …" note. Confirm by naming the N new items. Extraction pre-split stays the doctrine (M decision 2026-07-09) — this is the manual correction path, never an extraction substitute.
+
+"show muted" / "show snoozed" in this chat → the mute ledger (show-my-list's ledger mode): every live snooze with its remaining time and an Unmute action.
 
 ## Bulk actions (canonical set only — v2.14.19+ retired non-canonical "show all open" / "show all overdue" navigation buttons)
 

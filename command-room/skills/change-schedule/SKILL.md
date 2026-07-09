@@ -76,6 +76,8 @@ for tid, spec in view.items():
 
 Capture stdout — each line `taskId|display_name|label|enabled|registered|later_add|silent`.
 
+**Vantage guard (v4.5.2 R3 — F-40):** the scheduler registry is MACHINE-LOCAL; a cloud/remote chat (or a different computer) reads it empty even when all tasks are live. Before rendering "nothing is registered" or an all-not-added view from an empty registered set, run `task_watchdog.detect_registry_vantage(ws, records)` with whatever `list_scheduled_tasks` returned. If it returns a finding, say its `line` ("I can't see your scheduler from this chat — … open a local (non-cloud) chat") and STOP — no schedule render, and absolutely no mutations: `update_scheduled_task` / registration from a blind vantage lands in the wrong scheduler and creates duplicates. Only a genuinely fresh workspace (guard returns None with no registration history) renders honestly as not-set-up.
+
 **Live-cron precision:** for registered tasks, when you already have `list_scheduled_tasks` records in this conversation, render each task's LIVE `cronExpression` (via `cron_to_english`) rather than the merged config label — a default that changed in a later plugin version (e.g. friday-wrap 4 PM → 1 PM) does not move an existing registration, and the render must show what will actually fire. Don't make an extra MCP call just for the render; the config label is the designed offline default.
 
 ### Step 2 — Show current schedule + ask what to change
@@ -237,6 +239,8 @@ For each changed task, call `mcp__scheduled-tasks__update_scheduled_task(taskId,
 
 If a changed task turns out not to be registered at all (it was in the "Available, not added" group), there is nothing to re-anchor — the config write alone is correct; the value applies when the task is added.
 
+**A schedule change NEVER fires the task (v4.5.2 R2 — FINDINGS F-51).** Re-anchoring moves the NEXT occurrence; it does not create a missed slot for today. If the new time is already past at the moment of the change, the task simply fires at its next future occurrence — do NOT run the task "to catch up," do NOT invoke its orchestrator, do NOT compute or write any lateness for the moved slot, and do NOT reason about it ("the 9:30 slot was missed" is false — the slot did not exist when 9:30 passed). The live case: a 9:00→9:30 Pulse move at 2:46 PM fabricated a 317-minute late_fire plus a phantom 2:54 PM catch-up run against a slot the change itself created, on a day whose fire had already run at 9:09 under the old cron. Defensively, `late_fire.check_lateness` now refuses to score any slot older than the task's latest `schedule_config_changed` event — but the contract is that this path never invokes lateness at all.
+
 ### Step 8 — Confirm to user + STOP
 
 One-line confirmation per change, only after Step 7's `update_scheduled_task` calls actually succeeded. No CHANGELOG narration, no internal mechanics.
@@ -269,6 +273,7 @@ Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 
 ## Forbidden behaviors
 
+- **Do NOT fire, run, or invoke a task from this skill — ever.** A cron move is a config write + re-anchor, nothing else: no catch-up runs, no late_fire events, no lateness receipts (F-51 — Step 7's "schedule change NEVER fires the task" rule).
 - **Do NOT write directly to entities.json without atomic_write_json.** Drive-sync corruption risk.
 - **Do NOT pass `prompt` to `update_scheduled_task`.** Step 7 re-anchors `cronExpression`/`enabled` ONLY. Prompt content is registration's job (`set up command room schedules`).
 - **Do NOT render a task as scheduled unless it is registered.** The merged config alone is not evidence a task exists in Cowork's scheduler — that's the R1 ghost-task bug.

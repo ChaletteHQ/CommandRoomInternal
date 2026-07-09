@@ -144,6 +144,7 @@ Note: the key is `threads` in v2.2, but thread IDs retain the `project_` prefix 
 `kind` ∈ {`initiative`, `deal`, `advisory`, `investment`, `board`, `relationship`, `theme`, `concern`, `ritual`, `personal`, `other`}.
 `affiliation_id` is the most specific operating org; the tree walk via `parent_org_id` resolves holding context.
 **`folder_name` must match an actual folder on disk** (workspace root, case-sensitive). `cleanup` verifies this every run.
+**`last_activity` is DEPRECATED (v4.5.2, F-54/F-61):** no code maintains it — an unmaintained ingest-era stamp. Never rank or compute staleness from it; derive recency from events at read time via `shared/scripts/thread_activity.py` (zero-event threads may read it as a floor only). Full rule in `ORG_AND_THREAD_MODEL.md`.
 
 ### Org record (nested tree)
 

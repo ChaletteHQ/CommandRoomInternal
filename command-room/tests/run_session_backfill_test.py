@@ -51,7 +51,8 @@ def _events(ws: Path) -> list[dict]:
 
 ITEMS = [
     {"session_id": "h1", "type": "commitment", "summary": "Owe Priya the Q2 numbers",
-     "data": {"kind": "promise"}, "person_ids": ["person_042"]},
+     "data": {"kind": "promise", "due": "2026-05-02", "owner_id": "person_001",
+              "counterparty_id": "person_042"}, "person_ids": ["person_042"]},
     {"session_id": "h1", "type": "decision", "summary": "Sunset the legacy onboarding flow"},
     {"session_id": "h2", "type": "interaction", "summary": "Reviewed the roadmap with Ken",
      "data": {"channel": "session"}},

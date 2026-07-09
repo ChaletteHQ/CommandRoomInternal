@@ -53,12 +53,15 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
 
 2. **Read the last 60 days of sessions.** Resolve the session-transcript MCP at runtime by tool-name (the server id is per-install — never hard-code it, same as Granola / Calendar). List every session whose last activity is within 60 days and read each transcript. (No session-transcript MCP → say so and stop; nothing to write. Skip-not-fail per `shared/RELIABILITY.md`.)
 
-3. **Extract only what never became an event.** For each transcript, identify the concrete commitments, decisions, interactions, and deliverables; cross-reference the existing `events.jsonl` and DROP anything already logged. Build one item per survivor — the SAME shape session-sweep uses (commitments MUST classify `data.kind`; deliverables use `type: note` with `data.recovered_kind: "deliverable"`; summaries only, never raw text; resolve `person_ids` / `primary_thread_id` when confident):
+3. **Extract only what never became an event.** For each transcript, identify the concrete commitments, decisions, interactions, and deliverables; cross-reference the existing `events.jsonl` and DROP anything already logged. Build one item per survivor — the SAME shape session-sweep uses, including session-sweep's full commitment capture block (v4.5.2 C1 parity; the shared write core enforces it): `data.kind` classified with the promise-vs-task rule ("send X to [person]" is a promise, not a task), `data.due` proposed from source language (relatives resolved against the SESSION's date, not today's) or explicit `data.no_due: true`, `data.counterparty_id` or free-text `data.counterparty_name` (never a guessed id), `data.owner_id` when confident. Deliverables use `type: note` with `data.recovered_kind: "deliverable"`; summaries only, never raw text; resolve `person_ids` / `primary_thread_id` when confident:
 
    ```python
    items = [
      {"session_id": "<id>", "type": "commitment", "summary": "<the promise>",
-      "data": {"kind": "task"}, "person_ids": ["person_042"]},
+      "data": {"kind": "promise", "due": "2026-05-02", "owner_id": "<primary user id>",
+               "counterparty_id": "person_042"}, "person_ids": ["person_042"]},
+     {"session_id": "<id>", "type": "commitment", "summary": "<a self-owed item, no date in source>",
+      "data": {"kind": "task", "no_due": True, "owner_id": "<primary user id>"}},
      {"session_id": "<id>", "type": "decision",    "summary": "<what was decided>"},
      {"session_id": "<id>", "type": "interaction", "summary": "<who / what>",
       "data": {"channel": "session"}},

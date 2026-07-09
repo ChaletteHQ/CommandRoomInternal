@@ -202,6 +202,8 @@ The customer-facing flow for switching to a new workspace is just: re-run `set u
 
 `mcp__scheduled-tasks__list_scheduled_tasks`. Build set of `{taskId, cron, prompt}`.
 
+**Vantage guard — BLOCKING, before any registration (v4.5.2 R3 — F-40):** the scheduler registry is MACHINE-LOCAL. If the list comes back with zero Command Room tasks, run `task_watchdog.detect_registry_vantage(ws, records)` (plugin `shared/scripts/`) before treating this as a fresh install. If it returns a finding, the workspace's own records say schedules were already set up and (usually) running — an empty registry here means this chat cannot see that scheduler: a cloud/remote session, or a second computer. Registering now would create a duplicate task set in the wrong place (the F-38 double-fire class; in a cloud session the registrations land in a throwaway VM). So STOP and say, in substance: *"Your workspace shows Command Room schedules already set up[, with runs as recent as [time]], but I can't see that scheduler from this chat — this looks like a cloud session or a different computer. If you want a full check or a re-register, open a local (non-cloud) chat on the computer where Command Room runs. If you're deliberately setting up a SECOND computer, tell me that's what you want and I'll continue."* Proceed only on that explicit in-chat confirmation (per-machine second setups are a real, supported case — the sweep needs one) — never silently.
+
 **Legacy task migration (v2.9-v2.10.1 → v2.10.2):**
 
 For each legacy taskId found in the user's existing schedule, DISABLE it via `update_scheduled_task(enabled: false)` and surface in the install summary as "migrated to [new name]":
@@ -551,9 +553,9 @@ The v2.14.11+ daily auto-refresh scheduled task `cr-refresh-workspace-map` is RE
 
 **Migration for existing customers (anyone with the task already registered):** Phase 1's legacy-taskId migration list (above) now includes `cr-refresh-workspace-map`. On next `set up command room schedules` run, the task is DISABLED via `update_scheduled_task(enabled: false)` and surfaced in the install summary as: *"Removed the daily Workspace Map auto-refresh — the `↻ Refresh` button on your Workspace Map still works."*
 
-For each created schedule, log a `schedule_created` event:
+For each created schedule, log a `schedule_created` event (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 ```jsonl
-{"type":"schedule_created","ts":"<ISO>","data":{"taskId":"<id>","cron":"<expr>","label":"<description>"}}
+{"type":"schedule_created","data":{"taskId":"<id>","cron":"<expr>","label":"<description>"}}
 ```
 
 ## Phase 3.5 — Post-registration verification (v2.14.24+ — bootloader pattern)
@@ -685,9 +687,9 @@ The prompt receives the chunk window (start/end dates) as part of the orchestrat
 
 ### Step 3: log the schedule
 
-For each chunk:
+For each chunk (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 ```jsonl
-{"type":"backfill_chunk_scheduled","ts":"<ISO>","data":{"chunk_n":N,"of":M,"fireAt":"<ISO>","window_start":"<date>","window_end":"<date>","tier":"<light|medium|heavy>"}}
+{"type":"backfill_chunk_scheduled","data":{"chunk_n":N,"of":M,"fireAt":"<ISO>","window_start":"<date>","window_end":"<date>","tier":"<light|medium|heavy>"}}
 ```
 
 ### Step 4: surface to user as part of onboarding close-out

@@ -1,6 +1,6 @@
 ---
 name: show-my-list
-description: "Surfaces the user's curated 'discuss / follow-up later' list — items captured via the `add to my list` action across scheduled tasks. Read-only review surface. Triggers: 'show my list', 'whats on my list', 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list'. Use this when you want a batch view of everything you've flagged for later conversation, instead of context-switching when each item was originally captured."
+description: "Surfaces the user's curated 'discuss / follow-up later' list — items captured via the `add to my list` action across scheduled tasks. Read-only review surface. Triggers: 'show my list', 'whats on my list', 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list'. Use this when you want a batch view of everything you've flagged for later conversation, instead of context-switching when each item was originally captured. Does NOT fire on 'show my reminders' / 'my reminders' / 'remind me about' (show-my-reminders — the date-pinned reminder lane)."
 ---
 
 # show-my-list
@@ -57,9 +57,14 @@ for e in events:
         if tid is not None:
             resolved_seqs.add(tid)
 
-dismissed_seqs = {(e.get('data') or {}).get('target_id')
-                  for e in events if e.get('type') == 'chat_dismissal'}
-dismissed_seqs.discard(None)
+# v4.6.0 S4 — dismissal liveness comes from THE mute ledger: honors the
+# TTL the dismissal was written with AND any later unmute
+# (chat_dismissal_cleared). Pre-S4 this filter treated every historic
+# skip as permanent — a 24h skip suppressed the item forever.
+import datetime
+from mute_ledger import active_dismissal_target_ids
+dismissed_seqs = active_dismissal_target_ids(
+    events, datetime.datetime.now(datetime.timezone.utc).isoformat())
 
 open_items = [e for e in discuss_items
               if e.get('seq') not in resolved_seqs
@@ -135,16 +140,15 @@ The canonical renderer applies all v2.13.0+ validators (action verbs in CANONICA
 Before posting the widget, append a `pack_run` event to events.jsonl. **Use the canonical helper `log_pack_run` (`shared/scripts/log_pack_run.py`), which routes through the locked writer `atomic_append_jsonl` (SPEC GATE1 / A1) — do NOT hand-roll a `next_seq`+`open('a')` append or a raw `>>`.** The event shape:
 
 ```python
-{
-    "type": "pack_run",
-    "ts": <now ISO>,
-    "source_skill": "show-my-list",
-    "data": {
-        "kind": "list",
-        "items_surfaced": n_open,
-        "fired_via": "user-trigger",
-    }
-}
+from log_pack_run import log_pack_run
+log_pack_run(
+    workspace_root=WORKSPACE_ROOT,
+    kind="list",                 # non-task fire-marker; not a scheduled-task receipt
+    surfaced=n_open,
+    duration_ms=elapsed_ms,
+    source_skill="show-my-list",
+    fired_via="manual",          # canonical vocabulary (v4.5.2 R1); legacy "user-trigger" still parses
+)
 ```
 
 apply-choices reads the most recent fire-marker (within 60 min) to identify which orchestrator's handler to dispatch through. Without this event, clicking `resolved` or `skip` on a discuss-list item silently no-ops because apply-choices can't tell what surface it came from. (This was the v2.7.x→v2.14.18 silent-no-op bug from the simplify-pass Batch 7 finding #4.)
@@ -168,9 +172,49 @@ If 0 items match: surface plain English `Your list is empty — nothing set asid
 
 Local read of events.jsonl + the one Step 3 fire-marker append + render through canonical pipeline.
 
+## Mute ledger mode — `show muted` / `show snoozed` (v4.6.0 S4)
+
+The SECOND surface this skill renders: every live mute, so a timed mute
+stops being a one-way door. On "show muted" / "show snoozed":
+
+```python
+import sys, datetime; sys.path.insert(0, "shared/scripts")
+from mute_ledger import live_mutes
+from cru_match import load_events_defensively
+events, _ = load_events_defensively("<WORKSPACE>/_hq/data/events.jsonl")
+rows = live_mutes(events, datetime.datetime.now(datetime.timezone.utc).isoformat())
+```
+
+One widget row per ledger row, oldest first: what was muted (the row's
+`note`, else its `target_id` resolved to the referenced item's title, else
+the dismissal's `reason`), which chat it came from (`surface`), and the
+remaining time VERBATIM from `ttl_label` ("3 days left" — every mute states
+its duration, the F-59 rule). Actions per row: `unmute` (**Unmute**) ·
+`skip` (**Snooze (1 day)** — hides the ledger row for a day, never touches
+the underlying mute). Embed the row's dismissal `seq` verbatim (widget
+identity contract); pass `source_skill: "show-my-list"` and write the same
+Step 3 fire-marker. Dispatch: apply-choices § show-my-list mute-ledger rows
+(`unmute` → the ledger's clear writer; ack says the item re-surfaces on its
+next chat). 0 live mutes → plain English: `Nothing is muted right now.` —
+no widget, no fire-marker.
+
+Fences: permanent never-track rules are NOT in this ledger (they are
+suppression rules in the workspace config, lifted by editing the rules
+file — when any exist, add ONE footer line with their count); learned
+suppressions (surface-preferences) are a separate durable layer, also not
+timed mutes.
+
 ## Trigger pattern
 
-`show my list` / `whats on my list` / `what to discuss` / `what do i need to discuss` / `discuss list` / `show discuss list` / `my list`
+`show my list` / `whats on my list` / `what to discuss` / `what do i need to discuss` / `discuss list` / `show discuss list` / `my list` / `show muted` / `show snoozed`
+
+## Routing (full trigger corpus)
+
+The mute-ledger phrase family (v4.6.0 S4) rides on this skill — the
+description is budget-capped (G11), so these route via this section (same
+rule as the other budget-capped skills; enforced by tests/triggers.yaml).
+
+> Also fires on: 'show muted', 'show snoozed', 'what's muted', 'what did I snooze' — the mute-ledger mode: every live snooze/mute with its remaining time and an Unmute action. Does NOT fire on 'never track' rule management (those are permanent suppression rules, not timed mutes).
 
 ## Why this pattern
 
@@ -180,6 +224,7 @@ This is the pattern productivity systems like the GTD "next-action list" use —
 
 ## See also
 
+- `show-my-reminders` — the OTHER personal lane, fenced by design: reminders are date-pinned nags (`reminder` events, pin to the morning brief daily until cleared); this list is the discuss-later queue (`commitment_to_discuss`, surfaces only when pulled). Neither skill reads the other's events, and the trigger families never cross ("my list" vs "my reminders")
 - `add-to-my-list` action (defined in CHAT_ACTION_WIDGET.md action reference) — the capture verb
 - Past Meetings + Pulse orchestrators — primary surfaces that emit items into the list
 - `usage report` — separate read of events.jsonl for telemetry; this skill is for action items

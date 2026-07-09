@@ -97,6 +97,19 @@ def _recently_excluded(workspace_root, within_days: int = 7) -> set:
     if now is not None:
         from datetime import timedelta
         floor = now - timedelta(days=within_days)
+    # v4.6.0 S4 — chat_dismissal exclusion honors the mute ledger: an unmuted
+    # (chat_dismissal_cleared) dismissal no longer suppresses the person.
+    # Best-effort: if the ledger helper is unavailable, every dismissal's seq
+    # counts as live (pre-S4 behavior, never a crash).
+    live_dismissal_seqs = None
+    try:
+        from mute_ledger import live_mutes
+        live_dismissal_seqs = {
+            row["seq"] for row in live_mutes(events, _now_iso())
+            if row.get("seq") is not None
+        }
+    except Exception:
+        live_dismissal_seqs = None
     excluded: set = set()
     for ev in events:
         et = ev.get("type")
@@ -109,8 +122,15 @@ def _recently_excluded(workspace_root, within_days: int = 7) -> set:
         if et in ("email_sent", "relationship_move_suggested"):
             if floor is None or (dt is not None and dt >= floor):
                 excluded |= ids
-        elif et in ("dont_forget_snooze", "chat_dismissal"):
+        elif et == "dont_forget_snooze":
             excluded |= ids
+        elif et == "chat_dismissal":
+            if (
+                live_dismissal_seqs is None
+                or ev.get("seq") is None
+                or ev.get("seq") in live_dismissal_seqs
+            ):
+                excluded |= ids
     return excluded
 
 

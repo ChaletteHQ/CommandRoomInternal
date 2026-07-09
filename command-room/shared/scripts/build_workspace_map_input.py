@@ -298,6 +298,10 @@ def _aggregate_commitments(
         if owner and owner != user_id:
             owes_by_person[owner] = owes_by_person.get(owner, 0) + 1
             age_str, age_h = _humanize_age(ts, now)
+            # v4.5.2 R1b: "stuck" here is a legacy artifact-template token
+            # meaning overdue-by-due-date (the artifact CSS/JS key on it).
+            # Any VISIBLE label rendered from it says "overdue" (see
+            # orgs-map-artifact renderStuckLine) — never surface "stuck".
             state = "stuck" if is_overdue else "theyowe"
             tone = "stuck" if is_overdue else None
             preview = title + (f" · due {due}" if due else "")

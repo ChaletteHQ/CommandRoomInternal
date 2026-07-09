@@ -69,14 +69,36 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
 
 2. **Resolve the session-transcript MCP at runtime and list active sessions.** The session-info server id is per-install (like the Granola and Calendar servers) — resolve it at runtime by tool-name, never hard-code it. List the sessions whose last activity is at/after the Step-1 floor. Read each session's transcript. (No session-transcript MCP available, or no sessions in the window → skip to Step 4 with an empty item list; the receipt still lands. Skip-not-fail per `shared/RELIABILITY.md`.)
 
-3. **Extract only what never became an event.** For each transcript, identify the concrete commitments, decisions, interactions, and deliverables. Then cross-reference the recent `events.jsonl` window and DROP anything already logged (past-meetings, reconcile-sent, or a writing skill already captured it) — this pass recovers only the misses. For each survivor build one item:
+3. **Extract only what never became an event.** For each transcript, identify the concrete commitments, decisions, interactions, and deliverables. Then cross-reference the recent `events.jsonl` window and DROP anything already logged (past-meetings, reconcile-sent, or a writing skill already captured it) — this pass recovers only the misses.
+
+   **Commitments run the SAME capture block as every other commitment writer** (`scan-for-commitments` Step 3 is the reference text; meeting-notes and past-meetings comply — the sweep is not exempt). For every recovered commitment, per `shared/COMMITMENT_SCHEMA.md`:
+
+   - **Kind (Stage D — REQUIRED):** counterparty determinable → `"promise"`; self-owed with no counterparty → `"task"`; scheduling intent → `"scheduling"`; genuinely ambiguous → `"promise"` + `data.pending_review: true`. **"Send X to [person]" has a counterparty — it is a promise, not a task.** A task is self-owed with NO counterparty by definition; the write core rejects a task that names one.
+   - **Due (S2 due-nudge — REQUIRED):** propose `data.due` (`YYYY-MM-DD`) from the source language OR set `data.no_due: true` explicitly — silence is not an option; the write core rejects a commitment with neither. Resolve relative phrases against the session's own date: in a Jul 7 chat, "before tomorrow's call" → `2026-07-08`, "Thursday" → the next Thursday. An undated capture is invisible in every due-ranked surface on exactly the day it matters (the F-31 → F-44 chain).
+   - **Counterparty (Stage E — REQUIRED when determinable):** set `data.counterparty_id` (canonical `person_NNN`, auto-joined into `person_ids` by the write core) for who the deliverable is owed TO / who owes it. When the counterparty is named but resolves to no person record, set free-text `data.counterparty_name` — never guess a person_id (unchanged rule), and never drop the name on the floor: without a counterparty receipt the item never enters chase or meeting matching.
+   - **Owner:** set `data.owner_id` when confident — the primary user's id (`is_primary_user: true` in entities) for things the CEO owes; the named person's id for things owed to the CEO. Omit when not confident (capture always succeeds); the write core stamps `pending_review` on an ownerless promise.
+   - **pending_review (safety inversion):** when attribution confidence is low — unresolved counterparty name, ambiguous owner — set `data.pending_review: true` yourself. The write core ALSO stamps it deterministically for those cases (absence of the flag is not consent; nothing auto-resolves a flagged item without a human confirmation), so a forgotten flag cannot slip a low-confidence capture past the human gate.
+
+   For each survivor build one item:
 
    ```python
    items = [
-     # commitment — MUST classify kind (counterparty promise -> promise;
-     # self-owed -> task; scheduling intent -> scheduling; discuss item -> agenda):
-     {"session_id": "<id>", "type": "commitment", "summary": "<the promise, one line>",
-      "data": {"kind": "task"}, "person_ids": ["person_042"]},
+     # commitment — full capture block (kind + due/no_due + counterparty):
+     {"session_id": "<id>", "type": "commitment",
+      "summary": "Send the positioning briefs to Erick before tomorrow's call",
+      "data": {"kind": "promise", "due": "2026-07-08",
+               "owner_id": "<primary user id>", "counterparty_id": "person_017"},
+      "person_ids": ["person_017"]},
+     # counterparty named but unresolved -> counterparty_name, no guessed id
+     # (the write core stamps pending_review):
+     {"session_id": "<id>", "type": "commitment",
+      "summary": "Soft-sell the video-testimonial idea to Michelle at tomorrow's call",
+      "data": {"kind": "promise", "due": "2026-07-08",
+               "owner_id": "<primary user id>", "counterparty_name": "Michelle"}},
+     # genuinely no date in the source -> say so explicitly:
+     {"session_id": "<id>", "type": "commitment",
+      "summary": "Move Evan to the new version as the first user",
+      "data": {"kind": "task", "no_due": True, "owner_id": "<primary user id>"}},
      {"session_id": "<id>", "type": "decision",   "summary": "<what was decided>"},
      {"session_id": "<id>", "type": "interaction","summary": "<who / what>",
       "data": {"channel": "session"}, "person_ids": ["person_017"]},
@@ -85,13 +107,19 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
       "data": {"recovered_kind": "deliverable"}},
    ]
    ```
-   Resolve `person_ids` / `primary_thread_id` against `entities.json` when confident; omit when not (capture always succeeds). Summaries only — never the raw transcript text.
+   Resolve `person_ids` / `primary_thread_id` against `entities.json` when confident; omit when not (capture always succeeds). Set top-level `classification_confidence` (0–1) on recovered commitments — the daily surfaces filter on it, and the write core stamps `pending_review` below threshold. Summaries only — never the raw transcript text.
 
 4. **Write + receipt — ONE call.** It dedups every item on its content hash through `.source_refs.idx`, appends the survivors via `append_event()`, and lands the `session_sweep_run` receipt:
 
    ```python
    receipt = sweep_and_receipt("<abs workspace root>", items,
-                               sessions_scanned=<n_sessions_read>, window_hours=24)
+                               sessions_scanned=<n_sessions_read>, window_hours=24,
+                               window_desc=<"since-cursor <ISO>" when a cursor scoped
+                                            this run — the receipt records the REAL
+                                            window, not the default label (F-08 P2c)>,
+                               fired_via=<"scheduled" on the nightly fire;
+                                          "manual" on a 'run session sweep' chat
+                                          phrase or Run Now — v4.5.2 receipt contract>)
    ```
 
 5. **Self-validate against the event (mandatory).**

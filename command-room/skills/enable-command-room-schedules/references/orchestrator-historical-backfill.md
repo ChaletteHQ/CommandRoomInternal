@@ -131,9 +131,9 @@ This is the rule that prevents the 12-month historical backfill from cluttering 
 
 Write `_hq/data/.backfill_cursor` with `last_completed_chunk: N` (single-line file, overwrite).
 
-Append:
+Append (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 ```jsonl
-{"type":"pack_run","ts":"<ISO>","seq":<seq>,"data":{"kind":"historical_backfill","chunk_n":N,"of":M,"window_start":"<date>","window_end":"<date>","tier":"<light|medium|heavy>","status":"complete","mail_threads":<count>,"calendar_events":<count>,"drive_files":<count>,"granola_notes":<count>,"slack_dms":<count>,"new_provisional_persons":<count>,"new_proposed_projects":<count>,"errors":[],"duration_seconds":<N>}}
+{"type":"pack_run","data":{"kind":"historical_backfill","chunk_n":N,"of":M,"window_start":"<date>","window_end":"<date>","tier":"<light|medium|heavy>","status":"complete","mail_threads":<count>,"calendar_events":<count>,"drive_files":<count>,"granola_notes":<count>,"slack_dms":<count>,"new_provisional_persons":<count>,"new_proposed_projects":<count>,"errors":[],"duration_seconds":<N>}}
 ```
 
 # Phase 6 — Chat output (per Rule 9 — minimal, plain English)

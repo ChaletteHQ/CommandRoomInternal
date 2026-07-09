@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for stall_detector — v3.14.1.2 canonical-shape edition.
+"""Tests for stall_detector — v4.5.2 C3 derive-on-read edition.
 
 Covers:
 - Reads canonical entities.threads (nested under `entities` wrapper).
@@ -7,11 +7,22 @@ Covers:
 - Handles both flat top-level and nested-under-`entities` shapes.
 - All 6 statuses (active/exploring/paused/blocked/dormant/archived) — including
   archived = never flagged.
-- Primary baseline is whichever is most recent: thread.last_activity field OR
-  event-scan most-recent ts.
+- C3 baseline rule: events (top-level primary_thread_id + related_thread_ids,
+  REAL substrate shape per DATA_CONTRACT v2.2) STRICTLY beat the deprecated
+  thread.last_activity field; the field is a zero-event fallback only.
+- FINDINGS F-54 regression: a fossil record stamp can never make a project
+  with fresh events read as stalled (and the reverse — genuinely quiet
+  projects flag with the honest event-derived day count).
+- apply_live_check — the F-57 dormant-scan-discipline gate.
 - Defensive cases (missing files, malformed JSON, no threads).
 - Config override via skill_config_writer.
 - v3.14.1.x read-only contract (no events written during detection).
+
+FIXTURE SHAPE NOTE (the realdata-fixture gotcha): events here carry
+`primary_thread_id` at the event's TOP LEVEL — the canonical v2.2 shape that
+live substrates actually have. The pre-C3 fixture put the id under `data`,
+mirroring the detector's wrong assumption, which is exactly how F-54 shipped
+with a green suite. Legacy data-level shapes keep their own explicit tests.
 """
 
 from __future__ import annotations
@@ -26,7 +37,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared" / "scripts"))
 
-from stall_detector import detect_stalled_projects  # noqa: E402
+from stall_detector import detect_stalled_projects, apply_live_check  # noqa: E402
 from skill_config_writer import save_skill_config  # noqa: E402
 
 
@@ -38,13 +49,16 @@ def _days_ago_date(n: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=n)).date().isoformat()
 
 
-def _event(event_type: str, thread_id: str, days_ago: int, seq: int = 1) -> dict:
+def _event(event_type: str, thread_id: str, days_ago: int, seq: int = 1, **extra) -> dict:
+    """REAL substrate shape: thread ids live at the event's top level."""
     return {
         "seq": seq,
         "ts": _days_ago_iso(days_ago),
         "type": event_type,
         "source_skill": "test",
-        "data": {"project_id": thread_id},
+        "primary_thread_id": thread_id,
+        "data": {},
+        **extra,
     }
 
 
@@ -181,7 +195,7 @@ class TestStallDetector(unittest.TestCase):
         self._write_substrate_canonical([proj], [])
         self.assertEqual(detect_stalled_projects(self.workspace), [])
 
-    # --- Baseline source priority ---
+    # --- Baseline source priority (C3: events strictly beat the fossil) ---
 
     def test_event_scan_overrides_stale_last_activity_field(self):
         """If a meeting event happened more recently than thread.last_activity
@@ -196,8 +210,71 @@ class TestStallDetector(unittest.TestCase):
         # Event 10 days ago wins over field 50 days ago → under 14-day threshold
         self.assertEqual(flags, [])
 
+    def test_f54_regression_fossil_field_never_hides_fresh_events(self):
+        """FINDINGS F-54 exact scenario: project record last_activity frozen
+        weeks ago (the fossil — no code maintains the field), meetings +
+        commitments written through TODAY at the REAL top-level event shape.
+        The project must be structurally incapable of appearing stalled."""
+        self._write_substrate_canonical(
+            threads=[{"id": "project_acme", "status": "active",
+                      "first_seen": _days_ago_date(120),
+                      "last_activity": _days_ago_date(42)}],  # "May 27" fossil
+            events=[
+                _event("meeting", "project_acme", days_ago=0, seq=101),
+                _event("commitment", "project_acme", days_ago=0, seq=102),
+                _event("commitment", "project_acme", days_ago=1, seq=100),
+            ],
+        )
+        self.assertEqual(detect_stalled_projects(self.workspace), [],
+                         "same-day substrate activity read as stalled — F-54 regressed")
+
+    def test_f54_reverse_genuinely_quiet_project_flags_with_honest_count(self):
+        """The reverse guarantee: a project whose events really did stop
+        flags with the EVENT-derived day count — even when the fossil field
+        would claim it's fresher (a stale record stamp can't suppress a real
+        stall either)."""
+        self._write_substrate_canonical(
+            threads=[{"id": "project_001", "status": "active",
+                      "first_seen": _days_ago_date(90),
+                      "last_activity": _days_ago_date(5)}],  # fossil claims fresh
+            events=[_event("meeting", "project_001", days_ago=20, seq=7)],
+        )
+        flags = detect_stalled_projects(self.workspace)
+        self.assertEqual(len(flags), 1)
+        self.assertEqual(flags[0]["baseline_source"], "event_scan")
+        self.assertEqual(flags[0]["days_since_activity"], 20)
+        self.assertEqual(flags[0]["last_event_seq"], 7)
+
+    def test_related_thread_ids_count_as_activity(self):
+        """An event whose related_thread_ids[] references the project is
+        activity for it (DATA_CONTRACT v2.2 multi-thread events)."""
+        ev = _event("decision", "project_other", days_ago=2, seq=50,
+                    related_thread_ids=["project_001"])
+        self._write_substrate_canonical(
+            threads=[{"id": "project_001", "status": "active",
+                      "first_seen": _days_ago_date(60),
+                      "last_activity": _days_ago_date(40)}],
+            events=[ev],
+        )
+        self.assertEqual(detect_stalled_projects(self.workspace), [])
+
+    def test_low_confidence_events_do_not_count(self):
+        """classification_confidence below the documented 0.40 floor doesn't
+        reset staleness (matches computed_last_activity, VIEW_GENERATION.md)."""
+        ev = _event("interaction", "project_001", days_ago=1, seq=9,
+                    classification_confidence=0.2)
+        self._write_substrate_canonical(
+            threads=[{"id": "project_001", "status": "active",
+                      "first_seen": _days_ago_date(60)}],
+            events=[ev],
+        )
+        flags = detect_stalled_projects(self.workspace)
+        self.assertEqual(len(flags), 1)
+        self.assertEqual(flags[0]["baseline_source"], "first_seen")
+
     def test_last_activity_field_used_when_no_events(self):
-        """No events tied to thread — fall back to thread.last_activity field."""
+        """No events tied to thread — the deprecated field is the legitimate
+        zero-event fallback (fresh-ingest record stamps)."""
         self._write_substrate_canonical(
             threads=[{"id": "project_001", "status": "active",
                       "first_seen": _days_ago_date(60),
@@ -220,10 +297,24 @@ class TestStallDetector(unittest.TestCase):
         self.assertEqual(flags[0]["baseline_source"], "first_seen")
         self.assertIn("no activity since", flags[0]["recommended_action"])
 
-    # --- primary_thread_id event support ---
+    # --- Legacy event shapes (parsed forever — append-only history) ---
 
-    def test_event_with_primary_thread_id_field_recognized(self):
-        """Newer events use `data.primary_thread_id` instead of `data.project_id`."""
+    def test_legacy_data_level_project_id_still_recognized(self):
+        """Pre-v2.2 writers put the id under data.project_id."""
+        ev = {
+            "seq": 1, "ts": _days_ago_iso(5), "type": "meeting", "source_skill": "test",
+            "data": {"project_id": "project_001"},
+        }
+        self._write_substrate_canonical(
+            threads=[{"id": "project_001", "status": "active",
+                      "first_seen": _days_ago_date(60),
+                      "last_activity": _days_ago_date(30)}],
+            events=[ev],
+        )
+        self.assertEqual(detect_stalled_projects(self.workspace), [])
+
+    def test_legacy_data_level_primary_thread_id_still_recognized(self):
+        """Some transitional writers put primary_thread_id under data."""
         ev = {
             "seq": 1, "ts": _days_ago_iso(5), "type": "meeting", "source_skill": "test",
             "data": {"primary_thread_id": "project_001"},
@@ -236,6 +327,58 @@ class TestStallDetector(unittest.TestCase):
         )
         # Event 5 days ago wins → no flag (under 14-day threshold)
         self.assertEqual(detect_stalled_projects(self.workspace), [])
+
+    # --- apply_live_check (F-57 dormant-scan discipline) ---
+
+    def _one_stalled_flag(self) -> list[dict]:
+        self._write_substrate_canonical(
+            threads=[{"id": "project_001", "status": "active",
+                      "first_seen": _days_ago_date(90)}],
+            events=[_event("meeting", "project_001", days_ago=30, seq=3)],
+        )
+        flags = detect_stalled_projects(self.workspace)
+        self.assertEqual(len(flags), 1)
+        return flags
+
+    def test_live_check_drops_flag_with_reason_when_live_signal_is_fresh(self):
+        """Substrate-quiet + live-active = not stalled; dropped WITH the why."""
+        flags = self._one_stalled_flag()
+        kept, dropped = apply_live_check(flags, {
+            "project_001": {"live_last_iso": _days_ago_date(2), "source": "gmail",
+                            "detail": {"subject": "re: rollout"}},
+        })
+        self.assertEqual(kept, [])
+        self.assertEqual(len(dropped), 1)
+        self.assertIn("gmail", dropped[0]["drop_reason"])
+        self.assertIn("2 days ago", dropped[0]["drop_reason"])
+
+    def test_live_check_keeps_flag_with_honest_count_when_still_over_threshold(self):
+        """Live touch newer than substrate but still past threshold → kept,
+        day-count corrected to the live date."""
+        flags = self._one_stalled_flag()
+        kept, dropped = apply_live_check(flags, {
+            "project_001": {"live_last_iso": _days_ago_date(20), "source": "calendar"},
+        })
+        self.assertEqual(dropped, [])
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["days_since_activity"], 20)
+        self.assertTrue(kept[0].get("live_checked"))
+
+    def test_live_check_no_signal_keeps_flag_unchanged(self):
+        flags = self._one_stalled_flag()
+        kept, dropped = apply_live_check(flags, {"project_001": {}})
+        self.assertEqual(dropped, [])
+        self.assertEqual(kept, flags)
+
+    def test_live_check_older_signal_changes_nothing(self):
+        """A live signal OLDER than the substrate baseline is not evidence
+        of quiet — the substrate already knew better."""
+        flags = self._one_stalled_flag()
+        kept, dropped = apply_live_check(flags, {
+            "project_001": {"live_last_iso": _days_ago_date(45), "source": "gmail"},
+        })
+        self.assertEqual(dropped, [])
+        self.assertEqual(kept, flags)
 
     # --- Multiple threads, mixed statuses ---
 

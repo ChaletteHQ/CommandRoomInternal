@@ -39,7 +39,7 @@ PURE vs ORCHESTRATOR
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -52,13 +52,20 @@ from cru_match import (  # noqa: E402
     _commitment_id,
     _now_iso,
 )
-from event_time import event_time  # noqa: E402
+from event_time import event_dt, event_time  # noqa: E402
 
 try:
     from source_skill_compat import normalize_source_skill  # noqa: E402
 except ImportError:  # pragma: no cover - back-compat helper always ships
     def normalize_source_skill(value):
         return value
+
+try:
+    from receipts import receipt_task_id  # noqa: E402 — v4.5.2 R1 shared reader
+except ImportError:  # pragma: no cover - contract module always ships
+    def receipt_task_id(ev):
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        return normalize_source_skill(data.get("task_id"))
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +281,14 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
         elif et in DOCUMENT_EVENT_TYPES:
             documents_produced += 1
         elif et == "pack_run":
-            task_id = normalize_source_skill((ev.get("data") or {}).get("task_id"))
+            # v4.5.2 R1 — match through the receipt contract, not data.task_id
+            # alone: kind-only receipts (F-10b's live shape) and legacy cr-*/
+            # underscore spellings (F-49's miss class) all resolve.
+            task_id = receipt_task_id(ev)
             if task_id in MORNING_BRIEF_TASK_IDS:
-                morning_pack_dates.add(_parse_dt(ts).date())
+                d = _parse_dt(ts)
+                if d is not None:
+                    morning_pack_dates.add(d.date())
             elif task_id in PREP_BRIEF_TASK_IDS:
                 prep_briefs += 1
         elif et == "briefing":
@@ -498,6 +510,36 @@ def _build_summary(metrics: dict, hours_estimate: float, label: str) -> str:
 # Orchestrator + audit event (SPEC C1 D1) — copies reconcile_and_receipt.
 # ---------------------------------------------------------------------------
 
+# Idempotency guard (v4.5.2 R4 / F-09+F-36): the writer double-emitted
+# byte-identical month receipts three separate times in the dogfood (Jul 1
+# ~22s apart, Jul 7 17s apart, Jul 8 10s apart — the skill re-emits on some
+# second pass). A value_receipt_generated event for the SAME window + rollup
+# with IDENTICAL numbers inside this interval is the same logical receipt:
+# skip the append and note the skip on the returned receipt. If the numbers
+# CHANGED (events landed between the two calls), the new snapshot is real and
+# still writes — the guard only kills verbatim duplicates.
+IDEMPOTENCY_GUARD = timedelta(minutes=10)
+
+
+def _find_recent_duplicate(events, window_str, rollup, metrics, hours_estimate):
+    """The most recent value_receipt_generated event that duplicates the
+    receipt about to be written (same window, rollup, metrics, and hours),
+    or None. Caller checks its age against IDEMPOTENCY_GUARD."""
+    latest = None
+    for ev in events:
+        if ev.get("type") != "value_receipt_generated":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if (
+            d.get("window") == window_str
+            and d.get("rollup") == rollup
+            and d.get("metrics") == metrics
+            and d.get("hours_estimate") == hours_estimate
+        ):
+            latest = ev  # append-ordered — keep the last one seen
+    return latest
+
+
 def compute_value_receipt(
     workspace_root,
     window_start,
@@ -517,7 +559,11 @@ def compute_value_receipt(
 
     Receipts are point-in-time and window-pure: re-running appends a SECOND event
     (correct — each is a snapshot) and never mutates prior events; there is no
-    cursor state to go stale.
+    cursor state to go stale. EXCEPTION (v4.5.2 R4 / F-36): a re-run inside
+    IDEMPOTENCY_GUARD whose window, rollup, AND numbers are identical to the
+    latest prior receipt skips the append — the returned receipt notes the
+    skip in `duplicate_guard` and the prior event remains the receipt of
+    record (validate_receipt_ran still passes for the window).
 
     Args:
       workspace_root: absolute workspace root (the dir containing _hq/).
@@ -539,6 +585,10 @@ def compute_value_receipt(
         "sections": [ ... ],            # ready to pass to make_brief
         "summary": str,                 # verbatim chat line
         "skipped_lines": int,           # malformed events.jsonl lines tolerated
+        "duplicate_guard": {            # v4.5.2 R4 idempotency note
+            "skipped": bool,            # True = duplicate write suppressed
+            "prior_receipt_ts": str?,   # ts of the receipt of record when skipped
+        },
       }
     """
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -556,6 +606,33 @@ def compute_value_receipt(
 
     sections = _build_sections(metrics, hours_estimate, per_month, rollup)
     summary = _build_summary(metrics, hours_estimate, label)
+
+    # Idempotency guard (v4.5.2 R4 / F-09+F-36): if the latest prior receipt
+    # for this window+rollup carries IDENTICAL numbers and is younger than
+    # IDEMPOTENCY_GUARD, this call is the double-emit bug — skip the append
+    # and note it. The prior event stays the receipt of record.
+    duplicate = _find_recent_duplicate(
+        events, window_str, rollup, metrics, hours_estimate
+    )
+    if duplicate is not None:
+        prior_dt = event_dt(duplicate)
+        now_dt = datetime.now(timezone.utc)
+        if prior_dt is not None and (now_dt - prior_dt) <= IDEMPOTENCY_GUARD:
+            return {
+                "ran": True,
+                "window": window_str,
+                "rollup": rollup,
+                "metrics": metrics,
+                "hours_estimate": hours_estimate,
+                "per_month": per_month,
+                "sections": sections,
+                "summary": summary,
+                "skipped_lines": len(skipped),
+                "duplicate_guard": {
+                    "skipped": True,
+                    "prior_receipt_ts": event_time(duplicate),
+                },
+            }
 
     # ALWAYS append a value_receipt_generated AUDIT event carrying the CODE's
     # numbers — even on an empty window. Enforcement points at THIS event
@@ -589,6 +666,7 @@ def compute_value_receipt(
         "sections": sections,
         "summary": summary,
         "skipped_lines": len(skipped),
+        "duplicate_guard": {"skipped": False},
     }
 
 
@@ -636,6 +714,7 @@ def validate_receipt_ran(workspace_root, *, window=None) -> dict:
 __all__ = [
     "CONSERVATIVE_MINUTES_PER_UNIT",
     "CONSERVATIVE_DISCLAIMER",
+    "IDEMPOTENCY_GUARD",
     "compute_metrics",
     "compute_value_receipt",
     "validate_receipt_ran",

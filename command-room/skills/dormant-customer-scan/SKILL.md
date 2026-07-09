@@ -172,6 +172,7 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
 7. **Write the report.**
    - Save to `_hq/dormant/DORMANT_SCAN_[YYYY-MM-DD].docx` (per CONTRACT Rule 27 — no .md deliverables). Route through `shared/scripts/brief_writer.py` for layout consistency.
    - Return file link + 1-line headline ("12 customers have gone quiet. Top 3 by revenue: Acme Co ($240K, last touch 89 days ago), Northstar Partners ($180K, 67 days), Acme Logistics ($120K, 52 days).")
+8. **Write the scan receipt (v4.5.2 R1 — REQUIRED, every run).** The dogfood found this scan surfacing 4 dormant accounts and leaving zero substrate trace (FINDINGS F-57) — the next scan couldn't dedup its own nags and value receipts couldn't count the work. One line via the canonical helper: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "dormant-scan", fired_via="manual", surfaced=n_flagged, extra_data={"flagged_entity_ids": [...], "live_check_dropped": n_dropped})` — `"scheduled"` for fired_via when configured as a recurring scan. The `flagged_entity_ids` list is what the next scan reads to avoid re-nagging.
 
 ## Executive Output Standard (EXEC1, v3.20.0+)
 

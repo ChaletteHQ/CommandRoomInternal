@@ -148,8 +148,11 @@ def main():
         mb_lines = [l for l in lines if "Morning Brief" in l]
         check("SPEC-2.1 acceptance: exactly ONE flag for the dead morning-brief",
               len(mb_lines) == 1, repr(mb_lines))
-        check("late line names sleep before anything else",
-              "asleep" in mb_lines[0] and "Run Now" in mb_lines[0], mb_lines[0] if mb_lines else "")
+        # v4.5.2 R3 (F-10/F-43/F-47): the pre-R3 line asserted "the computer
+        # was asleep" — a cause the watchdog cannot know. Facts + action only.
+        check("late line asserts no cause (sleep narrative banned), names the action",
+              "asleep" not in mb_lines[0] and "Run Now" in mb_lines[0]
+              and "can't tell" in mb_lines[0], mb_lines[0] if mb_lines else "")
         check("never_authorized line names the one-time permission",
               any("permission" in l and "Reconcile Sent" in l for l in lines), repr(lines))
         check("ok tasks emit nothing",
@@ -169,8 +172,17 @@ def main():
         reports2 = tw.check_tasks(ws2, task_records=recs)
         pm = {r["task"]: r for r in reports2}["past-meetings"]
         check("fresh lastRunAt + stale receipt flags receipt_gap", pm["receipt_gap"] is True, repr(pm))
-        check("lastRunAt keeps cadence status ok (fired, just wrote nothing)",
-              pm["status"] == "ok", pm["status"])
+        # v4.5.2 R2 (F-39 / C3 autopsy): lastRunAt stamps land WITHOUT
+        # execution — 9 tasks stamped at app launch, one receipt. Receipts
+        # are the only served/not-served truth, so a fresh stamp with a
+        # 4-day-old receipt is LATE (+ receipt_gap), never "ok". Pre-R2
+        # this assertion was the inverse and encoded the trust-the-stamp bug.
+        check("stamped-but-receiptless run is late, not ok (stamps untrusted)",
+              pm["status"] == "late", pm["status"])
+        gap_lines = tw.plain_english_lines(reports2)
+        check("late+receipt_gap line says 'shows a recent run… nothing recorded', no sleep guess",
+              any("recorded" in l and "Past Meetings" in l for l in gap_lines)
+              and not any("asleep" in l for l in gap_lines), repr(gap_lines))
 
         print("== workspace binding")
         check("healthy binding returns None", tw.check_workspace_binding(ws) is None)

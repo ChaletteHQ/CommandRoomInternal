@@ -854,10 +854,10 @@ The "I [did the thing]" framing is the canonical voice for auto_apply notices �
 
 ### Step 4.8c — Log per-item events
 
-For each item that surfaced (applies=True and not previously seen), append a `plugin_update_remediation` event to events.jsonl:
+For each item that surfaced (applies=True and not previously seen), append a `plugin_update_remediation` event to events.jsonl (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 
 ```jsonl
-{"seq":<next>,"ts":"<ISO>","type":"plugin_update_remediation","source_skill":"command-room-update-bridge","data":{"manifest_version":"3.4.4","item_id":"v344_refire_commitments","action":"instruct_user","detector_context":{"count":47,"by_shape":{...}}}}
+{"type":"plugin_update_remediation","source_skill":"command-room-update-bridge","data":{"manifest_version":"3.4.4","item_id":"v344_refire_commitments","action":"instruct_user","detector_context":{"count":47,"by_shape":{...}}}}
 ```
 
 The item_id is what makes future re-runs idempotent **for `announce_only` items** — the next time `update command room` fires, `announce_only` items with matching `(manifest_version, item_id)` in events.jsonl are filtered out at Step 4.8a. **`instruct_user` items do NOT use prior-seen idempotency** (v3.13.8.3+, Bug #73 fix); they re-surface as long as their detector still returns `applies: True`. The `plugin_update_remediation` event is still written for `instruct_user` items so audit trails capture every surfacing, but it does not gate future surfacings — only the detector + permanent-decline check do.

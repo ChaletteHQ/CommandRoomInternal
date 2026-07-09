@@ -27,12 +27,39 @@ DESIGN RULES (from the owning spec + Cowork decisions):
   machine clock; workspace TZ is presentation-only (`tz.py`).
 - **One plain-English sentence per problem, only when something is wrong**
   (Rule 28 posture). `plain_english_lines()` is the single formatter every
-  surface uses; `late` names sleep as the likely cause FIRST (W3 — a customer
-  twice misdiagnosed lid-closed stalls as usage limits, 06-30/07-01).
+  surface uses. Lines state FACTS + the one action — never a fabricated
+  cause (v4.5.2 R3, superseding W3's sleep-first wording: the dogfood
+  logged four invented "computer was likely asleep" narratives in one day,
+  F-10/F-43/F-47; the generic common-causes education lives in
+  system-health's self-serve list, framed as possibilities).
 - **The watchdog itself must be un-silent-killable:** it runs inside
   surfaces that already fire (morning-brief step, cleanup Monday note) plus
   the on-demand `system health` trigger (skills/system-health) — never as
   yet another silent task.
+
+TRUTH RULES (v4.5.2 R3 — F-43 P1a/P1b/P2c, F-40, the F-10 lie catalog):
+
+- **Never assert fire history without a receipt.** A registered task with
+  zero receipts is `never_fired` ("hasn't had its first run yet — next fire
+  is [time]"), never part of "ran on their normal schedule" (F-43 P1a
+  invented run history for two tasks registered that morning).
+- **Late serves are read, not ignored.** `late_signals()` reads the
+  `late_fire` events + `fired_via`/`late_tier` receipt fields R2 writes; a
+  task whose newest fire was a catch-up carries `caught_up: True` and is
+  reported AS a dated catch-up ("caught up Wednesday 12:20 AM"), never as
+  "normal schedule" (F-43 P1b/P2c).
+- **Internal consistency is code, not prose.** `health_verdict()` partitions
+  every task into exactly ONE bucket (problem / caught-up / first-run-
+  pending / on-schedule) and computes the summary counts from the
+  partition — a task in any warning can never simultaneously count inside
+  "everything's running" (F-43's self-contradiction).
+- **Vantage before verdict (F-40).** An empty scheduler registry with a
+  substrate full of registration history + run receipts means THIS CHAT
+  CANNOT SEE THE SCHEDULER (cloud/remote session, or another machine) —
+  `detect_registry_vantage()` returns that finding and the verdict becomes
+  "I can't see your scheduler from this chat", never the false total-outage
+  "nothing is registered" (whose named fix would double-register
+  everything).
 
 STATUSES per task:
 
@@ -84,9 +111,10 @@ from schedule_config import (  # noqa: E402
     task_display_name,
 )
 
-# Analytical views owned by insight-generator — weekly-insights' only
-# durable receipt today is the view files themselves (the skill writes no
-# audit event yet), so its receipt is the newest view mtime.
+# Analytical views owned by insight-generator — weekly-insights' pre-v4.5.2
+# fires wrote no audit event, so the view-file mtimes remain a FALLBACK
+# freshness signal forever (append-only history: old installs never gain
+# receipts retroactively). v4.5.2+ fires also write a pack_run receipt.
 _INSIGHT_VIEWS = (
     "TIMELINE.md",
     "RELATIONSHIPS.md",
@@ -95,27 +123,27 @@ _INSIGHT_VIEWS = (
     "THEMES.md",
 )
 
-# Receipt spec per task. `types` are the substrate audit event types that
-# count as "this task fired"; `match` values are accepted against the
-# event's source_skill / data.kind / data.task_id / data.source_skill so
-# legacy spellings (cr-* prefixes, kind underscores) keep matching forever.
-# `views` marks a file-mtime fallback receipt (weekly-insights).
+# Receipt spec per task — DERIVED from the receipt contract
+# (`shared/scripts/receipts.py`, v4.5.2 R1), the single source of truth for
+# receipt types + legacy-spelling normalization. This dict keeps the
+# watchdog's historical shape for its consumers; the matcher itself is
+# `receipts.receipt_task_id` (all legacy spellings — cr-* prefixes,
+# underscore kinds, kind-only payloads — parse forever).
+# `views` marks the file-mtime fallback receipt (weekly-insights).
+from receipts import (  # noqa: E402
+    RECEIPT_TYPES as _RECEIPT_TYPES,
+    get_late_tier as _get_late_tier,
+    last_receipt_times as _last_receipt_times,
+    normalize_fired_via as _normalize_fired_via,
+    normalize_task_id as _normalize_task_id,
+    receipt_task_id as _receipt_task_id,
+)
+
 RECEIPT_SPECS: dict[str, dict] = {
-    "morning-brief": {"types": {"pack_run"}, "match": {"morning-brief", "morning_brief", "cr-morning-brief", "morning-briefing"}},
-    "upcoming-meetings": {"types": {"pack_run"}, "match": {"upcoming-meetings", "upcoming_meetings", "cr-upcoming-meetings"}},
-    "inbox": {"types": {"pack_run"}, "match": {"inbox", "cr-inbox", "cr-inbox-pulse"}},
-    "commitments": {"types": {"pack_run"}, "match": {"commitments", "cr-commitments"}},
-    "pulse": {"types": {"pack_run", "pulse_run"}, "match": {"pulse", "dont_forget", "dont-forget", "cr-dont-forget", "cr-pulse"}},
-    "past-meetings": {"types": {"pack_run"}, "match": {"past-meetings", "past_meetings", "cr-past-meetings"}},
-    "friday-wrap": {"types": {"pack_run"}, "match": {"friday-wrap", "friday_wrap", "weekly-recap", "weekly_recap"}},
-    "relationship-moves": {"types": {"pack_run"}, "match": {"relationship-moves", "relationship_moves"}},
-    "commitment-triage": {"types": {"pack_run"}, "match": {"commitment-triage", "commitment_triage"}},  # Phase 2 Stage D (S4)
-    "cleanup": {"types": {"cleanup_run", "audit_run"}, "match": None},
-    "reconcile-sent": {"types": {"sent_reconcile"}, "match": None},
-    "monthly-report": {"types": {"operator_report_generated", "value_receipt_generated"}, "match": None},
-    "weekly-insights": {"types": set(), "match": None, "views": _INSIGHT_VIEWS},
-    "session-sweep": {"types": {"session_sweep_run"}, "match": None},  # Phase 5 / R1 — receipt is the nightly sweep audit event
+    tid: {"types": set(spec["types"]), "match": None}
+    for tid, spec in _RECEIPT_TYPES.items()
 }
+RECEIPT_SPECS["weekly-insights"]["views"] = _INSIGHT_VIEWS
 
 # The version stamp the bootloader template carries as of Phase 3 (W4).
 # Registered prompts older than the stamp's introduction simply don't have
@@ -168,46 +196,37 @@ def _iter_events(workspace_root) -> Iterable[dict]:
 
 
 def _event_matches_task(ev: dict, spec: dict) -> bool:
+    """Back-compat shim — the matcher is the receipt contract's
+    (`receipts.receipt_task_id`), which parses every legacy shape forever."""
     if ev.get("type") not in spec["types"]:
         return False
-    match = spec.get("match")
-    if not match:
-        return True
-    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-    candidates = {
-        ev.get("source_skill"),
-        data.get("source_skill"),
-        data.get("kind"),
-        data.get("task_id"),
-        data.get("taskId"),
-    }
-    return any(isinstance(c, str) and c in match for c in candidates)
+    tid = _receipt_task_id(ev)
+    return tid is not None and spec is RECEIPT_SPECS.get(tid, spec)
 
 
 def last_receipts(workspace_root, task_ids=None) -> dict[str, Optional[_dt.datetime]]:
     """Newest substrate receipt per task, machine-local naive datetimes.
 
-    One pass over events.jsonl (shard-transparent when events_io is
-    importable). weekly-insights uses the analytical-view mtime fallback.
+    Delegates to the shared receipt reader (`receipts.last_receipt_times`,
+    v4.5.2 R1 — one pass, shard-transparent, all legacy shapes). weekly-
+    insights ALSO checks the analytical-view mtime fallback: pre-v4.5.2
+    fires left no audit event, so the newest of {receipt, view mtime} wins.
     """
     task_ids = list(task_ids) if task_ids is not None else list(RECEIPT_SPECS)
-    out: dict[str, Optional[_dt.datetime]] = {tid: None for tid in task_ids}
     event_tasks = [t for t in task_ids if RECEIPT_SPECS.get(t, {}).get("types")]
+    out: dict[str, Optional[_dt.datetime]] = {tid: None for tid in task_ids}
     if event_tasks:
-        for ev in _iter_events(workspace_root):
-            etype = ev.get("type")
-            if not isinstance(etype, str):
-                continue
-            for tid in event_tasks:
-                spec = RECEIPT_SPECS[tid]
-                if etype in spec["types"] and _event_matches_task(ev, spec):
-                    dt = _to_local_naive(event_dt(ev))
-                    if dt and (out[tid] is None or dt > out[tid]):
-                        out[tid] = dt
+        try:
+            found = _last_receipt_times(workspace_root, event_tasks)
+        except Exception:
+            found = {}
+        for tid, dt in found.items():
+            if tid in out and dt is not None:
+                out[tid] = _to_local_naive(dt)
     for tid in task_ids:
         views = RECEIPT_SPECS.get(tid, {}).get("views")
         if views:
-            newest = None
+            newest = out.get(tid)
             views_dir = Path(workspace_root) / "_hq" / "views"
             for name in views:
                 p = views_dir / name
@@ -245,6 +264,118 @@ def expected_fires(cron: str, now: Optional[_dt.datetime] = None, count: int = 2
                             return fires
         day -= _dt.timedelta(days=1)
     return fires
+
+
+def next_fire(cron: str, now: Optional[_dt.datetime] = None) -> Optional[_dt.datetime]:
+    """The next scheduled fire datetime strictly after `now` — the forward
+    mirror of expected_fires. Machine-local math, same bounded day walk.
+
+    R3 consumer: the `never_fired` render ("hasn't had its first run yet —
+    next fire is [time]") must name a real upcoming time, never invent a
+    past one."""
+    now = now or _now_local()
+    minute_set, hour_set, dom_set, month_set, dow_set = parse_cron(cron)
+    day = now.date()
+    for _ in range(0, 800):  # bound: > 2 years covers any sane cadence
+        cron_dow = (day.weekday() + 1) % 7  # python Mon=0 → cron Sun=0
+        if day.month in month_set and day.day in dom_set and cron_dow in dow_set:
+            for h in sorted(hour_set):
+                for m in sorted(minute_set):
+                    candidate = _dt.datetime.combine(day, _dt.time(h, m))
+                    if candidate > now:
+                        return candidate
+        day += _dt.timedelta(days=1)
+    return None
+
+
+def _human_time(
+    dt_naive: _dt.datetime,
+    workspace_root=None,
+    now: Optional[_dt.datetime] = None,
+) -> str:
+    """Presentation-only: 'Wednesday 12:20 AM' when within ~6 days of now
+    (past or future), '(Jul 2) 12:20 AM' beyond that — a bare weekday would
+    be ambiguous across weeks. Workspace TZ via tz.py when resolvable,
+    machine-local wall time otherwise. Never raises."""
+    now = now or _now_local()
+    aware = dt_naive.astimezone() if dt_naive.tzinfo is None else dt_naive
+    try:
+        from tz import to_local
+
+        local = to_local(aware, workspace_path=workspace_root)
+        if local is not None:
+            aware = local
+    except Exception:
+        pass
+    clock = aware.strftime("%I:%M %p").lstrip("0")
+    ref = now if now.tzinfo is None else now.astimezone().replace(tzinfo=None)
+    if abs(ref - dt_naive) < _dt.timedelta(days=6):
+        return f"{aware.strftime('%A')} {clock}"
+    return f"{aware.strftime('%b')} {aware.day}, {clock}"
+
+
+def late_signals(workspace_root, task_ids=None) -> dict[str, dict]:
+    """One defensive substrate pass for the late-serve evidence the truth
+    rules read (v4.5.2 R3 — F-43 P1b/P2c). Per task:
+
+      receipt_dt / fired_via / late_tier — the task's NEWEST receipt with
+        the run mode + lateness tier it carried (all legacy spellings
+        normalized by the R1 contract).
+      late_fire — the task's newest `late_fire` event (written by
+        late_fire.check_lateness on note/degrade tiers):
+        {dt, tier, lateness_minutes, scheduled_for}.
+
+    Machine-local naive datetimes throughout (the watchdog's clock).
+    """
+    wanted = None
+    if task_ids is not None:
+        wanted = {_normalize_task_id(t) for t in task_ids}
+    out: dict[str, dict] = {}
+
+    def _slot(tid: str) -> dict:
+        return out.setdefault(tid, {
+            "receipt_dt": None, "fired_via": None, "late_tier": None,
+            "late_fire": None,
+        })
+
+    for ev in _iter_events(workspace_root):
+        if not isinstance(ev, dict):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "late_fire":
+            tid = _normalize_task_id(
+                data.get("taskId") or data.get("task_id") or ev.get("source_skill")
+            )
+            if not isinstance(tid, str) or (wanted is not None and tid not in wanted):
+                continue
+            dt = _to_local_naive(event_dt(ev))
+            if dt is None:
+                continue
+            s = _slot(tid)
+            prev = s["late_fire"]
+            if prev is None or dt > prev["dt"]:
+                lm = data.get("lateness_minutes")
+                tier = data.get("tier")
+                sched = data.get("scheduled_for")
+                s["late_fire"] = {
+                    "dt": dt,
+                    "tier": tier if isinstance(tier, str) else None,
+                    "lateness_minutes": lm if isinstance(lm, int) else None,
+                    "scheduled_for": sched if isinstance(sched, str) else None,
+                }
+            continue
+        tid = _receipt_task_id(ev)
+        if tid is None or (wanted is not None and tid not in wanted):
+            continue
+        dt = _to_local_naive(event_dt(ev))
+        if dt is None:
+            continue
+        s = _slot(tid)
+        if s["receipt_dt"] is None or dt > s["receipt_dt"]:
+            s["receipt_dt"] = dt
+            s["fired_via"] = _normalize_fired_via(data.get("fired_via"))
+            s["late_tier"] = _get_late_tier(data)
+    return out
 
 
 def _weekdays_since(start: _dt.datetime, now: _dt.datetime) -> int:
@@ -288,8 +419,16 @@ def check_tasks(
 
     Returns dicts:
       {task, display_name, status, silent, last_fired (ISO|None),
-       expected (ISO|None), last_run_at (ISO|None), receipt_gap (bool),
-       registered (bool)}
+       expected (ISO|None), next_fire (ISO|None), last_run_at (ISO|None),
+       receipt_gap (bool), registered (bool), last_fired_via (str|None),
+       caught_up (bool), catchup (dict|None)}
+
+    `caught_up` (R3 — F-43 P1b/P2c): the task's NEWEST fire served its slot
+    late — a `catchup` fired_via / note-or-degrade `late_tier` on the newest
+    receipt, or a `late_fire` event written alongside it. Cadence-wise the
+    task is not broken (it fired), but it did NOT run "on its normal
+    schedule" and every render must say so, with dates (`catchup` carries
+    fired_at / scheduled_for / tier / lateness_minutes).
     """
     now = now or _now_local()
     ws_config = read_workspace_config(workspace_root)
@@ -306,6 +445,10 @@ def check_tasks(
 
     enabled = {tid: spec for tid, spec in config.items() if spec.get("enabled")}
     receipts = last_receipts(workspace_root, enabled.keys())
+    try:
+        signals = late_signals(workspace_root, enabled.keys())
+    except Exception:
+        signals = {}
     registered_at = parse_ts(ws_config.get("registered_at") or "")
     registered_at = _to_local_naive(registered_at)
 
@@ -320,9 +463,13 @@ def check_tasks(
         except CronParseError:
             recent = []
         expected_latest = recent[0] if recent else None
-        # Effective last fire = strongest available signal for cadence math;
-        # the receipt stays authoritative for "did it actually do its job".
-        effective = max(d for d in (last_fired, last_run_at) if d is not None) if (last_fired or last_run_at) else None
+        # Receipts are the ONLY served/not-served truth (v4.5.2 R2). The
+        # pre-R2 code took max(receipt, lastRunAt) here, which let a
+        # stamped-but-never-executed "run" read as on-schedule forever —
+        # the 2026-07-08 cleanup autopsy proved lastRunAt lands without
+        # execution (F-39: 9 tasks stamped at app launch, ONE receipt).
+        # lastRunAt stays a SECONDARY signal via receipt_gap below.
+        effective = last_fired
 
         if not is_registered:
             status = "not_registered"
@@ -346,6 +493,48 @@ def check_tasks(
             and RECEIPT_SPECS.get(tid, {}).get("types")
         )
 
+        # Late-serve detection (R3 — F-43 P1b/P2c): does the NEWEST fire
+        # evidence say this slot was served late? Signals only count when
+        # they belong to the newest fire — an old late_fire with a normal
+        # receipt after it is history, not a current finding. `last_fired`
+        # can come from the view-mtime fallback (weekly-insights), so the
+        # receipt-borne signals are gated on the receipt actually BEING the
+        # newest fire (within dispatch grace).
+        sig = signals.get(tid) or {}
+        lf = sig.get("late_fire")
+        last_fired_via = None
+        caught_up = False
+        catchup_info = None
+        if last_fired is not None:
+            receipt_is_newest = (
+                sig.get("receipt_dt") is not None
+                and abs(sig["receipt_dt"] - last_fired) <= _FIRE_GRACE
+            )
+            if receipt_is_newest:
+                last_fired_via = sig.get("fired_via")
+            lf_is_newest = bool(
+                lf and lf.get("dt") is not None
+                and abs(lf["dt"] - last_fired) <= _FIRE_GRACE
+            )
+            if status == "ok" and (
+                (receipt_is_newest and sig.get("fired_via") == "catchup")
+                or (receipt_is_newest and sig.get("late_tier") in ("note", "degrade"))
+                or lf_is_newest
+            ):
+                caught_up = True
+                catchup_info = {
+                    "fired_at": last_fired.isoformat(),
+                    "scheduled_for": (lf or {}).get("scheduled_for"),
+                    "tier": (lf or {}).get("tier")
+                            or (sig.get("late_tier") if receipt_is_newest else None),
+                    "lateness_minutes": (lf or {}).get("lateness_minutes"),
+                }
+
+        try:
+            upcoming = next_fire(spec["cron"], now=now)
+        except CronParseError:
+            upcoming = None
+
         reports.append({
             "task": tid,
             "display_name": task_display_name(tid),
@@ -356,9 +545,263 @@ def check_tasks(
             "last_fired": last_fired.isoformat() if last_fired else None,
             "last_run_at": last_run_at.isoformat() if last_run_at else None,
             "expected": expected_latest.isoformat() if expected_latest else None,
+            "next_fire": upcoming.isoformat() if upcoming else None,
             "receipt_gap": receipt_gap,
+            "last_fired_via": last_fired_via,
+            "caught_up": caught_up,
+            "catchup": catchup_info,
         })
     return reports
+
+
+# How fresh a run receipt must be for the vantage line to vouch that the
+# tasks "look alive" — a week covers the sparsest default cadence (weekly).
+_VANTAGE_FRESH = _dt.timedelta(days=7)
+
+
+def detect_registry_vantage(workspace_root, task_records, *, now=None) -> Optional[dict]:
+    """The F-40 guard: an EMPTY machine-local scheduler registry in a chat
+    whose substrate carries registration history (`schedule_created` events
+    or a recorded registered set) means this chat CANNOT SEE the scheduler —
+    a cloud/remote session, or a different computer than the one the tasks
+    run on. The honest verdict is "I can't see your scheduler from this
+    chat", NEVER "nothing is registered" (F-40's false total-outage report,
+    whose named fix would have double-registered all 12 tasks).
+
+    Returns None when the registry is visibly non-empty (any record — the
+    scheduler is in view, normal checks apply) or when the substrate shows
+    no registration history either (a genuinely fresh install — "not set up
+    yet" is then the honest verdict). Otherwise a finding dict:
+      {check, schedule_created_seen, registered_recorded, newest_receipt,
+       receipts_fresh, machine, line}
+    """
+    records = [r for r in (task_records or [])
+               if isinstance(r, dict) and r.get("taskId")]
+    if records:
+        return None
+    now = now or _now_local()
+    ws_config = read_workspace_config(workspace_root)
+    raw = ws_config.get("registered_taskIds")
+    recorded = [t for t in raw if isinstance(t, str)] if isinstance(raw, list) else []
+
+    seen_schedule_created = False
+    newest_receipt: Optional[_dt.datetime] = None
+    machine: Optional[str] = None
+    for ev in _iter_events(workspace_root):
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "schedule_created":
+            seen_schedule_created = True
+            continue
+        tid = _receipt_task_id(ev)
+        if tid is None:
+            continue
+        dt = _to_local_naive(event_dt(ev))
+        if dt is not None and (newest_receipt is None or dt > newest_receipt):
+            newest_receipt = dt
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            m = data.get("machine")
+            machine = m.strip() if isinstance(m, str) and m.strip() else None
+
+    if not seen_schedule_created and not recorded:
+        return None
+
+    fresh = newest_receipt is not None and (now - newest_receipt) <= _VANTAGE_FRESH
+    opener = (
+        "I can't see your scheduler from this chat — that usually means this "
+        "is a cloud or remote session, or a different computer than the one "
+        "your scheduled tasks run on."
+    )
+    closer = (
+        "For a full check, open a local (non-cloud) chat on the computer "
+        "where Command Room is set up."
+    )
+    if fresh:
+        when = _human_time(newest_receipt, workspace_root, now=now)
+        alive = f"Your tasks look alive: the most recent one ran {when}"
+        if machine:
+            alive += f" (on {machine})"
+        line = f"{opener} {alive}. {closer}"
+    elif newest_receipt is not None:
+        when = _human_time(newest_receipt, workspace_root, now=now)
+        line = (
+            f"{opener} I can't tell from here whether your tasks are still "
+            f"running — the most recent recorded run was {when}. {closer}"
+        )
+    else:
+        line = (
+            f"{opener} Your tasks were set up before, but there's no run "
+            f"record I can read from here. {closer}"
+        )
+    return {
+        "check": "registry_vantage",
+        "schedule_created_seen": seen_schedule_created,
+        "registered_recorded": len(recorded),
+        "newest_receipt": newest_receipt.isoformat() if newest_receipt else None,
+        "receipts_fresh": fresh,
+        "machine": machine,
+        "line": line,
+    }
+
+
+def _caught_up_line(r: dict, workspace_root=None, now=None) -> str:
+    """Dated catch-up render (F-43 P2c's fix): name WHEN it caught up and
+    which slot it served — facts only, no cause."""
+    name = r["display_name"]
+    fired = _human_time(_dt.datetime.fromisoformat(r["last_fired"]), workspace_root, now=now)
+    sched_iso = (r.get("catchup") or {}).get("scheduled_for")
+    if sched_iso:
+        try:
+            sched = _human_time(_dt.datetime.fromisoformat(sched_iso), workspace_root, now=now)
+            return (
+                f"Your {name} caught up {fired} — its {sched} run didn't "
+                f"happen on time. The work is done, just later than scheduled."
+            )
+        except ValueError:
+            pass
+    return (
+        f"Your {name}'s most recent run was a late catch-up ({fired}), not an "
+        f"on-schedule fire. The work is done, just later than scheduled."
+    )
+
+
+def _first_run_line(r: dict, workspace_root=None, now=None) -> str:
+    """never_fired render (F-43 P1a's fix): a task with zero receipts has NO
+    fire history to speak of — say so, and name the real next fire time."""
+    name = r["display_name"]
+    if r.get("next_fire"):
+        try:
+            nxt = _human_time(_dt.datetime.fromisoformat(r["next_fire"]), workspace_root, now=now)
+            return (
+                f"Your {name} task hasn't had its first run yet — its next "
+                f"scheduled run is {nxt}."
+            )
+        except ValueError:
+            pass
+    return f"Your {name} task hasn't had its first run yet."
+
+
+def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
+    """R3's one entry point for every health surface (system-health, cleanup's
+    weekly pass, any future daily pass). Vantage guard first, then the
+    partition: every counted task lands in exactly ONE bucket, and the
+    summary counts come from the partition — so a task named in any warning
+    can never simultaneously count inside "everything's running" (F-43's
+    self-contradiction, made structurally impossible).
+
+    Buckets (priority order — first match wins):
+      problems          — late / never_authorized / missing first-install /
+                          receipt_gap: something needs the user.
+      caught_up         — newest fire served its slot late (dated info line).
+      first_run_pending — registered, zero receipts, inside the grace window.
+      on_schedule       — receipted within cadence, served on time.
+    Later-add tasks that simply aren't registered are excluded from the
+    partition entirely (change-schedule owns that render).
+
+    Returns:
+      {vantage (None|finding), reports, on_schedule, caught_up,
+       first_run_pending, problems (task-id lists), summary_line,
+       lines (problem sentences incl. binding), info_lines (dated catch-up +
+       first-run sentences)}
+    """
+    now = now or _now_local()
+    vantage = detect_registry_vantage(workspace_root, task_records, now=now)
+    if vantage is not None:
+        return {
+            "vantage": vantage,
+            "reports": [],
+            "on_schedule": [], "caught_up": [],
+            "first_run_pending": [], "problems": [],
+            "summary_line": vantage["line"],
+            "lines": [],
+            "info_lines": [],
+        }
+
+    reports = check_tasks(workspace_root, now=now, task_records=task_records)
+    binding = check_workspace_binding(workspace_root)
+    on_schedule, caught_up, first_run, problems = [], [], [], []
+    for r in reports:
+        if r["status"] == "not_registered" and not r["first_install"]:
+            continue  # later-add: expected, uncounted; change-schedule renders it
+        if r["status"] in ("late", "never_authorized", "not_registered") or r["receipt_gap"]:
+            problems.append(r)
+        elif r["caught_up"]:
+            caught_up.append(r)
+        elif r["status"] == "never_fired":
+            first_run.append(r)
+        else:
+            on_schedule.append(r)
+
+    lines = plain_english_lines(reports, binding=binding)
+    info_lines = [_caught_up_line(r, workspace_root, now=now) for r in caught_up]
+    info_lines += [_first_run_line(r, workspace_root, now=now) for r in first_run]
+
+    total = len(on_schedule) + len(caught_up) + len(first_run) + len(problems)
+    fresh_unregistered = (
+        total > 0
+        and len(problems) == total
+        and all(r["status"] == "not_registered" for r in problems)
+    )
+    if total == 0 or fresh_unregistered:
+        # Nothing registered and no run history claimed for anything — a
+        # genuinely fresh install. One honest line beats N identical
+        # "missing from the schedule" flags; the per-task lines collapse
+        # (the binding finding, if any, stays).
+        summary = (
+            "Your scheduled chats and background tasks aren't set up yet — "
+            "say 'set up command room schedules' to get started."
+        )
+        if fresh_unregistered:
+            lines = plain_english_lines([], binding=binding)
+    elif not lines and not caught_up and not first_run:
+        newest = max(
+            (r for r in on_schedule if r["last_fired"]),
+            key=lambda r: r["last_fired"],
+            default=None,
+        )
+        recency = ""
+        if newest:
+            when = _human_time(
+                _dt.datetime.fromisoformat(newest["last_fired"]), workspace_root, now=now
+            )
+            recency = f", most recently {newest['display_name']} at {when}"
+        summary = (
+            f"Everything's running. All {total} of your scheduled chats and "
+            f"background tasks ran on their normal schedule{recency}."
+        )
+    else:
+        parts = [
+            f"{len(on_schedule)} of {total} scheduled chats and background "
+            f"tasks ran on their normal schedule"
+        ]
+        if caught_up:
+            parts.append(
+                f"{len(caught_up)} caught up late" if len(caught_up) > 1
+                else "1 caught up late"
+            )
+        if first_run:
+            parts.append(
+                f"{len(first_run)} are waiting on their first run" if len(first_run) > 1
+                else "1 is waiting on its first run"
+            )
+        if problems:
+            parts.append(
+                f"{len(problems)} need attention" if len(problems) > 1
+                else "1 needs attention"
+            )
+        summary = "; ".join(parts) + "."
+
+    return {
+        "vantage": None,
+        "reports": reports,
+        "on_schedule": [r["task"] for r in on_schedule],
+        "caught_up": [r["task"] for r in caught_up],
+        "first_run_pending": [r["task"] for r in first_run],
+        "problems": [r["task"] for r in problems],
+        "summary_line": summary,
+        "lines": lines,
+        "info_lines": info_lines,
+    }
 
 
 def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
@@ -452,9 +895,13 @@ def check_prompt_versions(task_records, installed_version: str) -> list[dict]:
 def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> list[str]:
     """One sentence per problem — the ONLY watchdog voice any surface uses.
 
-    Sleep is named first on `late` (W3): a lid-closed laptop is the most
-    common cause and customers read it as "Claude broke". No jargon, no
-    taskIds, no event names — display names + the exact next action.
+    Facts + the one action, never a cause the watchdog can't know (R3 —
+    the pre-R3 `late` line asserted "the computer was asleep", the exact
+    fabricated-narrative class F-10/F-43/F-47 catalogued; when a gap is
+    unexplained, say what is known and stop). Scheduler stamps are quoted
+    AS the schedule's claim ("the schedule shows..."), never as fact — F-39
+    proved they land without execution. No jargon, no taskIds, no event
+    names — display names + the exact next action.
     """
     lines: list[str] = []
     if binding:
@@ -465,19 +912,44 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> l
         )
     for r in reports:
         name = r["display_name"]
+        stamp_phrase = ""
+        if r.get("last_run_at"):
+            try:
+                stamp_phrase = " " + _human_time(_dt.datetime.fromisoformat(r["last_run_at"]))
+            except ValueError:
+                stamp_phrase = ""
         if r["status"] == "never_authorized":
-            lines.append(
-                f"Your {name} task has never run — it's likely still waiting on its one-time "
-                f"permission. Open it in the Scheduled section and press Run Now once."
-            )
+            if r["receipt_gap"]:
+                # The scheduler claims runs but the substrate has nothing —
+                # never call that "waiting on permission" (F-39 class:
+                # lastRunAt stamps land without execution).
+                lines.append(
+                    f"The schedule shows runs for your {name} task"
+                    f"{f' (latest{stamp_phrase})' if stamp_phrase else ''}, but it has never "
+                    f"recorded any work — open it and press Run Now once, and check the result "
+                    f"looks right."
+                )
+            else:
+                lines.append(
+                    f"Your {name} task has never run — it's likely still waiting on its one-time "
+                    f"permission. Open it in the Scheduled section and press Run Now once."
+                )
         elif r["status"] == "late":
-            since = (r["last_fired"] or r["last_run_at"] or "")[:10]
+            since = (r["last_fired"] or "")[:10]
             since_phrase = f" since {since}" if since else ""
-            lines.append(
-                f"Your {name} task hasn't run{since_phrase} — usually that means the computer "
-                f"was asleep or closed when it was due. Open it and press Run Now to catch up "
-                f"(and consider setting your computer to stay awake during work hours)."
-            )
+            if r["receipt_gap"]:
+                lines.append(
+                    f"The schedule shows your {name} task ran{stamp_phrase}, but it hasn't "
+                    f"recorded any work{since_phrase} — open it and press Run Now once, and "
+                    f"check the result looks right."
+                )
+            else:
+                # What is KNOWN: no record since <date>. The cause is not
+                # knowable from here — never assert one (R3).
+                lines.append(
+                    f"Your {name} task hasn't run{since_phrase} — I can't tell from here why it "
+                    f"stopped. Open it in the Scheduled section and press Run Now to catch up."
+                )
         elif r["status"] == "not_registered" and r["first_install"]:
             lines.append(
                 f"Your {name} task is missing from the schedule — say "
@@ -499,8 +971,12 @@ __all__ = [
     "check_schedule_parity",
     "check_workspace_binding",
     "check_prompt_versions",
+    "detect_registry_vantage",
     "expected_fires",
+    "health_verdict",
     "last_receipts",
+    "late_signals",
+    "next_fire",
     "plain_english_lines",
     "read_workspace_config",
 ]

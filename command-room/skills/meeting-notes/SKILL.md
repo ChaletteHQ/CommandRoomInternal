@@ -19,6 +19,8 @@ If the user's phrasing is ambiguous ("process the call and send follow-ups"), ca
 
 Before surfacing the post-processing acknowledgment, read `shared/PERSONIFICATION.md`. The chat acknowledgment after processing is FIRST PERSON, plain text (no backticks around the meeting name): "Got it, {first_name} — I've processed [Meeting Name]. {N} commitments captured, {M} decisions logged. Anything to add before I file it?" Never the third-person "{brain_name} processed…" shape — the AI speaks as itself.
 
+**{N} and {M} come from the claim audit (Step 9 pre-render, v4.5.2), never from extraction intent.** The 2026-07 dogfood caught this exact ack claiming "3 decisions logged" with zero decision events on disk (F-46). Count the events after appending, then speak.
+
 ## Writer Contract
 
 Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes must follow the File Ownership Map, Write Protocol, and Append Format defined there. JSON sources live in `_hq/data/`; markdown views in `_hq/views/` are regenerated and must not be written directly. Violations go to `_hq/CONFLICTS.md`.
@@ -26,8 +28,10 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes
 You are a **primary appender** for `_hq/data/events.jsonl` — every meeting you process becomes at least one event:
 
 - One `meeting` event with attendees, summary, transcript reference.
-- One `decision` event per captured decision.
+- One `decision` event per captured decision (Step 5b — **MANDATORY in both modes**, v4.5.2; same contract the scheduled past-meetings writer uses).
 - One `commitment` event per captured action item. **Schema is non-negotiable — see `shared/COMMITMENT_SCHEMA.md` and Step 5e below for the exact shape.** v2.7.15+ uses the canonical `data` envelope; legacy flat shape is read-only.
+- One `person_proposal` (or `person_update_proposal`) event per unknown name meaningfully involved (Step 5f, v4.5.2 — pending-review, never chat-only).
+- One `meeting_processed` receipt per processing run (Step 9a, v4.5.2 — the canonical already-processed marker the detectors read).
 - One `interaction` event per person (`channel: "meeting"`) if not already implicit.
 - Optional `status_change` or `scope_change` events when the meeting shifts project state.
 
@@ -37,7 +41,7 @@ You also append to `_hq/data/aliases.json` when you discover new raw-to-canonica
 
 You **append** to `[Project]/SESSION_NOTES_[NAME].md` as a human-readable narrative duplicate of the events you just persisted. Both must succeed: if the events.jsonl append fails, skip the markdown append and log a conflict.
 
-You **do not write** to `entities.json` projects (that's workspace-manager) or people (that's people-crm). When you discover a new person or a project state change that warrants canonical update, surface a suggestion: "I see a new person 'X' mentioned — add to team?" / "Sounds like Project Y is now blocked — want me to mark it that way?" Owner skills execute on the next turn.
+You **do not write** to `entities.json` projects (that's workspace-manager) or people (that's people-crm). For a **new person**, the durable record is the `person_proposal` event (Step 5f) — a chat suggestion ("say add [name]") on its own is NOT capture; dismiss that chat and the proposal is stranded forever (F-46 P2b). For a **project state change**, surface a suggestion: "Sounds like Project Y is now blocked — want me to mark it that way?" Owner skills execute on the next turn.
 
 **Canonicalize every person and project reference via `aliases.json` before persisting any event.** No raw Gmail names or Slack handles in events.
 
@@ -262,9 +266,39 @@ For each project or client mentioned in the meeting:
 | Project X | Last: 2026-04-08 | Next: [Aria] deliver spec by 2026-04-15 | Commitment: Beta launch by May | At-risk (scope creep) | Strong | +$50K budget |
 ```
 
-## Step 5b: Log Decisions (via decision-log — never a direct view write)
+## Step 5b: Log Decisions (MANDATORY in both modes — via decision-log's write protocol, never a direct view write)
 
-For each decision extracted in Step 2, append a `decision` event through the `decision-log` skill's writer path (per the Writer Contract at the top of this file: DECISION_LOG.md is a regenerated view — writing it by hand is forbidden; the writer helper regenerates it after the append). Each event carries the fields the old hand-written entry carried:
+> **v4.5.2 (F-46 P1):** this step is part of the mandatory data layer, exactly like Step 5e commitments. Pre-v4.5.2 it was gated to deep mode while the Step 9 chat card still rendered "DECISIONS LOGGED" — the skill claimed 3 decisions and wrote zero events; decision-revisit, weekly insights, and the decision log were blind to them. A decision that renders in the chat card MUST exist as a `decision` event first.
+
+For each decision extracted in Step 2, append a `decision` event through the `decision-log` skill's write protocol (locked writer + view regeneration — per the Writer Contract at the top of this file: DECISION_LOG.md is a regenerated view; writing it by hand is forbidden). Build the event via the shared builder so the shape matches the past-meetings writer's contract, then append via the gate:
+
+```python
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT" (same pattern as Step 5e)
+import sys; sys.path.insert(0, "shared/scripts")
+from meeting_capture import build_decision_event
+from event_gate import append_event
+
+ev = build_decision_event(
+    "<what was decided — one standalone factual sentence>",
+    source_ref="granola:<meeting_id>",          # same source_ref as the parent meeting event
+    source_skill="meeting-notes",
+    primary_thread_id="<same as parent meeting event>",
+    person_ids=["<canonical decider id>", "<others party to it>"],
+    project_id="<project_NNN — decision-log v3.13.0 mandate, when resolvable>",
+    evidence="<verbatim or near-verbatim transcript quote>",
+    rationale="<why — alternatives considered, if stated>",
+    made_by="<who made the call, or 'Team consensus'>",
+    source_event_seq=<seq of the parent meeting event>,
+    confidence=<attribution confidence 0.0-1.0>,   # below 0.75 the builder forces data.pending_review: true
+)
+append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.decisions")
+```
+
+The speaker-attribution ambiguity guard (Step 5e) applies to decisions identically: ambiguous decider → `pending_review: true`, never an auto-pick. The cross-meeting fusion guardrail applies too — a decision whose evidence phrase does not appear in THIS transcript is not written.
+
+After the appends, regenerate the view via `render_decision_log.regenerate("<WORKSPACE>")` (decision-log's renderer invocation pattern — silent per CONTRACT Rule 4).
+
+Each event carries the fields the old hand-written entry carried:
 
 ```markdown
 ### [Date] — [Decision Title]        <- rendered BY the view regeneration, shown here for content shape only
@@ -320,6 +354,14 @@ For **every action item** captured in Step 2's Action Items table, append one `c
 - "Let's discuss X" / agenda items → the existing `commitment_to_discuss` type (unchanged), NOT a commitment event with `kind: agenda`.
 - Genuinely ambiguous → `kind: "promise"` with `data.pending_review: true` (existing flag; surfaces for review, never auto-closed).
 
+**pending_review is default-on for low-confidence attribution (v4.5.2 safety inversion — MANDATORY).** CRU auto-resolution gates on `data.pending_review`: a low-confidence extraction that FORGETS the flag auto-resolves at high match with no human gate. So the rule is inverted — absence of the flag is an ASSERTION of high-confidence attribution, never a default. Set `data.pending_review: true` at capture whenever ANY of these hold:
+- owner attribution is ambiguous or unresolved (incl. every `attribution_ambiguous` / `attribution_unknown` case below);
+- a counterparty is named in the source but resolves to no person record;
+- overall attribution confidence is below 0.75 (the `meeting_capture` builders enforce this floor for decisions; apply the same floor to commitments);
+- the item is a sensitive category (firing / pricing / contract terms) — flag regardless of confidence, same rule the scheduled past-meetings writer runs.
+
+If you cannot assert high confidence, you MUST set the flag. An ambiguous item without `pending_review` is a write defect, not a judgment call.
+
 **Due-date nudge (S2):** every captured commitment proposes a `due` (from meeting language or a sensible default the user can push) OR carries explicit `data.no_due: true`. Undated items surface in the weekly triage, not the aging view — target is < 30% undated.
 
 **Resolve the owner to a person id BEFORE appending.** Use `aliases.json` to canonicalize (e.g., "Mira" → `person_011`). If the owner is the user themselves ("I'll send the deck"), use the user's canonical id (the entity with `is_primary_user: true` or `is_user: true`). If you cannot resolve the owner to a person id, surface a one-line suggestion at the end of the meeting summary — but DO NOT skip the commitment; emit it with `owner_id: ""` and the title still set, so the commitment isn't lost.
@@ -370,9 +412,9 @@ Same guard applies for `decision` events. The bug class this closes: Granola has
 - ❌ "follow up" (no specific deliverable)
 - ❌ "discuss pricing" (no concrete deliverable)
 
-**Dedup safety:** If you've already processed this Granola transcript before (the meeting event already exists in events.jsonl with the same `source_ref`), check that you're not double-emitting commitments. Match on `(source_ref, title)` — if both already exist for a `type: commitment` event, skip the append. The `scan-for-commitments` skill enforces this same dedup; the two skills are interchangeable for the same source data.
+**Dedup safety:** If you've already processed this Granola transcript before, check that you're not double-emitting commitments. The canonical already-processed marker is the `meeting_processed` receipt — check `meeting_capture.already_processed(workspace_root, source_ref)` (v4.5.2; a bare `meeting` event with the same `source_ref` also counts, for pre-receipt history). Match on `(source_ref, title)` — if both already exist for a `type: commitment` event, skip the append. The `scan-for-commitments` skill enforces this same dedup; the two skills are interchangeable for the same source data.
 
-**Surface a count after appending:** at the end of the meeting summary, line: "Logged N commitments (M you owe, K others owe)." — gives the user immediate confirmation that the extraction fired.
+**Surface a count after appending:** at the end of the meeting summary, line: "Logged N commitments (M you owe, K others owe)." — gives the user immediate confirmation that the extraction fired. **N comes from the Step 9a3 claim audit (disk read-back), never from the extraction list** — F-50 shipped a 7-claimed/6-written off-by-one because the surface counted intent.
 
 ---
 
@@ -390,6 +432,40 @@ Commitments accumulate as "open" in events.jsonl forever unless something explic
 6. **Dedup.** Handled by close_commitment itself — it checks the FULL resolved-id set and returns an `already_resolved` result instead of double-writing, so a same-turn race is a true no-op.
 
 Same shape rules as follow-up-ritual's Step "Surface Open Commitments" — the two skills follow the same v3.4.5 decision-CRU pattern.
+
+---
+
+## Step 5f: Person Proposals for Unknown Names (MANDATORY in both modes — v4.5.2, F-46 P2b)
+
+For each person who was **meaningfully involved** in the meeting (spoke, made a decision, took or received an action item, or was surfaced as an intro/prospect target) and resolves to NO person record via `aliases.json` / entities, write the durable proposal event — the same contract the scheduled past-meetings writer runs (its Phase 4.5b). Pre-v4.5.2 this skill surfaced "say add [name]" in chat only; if the user dismissed that chat, the name was stranded unrecorded forever while past-meetings wrote `person_proposal` events for the identical situation. Two capture writers, one contract — the event IS the capture; the chat line is just the pointer.
+
+1. **Dedup first (people_writer contract, v3.2+):** call `people_writer.find_existing_person(workspace_root, name=..., email=..., aliases=...)`. On a match, emit a `person_update_proposal` referencing the existing `person_id` with the proposed delta — never a second new-person proposal.
+2. **On a miss**, build + append the proposal:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from meeting_capture import build_person_proposal_event
+from event_gate import append_event
+
+ev = build_person_proposal_event(
+    "<full name as heard>",
+    source_ref="granola:<meeting_id>",
+    source_skill="meeting-notes",
+    primary_thread_id="<same as parent meeting event>",
+    inferred_role="<role if stated, else None>",
+    inferred_org="<org if stated/inferable, else None>",
+    evidence="<the transcript line that surfaced them>",
+    review_reason="<one line: why this needs the user's call>",
+    confidence=<0.0-1.0>,
+)
+append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.person_proposals")
+```
+
+Every proposal carries `data.pending_review: true` unconditionally (the builder enforces it) — proposals are adjudicated by the user's Add / Not-relevant click, and they re-surface in review surfaces until adjudicated instead of dying with the chat.
+
+3. **Chat surface:** the `new_person_handling` config still governs whether the suggestion interrupts now (`surface`) or batches to Pulse (`batch_to_pulse`) — but that setting governs the CHAT layer only. The event writes in both settings, in both processing modes. Skip generic attendees (notetaker, silent admin) — same "meaningfully involved" floor as Step 5c.
+
+**This step never writes person records** — `person_proposal` / `person_update_proposal` events only; people-crm executes the create/update on adjudication via `people_writer` (apply-choices Step 3a).
 
 ---
 
@@ -519,13 +595,46 @@ After all extraction + persistence steps complete, produce the chat surface as a
 
 **Step 9a — Generate the .docx brief (v2.14.32+ — `brief_writer` flow).** Use `shared/scripts/brief_path.get_brief_path("past_meeting", slug, date)` to compute the absolute path under `_hq/meetings/`, then pipe structured section content as JSON to `shared/scripts/brief_writer.py` stdin (same flow as `orchestrator-past-meetings.md` Phase 4 step 7 — see that file for the canonical JSON shape and section list). `brief_writer` produces deterministic, polished output with a hard-coded `Command Room` footer; the pre-v2.14.32 docx-skill invocation pattern + `Forwardable: yes` footer line are dead. Brief content still follows the **Brief Authoring Rules** above — factual recap only, no internal asks, no follow-up drafts. Cache the absolute path.
 
+**Step 9a2 — Write the `meeting_processed` receipt (v4.5.2, MANDATORY — F-46 P2a).** After the brief lands (so `brief_path` is known), append one `meeting_processed` event — the same receipt the scheduled past-meetings writer emits, and the canonical already-processed marker its Phase 3 dedup and the no-prep detectors read. F-50 proved the bare `meeting` event held off double-capture by accident, not contract; the receipt is the contract. This is a substrate event, NOT a `pack_run` run-receipt (that plumbing is owned elsewhere — do not touch it here).
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from meeting_capture import build_meeting_processed_event
+from event_gate import append_event
+
+ev = build_meeting_processed_event(
+    "<granola meeting_id>",
+    source_ref="granola:<meeting_id>",           # same spelling as the parent meeting event
+    source_skill="meeting-notes",
+    primary_thread_id="<same as parent meeting event>",
+    extracted_count=<decisions + commitments + proposals written this run>,
+    pending_review_count=<how many of those carry data.pending_review>,
+    brief_path="<workspace-relative BRIEF_PATH from Step 9a>",
+)
+append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.receipt")
+```
+
+On a deliberate user re-process of an already-processed meeting, still write the receipt but add `data.rerun_note` (the extracted-event dedup in Step 5e prevents double-capture; the second receipt documents the re-run honestly). Check `meeting_capture.already_processed(workspace_root, source_ref)` BEFORE processing to know which case you're in.
+
+**Step 9a3 — Claim audit (v4.5.2, MANDATORY — gate on this before ANY closing summary).** The closing chat surface may enumerate ONLY what verified on disk. Count the events after appending, then speak:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from meeting_capture import count_meeting_writes
+
+counts = count_meeting_writes("<WORKSPACE>", "granola:<meeting_id>")
+# counts = {"meeting": 1, "meeting_processed": 1, "decision": 3, "commitment": 6, "person_proposal": 2, ...}
+```
+
+Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N commitments" line comes from `counts` — never from extraction intent. If a count is lower than what you attempted to write, a write FAILED: say so plainly ("I captured 3 decisions but only 2 saved — say 'process meeting' again and I'll retry the missing one"), and never render the failed item as logged. The dogfood caught both failure directions: 3 decisions claimed / 0 written (F-46) and 7 claimed / 6 written (F-50) — neither may recur silently.
+
 **Step 9b — Invoke `follow-up-ritual` silently.** **Recursion guard (shared invocation contract, P1.3):** this step runs ONLY when meeting-notes is the top-level skill. When meeting-notes was itself invoked FROM follow-up-ritual (its internal logging step), SKIP 9b entirely — follow-up-ritual already owns the draft layer, and re-invoking it loops the pair. Drafts per-attendee follow-up emails as TEXT only (lazy creation per `EMAIL_DRAFT_PROTOCOL.md`). The drafts surface in the next Inbox / Commitments fire where the user picks `N send` / `N draft`. **The drafts do NOT appear in the chat output of this skill, and do NOT appear in the brief docx.** This step matches `orchestrator-past-meetings.md` Phase 4 step 3 — same skill, same output destination.
 
 **Step 9c — Render the 4-section chat card** through `chat_output_renderer.py` — the renderer landed in v2.12.4; there is no markdown fallback. The card has these sections in order:
 
 1. **Header line:** `Processed meeting: [Title] · [date] [time range]`
 2. **RECAP** — 3–5 factual bullet points summarizing what happened (third-person, shareable register — same content profile as the brief docx).
-3. **DECISIONS LOGGED** — list of decisions, each shown with a "added to your decision log" annotation. Each decision becomes a `decision` event in `events.jsonl` via the existing `decision-log` skill at processing time (not on user click).
+3. **DECISIONS LOGGED** — list of decisions, each shown with a "added to your decision log" annotation. Each decision listed here ALREADY EXISTS as a `decision` event in `events.jsonl` (written in Step 5b, both modes, at processing time — not on user click), and the section's count comes from the Step 9a3 claim audit. Render exactly `counts["decision"]` entries; a decision whose event failed to write goes in the failed-write line, never in this section.
 4. **BRIEF** — link to the .docx with one-line metadata: `Clean recap — safe to forward`. **v3.13.0+ surface the brief as an H2 heading link at the BOTTOM of the chat turn** via `chat_output_renderer.doc_headline_link(label, artifact_url)`. Format: `## → **[{Meeting title} — Past Meeting Recap]({computer_url})**`. `present_files` is no longer the primary opener — per CONTRACT.md Rule 3 (v3.13.0+) it's demoted to a reveal-in-folder secondary; include the `present_files` call only if the user is likely to want to navigate the filesystem (rare for meeting recaps — default: skip).
 5. **OPEN ITEMS** — interactive list of items requiring M's resolution. Each item is M-only (clarification needed, decision he must make, action with no resolved owner).
 
@@ -600,9 +709,11 @@ The standard processing path. Fast, focused, minimal file operations. Use this u
 4. **Route** → SESSION_NOTES to primary project; cross-ref lines to related projects (Step 4)
 5. **Update tracker** → Master Tracker: last touched, next action, commitments (Step 5)
 6. **Append commitments** → one canonical commitment event per qualifying action item (Step 5e — MANDATORY)
-7. **Generate brief + render via renderer** → Step 9 (v2.10.8+ — converged with cr-past-meetings format)
+7. **Append decisions** → one `decision` event per extracted decision via decision-log's write protocol (Step 5b — MANDATORY, v4.5.2)
+8. **Append person proposals** → one `person_proposal` / `person_update_proposal` event per unknown name (Step 5f — MANDATORY, v4.5.2)
+9. **Generate brief, write the `meeting_processed` receipt, run the claim audit, render via renderer** → Step 9 (v2.10.8+ format; 9a2/9a3 MANDATORY, v4.5.2)
 
-**Skipped in light mode:** Decision log (5b), People database (5c), team profiles (5d), ref file updates (Step 6), Business Lens analysis (Step 7), follow-up questions (formerly Step 8 — gated to deep mode in v2.10.8+), email/calendar context check (old Step 3). These still exist — they run in deep mode. **Commitment events (Step 5e) run in BOTH modes — they're the data layer behind every commitment view in the workspace and must not be skipped.**
+**Skipped in light mode:** People database VIEW updates (5c), team profiles (5d), ref file updates (Step 6), Business Lens analysis (Step 7), follow-up questions (formerly Step 8 — gated to deep mode in v2.10.8+), email/calendar context check (old Step 3). These still exist — they run in deep mode. **The event data layer runs in BOTH modes and must not be skipped: commitment events (5e), decision events (5b), person proposals (5f), and the meeting_processed receipt + claim audit (9a2/9a3).** Pre-v4.5.2 the decision-log step was on this skipped list while the chat card still rendered "DECISIONS LOGGED" — that is F-46: the surface claimed writes the mode had skipped. Mode gating applies to views, analysis, and questions — never to substrate events.
 
 ### Deep Mode ("process deep", "full meeting analysis")
 The full 12-step cascade. Use when the user says "process deep", "full analysis", "deep process", or explicitly asks for the complete treatment.
@@ -614,8 +725,8 @@ The full 12-step cascade. Use when the user says "process deep", "full analysis"
 5. **Route** → SESSION_NOTES to primary project; cross-refs to related projects
 6. **Update tracker** → Master Tracker (last touched, next action, commitments)
 7. **Append commitment events** → one canonical commitment event per qualifying action item (Step 5e — see `shared/COMMITMENT_SCHEMA.md`)
-8. **Log decisions** → `decision` events via the decision-log skill (Step 5b); the DECISION_LOG view regenerates
-9. **Update people** → Add new attendees or update existing profiles in `_hq/PEOPLE.md`
+8. **Log decisions** → `decision` events via decision-log's write protocol (Step 5b); the DECISION_LOG view regenerates
+9. **Append person proposals** → `person_proposal` / `person_update_proposal` events for unknown names (Step 5f), then update profiles in `_hq/PEOPLE.md` (Step 5c)
 10. **Update team profiles** → If `_people/` exists, update interaction logs + commitments for team members
 11. **Update ref files** → contacts, scope, financials, risks, timeline as needed
 12. **Apply lens** → Surface business implications (scope, financials, relationships, risks, opportunities)

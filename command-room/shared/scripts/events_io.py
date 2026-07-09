@@ -53,14 +53,22 @@ def _shard_year(p: Path) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def shard_paths(root: str | Path) -> list[Path]:
+def shard_paths(root: str | Path, since_ts=None) -> list[Path]:
     """Yearly shards (sorted ascending by year) then the active file, chronological.
-    No-shard workspace -> [events.jsonl]. Missing active + no shards -> []."""
+    No-shard workspace -> [events.jsonl]. Missing active + no shards -> [].
+
+    `since_ts` (ISO string or 'YYYY...') drops whole shards whose year is below
+    the floor — a filename-only prune that never opens a too-old shard (v4.6.0
+    MC2). The active file is never pruned. Callers own the correctness contract:
+    prune only when every event that matters to them postdates the floor."""
     data_dir = _data_dir(root)
+    floor = _floor_year(since_ts)
     shards = sorted(
         (p for p in data_dir.glob("events-*.jsonl") if _SHARD_RE.match(p.name)),
         key=lambda p: _shard_year(p) or 0,
     )
+    if floor is not None:
+        shards = [p for p in shards if (_shard_year(p) or floor) >= floor]
     out: list[Path] = list(shards)
     active = data_dir / "events.jsonl"
     if active.exists():
@@ -105,11 +113,7 @@ def iter_events(root: str | Path, since_ts=None) -> Iterator[dict]:
     """Generator over every event across all shards + the active file, in chronological
     file order. `since_ts` (ISO string or 'YYYY...') skips whole shards whose year is
     below the floor — a cheap, filename-only prune that never opens a too-old shard."""
-    floor = _floor_year(since_ts)
-    for p in shard_paths(root):
-        yr = _shard_year(p)
-        if floor is not None and yr is not None and yr < floor:
-            continue  # entire shard predates the floor
+    for p in shard_paths(root, since_ts=since_ts):
         yield from _iter_file(p)
 
 

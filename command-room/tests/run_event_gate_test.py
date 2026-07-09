@@ -110,10 +110,18 @@ def test_commitment_id_minting():
     check("explicit id preserved",
           ev2["data"]["id"] == "cmt_01JZ7Y0000000000000000TEST")
 
-    # Legacy explicit id shapes are also respected (readers still honor them).
-    append_event(path, _commitment_fixture(id="commitment_seq_142"), holder="test")
-    ev3 = _read(path)[2]
-    check("legacy explicit id preserved", ev3["data"]["id"] == "commitment_seq_142")
+    # v4.5.2 R1c — a NEW commitment may NOT claim an id shaped like a legacy
+    # seq alias: closures spelling "commitment_seq_142" mean "the commitment
+    # at seq 142", and an explicit id in that namespace would shadow them
+    # (closures land on the wrong commitment). Read-side amnesty for HISTORIC
+    # events is unchanged — this gate is write-time only.
+    try:
+        append_event(path, _commitment_fixture(id="commitment_seq_142"), holder="test")
+        check("seq-alias-shaped explicit id rejected (R1c)", False,
+              "gate accepted a seq-alias-shaped id")
+    except EventGateError as e:
+        check("seq-alias-shaped explicit id rejected (R1c)", "seq" in str(e))
+    check("rejected id wrote nothing", len(_read(path)) == 2, len(_read(path)))
 
     check("new_commitment_id() format", CMT_ID_RE.match(new_commitment_id()))
     check("mint uniqueness",

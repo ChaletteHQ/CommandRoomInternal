@@ -1,0 +1,41 @@
+{
+  "version": "4.6.0",
+  "headline": "The dogfood release — every surface tells the truth, briefs got visual, and you can now say 'remind me'.",
+  "items": [
+    {
+      "id": "v460_announce_reminders",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New: reminders. Say `remind me about the proposal on Friday` and it appears in your morning brief that day — every day, until you clear it or push it. Ignored reminders get louder, personal ones stay private, and `show my reminders` lists everything. Repeating reminders work too (`remind me every Monday...`).",
+      "action": "announce_only"
+    },
+    {
+      "id": "v460_announce_prep_v2",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your meeting-prep briefs got a full rebuild: the automatic morning briefs now use the same deep engine as `prep me` — a walk-out-with objective, what changed since you last met (including overnight email), open decisions, and a two-column table of what's owed both ways, with stat tiles and a relationship timeline up top. One brief per meeting, refreshed in place.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v460_announce_truth_layer",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Reliability got stricter about the truth: `health check` now reports only what receipts on disk prove — never invented run history, never a guessed cause. Late runs are reported as late with real times, and every count in every surface (brief, commitments chat, triage) now comes from one shared ledger, so the numbers always agree.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v460_announce_verbs_and_mutes",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One vocabulary everywhere: buttons and text now use the same words on every surface (Done, Defer, Drop, Not mine, Make task), every snooze states its duration on the button, and buttons visibly light up when selected with a live 'N selected' counter. New abilities: `fix the wording` on a mis-captured item, `that's actually [name]'s` to reassign, `split that into...` to break one item into parts, `merge those two` for duplicates, and `show muted` to see and reverse anything you've snoozed.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v460_announce_slack_capture",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "If Slack is connected, say `scan slack for commitments` — promises you made (and things people owe you) in Slack messages now get captured with the same care as meetings and email. Suspected duplicates across sources get flagged for your call, never silently doubled.",
+      "action": "announce_only"
+    }
+  ]
+}

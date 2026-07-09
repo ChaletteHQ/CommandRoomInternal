@@ -26,7 +26,9 @@ Token estimates are rough (chars/4 heuristic). Connector calls are the OTHER big
 
 Default: last 7 days. User can ask `usage report last 14 days` / `usage report last 30 days` / `usage report this week` / `usage report today` and the skill parses the window.
 
-### Step 2 — Read pack_run events
+### Step 2 — Read receipts through the shared reader
+
+**Run counts come from the receipt contract's shared reader (`shared/scripts/receipts.py` `count_runs`) — NEVER from a hand-rolled pack_run scan.** The v4.5.1 dogfood (FINDINGS F-49) proved the hand-rolled path undercounts: it missed legacy id spellings (`cr-commitments`, `past_meetings`) and two whole task families (reconcile-sent's `sent_reconcile` receipts, session-sweep's `session_sweep_run` receipts) because it read only `pack_run` events. The shared reader parses every receipt shape ever written, forever.
 
 Wrap the Python invocation in the canonical CONTRACT.md Rule 22 discovery preamble:
 
@@ -40,28 +42,29 @@ cd "$PLUGIN_ROOT" && WORKSPACE="$WORKSPACE" python3 -c "..."
 Inside the `python3 -c` body (cwd is `$PLUGIN_ROOT`, so `shared/scripts` imports resolve — but the events file lives in the WORKSPACE, not under the plugin root; resolve it from the exported `WORKSPACE` env var, never as a relative path):
 
 ```python
-import sys, os
+import sys, os, json, datetime
 sys.path.insert(0, 'shared/scripts')
+from receipts import count_runs, iter_receipts
 from telemetry import aggregate_pack_run_telemetry
-import json
 
-events_path = os.path.join(os.environ['WORKSPACE'], '_hq/data/events.jsonl')
-with open(events_path, 'r', encoding='utf-8') as f:
-    events = [
-        json.loads(line) for line in f
-        if line.strip()
-    ]
+ws = os.environ['WORKSPACE']
+since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)  # the parsed window
 
-# Filter to pack_run events in the window
-window_events = [
-    ev for ev in events
-    if ev.get('type') == 'pack_run' and in_window(ev.get('ts'), window)
-]
+# 1. Run counts — EVERY scheduled task, zero-filled (a task with no receipts
+#    shows "ran 0x"; it never silently vanishes from the table).
+runs = count_runs(ws, since=since)
 
-agg = aggregate_pack_run_telemetry(window_events)
+# 2. Cost columns — telemetry aggregation over the window's pack_run receipts
+#    (silent tasks have no telemetry; their rows show run counts only).
+window_receipts = [r['raw'] for r in iter_receipts(ws, since=since)]
+agg = aggregate_pack_run_telemetry(window_receipts)
+
+print(json.dumps({'runs': runs, 'agg': agg}, default=str))
 ```
 
-If `events.jsonl` doesn't exist or has no telemetry-bearing pack_run events: surface plain English `(Nothing to report yet — let a few of your scheduled chats run first, then check back.)` Don't guess.
+If the workspace has no receipts at all: surface plain English `(Nothing to report yet — let a few of your scheduled chats run first, then check back.)` Don't guess.
+
+**Never claim "run counts are solid" beyond what the reader returned** — the counts are the reader's output verbatim; the report renders them, it does not re-derive or adjust them.
 
 ### Step 3 — Surface a plain-English breakdown
 
@@ -78,6 +81,11 @@ By scheduled chat:
   Pulse             ran 5x   avg 4.1k words   avg 8 lookups    avg 6 seconds
   Past Meetings     ran 5x   avg 18.3k words  avg 35 lookups   avg 24 seconds   ← uses the most
   Upcoming Meetings ran 5x   avg 11.2k words  avg 18 lookups   avg 12 seconds
+
+Background tasks (silent — no chat output, so no word counts):
+  Sent-mail check   ran 6x
+  Nightly sweep     ran 4x
+  Weekly cleanup    ran 1x
 
 Where the lookups go:
   Gmail thread searches:     35

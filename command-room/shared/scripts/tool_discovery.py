@@ -105,6 +105,12 @@ _CALENDAR_PLATFORM_HINTS = {
                          "graph_calendar", "office365_calendar"),
 }
 
+# Team chat — Slack today (v4.6.0 MC3); the map shape leaves room for Teams
+# parity later without touching call sites (same Rule 21 posture as the rest).
+_CHAT_PLATFORM_HINTS = {
+    "slack": ("slack",),
+}
+
 
 def _match_platform(tool_id: str, platform_hints: dict) -> Optional[str]:
     """Returns the platform name (e.g. 'gmail', 'outlook') if the tool_id
@@ -539,6 +545,62 @@ def discover_transcript_tool(
 
 
 # ============================================================================
+# Slack — read-side discovery for the commitment-capture leg (v4.6.0 MC3)
+# ============================================================================
+
+
+def discover_slack_tool(
+    tools: Iterable[ToolDescriptor],
+    operation: str = "read_channel",
+) -> DiscoveryResult:
+    """Discover a native Slack MCP tool for a read operation
+    (`read_channel`, `read_thread`, `search_channels`, `search_users`,
+    `read_user_profile`, `search_public_and_private`).
+
+    Excludes Zapier-namespaced Slack tools — Zapier is for triggered
+    automations, never connector reads. tool_id=None means Slack simply is
+    not connected in this workspace: per the MC3 contract the calling leg
+    silently doesn't exist (zero errors, zero mentions to the user) — the
+    empty `reason` string here is deliberate diagnostics-only wording.
+    """
+    tools_list = list(tools)
+    candidates = 0
+    soft_match: Optional[ToolDescriptor] = None
+    op_norm = operation.lower().replace("_", "")
+
+    for t in tools_list:
+        candidates += 1
+        if _is_zapier(t.tool_id):
+            continue
+        platform = _match_platform(t.tool_id, _CHAT_PLATFORM_HINTS)
+        if not platform:
+            continue
+        tid_norm = t.tool_id.lower().replace("_", "")
+        if op_norm in tid_norm:
+            return DiscoveryResult(
+                tool_id=t.tool_id,
+                candidates_considered=candidates,
+                platform=platform,
+            )
+        if soft_match is None:
+            soft_match = t
+
+    if soft_match is not None:
+        return DiscoveryResult(
+            tool_id=soft_match.tool_id,
+            reason=f"matched Slack tool but operation hint {operation!r} not in tool ID",
+            candidates_considered=candidates,
+            platform="slack",
+        )
+
+    return DiscoveryResult(
+        tool_id=None,
+        reason="No native Slack MCP tool found.",
+        candidates_considered=candidates,
+    )
+
+
+# ============================================================================
 # Drive / file storage — Google Drive OR OneDrive (v2.14.2+)
 # ============================================================================
 
@@ -608,6 +670,8 @@ __all__ = [
     "discover_mail_thread_fetch_tool",
     "discover_transcript_tool",
     "discover_drive_tool",
+    # v4.6.0 MC3 — Slack commitment-capture leg
+    "discover_slack_tool",
 ]
 
 

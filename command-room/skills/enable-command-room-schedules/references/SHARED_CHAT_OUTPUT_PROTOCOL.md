@@ -47,17 +47,19 @@ def _pack_artifact(data):
             return v
     return None
 
-# Client back-compat (FIX1 Batch A): live workspaces have events.jsonl history
-# written with the legacy cr-* source_skill (cr-inbox, cr-dont-forget→pulse, ...).
-# events.jsonl is append-only — never rewritten — so normalize BOTH sides before
-# comparing so an old `cr-inbox` pack_run still matches slug "inbox".
-from source_skill_compat import normalize_source_skill  # shared/scripts is on path
+# Client back-compat (FIX1 Batch A; v4.5.2 R1): live workspaces have
+# events.jsonl history in every legacy spelling (cr-inbox, past_meetings,
+# dont_forget→pulse, ...). events.jsonl is append-only — never rewritten —
+# so match through the receipt contract's normalizer, which parses ALL of
+# them forever (cr- prefixes AND underscore kinds — the plain
+# source_skill_compat strip missed `past_meetings`).
+from receipts import normalize_task_id  # shared/scripts is on path
 
 def _is_for(e, slug):
     d = e.get("data") or {}
-    target = normalize_source_skill(slug)
+    target = normalize_task_id(slug)
     return any(
-        normalize_source_skill(v) == target
+        normalize_task_id(v) == target
         for v in (e.get("source_skill"), d.get("task_id"), d.get("kind"))
     )
 

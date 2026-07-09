@@ -35,25 +35,28 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Discover Gmail MCP IDs (or Outlook equivalents on M365).
 - M's `person_id` from entities.json.
 
-# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'past-meetings')))
+print(json.dumps(check_lateness('<workspace_root>', 'past-meetings', fired_via='<scheduled|manual>')))
 "
 ```
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Find unprocessed meetings (last 24h)
 
@@ -327,7 +330,7 @@ print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_appe
 
 **Threshold tuning:** the helper uses `HIGH_CONFIDENCE_THRESHOLD = 0.55` and `PENDING_REVIEW_THRESHOLD = 0.30`. These are deliberately conservative for v2.14.6 launch. Once telemetry shows real auto-resolve rates and false-positive rates from the next Pulse pending-review confirmations, tighten or loosen.
 
-**Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, transcript empty), swallow silently and continue. Phase 4.6 is best-effort enrichment; the Phase 4 commitment writes already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "4.6_commitment_cru", "reason": "<short>", "detail": "<truncated stderr or exception message>", "meeting_id": "<id>", "ts": "<ISO>"}`.
+**Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, transcript empty), swallow silently and continue. Phase 4.6 is best-effort enrichment; the Phase 4 commitment writes already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "4.6_commitment_cru", "reason": "<short>", "detail": "<truncated stderr or exception message>", "meeting_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
 # Phase 4.6.b — Decision CRU pass: auto-resolve / supersede open decisions (v3.4.5+)
 
@@ -394,7 +397,7 @@ print(f'CRU decisions: resolved={sum(1 for e in to_append if e[\"type\"]==\"deci
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: `decision_resolved` and `decision_superseded` event-type names never appear in chat. The user sees the resolution effect on the next DECISION_LOG view regeneration — closed decisions filter out of the "Active" list.
 
-**Failure handling:** if the decision-CRU pass errors (helper import fails, transcript empty, JSON malformed), swallow silently and continue. Best-effort enrichment; the Phase 4 decision writes (newly-extracted decisions from this transcript) already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+): `{"phase": "4.6b_decision_cru", "reason": "<short>", "detail": "<truncated stderr>", "meeting_id": "<id>", "ts": "<ISO>"}`.
+**Failure handling:** if the decision-CRU pass errors (helper import fails, transcript empty, JSON malformed), swallow silently and continue. Best-effort enrichment; the Phase 4 decision writes (newly-extracted decisions from this transcript) already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+): `{"phase": "4.6b_decision_cru", "reason": "<short>", "detail": "<truncated stderr>", "meeting_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
 # Phase 4.7 — Grade the prep brief against the transcript (Phase 6 Loop 3, silent)
 
@@ -423,7 +426,7 @@ Append to events.jsonl:
 - All extracted events (decisions, commitments, follow_ups) — high-conf flagged committed, low-conf flagged pending_review
 - `meeting_processed` per meeting
 - CRU resolution events (Phase 4.6) — already appended in Phase 4.6 itself; mentioned here for completeness of the audit trail
-- `pack_run` event with kind: past_meetings, date, status, errors, duration_ms, **telemetry** (v2.14.0+ — built via `shared/scripts/telemetry.py` `build_pack_run_telemetry()`, silent per Rule 9)
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "past-meetings", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=n_meetings, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; telemetry silent per Rule 9
 
 Append to staging_emissions.jsonl per .docx generated. Telemetry writes silently — no chat narration.
 

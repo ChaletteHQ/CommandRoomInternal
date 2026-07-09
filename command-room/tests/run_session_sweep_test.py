@@ -75,7 +75,8 @@ def test_sweep_recover_and_dedup():
     before = len(_events(ws))
     items = [
         {"session_id": "s1", "type": "commitment",
-         "summary": "Send Acme the revised pricing sheet", "data": {"kind": "task"},
+         "summary": "Send Acme the revised pricing sheet",
+         "data": {"kind": "task", "no_due": True},
          "person_ids": ["person_042"]},
         {"session_id": "s1", "type": "decision", "summary": "Go with vendor B for logistics"},
         {"session_id": "s1", "type": "interaction",

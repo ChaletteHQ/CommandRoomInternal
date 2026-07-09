@@ -219,6 +219,34 @@ def atomic_append_jsonl(
             from event_gate import gate_events
         events = gate_events(events, strict_enum=True, holder=holder)
 
+        # SEMANTIC DEDUP AT CAPTURE (v4.6.0 C4) — the `(source_ref, title)`
+        # dedup key is source-scoped, so the same real commitment captured by
+        # different writers (meeting + follow-up email + nightly sweep) lands
+        # as three open items. This hook compares each new `commitment` in the
+        # batch against the OPEN set (owner + counterparty + name-stripped
+        # title similarity within a time window) and FLAGS suspects
+        # (data.pending_review + data.suspected_duplicate_of) for the confirm
+        # flow — never drops, never merges. Runs here, caller-agnostically,
+        # for the same reason the gate does. Fail-open: a check failure
+        # appends the batch unflagged (today's behavior); it must never lose
+        # a capture. CR_DEDUP_CHECK=0 disables.
+        try:
+            from commitment_dedup import flag_suspected_duplicates
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            try:
+                from commitment_dedup import flag_suspected_duplicates
+            except Exception:
+                flag_suspected_duplicates = None
+        except Exception:
+            flag_suspected_duplicates = None
+        if flag_suspected_duplicates is not None:
+            try:
+                events = flag_suspected_duplicates(events, path)
+            except Exception:
+                pass
+
     def _read_stamp_write(evs: list[dict[str, Any]]) -> None:
         existing = ""
         existing_max_seq = 0

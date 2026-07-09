@@ -146,6 +146,11 @@ The aggregator removes the commitment from open queues when it sees a `commitmen
 
 `thread_resolved` events also close commitments — that's the v2.7.13 batch-resolution path from the DCC's `✓ done` button. Producers can use either; aggregator treats them the same.
 
+**Merge / supersession (`commitment_superseded`, v4.6.0 C4):** capture dedup is source-scoped (`(source_ref, title)` content hashes), so the same real-world commitment captured by different writers — meeting transcript (`granola:X`), follow-up email (`gmail:Y`), nightly sweep (`session:Z`) — lands as distinct open items. Two layers close the hole:
+
+1. **Capture-time flagging (`shared/scripts/commitment_dedup.py`, hooked inside the single append path — caller-agnostic like the gate):** each new `commitment` is compared against the OPEN set within a 14-day window under a conservative rule — owner ids must not conflict, counterparty signals must agree (ids, or lenient name-token match with the Bug #103 title fallback), and the name-stripped titles must overlap strongly (higher bar when no person field corroborates). A suspect is NEVER dropped or auto-merged: it lands with `data.pending_review: true` + `data.suspected_duplicate_of: <open item's id>` + `data.suspected_duplicate_score`, so the confirm flow renders "looks like a duplicate of X — merge / keep both". Fail-open: a check failure appends the batch unflagged. `CR_DEDUP_CHECK=0` disables.
+2. **The merge writer (`commitment_state.supersede_commitment(workspace_root, survivor_id, superseded_id, *, merged_by, source_skill, evidence, user_confirmed)`):** emits `commitment_superseded` — `data.commitment_id`/`data.commitment_seq` reference the SUPERSEDED item (closed through the standard closer chains, honored by the loader since v3.14.5), `data.superseded_by` names the survivor, `data.merged_source_refs` unions both sides' provenance. `load_open_commitments` folds the union onto the survivor's in-memory copy (`data.merged_source_refs` / `data.merged_from`) — the survivor "carries" every absorbed source without any history rewrite. Same guards as `close_commitment`: id normalization, loud `CommitmentIdError`, idempotent re-merge, `PendingReviewError` unless `user_confirmed=True` (merging IS the adjudication of a flagged suspect), lock-spanned scan→append. Surfaces: the W4b Merge verb once it ships; until then the chat phrase ("merge those two" / "same commitment") documented in commitment-triage.
+
 **Deferral (`commitment_updated`, read since Phase 2 Stage A):** a commitment's due date moves via a `commitment_updated` event carrying `data.commitment_id` + `data.new_due` (the orchestrator `push to [date]` verb; `due` / `due_date` accepted as variants). The original commitment event is NEVER rewritten — `load_open_commitments` folds the latest due-carrying update into the returned commitment's effective `data.due` (with `data.due_updated_by_seq` provenance), so consumers reading `_commitment_field(ev, "due")` see the pushed date and a deferred item stops rendering overdue. Updates without a due field (scope/summary changes via `change_summary`) don't affect the effective due.
 
 ---
@@ -158,8 +163,9 @@ The aggregator removes the commitment from open queues when it sees a `commitmen
 | `inbox-triage` | When email contains commitment language ("I'll send by Friday", "owe you", etc.) | `interaction` event for the email thread |
 | `follow-up-ritual` | Same trigger as meeting-notes (it invokes meeting-notes internally) | `meeting` event |
 | `scan-for-commitments` | One-shot bulk scan over historic Granola/Gmail data | varies — re-creates source events if missing |
+| `scan-for-commitments` (Slack leg, v4.6.0 MC3) | Recent-window Slack channel/DM scan when the connector is present | none — no parent event; provenance is `source_ref: slack:<permalink>` |
 
-Slack-based commitments are NOT currently extracted (v2.7.16 candidate — needs the slack connector wrapper that doesn't exist yet for inbox-triage).
+Slack-based commitments are extracted by `scan-for-commitments`'s Slack leg (v4.6.0 MC3) via `shared/scripts/slack_capture.py` — same Stage-D/S2/Stage-E capture block as every writer, `source_ref: slack:<permalink>` (the spelling this schema reserved), user's-own-messages as the promise source / messages-naming-the-user as the owed-to-you source, third-party items refused at the builder. Slack absent = the leg doesn't exist (skip-not-fail). Real-time per-message Slack extraction (an inbox-triage analog) still does not exist — the recent-window scan is the coverage today.
 
 ---
 
@@ -168,7 +174,7 @@ Slack-based commitments are NOT currently extracted (v2.7.16 candidate — needs
 | Consumer | Reads via | Surfaces as |
 |---|---|---|
 | `build_workspace_map_input.py` projector | `_aggregate_commitments` | THREADS_JSON + COMMITMENTS_JSON for the orgs-map / people-network / commitments-tracker artifacts |
-| `morning-briefing` | direct events.jsonl scan | "Open commitments: X you owe, Y they owe, Z stuck" line |
+| `morning-briefing` | `commitment_state.compute_brief_state` → `counts["headline"]` | "Commitments: X you owe · Y owed to you · U unowned · C unconfirmed · O overdue" line (v4.5.2 R4 — the one bucket export; never label the overdue number "stuck", per R1b) |
 | `follow-up-ritual` | direct events.jsonl scan | per-attendee open commitments listed in the close-the-loop pack |
 | `cleanup` | direct events.jsonl scan | overdue/aging commitment counts in the weekly digest |
 

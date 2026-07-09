@@ -40,8 +40,8 @@ Each scheduled-task skill calls `mcp__visualize__show_widget` with HTML that ren
 ├─────────────────────────────────────────────────────────┤
 │ Quick read: [if applicable]                             │
 │                                                          │
-│ Selections so far: 0 of 8                                │
-│ [ Apply all ]   [ Clear ]   [ Skip all ]                 │
+│ 0 of 8 selected                                          │
+│ [ Apply all ]   [ Reset ]   [ Snooze rest (1 day) ]      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -55,13 +55,17 @@ Each item gets a horizontal button group containing the same actions that used t
 
 ### Counter
 
-Below the items, a counter shows `Selections so far: X of N`. Increments with each unique-item selection, decrements on deselection.
+Below the items, a live counter shows `X of N selected` (v4.5.2 S2 — F-58).
+Increments with each unique-item selection, decrements on deselection. The
+counter + the selected-button styling are the two signals that make armed
+state visible before Apply; `validate_rendered_widget` refuses any widget
+HTML that carries action buttons without them.
 
 ### Bottom row buttons
 
-- **Apply all** — fires one `sendPrompt` with all current selections (see "Submission format" below). Disabled when 0 selections.
-- **Clear** — resets all per-item selections to "no choice yet." No `sendPrompt`. Local state only.
-- **Skip all** — selects `skip` for every unselected item, then fires Apply automatically. Convenience for "I've reviewed; mark the rest dismissed."
+- **Apply all** — fires one `sendPrompt` with all current selections (see "Submission format" below). Disabled when 0 selections. **Disable-with-reason (v4.5.2 S2 — F-17):** when a selected action is missing its REQUIRED input (Defer without a date), Apply stays disabled and the reason renders on the footer's `#cr-apply-reason` line ("Apply is waiting on item 3 — Defer needs a date."), the offending row highlights, and the field shows an inline "needs a date" note. The hold clears live as the field fills. A widget must NEVER swallow an Apply click silently — that is exactly F-17 (M concluded the button was dead).
+- **Reset** — resets all per-item selections to "no choice yet." No `sendPrompt`. Local state only. (Button label "Reset"; was "Clear".)
+- **Snooze rest (1 day)** — selects `skip` (the 1-day mute) for every unselected item, then fires Apply automatically. Convenience for "I've reviewed; snooze the rest until tomorrow." (Label was "Skip all"/"Dismiss rest" — renamed so the mute states its duration, F-59.)
 
 ### What the widget does NOT do
 
@@ -154,9 +158,11 @@ Use `_hq/CONVENTIONS_SOURCE_LINKS.md` as the canonical source-link format:
 
 The post-widget markdown links section replaces `mcp__cowork__present_files` cards. Cards are visually separated from the chat content; markdown links sit naturally inline and match Sam's Apr 30 ask: *"those briefs hyperlinked right under that UI."* `present_files` calls in orchestrator phase 6/9 specs are removed v2.12.0+.
 
-## Action reference — what each button does (v2.12.2+)
+## Action reference — what each button does (v2.12.2+; v4.5.2 S2)
 
-User-facing reference. Every action label across all surfaces, with semantics. Action labels are stored lowercase as `data-action` attribute (canonical for parsing); display is title-cased at render time.
+User-facing reference. Every action label across all surfaces, with semantics. Action labels are stored lowercase as `data-action` attribute (canonical for parsing); display labels come from the verb taxonomy at render time.
+
+> **Source of truth (v4.5.2 S2 — F-59):** `shared/scripts/verb_taxonomy.py` is THE verb table — wire id, display label, event dispatched, surfaces, mute TTL, required-input flag. The renderer derives `CANONICAL_ACTIONS` and every button label from it; the tables below are the human-readable view and the table wins on conflict. One label per verb, everywhere: `resolved` displays **Done** (never "Resolved"), `push to [date]` displays **Defer** (never "Push to"), `skip` displays **Snooze (1 day)**, and every mute states its duration on the button — `Snooze (3 days)`, `Not relevant (60 days)`, `Never track (permanent)`. Prose that names an action names the same word as the button (F-13 P2a). Rows that offer a reduced verb set (needs-confirm items) pass `reduced_verbs_reason` so the row says WHY in one line (F-59).
 
 ### Email-shaped items (Inbox, Commitments YOU OWE / OWED TO YOU)
 
@@ -168,15 +174,15 @@ User-facing reference. Every action label across all surfaces, with semantics. A
 | `draft` | To drafts | Save current draft to Gmail Drafts as-is. |
 | `draft` (consolidated v2.14.4+; was previously two separate verbs) | Edit then draft | Widget exposes textarea. User edits. Apply saves the edited body to Gmail Drafts. |
 | `escalate to memo` | Escalate to memo | Promote to memo-writer skill — generates a longer-form `.docx` memo when an email reply isn't enough. |
-| `skip` | Skip | Dismiss for 24h. Resurfaces tomorrow. |
+| `skip` | Snooze (1 day) | Mute for 1 day. Resurfaces tomorrow. |
 
 ### Commitments YOU OWE only
 
 | Action | Display | What it does |
 |---|---|---|
 | `prep deep work` | Prep deep work | Generates a context-loaded prompt to paste into a new task. For when you want to dig in and do work on the commitment. No email/send. |
-| `push to [date]` | Push to | Widget exposes a free-text natural-language input ("monday at 2", "next thursday afternoon"). Reply handler parses on apply. Records deferral, updates the draft to mention the new date. (v2.12.4+ — replaces strict date picker.) |
-| `resolved` | Resolved | Mark commitment fulfilled. Won't surface again. **(Distinct from `skip`, which is 24h dismissal.)** Renamed v2.12.3 from `close`. |
+| `push to [date]` | Defer | Widget exposes a free-text natural-language input ("monday at 2", "next thursday afternoon"). Reply handler parses on apply. Records deferral, updates the draft to mention the new date. Date is REQUIRED — an empty date holds Apply with the reason visible (F-17). |
+| `resolved` | Done | Mark commitment fulfilled. Won't surface again. **(Distinct from `skip`, the 1-day snooze.)** Wire id `resolved` retained (renamed v2.12.3 from `close`); displays Done everywhere (F-59). |
 
 ### Commitments OWED TO YOU only
 
@@ -193,16 +199,16 @@ When ONE person owes you multiple things in the same fire (e.g., five outstandin
 | Action | Display | What it does |
 |---|---|---|
 | `mark received` | Mark received | Mark THIS specific sub-item as received. Doesn't affect siblings. |
-| `skip` | Skip | Dismiss this sub-item for 24h. |
+| `skip` | Snooze (1 day) | Mute this sub-item for 1 day. |
 
 ### Self-commitments (no email — you owe yourself)
 
 | Action | Display | What it does |
 |---|---|---|
 | `prep deep work` | Prep deep work | Generate a deep-work prompt as above. |
-| `push to [date]` | Push to | Defer the self-commitment. |
-| `mark done` | Mark done | Same as `close` but for self-commitments. |
-| `skip` | Skip | 24h dismissal. |
+| `push to [date]` | Defer | Defer the self-commitment (date required). |
+| `mark done` | Done | Close the self-commitment — same display word as `resolved` (F-59). |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Commitment Triage (Phase 2 Stage D, S4 — `triage my commitments` + the Friday opt-in chat)
 
@@ -213,11 +219,14 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `resolved` | Done | Close via `close_commitment(..., resolution="done", user_confirmed=True)`. |
 | `push to [date]` | Defer | `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere). |
 | `drop` | Drop | Close via `close_commitment(..., resolution="dropped", user_confirmed=True)` — deliberately let go, distinct from done. |
-| `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. |
-| `make task` | Make it a task | `promote_task_to_commitment(..., new_kind="task")` — additive `commitment_reclassified` marker; drops off CRU/chase/aging, lives on the task surface. |
+| `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. When the user NAMES the real owner, route via `reassign to [name]` instead of dropping. |
+| `fix wording [text]` | Fix wording | `commitment_state.edit_commitment_wording` — corrects a mis-extracted title/summary; the projector renders the new text, history keeps the original (S4). |
+| `reassign to [name]` | Reassign | `commitment_state.reassign_commitment` — routes the item to its real owner instead of discarding it; unconfirmed reassignments stay pending_review and never enter chase (S4; W4b's Theirs → [name] confirm verb dispatches the same event). |
+| `split into [items]` | Split | `commitment_state.split_commitment` — N Stage-D-complete children (provenance → the original) + the original closed with "split into …" (S4; extraction pre-split stays the doctrine — this is the manual correction path). |
+| `make task` | Make task | `promote_task_to_commitment(..., new_kind="task")` — additive `commitment_reclassified` marker; drops off CRU/chase/aging, lives on the task surface. |
 | `promote` | Make it a commitment | `promote_task_to_commitment(..., new_kind="promise")` — S5 one-tap promote when a counterparty appears. |
-| `never track this` | Never track this | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). |
-| `skip` | Skip | 24h dismissal (unchanged). |
+| `never track this` | Never track (permanent) | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). Permanent — the label says so; every TIMED mute is reversible via the S4 ledger (`show muted` + Unmute). |
+| `skip` | Snooze (1 day) | 1-day mute (unchanged semantics; label now states the duration). |
 
 **Send-vs-draft clarity (PL 2026-07-02):** wherever `send` and `draft` appear side by side on an email-shaped item, the widget's intro line (or the item's context tag) makes the difference visible in plain words — "**Send** delivers it now · **Draft** saves it to your Drafts to send later." Never assume the customer knows the distinction from the labels alone.
 
@@ -231,7 +240,33 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `snooze 30d` | Snooze (30 days) | decision-revisit: `decision_revisit_scheduled` with `snooze_until_ts = now + 30d`. |
 | `snooze 7d` | Snooze (7 days) | scaffold-automation: re-surface the deployed-yet? check in a week. |
 
-**Undo (S4 — delivered by this surface):** the post-Apply ack ends with *"Say `undo` to reverse this triage."* A follow-up `undo` (within the same chat) reopens every commitment the batch closed via `commitment_state.reopen_commitment` — an ADDITIVE `commitment_reopened` event per item; tombstones stay in history and a later re-close works normally. Reclassifications undo with a reverse `commitment_reclassified` marker. Never edit or delete prior events.
+**Undo (S4 — delivered by this surface):** the post-Apply ack ends with *"Say `undo` to reverse this triage."* A follow-up `undo` (within the same chat) reopens every commitment the batch closed via `commitment_state.reopen_commitment` — an ADDITIVE `commitment_reopened` event per item; tombstones stay in history and a later re-close works normally. Reclassifications undo with a reverse `commitment_reclassified` marker. The batch's mutes undo too: every `chat_dismissal` the batch wrote is cleared via `mute_ledger.clear_dismissals` (an additive `chat_dismissal_cleared` per mute — the F-20 P3a asymmetry, fixed: undo used to reopen items while leaving their mutes in force). Never edit or delete prior events.
+
+### Mute ledger — `show muted` / `show snoozed` (v4.6.0 S4, rendered by show-my-list)
+
+Every live `chat_dismissal` (Snooze 1d/3d/7d/14d, Not relevant 60d), one row each, oldest first — each row states WHAT was muted, WHERE it came from, and its remaining time verbatim from `mute_ledger.live_mutes` (`ttl_label`: "3 days left" / "expires in an hour"). Timed mutes stop being a one-way door.
+
+| Action | Display | What it does |
+|---|---|---|
+| `unmute` | Unmute | `mute_ledger.clear_dismissal(<row's dismissal seq>)` — additive `chat_dismissal_cleared`; the item re-surfaces on its next scheduled chat. |
+| `skip` | Snooze (1 day) | Leave the mute in force (the ledger row itself disappears for a day). |
+
+Permanent `never track this` rules are NOT in this ledger (they are suppression rules in `_hq/config/commitment-rules.md`, lifted by editing the file); learned suppressions from `surface-preferences.json` are a separate durable layer.
+
+### Reminders — brief Pinned block + `show my reminders` (v4.5.2 S2)
+
+W4a shipped reminders as a chat-phrase-only surface and deferred the widget
+verbs to the S2 taxonomy. These are the rows any reminder-rendering widget
+uses; dispatch goes through `shared/scripts/reminders.py` builders (see
+apply-choices § "Reminder dispatch"). Same display words as the commitment
+lane — Done closes, Defer moves the date — so one vocabulary covers both
+lanes when they share a brief widget.
+
+| Action | Display | What it does |
+|---|---|---|
+| `reminder done` | Done | Clear the reminder (`reminder_cleared`). It leaves the Pinned block; a referenced commitment is NOT touched — closing that is its own action. |
+| `reminder push [date]` | Defer | Move the pin date (`reminder_updated`, action `push`). Date REQUIRED — empty holds Apply with the reason (F-17 contract). Re-arms a cleared one-shot. |
+| `reminder keep` | Keep | Acknowledge without clearing (`reminder_updated`, action `keep`) — resets the escalation clock, stays pinned. |
 
 ### Pulse — person dormancy/pattern-break
 
@@ -240,9 +275,9 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `investigate` | Investigate | Fires `tell me about [name]` — pulls cross-references from across your data. Read-only. Use when you want context, not action. |
 | `draft re-engagement` | Draft re-engagement | Generates a re-engagement email draft to the person. The draft surfaces in the apply-time widget with Send / Edit then send / etc. (v2.12.4+) |
 | `schedule catchup [when]` | Schedule catchup | Widget exposes a free-text natural-language input. User types "next Tuesday afternoon", "this Friday at 4pm", "sometime next week". Drafts the request email + creates tentative invite if a specific time was given. (v2.12.4+ — was no-input in earlier versions.) |
-| `resolved` | Resolved | State change. Suppresses the alert for 14 days. NO input affordance, NO textarea — clean one-click. (v2.14.1+ unified with Commitments YOU OWE `resolved`; v2.12.4 had `resolved [reason]` with a textarea, but Bo's Apr 30 testing flagged the surprise input as confusing — dropped per CONTRACT.md Rule 6 on action-label clarity.) Same display label, same behavior, same mental model as Commitments: "this isn't open anymore." |
-| `snooze [duration]` | Snooze | Snooze the alert for the picked duration (`7d`, `14d`, `30d`, etc.). **Emitted form:** v2.14.38+ widgets emit a fixed no-input `snooze 3d`; pre-v2.14.38 in-flight widgets may still emit `snooze [duration]` with a free-text duration — apply-choices accepts BOTH (see its Step 3 table). |
-| `skip` | Skip | 24h dismissal. |
+| `resolved` | Done | State change. Suppresses the alert for 14 days. NO input affordance, NO textarea — clean one-click. (v2.14.1+ unified with Commitments YOU OWE `resolved`; v4.5.2 S2 displays Done everywhere.) Same display label, same behavior, same mental model as Commitments: "this isn't open anymore." |
+| `snooze [duration]` | *(deprecated — never rendered)* | Back-compat alias only. New widgets emit a FIXED duration verb whose label states it — `snooze 3d` → "Snooze (3 days)", `snooze 7d`/`14d`/`30d` likewise; pre-v2.14.38 in-flight widgets may still emit `snooze [duration]` with free text — apply-choices accepts BOTH (see its Step 3 table). A bare "Snooze" with an invisible duration is a banned label (F-59). |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Pulse — stale-active project
 
@@ -252,8 +287,8 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `investigate` | Investigate | Fires `tell me about [project]` — pulls cross-references and surfaces what you might be missing. Read-only. |
 | `mark paused` | Mark paused | Move the project to paused status. Drops out of Pulse alerts. |
 | `status check` | Status check | Drafts an internal status-check email TO whoever owns the project. For when YOU haven't been driving and want someone else's update. |
-| `snooze [duration]` | Snooze | Snooze the alert. |
-| `skip` | Skip | 24h dismissal. |
+| `snooze [duration]` | *(deprecated)* | Use a fixed-duration snooze verb (`snooze 3d` etc.) — labels state the duration. |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Pulse — pending people-record review (a, b, c…)
 
@@ -263,8 +298,8 @@ When the synthesis layer detects a low-confidence change to someone's record (ne
 |---|---|---|
 | `confirm` | Confirm | Apply the proposed change to the person record. |
 | `edit [change]` | Edit | Widget exposes textarea. User types the corrected value. Applied as the change instead of the proposed one. |
-| `snooze [duration]` | Snooze | Suppress this specific proposal for the picked duration (`7d`, `14d`, `30d`). Won't re-surface until the snooze expires. (v2.14.5+ — finish-cluster consistency.) |
-| `skip` | Skip | Reject the proposal. 30-day cooldown — won't re-surface for 30 days. |
+| `snooze [duration]` | *(deprecated)* | Use a fixed-duration snooze verb — labels state the duration. Won't re-surface until the snooze expires. |
+| `skip` | Snooze (1 day) | Not now — resurfaces tomorrow. (Rejecting outright is `not relevant`, 60 days; the old 30-day-cooldown claim here contradicted the dispatch layer, which has always written the 1-day mute.) |
 
 ### Pulse — dormant transition proposal (d1, d2…)
 
@@ -275,8 +310,8 @@ When an active project has been quiet 30+ days, surfaces here to ask if it shoul
 | `active` | Active | Keep the project active. 14-day cooldown — won't re-propose for 14 days. |
 | `keep paused` | Keep paused | Already paused, no change. |
 | `archive` | Archive | Skip the dormant step entirely; archive the project (it's effectively closed). |
-| `snooze [duration]` | Snooze | Suppress this specific proposal for the picked duration. (v2.14.5+ — finish-cluster.) |
-| `skip` | Skip | 24h dismissal; re-surfaces tomorrow. (v2.14.5+ — finish-cluster.) |
+| `snooze [duration]` | *(deprecated)* | Use a fixed-duration snooze verb — labels state the duration. |
+| `skip` | Snooze (1 day) | 1-day mute; re-surfaces tomorrow. (v2.14.5+ — finish-cluster.) |
 
 ### Pulse — entity proposal (e1, e2…)
 
@@ -286,8 +321,8 @@ When passive ingestion detects a new org or project from your activity. The Phas
 |---|---|---|
 | `confirm [type]` | Confirm | Click opens a textarea pre-populated with the inferred entity details (name, domains, relationship_type, scope, signal). Empty submit = accept inferred. Type corrections to override before writing. |
 | `edit [type]` | Edit | Same textarea opens; intended for cases where the user wants to flip the inferred relationship_type (vendor → client, prospect → partner, etc.) before confirming. (v2.14.5+) |
-| `snooze [duration]` | Snooze | Suppress this proposal for the picked duration. Won't re-propose until the snooze expires. (v2.14.5+ — finish-cluster.) |
-| `skip` | Skip | 60-day cooldown — won't re-surface for 60 days. Use when the proposal is wrong or you don't want to track this entity. |
+| `snooze [duration]` | *(deprecated)* | Use a fixed-duration snooze verb — labels state the duration. Won't re-propose until the snooze expires. |
+| `skip` | Snooze (1 day) | Not now — resurfaces tomorrow. For "this proposal is wrong / don't track this," use `not relevant` (60 days) — the verb whose label states that cooldown. (The old 60-day-cooldown claim here contradicted the dispatch layer.) |
 
 ### Past Meetings — new-person sub-item (1a, 1b, 1c, …)
 
@@ -301,7 +336,7 @@ When a meeting mentions one or more new people, **each person gets their OWN sub
 | `add as new org` | Add as new org | Generic fallback — opens the same flow but prompts for the org name. Used when the candidate name isn't determinable. |
 | `add context [text]` | Add context | Widget exposes textarea for free-form context (where you met, role, etc.). On Apply, opens an interactive entity-creation flow seeded with that context. |
 | `add to my list` | Add to my list | Flag for later review. Surfaces via `show my list` (the retrieval trigger uses the same noun). |
-| `skip` | Skip | 24h dismissal. |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 (Removed in v2.12.4: `search emails` — per M's Apr 30 ask. Use `tell me about [name]` directly for cross-reference.)
 
@@ -315,7 +350,7 @@ When a meeting mentioned a commitment without a clear due date:
 |---|---|---|
 | `set date [when]` | Set date | Free-text natural-language date ("monday at 2", "next Thursday"). Sets a specific due date. |
 | `add to my list` | Add to my list | Flag for later review. |
-| `skip` | Skip | 24h dismissal. |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Upcoming Meetings (per meeting)
 
@@ -325,7 +360,7 @@ When a meeting mentioned a commitment without a clear due date:
 | `add more context [text]` | Add more context | (v2.12.4 - v2.14.36 alias, retained for back-compat) Translates at apply time to `context [text]`. New widgets emit `context [text]`; pre-v2.14.37 widgets in flight at upgrade still dispatch correctly. |
 | `ask question [text]` | Ask question | (v2.14.14 - v2.14.36 alias, retained for back-compat) Translates at apply time to `context [text]`. |
 | `push meeting [date]` | Push meeting | Widget exposes a free-text natural-language input ("monday at 2", "tomorrow afternoon", "2026-05-12"). The reply handler parses the natural language at apply time. Drafts the reschedule email; surfaces in the apply-time widget with Send / Edit then send / etc. (v2.12.4+ — replaces strict date picker.) |
-| `skip` | Skip | 24h dismissal. |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Bulk row (every surface)
 
@@ -334,7 +369,7 @@ When a meeting mentioned a commitment without a clear due date:
 | `send all` | Send all | Sequential sends across all non-noise items. |
 | `to drafts all` | To drafts all | Bulk save to Gmail Drafts. |
 | `show more` | Show more | Re-render with top 10 instead of top 5. |
-| `skip all` | Skip all | Bulk 24h dismissal. |
+| `skip all` | Snooze rest (1 day) | Bulk 1-day mute of everything unselected. |
 
 ### Why so many actions?
 

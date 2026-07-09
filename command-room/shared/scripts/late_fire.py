@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Late-fire detection + graceful degradation (Phase 3 Reliability, R4 — 2026-07).
+Late-fire detection + graceful degradation (Phase 3 Reliability, R4 — 2026-07;
+lateness ledger + run-mode gate v4.5.2 R2).
 
 Cowork fires a missed scheduled task at next app launch, hours or days
 after its cron slot — a "Friday wrap + Monday preview" delivered Sunday is
@@ -9,12 +10,38 @@ orchestrator calls `check_lateness()` at the top of its run (the shared
 helper the spec prefers over per-orchestrator math) and branches on the
 tier it returns.
 
+WHO MAY BE LATE (v4.5.2 R2 — FINDINGS F-47 P1a / F-51). The v4.5.1 dogfood
+produced THREE fabricated late_fire receipts in one afternoon because the
+lateness check ran on ANY task activation and consulted no served-slot
+ledger: a manual re-run scored 356 min against a slot the 8:48 AM scheduled
+fire had already served; a manual fire scored 1306 min against YESTERDAY'S
+slot, served by the overnight catch-up; a cron change scored 317 min against
+a slot the change itself created. The contract now:
+
+  - Lateness is evaluated ONLY on scheduled-context fires (`fired_via` in
+    {scheduled, catchup}). A `manual` fire (typed trigger, Run Now, re-run)
+    is interactive and never late — tier `manual`, no event, no banner.
+  - The slot being served must be UNSERVED: the task's newest substrate
+    receipt (via the R1 receipt reader — all legacy shapes) is the
+    served-slot marker. A slot with a receipt after it is SERVED; there is
+    never a second late_fire for it.
+  - A slot older than the task's most recent `schedule_config_changed`
+    event was minted retroactively by the change (the F-51 phantom) — never
+    scored. Schedule changes do not create missed slots.
+  - Scheduler `lastRunAt` stamps are NEVER consulted — the 2026-07-08
+    cleanup autopsy proved they land without execution (F-39: 9 tasks
+    stamped, one receipt). Receipts are the only served/not-served truth.
+
 TIER CONTRACT (thresholds tunable in LATENESS_TIERS — one shared constant):
 
+  manual   — fired_via=manual: interactive fire, lateness not applicable.
+             No banner, no degradation, no event.
   exempt   — silent task classes (SILENT_TASKS registry membership, never a
              hardcoded name list): late is fine, they always run in full.
              No banner, no degradation, no event.
-  none     — < 3h late. Run normally, no mention.
+  none     — < 3h late, or the slot was already served / minted by a
+             schedule change (`suppressed` says which). Run normally,
+             no mention.
   note     — 3h–24h late. Run normally; the output OPENS with the one
              plain-English `banner` line.
   degrade  — > 24h late. Do NOT render the full stale surface. The run
@@ -24,6 +51,17 @@ TIER CONTRACT (thresholds tunable in LATENESS_TIERS — one shared constant):
              writes explicit — then posts only the one-line
              `degrade_notice`. The next morning brief reads events.jsonl,
              so no extra carry logic is needed beyond the writes landing.
+
+The returned `receipt_fired_via` is what the fire's closing `log_receipt`
+call passes as `fired_via`: `manual` on manual fires, `catchup` when a
+scheduled-context fire is serving a missed slot (note/degrade), else
+`scheduled` — standardizing the pattern F-51's receipt improvised.
+
+NARRATIVE RULE (F-47/F-50): the banner states the facts — what was
+scheduled, that this run is late. It never asserts a CAUSE ("the computer
+was likely asleep"): the helper cannot know why, and the dogfood logged
+four fabricated sleep narratives in one day on fires that weren't late at
+all. Orchestrators must not add a cause either.
 
 TIME RULES: all lateness math is MACHINE-local (cron evaluates on the
 machine clock — confirmed live 2026-07-01, machine=Mountain vs workspace=
@@ -50,6 +88,12 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from event_time import event_dt  # noqa: E402
+from receipts import (  # noqa: E402
+    _iter_events,  # the one defensive event reader — shared, not re-rolled
+    normalize_fired_via,
+    normalize_task_id,
+    receipt_task_id,
+)
 from schedule_config import (  # noqa: E402
     CronParseError,
     is_silent_task,
@@ -93,18 +137,85 @@ def _human_time(dt_naive_local: _dt.datetime, workspace_root=None) -> str:
     return f"{hour} {day}"
 
 
+def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:
+    """Aware → naive machine-local (the clock cron evaluates in)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+def served_slot_markers(workspace_root, task_id) -> dict:
+    """One pass over the substrate for the two facts the lateness ledger
+    needs — machine-local naive datetimes (None = never):
+
+      last_receipt         — newest receipt for this task, ANY legacy shape
+                             (the R1 reader's matcher). This is the
+                             served-slot marker: receipts are the only
+                             served/not-served truth (F-39 — scheduler
+                             lastRunAt stamps land without execution).
+      last_schedule_change — newest `schedule_config_changed` event naming
+                             this task (change-schedule writes
+                             `data.changes: [{task_id, cron, enabled}]`).
+                             A slot older than this was minted retroactively
+                             by the change (F-51) — never a missed fire.
+    """
+    canonical = normalize_task_id(task_id)
+    last_receipt: Optional[_dt.datetime] = None
+    last_change: Optional[_dt.datetime] = None
+    for ev in _iter_events(workspace_root):
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "schedule_config_changed":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            changes = data.get("changes")
+            named = []
+            if isinstance(changes, list):
+                named = [normalize_task_id(c.get("task_id") or c.get("taskId"))
+                         for c in changes if isinstance(c, dict)]
+            else:  # defensive: flat single-task shapes
+                named = [normalize_task_id(data.get("task_id") or data.get("taskId"))]
+            if canonical in named:
+                dt = event_dt(ev)
+                if dt is not None and (last_change is None or dt > last_change):
+                    last_change = dt
+            continue
+        if receipt_task_id(ev) == canonical:
+            dt = event_dt(ev)
+            if dt is not None and (last_receipt is None or dt > last_receipt):
+                last_receipt = dt
+    return {
+        "last_receipt": _to_local_naive(last_receipt),
+        "last_schedule_change": _to_local_naive(last_change),
+    }
+
+
 def check_lateness(
     workspace_root,
     task_id: str,
     *,
+    fired_via: str = "scheduled",
     now: Optional[_dt.datetime] = None,
     emit: bool = True,
 ) -> dict:
     """Compute this fire's lateness tier. Call at the top of every chat
     orchestrator run, BEFORE any surface is rendered.
 
+    Args:
+      fired_via: the run mode the orchestrator detected
+        (`shared/RECEIPT_CONTRACT.md` § Run-mode detection): `scheduled`
+        for scheduler-initiated fires (including app-launch catch-up
+        deliveries of a missed slot), `manual` for anything a human caused
+        (typed trigger, Run Now, re-run). Manual fires are never late —
+        no tier math, no event, no banner (F-47 P1a).
+
     Returns:
-      {task, tier: exempt|none|note|degrade|unknown, lateness_minutes,
+      {task, tier: manual|exempt|none|note|degrade|unknown,
+       fired_via (normalized input), receipt_fired_via (what the fire's
+       closing log_receipt call passes: manual|scheduled|catchup),
+       suppressed (None | "manual_fire" | "slot_already_served" |
+       "slot_created_by_schedule_change"), lateness_minutes,
        scheduled_for (ISO, machine-local), banner (note tier),
        degrade_notice (degrade tier), event_logged (bool)}
 
@@ -113,15 +224,26 @@ def check_lateness(
     never block the primary output.
     """
     now = now or _now_local()
+    via = normalize_fired_via(fired_via) or "scheduled"
     out = {
         "task": task_id,
         "tier": "none",
+        "fired_via": via,
+        "receipt_fired_via": "manual" if via == "manual" else "scheduled",
+        "suppressed": None,
         "lateness_minutes": 0,
         "scheduled_for": None,
         "banner": None,
         "degrade_notice": None,
         "event_logged": False,
     }
+    if via == "manual":
+        # Interactive fire — lateness is not a concept that applies (F-47
+        # P1a: a manual Run-now self-classified as a 356-min-late scheduled
+        # fire). No slot math, no event, no narrative.
+        out["tier"] = "manual"
+        out["suppressed"] = "manual_fire"
+        return out
     if is_silent_task(task_id):
         out["tier"] = "exempt"
         return out
@@ -150,12 +272,40 @@ def check_lateness(
     if lateness < LATENESS_TIERS["note"]:
         return out  # tier "none" — run normally, no mention
 
+    # This fire LOOKS late — consult the lateness ledger before believing
+    # it (v4.5.2 R2). Best-effort like everything here: if the substrate is
+    # unreadable the markers come back None and the tier math proceeds.
+    try:
+        markers = served_slot_markers(workspace_root, task_id)
+    except Exception:
+        markers = {"last_receipt": None, "last_schedule_change": None}
+    last_receipt = markers["last_receipt"]
+    last_change = markers["last_schedule_change"]
+    if last_receipt is not None and last_receipt >= scheduled:
+        # The slot was served — a receipt exists after it. This fire is a
+        # re-run / second delivery, not a late first serve (F-47 triggers
+        # 1 and 2). Tier none, no event, run normally.
+        out["suppressed"] = "slot_already_served"
+        out["lateness_minutes"] = 0
+        return out
+    if last_change is not None and last_change > scheduled:
+        # The slot predates the task's latest schedule change — it only
+        # exists because the change re-anchored the cron (F-51's phantom
+        # 9:30 slot, minted at 2:46 PM). Never a missed fire.
+        out["suppressed"] = "slot_created_by_schedule_change"
+        out["lateness_minutes"] = 0
+        return out
+
+    # Serving a genuinely missed slot — the receipt says catchup.
+    out["receipt_fired_via"] = "catchup"
     when = _human_time(scheduled, workspace_root)
     if lateness < LATENESS_TIERS["degrade"]:
         out["tier"] = "note"
+        # Facts only — never assert a cause (F-47/F-50: four fabricated
+        # "computer was likely asleep" narratives in one dogfood day).
         out["banner"] = (
             f"This is your {display}, running late — it was scheduled for "
-            f"{when} and the computer was likely asleep or closed then."
+            f"{when}."
         )
     else:
         now_day = _human_time(now, workspace_root).split(" ", 2)[-1]
@@ -180,6 +330,7 @@ def check_lateness(
                         "tier": out["tier"],
                         "lateness_minutes": out["lateness_minutes"],
                         "scheduled_for": out["scheduled_for"],
+                        "fired_via": out["receipt_fired_via"],
                     },
                 },
                 holder="late_fire",
@@ -255,4 +406,5 @@ __all__ = [
     "CHRONIC_MIN_LATE_WEEKS",
     "check_lateness",
     "detect_chronic_lateness",
+    "served_slot_markers",
 ]

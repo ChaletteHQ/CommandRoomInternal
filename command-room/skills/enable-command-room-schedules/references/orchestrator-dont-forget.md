@@ -42,25 +42,28 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Discover NATIVE Gmail MCP IDs for re-engagement / status-check / catchup-request drafts (`search_threads`, `create_draft`, `send_draft`).
 - Discover Zapier-threaded-send tool per `EMAIL_DRAFT_PROTOCOL.md` §3c (limit to tools whose name OR description contains `Send Threaded Email`; never any other Zapier tool). Cached for the session. If none, fall back to native Gmail at send time.
 
-# Phase 2.9 — Lateness check (Phase 3 / R4 — runs BEFORE any surface is rendered)
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in):
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'pulse')))
+print(json.dumps(check_lateness('<workspace_root>', 'pulse', fired_via='<scheduled|manual>')))
 "
 ```
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere.
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user.
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Per-person dormancy scan
 
@@ -164,13 +167,29 @@ For each person in entities.json (excluding M, excluding flagged-orphan / left-c
 
 # Phase 4 — Project lifecycle pass (stale-active + dormant transitions, v2.10.3)
 
+**The one derivation (v4.5.2 C3 — FINDINGS F-54):** compute `last_event_date` for EVERY sub-phase below via the canonical helper, once per fire:
+
+```python
+from thread_activity import derive_thread_activity
+from stall_detector import DEFAULT_CONFIG
+from skill_config_writer import load_skill_config
+
+saved = load_skill_config(WORKSPACE_ROOT, "stalled-projects")
+types = ((saved or {}).get("config") or {}).get("activity_event_types") \
+        or DEFAULT_CONFIG["activity_event_types"]
+last_event = derive_thread_activity(WORKSPACE_ROOT, activity_types=types)
+# last_event[project.id].ts → last_event_date (no entry = no activity events)
+```
+
+This is the SAME helper + SAME activity-type set the on-demand `stalled projects` skill uses, so the day-count Pulse quotes and the day-count stalled-projects quotes can never disagree for the same project on the same day (F-54's cross-surface split: pulse said 21d stale, stalled-projects said 37d, same project, same morning). It also credits `related_thread_ids[]` activity and NEVER reads the deprecated `entities.json thread.last_activity` field — a fossil no code maintains (the F-61 cleanup autopsy). Do NOT inline your own max(ts) scan.
+
 For each project in entities.json:
 
 ## 4a. Active projects — stale check (existing behavior)
 
 For each project with `status: "active"`:
 
-1. Compute `last_event_date` = max(ts) of events with `primary_thread_id == project.id`.
+1. `last_event_date` = the Phase-4 derivation above for `project.id`. No entry → fall back to the project's `first_seen` (never to `last_activity`).
 2. Flag as **stale** if `today - last_event_date > 14 days` AND last `decision` event for this project was >7 days ago.
 3. Skip projects with `dont_forget_snooze` active.
 
@@ -192,7 +211,7 @@ For each project with `status: "dormant"`:
 
 For each project with `status: "dormant"` OR `status: "archived"`:
 
-- If new events appeared in last 7 days (any `primary_thread_id == project.id` event newer than the status_change event) → auto-revive to `status: "active"`. Write `status_change` event with `triggered_by: "auto_revive", reason: "new_activity_detected"`.
+- If new events appeared in last 7 days (the Phase-4 derivation shows activity for `project.id` newer than the status_change event — this credits `related_thread_ids` touches too) → auto-revive to `status: "active"`. Write `status_change` event with `triggered_by: "auto_revive", reason: "new_activity_detected"`.
 - Re-revive is silent — the user just sees the project re-appearing in daily flows naturally.
 
 This means `go [project]` + adding a session note (which writes events) auto-revives any dormant or archived project. No explicit `revive [project]` command needed for the common case.
@@ -349,7 +368,7 @@ Append to events.jsonl:
 - `dont_forget_run` event with `data: {surfaced_count: N, suppressed_count: M, top_5: [item ids], people_synthesized: P, auto_applied: Q, pending_review: R}`
 - For each item surfaced: `pattern_break_detected` event linking to person/project
 - For each HIGH-confidence person update: `person_record_update` event (per Phase 5)
-- One `pack_run` event with kind: dont_forget, date, status, errors, duration_ms, **telemetry** (v2.14.0+ — built via `shared/scripts/telemetry.py` `build_pack_run_telemetry()`, silent per Rule 9, surfaces in `usage report` skill aggregation)
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the `dont_forget` kind spelling was one of FINDINGS F-49's misses): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "pulse", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=surfaced_count, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; telemetry silent per Rule 9, surfaces in `usage report` skill aggregation. (The `dont_forget_run` event above keeps its own payload contract — the shared reader counts a fire that wrote both as ONE run.)
 
 # Phase 8 — Post the chat turn (v2.10.8+ — renderer-driven, ENFORCED)
 

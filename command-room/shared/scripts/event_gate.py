@@ -30,7 +30,15 @@ this module adds the identity + validation layer on top:
   4. Fail-loud closure identity — `type: commitment_resolved` with no
      readable id field is REJECTED (EventGateError). This exact silent
      failure produced 291 dead-letter closures in the live substrate.
-  5. Schema-enum validation for ALL event families — the type must be
+  5. Reminder-lane hard rules (v4.6.0 W4a) — `reminder` / `reminder_updated` /
+     `reminder_cleared` events REQUIRE `data.origin == "user_explicit"`
+     (unconditional reject on anything else: no skill, sweep, or scheduled
+     task may ever mint a reminder — reminders exist because the USER said
+     "remind me"). `reminder` gets `data.id` minted as `rem_<ULID>` when the
+     caller didn't set one; `reminder_updated` / `reminder_cleared` without a
+     readable `data.reminder_id` are dead letters and reject. Builders live in
+     shared/scripts/reminders.py.
+  6. Schema-enum validation for ALL event families — the type must be
      registered in shared/data-schemas/events.schema.json (see
      event_types.py for the enum-home decision). An unknown type raises on
      BOTH entries — append_event() and the legacy atomic_append_jsonl path —
@@ -52,6 +60,7 @@ try:
     from event_types import (
         COMMITMENT_CLOSURE_ID_FIELDS,
         KIND_VALUES,
+        LEGACY_SEQ_ID_RE,
         is_known_type,
     )
 except ImportError:
@@ -61,6 +70,7 @@ except ImportError:
     from event_types import (
         COMMITMENT_CLOSURE_ID_FIELDS,
         KIND_VALUES,
+        LEGACY_SEQ_ID_RE,
         is_known_type,
     )
 
@@ -77,6 +87,14 @@ TYPE_NORMALIZATION = {
 }
 
 _KIND_DEFAULT = "promise"
+
+# Reminder lane (v4.6.0 W4a). Reminders are user-minted pins, NOT commitments —
+# they never enter buckets, counts, chase, or triage, and ONLY the user may
+# create one. The gate enforces both identities unconditionally (like the
+# id-less-closure rule): origin must be the literal below, and mutation events
+# must reference the reminder they touch.
+REMINDER_TYPES = frozenset({"reminder", "reminder_updated", "reminder_cleared"})
+REMINDER_ORIGIN = "user_explicit"
 
 # Crockford base32 (no I, L, O, U) — standard ULID alphabet.
 _ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -97,6 +115,12 @@ def _ulid() -> str:
 def new_commitment_id() -> str:
     """Mint a canonical commitment id: cmt_<ULID> (ratified 2026-07-01)."""
     return "cmt_" + _ulid()
+
+
+def new_reminder_id() -> str:
+    """Mint a canonical reminder id: rem_<ULID> (v4.6.0 W4a — same alphabet,
+    distinct prefix so a reminder id can never be mistaken for a commitment)."""
+    return "rem_" + _ulid()
 
 
 def _gate_enabled() -> bool:
@@ -144,7 +168,7 @@ def gate_events(
             etype = TYPE_NORMALIZATION[etype]
             ev["type"] = etype
 
-        # 5. Schema-enum validation — every family, from day one.
+        # 6. Schema-enum validation — every family, from day one.
         if not isinstance(etype, str) or not etype:
             msg = f"event {i} has no 'type' (holder={holder})"
             if strict_enum:
@@ -164,8 +188,44 @@ def gate_events(
         if etype == "commitment":
             data = ev.get("data")
             data = {**data} if isinstance(data, dict) else {}
-            if data.get("id") in (None, ""):
+            if data.get("id") in (None, "") or (
+                isinstance(data.get("id"), str) and not data["id"].strip()
+            ):
                 data["id"] = new_commitment_id()
+            else:
+                # v4.5.2 R1c — explicit ids must ROUND-TRIP through
+                # normalize_commitment_id (custom-string ids like
+                # commit_navid_… are legitimate; the failure modes aren't):
+                #   - non-string ids never match the read-side exact-id index;
+                #   - leading/trailing whitespace breaks the strip()-then-look-
+                #     up on close (trimmed here, not rejected);
+                #   - an id shaped like a legacy seq alias (bare digits,
+                #     seq_N, event_N, commitment_seq_N) SHADOWS seq
+                #     references — a closure meaning "the event at seq 86"
+                #     would resolve to this commitment instead. Rejected.
+                raw_id = data["id"]
+                if not isinstance(raw_id, str):
+                    raise EventGateError(
+                        f"commitment event has a non-string data.id "
+                        f"{raw_id!r} (holder={holder}) — an explicit id must "
+                        "be a string that resolves back via "
+                        "normalize_commitment_id. Pass a distinct string id "
+                        "or omit data.id to have a cmt_<ulid> minted."
+                    )
+                trimmed = raw_id.strip()
+                if LEGACY_SEQ_ID_RE.match(trimmed):
+                    raise EventGateError(
+                        f"commitment event data.id {raw_id!r} collides with "
+                        f"the legacy seq-alias namespace (bare digits / "
+                        f"seq_N / event_N / commitment_seq_N; holder="
+                        f"{holder}). Closures referencing that spelling mean "
+                        "'the commitment at seq N' — this id would shadow "
+                        "them and closures would land on the wrong "
+                        "commitment. Use a distinct string id (e.g. "
+                        "cmt_<ulid> or commit_<name>_<date>_<n>) or omit "
+                        "data.id to have one minted."
+                    )
+                data["id"] = trimmed
             kind = data.get("kind")
             if kind in (None, ""):
                 # Stage D flip: kind is REQUIRED AT CAPTURE. Strict path
@@ -201,6 +261,33 @@ def gate_events(
                     f"(allowed: {sorted(KIND_VALUES)}; holder={holder})"
                 )
 
+        # 5 (reminder lane, v4.6.0 W4a). Origin is a HARD identity: reminders
+        # exist only because the user explicitly asked. Rejection is
+        # unconditional (both entries, strict or not) — a sweep/skill-minted
+        # reminder is a defect, never a burn-in warning.
+        if etype in REMINDER_TYPES:
+            data = ev.get("data")
+            data = {**data} if isinstance(data, dict) else {}
+            if data.get("origin") != REMINDER_ORIGIN:
+                raise EventGateError(
+                    f"{etype} event carries data.origin={data.get('origin')!r} "
+                    f"(holder={holder}) — reminders are minted by the USER "
+                    f"only: data.origin must be '{REMINDER_ORIGIN}'. No skill, "
+                    "sweep, or scheduled task may create or mutate a reminder "
+                    "on its own. Build through shared/scripts/reminders.py."
+                )
+            if etype == "reminder":
+                if data.get("id") in (None, ""):
+                    data["id"] = "rem_" + _ulid()
+            elif data.get("reminder_id") in (None, ""):
+                raise EventGateError(
+                    f"{etype} event carries no data.reminder_id "
+                    f"(holder={holder}) — an id-less reminder mutation is a "
+                    "dead letter; pass the reminder's data.id (rem_<ulid>) "
+                    "verbatim."
+                )
+            ev["data"] = data
+
         # 4. Fail-loud rejection of id-less closures.
         if etype == "commitment_resolved" and not _has_closure_id(ev):
             raise EventGateError(
@@ -210,6 +297,42 @@ def gate_events(
                 "closes nothing. Pass the commitment's data.id verbatim "
                 "(cmt_<ulid> or legacy commitment_seq_<n>)."
             )
+
+        # 4b (v4.6.0 S4) — the same dead-letter rule for the reassign and
+        # unmute references: an event that names no target routes/clears
+        # nothing. Both types are written through their canonical writers
+        # (commitment_state.reassign_commitment / mute_ledger.clear_dismissal),
+        # which always stamp the ids; this gate catches hand-built appends.
+        if etype == "commitment_reassigned":
+            data = ev.get("data")
+            data = data if isinstance(data, dict) else {}
+            if not _has_closure_id(ev):
+                raise EventGateError(
+                    "commitment_reassigned event carries no readable commitment "
+                    f"id (holder={holder}) — an id-less reassignment is a dead "
+                    "letter. Write through commitment_state.reassign_commitment."
+                )
+            if not (data.get("new_owner_id") or data.get("new_counterparty_id")):
+                raise EventGateError(
+                    "commitment_reassigned event names no new_owner_id or "
+                    f"new_counterparty_id (holder={holder}) — a reassignment "
+                    "must route the item somewhere. Write through "
+                    "commitment_state.reassign_commitment."
+                )
+        if etype == "chat_dismissal_cleared":
+            data = ev.get("data")
+            data = data if isinstance(data, dict) else {}
+            if not (
+                data.get("dismissal_seq") not in (None, "")
+                or data.get("target_id") not in (None, "")
+                or data.get("fingerprint") not in (None, "")
+            ):
+                raise EventGateError(
+                    "chat_dismissal_cleared event references no dismissal "
+                    f"(need data.dismissal_seq, data.target_id, or "
+                    f"data.fingerprint; holder={holder}) — an unanchored clear "
+                    "unmutes nothing. Write through mute_ledger.clear_dismissal."
+                )
 
         out.append(ev)
     return out
@@ -258,7 +381,10 @@ def append_event(
 __all__ = [
     "EventGateError",
     "TYPE_NORMALIZATION",
+    "REMINDER_TYPES",
+    "REMINDER_ORIGIN",
     "new_commitment_id",
+    "new_reminder_id",
     "gate_events",
     "append_event",
 ]

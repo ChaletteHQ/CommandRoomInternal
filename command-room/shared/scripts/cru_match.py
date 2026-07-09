@@ -588,6 +588,7 @@ def _commitment_confidence(ev: dict) -> float:
 
 def load_events_defensively(
     events_jsonl_path: str | Path,
+    since_ts=None,
 ) -> tuple[list[dict], list[dict]]:
     """Canonical events.jsonl reader (v3.13.8+ — Sub-bug #14b).
 
@@ -617,10 +618,19 @@ def load_events_defensively(
     # `events-<year>.jsonl` shards too, so full-history consumers see the whole timeline
     # after a rotation. Unsharded workspace -> identical output to the pre-A5 single read.
     # A non-events.jsonl path is read as-is (back-compat).
+    #
+    # `since_ts` (v4.6.0 MC2 — the cheap perf half): whole year-shards below
+    # the floor year are pruned by FILENAME, never opened (events_io.
+    # shard_paths' rule). Default None = full history, byte-identical to
+    # pre-MC2 behavior. THE SAFETY CONTRACT lives with the caller: a pruned
+    # shard's events are simply invisible, so pass since_ts ONLY when
+    # everything that matters to the caller provably postdates the floor.
+    # The active events.jsonl is never pruned; a non-events.jsonl path
+    # ignores since_ts (no shards to prune).
     if path.name == "events.jsonl":
         try:
             from events_io import shard_paths
-            files = shard_paths(path)
+            files = shard_paths(path, since_ts=since_ts)
         except Exception:
             files = [path] if path.exists() else []
     else:
@@ -665,10 +675,66 @@ def load_events_defensively(
     return events, skipped
 
 
-def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
+# v4.5.2 R1 perf — per-fire memoization of the open-set projection.
+# The daily chase (orchestrator-commitments) calls load_open_commitments 4+
+# times per fire and once more per closure, and every call was a full-history
+# scan across all shards. Cache keyed on the stat signature (path, mtime_ns,
+# size) of the events file + every shard: any append changes size → miss →
+# fresh scan, so a close_commitment write invalidates automatically. History
+# is append-only, so an unchanged signature means unchanged content.
+# Keyed on (resolved path, since_ts) — MC2's windowed projections cache
+# separately from the full one.
+_OPEN_COMMITMENTS_CACHE: dict[tuple, tuple] = {}
+
+
+def _events_files_sig(path: Path) -> tuple:
+    """Stat signature over the events file + its sibling shards (the same file
+    set load_events_defensively reads). Any append changes st_size."""
+    if path.name == "events.jsonl":
+        try:
+            from events_io import shard_paths
+
+            files = shard_paths(path)
+        except Exception:
+            files = [path] if path.exists() else []
+    else:
+        files = [path] if path.exists() else []
+    sig = []
+    for fp in files:
+        try:
+            st = fp.stat()
+            sig.append((str(fp), st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append((str(fp), None, None))
+    return tuple(sig)
+
+
+def load_open_commitments(
+    events_jsonl_path: str | Path,
+    since_ts=None,
+) -> list[dict]:
     """Read events.jsonl and return all open commitments (status open or
     overdue) that have NOT been closed by a subsequent `commitment_resolved`
     or `thread_resolved` event.
+
+    v4.5.2 R1 — memoized per file state: repeated calls within one fire reuse
+    the projection (the returned LIST is a fresh copy each call; the event
+    dicts inside are shared — treat them as read-only, which every consumer
+    already does). Any append to events.jsonl or a shard invalidates the
+    cache via the stat signature. The full incremental index is 4.7 scope
+    (client-scale trigger).
+
+    v4.6.0 MC2 — `since_ts` shard pruning: passed through to
+    load_events_defensively, dropping whole year-shards below the floor year
+    by FILENAME (never opened). Default None = full history, byte-identical
+    to pre-MC2 behavior — and the correct default for this function: the
+    open-set projection is inherently full-history (a 2024 capture can still
+    be open, and its closer can live in any later shard), so a pruned shard's
+    commitments and closers silently vanish from the result. PASS since_ts
+    ONLY when the window provably covers the entire commitment history —
+    e.g. the caller has checked the workspace's first commitment-family
+    event postdates the floor (fresh workspaces), or a test controls the
+    fixture. When in doubt, don't: correctness beats the shard skip.
 
     Mirror of build_workspace_map_input.py `_aggregate_commitments`. Returns
     full event dicts (caller pulls what it needs from `data`).
@@ -699,12 +765,38 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
     fold is read-side only (in-memory copies); events.jsonl history is never
     rewritten. Consumers keep reading due via `_commitment_field(ev, "due")`
     and are agnostic to whether it was deferred.
+
+    v4.6.0 S4 — two more read-side folds, same append-only doctrine:
+      * WORDING: `commitment_updated` events carrying `data.new_title` /
+        `data.new_summary` (the `fix wording` verb via
+        commitment_state.edit_commitment_wording) fold into the projected
+        item's title/summary — each field independently, newest wins; the
+        mis-extracted original stays in history. `change_summary` (the CRU
+        schedule-shift prose) deliberately never folds into wording.
+      * REASSIGNMENT: the latest `commitment_reassigned` folds
+        new_owner_id / new_counterparty_id (+ display names when carried)
+        into the projected item. Unconfirmed reassignments stamp
+        `pending_review` (+ review_reason) so the item counts as unconfirmed
+        and never enters chase; a confirmed one (W4b Theirs→[name], or the
+        user naming the person) clears the flag.
+    Split closers (`commitment_superseded` with `data.split_into`) close the
+    original through the standard closer chain but are NOT merges — the C4
+    survivor-provenance fold is skipped for them; split children carry their
+    own `data.source_event_seq` / `data.split_from` provenance at write time.
     """
     path = Path(events_jsonl_path)
     if not path.exists():
         return []
 
-    events, skipped = load_events_defensively(path)
+    # Cache key carries since_ts — a windowed projection and the full one
+    # are different results and must never serve each other's cache entries.
+    cache_key = (str(path.resolve()), since_ts)
+    sig = _events_files_sig(path)
+    cached = _OPEN_COMMITMENTS_CACHE.get(cache_key)
+    if cached is not None and cached[0] == sig:
+        return list(cached[1])
+
+    events, skipped = load_events_defensively(path, since_ts=since_ts)
     if skipped:
         # Surface a warning so consumers see a non-silent skipped count
         # in stderr / log streams. Per the v3.13.8 contract, callers that
@@ -732,11 +824,29 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
     reopened_seqs_at: dict[int, int] = {}
     # commitment id → latest due-shifting update (Stage A fold; see docstring).
     due_updates: dict[str, dict] = {}
+    # commitment id → latest wording update per field (v4.6.0 S4 fold: the
+    # `fix wording` verb writes commitment_updated with data.new_title /
+    # data.new_summary; each field folds independently, newest wins; the
+    # original text stays in history — append-only, never rewritten).
+    wording_updates: dict[str, dict] = {}
+    # commitment id → latest reassignment (v4.6.0 S4: commitment_reassigned
+    # routes an item to a new owner/counterparty instead of discarding it;
+    # an UNCONFIRMED reassignment stamps pending_review on the projection so
+    # the item sits in the unconfirmed bucket and never enters chase — the
+    # W4b no-auto-email-on-a-guessed-owner guardrail).
+    reassignments: dict[str, dict] = {}
     # commitment target → latest kind override (Stage D fold: the
     # `commitment_reclassified` marker is ADDITIVE — promote/migrate never
     # delete/recreate; the projector applies the label change read-side).
     kind_overrides_by_id: dict[str, dict] = {}
     kind_overrides_by_seq: dict[int, dict] = {}
+    # survivor id → accumulated merge provenance (v4.6.0 C4 fold): each
+    # `commitment_superseded` closes its target through the standard closer
+    # chain above AND names a survivor (`data.superseded_by`) that absorbed
+    # it — the survivor's in-memory copy carries the union
+    # (data.merged_source_refs / data.merged_from). Read-side only; history
+    # is never rewritten.
+    merged_onto: dict[str, dict] = {}
 
     def _as_seq(value):
         if isinstance(value, bool):
@@ -783,6 +893,22 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
                 sv = _as_seq(d.get(seq_field))
                 if sv is not None:
                     closed_seqs_at[sv] = idx
+            # C4 merge fold: a supersession names the survivor that absorbed
+            # the closed item — accumulate its provenance for the patch below.
+            # S4 split closers (data.split_into present) are NOT merges: the
+            # children carry their own source_event_seq / split_from
+            # provenance at write time, so no survivor fold applies.
+            if et == "commitment_superseded" and not d.get("split_into"):
+                survivor = d.get("superseded_by") or d.get("survivor_id")
+                if survivor:
+                    entry = merged_onto.setdefault(
+                        str(survivor), {"refs": [], "from": []}
+                    )
+                    for r in d.get("merged_source_refs") or []:
+                        if isinstance(r, str) and r and r not in entry["refs"]:
+                            entry["refs"].append(r)
+                    if cid and str(cid) not in entry["from"]:
+                        entry["from"].append(str(cid))
         elif et == "commitment_reopened":
             # Stage D (S4 undo): reopen the referenced commitment. Same target
             # chain shape as closures; append order decides the final state.
@@ -821,6 +947,37 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
             new_due = d.get("new_due") or d.get("due") or d.get("due_date")
             if target and new_due:
                 due_updates[str(target)] = {"due": new_due, "seq": ev.get("seq")}
+            # S4 wording fold: explicit new_title / new_summary only — the
+            # CRU schedule-shift path's change_summary is prose describing
+            # WHAT changed, never the new wording, and must not clobber the
+            # title. Each field folds independently (newest wins per field);
+            # a due-only update never erases an earlier wording fix and vice
+            # versa.
+            if target and (d.get("new_title") or d.get("new_summary")):
+                slot = wording_updates.setdefault(str(target), {})
+                if d.get("new_title"):
+                    slot["title"] = d["new_title"]
+                    slot["title_seq"] = ev.get("seq")
+                if d.get("new_summary"):
+                    slot["summary"] = d["new_summary"]
+                    slot["summary_seq"] = ev.get("seq")
+        elif et == "commitment_reassigned":
+            # S4 reassignment fold: latest event wins wholesale (a second
+            # reassignment replaces the first, including its confirmed flag).
+            target = (
+                d.get("commitment_id")
+                or d.get("target_id")
+                or ev.get("commitment_id")
+            )
+            if target and (d.get("new_owner_id") or d.get("new_counterparty_id")):
+                reassignments[str(target)] = {
+                    "new_owner_id": d.get("new_owner_id"),
+                    "new_counterparty_id": d.get("new_counterparty_id"),
+                    "new_owner_name": d.get("new_owner_name"),
+                    "new_counterparty_name": d.get("new_counterparty_name"),
+                    "confirmed": bool(d.get("confirmed")),
+                    "seq": ev.get("seq"),
+                }
         elif et == "commitment":
             status = _commitment_field(ev, "status") or "open"
             if status in ("open", "overdue"):
@@ -850,6 +1007,42 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
             # flat top-level due. History on disk is untouched.
             patch["due"] = upd["due"]
             patch["due_updated_by_seq"] = upd["seq"]
+        wu = wording_updates.get(cid)
+        if wu:
+            # S4 wording fold: EFFECTIVE title/summary from the latest `fix
+            # wording` update per field. The original wording stays in
+            # history (append-only) — this is an in-memory copy only.
+            if wu.get("title"):
+                patch["title"] = wu["title"]
+                patch["title_updated_by_seq"] = wu["title_seq"]
+            if wu.get("summary"):
+                patch["summary"] = wu["summary"]
+                patch["summary_updated_by_seq"] = wu["summary_seq"]
+        ra = reassignments.get(cid)
+        if ra:
+            # S4 reassignment fold: EFFECTIVE owner/counterparty from the
+            # latest commitment_reassigned. data.owner_id is first in the
+            # alias chain, so the patch wins over legacy owner /
+            # owner_person_id spellings. An UNCONFIRMED reassignment stamps
+            # pending_review (the item sits in the unconfirmed bucket and
+            # never enters chase — no auto-email on a guessed owner); a
+            # confirmed one clears it (the reassignment IS the adjudication).
+            if ra.get("new_owner_id"):
+                patch["owner_id"] = ra["new_owner_id"]
+                if ra.get("new_owner_name"):
+                    patch["owner_name"] = ra["new_owner_name"]
+            if ra.get("new_counterparty_id"):
+                patch["counterparty_id"] = ra["new_counterparty_id"]
+                if ra.get("new_counterparty_name"):
+                    patch["counterparty_name"] = ra["new_counterparty_name"]
+            patch["reassigned_by_seq"] = ra["seq"]
+            if ra["confirmed"]:
+                patch["pending_review"] = False
+            else:
+                patch["pending_review"] = True
+                patch["review_reason"] = (
+                    "reassigned — confirm the new owner before this is chased"
+                )
         ko = kind_overrides_by_id.get(cid) or (
             kind_overrides_by_seq.get(seq) if seq is not None else None
         )
@@ -859,10 +1052,22 @@ def load_open_commitments(events_jsonl_path: str | Path) -> list[dict]:
             # delete/recreate; original event untouched on disk.
             patch["kind"] = ko["kind"]
             patch["kind_overridden_by_seq"] = ko["seq"]
+        merged = merged_onto.get(cid)
+        if merged:
+            # C4 fold: the survivor of a merge carries the union of absorbed
+            # provenance — every source_ref except its own primary one, plus
+            # the superseded ids. In-memory copy only.
+            own_ref = (c.get("data") or {}).get("source_ref")
+            refs = [r for r in merged["refs"] if r != own_ref]
+            if refs:
+                patch["merged_source_refs"] = refs
+            if merged["from"]:
+                patch["merged_from"] = list(merged["from"])
         if patch:
             c = {**c, "data": {**(c.get("data") or {}), **patch}}
         out.append(c)
-    return out
+    _OPEN_COMMITMENTS_CACHE[cache_key] = (sig, out)
+    return list(out)
 
 
 # -----------------------------------------------------------------------------

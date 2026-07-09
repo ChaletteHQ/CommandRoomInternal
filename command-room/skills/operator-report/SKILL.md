@@ -297,19 +297,18 @@ Renders as `## → **[Operator report — May 2026](computer://...)**` — same 
 
 ### Step 5 — Log
 
-Append the `operator_report_generated` event via the locked writer — never a hand-rolled JSON append:
+Append the `operator_report_generated` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — never a hand-rolled JSON append. This receipt is the monthly-report task's RUN COUNTER (the value receipts the same fire emits are freshness signals only — one fire writes several of them), so exactly one per run:
 
 ```python
 import sys
 sys.path.insert(0, "shared/scripts")
-from atomic_write import atomic_append_jsonl
-atomic_append_jsonl(f"{workspace_root}/_hq/data/events.jsonl", {
-    # no "seq" — the append gate auto-stamps it
-    "ts": "<ISO-now>",
-    "type": "operator_report_generated",
-    "source_skill": "operator-report",
-    "data": {"window": "<start>..<end>", "hours_estimate": "<N>", "output_path": "<path-or-chat>"},
-})
+from receipts import log_receipt
+log_receipt(
+    workspace_root, "monthly-report",
+    receipt_type="operator_report_generated",
+    fired_via="scheduled",   # "manual" on an on-demand `operator report` chat fire
+    extra_data={"window": "<start>..<end>", "hours_estimate": "<N>", "output_path": "<path-or-chat>"},
+)
 ```
 
 ## Sourcing rules

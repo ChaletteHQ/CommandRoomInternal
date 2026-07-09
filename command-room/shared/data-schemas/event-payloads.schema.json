@@ -4,7 +4,27 @@
   "commitment": {
     "description": "An open promise. Aliases tolerated by cru_match._commitment_field: due~due_date, status~state, owner_id~owner_person_id~owner, id (minted cmt_<ulid> at write time by the append gate when absent; read by _commitment_id). kind (promise|task|scheduling|agenda) is REQUIRED AT CAPTURE (Stage D; strict path rejects, legacy path warns+stamps promise). Stage E receipts: counterparty_id (REQUIRED when determinable — feeds the CRU candidacy gate; retires requester_* for new writes) + counterparty_name (free-text fallback). Closers reference it via data.commitment_id.",
     "required": [["title"]],
-    "properties": {"title": "string", "id": "string", "kind": "string", "due": "string", "due_date": "string", "no_due": "boolean", "status": "string", "state": "string", "owner_id": "string", "owner_person_id": "string", "owner": "string", "counterparty_id": "string", "counterparty_name": "string", "source_ref": "string"}
+    "properties": {"title": "string", "id": "string", "kind": "string", "due": "string", "due_date": "string", "no_due": "boolean", "status": "string", "state": "string", "owner_id": "string", "owner_person_id": "string", "owner": "string", "counterparty_id": "string", "counterparty_name": "string", "source_ref": "string", "pending_review": "boolean", "review_reason": "string", "suspected_duplicate_of": "string", "suspected_duplicate_score": "number"}
+  },
+  "commitment_superseded": {
+    "description": "Closes a DUPLICATE commitment in favor of a survivor (v4.6.0 C4 — the merge verb) OR closes a SPLIT original in favor of its parts (v4.6.0 S4 — the split verb; data.split_into lists the child commitment ids and superseded_by names the first child). WRITTEN ONLY via commitment_state.supersede_commitment() / commitment_state.split_commitment() (same guard set as close_commitment: id normalization, loud no-match, idempotency, pending_review floor — merging/splitting adjudicates the item, so user_confirmed is required for flagged items, lock-spanned scan->append). The projector honors it as a closer through the standard closer-id chain (data.commitment_id + the commitment_seq F3 seq alias reference the SUPERSEDED item) and, for MERGES ONLY (no split_into), folds data.merged_source_refs / the superseded id onto the SURVIVOR's in-memory copy (data.superseded_by) — provenance union, history never rewritten; split children instead carry their own data.source_event_seq / data.split_from provenance at write time. Suspects are flagged at capture by commitment_dedup (data.suspected_duplicate_of on the commitment event); the flag never closes anything by itself.",
+    "required": [["commitment_id", "commitment_seq"], ["superseded_by"]],
+    "properties": {"commitment_id": "string", "commitment_seq": "number", "superseded_by": "string", "survivor_seq": "number", "resolved_by": "string", "evidence": "string", "resolution": "string", "merged_source_refs": "array", "split_into": "array"}
+  },
+  "commitment_updated": {
+    "description": "Records a change to an OPEN commitment — the item stays open. Three writer families: the orchestrator `push to [date]` verb (data.new_due — the projector folds the latest into the effective due), the CRU schedule-shift path (data.change_summary + evidence, informational prose describing WHAT changed — never folded into wording), and the S4 `fix wording` verb via commitment_state.edit_commitment_wording (data.new_title / data.new_summary — the projector folds the latest of each into the projected item's title/summary; the original stays in history, append-only). Updates that carry none of new_due/new_title/new_summary are informational and affect no fold.",
+    "required": [["commitment_id", "target_id"]],
+    "properties": {"commitment_id": "string", "target_id": "string", "commitment_seq": "number", "new_due": "string", "due": "string", "due_date": "string", "new_title": "string", "new_summary": "string", "change_summary": "string", "evidence": "string", "reason": "string", "edited_by": "string"}
+  },
+  "commitment_reassigned": {
+    "description": "Routes a commitment to a different owner or counterparty (v4.6.0 S4 — 'not mine' used to DISCARD; reassign ROUTES). WRITTEN ONLY via commitment_state.reassign_commitment() (id normalization, loud no-match, refuses closed items). At least one of new_owner_id / new_counterparty_id is required. data.confirmed marks an explicit user action (the W4b Theirs->[name] confirm verb, or the user naming the person in chat); the projector folds the latest reassignment into the projected item's owner_id/counterparty_id and — when confirmed is NOT true — stamps pending_review so the item sits in the unconfirmed bucket and never enters chase until confirmed (the W4b no-auto-email-on-a-guessed-owner guardrail).",
+    "required": [["commitment_id", "commitment_seq"], ["new_owner_id", "new_counterparty_id"]],
+    "properties": {"commitment_id": "string", "commitment_seq": "number", "new_owner_id": "string", "new_counterparty_id": "string", "new_owner_name": "string", "new_counterparty_name": "string", "reason": "string", "reassigned_by": "string", "confirmed": "boolean"}
+  },
+  "chat_dismissal_cleared": {
+    "description": "Unmutes a live chat_dismissal before its TTL expires (v4.6.0 S4 mute ledger — mutes stop being a one-way door). WRITTEN ONLY via mute_ledger.clear_dismissal() / clear_dismissals() (loud no-match on an unknown dismissal_seq, idempotent over already-inactive dismissals). References the dismissal by data.dismissal_seq (preferred — the chat_dismissal event's seq) or by data.target_id / data.fingerprint (clears every dismissal with that identity written BEFORE the clear). Readers of chat_dismissal MUST honor it: a dismissal followed by a matching clear is INACTIVE regardless of remaining TTL (mute_ledger.live_mutes / active_dismissal_target_ids are the canonical readers).",
+    "required": [["dismissal_seq", "target_id", "fingerprint"]],
+    "properties": {"dismissal_seq": "number", "target_id": "string", "fingerprint": "string", "cleared_by": "string", "reason": "string", "via": "string"}
   },
   "commitment_resolved": {
     "description": "Closes a commitment. WRITTEN ONLY via commitment_state.close_commitment() (Phase 2 Stage B, F2 — the single closure path: id normalization, loud no-match, full-set idempotency, pending_review floor). References the commitment via one of the closer-id aliases (cru_match closer chain): commitment_id~thread_id~id~target_id, or a seq alias (commitment_seq~source_event_seq, F3 amnesty chain). The append gate REJECTS closures carrying none of these (Phase 1). close_commitment writes data.commitment_id (canonical) + resolved_by + evidence (≤200 chars) + resolution (done|dropped|superseded).",
@@ -60,5 +80,25 @@
     "description": "A person whose contact cadence broke (Pulse). Carries the person and the diagnostic counts.",
     "required": [["person_id"]],
     "properties": {"person_id": "string", "eligible_event_count": "number", "most_recent_eligible_event_seq": "number"}
+  },
+  "prep_brief": {
+    "description": "Per-brief prep receipt (v4.5.2 S1). One per Call_Prep brief written, carrying the meeting id — THE signal the morning brief's no-prep detection reads (F-29). Written only by receipts.log_prep_receipt; not a task-run receipt (five briefs in one fire are five prep_brief events and ONE pack_run).",
+    "required": [["meeting_id"], ["slug"], ["artifact"]],
+    "properties": {"meeting_id": "string", "slug": "string", "artifact": "string", "generated_by": "string", "fired_via": "string", "refreshed": "boolean", "machine": "string"}
+  },
+  "reminder": {
+    "description": "A user-created pin-until-cleared reminder (v4.6.0 W4a). NOT a commitment kind — never enters buckets, counts, chase, or triage. data.origin MUST be 'user_explicit' (gate-enforced; no skill, sweep, or scheduled task may mint one). id minted rem_<ulid> at build/gate time. repeat is 'weekly' | 'monthly' | {\"every_days\": N} — recurrence lives on reminders, not commitments (M decision 2026-07-09). personal defaults true when the reminder references no tracked business entity; personal reminders render ONLY in M-facing surfaces. ref (optional) points at a commitment/event id for context only — clearing the reminder never touches the referenced item.",
+    "required": [["summary"], ["remind_from"], ["origin"]],
+    "properties": {"id": "string", "summary": "string", "remind_from": "string", "due": "string", "personal": "boolean", "ref": "string", "origin": "string"}
+  },
+  "reminder_updated": {
+    "description": "Push / keep / edit on an existing reminder. reminder_id REQUIRED (gate-rejected without it — an id-less update is a dead letter). action 'push' carries new remind_from (also re-arms a cleared one-shot); 'keep' is an acknowledged touch that resets the escalation clock; 'edit' revises summary/due. origin MUST be 'user_explicit'.",
+    "required": [["reminder_id"], ["origin"]],
+    "properties": {"reminder_id": "string", "action": "string", "remind_from": "string", "due": "string", "summary": "string", "origin": "string"}
+  },
+  "reminder_cleared": {
+    "description": "Clears a reminder. reminder_id REQUIRED. For repeating reminders the reader re-arms to the next occurrence after data.occurrence (defaults to the occurrence active at clear time) — derive-next-on-read, no scheduler. Clearing a reminder with ref NEVER closes the referenced commitment. origin MUST be 'user_explicit'.",
+    "required": [["reminder_id"], ["origin"]],
+    "properties": {"reminder_id": "string", "occurrence": "string", "note": "string", "origin": "string"}
   }
 }

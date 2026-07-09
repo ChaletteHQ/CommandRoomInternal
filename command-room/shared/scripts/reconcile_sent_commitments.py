@@ -225,6 +225,7 @@ def reconcile_and_receipt(
     user_person_id,
     source_skill="morning-briefing",
     outcome_watch_summary=None,
+    fired_via="scheduled",
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -362,6 +363,11 @@ def reconcile_and_receipt(
         "type": "sent_reconcile",
         "source_skill": source_skill,
         "data": {
+            # v4.5.2 R1 receipt-contract fields (shared/RECEIPT_CONTRACT.md).
+            "task_id": "reconcile-sent",
+            "kind": "reconcile-sent",
+            "status": "complete",
+            "fired_via": fired_via,
             "cursor_from": cursor_before,
             "cursor_to": cursor_after,
             "sent_scanned_count": n_fetched,
@@ -369,6 +375,14 @@ def reconcile_and_receipt(
             "n_pending": n_pend,
         },
     }
+    try:
+        from receipts import _machine_name
+
+        _machine = _machine_name()
+        if _machine:
+            audit_event["data"]["machine"] = _machine
+    except Exception:
+        pass
     # B6: fold the outcome-watch counts (replies/no-reply/bounced) into the SAME
     # audit event so one fire leaves one verifiable trace. Free-form `data`, so
     # no schema change for the audit part. Co-locating two silent WRITES is fine

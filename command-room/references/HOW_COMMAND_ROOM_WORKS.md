@@ -128,7 +128,7 @@ The most complex orchestrator (~700 lines of prompt). Splits open commitments in
 | ↗ YOU OWE | overdue / due_near / aging_undated |
 | ↙ OWED TO YOU | overdue / due_near / aging_undated |
 
-For each item: per-recipient draft of either a status-update email (YOU OWE) or a chase email (OWED TO YOU). Cowork user reviews + clicks Send / Edit / Push to [date] / Resolved / Snooze 3d / Add to my list.
+For each item: per-recipient draft of either a status-update email (YOU OWE) or a chase email (OWED TO YOU). Cowork user reviews + clicks Send / Edit then send / Defer / Done / Snooze (3 days) / Add to my list.
 
 **Sam-class bug history**: this orchestrator was the source of the dual-shape commitment bug (Sam 2026-05-17), the all-shape audit (v3.4.4), and the canonical filter using `_commitment_field` + `_commitment_confidence` helpers.
 

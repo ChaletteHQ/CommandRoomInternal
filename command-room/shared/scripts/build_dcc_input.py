@@ -229,10 +229,13 @@ def _project_matters_fallback(
     matters: list[dict[str, Any]] = []
     seq = 1
 
-    # Layer 1: stuck commitments (overdue first, by oldest)
-    stuck = [c for c in open_commits if _c_status(c) == "overdue"]
-    stuck.sort(key=lambda c: _c_ts(c))
-    for c in stuck[:3]:
+    # Layer 1: overdue commitments first, by oldest. v4.5.2 R1b: the template
+    # token `type: "stuck"` is a legacy STYLING key the artifact CSS keys on —
+    # kept for template compat. Every user-VISIBLE string says "overdue";
+    # never render the word "stuck" for an overdue-by-due-date item.
+    overdue_commits = [c for c in open_commits if _c_status(c) == "overdue"]
+    overdue_commits.sort(key=lambda c: _c_ts(c))
+    for c in overdue_commits[:3]:
         owner = _c_owner(c)
         proj_id = _c_project(c)
         proj_name = _name_of(projects_by_id.get(proj_id)) or proj_id
@@ -245,8 +248,8 @@ def _project_matters_fallback(
         matters.append({
             "id": f"matter_fallback_{seq}",
             "source": "signal",
-            "type": "stuck",
-            "aged": (age_str + " stuck") if age_str else "stuck",
+            "type": "stuck",  # legacy styling token (see Layer 1 note); display text says "overdue"
+            "aged": (age_str + " overdue") if age_str else "overdue",
             "headline": title,
             "evidence": f"Commitment is overdue{(' · due ' + due) if due else ''}{(' · owner: ' + owner_name) if owner_name and not is_user_owed else ''}.",
             "project": proj_name,
@@ -269,7 +272,7 @@ def _project_matters_fallback(
         owner_name = _name_of(people_by_id.get(owner)) or ""
         title = _c_title(c) or "(untitled commitment)"
         is_user_owed = owner == user_id or not owner
-        type_ = "priority" if is_user_owed else "stuck"
+        type_ = "priority" if is_user_owed else "stuck"  # styling token only; visible text says "open"
         action_verb = "work on" if is_user_owed else "nudge " + (owner_name or "owner")
         matters.append({
             "id": f"matter_fallback_{seq}",

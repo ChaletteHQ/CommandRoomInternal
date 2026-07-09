@@ -50,6 +50,17 @@ COMMITMENT_CLOSURE_ID_FIELDS = (
     "source_event_seq",
 )
 
+# Legacy seq-alias id spellings (F2/F3): bare int 86, "86", "seq_86",
+# "event_086", "commitment_seq_86" — all resolved read-side as "the commitment
+# event at seq N". Lives here (the shared vocabulary home) because BOTH sides
+# need it: commitment_state.normalize_commitment_id resolves these on read,
+# and event_gate REJECTS an explicit data.id that matches this namespace on
+# write (v4.5.2 R1c) — a custom id shaped like a seq alias would shadow seq
+# references and make closures resolve to the wrong commitment.
+import re as _re  # noqa: E402
+
+LEGACY_SEQ_ID_RE = _re.compile(r"^(?:commitment_seq_|event_|seq_)?0*(\d+)$")
+
 
 def load_event_types() -> FrozenSet[str]:
     """The canonical type enum, loaded once from events.schema.json.
@@ -80,6 +91,7 @@ def is_known_type(event_type) -> bool:
 
 __all__ = [
     "KIND_VALUES",
+    "LEGACY_SEQ_ID_RE",
     "COMMITMENT_CLOSURE_ID_FIELDS",
     "load_event_types",
     "is_known_type",

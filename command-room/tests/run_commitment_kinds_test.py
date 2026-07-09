@@ -273,9 +273,11 @@ def main():
               "data.kind" in text and "capture floor" in text.lower()
               and "commitment-rules.md" in text)
 
-    renderer = read("shared/scripts/chat_output_renderer.py")
+    # v4.5.2 S2 — the verb registry lives in shared/scripts/verb_taxonomy.py;
+    # the renderer derives CANONICAL_ACTIONS from the table.
+    taxonomy = read("shared/scripts/verb_taxonomy.py")
     for verb in ('"drop"', '"not mine"', '"make task"', '"promote"', '"never track this"'):
-        check(f"CANONICAL_ACTIONS carries triage verb {verb}", verb in renderer)
+        check(f"CANONICAL_ACTIONS carries triage verb {verb}", verb in taxonomy)
 
     check("CHAT_ACTION_WIDGET documents the triage surface + undo",
           "Commitment Triage" in read("shared/CHAT_ACTION_WIDGET.md")
