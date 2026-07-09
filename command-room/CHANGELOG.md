@@ -1,5 +1,21 @@
 # Command Room — Changelog
 
+## v4.6.1 — 2026-07-09 — Marketplace install hotfix (`_comment` in hooks config)
+
+v4.6.0 could not be installed or updated in Cowork on any client repo: the remote marketplace validator rejected the plugin with `status=failed_content` / "Unknown hook field(s) ['_comment'] in hooks config." Every repo carrying v4.6.0 core was affected fleet-wide (confirmed when two freshly-provisioned client repos, CommandRoomCategory and CommandRoomAZ2, failed sync identically).
+
+### Root cause
+`command-room/hooks/hooks.json` carried a top-level `_comment` key (a JSON-comment workaround holding the GATE2 D3 rationale). JSON has no comment syntax; the Cowork marketplace validator now schema-validates hooks configs and rejects ANY field it can't surface in the approval UI — `_comment` included. This is a content-validation failure, not a path/zip issue.
+
+### Fix
+Removed the `_comment` key from `hooks/hooks.json` (the hook config itself is unchanged and still valid). Relocated the rationale to a new `command-room/hooks/README.md` so nothing is lost, with a note to keep `hooks.json` limited to schema-valid hook fields only.
+
+### Files touched
+`command-room/hooks/hooks.json` (removed 1 key) · `command-room/hooks/README.md` (new) · version + changelog + manifest.
+
+### Customer migration impact
+None functional. This is what makes v4.6.x installable at all — clients still stuck on the failed v4.6.0 sync can now Check for updates and land on 4.6.1. No re-registration, no schema migration, no data repair. All v4.6.0 behavior is carried forward unchanged.
+
 ## v4.6.0 — 2026-07-09 — The dogfood release (16 items from the 2026-07-07/08 live dogfood)
 
 Two days of interactive dogfooding on M's live workspace produced 60+ findings (FINDINGS_M_v451.md); this release ships the entire fix batch plus the first 4.6 feature wave. Battery grew 161 → 177 suites, all green. Sixteen items, each independently built, adversarially reviewed against the findings' disk evidence, and merged in dependency order.

@@ -1,5 +1,4 @@
 {
-  "_comment": "SPEC GATE2 D3 — best-effort SAME-TURN enforcement. This registers a Stop hook that sweeps the deliverables the turn just produced for voice/privacy violations and surfaces them BEFORE the user forwards the artifact. Plugin Stop hooks are CONFIRMED in the Claude Code CLI; whether the Cowork sandboxed runtime executes plugin hooks is UNCONFIRMED (see gate2_turn_sweep.py header). Shipped as a safe probe + best-effort layer: the runner NEVER blocks and ALWAYS exits 0, so if the runtime ignores this hook there is zero harm and the cleanup weekly sweep (cleanup/SKILL.md Phase 3f) remains the load-bearing backstop. If the hook DOES fire, a gate_ran event with surface=turn_hook lands in events.jsonl that turn — that is how the live re-run confirms whether Cowork honors it.",
   "hooks": {
     "Stop": [
       {
