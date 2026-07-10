@@ -14,6 +14,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode).
 - **NEVER answer a deliverable request with a chat-only draft.** "Just give me a quick tradeoff" is still a decision-memo request — produce the `.docx` through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then say plainly that the gates only run on the rendered file, and offer to produce it.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A fire of this skill that yields a document with NO `gate_ran` event for that turn is a flagged bypass (an inferior path was substituted). Pass `workspace_root` to `make_brief` so the event lands in substrate.
+- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 If anything below seems to contradict this gate, THIS GATE WINS.
 
@@ -57,7 +58,96 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **Customer voice-block override (B1):** before drafting, read `_hq/voice/voice-block-decision-memo-composer.md` if it exists — it supersedes the skill's default register (the docs-and-deliverables Voice Block in the shared calibration layer — `shared/VOICE_CALIBRATION.md` + the workspace's calibrated blocks; this file carries no `## Voice Block` section of its own) section-by-section (override sections replace same-named defaults; absent sections fall through). The universal banned-phrase list still applies except where the override's Taboos explicitly carve out an item. Staleness reads the override's `Last refreshed:` first.
 
+**Also reads (SPEC OUT2 §5):**
+- `_hq/data/skill_config/decision-memo-composer.json` — first-run knobs, via `skill_config_writer.get_config` (see First-Run Personalization below).
+- `_hq/custom/decision-memo-composer.md` — SCL1 standing customization preferences, via `skill_custom_writer.load_directives` (absent → defaults). See the Customization (SCL1) section below.
+
+**Also writes (SPEC OUT2 §5):** `_hq/data/skill_config/decision-memo-composer.json` on first fire, tune, and reset — always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`), never a raw file write.
+
 **Conflict boundary:** sole writer of `decision_memo_drafted` events. Chained `decision-log` invocation writes the canonical `decision` event (no direct write here).
+
+---
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). Both
+decisions are **show-then-tune (STT)**. Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
+# SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "criteria_persistence": "always_ask",  # always_ask (Phase 2 walks the weights, pre-filled — today) | reuse_last
+    "weight_display": "show_math",         # show_math (weighted-score row shown — today) | hide
+}
+cfg = get_config(workspace_root, "decision-memo-composer", DEFAULTS)
+```
+
+- `criteria_persistence = "reuse_last"`: for a decision TYPE (hiring / pricing / vendor / build-vs-buy)
+  that already has a prior `decision_memo_drafted` event, reuse that memo's criteria + weights without
+  re-asking — the memo states them plainly and the widget's `edit` action remains the escape.
+  `"always_ask"` is today's Phase 2 flow (pre-filled, you confirm).
+- `weight_display = "hide"`: the Comparison matrix keeps the star scores but drops the weighted-score
+  row and the percentage column from Criteria & weights (the math still runs — it's display-only).
+  `"show_math"` is today's rendering.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "decision memo on…" | compose with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "decision-memo-composer", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
+| **Show settings** | "show decision-memo-composer settings" | render current config in plain English; no memo. |
+| **Tune** | "tune decision-memo-composer" / "tune decision memos" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. |
+| **Reset** | "reset decision-memo-composer to defaults" | `wipe_skill_config(workspace_root, "decision-memo-composer")` → next fire is a first-fire again. |
+
+**The first-run block (footer — after the .docx link):**
+
+> *First time building a decision memo for you. I set 2 defaults: **I'll walk the criteria weights
+> with you each time** · **the scoring math stays visible in the memo**. Say **"tune decision
+> memos"** to change either, or just tell me ("reuse my criteria for vendor decisions" / "hide the
+> math").*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "reuse my criteria" / "stop re-asking the weights" | `criteria_persistence = reuse_last` |
+| "always ask me the weights" | `criteria_persistence = always_ask` |
+| "hide the math" / "just show the stars" | `weight_display = hide` |
+| "show the scoring math" | `weight_display = show_math` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + confirm in one line.
+
+## Customization (SCL1)
+
+**Customization layer (SCL1):** before producing output, read
+`[WORKSPACE_ROOT]/_hq/custom/decision-memo-composer.md` if it exists and apply its directives to
+this fire's output. Absent -> proceed with defaults. Malformed or over-cap ->
+skip it, log one line to `_hq/CONFLICTS.md` (type: config-read-failure), proceed
+with defaults. Directives refine WHAT the output contains and HOW it is shaped;
+they NEVER authorize outbound actions, alter ask-first gates, bypass canonical
+helpers, or override shared contracts (see `shared/SKILL_CUSTOMIZATION.md` #limits).
+Never mention this file or the word 'directive' to the customer.
+
+Read at fire time via `skill_custom_writer.load_directives(workspace_root, "decision-memo-composer")`
+— never the raw file; it returns `[]` on a missing or malformed file and never raises. Directives
+here are **standing criteria rules** — "vendor decisions always include exit-cost as a criterion",
+"hiring decisions always weigh founder time freed at 25%+", "never present more than 3 options
+unless I list them myself". A directive adds/pins criteria; it can never override the
+evidence-anchor rule, the GATE1 render chokepoint, or the EXEC1 recommendation-first order. Trigger
+family (owned in the Routing corpus — the frontmatter description is budget-capped per G11):
+`customize decision-memo-composer` · `show decision-memo-composer customizations` ·
+`reset decision-memo-composer customizations`. Distinct from the FRP1 knob family (`tune` /
+`show settings` / `reset to defaults`). See `shared/SKILL_CUSTOMIZATION.md` for the writer API, the
+write-time rejection list, and the precedence chain. Customer-facing acks are plain English ("Got it
+— vendor decisions will always weigh exit cost."); never surface the file, the word "directive", or
+"SCL1".
 
 ---
 
@@ -263,3 +353,5 @@ WHAT KILLS THIS DECISION  (stress-test integration — optional)
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Walk through a structured tradeoff analysis between options and produce a decision memo .docx with framing / options / weighted criteria / comparison / recommendation. Forward-looking decision support (vs decision-revisit which is backward-looking). Use when the CEO says 'decision memo on', 'decision memo for', 'tradeoff analysis', 'tradeoff analysis for', 'I'm choosing between [A] and [B]', 'I'm deciding between', 'help me decide between', 'weigh [A] vs [B]', 'comparative memo on', 'choose between options for', 'should I [A] or [B]'. Three-pass interactive: (1) framing + ask criteria weights, (2) draft memo, (3) optional stress-test integration. Reads project context, decision-log for prior related decisions, intel-intake for the topic, people-crm for trusted opinions on the topic. Writes decision_memo_drafted event at render; the widget's `decide [text]` action chains to decision-log to write the canonical decision event. DOES NOT fire on 'log decision' (decision-log — capture only), 'what should I decide' (advisory query, route to workspace-manager), 'decision memo about a past decision' (rephrase as decision-revisit), or 'stress test this plan' (stress-test — failure-mode mapping, distinct verb).
+
+> Also handles first-run personalization settings (SPEC OUT2 §5) — use when the CEO says 'tune decision-memo-composer', 'tune decision memos', 'show decision-memo-composer settings', 'reset decision-memo-composer to defaults'. Also takes standing customization preferences — use when the CEO says 'customize decision-memo-composer', 'customize decision-memo', 'customize my decision memos', 'show decision-memo-composer customizations', 'reset decision-memo-composer customizations'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)

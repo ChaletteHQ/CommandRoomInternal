@@ -373,6 +373,7 @@ with tempfile.TemporaryDirectory() as tmp:
     out_rep = os.path.join(tmp, "report.docx")
     path = make_brief(out_rep, brief_kind="decision_memo",
                       title="Hire timing", subtitle="Decide by June",
+                      exec_header={"verdict": "Hire in June."},  # OUT2 §4 flip
                       sections=_dm_no_rec, contract="report")
     check("report mode → file written despite violation", os.path.isfile(out_rep))
 
@@ -380,6 +381,7 @@ with tempfile.TemporaryDirectory() as tmp:
     out_off = os.path.join(tmp, "off.docx")
     make_brief(out_off, brief_kind="decision_memo",
                title="Hire timing", subtitle="Decide by June",
+               exec_header={"verdict": "Hire in June."},  # OUT2 §4 flip
                sections=_dm_no_rec, contract="off")
     check("off mode → file written", os.path.isfile(out_off))
 
@@ -390,6 +392,7 @@ with tempfile.TemporaryDirectory() as tmp:
         "brief_kind": "call_prep",
         "title": "Thin prep",
         "subtitle": "Today",
+        "exec_header": {"verdict": "Walk out with the date set."},
         "sections": [{"heading": "Meeting Details", "body": words(50)}],
         "contract": "off",
     })

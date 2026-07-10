@@ -65,6 +65,8 @@ Render one `all_batch_widget` per `shared/CHAT_ACTION_WIDGET.md`. Per item:
 
 All verbs are already in `CANONICAL_ACTIONS` — no renderer change. The `send`/`edit then send`/`draft` clicks dispatch through apply-choices into email-writer's Phase 5/6 (`email_drafted` + `email_sent` with `draft_event_seq` linkage) — do NOT reinvent the send lifecycle. Put the Links section after the widget, then STOP (the widget is the entire turn).
 
+**Ranked-report layout (SPEC OUT2 §4 — this pack is one of the four ranked-report surfaces; contract in `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The ranked report").** The widget above maps to the contract — align, don't duplicate: open the widget with the shared **tile summary band** (components.py fragment) derived from the SAME ranking computation — **worth a touch** (candidate count) · **days quiet** (median gap across the 3) · **owed** (count with an overdue commitment component); drop-empty per F-60, and with fewer than 2 real tiles skip the band entirely (a one-tile band is noise on a 3-item pack). Each item IS the scored row: rank (widget position) · name · quantify tag (the days-quiet + overdue-commitment component, code-computed, never an estimate) · why-now (the evidence line) · action (send / edit then send / draft / skip). The widget's actions are the ask block (one-ask-surface) — never a prose twin. No synthesis lead: ranked lists lead with the count line.
+
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "last touch [date] · [N] days (dormancy_signal score 0.72)"
 - Good: "last touch Feb 3 · 47 days ago"

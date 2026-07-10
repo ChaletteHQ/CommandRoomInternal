@@ -67,6 +67,12 @@ def main() -> int:
         ("weekly-recap", "lens"),
         ("memo-writer", "register"),
         ("operator-report", "length"),
+        # SPEC OUT2 §5 — the composer wave + the cross-skill output profile.
+        ("board-pack-assembler", "kpi_set"),
+        ("decision-memo-composer", "criteria_persistence"),
+        ("stress-test", "risk_framing"),
+        ("automation-scanner", "ranking_weights"),
+        ("output_profile", "density"),
     ]:
         check(f"schema: {s} registered with key '{key}'",
               key in skills.get(s, []))

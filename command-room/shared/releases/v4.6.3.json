@@ -1,0 +1,34 @@
+{
+  "version": "4.6.3",
+  "headline": "Your documents got a serious upgrade — a sharper default look out of the box, stat tiles on more deliverables, and a visual quality check before anything reaches you.",
+  "items": [
+    {
+      "id": "v463_announce_default_look",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Every Word deliverable now ships with a refined, executive-grade design with zero setup — cleaner headings, a sharper palette, and warm stat tiles. Nothing to configure; your next document simply looks better.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v463_announce_visual_layer_spread",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The visual layer now reaches more deliverables: board packs, value receipts, and dormant-customer scans open with at-a-glance stat tiles, contract reviews get a flag matrix, and team briefs use the same engine as your meeting prep.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v463_announce_visual_gate",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Documents are now rendered and visually reviewed before they reach you — layout problems get caught and fixed instead of delivered.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v463_announce_tune_composers",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "You can now set standing preferences for how your documents come out — say 'tune' or 'customize' plus the document type (for example 'customize memo writer') to adjust length, density, and how visual the output is. Preferences persist until you change them.",
+      "action": "announce_only"
+    }
+  ]
+}

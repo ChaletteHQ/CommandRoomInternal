@@ -181,11 +181,17 @@ Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. Pass `make_brief(brief_kind="dor
 - **changed / decide / needs** = what shifted since the last scan · the one customer worth calling today · the one-tap re-engagement to approve.
 - **Subsumes** the old prose `## Summary` line ("Looked across [N]…") — that line is REPLACED by the exec header, not added on top (net length must not increase).
 
+**Header tile band (SPEC OUT1 §4):** the FIRST section of the .docx (immediately under the exec header) is a stat-tile band — pass it as a section with a `tiles` list: **$ at stake** (sum of the annotated/quantify-derived revenue across the ranked customers) · **dormant** (count of ranked customers) · **trending quieter** (count whose gap is widening but not yet over threshold). Values come from the SAME computation that builds the ranked list — never a second pass, never a prose re-count. Drop-empty (F-60): if no revenue is annotated anywhere, DROP the "$ at stake" tile (never a $0 or estimated frame); the dormant-count tile always has data. A tile whose datum is genuinely unknown is omitted; a real zero renders.
+
+**Ranked-report layout (SPEC OUT2 §4 — this scan is one of the four ranked-report surfaces; contract in `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The ranked report").** This skill ALREADY carries the contract's pieces — align, don't duplicate: the tile band above IS the contract's tile summary band (item 1); each ranked customer entry maps to the scored row (item 2) as rank (list position) · name (customer + org) · quantify tag (historical revenue + gap vs baseline, substrate-derived only) · why-now (the suggested re-engagement angle citing real evidence) · action (draft re-engagement). Nothing new to render — this paragraph exists so the four ranked-report skills read as one system.
+
 **Top-3 one-tap (element 4 ASK block / one-ask-surface):** the top-3 dormant customers each get a one-tap `draft re-engagement` action (already in CANONICAL_ACTIONS; draft-never-send preserved per the Writer Contract). On the widget surface the widget IS the ask block — no prose twin.
 
 **Quantify (element 3):** per-item dollar tags come from `quantify.money_time_tag` (or the annotated `_hq/CUSTOMERS.md` revenue), never an estimate.
 
 Checklist (binary): header concrete-or-nothing · quantify tag only when non-None · top-3 asks one-tap, reader-actionable, one-surface.
+
+**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "Live lookup unavailable — flags below are substrate-only."

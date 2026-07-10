@@ -13,6 +13,11 @@
     "decision-log": ["auto_log", "revisit_reminders"],
     "one-pager-composer": ["register", "signature"],
     "memo-writer": ["register", "signature"],
-    "operator-report": ["length"]
+    "operator-report": ["length"],
+    "board-pack-assembler": ["pack_length", "deck_companion", "kpi_set"],
+    "decision-memo-composer": ["criteria_persistence", "weight_display"],
+    "stress-test": ["depth", "risk_framing"],
+    "automation-scanner": ["ranking_weights", "horizon_buckets"],
+    "output_profile": ["density", "visual_bias", "page_cap", "default_format"]
   }
 }

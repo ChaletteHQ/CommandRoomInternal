@@ -279,6 +279,7 @@ def test_brief_writer_call_prep_warn_only() -> None:
         brief_kind="call_prep",
         title="Call prep",
         subtitle="Internal",
+        exec_header={"verdict": "Walk out with the deal moved."},  # OUT2 §4 flip
         sections=sections,
         contract="off",  # B3: isolating the voice gate; this thin stub would trip the contract gate
     )
@@ -296,6 +297,7 @@ def test_brief_writer_voice_gate_off() -> None:
         brief_kind="memo",
         title="Deal update",
         subtitle="Internal",
+        exec_header={"verdict": "Deal moves Friday."},  # OUT2 §4 flip
         sections=sections,
         voice_gate="off",
         contract="off",  # B3: isolating voice_gate behavior; thin stub would trip the contract gate
@@ -316,6 +318,7 @@ def test_brief_writer_clean_memo_saves() -> None:
         brief_kind="memo",
         title="Deal update",
         subtitle="Internal",
+        exec_header={"verdict": "Deal moves Friday."},  # OUT2 §4 flip
         sections=sections,
         contract="off",  # B3: isolating voice-gate clean-pass; thin stub would trip the contract gate
     )

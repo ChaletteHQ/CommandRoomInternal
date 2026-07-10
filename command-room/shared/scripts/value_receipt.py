@@ -445,10 +445,56 @@ def _hours_body(hours_estimate: float) -> str:
     )
 
 
+# Metric keys that roll up into the "Actions handled" tile — every unit of work
+# Command Room actually did this window. briefs_delivered already folds
+# morning_briefings + prep_briefs, so those are NOT re-added (no double count).
+_ACTIONS_HANDLED_KEYS = (
+    "commitments_captured",
+    "meetings_processed",
+    "briefs_delivered",
+    "drafts_produced",
+    "decisions_logged",
+    "documents_produced",
+    "dormant_resurfaced",
+)
+
+
+def build_receipt_tiles(metrics: dict, hours_estimate: float) -> list:
+    """The stat-tile band for the value receipt (SPEC OUT1 §4): Actions handled ·
+    Hours returned (conservative) · Threads advanced. Values come straight from
+    the computed receipt — this NEVER re-derives math the skill would then
+    render in prose (F-60: substrate-derived only).
+
+    Drop rule follows this module's own omit-don't-pad convention (mirrors
+    `_count_bullets`, which skips zero lines): a zero tile is omitted so a thin
+    window shows a thin band, never a wall of zeros. Returns [] when nothing was
+    handled — the caller then omits the band entirely (`_count_bullets` already
+    prints the honest 'No recorded activity' line)."""
+    m = metrics
+    actions_handled = sum(int(m.get(k, 0)) for k in _ACTIONS_HANDLED_KEYS)
+    # A "thread advanced" = an outbound draft written or a quiet relationship
+    # resurfaced — both move a conversation forward.
+    threads_advanced = int(m.get("drafts_produced", 0)) + int(m.get("dormant_resurfaced", 0))
+
+    tiles = []
+    if actions_handled > 0:
+        tiles.append({"label": "Actions handled", "value": str(actions_handled)})
+    if hours_estimate and hours_estimate > 0:
+        tiles.append({"label": "Hours returned (conservative)", "value": f"~{hours_estimate:g}"})
+    if threads_advanced > 0:
+        tiles.append({"label": "Threads advanced", "value": str(threads_advanced)})
+    return tiles
+
+
 def _build_sections(metrics: dict, hours_estimate: float, per_month: list, rollup: str) -> list:
     """A ready-to-pass make_brief sections list. Code builds every number into
     the strings, so the skill renders — it never recomputes in prose."""
-    sections = [
+    sections = []
+    # SPEC OUT1 §4 — tile band above the counts. Substrate-derived, drop-empty.
+    tiles = build_receipt_tiles(metrics, hours_estimate)
+    if tiles:
+        sections.append({"heading": "At a glance", "tiles": tiles})
+    sections += [
         {"heading": "What Command Room handled", "bullets": _count_bullets(metrics)},
         {"heading": "Time absorbed", "body": _hours_body(hours_estimate)},
     ]
@@ -719,6 +765,7 @@ __all__ = [
     "compute_value_receipt",
     "validate_receipt_ran",
     "window_label",
+    "build_receipt_tiles",
 ]
 
 

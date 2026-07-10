@@ -271,6 +271,8 @@ If zero on either side, omit that half of the line.
 
 > **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: the pack **opens with "What YOU committed to in this room" before others' items** — the `owner_id == user_id` split is already computed (Step: Surface Open Commitments), so this is pure ordering. Pass `make_brief(brief_kind="followup_pack", ...)` an `exec_header` whose verdict names what the user walked out owing ("You own 2 items from this call — pricing redline by Thu, intro by Fri"); CHANGED = what got decided/closed; DECIDE/NEEDED follow the floor or the nothing-form. The **drafts widget IS the ASK block** (element 4, one-ask-surface) — the per-attendee draft widget is the reader-action surface; do NOT also render a prose "What I need from you" twin in the .docx.
 
+**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
+
 ```
 # Follow-Up: [Meeting Name]
 Date: YYYY-MM-DD | Attendees: Aria, Bowie, Skyler | Project: [Project]

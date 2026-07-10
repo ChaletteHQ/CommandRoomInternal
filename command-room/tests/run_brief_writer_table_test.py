@@ -27,6 +27,7 @@ def test_basic_table_renders() -> None:
         brief_kind="memo",
         title="Test memo",
         subtitle="Test subtitle",
+        exec_header={"verdict": "Table primitive renders."},  # OUT2 §4 flip
         sections=[
             {
                 "heading": "Section A",
@@ -63,6 +64,7 @@ def test_matrix_with_star_renders() -> None:
         brief_kind="decision_memo",
         title="Decision test",
         subtitle="Test subtitle",
+        exec_header={"verdict": "Matrix primitive renders."},  # OUT2 §4 flip
         sections=[
             {
                 "heading": "Comparison",
@@ -88,6 +90,47 @@ def test_matrix_with_star_renders() -> None:
     # Star glyph on column 0 cells
     assert "★" in xml, "expected star glyph in matrix col 0"
     print("PASS test_matrix_with_star_renders")
+
+
+def test_contract_review_flag_matrix() -> None:
+    """SPEC OUT1 §4 — contract-review 'How it compares' matrix: the flag column
+    (flag_col_idx) gets shaded with the brand tint that matches each flag word."""
+    from brand import DEFAULT_BRAND
+    tmp = Path(tempfile.mkdtemp(prefix="brief_flag_matrix_"))
+    out = tmp / "flag_matrix.docx"
+    make_brief(
+        str(out),
+        brief_kind="contract_review",
+        title="Acme MSA review",
+        subtitle="Test subtitle",
+        exec_header={"verdict": "Flag matrix renders."},  # OUT2 §4 flip (contract_review is now a STANDARD_KIND)
+        sections=[
+            {
+                "heading": "How it compares",
+                "matrix": {
+                    "headers_row": ["Your standard", "This contract", "Flag"],
+                    "headers_col": ["Term length", "Indemnification", "Payment"],
+                    "cells": [
+                        ["12 months", "12 months", "Standard"],
+                        ["mutual, capped", "one-way, uncapped", "Flag"],
+                        ["net 30", "net 45", "Review"],
+                    ],
+                    "flag_col_idx": 2,
+                },
+            },
+        ],
+        contract="off",
+        voice_gate="off",
+    )
+    assert out.exists()
+    xml = _extract_xml(out)
+    # Each flag word's tint fill must appear in the doc.
+    pal = DEFAULT_BRAND["palette"]
+    for tint_key in ("flag_ok", "flag_bad", "flag_warn"):
+        assert pal[tint_key].upper() in xml.upper(), f"expected {tint_key} tint in flag matrix"
+    # The flag words themselves render (grayscale/colorblind-safe).
+    assert "Standard" in xml and "Flag" in xml and "Review" in xml
+    print("PASS test_contract_review_flag_matrix")
 
 
 def test_insights_kind_supported() -> None:
@@ -119,6 +162,7 @@ def test_table_only_section_works() -> None:
         brief_kind="board_pack",
         title="Board pack test",
         subtitle="Q2 metrics",
+        exec_header={"verdict": "Timeline primitive renders."},  # OUT2 §4 flip
         sections=[
             {
                 "heading": "KPIs",
@@ -139,6 +183,7 @@ def test_table_only_section_works() -> None:
 def main() -> int:
     test_basic_table_renders()
     test_matrix_with_star_renders()
+    test_contract_review_flag_matrix()
     test_insights_kind_supported()
     test_table_only_section_works()
     print("\nALL brief_writer table/matrix tests PASSED")

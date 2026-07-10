@@ -1,5 +1,21 @@
 # Command Room — Changelog
 
+## v4.6.3 — 2026-07-10 — The output layer (OUT1 + OUT2)
+
+Ships the ratified output-skills strategy's first two waves. Verdict from the 2026-07-09 strategy session: outputs had a distribution problem, not a missing-skills problem — the visual engine existed but only two skills used it, and every document shipped the same flat default. Battery 186 → 191 suites, all green.
+
+### OUT1 — default output upgrade + dormant brand plumbing
+Every docx deliverable gets a zero-config premium default: Georgia display headings, refined navy palette, warm stat tiles (`shared/scripts/brand.py` = the single theme source; brief_writer consumes it). Tile bands land on value-receipt, board-pack, and dormant-customer-scan; contract-review gains a flag matrix; team-intelligence briefs rewire through prep_pipeline. Brand layer is WIRED but DORMANT — `$defs/brand` on the entities schema, no trigger, nothing in onboarding; activation is an M-led engagement per client.
+
+### OUT2 — the systemic output layer
+One component library (`components.py`) with docx + HTML backends and a no-stray-palette guard — every visual element renders from one implementation. Render-then-critique visual gate (`visual_gate.py`): documents are rasterized and visually checked before delivery, with a Windows-native rasterizer rung (Windows.Data.Pdf) so stock client boxes need no extra installs. EXEC1 completed (warn→ValueError flip + ranked-report layout contract). Composer customization: tune/customize verbs fold into composers via output_profile — absent profile = byte-identical output (fence test-enforced); triggers live in Routing sections (G11 headroom ~200 chars, documented in the G11_CONSTRAINED lint set).
+
+### Customer migration impact
+None. No re-registration, no schema migration, no data repair. Documents simply look better on the next fire. Announce items in shared/releases/v4.6.3.json.
+
+### What's NOT in this ship (Wave 3, logged)
+AntV-adapted chart skill (MIT) · infographic composer · premium HTML as a client-selectable format · exemplar library across all standard kinds · brand-layer activation (M-led, never self-serve).
+
 ## v4.6.2 — 2026-07-09 — The marathon finale (W4b, W4c, S3, MC1 + BUG-3719)
 
 Completes the 20-item build program that started with the 2026-07-07/08 live dogfood. Battery 177 -> 186 suites since 4.6.0, all green. Every item independently built in an isolated worktree, adversarially reviewed against the findings' disk evidence, and merged with integration batteries.

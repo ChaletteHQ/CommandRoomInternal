@@ -278,6 +278,8 @@ Per-item action set (all canonical — P1.1 respec 2026-07-02; dispatch in apply
 
 The CEO sees: project title + "N days quiet" + recommended action + action buttons. Scannable in under a minute even with 10 stalled projects.
 
+**Ranked-report layout (SPEC OUT2 §4 — this queue is one of the four ranked-report surfaces; contract in `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The ranked report").** The widget above maps to the contract — align, don't duplicate: the quantified count line's figures MAY additionally render as the shared **tile summary band** (components.py fragment) at the top of the widget — **stalled** (count) · **$ at stake** (the substrate-derived sum, only when non-None) · **oldest** (max days quiet) — same values as the count line's computation, never a second pass; drop-empty per F-60, and when only the count tile has data skip the band (the count line already carries it). Each flag IS the scored row: rank (severity order) · name (project) · quantify tag (`money_time_tag`, date-only fallback) · why-now ("N days quiet" + the honest live-check status) · action (the recommended action). The widget's per-item buttons are the ask block (one-ask-surface) — never a prose twin.
+
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "Next time you fire 'show me stalled projects', it'll offer the tune flow on first re-fire."
 - Good: "Next time you ask for stalled projects I'll use the recommended settings — and I'll offer the setup options once."

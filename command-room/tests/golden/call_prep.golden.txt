@@ -1,6 +1,7 @@
 CALL PREP
 Call prep — Rio Sample
 1:1 · <DATE> · Acme Co
+Walk out with the renewal date locked.
 Suggested outcome
 Confirm the sourcing spec lands this week and align on the pricing sheet for Northstar.
 Open with them

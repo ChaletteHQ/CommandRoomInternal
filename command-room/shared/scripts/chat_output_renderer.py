@@ -91,6 +91,13 @@ from verb_taxonomy import (
     required_input_thing,
 )
 
+# SPEC OUT2 §2a/2b — the stat-tile band markup is owned by the shared
+# component library (one implementation, two backends: this widget surface +
+# brief_writer's .docx band). The legacy `counters` path and the OUT2 `tiles`
+# path both render through it; markup is byte-identical to the pre-OUT2
+# inline loop, so nothing changes on screen.
+from components import build_tile_band_html as _build_tile_band_html
+
 
 # Visual constants
 PILL = "▸"
@@ -1531,17 +1538,10 @@ def _render_all_clear_summary(data: dict, wrapper: str = "document") -> str:
 
     counters = data.get("counters") or []
     if counters:
-        parts.append('<div class="cr-counter-grid">')
-        for c in counters:
-            label = _html_mod.escape(str(c.get("label", "")))
-            value = _html_mod.escape(str(c.get("value", "")))
-            parts.append(
-                f'<div class="cr-counter-card">'
-                f'<div class="cr-counter-label">{label}</div>'
-                f'<div class="cr-counter-value">{value}</div>'
-                f'</div>'
-            )
-        parts.append('</div>')
+        # SPEC OUT2 §2b — shared tile fragment (markup identical to the old
+        # inline loop). validate=False: counters are R4-verbatim headline
+        # numbers (0 is data; >5 buckets is legitimate).
+        parts.append(_build_tile_band_html(counters, validate=False))
 
     summary_line = data.get("summary_line", "")
     if summary_line:
@@ -1928,19 +1928,23 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # (Open / You owe / Owed to you / Unowned / Unconfirmed) rendered
     # VERBATIM from the canonical loader's bucket export (R4). Same markup
     # the all-clear summary already used.
+    #
+    # SPEC OUT2 §2b — both header-band keys render through the shared
+    # component fragment (components.build_tile_band_html), so the chat band
+    # and brief_writer's .docx band are one implementation (F-60):
+    #   - `counters` (legacy key): rendered as-passed, validate=False —
+    #     R4-verbatim headline numbers where 0 is data and more than 5
+    #     buckets is legitimate. Labels/values unchanged.
+    #   - `tiles` (OUT2 key): the docx-parity band — same {label, value}
+    #     shape make_brief consumes, validated by the component contract
+    #     (drop-empty refusal, 5-tile band cap). Pass the SAME list to both
+    #     surfaces and they provably render the same values/labels/order.
     counters = data.get("counters") or []
     if counters:
-        parts.append('<div class="cr-counter-grid">')
-        for c in counters:
-            c_label = _html_mod.escape(str(c.get("label", "")))
-            c_value = _html_mod.escape(str(c.get("value", "")))
-            parts.append(
-                f'<div class="cr-counter-card">'
-                f'<div class="cr-counter-label">{c_label}</div>'
-                f'<div class="cr-counter-value">{c_value}</div>'
-                f'</div>'
-            )
-        parts.append('</div>')
+        parts.append(_build_tile_band_html(counters, validate=False))
+    tiles = data.get("tiles") or []
+    if tiles:
+        parts.append(_build_tile_band_html(tiles, validate=True))
 
     parts.append('<div class="cr-body">')
     for section in sections:

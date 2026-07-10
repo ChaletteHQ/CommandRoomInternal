@@ -28,6 +28,71 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **Why the upgrade (v3.7.1 note):** pre-v3.7.1 this skill was advisory-only — the scan produced a `.docx` report and nothing else. There was no way to know which opportunities had been scanned, which were scaffolded, and which were sitting on the floor. The per-opportunity event closes the loop and prepares the substrate for the v3.8.0 `scaffold-automation` pairing.
 
+**Also reads (SPEC OUT2 §5):** `_hq/data/skill_config/automation-scanner.json` — first-run knobs, via `skill_config_writer.get_config` (see First-Run Personalization below).
+
+**Also writes (SPEC OUT2 §5):** `_hq/data/skill_config/automation-scanner.json` on first fire, tune, and reset — always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`), never a raw file write.
+
+---
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). Both
+decisions are **show-then-tune (STT)** — knobs only; this skill deliberately takes no SCL1
+customization layer (the knobs suffice). Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
+# SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "ranking_weights": "balanced",                # balanced (today's formula) | favor_time_saved | favor_quick_builds
+    "horizon_buckets": ["quick_wins", "medium"],  # buckets rendered by default (today: long_term omitted unless asked)
+}
+cfg = get_config(workspace_root, "automation-scanner", DEFAULTS)
+```
+
+- `ranking_weights` biases the ORDER, never the arithmetic (the `rank_score` formula below always
+  computes and always renders so the CEO can challenge the inputs): `balanced` sorts by `rank_score`
+  (today); `favor_time_saved` sorts by hours-saved-per-year first (rank_score as tiebreak — big wins
+  float even when the build is chunky); `favor_quick_builds` sorts by build-hours ascending first
+  (momentum bias — smallest builds float).
+- `horizon_buckets` sets which sections render: any subset of `quick_wins` / `medium` / `long_term`.
+  Default `["quick_wins", "medium"]` is today's behavior (long-term omitted unless the CEO asks);
+  adding `long_term` renders the long-term section every scan.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "automation scan" | scan with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "automation-scanner", DEFAULTS)` BEFORE rendering, then append the first-run footer after the report link. |
+| **Show settings** | "show automation-scanner settings" | render current config in plain English; no scan. |
+| **Tune** | "tune automation-scanner" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. |
+| **Reset** | "reset automation-scanner to defaults" | `wipe_skill_config(workspace_root, "automation-scanner")` → next fire is a first-fire again. |
+
+**The first-run block (footer — after the report link):**
+
+> *First time scanning for automations. I set 2 defaults: **ranked by payback (time saved against
+> build effort)** · **quick wins and medium builds shown, long-term ideas on request**. Say **"tune
+> automation-scanner"** to change either, or just tell me ("show me the long-term ideas too" /
+> "smallest builds first").*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "biggest time savings first" | `ranking_weights = favor_time_saved` |
+| "smallest builds first" / "easiest wins first" | `ranking_weights = favor_quick_builds` |
+| "back to balanced ranking" | `ranking_weights = balanced` |
+| "show me the long-term ideas too" | add `long_term` to `horizon_buckets` |
+| "just the quick wins" | `horizon_buckets = ["quick_wins"]` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + confirm in one line.
+
 ---
 
 # Automation Opportunity Scanner
@@ -104,6 +169,18 @@ Runs in two modes:
 
 **Rendering (v3.13.8+ — Bug #53):** render the `.docx` via the canonical `shared/scripts/brief_writer.py` `make_brief(brief_kind="automation_scan", ...)`. Do NOT hand-roll python-docx or use docx-js. brief_writer enforces canonical typography, Heading 1/2/3 hierarchy, and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically. Use the v3.13.8 `table` primitive for the ranked-list section rather than synthesizing bullets for column-shaped data.
 
+**Executive Output Standard (SPEC OUT2 §4 — `automation_scan` is now a STANDARD_KIND; `make_brief` REFUSES the render without this).** Pass `exec_header`:
+- **verdict = top opportunity + payback** — the #1 ranked item with its arithmetic: *"Automate the Monday roundtable prep — 15 min/week back for a 2-hour build."* When the scan finds nothing above threshold: *"No automation worth building this scan — your recurring work is already covered."*
+- **changed** = movement since the last scan (newly surfaced vs previously-surfaced-still-unbuilt), or the nothing-form. **decide** = which ONE quick win to build this week. **needs** = "say 'scaffold #1'" (or "Nothing from you" on an empty scan).
+- **Subsumption (net length must not increase):** the header REPLACES the former "Here's what I found you could automate — [DATE] / Found [N] opportunities" lead lines in the output template below — the count moves into the tile band, the conclusion into the verdict.
+
+**Ranked-report layout (SPEC OUT2 §4 — this scan is one of the four ranked-report surfaces; contract in `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The ranked report"):**
+- **Tile summary band first** — pass the first section a `tiles` list derived from the SAME scan computation: **opportunities** (count surfaced) · **time back** (summed estimated min/week across quick wins) · **quick wins** (count with rank_score ≥ 10). Drop-empty per F-60: a tile with no real datum is omitted, never rendered as 0-filler.
+- **Scored rows** — each ranked item carries: rank (#N) · name (what it automates) · quantify tag (the `rank_score` + time-saved estimate, shown so the CEO can challenge the inputs, not the math) · why-now ("Where I saw it" — the concrete workspace example) · action ("scaffold #N").
+- **Actions last** — the "What's next" block stays the closing action surface; on a widget turn the widget IS the ask block (one-ask-surface), no prose twin.
+
+**Visual pass (SPEC OUT2 §3, after the save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever).
+
 **Ranking formula (compute, don't vibe):**
 
 ```
@@ -117,8 +194,13 @@ Categorize by `rank_score`: **quick win = ≥ 10** (surface ALL); **medium = 3�
 Ranked list with time-saved estimate, build complexity, and one-line description. Use this structure:
 
 ```
-Here's what I found you could automate — [DATE]
-Found [N] opportunities worth looking at.
+[Exec header (OUT2 §4) replaces the former "Here's what I found… / Found [N]…" lead lines:]
+**[Top opportunity + payback — e.g. "Automate the Monday roundtable prep — 15 min/week back for a 2-hour build."]**
+CHANGED   [movement since the last scan, or "Nothing new — same 3 opportunities still unbuilt."]
+DECIDE    [the ONE quick win to build this week]
+NEEDED    [say 'scaffold #1', or "Nothing from you."]
+
+[Tile band: opportunities · time back/week · quick wins — from the same scan computation]
 
 #1 — saves about [TIME_SAVED] a week
 What it does: [What the automation does]
@@ -265,3 +347,9 @@ After the scan:
 - Test it for 2 weeks
 - Measure actual time saved
 - Repeat
+
+## Routing (full trigger corpus)
+
+The description above carries the scan triggers; this section carries the settings family added by SPEC OUT2 §5 (the description budget is capped per G11 — the runtime router and the trigger tests read the description and this Routing corpus together). Everything below remains binding at fire time.
+
+> Also handles first-run personalization settings — use when the CEO says 'tune automation-scanner', 'tune the automation scan', 'show automation-scanner settings', 'reset automation-scanner to defaults'. DOES NOT fire on 'tune output' / 'show output settings' (workspace-manager — the cross-skill document profile, not this scan's ranking knobs).

@@ -41,6 +41,8 @@ VALID = [
     {"type": "reminder_updated", "data": {"reminder_id": "rem_1", "action": "push", "remind_from": "2026-07-20", "origin": "user_explicit"}},
     {"type": "reminder_cleared", "data": {"reminder_id": "rem_1", "origin": "user_explicit"}},
     {"type": "commitment_observed", "data": {"title": "Stacy to send Rick the report", "source_ref": "granola:m9", "tier": "observed", "observed_reason": "between other people", "id": "obs_abc123def456"}},
+    {"type": "visual_gate", "data": {"doc": "_hq/meetings/CallPrep_2026-07-10.docx", "rendered": True, "findings": ["empty or placeholder tile"], "fixed": True}},
+    {"type": "visual_gate", "data": {"doc": "_hq/meetings/CallPrep_2026-07-10.docx", "rendered": False, "findings": [], "fixed": False, "skipped_reason": "no renderer on this machine"}},  # skipped-path shape
     {"type": "some_unconstrained_type", "data": {"anything": True}},  # no schema -> pass
 ]
 
@@ -69,7 +71,7 @@ def test_type_mismatch_flagged():
     check("wrong-typed property flagged", any("draft_event_seq" in x for x in v))
 
 
-def test_coverage_is_22_types():
+def test_coverage_is_23_types():
     types = set(epc.covered_types())
     # 10 original load-bearing types + the Phase 2 Stage D commitment-family
     # additions (commitment_reclassified / commitment_reopened) + the v4.5.2
@@ -79,15 +81,16 @@ def test_coverage_is_22_types():
     # (commitment_updated wording/due shapes, commitment_reassigned,
     # chat_dismissal_cleared) + the v4.6.1 W4b proposal tombstone
     # (person_proposal_resolved) + the v4.6.1 W4c observed tier
-    # (commitment_observed) - each registered per EVENT_TYPES.md with
+    # (commitment_observed) + the OUT2 §3 render-then-critique audit
+    # (visual_gate) - each registered per EVENT_TYPES.md with
     # named consumers.
     expected = {"commitment", "commitment_resolved", "decision", "meeting", "meeting_processed",
                 "interaction", "email_drafted", "email_sent", "pack_run", "pattern_break_detected",
                 "commitment_reclassified", "commitment_reopened", "prep_brief",
                 "reminder", "reminder_updated", "reminder_cleared", "commitment_superseded",
                 "commitment_updated", "commitment_reassigned", "chat_dismissal_cleared",
-                "person_proposal_resolved", "commitment_observed"}
-    check("exactly the 22 load-bearing types are covered", types == expected)
+                "person_proposal_resolved", "commitment_observed", "visual_gate"}
+    check("exactly the 23 load-bearing types are covered", types == expected)
 
 
 def test_warn_only_hook_never_blocks():
@@ -109,7 +112,7 @@ def main():
     test_valid_payloads_pass()
     test_missing_required_fails_with_named_key()
     test_type_mismatch_flagged()
-    test_coverage_is_22_types()
+    test_coverage_is_23_types()
     test_warn_only_hook_never_blocks()
     print()
     if _failures:

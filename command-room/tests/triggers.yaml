@@ -657,6 +657,57 @@
   expected: operator-report
 - phrase: "reset operator-report to defaults"
   expected: operator-report
+# OUT2 §5 composer wave — the family lives in each skill's Routing corpus
+# (description budget at G11 cap; the matcher reads description + Routing).
+- phrase: "tune board-pack-assembler"
+  expected: board-pack-assembler
+- phrase: "tune the board pack"
+  expected: board-pack-assembler
+  notes: "natural spoken form advertised by the first-run footer (G6)"
+- phrase: "show board-pack-assembler settings"
+  expected: board-pack-assembler
+- phrase: "reset board-pack-assembler to defaults"
+  expected: board-pack-assembler
+- phrase: "tune decision-memo-composer"
+  expected: decision-memo-composer
+- phrase: "tune decision memos"
+  expected: decision-memo-composer
+  notes: "natural spoken form advertised by the first-run footer (G6)"
+- phrase: "show decision-memo-composer settings"
+  expected: decision-memo-composer
+- phrase: "tune stress-test"
+  expected: stress-test
+- phrase: "show stress-test settings"
+  expected: stress-test
+- phrase: "reset stress-test to defaults"
+  expected: stress-test
+- phrase: "tune automation-scanner"
+  expected: automation-scanner
+- phrase: "show automation-scanner settings"
+  expected: automation-scanner
+- phrase: "reset automation-scanner to defaults"
+  expected: automation-scanner
+# OUT2 §5 domain-config aliases — verbs map onto the EXISTING stores
+# (standard-terms.md / _team-config.md), no skill_config JSON.
+- phrase: "review this contract"
+  expected: contract-review
+  notes: "primary phrase — first tested case for this skill (G11d front-load anchor)"
+- phrase: "tune contract-review"
+  expected: contract-review
+- phrase: "show contract-review settings"
+  expected: contract-review
+- phrase: "tune team-intelligence"
+  expected: team-intelligence
+- phrase: "show team-intelligence settings"
+  expected: team-intelligence
+# OUT2 §5 cross-skill output profile — "output" is not a skill; the verb is
+# owned by workspace-manager and writes _hq/data/skill_config/output_profile.json.
+- phrase: "tune output"
+  expected: workspace-manager
+- phrase: "show output settings"
+  expected: workspace-manager
+- phrase: "reset output to defaults"
+  expected: workspace-manager
 # Reset disambiguation (SPEC FRP1 §6): the skill-pref reset REQUIRES the
 # "to defaults" suffix and routes to the skill — it must NOT collide with the
 # morning-brief scheduled task (the dangerous near-name). The suffix + the
@@ -697,6 +748,27 @@
 - phrase: "reset memo-writer customizations"
   expected: memo-writer
   notes: "customize/tune split verified: 'tune memo-writer' (FRP1) already asserted above routes to the same skill; verb-dispatched inside"
+# OUT2 §5 adopters: board-pack-assembler (section order + standing appendix
+# rules) and decision-memo-composer (standing criteria sets). Family lives in
+# each skill's Routing corpus (G11-capped descriptions).
+- phrase: "customize board-pack-assembler"
+  expected: board-pack-assembler
+- phrase: "customize board pack"
+  expected: board-pack-assembler
+  notes: "natural spoken form (SPEC OUT2 §5); must not fall to workspace-manager"
+- phrase: "show board-pack-assembler customizations"
+  expected: board-pack-assembler
+- phrase: "reset board-pack-assembler customizations"
+  expected: board-pack-assembler
+- phrase: "customize decision-memo-composer"
+  expected: decision-memo-composer
+- phrase: "customize decision-memo"
+  expected: decision-memo-composer
+  notes: "natural spoken form (SPEC OUT2 §5)"
+- phrase: "show decision-memo-composer customizations"
+  expected: decision-memo-composer
+- phrase: "reset decision-memo-composer customizations"
+  expected: decision-memo-composer
 # no-skill form → workspace-manager Layer 4 menu
 - phrase: "customize command room"
   expected: workspace-manager

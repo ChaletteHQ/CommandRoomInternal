@@ -179,6 +179,8 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
 
    **Section names are owned by `prep_pipeline.assemble_prep_sections` + `skills/call-prep/SKILL.md` "What You Get".** If you add or rename a section, update the pipeline, the SKILL.md, AND this file in the same commit.
 
+   **Visual pass (SPEC OUT2 §3, after the save — per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass"):** call `shared/scripts/visual_gate.py` `render_preview(BRIEF_PATH)`. If it returns page images, LOOK at them against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(ws, BRIEF_PATH, rendered, findings, fixed)`. If it returns `None` (scheduled-task sandboxes usually have no renderer — expected), log `rendered: false` with a `skipped_reason` and proceed exactly as before. Warn-only forever: a finding never blocks the brief, the pass never loops, and the temp-dir PNGs are never written to the workspace.
+
    Verify with:
 
    ```bash

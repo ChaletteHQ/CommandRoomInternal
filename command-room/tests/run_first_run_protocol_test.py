@@ -4,6 +4,7 @@ check(name, cond) prints OK/FAIL, exit 1 on any failure, auto-discovered by run_
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -111,7 +112,20 @@ def main() -> int:
         "weekly-recap", "dormant-customer-scan", "decision-log",
         "memo-writer", "one-pager-composer", "stalled-projects",
         "operator-report",  # settings-layer C2 #6 — length preset (PR2)
+        # SPEC OUT2 §5 — the composer wave.
+        "board-pack-assembler", "decision-memo-composer",
+        "stress-test", "automation-scanner",
     ]
+    # OUT2 §5 adopters landed with the G11 catalog budget at cap, so their
+    # primary 'tune <skill>' phrase lives in the body's '## Routing (full
+    # trigger corpus)' section instead of the frontmatter description (the
+    # runtime router and run_trigger_test read description + Routing together —
+    # the v4.5.1 rule). If description budget is ever freed, moving the phrase
+    # up and removing the skill from this set is the tightening move.
+    G11_CONSTRAINED = {
+        "board-pack-assembler", "decision-memo-composer",
+        "stress-test", "automation-scanner",
+    }
     BODY_MARKERS = [
         ("SPEC FRP1", "names the protocol"),
         ("First-Run Personalization", "has the section heading"),
@@ -133,11 +147,21 @@ def main() -> int:
         # v4.5.1 contract: the PRIMARY config phrase must be in the budget-capped
         # description (front-loaded routing); the full family may live in the
         # description OR the body's Routing section (loaded at fire time; the
-        # runtime router matches variants semantically).
+        # runtime router matches variants semantically). G11_CONSTRAINED skills
+        # (OUT2 §5) carry the primary in the Routing corpus instead — see the
+        # set's comment above.
         fm = text.split("---", 2)
         desc = fm[1] if len(fm) >= 3 else text
-        check(f"adoption[{skill}]: description carries 'tune {skill}'",
-              f"tune {skill}" in desc)
+        if skill in G11_CONSTRAINED:
+            rm = re.search(
+                r"^## Routing \(full trigger corpus\)\n(.*?)(?=^## |\Z)",
+                text, re.S | re.M)
+            routing = rm.group(1) if rm else ""
+            check(f"adoption[{skill}]: Routing corpus carries 'tune {skill}' "
+                  f"(G11-capped placement)", f"tune {skill}" in routing)
+        else:
+            check(f"adoption[{skill}]: description carries 'tune {skill}'",
+                  f"tune {skill}" in desc)
         for trig in (f"show {skill} settings", f"reset {skill} to defaults"):
             check(f"adoption[{skill}]: corpus carries '{trig}'", trig in text)
 

@@ -59,6 +59,9 @@ the first relevant request, with a working default-escape. The entire AF class:
 - **follow-up-ritual send timing** — gates outbound email.
 - **contract-review standard-terms** — already AF; keeps its skip-escape.
 - **workspace-manager relationship_type** — already AF; permanently shapes the entity graph.
+- **board-pack-assembler KPI set** (OUT2 §5) — the KPI list is the board pack's spine; edits to it
+  always confirm before saving (the pack goes straight to a board — a silently-changed KPI list is
+  an outward-acting default). The skill's other two knobs stay STT.
 
 Everything else is STT. If you're unsure, it's STT.
 
@@ -115,6 +118,23 @@ More than 3 decisions, or more than 4 options, belongs in freeform tune — not 
 | decision-log | auto-log / confirm · revisit reminders | STT |
 | commitments orchestrator | group by person/project · chase tone | STT (fr-items) |
 | memo / one-pager | default register · signed/unsigned | STT |
+| board-pack-assembler (OUT2 §5) | pack length · deck companion · **KPI set** | KPI set AF, rest STT |
+| decision-memo-composer (OUT2 §5) | criteria persistence per decision type · weight display | STT |
+| stress-test (OUT2 §5) | depth (passes 3/5) · risk framing | STT |
+| automation-scanner (OUT2 §5) | ranking weights · horizon buckets | STT |
+
+**Domain-config aliases (OUT2 §5 — verbs without a second store):** `contract-review` and
+`team-intelligence` answer the same `tune / show settings / reset to defaults` vocabulary, but the
+verbs are ALIASES onto their existing domain config files (`_hq/contracts/standard-terms.md` and
+`_team-config.md` respectively) — no `skill_config` JSON, no migration, storage unchanged. Their
+SKILL.md "Settings verbs" sections define the mapping.
+
+**The output profile is NOT in this catalog — by design (OUT2 §5 fence).** The cross-skill
+`_hq/data/skill_config/output_profile.json` (density / visual_bias / page_cap / default_format —
+read by `make_brief`, contract in `EXECUTIVE_OUTPUT_STANDARD.md` § "The output profile") has **no
+first-run block, no first-fire footer, and no onboarding mention, ever**. It is written only by an
+explicit `tune output` (workspace-manager) or a confirmed insight-generator proposal. Do not add a
+row for it here.
 
 ---
 
@@ -166,3 +186,10 @@ adoption of the catalog above proceeds per SPEC FRP1 §5 (email-writer / morning
 inbox-triage first, then the rest). The storage + read path + `origin` + the `fr*` dispatch
 rails are complete (S1); each skill adopts by adding its DEFAULTS, the first-run block, the
 freeform tune table, and the trigger family to its SKILL.md.
+
+The OUT2 §5 composer wave (board-pack-assembler, decision-memo-composer, stress-test,
+automation-scanner) is adopted. **G11-constrained trigger placement:** the description budget was
+at cap when this wave landed, so these four carry their `tune / show settings / reset to defaults`
+family in the body's `## Routing (full trigger corpus)` section instead of the frontmatter
+description — the runtime router and the trigger tests read both (v4.5.1 rule). Moving the primary
+phrase up into the description is a ship-session option if budget is ever freed.

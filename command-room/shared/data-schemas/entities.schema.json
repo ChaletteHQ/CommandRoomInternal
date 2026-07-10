@@ -49,6 +49,60 @@
     }
   },
   "$defs": {
+    "brand": {
+      "type": "object",
+      "description": "OPTIONAL, DORMANT-BY-DEFAULT deliverable theme (SPEC OUT1). A PARTIAL override deep-merged over shared/scripts/brand.py DEFAULT_BRAND at render time — every key is optional and an omitted key keeps the (premium) default. An ABSENT brand object = byte-stable defaults, no warning, no event. NOTHING in onboarding sets this; it is written by hand into a client's entities.json during a paid customization engagement — on the top-level `workspace` object (all that client's docs) or on a single `org` (that org's docs only, overriding the workspace brand). Colors are 6-hex WITHOUT '#'. Fonts are NAMES only and must be installed on the reader's machine.",
+      "additionalProperties": false,
+      "properties": {
+        "palette": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Color overrides (6-hex, no '#').",
+          "properties": {
+            "ink": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "heading": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "accent": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "muted": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "rule": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "tile_bg": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "zebra": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "table_header": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "col_header": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "highlight": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "flag_ok": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "flag_warn": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+            "flag_bad": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }
+          }
+        },
+        "fonts": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Font NAME overrides — must be installed on the reader's machine (a downloadable/custom font that isn't present will silently fall back in Word).",
+          "properties": {
+            "heading": { "type": "string", "minLength": 1 },
+            "body": { "type": "string", "minLength": 1 },
+            "mono": { "type": "string", "minLength": 1 }
+          }
+        },
+        "footer_line": {
+          "type": "string",
+          "description": "Centered footer text. Defaults to 'Command Room'. NEVER provenance metadata (CONTRACT Rule 15)."
+        },
+        "logo_path": {
+          "type": ["string", "null"],
+          "description": "Path to a letterhead image (absolute, or relative to workspace root). Renders right-aligned <= 0.35in at the top of the document ONLY if the file exists; a missing file silently falls back to the quiet no-logo header (R26). Null (default) = no logo."
+        },
+        "eyebrow_style": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "size": { "type": "number" },
+            "bold": { "type": "boolean" },
+            "upper": { "type": "boolean" }
+          }
+        }
+      }
+    },
     "person": {
       "type": "object",
       "required": ["id", "canonical_name", "first_seen"],
@@ -358,6 +412,10 @@
         "needs_enrichment": {
           "type": "boolean",
           "description": "Provisional org from reactive discovery, awaiting CEO confirm (deep-audit #18). On-entity flag; cleared on confirm. Replaces the forbidden pending_review."
+        },
+        "brand": {
+          "$ref": "#/$defs/brand",
+          "description": "OPTIONAL, DORMANT per-org deliverable theme (SPEC OUT1). Overrides the workspace brand for documents scoped to THIS org (via make_brief org_id=). Absent = the workspace brand (or premium defaults). Set by hand during a paid customization engagement; never touched by onboarding."
         }
       }
     },
@@ -432,6 +490,10 @@
         "schedule_timezone": {
           "type": "string",
           "description": "Timezone used by scheduled tasks. Usually identical to user_timezone but can be set separately for cases where the user travels."
+        },
+        "brand": {
+          "$ref": "#/$defs/brand",
+          "description": "OPTIONAL, DORMANT deliverable theme applied to ALL of this workspace's .docx output (SPEC OUT1). Absent = premium defaults. Set by hand during a paid customization engagement; never touched by onboarding."
         }
       }
     }

@@ -88,6 +88,7 @@ def main() -> int:
     try:
         make_brief(str(out), brief_kind="board_pack",
                    title="Board pack — Acme Co", subtitle="Reporting period: May 2026",
+                   exec_header={"verdict": "Acme Co ended May ahead of plan."},  # OUT2 §4 flip
                    sections=sections, contract="report")
         ok("make_brief rendered the board pack")
     except Exception as e:

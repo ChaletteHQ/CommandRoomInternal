@@ -71,7 +71,9 @@ def main() -> int:
     try:
         make_brief(str(out), brief_kind="followup_pack",
                    title="Follow-up pack — Pricing review",
-                   subtitle=f"{DATE} · 3 attendees", sections=sections, contract="report")
+                   subtitle=f"{DATE} · 3 attendees",
+                   exec_header={"verdict": "Three follow-ups drafted; pricing decision logged."},  # OUT2 §4 flip
+                   sections=sections, contract="report")
         ok("make_brief rendered the follow-up pack")
     except Exception as e:
         fail("make_brief rendered the follow-up pack", f"{type(e).__name__}: {e}")

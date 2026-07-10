@@ -140,6 +140,7 @@ DANGLING_READ_OK = {
 ORPHAN_WRITE_OK = {
     "pack_run": "audit/telemetry trail; aggregated on-demand by usage-report",
     "schedule_created": "audit trail of task registration; read by detectors",
+    "visual_gate": "OUT2 §3 render-then-critique audit trail; written by visual_gate.log_visual_gate, mined on-demand by usage-report / insight-generator (prose-consumed, no code-shaped reader by design)",
 }
 
 # Near-miss tokens (close edit-distance to a canonical type) that are OK — e.g.

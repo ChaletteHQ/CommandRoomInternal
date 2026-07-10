@@ -4,7 +4,7 @@ This folder holds the JSON schemas that define every structured context file in 
 
 ## Files
 
-- `entities.schema.json` — canonical registry of people, projects (threads), orgs — with nested org support (parent_org_id, scope, relationship_type, is_primary_focus)
+- `entities.schema.json` — canonical registry of people, projects (threads), orgs — with nested org support (parent_org_id, scope, relationship_type, is_primary_focus). Also defines the optional, dormant-by-default `brand` object (`$defs/brand`) — an OUT1 deliverable theme that may live on `workspace` (all docs) or an `org` (that org's docs); absent = premium defaults from `shared/scripts/brand.py`. Set by hand during a paid customization engagement; never touched by onboarding.
 - `events.schema.json` — append-only event log (meetings, decisions, commitments, reclassifications, classification_reviews, etc.) with multi-thread tagging and classifier confidence
 - `aliases.schema.json` — raw-form to canonical-id registry
 

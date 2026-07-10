@@ -82,6 +82,21 @@ If `_hq/contracts/standard-terms.md` doesn't exist:
 
 Write the answers to `_hq/contracts/standard-terms.md` as a YAML block (one key per answer) plus a one-paragraph narrative summary.
 
+### Settings verbs (SPEC OUT2 §5 — aliases onto this wizard, NOT a second store)
+
+The standard FRP1 verbs map onto the existing standard-terms file — storage unchanged, no
+`skill_config` JSON for this skill, no migration:
+
+| CEO says | Behavior |
+|---|---|
+| "tune contract-review" / "update my standard terms" | re-run the 6-question wizard with the CURRENT `standard-terms.md` answers pre-filled → rewrite the file. This is the "separate explicit edit" the DOES NOT section requires — never mid-review. |
+| "show contract-review settings" / "show my standard terms" | render the current `standard-terms.md` answers in plain English, read-only. If the file doesn't exist yet: offer the wizard. |
+| "reset contract-review to defaults" | confirm first (this deletes your captured standard — AF posture, the wizard answers are the review's spine), then remove `standard-terms.md`; reviews fall back to the market-standard defaults below until the wizard runs again. |
+
+These verbs are ALIASES into the Phase 0 wizard — they exist so the whole composer family answers
+the same tune/show/reset vocabulary. The file stays the single source of truth; do NOT create
+`_hq/data/skill_config/contract-review.json`.
+
 **No-standard fallback (user skipped the wizard):** still assign colors against market-standard defaults — don't punt to "everything's yellow."
 - **RED:** uncapped or one-way indemnification; unlimited liability; IP assignment of pre-existing/background work.
 - **YELLOW:** term > 24 months; auto-renewal with no notice window; payment terms > net 45; unilateral change clauses.
@@ -166,7 +181,14 @@ For each red flag, generate 1-2 questions probing the counterparty's underlying 
 
 ### Phase 5 — Write artifact + event
 
-- Render the .docx via `shared/scripts/brief_writer.py` with the contract-review template (Key Terms / Flags / Redlines / Questions sections).
+- Render the .docx via `shared/scripts/brief_writer.py` with the contract-review template (Key Terms / How it compares / Redlines / Questions sections).
+- **Executive Output Standard (SPEC OUT2 §4 — `contract_review` is now a STANDARD_KIND; `make_brief` REFUSES the render without this).** Pass `exec_header`:
+  - **verdict = the deal-breaker flag line** — the single red flag that must move before signing: *"Don't sign as-is — uncapped indemnification violates your Jan 12 cap decision."* When nothing is red: *"Safe to sign — two yellow terms worth a push, no deal-breakers."*
+  - **changed** = what's new vs the counterparty's prior paper (the pattern/history note: "third uncapped-indemnification contract this quarter"), or the nothing-form.
+  - **decide** = the negotiate-vs-accept call in front of the user (with the date if one is live). **needs** = the one action ("approve the §6.1 redline below"), or "Nothing from you."
+  - **Subsumption (net length must not increase):** the verdict REPLACES the former top summary line of "How it compares to your standard" (the "Push back before signing: …" lead) — the matrix carries the detail; the header carries the conclusion. Body sections never restate the header.
+- **Visual pass (SPEC OUT2 §3, after the save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied — the flag matrix's tinted cells are exactly what this catches when they wrap or render blank), fix + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever).
+- **"How it compares" is a `matrix` (SPEC OUT1 §4), not prose labels.** Pass a section whose `matrix` has `headers_row = ["Your standard", "This contract", "Flag"]`, `headers_col` = the term names (leftmost column), the cell grid = `[your-standard-summary, this-contract-summary, flag-word]` per row, and **`flag_col_idx = 2`** so the renderer shades each Flag cell with the brand tint that matches its word. Use the plain flag WORD in the flag column — `Standard` / `OK` (green tint), `Review` / `Watch` (amber tint), or `Flag` / `Risk` (red tint) — NOT the emoji dots and NOT a raw color name; the shading carries the color, the word carries the meaning for a reader who prints in grayscale or is colorblind. The per-term redline/pattern/history prose analysis stays BELOW the matrix in the Redlines section — the matrix is the scan-in-5-seconds layer, the prose is the depth.
 - Save to `_hq/contracts/ContractReview_[Counterparty]_[YYYY-MM-DD].docx`.
 - Append `contract_reviewed` event.
 - Surface a 1-line summary in chat: "Reviewed the Acme Co MSA. Most of it lines up with your standard — two items to push back on, and one I'd want to negotiate before signing (uncapped indemnification). Suggested language and questions are in the brief."
@@ -186,6 +208,12 @@ For each red flag, generate 1-2 questions probing the counterparty's underlying 
 CONTRACT REVIEW — Acme Co Master Services Agreement
 Reviewed 2026-05-19 | Acme Co (Wilmington, DE) | 12 pages
 
+[Exec header (OUT2 §4) — the deal-breaker flag line leads:]
+**Don't sign as-is — uncapped indemnification violates your Jan 12 cap decision.**
+CHANGED   Third uncapped-indemnification contract this quarter; Acme re-ran their Sep 2025 IP carve-out.
+DECIDE    Negotiate §6.1 + §9 before signing, or accept the 90-day notice as-is.
+NEEDED    Approve the two suggested redlines below.
+
 KEY TERMS
   Parties:         Your company and Acme Co
   Term:            12 months, auto-renew
@@ -196,10 +224,12 @@ KEY TERMS
   Governing law:   Delaware
 
 HOW IT COMPARES TO YOUR STANDARD
+  [The flag matrix (Phase 5) — Your standard | This contract | Flag, one row
+   per term, flag cells tinted. The former "Push back before signing:" summary
+   line is SUBSUMED by the exec-header verdict above (no-duplication rule);
+   the indemnification detail lives in its matrix row + the Redlines section.]
   Matches your standard:   payment, governing law, confidentiality, term length
   Worth negotiating:       IP ownership, termination notice
-  Push back before signing: uncapped indemnification — you decided on
-                            2026-01-12 to cap this at 12 months of fees
 
 WHAT TO KNOW
   - Acme asked for the same IP carve-out in their NDA back in Sep 2025.
@@ -233,3 +263,5 @@ QUESTIONS TO ASK BEFORE SIGNING
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Counterparty- and history-aware: if the counterparty has pushed for the same carve-out before, the review notes the pattern. Use when the CEO says 'review this contract', 'review this NDA', 'redline this contract', 'redline this NDA', 'contract review', 'check this contract', 'analyze this contract', 'review this MSA', 'redline this MSA', 'review this agreement', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Reads the contract PDF/docx, `_hq/contracts/standard-terms.md` (your standard), entities.json for counterparty context, events.jsonl for prior contract_reviewed events with the same counterparty or matching deviation classes. Writes contract_reviewed event with parties, deviation count, term hash, .docx artifact link. DOES NOT fire on 'write a contract' (out of scope — Command Room reviews, doesn't draft contracts), 'lawyer questions' (out of scope), or 'sign this contract' (use DocuSign / Adobe Sign MCP directly).
+
+> Also handles standard-terms settings (SPEC OUT2 §5 — aliases onto the Phase 0 wizard; storage stays `_hq/contracts/standard-terms.md`, never a second store) — use when the CEO says 'tune contract-review', 'show contract-review settings', 'reset contract-review to defaults', 'update my standard terms', 'show my standard terms'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)

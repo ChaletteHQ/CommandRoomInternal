@@ -101,6 +101,30 @@ missing-hyphen skill-ish form ("customize email writer") is a Layer 3 name-menti
 to the skill and confirm ("Did you mean email-writer?"). Never write a directive from here;
 workspace-manager routes, the adopting skill writes.
 
+### "tune output" — the cross-skill output profile (SPEC OUT2 §5)
+
+"Output" is not a skill, so the bare-`tune-X` router rule can't resolve it — this skill owns the
+verb. It edits the ONE cross-skill document profile every `.docx` composer reads through
+`make_brief` (contract: `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The output profile"). Storage:
+`_hq/data/skill_config/output_profile.json`, written ONLY via
+`skill_config_writer.save_skill_config(workspace_root, "output_profile", {...})` after
+`output_profile.validate_output_profile` passes. The knobs (defaults = today's behavior):
+**density** (tight / narrative) · **visual bias** (tiles-first / prose-first) · **page cap** per
+document kind (warn-only) · **default format** (docx — the only option for now).
+
+- **"tune output"** → show the four knobs with current values pre-filled (plain English: "how dense
+  the prose runs", "whether numbers lead as stat tiles or prose leads") → validate → save → one-line
+  ack. Freeform works too ("make my documents airier" → `density: narrative`; "lead with the
+  numbers" → `visual_bias: tiles_first`).
+- **"show output settings"** → render the current profile in plain English, read-only; unconfigured
+  = "You're on the standard document style — say 'tune output' to adjust it."
+- **"reset output to defaults"** → `wipe_skill_config(workspace_root, "output_profile")` → one-line ack.
+
+⛔ FENCE (SPEC OUT2 §5): there is NO first-run block for this profile and NO onboarding mention —
+never offer it proactively at first fire of anything. It is written only here (explicit ask) or by
+an insight-generator proposal the user confirms. Never confuse it with a per-skill `tune <skill>`
+(those knobs stay with their skills).
+
 ### Name resolution rules
 
 - **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Elon' → Elan Torbati" or "phonetic match (sound-alike) to canonical 'Dynarii'"). Never re-implement the match ladder inline; this skill calls the helper.
@@ -1048,3 +1072,5 @@ When workspace-manager is already active in a session (e.g., during a "go [proje
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
+
+> Also owns the cross-skill output profile (SPEC OUT2 §5 — output is not a skill name, so the bare-tune router rule can't resolve it) — use when the CEO says 'tune output', 'tune my output', 'show output settings', 'reset output to defaults'. DOES NOT fire on 'tune [skill-name]' when the name resolves to an actual skill (that skill's own FRP1 family owns it).

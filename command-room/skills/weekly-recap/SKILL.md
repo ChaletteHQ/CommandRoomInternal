@@ -358,6 +358,8 @@ JSON
 - **The two owe sections render as two-column tables** (what | who · due/age) instead of bullets — same drop rule: no rows, no section. Cap 10 rows per direction with a final "+N more" row.
 - Everything else stays prose/bullets — the tiles and tables carry the scannable layer; no decorative charts, no fabricated numbers, substrate-derived only.
 
+**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
+
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "I made 2 calls: theme-led · internal/external split view"
 - Good: "I set 2 defaults: I lead with the themes, not the numbers · I split what you owe into work for others vs your own projects"

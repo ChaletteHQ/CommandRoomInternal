@@ -258,7 +258,10 @@ A skill adopts SCL1 by adding, in the SAME commit:
    Calibration section (writing skills) or after frontmatter (non-writing skills);
 2. the **trigger family** in its frontmatter `description`
    (`customize <skill>` · `show <skill> customizations` · `reset <skill>
-   customizations`);
+   customizations`) — OR, when the description budget (G11) is at cap, in the
+   body's `## Routing (full trigger corpus)` section (the runtime router and the
+   trigger tests read description + Routing together, v4.5.1 rule; the OUT2 §5
+   adopters board-pack-assembler and decision-memo-composer use this placement);
 3. a **Writer Contract line** declaring the read of `_hq/custom/<skill>.md`
    (SKILL_SHAPE_V2 compliance);
 4. `tests/triggers.yaml` entries for the family.

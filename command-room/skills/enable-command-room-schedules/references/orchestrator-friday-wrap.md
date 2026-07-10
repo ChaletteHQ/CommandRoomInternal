@@ -79,6 +79,8 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 
 Read `skills/weekly-recap/SKILL.md`. Execute its Phases 1-6 verbatim against the current workspace + connectors, with these orchestrator-imposed defaults:
 
+**Visual pass note (SPEC OUT2 §3):** the weekly-recap skill's visual pass (render-then-critique of the saved .docx per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass") is PART of the skill's phases and runs here too. Its page-preview PNGs go to a session temp dir only — that render does NOT violate this orchestrator's "no writing rendered chat output to disk" rule (the previews are ephemeral critique input, not output; nothing lands in `_hq/` beyond the canonical .docx and the `visual_gate` audit event). In this sandbox the ladder usually returns `None` — log the skipped event and move on; never install a renderer from a scheduled task.
+
 - **Window:** last 7 days `[now - 7d, now]` in workspace timezone. Same as the skill's default.
 - **Grouping mode:** by-project (the skill's default — customer's mental model is project-shaped).
 - **Connector caps:** use the skill's defaults (250 received + 250 sent emails, 200 Slack messages, 100 Drive files, 50 transcripts, all calendar events that occurred).

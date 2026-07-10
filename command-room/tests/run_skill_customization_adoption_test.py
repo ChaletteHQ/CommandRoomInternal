@@ -34,7 +34,21 @@ ADOPTION_REGISTRY = [
     "morning-briefing",
     "operator-report",
     "memo-writer",
+    # SPEC OUT2 §5 — composer wave (board-pack: section order + standing
+    # appendix rules; decision-memo: standing criteria sets). stress-test and
+    # automation-scanner deliberately do NOT adopt (knobs suffice — spec table).
+    "board-pack-assembler",
+    "decision-memo-composer",
 ]
+
+# OUT2 §5 adopters landed with the G11 catalog budget at cap, so their primary
+# 'customize <skill>' phrase lives in the body's '## Routing (full trigger
+# corpus)' section instead of the frontmatter description (the runtime router
+# and run_trigger_test read description + Routing together — the v4.5.1 rule).
+G11_CONSTRAINED = {
+    "board-pack-assembler",
+    "decision-memo-composer",
+}
 
 # The invariant clauses of the §6.2 read paragraph. Whitespace-normalized
 # substring match tolerates the doc's line-wrapping; <skill> is substituted per
@@ -95,11 +109,22 @@ def main() -> int:
 
         # (c) v4.5.1 contract: 'customize <skill>' (the primary) must be in the
         # budget-capped description; the rest of the family may live in the
-        # description OR the body's Routing section.
+        # description OR the body's Routing section. G11_CONSTRAINED skills
+        # (OUT2 §5) carry the primary in the Routing corpus instead — see the
+        # set's comment above.
         fm = text.split("---", 2)
         desc = fm[1] if len(fm) >= 3 else text
-        check(f"adoption[{skill}]: description advertises 'customize {skill}'",
-              f"customize {skill}" in desc)
+        if skill in G11_CONSTRAINED:
+            rm = re.search(
+                r"^## Routing \(full trigger corpus\)\n(.*?)(?=^## |\Z)",
+                text, re.S | re.M)
+            routing = rm.group(1) if rm else ""
+            check(f"adoption[{skill}]: Routing corpus advertises "
+                  f"'customize {skill}' (G11-capped placement)",
+                  f"customize {skill}" in routing)
+        else:
+            check(f"adoption[{skill}]: description advertises 'customize {skill}'",
+                  f"customize {skill}" in desc)
         for trig in (f"show {skill} customizations",
                      f"reset {skill} customizations"):
             check(f"adoption[{skill}]: corpus advertises '{trig}'", trig in text)

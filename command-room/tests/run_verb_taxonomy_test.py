@@ -89,6 +89,9 @@ def render_all_fixture_widgets():
              "actions": ["resolved", "drop", "not mine", "skip"]},
         ],
         counters=[{"label": "Open", "value": 3}, {"label": "You owe", "value": 2}],
+        # SPEC OUT2 §2b — the docx-parity tile band (validated component
+        # shape) renders on the main widget path alongside legacy counters.
+        tiles=[{"label": "Oldest open", "value": "47d"}],
     ))
     # Email-shaped (inbox / commitments)
     htmls.append(_render(
@@ -329,6 +332,24 @@ def main() -> int:
     # ------------------------------------------------------------------
     check("reduced_verbs_reason renders as a visible note",
           "cr-verbset-note" in html and "owner is unconfirmed" in html)
+
+    # ------------------------------------------------------------------
+    print("[7] OUT2 — header bands render via the shared component fragment")
+    # ------------------------------------------------------------------
+    # Legacy counters + the OUT2 tiles key both emit the shared markup
+    # (components.build_tile_band_html) on the main widget path.
+    check("counters band rendered (legacy key, values verbatim)",
+          '<div class="cr-counter-label">Open</div>'
+          '<div class="cr-counter-value">3</div>' in html)
+    check("tiles band rendered (OUT2 key, component-validated)",
+          '<div class="cr-counter-label">Oldest open</div>'
+          '<div class="cr-counter-value">47d</div>' in html)
+    try:
+        _render([{"n": 1, "name": "x", "actions": ["skip"]}],
+                tiles=[{"label": "Empty", "value": "  "}])
+        check("empty tile on the tiles key is refused (drop-empty rule)", False)
+    except ValueError:
+        check("empty tile on the tiles key is refused (drop-empty rule)", True)
 
     # ------------------------------------------------------------------
     print(f"\n=== Summary: {PASS} passed, {FAIL} failed ===")

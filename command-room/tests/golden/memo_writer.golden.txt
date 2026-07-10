@@ -1,6 +1,7 @@
 MEMO
 Acme Co — Sourcing Bot — Pricing
 Strategy memo · <DATE> · Acme Co
+Price the Sourcing Bot at value, not cost.
 Decision
 Move Sourcing Bot to annual-only billing and lock the pricing tiers before the Northstar renewal.
 Context

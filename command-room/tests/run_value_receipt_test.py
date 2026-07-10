@@ -39,6 +39,7 @@ from value_receipt import (  # noqa: E402
     compute_metrics,
     compute_value_receipt,
     validate_receipt_ran,
+    build_receipt_tiles,
 )
 
 passed = 0
@@ -364,6 +365,43 @@ def _read_events(root):
     return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
 
+def test_receipt_tiles():
+    print("\n[11] SPEC OUT1 tile band — substrate-derived, drop-empty, above the counts")
+    # Full window -> all three tiles present, values from the computed receipt.
+    out = compute_metrics(_may_fixture(), MAY_START, MAY_END)
+    metrics, hours = out["metrics"], out["hours_estimate"]
+    tiles = build_receipt_tiles(metrics, hours)
+    labels = [t["label"] for t in tiles]
+    check("tiles: 'Actions handled' present", "Actions handled" in labels)
+    check("tiles: 'Hours returned (conservative)' present",
+          "Hours returned (conservative)" in labels)
+    # Actions-handled value = the sum of the handled-count metrics (no double count
+    # of the briefs sub-splits).
+    from value_receipt import _ACTIONS_HANDLED_KEYS
+    expected_actions = sum(int(metrics[k]) for k in _ACTIONS_HANDLED_KEYS)
+    actions_tile = next(t for t in tiles if t["label"] == "Actions handled")
+    check("tiles: actions value == summed handled metrics",
+          actions_tile["value"] == str(expected_actions), actions_tile["value"])
+    hours_tile = next(t for t in tiles if t["label"].startswith("Hours"))
+    check("tiles: hours value matches receipt hours (not re-derived)",
+          hours_tile["value"] == f"~{hours:g}", hours_tile["value"])
+    # Empty window -> no band at all (omit-don't-pad, like _count_bullets).
+    check("tiles: empty metrics -> [] (band omitted)",
+          build_receipt_tiles(
+              {k: 0 for k in metrics}, 0.0) == [])
+    # A zero tile is dropped; a non-zero one renders (per-tile drop).
+    partial = build_receipt_tiles(
+        {**{k: 0 for k in metrics}, "meetings_processed": 3, "briefs_delivered": 3}, 0.0)
+    plabels = [t["label"] for t in partial]
+    check("tiles: zero-hours tile dropped, actions tile kept",
+          plabels == ["Actions handled"], plabels)
+    # The band is the FIRST section when present (above the counts).
+    receipt = compute_value_receipt(_build_ws(_may_fixture()), MAY_START, MAY_END)
+    check("tiles: band is the first section, above the counts",
+          receipt["sections"][0].get("tiles") is not None
+          and receipt["sections"][0]["heading"] == "At a glance")
+
+
 def main():
     print("=== value_receipt (SPEC C1) ===")
     test_metric_counts()
@@ -376,6 +414,7 @@ def main():
     test_second_run_idempotency_guard()
     test_quarterly_rollup()
     test_brief_docx_passes_leak_scan()
+    test_receipt_tiles()
     print(f"\n=== Summary: {passed} passed, {failed} failed ===\n")
     return 0 if failed == 0 else 1
 

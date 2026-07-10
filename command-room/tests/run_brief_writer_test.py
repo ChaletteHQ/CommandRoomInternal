@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "shared", "scripts"))
 
 from brief_writer import make_brief, make_brief_from_json
+from brand import DEFAULT_BRAND
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -54,6 +55,8 @@ def _sample_call_prep(path):
         brief_kind="call_prep",
         title="Sam Sample — Q2 deck review",
         subtitle="Friday, May 9, 2026 · 9:00 AM PT · Category Company",
+        # OUT2 §4 flip: call_prep is a STANDARD_KIND — exec_header required.
+        exec_header={"verdict": "Walk out with the Q2 deck approved."},
         sections=[
             {"heading": "Lead with", "body": "Open warm.\n\nPivot to substance fast."},
             {"heading": "What to demo", "bullets": ["Connect Gmail.", "Surface a real signal."]},
@@ -114,10 +117,13 @@ with tempfile.TemporaryDirectory() as tmp:
     check("title text matches", title_para.text == "Sam Sample — Q2 deck review")
     check("title is 22pt", title_run.font.size == Pt(22), f"got {title_run.font.size}")
     check("title is bold", title_run.font.bold is True)
+    # SPEC OUT1 deliberate default-theme diff: heading navy refined
+    # 0F2A3F -> 102A40 (DEFAULT_BRAND.palette.heading). Anchored to the brand
+    # source of truth so a future default-theme change updates in one place.
     check(
-        "title color is dark navy (#0F2A3F)",
-        str(title_run.font.color.rgb) == "0F2A3F",
-        f"got {title_run.font.color.rgb}",
+        "title color is the default-brand heading navy",
+        str(title_run.font.color.rgb) == DEFAULT_BRAND["palette"]["heading"],
+        f"got {title_run.font.color.rgb}, expected {DEFAULT_BRAND['palette']['heading']}",
     )
 
     # ============================================================================
@@ -145,8 +151,8 @@ with tempfile.TemporaryDirectory() as tmp:
         h = heading_paras[0]
         check("first section heading text = 'Lead with'", h.text == "Lead with")
         check(
-            "section heading color is dark navy",
-            str(h.runs[0].font.color.rgb) == "0F2A3F",
+            "section heading color is the default-brand heading navy",
+            str(h.runs[0].font.color.rgb) == DEFAULT_BRAND["palette"]["heading"],
         )
 
     # ============================================================================
@@ -206,6 +212,7 @@ with tempfile.TemporaryDirectory() as tmp:
         "brief_kind": "call_prep",
         "title": "JSON Test Title",
         "subtitle": "Today",
+        "exec_header": {"verdict": "Walk out with the JSON path proven."},  # OUT2 §4 flip
         "sections": [{"heading": "Solo section", "body": "Hello."}],
         "contract": "off",  # B3: exercises the JSON round-trip, not the contract gate
     })
@@ -363,6 +370,7 @@ with tempfile.TemporaryDirectory() as tmp:
     _expect_ve(
         "asks >3 raises",
         lambda: make_brief(bad, brief_kind="memo", title="t", subtitle="s",
+                           exec_header={"verdict": "v"},  # so the raise is the asks cap
                            sections=[{"heading": "h", "body": "b"}],
                            asks=[{"text": "a"}, {"text": "b"}, {"text": "c"}, {"text": "d"}],
                            contract="off", voice_gate="off"),
@@ -370,6 +378,7 @@ with tempfile.TemporaryDirectory() as tmp:
     _expect_ve(
         "ask without text raises",
         lambda: make_brief(bad, brief_kind="memo", title="t", subtitle="s",
+                           exec_header={"verdict": "v"},  # so the raise is the asks shape
                            sections=[{"heading": "h", "body": "b"}],
                            asks=[{"deadline": "Friday"}], contract="off", voice_gate="off"),
     )
@@ -403,6 +412,7 @@ with tempfile.TemporaryDirectory() as tmp:
     _expect_ve2(
         "decision_memo with late Recommendation (idx 4) raises",
         lambda: make_brief(bad, brief_kind="decision_memo", title="t", subtitle="s",
+                           exec_header={"verdict": "v"},  # so the raise is the ordering check
                            sections=[{"heading": "Framing", "body": "b"},
                                      {"heading": "Options", "body": "b"},
                                      {"heading": "Criteria", "body": "b"},
@@ -422,6 +432,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # non-decision kind (call_prep) is NOT subject to the ordering check
     ok2 = os.path.join(tmp, "ok2.docx")
     make_brief(ok2, brief_kind="call_prep", title="t", subtitle="s",
+               exec_header={"verdict": "v"},  # OUT2 §4 flip: call_prep requires it
                sections=[{"heading": "A", "body": "b"}, {"heading": "B", "body": "b"},
                          {"heading": "C", "body": "b"}, {"heading": "Decisions", "body": "b"}],
                contract="off", voice_gate="off")
@@ -429,42 +440,71 @@ with tempfile.TemporaryDirectory() as tmp:
 
 
 # ============================================================================
-# Test 16 — SPEC EXEC1: STANDARD_KINDS exec_header is WARN-ONLY (never raises)
-#           + brief_meta audit event written when workspace_root is passed
+# Test 16 — SPEC OUT2 §4: STANDARD_KINDS exec_header is REQUIRED (the deferred
+#           EXEC1 release-N+1 flip) — ValueError naming the kind, no partial
+#           file, brief_meta severity="error" audit when workspace_root passed
 # ============================================================================
-print("\n=== EXEC1: exec_header warn-only (client safety) ===")
+print("\n=== OUT2 §4: exec_header hard-require (the flip) ===")
+
+from brief_writer import STANDARD_KINDS  # noqa: E402
 
 with tempfile.TemporaryDirectory() as tmp:
-    # A STANDARD_KIND with NO exec_header must still SAVE (warn-only, no raise).
-    p = os.path.join(tmp, "noheader.docx")
-    returned = make_brief(p, brief_kind="memo", title="t", subtitle="s",
-                          sections=[{"heading": "h", "body": "b"}],
-                          contract="off", voice_gate="off")
-    check("STANDARD_KIND without exec_header still saves (warn-only)",
-          os.path.isfile(p) and returned == p)
+    # EVERY kind in the set must refuse to render without an exec_header, and
+    # the error must NAME the kind (spec §6: "or the test fails naming the
+    # skill"). No partial file may exist after the raise.
+    for kind in sorted(STANDARD_KINDS):
+        p = os.path.join(tmp, f"noheader_{kind}.docx")
+        try:
+            make_brief(p, brief_kind=kind, title="t", subtitle="s",
+                       sections=[{"heading": "h", "body": "b"}],
+                       contract="off", voice_gate="off")
+            check(f"STANDARD_KIND {kind} without exec_header raises", False)
+        except ValueError as e:
+            check(f"STANDARD_KIND {kind} without exec_header raises naming the kind",
+                  kind in str(e) and "exec_header" in str(e))
+        check(f"STANDARD_KIND {kind} refusal leaves no partial file",
+              not os.path.isfile(p))
 
-    # When workspace_root is provided, a brief_meta audit event lands in
-    # events.jsonl — making the missing header DETECTABLE without breaking.
+    # An empty/whitespace verdict is the same as no header.
+    p_blank = os.path.join(tmp, "blankverdict.docx")
+    try:
+        make_brief(p_blank, brief_kind="memo", title="t", subtitle="s",
+                   exec_header={"verdict": "   "},
+                   sections=[{"heading": "h", "body": "b"}],
+                   contract="off", voice_gate="off")
+        check("blank verdict raises like a missing header", False)
+    except ValueError:
+        check("blank verdict raises like a missing header", True)
+
+    # NON-standard kinds still render freely without one (never required).
+    p_free = os.path.join(tmp, "free.docx")
+    make_brief(p_free, brief_kind="past_meeting", title="t", subtitle="s",
+               sections=[{"heading": "h", "body": "b"}],
+               contract="off", voice_gate="off")
+    check("non-STANDARD kind renders without exec_header", os.path.isfile(p_free))
+
+    # When workspace_root is provided, the refusal leaves a brief_meta
+    # severity="error" audit event — the substrate trace of a lagging caller.
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "_hq", "data"), exist_ok=True)
     p2 = os.path.join(tmp, "audit.docx")
-    make_brief(p2, brief_kind="board_pack", title="t", subtitle="s",
-               sections=[{"heading": "h", "body": "b"}],
-               contract="off", voice_gate="off", workspace_root=ws)
+    try:
+        make_brief(p2, brief_kind="board_pack", title="t", subtitle="s",
+                   sections=[{"heading": "h", "body": "b"}],
+                   contract="off", voice_gate="off", workspace_root=ws)
+    except ValueError:
+        pass
     events_path = os.path.join(ws, "_hq", "data", "events.jsonl")
-    check("brief_meta audit event file written", os.path.isfile(events_path))
+    check("brief_meta audit event file written on refusal", os.path.isfile(events_path))
     if os.path.isfile(events_path):
         lines = [l for l in open(events_path, encoding="utf-8").read().splitlines() if l.strip()]
         evs = [json.loads(l) for l in lines]
-        check("a brief_meta event was appended",
-              any(e.get("type") == "brief_meta" for e in evs),
-              f"types={[e.get('type') for e in evs]}")
         bm = [e for e in evs if e.get("type") == "brief_meta"]
-        check("brief_meta carries the kind + warn severity",
+        check("brief_meta carries the kind + error severity",
               bool(bm) and bm[0]["data"].get("brief_kind") == "board_pack"
-              and bm[0]["data"].get("severity") == "warn")
+              and bm[0]["data"].get("severity") == "error")
 
-    # A STANDARD_KIND WITH exec_header writes NO brief_meta warn.
+    # A STANDARD_KIND WITH exec_header saves cleanly, NO brief_meta event.
     ws2 = os.path.join(tmp, "ws2")
     os.makedirs(os.path.join(ws2, "_hq", "data"), exist_ok=True)
     p3 = os.path.join(tmp, "withheader.docx")
@@ -472,12 +512,13 @@ with tempfile.TemporaryDirectory() as tmp:
                exec_header={"verdict": "Ship it."},
                sections=[{"heading": "h", "body": "b"}],
                contract="off", voice_gate="off", workspace_root=ws2)
+    check("exec_header present → saves", os.path.isfile(p3))
     ep2 = os.path.join(ws2, "_hq", "data", "events.jsonl")
     no_warn = (not os.path.isfile(ep2)) or all(
         json.loads(l).get("type") != "brief_meta"
         for l in open(ep2, encoding="utf-8").read().splitlines() if l.strip()
     )
-    check("exec_header present → no brief_meta warn", no_warn)
+    check("exec_header present → no brief_meta event", no_warn)
 
 
 # ============================================================================

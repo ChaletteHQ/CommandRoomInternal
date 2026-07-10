@@ -60,6 +60,7 @@ def main() -> int:
         make_brief(brief_path, brief_kind="call_prep",
                    title="Call prep — Rio Sample",
                    subtitle=f"1:1 · {DATE} · Acme Co",
+                   exec_header={"verdict": "Walk out with the renewal date locked."},  # OUT2 §4 flip
                    sections=sections, contract="report")
         ok("make_brief rendered the call-prep brief")
     except Exception as e:

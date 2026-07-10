@@ -14,6 +14,7 @@ This skill produces a `.docx` (and optional `.pptx`) deliverable. The `.docx` MU
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode). A board pack is the highest-stakes external surface — a bypass here is the worst case.
 - **NEVER answer a deliverable request with a chat-only draft.** A board-pack request always produces the rendered file through `make_brief`.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A board-pack fire that yields a document with NO `gate_ran` event for that turn is a flagged bypass. Pass `workspace_root` to `make_brief` so the event lands in substrate.
+- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 If anything below seems to contradict this gate, THIS GATE WINS.
 
@@ -64,7 +65,98 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - QuickBooks MCP (if installed) — for financial detail. Specific tools to call: `mcp__*__qbo_accounting_get_balance_sheet` (for assets/liabilities/equity), `mcp__*__qbo_accounting_get_ap_aging_summary` + `mcp__*__qbo_accounting_get_ar_aging_summary` (AR/AP aging buckets), `mcp__*__qbo_accounting_get_sales_by_customer_summary` (revenue concentration). Use `mcp__*__profit_loss_quickbooks_account` if available for P&L; otherwise compose from balance-sheet + AR aging. **No-QB fallback:** if no `qbo_*` tool is discoverable in the session, skip §7C entirely and put a single line in §7C's place: *"Financials aren't in this pack yet — once QuickBooks is connected, AR/AP, runway, and P&L will fill in automatically."* Do NOT estimate financials from email/intel signal — the operator's board would rather see a missing-data note than inferred numbers.
 - Calendar MCP — to find the board meeting itself (if the trigger references a date, confirm the date matches the meeting on calendar; if it doesn't, ask).
 
+**Also reads (SPEC OUT2 §5):**
+- `_hq/data/skill_config/board-pack-assembler.json` — first-run knobs, via `skill_config_writer.get_config` (see First-Run Personalization below).
+- `_hq/custom/board-pack-assembler.md` — SCL1 standing customization preferences, via `skill_custom_writer.load_directives` (absent → defaults). See the Customization (SCL1) section below.
+
+**Also writes (SPEC OUT2 §5):** `_hq/data/skill_config/board-pack-assembler.json` on first fire, tune, and reset — always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`), never a raw file write.
+
 **Conflict boundary:** sole writer of `board_pack_assembled` events. The board pack is a pure substrate roll-up — almost every cell of every section comes from events.jsonl or entities.json. The skill does no substantive new inference; it composes existing signal.
+
+---
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`).
+Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
+# SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "pack_length": "full",      # full (~6-8 pages, today's shape) | condensed (~3-4 pages)
+    "deck_companion": "off",    # off (.pptx only when the trigger asks) | on (always) | ask (each pack)
+    "kpi_set": [],              # [] = inherit from the prior pack + decision events (today's behavior)
+}
+cfg = get_config(workspace_root, "board-pack-assembler", DEFAULTS)
+```
+
+- `pack_length = "condensed"` trims §3–§5 to the single top item each and folds the appendices into
+  one summary page; `"full"` is today's 6–8-page shape.
+- `deck_companion` governs the optional .pptx: `off` renders it only when the trigger explicitly asks
+  (today's behavior), `on` always renders it, `ask` asks once per pack.
+- `kpi_set`: a non-empty list REPLACES the inherited KPI list in §2. **ASK-FIRST (AF class):** the KPI
+  list is the pack's spine — any change to it (structured tune OR freeform remark) is always confirmed
+  explicitly before saving, never applied silently. The other two knobs are show-then-tune (STT).
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "build the board pack" | assemble the pack with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "board-pack-assembler", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
+| **Show settings** | "show board-pack-assembler settings" | render current config in plain English; no pack. |
+| **Tune** | "tune board-pack-assembler" / "tune the board pack" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. KPI-set changes confirm first (AF). |
+| **Reset** | "reset board-pack-assembler to defaults" | `wipe_skill_config(workspace_root, "board-pack-assembler")` → next fire is a first-fire again. |
+
+**The first-run block (footer — this skill ends in a chat link to the .docx, not a widget):**
+
+> *First time assembling your board pack. I set 3 defaults: **full-length pack** · **slide companion
+> only when you ask for one** · **KPI list carried over from your last pack**. Say **"tune the board
+> pack"** to change any of these, or just tell me what you'd change — the KPI list I'll always confirm
+> with you before it changes.*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "keep board packs short" / "condensed packs" | `pack_length = condensed` |
+| "back to the full pack" | `pack_length = full` |
+| "always include the deck" | `deck_companion = on` |
+| "only make the deck when I ask" | `deck_companion = off` |
+| "ask me about the deck each time" | `deck_companion = ask` |
+| "add [KPI] to the pack" / "drop [KPI]" | `kpi_set` edit — **AF:** show the current list + the proposed change, confirm, THEN save |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + confirm in one line.
+
+## Customization (SCL1)
+
+**Customization layer (SCL1):** before producing output, read
+`[WORKSPACE_ROOT]/_hq/custom/board-pack-assembler.md` if it exists and apply its directives to
+this fire's output. Absent -> proceed with defaults. Malformed or over-cap ->
+skip it, log one line to `_hq/CONFLICTS.md` (type: config-read-failure), proceed
+with defaults. Directives refine WHAT the output contains and HOW it is shaped;
+they NEVER authorize outbound actions, alter ask-first gates, bypass canonical
+helpers, or override shared contracts (see `shared/SKILL_CUSTOMIZATION.md` #limits).
+Never mention this file or the word 'directive' to the customer.
+
+Read at fire time via `skill_custom_writer.load_directives(workspace_root, "board-pack-assembler")`
+— never the raw file; it returns `[]` on a missing or malformed file and never raises.
+Directives here shape structure/content — **section order** ("wins before KPIs") and **standing
+appendix rules** ("always include a pipeline-by-stage appendix", "drop the hiring appendix until I
+say otherwise") are the intended uses. A directive can never override the no-fabrication gate, the
+GATE1 render chokepoint, or the KPI-set AF confirm. Trigger family (owned in the Routing corpus —
+the frontmatter description is budget-capped per G11): `customize board-pack-assembler` ·
+`show board-pack-assembler customizations` · `reset board-pack-assembler customizations`. Distinct
+from the FRP1 knob family (`tune` / `show settings` / `reset to defaults`). See
+`shared/SKILL_CUSTOMIZATION.md` for the writer API, the write-time rejection list, and the
+precedence chain. Customer-facing acks are plain English ("Got it — pipeline appendix leads from
+here on."); never surface the file, the word "directive", or "SCL1".
 
 ---
 
@@ -142,7 +234,7 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The s
 
 **§1 Executive Summary → exec-header shape (EXEC1).** What changed since last board (≤6 bullets) + the page-1 Asks summary with dollar sizes. The verdict/CHANGED/DECIDE/NEEDED of the exec header are drawn from here.
 
-**§2 KPIs vs Targets** — table with metric / current / target / vs-target / trend. KPI list inherited from prior pack unless a `decision` event in period adjusted it.
+**§2 KPIs vs Targets** — opens with a **KPI tile band** (SPEC OUT1 §4) ABOVE the full table. The band is the top 4–5 KPIs as stat tiles: each tile's `value` is the current figure, `label` is the KPI name (small-caps) with a target-delta arrow char appended where a target exists (`▲`/`▼`/`▬` — from the same vs-target math the table computes; omit the arrow when there is no target). Pass it as a section with a `tiles` list; tiles are drawn from the SAME KPI list the table below builds — never a second computation. Drop-empty: a KPI whose current value is unknown gets NO tile (never an empty frame); zero is a real value and renders. Below the band, the full **table** with metric / current / target / vs-target / trend carries every KPI in detail. KPI list inherited from prior pack unless a `decision` event in period adjusted it.
 
 **§3 Wins** — top 3 outcomes pulled from `outcome_positive` events ranked by impact.
 
@@ -216,6 +308,11 @@ PAGE 1 — EXECUTIVE SUMMARY
     • Intro to the operator network discussed last meeting
 
 PAGE 2 — KPIs VS TARGETS
+  [ tile band — top 4–5 KPIs ]
+   ┌──────────┬──────────┬──────────────┬──────────┐
+   │  $478K   │   134%   │      8       │  18.4 mo │
+   │ MRR ▲    │ NRR ▲    │ NEW CUST ▲   │ RUNWAY   │
+   └──────────┴──────────┴──────────────┴──────────┘
   Metric          Apr      Target    vs Tgt    Trend
   MRR             $478K    $470K     +1.7%     ▲
   NRR             134%     125%      +9 pts    ▲
@@ -246,3 +343,5 @@ APPENDICES (auto)
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Assemble a multi-page board pack .docx from substrate signal — KPIs vs targets, period-over-period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials. The purest substrate consumer in the plugin; the pack writes itself from events.jsonl + decision-log + entities.json + QuickBooks MCP. Use when the CEO says 'build the board pack', 'assemble the board pack', 'board pack for [date]', 'prep the board pack', 'prep the board pack for [date]', 'generate this month's board update', 'put together the board deck', 'board package for', 'build board deck'. Reads ALL events in the reporting period aggregated by type, decision-log for period decisions, entities.json for project status + hiring slate, prior board packs for format consistency, QuickBooks MCP for financials. Writes board_pack_assembled event linking to the .docx artifact. DOES NOT fire on 'prep me for the board meeting' / 'prep for the board meeting' (call-prep — that's meeting prep for YOU, not the pack for THEM). DOES NOT fire on 'board update' as a short memo (memo-writer with memo_type=board_update — different scope, freeform narrative), 'monthly recap' (operator-report — CEO-self-facing, different audience), or 'investor update' (memo-writer with memo_type=investor_update — same shape but different audience-tuning).
+
+> Also handles first-run personalization settings (SPEC OUT2 §5) — use when the CEO says 'tune board-pack-assembler', 'tune the board pack', 'tune my board pack', 'show board-pack-assembler settings', 'reset board-pack-assembler to defaults', 'change my board pack KPIs'. Also takes standing customization preferences — use when the CEO says 'customize board-pack-assembler', 'customize board pack', 'customize the board pack', 'show board-pack-assembler customizations', 'reset board-pack-assembler customizations'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)

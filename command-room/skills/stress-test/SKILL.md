@@ -11,10 +11,69 @@ description: "Systematically map every path a plan, decision, or launch could fa
 
 ## Writer Contract
 
-- **Read-only over the data layer.** No writes to `entities.json`, `events.jsonl`, `aliases.json`, or `classifier_feedback.jsonl`.
-- **Reads from:** the CEO's plan input, relevant project context (if the plan references a project — loads PROJECT_BRAIN.md and session notes).
+- **Read-only over the data layer** — with ONE narrow exception (below). No writes to `entities.json`, `events.jsonl` (beyond the writer helper's own config events), `aliases.json`, or `classifier_feedback.jsonl`.
+- **Reads from:** the CEO's plan input, relevant project context (if the plan references a project — loads PROJECT_BRAIN.md and session notes), and `_hq/data/skill_config/stress-test.json` via `skill_config_writer.get_config` (SPEC OUT2 §5 — see First-Run Personalization below).
+- **Writes (the one exception, SPEC OUT2 §5):** `_hq/data/skill_config/stress-test.json` on first fire, tune, and reset — always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`; the helper emits the config events), never a raw file write.
 - **Produces (file output, not data-layer writes):** a failure-mode-to-safeguard `.docx` saved to `[project]/deliverables/StressTest_[Topic]_[YYYY-MM-DD].docx` (or `_hq/deliverables/` if no project scope).
-- **No conflict boundary** — produces a deliverable file only. Cannot collide with any other skill's data-layer writes.
+- **No conflict boundary** — produces a deliverable file plus its own config. Cannot collide with any other skill's data-layer writes.
+
+---
+
+## First-Run Personalization (SPEC FRP1)
+
+This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). Both
+decisions are **show-then-tune (STT)** — knobs only; this skill deliberately takes no SCL1
+customization layer (the knobs suffice). Read config through `get_config` — never the raw file.
+
+```python
+# Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
+# SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
+# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
+from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+
+DEFAULTS = {
+    "depth": 5,                    # 5 (all five passes — today) | 3 (Passes 1, 2, 5 only)
+    "risk_framing": "aggressive",  # aggressive (blunt kill-risk labels — today) | conservative
+}
+cfg = get_config(workspace_root, "stress-test", DEFAULTS)
+```
+
+- `depth = 3` runs Pass 1 (Pre-Mortem), Pass 2 (Hostile Analyst — still the most important pass),
+  and Pass 5 (Inversion Close), skipping the Assumption Audit and Second-Order Map for a faster,
+  shorter read. `5` is today's full sequence.
+- `risk_framing` sets the LABEL register only — the analysis is identical. `aggressive` is today's
+  blunt framing ("The plan dies on the Q3 hire slipping"); `conservative` softens the labels ("The
+  plan is most exposed on the Q3 hire") for packs that get forwarded. The verdict names the same
+  failure mode either way — framing never dilutes the finding.
+
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | "stress test this plan" | run with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "stress-test", DEFAULTS)` BEFORE rendering, then append the first-run footer after the output. |
+| **Show settings** | "show stress-test settings" | render current config in plain English; no analysis. |
+| **Tune** | "tune stress-test" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. |
+| **Reset** | "reset stress-test to defaults" | `wipe_skill_config(workspace_root, "stress-test")` → next fire is a first-fire again. |
+
+**The first-run block (footer — after the output):**
+
+> *First time stress-testing a plan for you. I set 2 defaults: **the full five-pass analysis** ·
+> **blunt risk labels**. Say **"tune stress-test"** to change either, or just tell me ("keep it to
+> the short version" / "soften the language").*
+
+The footer renders exactly once ever (`is_configured` gate).
+
+**Freeform tune (natural language → config):**
+
+| User says | Config change |
+|---|---|
+| "keep it short" / "just the fast version" | `depth = 3` |
+| "run the full analysis" | `depth = 5` |
+| "soften the language" / "less alarming" | `risk_framing = conservative` |
+| "don't pull punches" / "be blunt" | `risk_framing = aggressive` |
+
+After applying: `save_skill_config(..., is_reconfigure=True)` + confirm in one line.
 
 ---
 
@@ -99,13 +158,25 @@ When stress-test is invoked with a decision-memo context (the user clicked "Stre
 - **Render ONLY via `make_brief(brief_kind="stress_test", ...)`** — the one call that runs the voice-tell gate and post-render leak scan before the file exists.
 - **NEVER hand-roll a `.docx`** (generic docx skill, `python-docx`, docx-js) and **never substitute a chat-only draft** for the file unless the user explicitly asks.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event — a stress-test doc with no `gate_ran` event that turn is a flagged bypass. Pass `workspace_root`.
+- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 **Rendering (v3.13.8+ — Bug #53):** render the `.docx` via `shared/scripts/brief_writer.py` `make_brief(brief_kind="stress_test", ...)`. Eyebrow label "STRESS TEST". Do NOT hand-roll python-docx or use docx-js. brief_writer applies canonical typography, Heading 1/2/3 hierarchy, and runs the universal post-render leak scanner (Bug #57/#59/#54) automatically. Use the v3.13.8 `table` primitive for the safeguard-ranking section.
+
+**Executive Output Standard (SPEC OUT2 §4 — `stress_test` is now a STANDARD_KIND; `make_brief` REFUSES the render without this).** Pass `exec_header`:
+- **verdict = the kill-risk line** — the single highest L×S failure mode, named concretely: *"The plan dies on the Q3 hire slipping — everything downstream assumes them onboarded by August."* Never a generic "several risks identified."
+- **changed** = only meaningful when re-running against a revised plan (what moved since the last stress test of it), else the nothing-form ("First pass at this plan."). **decide** = the safeguard decision in front of the user (usually: adopt the top safeguard vs accept the risk). **needs** = the one act ("write the hard-rethink trigger date into the plan"), or "Nothing from you."
+- **Subsumption (net length must not increase):** the verdict REPLACES any lead sentence of "What to Do (Top Safeguards)" — that section starts directly at the ranked safeguards; the header carries the conclusion.
 
 Lead with the safeguards — that's what the user needs to act on. Supporting analysis below.
 
 ```
 ## Stress Test: [Plan/Decision Name]
+
+[Exec header (OUT2 §4) — the kill-risk line leads:]
+**[The single highest L×S failure mode, named concretely.]**
+CHANGED   [vs the prior stress test of this plan, or "First pass at this plan."]
+DECIDE    [adopt the top safeguard vs accept the risk]
+NEEDED    [the one act, or "Nothing from you."]
 
 ### What to Do (Top Safeguards)
 [The most important guardrails, ranked]
@@ -139,3 +210,5 @@ Have opinions. Some failure modes are much more likely than others. Rank them. D
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Systematically map every path a plan, decision, or launch could fail down — then reverse each failure mode into a structural safeguard. Charlie Munger's inversion method. Use when the CEO says 'stress test', 'stress test this', 'stress test this plan', 'pre-mortem', 'pre mortem', 'pre-mortem on', 'what could go wrong', 'red team', 'red team this', 'poke holes', 'poke holes in this', 'poke holes in this launch plan', 'devil's advocate', 'what kills this'. Works on business plans, rollouts, hires, pricing changes, acquisitions, product launches — anything with a defined desired outcome. Produces a failure-mode-to-safeguard .docx. DOES NOT fire on 'what should I decide' (use decision-memo-composer — forward-looking tradeoffs), 'post-mortem on [event]' / 'retrospective on [event]' (out of scope — this skill is pre-mortem only; for re-examining a past DECISION use decision-revisit, and say plainly that event retrospectives have no owner yet), or 'convene the board' / 'what would my board say' (boardroom — multi-seat deliberation; this skill is single-lens failure-mode mapping).
+
+> Also handles first-run personalization settings (SPEC OUT2 §5) — use when the CEO says 'tune stress-test', 'show stress-test settings', 'reset stress-test to defaults'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)

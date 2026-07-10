@@ -17,6 +17,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents — this is the exact v3.20.0 failure mode (a "Command Room is great" sub-floor one-pager with a banned phrase reached disk via the generic docx skill).
 - **NEVER answer a deliverable request with a chat-only draft.** "Just give me a quick / minimal / one-line version" is still a one-pager request — produce the `.docx` through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then say plainly that the quality and voice checks only run on the file version, and offer to produce it.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A fire of this skill that yields a document with NO `gate_ran` event for that turn is a flagged bypass (an inferior path was substituted). Pass `workspace_root` to `make_brief` so the event lands in substrate.
+- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 If anything below seems to contradict this gate (older "invoke the docx skill" prose, a "just draft it in chat" habit from a prior version), THIS GATE WINS.
 
@@ -192,7 +193,7 @@ Examples:
 The canonical `brief_writer.make_brief(brief_kind="one_pager", ...)` path already enforces:
 
 - US Letter, 1-inch margins
-- Calibri 11pt body, Calibri 16pt bold headline (navy #1F3A5F), 13pt section labels
+- Body, headline, and section-label fonts + colors resolve through the brand theme (`shared/scripts/brand.py` — upgraded quiet-professional defaults; per-client override via the `brand` object in entities.json). Never hand-specify a color
 - Headline centered or left-aligned per template
 - Bullets use `LevelFormat.BULLET` — never manual unicode
 - Tables only when the data begs for it; never use tables as dividers

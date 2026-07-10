@@ -101,6 +101,7 @@ def exercise_gate_ran_on_render() -> None:
         brief_kind="call_prep",
         title="Acme kickoff — prep",
         subtitle="Fri 9:00 AM PT",
+        exec_header={"verdict": "Walk out with the cutover window confirmed."},  # OUT2 §4 flip
         sections=[
             {"heading": "Meeting Details",
              "body": "Acme kickoff. Friday 9:00 AM PT, 45 minutes, Google Meet. "

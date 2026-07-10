@@ -39,7 +39,12 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import List, Dict, Optional, Union
+
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 
 PYTHON_DOCX_PIN = "1.2.0"
@@ -77,16 +82,177 @@ from docx.oxml.ns import qn  # noqa: E402
 from docx.oxml import OxmlElement  # noqa: E402
 
 
-# ---------- Brand palette (subtle, professional) ----------
+# ---------- Brand theme (SPEC OUT1 — resolved via shared/scripts/brand.py) ----------
+# Every color / font / footer / logo constant is now sourced from the brand
+# layer instead of being hardcoded here. `get_brand()` with no config returns
+# DEFAULT_BRAND (an UPGRADED quiet-professional default — the deliverable), so a
+# fresh workspace looks premium with zero config. A paying client's `brand`
+# object in entities.json (workspace-level or per-org) deep-merges over the
+# default; an absent brand object = byte-stable defaults, no warning, no event.
+#
+# The module-level globals below hold the CURRENT render theme. They default to
+# DEFAULT_BRAND at import and are re-applied per render by `_apply_brand()` (the
+# `brand=` / workspace_root / org_id resolution in make_brief), then restored.
+# All the _add_* helpers read these globals, so a per-render theme flows through
+# without threading a palette arg into every helper.
 
-INK = RGBColor(0x1A, 0x1A, 0x1A)        # body text — near-black
-HEADING = RGBColor(0x0F, 0x2A, 0x3F)    # section headings — dark navy
-MUTED = RGBColor(0x6B, 0x6B, 0x6B)      # subtitle, footer — medium grey
-ACCENT = RGBColor(0x2E, 0x7D, 0x6B)     # eyebrow label — dark teal
-RULE_HEX = "C0C0C0"                     # horizontal rule — light grey
+from brand import get_brand  # noqa: E402
 
-BODY_FONT = "Calibri"
-HEADING_FONT = "Calibri"
+# SPEC OUT2 §2a — the component data shapes + validation (tiles / timeline /
+# table / matrix drop-empty rules, one-point-strip refusal, star-highlight,
+# flag words) moved to the shared component library. This file is now the
+# .docx BACKEND consuming those shapes; the HTML fragment backend lives in
+# components.py too (build_tile_band_html / build_two_col_table_html).
+from components import (  # noqa: E402
+    validate_tiles as _validate_tiles,
+    validate_timeline as _validate_timeline,
+    validate_table as _validate_table,
+    normalize_matrix as _normalize_matrix,
+    star_cell_text as _star_cell_text,
+    flag_key_for as _flag_key_for,
+)
+
+# SPEC OUT2 §5 — the cross-skill output profile (density / visual_bias /
+# page_cap / default_format). Resolved per render exactly like the brand:
+# absent file = DEFAULT_OUTPUT_PROFILE = byte-identical to pre-profile output.
+from output_profile import (  # noqa: E402
+    DEFAULT_OUTPUT_PROFILE,
+    get_output_profile,
+)
+
+_DEFAULT_RESOLVED = get_brand()  # pure defaults; no I/O at import
+
+
+def _rgb(hexstr: str) -> "RGBColor":
+    """A 6-hex string (no '#') -> RGBColor."""
+    h = str(hexstr).lstrip("#")
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+# Current-render theme globals (rebound by _apply_brand; the _add_* helpers read
+# these). Colors that go through _set_run are RGBColor; colors that go through
+# _shade_cell stay bare hex strings (its API wants hex).
+INK = _rgb(_DEFAULT_RESOLVED["palette"]["ink"])
+HEADING = _rgb(_DEFAULT_RESOLVED["palette"]["heading"])
+MUTED = _rgb(_DEFAULT_RESOLVED["palette"]["muted"])
+ACCENT = _rgb(_DEFAULT_RESOLVED["palette"]["accent"])
+RULE_HEX = _DEFAULT_RESOLVED["palette"]["rule"]
+
+TILE_BG = _DEFAULT_RESOLVED["palette"]["tile_bg"]
+ZEBRA = _DEFAULT_RESOLVED["palette"]["zebra"]
+TABLE_HEADER = _DEFAULT_RESOLVED["palette"]["table_header"]
+COL_HEADER = _DEFAULT_RESOLVED["palette"]["col_header"]
+HIGHLIGHT = _DEFAULT_RESOLVED["palette"]["highlight"]
+FLAG_OK = _DEFAULT_RESOLVED["palette"]["flag_ok"]
+FLAG_WARN = _DEFAULT_RESOLVED["palette"]["flag_warn"]
+FLAG_BAD = _DEFAULT_RESOLVED["palette"]["flag_bad"]
+
+BODY_FONT = _DEFAULT_RESOLVED["fonts"]["body"]
+HEADING_FONT = _DEFAULT_RESOLVED["fonts"]["heading"]
+MONO_FONT = _DEFAULT_RESOLVED["fonts"]["mono"]
+
+FOOTER_DEFAULT = _DEFAULT_RESOLVED["footer_line"]
+LOGO_PATH = _DEFAULT_RESOLVED["logo_path"]
+EYEBROW_STYLE = dict(_DEFAULT_RESOLVED["eyebrow_style"])
+
+# Current-render output-profile globals (SPEC OUT2 §5 — rebound per render by
+# _apply_output_profile, restored in make_brief's finally, exactly like the
+# brand globals). Defaults equal today's behavior byte-for-byte:
+#   tight     -> body line_spacing 1.25 / space_after 6pt (the pre-profile values)
+#   narrative -> body line_spacing 1.40 / space_after 10pt (looser prose)
+_BODY_LINE_SPACING = 1.25
+_BODY_SPACE_AFTER = 6
+_VISUAL_BIAS = DEFAULT_OUTPUT_PROFILE["visual_bias"]
+
+# Rough words-per-page for the WARN-ONLY page_cap estimate. Deliberately crude
+# (the profile never blocks a save); tables/tiles/timelines count as word
+# equivalents below.
+_WORDS_PER_PAGE_EST = 450
+
+
+def _apply_output_profile(profile: dict) -> None:
+    """Rebind the render-density globals from a resolved output profile.
+    Called at the top of every render and restored to defaults after
+    (make_brief try/finally). Single-threaded per fire, same posture as
+    _apply_brand."""
+    global _BODY_LINE_SPACING, _BODY_SPACE_AFTER, _VISUAL_BIAS
+    if profile.get("density") == "narrative":
+        _BODY_LINE_SPACING = 1.40
+        _BODY_SPACE_AFTER = 10
+    else:  # "tight" — today's behavior
+        _BODY_LINE_SPACING = 1.25
+        _BODY_SPACE_AFTER = 6
+    _VISUAL_BIAS = (
+        profile.get("visual_bias")
+        if profile.get("visual_bias") in ("tiles_first", "prose_first")
+        else "tiles_first"
+    )
+
+
+def _estimate_pages(title: str, subtitle: str, sections: List[dict]) -> int:
+    """Crude, deterministic page estimate for the WARN-ONLY page_cap check.
+    Counts words in bodies/bullets/table/matrix cells; tiles and timeline
+    points weigh a fixed word-equivalent each."""
+    words = len(str(title).split()) + len(str(subtitle).split())
+    for sec in sections:
+        if not isinstance(sec, dict):
+            continue
+        words += len(str(sec.get("heading") or "").split()) + 4
+        words += len(str(sec.get("body") or "").split())
+        for b in sec.get("bullets") or []:
+            words += len(str(b).split()) + 2
+        table = sec.get("table")
+        if isinstance(table, dict):
+            for row in (table.get("rows") or []):
+                for cell in row:
+                    words += len(str(cell).split()) + 1
+            for h in (table.get("headers") or []):
+                words += len(str(h).split()) + 1
+        matrix = sec.get("matrix")
+        if isinstance(matrix, dict):
+            cells = matrix.get("cells")
+            if isinstance(cells, list):
+                for row in cells:
+                    words += sum(len(str(c).split()) + 1 for c in row)
+        words += 12 * len(sec.get("tiles") or [])
+        words += 8 * len(sec.get("timeline") or [])
+    return max(1, -(-words // _WORDS_PER_PAGE_EST))  # ceil division
+
+# Flag-cell tint words for the contract-review matrix (SPEC OUT1 §4) moved to
+# components.FLAG_TINT_KEYS (SPEC OUT2 §2a) — this backend maps the returned
+# palette KEY to its resolved brand tint hex in _flag_tint_for below.
+
+
+def _apply_brand(brand: dict) -> None:
+    """Rebind the module-level render-theme globals from a resolved brand dict.
+    Called at the top of every render with the render's resolved theme, and
+    restored to defaults after (make_brief try/finally). Single-threaded per
+    fire, so global rebinding is safe and keeps the _add_* helpers arg-free."""
+    global INK, HEADING, MUTED, ACCENT, RULE_HEX
+    global TILE_BG, ZEBRA, TABLE_HEADER, COL_HEADER, HIGHLIGHT
+    global FLAG_OK, FLAG_WARN, FLAG_BAD
+    global BODY_FONT, HEADING_FONT, MONO_FONT
+    global FOOTER_DEFAULT, LOGO_PATH, EYEBROW_STYLE
+    p = brand["palette"]
+    INK = _rgb(p["ink"])
+    HEADING = _rgb(p["heading"])
+    MUTED = _rgb(p["muted"])
+    ACCENT = _rgb(p["accent"])
+    RULE_HEX = p["rule"]
+    TILE_BG = p["tile_bg"]
+    ZEBRA = p["zebra"]
+    TABLE_HEADER = p["table_header"]
+    COL_HEADER = p["col_header"]
+    HIGHLIGHT = p["highlight"]
+    FLAG_OK = p["flag_ok"]
+    FLAG_WARN = p["flag_warn"]
+    FLAG_BAD = p["flag_bad"]
+    BODY_FONT = brand["fonts"]["body"]
+    HEADING_FONT = brand["fonts"]["heading"]
+    MONO_FONT = brand["fonts"]["mono"]
+    FOOTER_DEFAULT = brand["footer_line"]
+    LOGO_PATH = brand["logo_path"]
+    EYEBROW_STYLE = dict(brand["eyebrow_style"])
 
 
 # ---------- Supported brief kinds ----------
@@ -122,13 +288,16 @@ SUPPORTED_BRIEF_KINDS = frozenset(EYEBROW_BY_KIND)
 # See shared/EXECUTIVE_OUTPUT_STANDARD.md. The standard is enforced HERE (the
 # render chokepoint), not re-implemented per skill.
 
-# Kinds expected to carry a 30-second exec header (element 1). Missing header on
-# one of these is WARN-ONLY this release (emit a brief_meta audit event, never
-# raise) — a hard-require now would break every scheduled brief on the live
-# client workspaces on upgrade day, because their orchestrator prompts lag the
-# plugin and don't pass exec_header yet (CONTRACT Rule 16). The ValueError is a
-# FUTURE release (N+1), after the prompts catch up. These are exactly the §4
-# docx-producing skills that take the adoption edit.
+# Kinds required to carry a 30-second exec header (element 1). Missing header
+# on one of these raises ValueError (SPEC OUT2 §4 — the deferred release-N+1
+# flip, landed after the EXEC1 warn-only staging release). The flip shipped in
+# the SAME commit as the scheduled-orchestrator compliance sweep (CONTRACT
+# Rule 16 — prompts lag the plugin; the sweep verified every scheduled
+# orchestrator that renders a STANDARD_KIND passes exec_header: upcoming-
+# meetings passes it on the call_prep path; past-meetings renders past_meeting,
+# not a STANDARD_KIND; friday-wrap delegates to weekly-recap's phases which
+# pass it; no other orchestrator renders a .docx). These are exactly the §4
+# docx-producing skills that carry the adoption edit in their SKILL.md.
 STANDARD_KINDS = frozenset({
     "call_prep",
     "memo",
@@ -138,6 +307,10 @@ STANDARD_KINDS = frozenset({
     "followup_pack",
     "decision_memo",
     "dormant_scan",
+    # OUT2 §4 — EXEC1 completion: the three kinds EXEC1 deferred.
+    "contract_review",   # verdict = the deal-breaker flag line
+    "automation_scan",   # verdict = top opportunity + payback
+    "stress_test",       # verdict = the kill-risk line
 })
 # NB: operator_report is deliberately NOT here. Per SPEC EXEC1 §4 its Section 0
 # synthesis lead is "untouched (it's the prototype)" and §5 lists it as a
@@ -169,18 +342,24 @@ MAX_ASKS = 3
 _EXEC_HEADER_LINES = (("changed", "CHANGED"), ("decide", "DECIDE"), ("needs", "NEEDED"))
 
 
-def _emit_brief_meta_audit(brief_kind: str, reason: str, workspace_root: Optional[str]) -> None:
-    """WARN-ONLY exec-standard audit (SPEC EXEC1, element 1). NEVER raises.
+def _emit_brief_meta_audit(
+    brief_kind: str, reason: str, workspace_root: Optional[str],
+    severity: str = "warn",
+) -> None:
+    """Exec-standard audit trail (SPEC EXEC1 element 1). NEVER raises itself.
 
     Always surfaces a `[brief_meta]` line on stderr (dev-internal, never
-    user-visible — same channel the contract/voice gates use for warn-only
+    user-visible — same channel the contract/voice gates use for their
     findings). When `workspace_root` is known, ALSO best-effort appends a
     `brief_meta` event to events.jsonl (mirrors compute_and_log_brief_state) so
-    a missing-header brief is DETECTABLE in the verify loop without breaking the
-    brief. The events.jsonl write is wrapped so it can never block a save."""
+    the finding is DETECTABLE in the verify loop. Since the OUT2 §4 flip the
+    missing-header call site passes severity="error" and raises AFTER this
+    returns — the event is the substrate trace of the refused save (an
+    orchestrator that lagged the flip shows up in the verify loop, not just in
+    a transient stderr line). The events.jsonl write is wrapped so it can
+    never block or mask the caller's outcome."""
     print(
-        f"[brief_meta] exec-standard warn (save proceeds, never blocks): "
-        f"{brief_kind} — {reason}",
+        f"[brief_meta] exec-standard {severity}: {brief_kind} — {reason}",
         file=sys.stderr,
     )
     if not workspace_root:
@@ -196,10 +375,10 @@ def _emit_brief_meta_audit(brief_kind: str, reason: str, workspace_root: Optiona
             "ts": _ts(),
             "type": "brief_meta",
             "source_skill": "brief_writer",
-            "data": {"brief_kind": brief_kind, "reason": reason, "severity": "warn"},
+            "data": {"brief_kind": brief_kind, "reason": reason, "severity": severity},
         }])
     except Exception:
-        # Never let the audit write block the brief — warn-only is warn-only.
+        # Never let the audit write block or mask the caller's outcome.
         pass
 
 
@@ -263,10 +442,13 @@ def _emit_gate_ran_audit(
 
 # ---------- Internal helpers ----------
 
-def _set_run(run, *, font=BODY_FONT, size=11, color=INK, bold=False, italic=False):
-    run.font.name = font
+def _set_run(run, *, font=None, size=11, color=None, bold=False, italic=False):
+    # Resolve None -> current render-theme global at CALL time, so a per-render
+    # brand applied via _apply_brand reaches callers that omit font/color (def
+    # defaults bind once at import and would otherwise miss a rebind).
+    run.font.name = font if font is not None else BODY_FONT
     run.font.size = Pt(size)
-    run.font.color.rgb = color
+    run.font.color.rgb = color if color is not None else INK
     run.font.bold = bold
     run.font.italic = italic
 
@@ -301,9 +483,12 @@ def _tighten_margins(doc) -> None:
 
 
 def _add_eyebrow(doc, label: str) -> None:
+    style = EYEBROW_STYLE or {}
+    text = label.upper() if style.get("upper", True) else label
     p = doc.add_paragraph()
-    run = p.add_run(label.upper())
-    _set_run(run, font=HEADING_FONT, size=9, color=ACCENT, bold=True)
+    run = p.add_run(text)
+    _set_run(run, font=HEADING_FONT, size=style.get("size", 9),
+             color=ACCENT, bold=style.get("bold", True))
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(2)
 
@@ -359,8 +544,10 @@ def _add_body_paragraphs(doc, body_text: str) -> None:
         run = p.add_run(block)
         _set_run(run, font=BODY_FONT, size=11, color=INK)
         p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(6)
-        p.paragraph_format.line_spacing = 1.25
+        # SPEC OUT2 §5 — density comes from the output profile ("tight" default
+        # keeps the pre-profile 6pt/1.25 values byte-stably).
+        p.paragraph_format.space_after = Pt(_BODY_SPACE_AFTER)
+        p.paragraph_format.line_spacing = _BODY_LINE_SPACING
 
 
 def _shade_cell(cell, hex_color: str) -> None:
@@ -393,14 +580,9 @@ def _add_table(
       column_widths: optional list of float (inches). Defaults to equal split
         across 6 inches usable page width.
     """
-    if not rows:
-        raise ValueError("table 'rows' must be a non-empty list")
-    if not all(isinstance(r, list) for r in rows):
-        raise ValueError("each row must be a list")
-
-    n_cols = max(len(r) for r in rows)
-    if headers is not None:
-        n_cols = max(n_cols, len(headers))
+    # SPEC OUT2 §2a — shape validation shared with the HTML backend
+    # (components.validate_table; messages + rules identical to pre-OUT2).
+    n_cols = _validate_table(rows, headers, column_widths)
 
     total_rows = len(rows) + (1 if headers else 0)
     table = doc.add_table(rows=total_rows, cols=n_cols)
@@ -408,10 +590,6 @@ def _add_table(
 
     # Column widths
     if column_widths:
-        if len(column_widths) != n_cols:
-            raise ValueError(
-                f"column_widths length {len(column_widths)} must match n_cols {n_cols}"
-            )
         for i, width in enumerate(column_widths):
             for row in table.rows:
                 row.cells[i].width = Inches(width)
@@ -426,7 +604,7 @@ def _add_table(
     if headers:
         for j, header_text in enumerate(headers):
             cell = table.rows[0].cells[j]
-            _shade_cell(cell, "0F2A3F")  # HEADING navy
+            _shade_cell(cell, TABLE_HEADER)  # heading-navy header fill
             for p in cell.paragraphs:
                 p.text = ""
             p = cell.paragraphs[0]
@@ -439,8 +617,8 @@ def _add_table(
         target_row = table.rows[i + row_offset]
         is_highlight = highlight_row_idx is not None and i == highlight_row_idx
         # Zebra stripe (very subtle) when no per-row highlight has consumed it
-        zebra_fill = "F5F2EE" if (i % 2 == 1) else None
-        accent_fill = "E8F1EE"  # ACCENT-tinted background
+        zebra_fill = ZEBRA if (i % 2 == 1) else None
+        accent_fill = HIGHLIGHT  # ACCENT-tinted background
         for j in range(n_cols):
             cell = target_row.cells[j]
             text = str(row_data[j]) if j < len(row_data) else ""
@@ -466,12 +644,25 @@ def _add_table(
     spacer.paragraph_format.space_after = Pt(6)
 
 
+def _flag_tint_for(value: str) -> Optional[str]:
+    """The palette tint hex for a flag cell's value, or None if it doesn't read
+    as a flag word. Word normalization lives in components.flag_key_for (SPEC
+    OUT2 §2a); this backend maps the palette KEY to the CURRENT render theme's
+    tint hex. Used by the contract-review matrix so a green/amber/red flag
+    column renders as shaded cells, not prose labels."""
+    key = _flag_key_for(value)
+    if key is None:
+        return None
+    return {"flag_ok": FLAG_OK, "flag_warn": FLAG_WARN, "flag_bad": FLAG_BAD}[key]
+
+
 def _add_matrix(
     doc,
     cells: Union[List[List[str]], Dict[tuple, str]],
     headers_row: Optional[List[str]] = None,
     headers_col: Optional[List[str]] = None,
     star_col_idx: Optional[int] = None,
+    flag_col_idx: Optional[int] = None,
 ) -> None:
     """v3.13.8+ — N×M comparison matrix with optional ★ glyph highlighting.
 
@@ -482,23 +673,14 @@ def _add_matrix(
       star_col_idx: optional int — render ★ glyph in front of every cell
         whose row's value in this column is non-empty/non-falsy (used for
         "recommended option" matrices).
+      flag_col_idx: optional int (SPEC OUT1 §4) — a column of flag words
+        (ok / warn / bad and common synonyms) whose cells get shaded with the
+        brand flag tint that matches each cell's value. Used by contract-review
+        so the green/yellow/red flag column is color, not just a prose label.
     """
-    if isinstance(cells, dict):
-        n_rows = max(k[0] for k in cells.keys()) + 1 if cells else 0
-        n_cols = max(k[1] for k in cells.keys()) + 1 if cells else 0
-        as_list = [["" for _ in range(n_cols)] for _ in range(n_rows)]
-        for (r, c), v in cells.items():
-            as_list[r][c] = v
-        rows_data = as_list
-    else:
-        rows_data = cells
-
-    if not rows_data:
-        raise ValueError("matrix 'cells' must contain at least one row")
-
-    n_cols = max(len(r) for r in rows_data)
-    if headers_row is not None:
-        n_cols = max(n_cols, len(headers_row))
+    # SPEC OUT2 §2a — dict→grid normalization + shape validation shared with
+    # the HTML backend (components.normalize_matrix; logic identical).
+    rows_data, n_cols = _normalize_matrix(cells, headers_row)
     # +1 column for headers_col if present
     actual_cols = n_cols + (1 if headers_col else 0)
     total_rows = len(rows_data) + (1 if headers_row else 0)
@@ -515,11 +697,11 @@ def _add_matrix(
     if headers_row:
         if headers_col:
             cell = table.rows[0].cells[0]
-            _shade_cell(cell, "0F2A3F")
+            _shade_cell(cell, TABLE_HEADER)
         for j, header_text in enumerate(headers_row):
             target_j = j + (1 if headers_col else 0)
             cell = table.rows[0].cells[target_j]
-            _shade_cell(cell, "0F2A3F")
+            _shade_cell(cell, TABLE_HEADER)
             for p in cell.paragraphs:
                 p.text = ""
             p = cell.paragraphs[0]
@@ -533,7 +715,7 @@ def _add_matrix(
         if headers_col:
             label = headers_col[i] if i < len(headers_col) else ""
             cell = target_row.cells[0]
-            _shade_cell(cell, "F0EDE9")
+            _shade_cell(cell, COL_HEADER)
             for p in cell.paragraphs:
                 p.text = ""
             p = cell.paragraphs[0]
@@ -543,8 +725,12 @@ def _add_matrix(
             target_j = j + (1 if headers_col else 0)
             cell = target_row.cells[target_j]
             text = str(row_data[j]) if j < len(row_data) else ""
-            if star_col_idx is not None and j == star_col_idx and text.strip():
-                text = "★ " + text
+            # SPEC OUT2 §2a — star-highlight rule shared with the HTML backend.
+            text = _star_cell_text(text, j, star_col_idx)
+            if flag_col_idx is not None and j == flag_col_idx:
+                tint = _flag_tint_for(text)
+                if tint:
+                    _shade_cell(cell, tint)
             for p in cell.paragraphs:
                 p.text = ""
             p = cell.paragraphs[0]
@@ -564,18 +750,11 @@ def _add_stat_tiles(doc, tiles: List[Dict[str, str]]) -> None:
     is dropped, never rendered as an empty frame") is enforced by the builder
     (prep_pipeline.build_prep_tiles) AND here at the render chokepoint, so an
     empty frame is structurally impossible whichever path called us.
+
+    SPEC OUT2 §2a — the validation moved to components.validate_tiles (shared
+    with the HTML backend); rules + messages identical.
     """
-    if not isinstance(tiles, list) or not tiles:
-        raise ValueError("tiles must be a non-empty list of {label, value}")
-    if len(tiles) > 5:
-        raise ValueError(f"at most 5 tiles per band (got {len(tiles)})")
-    for t in tiles:
-        if not isinstance(t, dict) or not str(t.get("label") or "").strip() \
-                or not str(t.get("value") or "").strip():
-            raise ValueError(
-                f"tile with no data must be DROPPED by the caller, never "
-                f"rendered as an empty frame: {t!r}"
-            )
+    _validate_tiles(tiles)
 
     table = doc.add_table(rows=1, cols=len(tiles))
     per_col = 6.0 / len(tiles)
@@ -583,7 +762,7 @@ def _add_stat_tiles(doc, tiles: List[Dict[str, str]]) -> None:
         table.rows[0].cells[i].width = Inches(per_col)
     for i, t in enumerate(tiles):
         cell = table.rows[0].cells[i]
-        _shade_cell(cell, "F5F2EE")
+        _shade_cell(cell, TILE_BG)
         for p in cell.paragraphs:
             p.text = ""
         value_p = cell.paragraphs[0]
@@ -611,16 +790,11 @@ def _add_timeline(doc, points: List[Dict[str, str]]) -> None:
     meeting bold with an em-dash marker. Requires >= 2 points — a one-point
     strip is an empty frame; the builder (prep_pipeline) already drops it,
     and this render-chokepoint check makes the rule bypass-proof.
+
+    SPEC OUT2 §2a — the validation moved to components.validate_timeline
+    (shared with the HTML backend); rules + messages identical.
     """
-    if not isinstance(points, list) or len(points) < 2:
-        raise ValueError(
-            "timeline needs >= 2 points; the caller drops the section when "
-            "the substrate has fewer (never render an empty strip)"
-        )
-    for pt in points:
-        if not isinstance(pt, dict) or not str(pt.get("date") or "").strip() \
-                or not str(pt.get("label") or "").strip():
-            raise ValueError(f"timeline point needs 'date' and 'label': {pt!r}")
+    _validate_timeline(points)
 
     for pt in points:
         is_current = bool(pt.get("current"))
@@ -664,6 +838,42 @@ def _add_footer(doc, text: str) -> None:
     fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = fp.add_run(text)
     _set_run(run, font=BODY_FONT, size=9, color=MUTED)
+
+
+def _resolve_logo(logo_path: Optional[str], workspace_root: Optional[str]) -> Optional[str]:
+    """Absolute path of the brand logo IF it exists on disk, else None.
+
+    CONTRACT R26 / privacy (SPEC OUT1 §3d): a configured-but-missing logo NEVER
+    raises in a client chat — it silently falls back to the quiet no-logo
+    header. An absolute path is used as-is; a relative path resolves against
+    workspace_root. `None` (the default) means no logo at all."""
+    if not logo_path:
+        return None
+    p = Path(logo_path)
+    if not p.is_absolute() and workspace_root:
+        p = Path(workspace_root) / logo_path
+    try:
+        return str(p) if p.is_file() else None
+    except OSError:
+        return None
+
+
+def _add_logo_header(doc, logo_abspath: str) -> None:
+    """Right-aligned letterhead image at the very top of the document, <= 0.35in
+    tall (SPEC OUT1 §3b). Only called when a brand logo file actually exists;
+    the default (no logo) leaves the current quiet header untouched. Any
+    python-docx image error is swallowed — a bad image never blocks a client's
+    deliverable (R26)."""
+    try:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run()
+        run.add_picture(logo_abspath, height=Inches(0.35))
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(4)
+    except Exception:
+        # Never let a malformed / unreadable image block the save.
+        pass
 
 
 def _add_exec_header(doc, exec_header: Dict[str, str]) -> None:
@@ -731,13 +941,15 @@ def make_brief(
     title: str,
     subtitle: str,
     sections: List[Dict[str, Union[str, List[str]]]],
-    footer_text: str = "Command Room",
+    footer_text: Optional[str] = None,
     voice_gate: str = "default",
     contract: str = "enforce",
     contract_profile: Optional[str] = None,
     exec_header: Optional[Dict[str, str]] = None,
     asks: Optional[List[Dict[str, str]]] = None,
     workspace_root: Optional[str] = None,
+    brand: Optional[dict] = None,
+    org_id: Optional[str] = None,
 ) -> str:
     """Write a polished brief .docx to `output_path` and return the path.
 
@@ -789,8 +1001,9 @@ def make_brief(
             drops the section below that).
         A section may mix body / bullets / table / matrix / tiles / timeline.
         Render order is: tiles → body → bullets → table → matrix → timeline.
-      footer_text: centered footer text on every page. Defaults to
-        "Command Room". NEVER include provenance metadata
+      footer_text: centered footer text on every page. None (the default) uses
+        the brand's `footer_line` ("Command Room" on the default brand). Pass a
+        string to override. NEVER include provenance metadata
         (Source / Fired / meeting_id / TTL) per CONTRACT.md Rule 15.
       contract: output-contract gate mode (SPEC B3). Runs BEFORE the voice
         gate (canonical order: contract → voice → render → leak scan).
@@ -814,22 +1027,32 @@ def make_brief(
           "warn"    — never block; emit findings to stderr and save anyway.
             Escape valve for a caller with a legitimate calibrated override.
           "off"     — skip the voice gate entirely.
-      exec_header: optional dict (SPEC EXEC1 element 1 — the 30-second
-        contract). Keys: `verdict` (one bold conclusion sentence), `changed`,
-        `decide`, `needs`. Rendered as the first block before any section. For
-        STANDARD_KINDS, omitting it is WARN-ONLY this release (a brief_meta
-        audit event, NEVER a raise — see _emit_brief_meta_audit); the
-        ValueError is release N+1. Other kinds may pass it freely; it's never
-        required for them.
+      exec_header: dict (SPEC EXEC1 element 1 — the 30-second contract).
+        Keys: `verdict` (one bold conclusion sentence), `changed`, `decide`,
+        `needs`. Rendered as the first block before any section. REQUIRED
+        (with a non-empty verdict) for STANDARD_KINDS since the OUT2 §4 flip —
+        omitting it raises ValueError BEFORE Document() is built (a brief_meta
+        severity="error" audit event records the refusal). Other kinds may
+        pass it freely; it's never required for them.
       asks: optional list of {text, deadline?} dicts (SPEC EXEC1 element 4 —
         the ASK block). Max MAX_ASKS (3); more raises ValueError. Each is a
         reader-action; rendered last under "What I need from you". Empty / None
         → nothing rendered (the exec header already said NEEDED Nothing). When a
         widget is the action surface, DON'T also pass asks — one-ask-surface.
       workspace_root: optional absolute workspace root. When provided, the
-        warn-only exec-standard audit ALSO appends a brief_meta event to
-        events.jsonl (best-effort, never blocks). Omit it and the audit is
-        stderr-only — still never user-visible, still never raises.
+        exec-standard audit ALSO appends a brief_meta event to events.jsonl
+        (best-effort, never blocks or masks the outcome). Omit it and the
+        audit is stderr-only — still never user-visible. ALSO the
+        source of the resolved brand theme when `brand` is not passed (reads
+        workspace.brand / orgs[org_id].brand from entities.json — SPEC OUT1).
+      brand: optional resolved brand dict (SPEC OUT1) overriding the theme for
+        THIS render, highest precedence. Normally omitted — the theme resolves
+        from workspace_root's entities.json (byte-stable DEFAULT_BRAND when no
+        brand object is configured). Pass an explicit dict for a per-document
+        theme (e.g. a per-org rendering assembled by the caller).
+      org_id: optional org id whose per-org `brand` overrides the workspace
+        brand, for a document scoped to one client org. Only consulted when
+        `brand` is not passed and `workspace_root` is set.
 
     Returns: `output_path` on success.
 
@@ -1009,119 +1232,186 @@ def make_brief(
                 )
 
     # SPEC EXEC1 element 1 — STANDARD_KINDS exec-header presence check.
-    # WARN-ONLY this release: a STANDARD_KIND with no exec_header emits a
-    # brief_meta audit event and the save proceeds. NEVER raises (a hard-require
-    # now breaks every scheduled brief on the live client workspaces — their
-    # orchestrator prompts lag the plugin and don't pass exec_header yet,
-    # CONTRACT Rule 16). The ValueError is release N+1, after prompts catch up.
+    # HARD-REQUIRE as of SPEC OUT2 §4 (the deferred release-N+1 flip): a
+    # STANDARD_KIND with no exec_header raises BEFORE Document() is built — no
+    # partial file. The warn-only staging release gave orchestrator prompts a
+    # full release to catch up (CONTRACT Rule 16); the compliance sweep landed
+    # in the same commit as this flip (see the STANDARD_KINDS comment above).
     if brief_kind in STANDARD_KINDS and not (
         exec_header and (exec_header.get("verdict") or "").strip()
     ):
         _emit_brief_meta_audit(
             brief_kind,
-            "no exec_header (30-second contract) passed — warn-only until N+1",
+            "no exec_header (30-second contract) passed — save refused (OUT2 §4 flip)",
             workspace_root,
+            severity="error",
+        )
+        raise ValueError(
+            f"brief_kind {brief_kind!r} is a STANDARD_KIND and requires an "
+            f"exec_header with a non-empty 'verdict' (the 30-second contract, "
+            f"shared/EXECUTIVE_OUTPUT_STANDARD.md element 1). Pass "
+            f"exec_header={{'verdict': ..., 'changed': ..., 'decide': ..., "
+            f"'needs': ...}} — 'Nothing' forms are legal and encouraged."
         )
 
-    doc = Document()
-    _set_normal_baseline(doc)
-    _tighten_margins(doc)
+    # SPEC OUT1 — resolve + apply the render theme (brand) for THIS render.
+    # Precedence: explicit `brand=` dict > the workspace's resolved brand
+    # (workspace.brand + optional orgs[org_id].brand from entities.json) >
+    # byte-stable DEFAULT_BRAND. `get_brand(None)` is pure defaults with no I/O,
+    # so a zero-config workspace renders the (upgraded) default theme. The
+    # render-theme globals are restored in the finally so a later render in the
+    # same process is never contaminated (defaults-are-defaults invariant).
+    resolved_brand = brand if brand is not None else get_brand(workspace_root, org_id)
+    _apply_brand(resolved_brand)
 
-    eyebrow_label = eyebrow_by_kind[brief_kind]
-    _add_eyebrow(doc, eyebrow_label)
-    _add_title(doc, title)
-    _add_subtitle(doc, subtitle)
-    _add_header_rule(doc)
+    # SPEC OUT2 §5 — resolve + apply the cross-skill output profile for THIS
+    # render. Absent / unconfigured profile == DEFAULT_OUTPUT_PROFILE == today's
+    # behavior, byte-stably (same invariant as the brand). Restored in the
+    # finally alongside the brand globals.
+    resolved_profile = get_output_profile(workspace_root)
+    _apply_output_profile(resolved_profile)
 
-    # SPEC EXEC1 element 1 — the 30-second contract renders before any section.
-    if exec_header and (exec_header.get("verdict") or "").strip():
-        _add_exec_header(doc, exec_header)
-
-    for sec in sections:
-        heading = sec.get("heading")
-        if not heading:
-            raise ValueError(f"section missing 'heading': {sec!r}")
-        _add_section_heading(doc, heading)
-        body = sec.get("body")
-        bullets = sec.get("bullets")
-        table = sec.get("table")
-        matrix = sec.get("matrix")
-        tiles = sec.get("tiles")
-        timeline = sec.get("timeline")
-        if tiles:
-            if not isinstance(tiles, list):
-                raise ValueError(f"section 'tiles' must be a list: {sec!r}")
-            _add_stat_tiles(doc, tiles)
-        if body:
-            if not isinstance(body, str):
-                raise ValueError(f"section 'body' must be a string: {sec!r}")
-            _add_body_paragraphs(doc, body)
-        if bullets:
-            if not isinstance(bullets, list):
-                raise ValueError(f"section 'bullets' must be a list: {sec!r}")
-            _add_bullets(doc, bullets)
-        if table:
-            if not isinstance(table, dict):
-                raise ValueError(f"section 'table' must be a dict: {sec!r}")
-            _add_table(
-                doc,
-                rows=table["rows"],
-                headers=table.get("headers"),
-                highlight_row_idx=table.get("highlight_row_idx"),
-                column_widths=table.get("column_widths"),
-            )
-        if matrix:
-            if not isinstance(matrix, dict):
-                raise ValueError(f"section 'matrix' must be a dict: {sec!r}")
-            _add_matrix(
-                doc,
-                cells=matrix["cells"],
-                headers_row=matrix.get("headers_row"),
-                headers_col=matrix.get("headers_col"),
-                star_col_idx=matrix.get("star_col_idx"),
-            )
-        if timeline:
-            if not isinstance(timeline, list):
-                raise ValueError(f"section 'timeline' must be a list: {sec!r}")
-            _add_timeline(doc, timeline)
-        if not body and not bullets and not table and not matrix \
-                and not tiles and not timeline:
-            raise ValueError(
-                f"section needs 'body', 'bullets', 'table', 'matrix', "
-                f"'tiles', or 'timeline': {sec!r}"
+    # page_cap (WARN-ONLY, forever): a configured cap for this kind that the
+    # crude estimate exceeds gets one stderr note — never a block, never a
+    # truncation. No cap configured (the default) = silence.
+    _cap = resolved_profile.get("page_cap", {}).get(brief_kind)
+    if _cap:
+        _est = _estimate_pages(title, subtitle, sections)
+        if _est > _cap:
+            print(
+                f"[output-profile] {brief_kind}: estimated ~{_est} pages against "
+                f"a configured page cap of {_cap} (warn-only — save proceeds; "
+                f"consider tightening the longest sections)",
+                file=sys.stderr,
             )
 
-    # SPEC EXEC1 element 4 — the ASK block renders last, after all sections.
-    # Zero asks → nothing (the exec header already said NEEDED Nothing).
-    if asks:
-        renderable = [a for a in asks if (a.get("text") or "").strip()]
-        if renderable:
-            _add_asks_block(doc, renderable)
-
-    _add_footer(doc, footer_text)
-    doc.save(output_path)
-
-    # v3.13.8+ — universal post-render leak scan gate (Bug #57 + #59 + #54).
-    # Runs against every brief regardless of which skill called us. The
-    # scanner is added by §2.4. We invoke it lazily to avoid a hard
-    # dependency cycle during partial-install scenarios.
     try:
-        from docx_leak_scanner import scan_docx_for_leaks, LeakScanError
-        scan_docx_for_leaks(output_path)
-        gates_ran.append("leak")
-    except ImportError:
-        # docx_leak_scanner not installed yet (e.g. a workspace that hasn't
-        # taken the v3.13.8 update). Don't block briefs; the scanner will
-        # apply on the next plugin update.
-        pass
+        doc = Document()
+        _set_normal_baseline(doc)
+        _tighten_margins(doc)
 
-    # SPEC GATE1 — emit the detectable-bypass audit AFTER a fully successful
-    # render+save (deliverable on disk, all wired gates passed). A composer fire
-    # that produces a doc with NO gate_ran event for that turn is a flaggable
-    # bypass. Best-effort + never raises (the deliverable is already valid).
-    _emit_gate_ran_audit(brief_kind, gates_ran, output_path, workspace_root)
+        # SPEC OUT1 §3b — brand letterhead. Renders ONLY when logo_path is set
+        # AND the file exists (R26: a missing logo silently falls back to the
+        # quiet no-logo header, never an error). Default brand has no logo, so
+        # this is a no-op on a fresh workspace — the header is byte-unchanged.
+        logo_abspath = _resolve_logo(resolved_brand.get("logo_path"), workspace_root)
+        if logo_abspath:
+            _add_logo_header(doc, logo_abspath)
 
-    return output_path
+        eyebrow_label = eyebrow_by_kind[brief_kind]
+        _add_eyebrow(doc, eyebrow_label)
+        _add_title(doc, title)
+        _add_subtitle(doc, subtitle)
+        _add_header_rule(doc)
+
+        # SPEC EXEC1 element 1 — the 30-second contract renders before any section.
+        if exec_header and (exec_header.get("verdict") or "").strip():
+            _add_exec_header(doc, exec_header)
+
+        for sec in sections:
+            heading = sec.get("heading")
+            if not heading:
+                raise ValueError(f"section missing 'heading': {sec!r}")
+            _add_section_heading(doc, heading)
+            body = sec.get("body")
+            bullets = sec.get("bullets")
+            table = sec.get("table")
+            matrix = sec.get("matrix")
+            tiles = sec.get("tiles")
+            timeline = sec.get("timeline")
+            if tiles and not isinstance(tiles, list):
+                raise ValueError(f"section 'tiles' must be a list: {sec!r}")
+            if body and not isinstance(body, str):
+                raise ValueError(f"section 'body' must be a string: {sec!r}")
+            # SPEC OUT2 §5 — visual_bias sets the tiles/body order within a
+            # section. Default "tiles_first" is the pre-profile order
+            # (tiles -> body), byte-stably; "prose_first" flips just these two
+            # (bullets/table/matrix/timeline order is unchanged).
+            if _VISUAL_BIAS == "prose_first":
+                if body:
+                    _add_body_paragraphs(doc, body)
+                if tiles:
+                    _add_stat_tiles(doc, tiles)
+            else:
+                if tiles:
+                    _add_stat_tiles(doc, tiles)
+                if body:
+                    _add_body_paragraphs(doc, body)
+            if bullets:
+                if not isinstance(bullets, list):
+                    raise ValueError(f"section 'bullets' must be a list: {sec!r}")
+                _add_bullets(doc, bullets)
+            if table:
+                if not isinstance(table, dict):
+                    raise ValueError(f"section 'table' must be a dict: {sec!r}")
+                _add_table(
+                    doc,
+                    rows=table["rows"],
+                    headers=table.get("headers"),
+                    highlight_row_idx=table.get("highlight_row_idx"),
+                    column_widths=table.get("column_widths"),
+                )
+            if matrix:
+                if not isinstance(matrix, dict):
+                    raise ValueError(f"section 'matrix' must be a dict: {sec!r}")
+                _add_matrix(
+                    doc,
+                    cells=matrix["cells"],
+                    headers_row=matrix.get("headers_row"),
+                    headers_col=matrix.get("headers_col"),
+                    star_col_idx=matrix.get("star_col_idx"),
+                    flag_col_idx=matrix.get("flag_col_idx"),
+                )
+            if timeline:
+                if not isinstance(timeline, list):
+                    raise ValueError(f"section 'timeline' must be a list: {sec!r}")
+                _add_timeline(doc, timeline)
+            if not body and not bullets and not table and not matrix \
+                    and not tiles and not timeline:
+                raise ValueError(
+                    f"section needs 'body', 'bullets', 'table', 'matrix', "
+                    f"'tiles', or 'timeline': {sec!r}"
+                )
+
+        # SPEC EXEC1 element 4 — the ASK block renders last, after all sections.
+        # Zero asks → nothing (the exec header already said NEEDED Nothing).
+        if asks:
+            renderable = [a for a in asks if (a.get("text") or "").strip()]
+            if renderable:
+                _add_asks_block(doc, renderable)
+
+        # Footer: caller override wins; otherwise the brand footer_line (which
+        # is "Command Room" on the default brand).
+        _add_footer(doc, footer_text if footer_text is not None else FOOTER_DEFAULT)
+        doc.save(output_path)
+
+        # v3.13.8+ — universal post-render leak scan gate (Bug #57 + #59 + #54).
+        # Runs against every brief regardless of which skill called us. The
+        # scanner is added by §2.4. We invoke it lazily to avoid a hard
+        # dependency cycle during partial-install scenarios.
+        try:
+            from docx_leak_scanner import scan_docx_for_leaks, LeakScanError
+            scan_docx_for_leaks(output_path)
+            gates_ran.append("leak")
+        except ImportError:
+            # docx_leak_scanner not installed yet (e.g. a workspace that hasn't
+            # taken the v3.13.8 update). Don't block briefs; the scanner will
+            # apply on the next plugin update.
+            pass
+
+        # SPEC GATE1 — emit the detectable-bypass audit AFTER a fully successful
+        # render+save (deliverable on disk, all wired gates passed). A composer
+        # fire that produces a doc with NO gate_ran event for that turn is a
+        # flaggable bypass. Best-effort + never raises (deliverable already valid).
+        _emit_gate_ran_audit(brief_kind, gates_ran, output_path, workspace_root)
+
+        return output_path
+    finally:
+        # Restore defaults so the next render in this process is never
+        # contaminated by this render's theme or profile (byte-stable defaults
+        # invariant).
+        _apply_brand(_DEFAULT_RESOLVED)
+        _apply_output_profile(DEFAULT_OUTPUT_PROFILE)
 
 
 def make_brief_from_json(json_payload: str) -> str:
@@ -1139,13 +1429,15 @@ def make_brief_from_json(json_payload: str) -> str:
         title=payload["title"],
         subtitle=payload["subtitle"],
         sections=payload["sections"],
-        footer_text=payload.get("footer_text", "Command Room"),
+        footer_text=payload.get("footer_text"),
         voice_gate=payload.get("voice_gate", "default"),
         contract=payload.get("contract", "enforce"),
         contract_profile=payload.get("contract_profile"),
         exec_header=payload.get("exec_header"),
         asks=payload.get("asks"),
         workspace_root=payload.get("workspace_root"),
+        brand=payload.get("brand"),
+        org_id=payload.get("org_id"),
     )
     print(path)
     return path

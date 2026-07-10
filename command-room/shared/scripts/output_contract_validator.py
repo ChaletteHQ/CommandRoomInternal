@@ -232,19 +232,22 @@ def _paragraphs(body: str) -> List[str]:
 
 def _matrix_grid(matrix: dict) -> List[List[str]]:
     """Normalize a matrix `cells` payload (2D list OR {(r,c): v} dict) to a
-    dense 2D grid — mirrors brief_writer._add_matrix. A missing (r,c) key in
-    the dict shape becomes "" (i.e. a blank cell)."""
+    dense 2D grid. Delegates to components.normalize_matrix (SPEC OUT2 —
+    convergence: one normalization for both consumers, no mirrored copy) with
+    this validator's historical empty-tolerance preserved: empty/missing
+    `cells` returns [] here (emptiness is enforced by this module's own rules
+    with per-section diagnostics), where the renderer path raises."""
     cells = matrix.get("cells")
-    if isinstance(cells, dict):
-        if not cells:
-            return []
-        n_rows = max(k[0] for k in cells) + 1
-        n_cols = max(k[1] for k in cells) + 1
-        grid = [["" for _ in range(n_cols)] for _ in range(n_rows)]
-        for (r, c), v in cells.items():
-            grid[r][c] = v
-        return grid
-    return cells or []
+    if not cells:
+        return []
+    import os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from components import normalize_matrix as _normalize_matrix
+    try:
+        rows, _n_cols = _normalize_matrix(cells)
+    except ValueError:
+        return []
+    return rows
 
 
 def _section_words(sec: dict) -> int:

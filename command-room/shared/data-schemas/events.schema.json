@@ -29,6 +29,7 @@
         "brief_state",
         "brief_meta",
         "gate_ran",
+        "visual_gate",
         "apply_choices_applied",
         "commitment_updated",
         "commitment_reclassified",

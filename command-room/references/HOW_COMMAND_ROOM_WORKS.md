@@ -80,6 +80,10 @@ Two safeguards: (1) `people_writer.py` enforces dedup at write time; (2) Pulse's
 
 Maps free-text names ("Sam", "Sam P", "DSample") to canonical `person_NNN` ids. Used by every skill that has to interpret natural-language references to people. Cheap to write; rich payoff in surface quality.
 
+### Deliverable theme (brand) — dormant by default
+
+Every `.docx` deliverable is themed by a single source, `shared/scripts/brand.py`. With no configuration it returns an upgraded, premium default (editorial Georgia headings over Calibri body, a refined navy + consistent teal accent, stat-tile bands and shaded tables) — so a fresh workspace already looks sharp with **zero setup**. For a client who wants their own look, add an optional `brand` object to `entities.json` — on the top-level `workspace` (themes all their documents) or on a single `org` (themes that org's documents only, via `make_brief(org_id=…)`). It is a partial override deep-merged over the default: set only `palette.accent` and a `logo_path`, and everything else stays the premium default. A logo renders as a right-aligned letterhead only if the file exists; a missing file silently falls back to the quiet no-logo header. **This is entirely dormant until switched on by hand:** nothing in onboarding asks about branding and no skill trigger sets it — the brand object is written during a paid customization engagement, and an absent brand object is byte-identical to having no brand layer at all. Schema: `shared/data-schemas/entities.schema.json` → `$defs/brand`.
+
 ### The three-layer memory model (episodic → canonical → semantic)
 
 The three files above are the middle and top of a three-layer memory. Naming the layers explains where every piece of the substrate lives and, more importantly, how memory *heals itself over time* instead of depending on whether a skill happened to fire at the right moment.

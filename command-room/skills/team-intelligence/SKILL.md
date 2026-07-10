@@ -75,6 +75,20 @@ Lightweight configuration:
 - **Staleness rules** — how many days without interaction before flagging (default: 14 days)
 - **Commitment overdue threshold** — how many days past due before escalating (default: 3 days)
 
+### Settings verbs (SPEC OUT2 §5 — aliases onto this file, NOT a second store)
+
+The standard FRP1 verbs map onto `_team-config.md` — storage unchanged, no `skill_config` JSON for
+this skill, no migration:
+
+| CEO says | Behavior |
+|---|---|
+| "tune team-intelligence" | walk the three preference blocks (prep format, staleness rule, overdue threshold) with the CURRENT `_team-config.md` values pre-filled → rewrite the file. The roster is NOT edited here — that stays "add [name] to my team" / "remove [name] from my team". |
+| "show team-intelligence settings" | render the current `_team-config.md` preferences in plain English, read-only (roster count + the three preference values). If the file doesn't exist yet: state the defaults (14-day staleness, 3-day overdue, standard prep format) and offer the tune. |
+| "reset team-intelligence to defaults" | reset the three preference blocks in `_team-config.md` to the defaults above. NEVER touches the roster or any PERSON.md — confirm that scope in the ack ("Preferences reset — your team roster is untouched."). |
+
+These verbs are ALIASES into the existing config file — they exist so the whole composer family
+answers the same tune/show/reset vocabulary. Do NOT create `_hq/data/skill_config/team-intelligence.json`.
+
 ---
 
 ## Commands
@@ -154,32 +168,66 @@ This is the flagship command. Output a brief the CEO reads in 60 seconds before 
 10. **Slack** (if connected): Recent messages from/mentioning this person
 11. **Transcript connector** (if connected — via `discover_transcript_tool()`): Any unprocessed meeting transcripts involving this person
 
-**Step 4: Build the brief**
+**Step 4: Build the brief — ONE generator (SPEC OUT1 §4 / S1 contract)**
 
-Present in this order:
+The 1:1 brief does NOT hand-roll its own layout. It calls the SAME prep generator call-prep uses — `shared/scripts/prep_pipeline.py::assemble_prep_sections` — with the direct report as the counterparty. That gives the stat-tile band, relationship timeline, and both-directions owed table for free, on the identical section machinery as an external call-prep (acceptance #4: diff the section lists — they share the generator). The team-specific sections (Fresh intel, Flags, Across projects) ride along as `extra_sections`; they never fork a second layout.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from prep_pipeline import (
+    assemble_prep_sections, build_prep_tiles,
+    build_relationship_timeline, build_owed_table,
+)
+
+tiles = build_prep_tiles(
+    days_since_last_touch=<days since last logged interaction, or None>,
+    you_owe=<count you owe them, or None>,
+    they_owe=<count of their open commitments, or None>,
+    oldest_owed_days=<age of the oldest owed item, or None>,
+    touch_number=None,                 # 1:1s are recurring; touch # is optional
+)
+timeline = build_relationship_timeline(<prior 1:1s + key interactions as {date,label}>)
+owed = build_owed_table(<their + your matched commitment rows>,
+                        user_person_id="<your person_id>", now_date="<today ISO>")
+
+assembled = assemble_prep_sections(
+    walk_out_with="Walk out with: <the one concrete outcome — e.g. clear status on N open items + the single blocker to unblock>",
+    meeting_details="1:1 with <Name> · <Date>",
+    tiles=tiles,
+    timeline=timeline,
+    owed_table=owed,
+    changed_lines=[<what's happened since the last logged interaction>],
+    talking_points=[<each line ENDS with a source cite — '(commitment, due Jul 7)', '(email, Jul 5)'>],
+    extra_sections=[
+        {"heading": "Across Projects", "bullets": [<Project: their role/status in one line>]},
+        {"heading": "Fresh Intel", "bullets": [<email/Slack/calendar not yet in the profile>]},
+        {"heading": "Flags", "bullets": [<anything the CEO flagged>]},   # omit the section entirely if none
+    ],
+)
 ```
-## 1:1 Prep — [Name] | [Date]
 
-**Since last time:** [1-2 lines — what's happened since the last logged interaction]
+**Contract note:** `assemble_prep_sections` REQUIRES `walk_out_with` and enforces that every talking point carries a source cite — an unsourced line raises `PrepContractError` before any file is written (rewrite the flagged lines and re-assemble). Drop-empty is automatic: no owed items → no owed table; <2 timeline points → no timeline; an empty `extra_sections` bullet list → that section is omitted (never an empty frame).
 
-**Open commitments:**
-- [Commitment] — due [date] — [on track / overdue X days]
-- [Commitment] — due [date] — [delivered ✓]
+Render through the shared writer (SAME `brief_kind` as call-prep, so the eyebrow + gate path match):
 
-**Across projects:**
-- [Project A]: [their current role/status in 1 line]
-- [Project B]: [their current role/status in 1 line]
+```python
+from brief_writer import make_brief
+from brief_path import get_brief_path
 
-**Fresh intel:** [anything from email/Slack/calendar not yet in the profile]
-
-**Flags:** [anything the CEO flagged — or "None"]
-
-**Suggested talking points:**
-- [Based on overdue items, project status, or relationship context]
-- [Based on what came in from email/Slack since last meeting]
+path = get_brief_path(workspace_root, "call_prep", "1-1 <name>", "<today ISO>")
+make_brief(
+    path,
+    brief_kind="call_prep",
+    title="1:1 Prep — <Name>",
+    subtitle="<Date>",
+    sections=assembled["sections"],
+    exec_header=assembled["exec_header"],
+    workspace_root=workspace_root,
+)
 ```
 
-Save as .docx (CONTRACT Rule 27 — never .md) at `brief_path.get_brief_path(workspace_root, "call_prep", "1-1 [name]", date)` → `_hq/meetings/`, and surface it as the H2 heading link at the bottom of the chat turn per CONTRACT Rule 3 (`doc_headline_link` + `get_brief_artifact_url`).
+Save to `_hq/meetings/` (CONTRACT Rule 27 — never .md), and surface it as the H2 heading link at the bottom of the chat turn per CONTRACT Rule 3 (`doc_headline_link` + `get_brief_artifact_url`).
 
 ### "what's [name] working on?" / "status on [name]" / "how's [name] doing?"
 
@@ -347,3 +395,5 @@ The CEO can always directly update person files:
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Never walk into a 1:1 cold again. Owns the leadership-team layer — direct report profiles, what they're working on, their open commitments, and pattern detection (who's overloaded, who's drifting, who has three overdue asks). Use when the CEO says 'my team', 'team status', 'prep for 1:1', 'prep for 1 1', 'prep for my 1:1', 'prep for my 1 1', 'prep me for my 1:1', 'prep me for my 1 1', 'who owns', 'who owns the', 'log commitment for', 'log commitment for [name]', 'discover my team', 'who's overloaded', 'what has [name] delivered', 'delivered this quarter'. Produces 1:1 briefs, weekly team rollups, and commitment tracking. This is the CEO's private chief-of-staff layer for people — NOT an HR system. DOES NOT fire on 'prep me for the Acme call' / 'prep me for my 2pm' — external-attendee meeting prep (call-prep; this skill owns DIRECT-REPORT 1:1s only), bare 'log a commitment' with no direct report named (workspace-manager), 'who is' ('who is Jessica' — people-crm), 'who hasn't replied' (dormant-customer-scan), 'who competes with' (research — no competitive-intel skill ships in this plugin), or 'hire' / compensation / performance reviews (out of scope).
+
+> Also handles team-tracking settings (SPEC OUT2 §5 — aliases onto `_team-config.md`; storage unchanged, never a second store) — use when the CEO says 'tune team-intelligence', 'show team-intelligence settings', 'reset team-intelligence to defaults'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)

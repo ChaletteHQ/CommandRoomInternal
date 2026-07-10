@@ -97,6 +97,7 @@ def main() -> int:
             str(out_path), brief_kind="memo",
             title="Acme Co — Sourcing Bot — Pricing",
             subtitle=f"Strategy memo · {DATE} · Acme Co",
+            exec_header={"verdict": "Price the Sourcing Bot at value, not cost."},  # OUT2 §4 flip
             sections=_sections(clean_decision),
             contract="report",  # structure exercise — the contract gate has its own test
         )  # no workspace_root: we don't want make_brief's gate_ran audit events polluting
@@ -133,6 +134,7 @@ def main() -> int:
             str(out_dir / "leak_probe.docx"), brief_kind="memo",
             title="Acme Co — Sourcing Bot — Pricing",
             subtitle=f"Strategy memo · {DATE}",
+            exec_header={"verdict": "Price the Sourcing Bot at value, not cost."},  # OUT2 §4 flip
             sections=_sections("This memo references project_001 in the body."),
             contract="off",
         )
