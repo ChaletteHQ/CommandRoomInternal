@@ -64,7 +64,9 @@ expected until its phase lands.
 | `commitment_reclassified` | `commitment_state.promote_task_to_commitment` (Phase 2 Stage D — triage `make task`/`promote` verbs) + `shared/scripts/migrate_commitment_kinds.py` (S6 one-time partition, dry-run default) | the projector (`load_open_commitments` kind-override fold), `commitment_counts` by_kind, commitment-triage, `stale_tasks` |
 | `commitment_reopened` | `commitment_state.reopen_commitment` (Phase 2 Stage D — S4 triage undo; also the reconcile-sent `undo` affordance may migrate here) | the projector (`load_open_commitments` order-aware closure state), `close_commitment` idempotency (a reopened item may be re-closed), commitment-triage |
 | `commitment_reassigned` | `commitment_state.reassign_commitment` (v4.6.0 S4 — the `reassign to [name]` verb + the "that's actually [name]'s" chat phrase; W4b's Theirs→[name] confirm verb dispatches it with `confirmed: true`) | the projector (`load_open_commitments` reassignment fold — latest event wins; unconfirmed reassignments stamp `pending_review` so the item sits in the unconfirmed bucket and never enters chase), `commitment_counts` direction buckets, commitment-triage, the daily Commitments chat |
+| `commitment_partial_received` | `commitment_state.mark_partial_received` (v4.6.0 MC1 — the per-person `mark received from [name]` verb on a multi-counterparty commitment; records "counterparty X delivered" WITHOUT closing the item) | the projector (`load_open_commitments` receipt fold — accumulates `data.received_from` / `data.received_from_names`, stamps `data.all_counterparties_received` when the roster is complete), the daily Commitments chase fan-out (drops received counterparties from the per-person nudge set), the closure PROPOSAL (all-received → propose close, never auto-close) |
 | `chat_dismissal_cleared` | `mute_ledger.clear_dismissal` / `clear_dismissals` (v4.6.0 S4 — the Unmute verb on the `show muted` ledger + the triage batch-undo's mute reversal, F-20 P3a) | `mute_ledger.live_mutes` / `active_dismissal_target_ids` (THE dismissal-liveness readers — every surface that filters on an active `chat_dismissal` honors the clear), show-my-list render filter, relationship_moves exclusion pass, the Commitments/Pulse/Inbox orchestrator dismissal filters |
+| `person_proposal_resolved` | apply-choices confirm-section dispatch via `confirm_flow.build_person_proposal_resolved_event` (v4.6.1 W4b — the proposal tombstone: `Add person` writes it with `resolution: person_added` after `people_writer.create_person`; `Same as [existing]` with `resolution: same_as` after `people_writer.add_person_alias`; `Not relevant` with `resolution: not_relevant`, nothing else written) | `confirm_flow.load_open_person_proposals` (adjudicated proposals stop re-surfacing — the F-46 P2b stranding fix), usage-report |
 
 ## Reminder lane (v4.6.0 W4a)
 
@@ -144,6 +146,29 @@ as the existing `commitment` / `decision` / `interaction` types through
   lands with `data.pending_review: true` + `data.suspected_duplicate_of` —
   never silently dropped, never silently merged; the confirm flow (W4b) or
   the "merge those two" chat phrase (commitment-triage) adjudicates.
+- `commitment_observed` — the set-aside tier (v4.6.1 W4c, the volume fix):
+  a commitment-shaped item the relevance gate kept on file WITHOUT opening —
+  third-party↔third-party, or attribution the extraction couldn't confidently
+  resolve (amber is silent by default). Deliberately a SEPARATE type from
+  `commitment`, not a tier field on it: every open-set reader filters
+  `type == "commitment"`, so observed items are excluded from counts, triage,
+  the confirm section, chase, and CRU candidacy BY CONSTRUCTION — the same
+  doctrine that keeps reminders out (W4a). **Writers:** every capture leg via
+  `capture_gate.build_observed_event` / `observed_from_commitment_event`
+  (session_sweep routes automatically; scan-for-commitments' meeting/Slack
+  legs per its Step 3.5). The builder REFUSES items carrying a due date or a
+  money amount — the asymmetric caution rail opens those instead, in every
+  mode. `data.id` is deterministic `obs_<sha256[:12]>(source_ref|title)`
+  (re-scan idempotent). **Named consumers:** `capture_gate.observed_counts`
+  (the weekly cleanup "N items set aside — review" line),
+  `capture_gate.prep_context_observed` (call-prep context with a track-it
+  affordance), `capture_gate.find_corroborations` / `promote_observed`
+  (promotion appends a REAL `commitment` with `data.pending_review: true` +
+  `data.promoted_from` → the confirm flow picks it up by data contract),
+  transcript-search (observed items are part of the searchable record).
+  Capture policy (modes + per-org overrides) is SCL1 directives under
+  `scan-for-commitments`; full contract in `COMMITMENT_SCHEMA.md`
+  § Observed tier.
 - `commitment_update` is drift; the gate rewrites it to `commitment_updated`.
 - `commitment_updated` — writers: the Commitments orchestrator `push to [date]`
   verb (`data: {commitment_id, new_due, reason}`), the CRU schedule-shift

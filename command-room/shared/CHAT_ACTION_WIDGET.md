@@ -228,6 +228,27 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `never track this` | Never track (permanent) | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). Permanent — the label says so; every TIMED mute is reversible via the S4 ledger (`show muted` + Unmute). |
 | `skip` | Snooze (1 day) | 1-day mute (unchanged semantics; label now states the duration). |
 
+### Confirm section — "Needs a quick confirm" (v4.6.1 W4b, the daily Commitments chat + the triage Unconfirmed block)
+
+Rows come from `confirm_flow` selectors: captures younger than the 7-day
+escalation pin that are
+pending_review / unowned / suspected duplicates, plus unadjudicated person
+proposals (daily until adjudicated — the stranding fix) and kind
+auto-promotion proposals. Unconfirmed items NEVER enter chase and count only
+in the headline `unconfirmed` bucket. Verb clusters per row class:
+
+| Action | Display | What it does |
+|---|---|---|
+| `mine` | Mine | `commitment_state.confirm_commitment_owner` — you own it; the confirm flag clears and it joins you-owe. |
+| `theirs to [name]` | Theirs | `commitment_state.reassign_commitment(..., confirmed=True)` — routes to the named person; the name is REQUIRED (F-17) and IS the explicit confirmation. |
+| `make task` / `drop` | Make task / Drop | Same dispatch as triage (above) — the click adjudicates a pending_review row (`user_confirmed=True`). |
+| `merge` | Merge | Duplicate rows only — `commitment_state.supersede_commitment(survivor=the flagged suspected_duplicate_of target, superseded=this row, user_confirmed=True)`. Both ids are embedded; no input. |
+| `keep both` | Keep both | Duplicate rows only — `commitment_state.clear_review_flags` ("confirmed distinct"); both stay open. |
+| `add person` | Add person | Unknown-person rows — `people_writer.create_person` via apply-choices Step 3a (dedup-first), then the proposal tombstone. |
+| `same as [existing]` | Same as | Unknown-person rows — resolve the typed name (ambiguous → ask), `people_writer.add_person_alias` (aliases.json + the person record), then the tombstone. Name REQUIRED. |
+| `proposal not relevant` | Not relevant (permanent) | Unknown-person rows — proposal tombstone, nothing else written. Permanent by design (not a timed mute; the label says so). |
+| `promote` | Make it a commitment | Promotion-proposal rows — same S5 dispatch as triage; the click IS the adjudication (PROPOSE only, never auto). |
+
 **Send-vs-draft clarity (PL 2026-07-02):** wherever `send` and `draft` appear side by side on an email-shaped item, the widget's intro line (or the item's context tag) makes the difference visible in plain words — "**Send** delivers it now · **Draft** saves it to your Drafts to send later." Never assume the customer knows the distinction from the labels alone.
 
 ### Deliberation extension (Phase 4 2026-07-02 — same pre-authorized set, grown once)
@@ -386,7 +407,7 @@ Every surface has 5–8 buttons because each one corresponds to a different real
 **MUST NOT do:**
 
 1. **Do NOT narrate or paraphrase the widget's behavior in chat.** Lines like *"Click any action button per item, then Apply all to fire..."* are forbidden. The widget's footer counter + Apply button are self-explanatory; explaining them in markdown text duplicates the surface and signals fallback-mode behavior. If you ever feel like writing prose about what the buttons do, STOP — emit the widget and trust it.
-2. **Do NOT leak internal routing metadata into chat.** Forbidden patterns include `Domain match: x@y.com → Org Name (project_NNN, active)`, `Routing: stage 3 of 5`, `Confidence: 0.87`, `entities.json line 142`, internal entity IDs (`person_NNN`, `project_NNN`, `org_NNN`), event seq numbers, file paths under `_hq/staging/`, debug strings, "phase 4" labels. These are internal mechanics and never appear in user-facing output. The user sees PEOPLE NAMES and PROJECT NAMES — never the substrate.
+2. **Do NOT leak internal routing metadata into chat.** Forbidden patterns include `Domain match: x@y.com → Org Name (project_NNN, active)`, `Routing: stage 3 of 5`, `Confidence: 0.87`, `entities.json line 142`, internal entity IDs (`person_NNN`, `project_NNN`, `org_NNN`), event seq numbers, file paths under `_hq/staging/`, debug strings, "phase 4" labels. These are internal mechanics and never appear in user-facing output. The user sees PEOPLE NAMES and PROJECT NAMES — never the internal machinery. And the person name shown is the RESOLVED record's spelling (`canonical_name` via `entity_resolve`), never a transcript/ASR spelling — F-50 P2b rendered "Myra Samples" in a widget for a correctly-resolved Mira Sample. Raw spellings appear only inside verbatim evidence quotes or on genuinely unresolved rows (see `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names).
 3. **Do NOT include brief / .docx links inside the widget HTML.** The widget's `_render_widget_item` no longer renders `artifact_link` (v2.11.3+). The `artifact_link` field stays in the data shape so the orchestrator can collect paths for `present_files` — it does not appear in the widget body.
 4. **Do NOT fall back to markdown narration if `mcp__visualize__show_widget` is unavailable.** ABORT the fire and surface plain English: `(Widget surface unavailable — re-fire when the visualize MCP is reachable.)` Do not improvise a text-based action surface. The pre-flight check (`from chat_output_renderer import render_chat_output_widget; print('OK')`) catches the renderer-import case; if `show_widget` itself is missing, surface the same plain-English abort.
 5. **Do NOT post any commentary AFTER the widget + Links section.** No "Surfaced 5 items from this morning's scan." No "Cadence math is in early-baseline mode for almost everyone." No "Diversification rule pulled X into slot 1." No "Wrote pattern_break_detected × 5, dont_forget_run, pack_run to events.jsonl." No "Backup at events.YYYY-MM-DDTHHMM.dont_forget.bak.jsonl." No "I noted that in the Quick read." NO commentary at all about what you observed under the hood, what you wrote, what backups you made, what scoring decisions you made, what diversification did. (v2.12.5+ — per M's Apr 30 ask: *"this technical stuff should not show up."*)

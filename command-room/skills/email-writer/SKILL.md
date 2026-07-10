@@ -13,7 +13,7 @@ template_version: 1.0.0
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-Before resolving the recipient(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates may you fall back to grep or to asking the user, and that fallback MUST be flagged. For thread / recent-context lookup, use `shared/scripts/cru_match.py::load_open_commitments` to ground the substrate-aware agenda — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
+Before resolving the recipient(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates may you fall back to grep or to asking the user, and that fallback MUST be flagged. For thread / recent-context lookup, use `shared/scripts/cru_match.py::load_open_commitments` to ground the substrate-aware agenda — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract. Once resolved, the greeting and every rendered mention of the recipient use the record's `canonical_name` spelling (or its nickname field for warm registers) — never a transcript/ASR or email-display-name spelling (F-50 P2b; protocol § Display names).
 
 **For:** CEOs who send 20-50 emails a day and want a tool that produces drafts sounding exactly like them — not generic professional prose. Works on day 1 with a default voice; upgrades to calibrated voice via the Chalette customization service.
 
@@ -219,6 +219,14 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until the detector exit
    - If body is too thin to synthesize from (one-liner, attachment-only, etc.), use `Re: Following up` as a last-resort fallback. Better than bare `Re:`.
 
 This rule applies to all reply paths — `N send`, `N draft`, on-demand reply drafts. Synthesizing a subject ALSO improves Gmail's threading reliability for any send path that doesn't set `In-Reply-To` (the §3a fallback case in EMAIL_DRAFT_PROTOCOL), because the synthesized subject gives Gmail's subject-normalization fallback something to anchor to.
+
+**Subject voice gate (v4.6.1 S3 — MANDATORY, bash-gated like the body gate).** Every subject — synthesized here, fresh-composed, or carried through on a new outbound — runs the subject gate before the draft renders:
+
+```bash
+printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject
+```
+
+It hard-fails on any dash used as punctuation (em dash, en dash, spaced hyphen — the BRAND_VOICE hard rule the body gate never applied to subjects: F-47 P2d and F-53 shipped em-dash subjects twice in one day), and on the banned phrases + shared vocabulary words. On exit 1, rewrite the subject (comma, colon, or reword — "Q2 deck — status" becomes "Q2 deck: status") and re-run until it exits 0. `Re: <inbound subject>` replies are exempt from the dash rule ONLY for the carried-through inbound portion — never edit the recipient's own subject text, and never let the gate force a thread-splitting rewrite of a reply subject; when the inbound subject itself contains a dash, keep it verbatim and skip the gate for that reply.
 
 The Zapier-threaded send path (§3c, v2.10.7+) sets `In-Reply-To` and `References` headers and is unaffected by subject — but until every workspace wires the Zap, subject synthesis prevents the thread split at the source for ALL paths.
 

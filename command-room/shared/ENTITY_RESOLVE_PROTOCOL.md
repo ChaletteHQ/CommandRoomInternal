@@ -93,6 +93,34 @@ Pre-v3.13.7 the silent-first-pick pattern lost real distinctions across
 multiple skills. The v3.13.7 enforcement-gate work added MUST-language
 gates to 3 skills; v3.13.8 generalizes the rule.
 
+## Display names — render from the resolved record, never the raw spelling (v4.6.1 S3 / F-50 P2b)
+
+Once a person (or org) resolves, EVERY rendered occurrence of their name —
+widget rows, brief prose, meeting/event titles, chase drafts, email
+greetings, SESSION_NOTES headers — uses the resolved record's spelling:
+`entity_resolve.ResolveResult.display_name` (a person's `canonical_name`),
+or equivalently `people_writer.get_person_display_names(record)[0]` /
+`org_writer.get_org_display_names(record)[0]`.
+
+Raw spellings — ASR/transcript text, Granola speaker tags, email
+display-names, free-text `counterparty_name` — are MATCHING input and
+EVIDENCE only. They survive in exactly two places:
+
+1. **Verbatim evidence quotes** (a transcript excerpt quoted as evidence
+   keeps its original text — never rewrite a quote).
+2. **Genuinely unresolved names** — no record exists yet: `owner_external`
+   rows, free-text `counterparty_name` with no `counterparty_id`, and the
+   as-heard `name` inside a `person_proposal` (the proposal exists to ASK
+   about that spelling). The moment a record resolves — including via a
+   later `Same as` alias — rendering switches to the record's name.
+
+The dogfood failure this closes (F-50 P2b): person resolution correctly
+matched person_093 = Mira Sample, yet the widget and the meeting event
+title rendered the transcript's "Myra Samples" — right record, wrong
+spelling, on a customer surface. ID-resolution rules ("no `person_NNN` in
+output") already existed everywhere; this rule covers the OTHER half:
+the string substituted for the ID must be the record's canonical name.
+
 ## Canonical-helper enforcement (events.jsonl + commitments)
 
 For ANY surface that displays / counts / acts on open commitments, every

@@ -1,5 +1,5 @@
 {
   "version": "4.0.0",
-  "headline": "Major release — the gate/reliability stack lands plus a wave of new capability: voice-calibration loop, on-demand deliverable quality scan, retention hooks, outcome tracking, weekly relationship moves, and substrate hardening (dedup index, payload schemas, event-log sharding, output regression harness). Nothing to do — new skills are discoverable by phrase.",
+  "headline": "Major release — the gate/reliability stack lands plus a wave of new capability: voice-calibration loop, on-demand deliverable quality scan, retention hooks, outcome tracking, weekly relationship moves, and memory-layer hardening (dedup index, stricter record schemas, event-log sharding, output regression harness). Nothing to do — new skills are discoverable by phrase.",
   "items": []
 }

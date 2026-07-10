@@ -98,7 +98,9 @@ VERB_TAXONOMY = (
                "Apply with the reason visible."),
     _row("drop", "Drop", "commitment_resolved",
          "Close as deliberately let go (resolution: dropped) — distinct from Done.",
-         ("commitment-triage",), family="commitment"),
+         ("commitment-triage", "commitments"), family="commitment",
+         notes="Added to the daily chat's confirm section (v4.6.1 W4b) — same "
+               "dispatch as triage."),
     _row("not mine", "Not mine", "commitment_resolved",
          "Close as someone else's item (cross-attendee capture).",
          ("commitment-triage",), family="commitment",
@@ -135,13 +137,47 @@ VERB_TAXONOMY = (
     _row("make task", "Make task", "commitment_reclassified",
          "Reclassify promise → task: stays open, stops being chased, ages on "
          "the triage surface only.",
-         ("commitment-triage",), family="commitment"),
+         ("commitment-triage", "commitments"), family="commitment",
+         notes="Added to the daily chat's confirm section (v4.6.1 W4b)."),
     _row("promote", "Make it a commitment", "commitment_reclassified",
          "Reclassify task → promise when a counterparty appears; enters chase.",
-         ("commitment-triage",), family="commitment",
+         ("commitment-triage", "commitments"), family="commitment",
          notes="F-59 flagged this verb as spec'd-but-rendered-nowhere. It "
                "SHIPS (task rows on triage render it); W4b's confirm flow "
-               "reuses it for kind auto-promotion proposals."),
+               "reuses it for kind auto-promotion proposals ('Make it a "
+               "commitment?' — PROPOSE only, the click reclassifies)."),
+    # --- W4b confirm flow (v4.6.1 — the daily confirm section's verbs) ------
+    _row("mine", "Mine", "commitment_updated",
+         "Confirm the item is yours — you become the owner, the confirm flag "
+         "clears, and it joins your you-owe list.",
+         ("commitments", "commitment-triage"), family="commitment",
+         notes="W4b. Dispatch: commitment_state.confirm_commitment_owner "
+               "(owner = the primary user, owner_confirmed stamp). The "
+               "counterpart of Theirs — Mine CLAIMS, Theirs ROUTES."),
+    _row("theirs to [name]", "Theirs", "commitment_reassigned",
+         "Confirm the item belongs to the person you name — it routes to "
+         "them and leaves your list; nothing is chased on their behalf.",
+         ("commitments", "commitment-triage"), input="required",
+         family="commitment",
+         notes="W4b. Dispatch: commitment_state.reassign_commitment with "
+               "confirmed=True — the typed/tapped name IS the explicit "
+               "confirmation. S4's `reassign to [name]` is the chat-phrase "
+               "twin (same event, same dispatch)."),
+    _row("merge", "Merge", "commitment_superseded",
+         "Fold a suspected duplicate into the item it duplicates — one item "
+         "survives carrying both sources.",
+         ("commitments", "commitment-triage"), family="commitment",
+         notes="W4b/C4. Dispatch: commitment_state.supersede_commitment("
+               "survivor=the row's suspected_duplicate_of target, "
+               "superseded=the row, user_confirmed=True). The row embeds "
+               "both ids — no input needed. Never auto-merge: the flag is a "
+               "question, this click is the verdict."),
+    _row("keep both", "Keep both", "commitment_updated",
+         "The suspected duplicate is a real, separate item — the flag clears "
+         "and both stay open.",
+         ("commitments", "commitment-triage"), family="commitment",
+         notes="W4b/C4. Dispatch: commitment_state.clear_review_flags "
+               "(note 'confirmed distinct')."),
     _row("never track this", "Never track (permanent)", "commitment_resolved",
          "Close the item AND append a suppression rule so extractors never "
          "capture this shape again. Permanent — not a timed mute.",
@@ -160,6 +196,18 @@ VERB_TAXONOMY = (
     _row("mark received all", "Mark received all", "thread_resolved",
          "Close every sub-item of a grouped chase at once.",
          ("commitments",), family="commitment"),
+    _row("mark received from [name]", "Mark received from",
+         "commitment_partial_received",
+         "Record that ONE recipient of a multi-party item delivered — the "
+         "item stays open until everyone has, then closure is proposed.",
+         ("commitments", "commitment-triage"), input="required",
+         family="commitment",
+         notes="MC1. Dispatch: commitment_state.mark_partial_received (per "
+               "OUTSTANDING counterparty of a multi-counterparty commitment — "
+               "'send the deck to the board'). Received counterparties drop "
+               "from the chase fan-out; when the last is marked the ack "
+               "PROPOSES closure — the item never auto-closes. Distinct from "
+               "`mark received` (which closes a single owed-to-you item)."),
     _row("add to my list", "Add to my list", "commitment_to_discuss",
          "Flag for later review — no state change; grouped by person under "
          "`show my list`.",
@@ -195,7 +243,8 @@ VERB_TAXONOMY = (
          ("decision-revisit",), mute_ttl_days=30, family="mute"),
     _row("not relevant", "Not relevant (60 days)", "chat_dismissal",
          "Reject the proposal / dismiss the item; it won't re-surface for 60 days.",
-         ("dont-forget", "inbox", "past-meetings"), mute_ttl_days=60,
+         ("dont-forget", "inbox", "past-meetings", "commitments"),
+         mute_ttl_days=60,
          family="mute",
          notes="The 60-day cooldown was previously hidden by design "
                "('duration NEVER shown') — F-59 reverses that: every mute "
@@ -311,6 +360,35 @@ VERB_TAXONOMY = (
     _row("archive", "Archive", None,
          "Archive the project outright (skip the dormant step).",
          ("dont-forget",), family="review"),
+    # --- W4b confirm flow — unknown-person rows (v4.6.1) ---------------------
+    _row("add person", "Add person", "person_proposal_resolved",
+         "Create the contact from the proposal (details inferred; type to "
+         "correct them) — future captures of this name resolve to them.",
+         ("commitments",), input="optional", family="review",
+         notes="W4b. Dispatch: people_writer.create_person via apply-choices "
+               "Step 3a (dedup-first, disambiguation on MultipleCandidates), "
+               "then the proposal tombstone (confirm_flow."
+               "build_person_proposal_resolved_event, resolution "
+               "person_added) so it stops re-surfacing."),
+    _row("same as [existing]", "Same as", "person_proposal_resolved",
+         "This name is an existing contact — saves the spelling as a "
+         "shortcut so it resolves to them forever.",
+         ("commitments",), input="required", family="review",
+         notes="W4b. Dispatch: resolve the typed name via the standard "
+               "entity path (ambiguous → ask, never guess), then "
+               "people_writer.add_person_alias (aliases.json mapping + the "
+               "person record) + the proposal tombstone (resolution "
+               "same_as). Permanent resolution improvement — the F-13 "
+               "P2b/F-56 misattribution class shrinks with every alias."),
+    _row("proposal not relevant", "Not relevant (permanent)",
+         "person_proposal_resolved",
+         "The name isn't worth tracking — the proposal is retired for good "
+         "(nothing else is written).",
+         ("commitments",), family="review",
+         notes="W4b. A proposal tombstone, NOT a timed mute — the label says "
+               "permanent (F-59 rule). Commitment rows keep the 60-day "
+               "`not relevant` mute; this verb renders ONLY on "
+               "unknown-person proposal rows."),
     _row("add as person to [org]", "Add as person to org", None,
          "Create a person record under the org you type.",
          ("past-meetings", "meeting-notes"), input="required", family="review"),
@@ -423,7 +501,10 @@ _THING_OVERRIDES = {
     "reminder push [date]": "date",
     "fix wording [text]": "corrected wording",
     "reassign to [name]": "name",
+    "theirs to [name]": "name",
+    "same as [existing]": "name",
     "split into [items]": "list of items",
+    "mark received from [name]": "name",
 }
 
 

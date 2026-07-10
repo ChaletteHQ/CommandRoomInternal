@@ -747,6 +747,110 @@ def update_person(
     return target
 
 
+def _aliases_path(workspace_root: Path) -> Path:
+    return Path(workspace_root) / "_hq" / "data" / "aliases.json"
+
+
+def add_person_alias(
+    workspace_root: str | Path,
+    person_id: str,
+    alias: str,
+    *,
+    source_skill: str = "people_writer",
+) -> dict:
+    """THE Same-as writer (v4.6.1 W4b): a raw name spelling is an existing
+    person — save it as a permanent resolution improvement so every future
+    capture of this spelling resolves to them.
+
+    Two writes, both canonical resolution surfaces (entity_resolve Tier 1a
+    reads aliases.json mappings; Tier 1b reads the person record's aliases):
+      1. aliases.json — append {"raw": alias, "canonical_id": person_id} to
+         mappings.people (canonical dict-of-lists shape; a legacy flat-list
+         mappings array is appended to in place — reader-back-compat, never
+         a shape rewrite). Locked atomic write.
+      2. entities.json — union the spelling into the person record's
+         `aliases` array via update_person (validated, locked, logged as
+         person_updated).
+
+    Idempotent: an alias already mapped to this person returns
+    {"status": "exists"} and writes nothing. An alias mapped to a DIFFERENT
+    person raises ValueError — a raw spelling must never silently re-point
+    (surface it for a human decision instead). KeyError when person_id
+    doesn't exist (from update_person's lookup).
+    """
+    alias = (alias or "").strip()
+    if not alias:
+        raise ValueError("add_person_alias needs a non-empty alias spelling")
+    workspace_root = Path(workspace_root)
+    alias_norm = _normalize_name(alias)
+
+    # Person record must exist (and we need its current aliases + name).
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+
+    # --- aliases.json mapping ------------------------------------------------
+    apath = _aliases_path(workspace_root)
+    if apath.exists():
+        try:
+            aliases_doc = json.loads(apath.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            # Unreadable aliases.json is a workspace-corruption condition —
+            # never overwrite it with a fresh doc from here (cleanup's
+            # backup-restore owns that). Fail loud instead.
+            raise ValueError(
+                f"aliases.json at {apath} is unreadable — refusing to "
+                "overwrite it; restore it (cleanup keeps backups) and retry"
+            )
+    else:
+        aliases_doc = {"mappings": {"people": [], "projects": [], "orgs": []}}
+
+    mappings = aliases_doc.setdefault("mappings", {})
+    if isinstance(mappings, list):
+        tier = mappings                      # legacy flat-list shape
+    else:
+        tier = mappings.setdefault("people", [])
+
+    mapping_written = False
+    existing = next(
+        (m for m in tier
+         if isinstance(m, dict) and isinstance(m.get("raw"), str)
+         and _normalize_name(m["raw"]) == alias_norm),
+        None,
+    )
+    if existing is not None:
+        if existing.get("canonical_id") != person_id:
+            raise ValueError(
+                f"alias {alias!r} already maps to {existing.get('canonical_id')!r} "
+                f"— refusing to silently re-point it to {person_id!r}. "
+                "Surface the conflict for a human decision."
+            )
+    else:
+        tier.append({"raw": alias, "canonical_id": person_id})
+        atomic_write_json_locked(apath, aliases_doc, holder=source_skill)
+        mapping_written = True
+
+    # --- person record aliases union ------------------------------------------
+    record_written = False
+    known = {_normalize_name(n) for n in get_person_display_names(target)}
+    if alias_norm not in known:
+        new_aliases = list(target.get("aliases") or []) + [alias]
+        update_person(workspace_root, person_id, aliases=new_aliases,
+                      source_skill=source_skill)
+        record_written = True
+
+    status = "added" if (mapping_written or record_written) else "exists"
+    return {
+        "status": status,
+        "person_id": person_id,
+        "alias": alias,
+        "mapping_written": mapping_written,
+        "record_written": record_written,
+    }
+
+
 def merge_person_into(
     workspace_root: str | Path,
     *,

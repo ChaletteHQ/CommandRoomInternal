@@ -1,6 +1,6 @@
 ---
 name: cleanup
-description: Weekly self-maintenance. Keeps the workspace tidy without the CEO's attention — runs Sunday night (scheduled), auto-fixes what's safe, heals substrate corruption, and leaves a short plain-English Monday-morning note only if something needs eyes. Triggers on "weekly cleanup", "clean up my workspace", "clean up the workspace", "tidy up", "maintenance", "deep clean". (Bare "clean up [a thing]" — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired audit phrases "weekly audit", "system review", "scan everything" and redirects them here. DOES NOT fire on "weekly recap" / "what happened this week" (that's weekly-recap), "level up command room" (opt-in add-ons), or "health check" / "system health" / "is everything running" (that's system-health — the scheduled-task watchdog, moved out of cleanup in Phase 3/W1).
+description: Weekly self-maintenance. Keeps the workspace tidy without the CEO's attention — runs Sunday night (scheduled), auto-fixes what's safe, repairs damaged records, and leaves a short plain-English Monday-morning note only if something needs eyes. Triggers on "weekly cleanup", "clean up my workspace", "clean up the workspace", "tidy up", "maintenance", "deep clean". (Bare "clean up [a thing]" — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired audit phrases "weekly audit", "system review", "scan everything" and redirects them here. DOES NOT fire on "weekly recap" / "what happened this week" (that's weekly-recap), "level up command room" (opt-in add-ons), or "health check" / "system health" / "is everything running" (that's system-health — the scheduled-task watchdog, moved out of cleanup in Phase 3/W1).
 ---
 
 # Cleanup
@@ -511,6 +511,21 @@ Fold the result into Beat 1 (see below):
 
 The dedup index (`_hq/data/.source_refs.idx`) is a cache over events.jsonl that keeps duplicate captures out regardless of age. It self-maintains on every append, but manual events.jsonl surgery (corruption recovery, quarantine release) can leave it divergent. Run `python3 shared/scripts/source_ref_index.py verify <workspace_root>`; on `MISMATCH`, run `rebuild` and add one line to the Monday note ("tidied up one of my behind-the-scenes indexes — nothing changed in your data"). Run rebuild AFTER any corruption-recovery path in this cleanup that touched events.jsonl. Also move any cloud-sync conflict copies matching `.source_refs*.idx` that aren't the canonical name into `_archive/dedup-index/` (archived, never deleted). If the index matches, say nothing.
 
+### 3i. Long-unconfirmed commitment sweep (v4.6.1 W4b — PROPOSE only)
+
+Captures that have sat unconfirmed (pending_review / no owner / suspected duplicate) for 30+ days almost certainly resolved outside the system or were never real — the weekly note proposes Drop; the drop itself is ALWAYS a manual click on the triage surface, never something cleanup does. Read-only here:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from cru_match import load_open_commitments
+from confirm_flow import select_unconfirmed_escalation
+
+opens = load_open_commitments("<WORKSPACE>/_hq/data/events.jsonl")
+stale_unconfirmed = select_unconfirmed_escalation(opens, "<now ISO>")["propose_drop"]
+```
+
+A non-empty result adds ONE line to the Monday note's Beat 1 (see below). Zero → nothing. No events written, no receipts beyond the standard cleanup_run, and this never touches the scheduled-task watchdog pass (3e-bis) or its note lines.
+
 ## Phase 4: Monday-Morning Report — the scorecard handshake (no scores)
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
@@ -537,10 +552,13 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 - **Orphan folders found** (Phase 1.0 `orphan_folder`): *"I noticed [N] folders that aren't tracked yet — [names]. Want me to register or archive them?"* FLAG only; never moved.
 - **Session-notes backfilled** (Phase 3c, D3): *"[N] projects were missing a notes file — I started one for each so they stay current."* (Only counts files actually created; the helper never overwrites existing notes.)
 - **Stale insight views** (Phase 3.5e, D5): the single line — *"A few of your insight pages are behind — say `run insights` and I'll bring them current."* Add the >14-day insight-generator nudge when `insight_nudge.stale` is True.
+- **Long-unconfirmed items** (Phase 3i, v4.6.1 W4b): when `stale_unconfirmed` is non-empty, ONE line — *"[N] captured to-dos have sat unconfirmed for over a month — say `triage my commitments` and I'll queue them up to drop or keep."* PROPOSE only (the drop is a click on the triage surface, never automatic); omit on zero. Keep this line out of the watchdog cluster below — it's a substrate-hygiene item, not a schedule finding.
 - **Lock files archived** (Phase 2 Rule 9, D6): fold the count into the "tidied up" line — *"…tidied away [N] leftover lock files."* Plain English; never say "lock.stale" or surface a path. (They're moved to `_archive/`, never deleted — but don't burden the CEO with that detail unless asked.)
 - **Deliverable voice/privacy flags** (Phase 3f, GATE2): when the sweep flagged docs, surface its plain-English `summary` verbatim — *"[N] documents produced recently didn't pass the quality gate — worth a glance before any go out: • [filename] — language that doesn't sound like you ('leverage')…"*. Filenames only, never `_hq/` paths or token jargon. When only `suspected_bypass` is non-zero, use the softer "produced without the quality check" line. Omit entirely on a clean sweep.
 - **Scheduled-task watchdog findings** (Phase 3e-bis, W1/R5/R10 + R3 truth rules): surface each returned line verbatim under the "worth a glance" tier — dead task, never-authorized task, folder rename, prompt drift, render-without-write, plus the R3 info lines (dated late catch-ups, first-run-pending). These lead the tier when present (a dead schedule starves every other surface). If the vantage guard fired (F-40), its single line replaces ALL per-task schedule claims. Omit entirely when the watchdog returns nothing (the common case). A task named in any of these lines is never simultaneously described as running normally elsewhere in the note.
 - **Events-lock contention** (Phase 2 Rule 10, A1): include ONLY when there were waits or timeouts this week — *"A few things tried to save to your activity log at the same moment this week — everything saved fine, nothing was lost."* Omit the line entirely on a quiet week (the common case). Never surface file paths, "lock_stats", wait/timeout counts, or lock vocabulary; the point is reassurance that it was handled, not a metric dump. The counters reset after this report.
+
+**Set-aside audit line (W4c — own paragraph, non-zero weeks only).** Read `capture_gate.observed_counts(workspace_root, since_ts=<7 days ago ISO>)` and, when `observed > 0`, add exactly one sentence to Beat 1: *"I also set aside [N] items from meetings and chats that looked like other people's to-dos — ask me to show them if you want a look."* Never a per-item list, never the words "observed" or "tier"; omit entirely at zero. (Visible rejects are what make the capture filter trustworthy.)
 
 ### Beat 2 — What I handled for you (the value, this week)
 

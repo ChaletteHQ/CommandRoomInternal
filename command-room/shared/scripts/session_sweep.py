@@ -54,14 +54,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from capture_gate import (  # noqa: E402
+    classify_capture,
+    gate_commitment_data,
+    observed_from_commitment_event,
+    workspace_capture_context,
+)
 from event_gate import append_event  # noqa: E402
-from event_types import KIND_VALUES  # noqa: E402
 import source_ref_index  # noqa: E402
-
-try:
-    from confidence import CONFIDENCE_SURFACE_MIN  # noqa: E402
-except Exception:  # pragma: no cover
-    CONFIDENCE_SURFACE_MIN = 0.7
 
 # The event families the sweep may recover. Deliberately a small, closed set of
 # ALREADY-REGISTERED types — the sweep recovers real history, it does not mint a
@@ -121,93 +121,20 @@ class SweepItemError(ValueError):
     visible, not silently dropped."""
 
 
-def _parse_iso_date(value) -> bool:
-    """True iff `value` is a string whose first 10 chars parse as an ISO date."""
-    if not isinstance(value, str) or not value.strip():
-        return False
-    import datetime as _d
-
-    try:
-        _d.date.fromisoformat(value.strip()[:10])
-        return True
-    except ValueError:
-        return False
-
-
 def _gate_commitment(data: dict, raw: dict, session_id) -> None:
     """Stage-D / S2 / Stage-E capture parity for a recovered commitment
     (v4.5.2 C1, F-31): the sweep runs the SAME capture block as
-    scan-for-commitments Step 3. meeting-notes and past-meetings both comply;
-    the Jul 7 sweep wrote 7 items with 0/7 due, empty counterparties, and 5
-    promises misclassified as task — all invisible on the exact day they
-    mattered (F-44). Mutates `data` in place (pending_review stamping);
-    raises SweepItemError on anything the extraction must go back and do.
-    """
-    kind = data.get("kind")
-    if kind not in KIND_VALUES:
-        raise SweepItemError(
-            f"recovered commitment (session {session_id}) needs data.kind, "
-            f"one of {sorted(KIND_VALUES)} — classify it at extraction "
-            f"(counterparty promise -> promise; self-owed -> task; "
-            f"scheduling intent -> scheduling; discuss item -> agenda). "
-            f"'send X to [person]' has a counterparty — it is a promise, "
-            f"not a task."
-        )
-
-    # S2 due-date nudge: every capture proposes a `due` from the source
-    # language (resolve relative phrases — "before tomorrow's call",
-    # "Thursday" — against the session's date) OR sets data.no_due: true.
-    # Silence is not an option; an undated capture sinks in every ranking
-    # at exactly the moment it matters (F-31 -> F-44).
-    due = data.get("due")
-    no_due = data.get("no_due")
-    if no_due is True:
-        if due:
-            raise SweepItemError(
-                f"recovered commitment (session {session_id}) sets BOTH "
-                f"data.due={due!r} and data.no_due: true — pick one"
-            )
-    elif not _parse_iso_date(due):
-        raise SweepItemError(
-            f"recovered commitment (session {session_id}) needs a due date: "
-            f"propose data.due as YYYY-MM-DD from the source language "
-            f"(resolve relative phrases like 'tomorrow'/'Thursday' against "
-            f"the session's date) or set data.no_due: true explicitly "
-            f"(S2 due-nudge; got due={due!r})"
-        )
-
-    # Stage-E counterparty receipts + the promise-vs-task rule. A task is
-    # self-owed with NO counterparty by definition — a counterparty makes it
-    # a promise (F-31: "send briefs to collaborator" is a promise).
-    cp_id = data.get("counterparty_id")
-    cp_name = data.get("counterparty_name")
-    if kind == "task" and (cp_id or cp_name):
-        raise SweepItemError(
-            f"recovered commitment (session {session_id}) is kind 'task' but "
-            f"carries a counterparty ({cp_id or cp_name!r}) — a deliverable "
-            f"owed to/by a named person is a promise, not a task; reclassify"
-        )
-
-    # Safety inversion (v4.5.2): pending_review defaults ON whenever
-    # attribution is not confidently resolved — absence of the flag is not
-    # consent (CRU auto-resolution gates on it; a low-confidence capture
-    # that forgets the flag would auto-resolve with no human gate). The
-    # sweep already refuses to guess person_ids; this stamps the flag those
-    # refusals imply. Never unsets an extractor-set True.
-    reasons = []
-    if cp_name and not cp_id:
-        reasons.append(f"counterparty '{cp_name}' has no person record")
-    if kind == "promise":
-        if not cp_id and not cp_name:
-            reasons.append("no counterparty identified for a promise")
-        if not data.get("owner_id"):
-            reasons.append("no resolved owner")
-    conf = raw.get("classification_confidence")
-    if isinstance(conf, (int, float)) and conf < CONFIDENCE_SURFACE_MIN:
-        reasons.append(f"extraction confidence {conf} below threshold")
-    if reasons:
-        data["pending_review"] = True
-        data.setdefault("review_reason", "; ".join(reasons))
+    scan-for-commitments Step 3 — since v4.6.1 W4c literally the same code,
+    `capture_gate.gate_commitment_data` (this wrapper only binds the sweep's
+    error class + subject wording). Mutates `data` in place (pending_review
+    stamping); raises SweepItemError on anything the extraction must go back
+    and do."""
+    gate_commitment_data(
+        data,
+        subject=f"recovered commitment (session {session_id})",
+        classification_confidence=raw.get("classification_confidence"),
+        error_cls=SweepItemError,
+    )
 
 
 def _normalize_item(raw: dict, source_skill: str) -> tuple[dict, str]:
@@ -251,6 +178,19 @@ def _normalize_item(raw: dict, source_skill: str) -> tuple[dict, str]:
     # scan-for-commitments Step 3). Title defaults from the summary.
     if etype == "commitment":
         data.setdefault("title", summary)
+        # MC1: normalize counterparty fields (single byte-identical; multi
+        # writes the list + primary scalar so degrade-readers see the first).
+        from commitment_parties import build_counterparty_fields
+        _cpf = build_counterparty_fields(
+            counterparty_id=data.get("counterparty_id"),
+            counterparty_name=data.get("counterparty_name"),
+            counterparty_ids=data.get("counterparty_ids"),
+            counterparty_names=data.get("counterparty_names"),
+        )
+        for _k in ("counterparty_id", "counterparty_name",
+                   "counterparty_ids", "counterparty_names"):
+            data.pop(_k, None)
+        data.update(_cpf)
         _gate_commitment(data, raw, session_id)
 
     event = {"type": etype, "source_skill": source_skill, "data": data}
@@ -260,12 +200,16 @@ def _normalize_item(raw: dict, source_skill: str) -> tuple[dict, str]:
 
     # Stage-E: a resolved counterparty_id is also a person reference — the
     # schema requires it in person_ids so the dual-layer reader links it.
-    cp_id = data.get("counterparty_id") if etype == "commitment" else None
-    if cp_id:
+    if etype == "commitment":
+        from commitment_parties import counterparty_ids as _cp_ids
         pids = list(event.get("person_ids") or [])
-        if cp_id not in pids:
-            pids.append(cp_id)
-        event["person_ids"] = pids
+        changed = False
+        for _cid in _cp_ids(data):  # MC1: every resolved counterparty
+            if _cid not in pids:
+                pids.append(_cid)
+                changed = True
+        if changed:
+            event["person_ids"] = pids
     return event, dedup_hash
 
 
@@ -291,6 +235,11 @@ def _sweep(
     and the historical backfill. Returns a receipt dict the skill renders."""
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
 
+    # W4c relevance gate: resolve the capture context once per run (who the
+    # user is, the team, the customize-layer mode). Fail-open — an
+    # unresolvable user forces track-everything inside the helper.
+    ctx = workspace_capture_context(workspace_root)
+
     recovered: list[dict] = []
     by_type: Counter = Counter()
     seen: set[str] = set()
@@ -305,6 +254,23 @@ def _sweep(
             skipped += 1
             continue
         seen.add(h)
+        # W4c: a recovered commitment opens ONLY when the workspace owner is
+        # a party (or the mode/caution rail says otherwise); third-party and
+        # can't-attribute items land as observed tier — the full record,
+        # silent, promotable. Sessions carry no org context, so no override.
+        if event["type"] == "commitment":
+            verdict = classify_capture(
+                event["data"],
+                mode=ctx["mode"],
+                user_id=ctx["user_id"],
+                user_names=ctx["user_names"],
+                team_ids=ctx["team_ids"],
+                known_ids=ctx["known_ids"],
+            )
+            if verdict["tier"] == "observed":
+                event = observed_from_commitment_event(
+                    event, reason=verdict["reason"]
+                )
         recovered.append(event)
         by_type[event["type"]] += 1
 
@@ -462,12 +428,28 @@ def preview_items(workspace_root, items: Iterable[dict], *, source_skill: str = 
     seen: set[str] = set()
     would: list[str] = []
     skipped = 0
+    ctx = workspace_capture_context(workspace_root)
     for raw in items:
         event, h = _normalize_item(raw, source_skill)
         if h in seen or already_captured(workspace_root, h):
             skipped += 1
             continue
         seen.add(h)
+        # Same W4c relevance routing as the write path — the preview's
+        # by_type must equal what a confirm would actually append.
+        if event["type"] == "commitment":
+            verdict = classify_capture(
+                event["data"],
+                mode=ctx["mode"],
+                user_id=ctx["user_id"],
+                user_names=ctx["user_names"],
+                team_ids=ctx["team_ids"],
+                known_ids=ctx["known_ids"],
+            )
+            if verdict["tier"] == "observed":
+                event = observed_from_commitment_event(
+                    event, reason=verdict["reason"]
+                )
         by_type[event["type"]] += 1
         would.append(event["data"]["summary"])
     return {

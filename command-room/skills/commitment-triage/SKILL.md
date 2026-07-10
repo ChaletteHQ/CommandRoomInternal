@@ -68,6 +68,22 @@ retired. One scrollable widget:
   view with `Open` / `You owe` / `Owed to you` / `Unowned` / `Unconfirmed`
   (+ `Undated` if room) — values VERBATIM from `counts["headline"]`, never
   hand-rolled.
+- **Unconfirmed block — renders FIRST, above every age section (v4.6.1
+  W4b escalation; never age-buried):** anything unconfirmed 7+ days pins to
+  a dedicated **"Unconfirmed"** section at the TOP of the widget —
+  unconfirmed items don't age into the pool, they escalate to confirmation.
+  Build it in code: `from confirm_flow import select_unconfirmed_escalation`
+  → `esc = select_unconfirmed_escalation(opens, "<now ISO>")`; render
+  `esc["pin"]` rows with their `days_unconfirmed` age and `review_reason`
+  in plain English ("captured 12 days ago — still unconfirmed"). Verbs are
+  the confirm cluster: `mine` / `theirs to [name]` / `make task` / `drop`
+  (duplicate-flagged rows: `merge` / `keep both` / `drop`), dispatched
+  exactly per apply-choices § the commitments confirm-section handlers
+  (source `commitment-triage`). Rows in `esc["propose_drop"]` (30+ days)
+  additionally lead with the question **"sat unconfirmed for [N] days —
+  drop it?"** — Drop stays a manual click, never automatic. These rows are
+  EXCLUDED from the age sections below (no double-surfacing); they still
+  count in `headline["unconfirmed"]` and nowhere else.
 - **Age sections**, oldest first (event ts via `event_time`): a `30+ DAYS
   OLD` section title above the aged block, the rest below. No confidence
   filter, no cap-by-bucket — this is the full-set surface.
@@ -97,12 +113,13 @@ retired. One scrollable widget:
   count that transmits (40+ rows is proven) and offer `show more` — same
   layout per chunk, never a different design.
 
-## Merging duplicates (interim surface until the W4b confirm flow ships)
+## Merging duplicates (chat-phrase path; the Merge verb ships in the W4b confirm flow, v4.6.1)
 
 The same real commitment captured by two writers (meeting + email + sweep)
 is two open rows. When the user says **"merge those two"**, **"same
-commitment"**, **"those are the same thing"**, or clicks a future Merge verb,
-close the duplicate INTO the survivor:
+commitment"**, **"those are the same thing"**, or clicks the `merge` verb
+(confirm section / Unconfirmed block rows), close the duplicate INTO the
+survivor:
 
 ```python
 from commitment_state import supersede_commitment

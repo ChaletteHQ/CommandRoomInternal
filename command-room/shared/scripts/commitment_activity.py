@@ -272,12 +272,14 @@ def derive_commitment_movement(
 
 def _commitment_counterparty(ev: dict) -> Optional[str]:
     """The commitment's own named counterparty (blocked-on fallback when the
-    chase event carries no name of its own)."""
-    for field in ("counterparty_name", "counterparty_id"):
-        v = _commitment_field(ev, field)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return None
+    chase event carries no name of its own). MC1: the PRIMARY (first)
+    counterparty — a blocked-on line names one person; the fan-out surfaces
+    the rest."""
+    from commitment_parties import (
+        primary_counterparty_name as _p_name,
+        primary_counterparty_id as _p_id,
+    )
+    return _p_name(ev) or _p_id(ev)
 
 
 def classify_commitments(

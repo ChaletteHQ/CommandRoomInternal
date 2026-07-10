@@ -55,7 +55,15 @@ fails the battery loudly.
 from __future__ import annotations
 
 import re
+import sys as _sys
+from pathlib import Path as _Path
 from typing import Dict, List, Optional, Sequence
+
+try:
+    from vocabulary_policy import vocabulary_fail_rules
+except ImportError:  # pragma: no cover — direct-path import fallback
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from vocabulary_policy import vocabulary_fail_rules
 
 
 class VoiceTellError(RuntimeError):
@@ -149,9 +157,18 @@ _PATTERN_OVERRIDES: Dict[str, "re.Pattern[str]"] = {
 
 # Compiled fail-rule table: (rule_id, canonical_phrase, compiled_pattern, hint).
 # Use the per-rule override when present, else the generic phrase pattern.
+# The tail rows come from the ONE shared vocabulary list (v4.6.1 S3, F-53
+# P3a: "leverage" was hard-blocked in a docx and led an email the same day
+# because the two gates kept disjoint lists — vocabulary_policy.py is now
+# the single owner; the leak gate reads the same words). allow_phrases
+# carve-outs apply to vocabulary rows exactly like phrase rows, so a client
+# whose calibrated voice uses one of these words feeds it through.
 _FAIL_RULES: List[tuple[str, str, "re.Pattern[str]", str]] = [
     (rid, phrase, _PATTERN_OVERRIDES.get(rid, _phrase_pattern(phrase)), hint)
     for rid, phrase, hint in _FAIL_PHRASES
+] + [
+    (rid, phrase, _phrase_pattern(phrase), hint)
+    for rid, phrase, hint in vocabulary_fail_rules()
 ]
 
 # Number of exact-phrase fail rules. The test asserts this is >= the markdown
@@ -369,6 +386,51 @@ def scan_text(
     return {"verdict": _verdict(findings), "findings": findings}
 
 
+# Dash-as-punctuation in a subject line: any em dash, any en dash, or a
+# space-hyphen-space run. Hyphenated compounds ("check-in", "follow-up")
+# stay legal. BRAND_VOICE hard rule; F-47 P2d + F-53 hit it twice in one day.
+_SUBJECT_DASH_RE = re.compile(r"—|–|\s-\s")
+
+
+def scan_subject(
+    subject: str,
+    *,
+    allow_phrases: Optional[Sequence[str]] = None,
+) -> Dict:
+    """The subject-line gate (v4.6.1 S3; F-53 / F-47 P2d — em dashes in
+    email subjects twice in one dogfood day; the body gate never saw
+    subjects).
+
+    Fails on:
+      - any dash used as punctuation (em dash, en dash, spaced hyphen) —
+        the BRAND_VOICE hard rule, applied to subjects with NO pile-up
+        allowance (unlike the body's warn-at->2 structural rule)
+      - the universal banned phrases + shared vocabulary words (a subject
+        that LEADS with "Circling back" or "leverage" is still the voice)
+
+    Returns the same {"verdict", "findings"} shape as scan_text. Empty /
+    missing subjects are the threading rule's problem (email-writer Phase
+    3.5 Rule 12), not this gate's — they pass here.
+    """
+    if not subject:
+        return {"verdict": "pass", "findings": []}
+    allow_norm = _normalize_allow(allow_phrases)
+    findings = _scan_phrases(subject, allow_norm=allow_norm, skip_quoted=False)
+    for m in _SUBJECT_DASH_RE.finditer(subject):
+        findings.append(
+            {
+                "rule": "subject_dash",
+                "severity": "fail",
+                "line_no": 1,
+                "line": subject.strip(),
+                "match": m.group(0),
+                "hint": "no dashes as punctuation in subject lines — "
+                        "use a comma, a colon, or rewrite",
+            }
+        )
+    return {"verdict": _verdict(findings), "findings": findings}
+
+
 def _cell_strings(value) -> List[str]:
     """Flatten an arbitrarily-nested table/matrix cell container into strings."""
     out: List[str] = []
@@ -461,6 +523,7 @@ def summarize_findings(findings: List[dict], *, limit: int = 10) -> str:
 
 __all__ = [
     "scan_text",
+    "scan_subject",
     "check_sections",
     "summarize_findings",
     "VoiceTellError",
@@ -487,7 +550,7 @@ def _main(argv: List[str]) -> int:
 
     if len(paths) != 1:
         print(
-            "usage: voice_tell_detector.py <file|-> [--context email|brief]",
+            "usage: voice_tell_detector.py <file|-> [--context email|brief|subject]",
             file=sys.stderr,
         )
         return 2
@@ -504,7 +567,10 @@ def _main(argv: List[str]) -> int:
             return 2
         text = p.read_text(encoding="utf-8", errors="replace")
 
-    result = scan_text(text, context=context)
+    if context == "subject":
+        result = scan_subject(text.strip("\n"))
+    else:
+        result = scan_text(text, context=context)
     verdict = result["verdict"]
     findings = result["findings"]
 

@@ -1,6 +1,6 @@
 {
   "version": "3.13.8.3",
-  "headline": "Patch — substrate writer hygiene (auto-stamp seq + ts) + state-aware instruct_user idempotency",
+  "headline": "Patch — activity-log writer hygiene (sequence + timestamp auto-stamped) + repeat-safe update reminders",
   "items": [
     {
       "id": "v31383_atomic_append_jsonl_auto_stamp",

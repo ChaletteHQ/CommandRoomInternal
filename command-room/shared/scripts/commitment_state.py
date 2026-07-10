@@ -468,9 +468,13 @@ def match_commitments_to_meetings(
     if not meeting_list:
         return []
 
+    from commitment_parties import counterparty_ids as _cp_ids
     out: list[dict] = []
     for ev in open_commitments:
-        cp_id = _commitment_field(ev, "counterparty_id")
+        # MC1: the FULL counterparty roster (legacy single + list) — a
+        # meeting is relevant when ANY of a multi-counterparty commitment's
+        # people is in the room, not just the first.
+        cp_ids = _cp_ids(ev)
         owner_id = _commitment_field(ev, "owner_id")
         text = _commitment_match_text(ev).lower()
         text_tokens = _name_tokens(text)
@@ -478,9 +482,10 @@ def match_commitments_to_meetings(
         for m, att_ids, att_names in meeting_list:
             match = None
             matched_name = None
-            if (cp_id and cp_id in att_ids) or (owner_id and owner_id in att_ids):
+            cp_hit = next((c for c in cp_ids if c in att_ids), None)
+            if cp_hit or (owner_id and owner_id in att_ids):
                 match = "counterparty"
-                matched_name = cp_id if cp_id in att_ids else owner_id
+                matched_name = cp_hit or owner_id
             else:
                 for display, toks in att_names:
                     full = " ".join(toks)
@@ -500,7 +505,8 @@ def match_commitments_to_meetings(
                     "kind": commitment_kind(ev),
                     "due": _commitment_field(ev, "due"),
                     "owner_id": owner_id,
-                    "counterparty_id": cp_id,
+                    "counterparty_id": (cp_ids[0] if cp_ids else None),
+                    "counterparty_ids": cp_ids,
                     "pending_review": _is_pending_review(ev),
                     "meeting_id": m.get("meeting_id"),
                     "meeting_title": m.get("title") or "",
@@ -1302,6 +1308,211 @@ def reassign_commitment(
     return {"status": "reassigned", "commitment_id": cid, "event": ev}
 
 
+def confirm_commitment_owner(
+    workspace_root,
+    commitment_id,
+    *,
+    owner_id: str,
+    confirmed_by: str,
+    source_skill: str,
+    owner_name: Optional[str] = None,
+    reason: str = "user confirmed ownership",
+) -> dict:
+    """THE Mine writer (v4.6.1 W4b confirm flow). An unconfirmed capture —
+    pending_review, unowned, or an inferred owner — is claimed by the user
+    ("Mine"): ownership folds to `owner_id` and the pending_review flag
+    clears, so the item leaves the unconfirmed bucket and joins the
+    confirmed you-owe direction.
+
+    Appends a `commitment_updated` carrying `data.owner_confirmed: true` +
+    `data.new_owner_id`; the projector folds it (append-order-aware against
+    reassignments — a later unconfirmed reassign re-stamps pending_review).
+    Distinct from reassign_commitment on purpose: Mine CLAIMS, Theirs ROUTES
+    — the event vocabulary keeps the two adjudications distinguishable in
+    history.
+
+    Guards: id normalization over legacy spellings, loud CommitmentIdError
+    on no match, refuses a CLOSED item ({"status": "not_open"}), scan→append
+    inside the writer lock (R1c). No pending_review floor — the explicit
+    click IS the adjudication.
+    """
+    if not owner_id:
+        raise ValueError("confirm_commitment_owner needs an owner_id — "
+                         "'Mine' claims the item for a specific person")
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"confirm_owner:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        data: dict = {
+            "commitment_id": cid,
+            "new_owner_id": owner_id,
+            "owner_confirmed": True,
+            "pending_review": False,
+            "confirmed_by": confirmed_by,
+            "reason": (reason or "")[:200],
+        }
+        if owner_name:
+            data["new_owner_name"] = owner_name
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "confirmed", "commitment_id": cid, "event": ev}
+
+
+def clear_review_flags(
+    workspace_root,
+    commitment_id,
+    *,
+    cleared_by: str,
+    source_skill: str,
+    note: str = "confirmed distinct",
+) -> dict:
+    """THE Keep-both writer (v4.6.1 W4b / C4). A suspected duplicate the
+    user adjudicates as a real, separate item: appends a `commitment_updated`
+    carrying `data.review_flags_cleared: true`; the projector clears
+    `pending_review`, `review_reason`, AND the C4 `suspected_duplicate_of` /
+    `suspected_duplicate_score` flags read-side — both items stay open, the
+    capture event is never rewritten.
+
+    Same guard set as confirm_commitment_owner: id normalization, loud
+    CommitmentIdError on no match, refuses a CLOSED item ({"status":
+    "not_open"}), scan→append inside the writer lock (R1c).
+    """
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"clear_review:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        data: dict = {
+            "commitment_id": cid,
+            "review_flags_cleared": True,
+            "pending_review": False,
+            "cleared_by": cleared_by,
+            "note": (note or "")[:200],
+        }
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "cleared", "commitment_id": cid, "event": ev}
+
+
+def mark_partial_received(
+    workspace_root,
+    commitment_id,
+    *,
+    received_by: str,
+    source_skill: str,
+    counterparty_id: Optional[str] = None,
+    counterparty_name: Optional[str] = None,
+    evidence: str = "",
+) -> dict:
+    """THE per-person receipt writer (v4.6.0 MC1). A multi-counterparty
+    commitment ("send the deck to the board") is fulfilled one counterparty
+    at a time; this records that ONE counterparty delivered WITHOUT closing
+    the item. Appends a `commitment_partial_received` carrying
+    `data.received_counterparty_id` (or free-text `received_counterparty_name`
+    when the person has no record); the projector accumulates
+    `data.received_from` / `data.received_from_names` and stamps
+    `data.all_counterparties_received` when the whole roster is in — the
+    PROPOSE-closure signal (this writer NEVER closes; the user closes when
+    ready).
+
+    Returns {"status": "received", "commitment_id": <canonical>,
+             "propose_closure": bool, "outstanding": [{"id","name"}, ...],
+             "event": {...}} — `propose_closure` is True iff this receipt
+    completed the roster (surfaces render "everyone's received — close it?").
+    A CLOSED item returns {"status": "not_open", ...}; an already-recorded
+    receipt for the same counterparty is harmless (the loader unions), so no
+    idempotency short-circuit is needed.
+
+    Guards: at least one of counterparty_id / counterparty_name required
+    (WHICH recipient delivered?), id normalization over legacy spellings,
+    loud CommitmentIdError on no match, scan→append inside the writer lock
+    (R1c). No pending_review floor — a receipt is informational, not a
+    closure; it never removes the item from the open set.
+    """
+    if not (counterparty_id or counterparty_name):
+        raise ValueError(
+            "mark_partial_received needs a counterparty_id or "
+            "counterparty_name — a receipt records WHICH recipient of a "
+            "multi-counterparty commitment delivered"
+        )
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"mark_received:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        data: dict = {
+            "commitment_id": cid,
+            "received_by": received_by,
+        }
+        if counterparty_id:
+            data["received_counterparty_id"] = counterparty_id
+        if counterparty_name and not counterparty_id:
+            data["received_counterparty_name"] = counterparty_name
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        if evidence:
+            data["evidence"] = (evidence or "")[:200]
+        ev = {
+            "type": "commitment_partial_received",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+
+    # Recompute the roster state from the fresh projection (append invalidated
+    # the loader cache) so the caller can PROPOSE closure the moment the last
+    # counterparty is in — never auto-closing here.
+    from commitment_parties import (
+        all_counterparties_received as _all_rcv,
+        outstanding_counterparties as _outstanding,
+    )
+    projected = None
+    for c in load_open_commitments(events_path):
+        if _commitment_id(c) == cid:
+            projected = c
+            break
+    propose_closure = bool(projected is not None and _all_rcv(projected))
+    outstanding = _outstanding(projected) if projected is not None else []
+    return {
+        "status": "received",
+        "commitment_id": cid,
+        "propose_closure": propose_closure,
+        "outstanding": outstanding,
+        "event": ev,
+    }
+
+
 def split_commitment(
     workspace_root,
     commitment_id,
@@ -1620,6 +1831,9 @@ __all__ = [
     "supersede_commitment",
     "edit_commitment_wording",
     "reassign_commitment",
+    "confirm_commitment_owner",
+    "clear_review_flags",
+    "mark_partial_received",
     "split_commitment",
     "reopen_commitment",
     "promote_task_to_commitment",

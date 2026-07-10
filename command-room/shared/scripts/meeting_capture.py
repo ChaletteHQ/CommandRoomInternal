@@ -78,6 +78,124 @@ def _norm_ref_keys(ref) -> set:
 # -----------------------------------------------------------------------------
 
 
+def build_meeting_commitment_event(
+    title: str,
+    *,
+    source_ref: str,
+    kind: str,
+    due: Optional[str] = None,
+    no_due: bool = False,
+    owner_id: str = "",
+    owner_external: str = "",
+    counterparty_id: Optional[str] = None,
+    counterparty_name: Optional[str] = None,
+    counterparty_ids: Optional[List[str]] = None,
+    counterparty_names: Optional[List[str]] = None,
+    evidence: str = "",
+    meeting_date: Optional[str] = None,
+    source_event_seq: Optional[int] = None,
+    primary_thread_id: Optional[str] = None,
+    person_ids: Optional[List[str]] = None,
+    classification_confidence: Optional[float] = None,
+    pending_review: bool = False,
+    review_reason: str = "",
+    urgency: Optional[str] = None,
+    source_skill: str = "meeting-notes",
+) -> dict:
+    """One extracted meeting commitment → one canonical `commitment` event
+    dict, with the SHARED capture block enforced in code (v4.6.1 W4c
+    consolidation — `capture_gate.gate_commitment_data`: Stage-D kind, S2
+    due-nudge resolved against the MEETING's date, promise-vs-task, the
+    pending_review inversion). This closes the meeting leg's C1/C2 parity gap
+    the same way slack_capture / session_sweep already had it in code — the
+    transcript writers no longer depend on prose alone to run the block.
+
+    Construction only — append the batch through `event_gate.append_event`
+    (ids minted and seq stamped inside the writer lock; C4's semantic dedup
+    fires there). Raises ValueError on anything the extraction must go back
+    and do."""
+    try:
+        from capture_gate import gate_commitment_data, parse_iso_date
+    except ImportError:  # pragma: no cover — direct-path import
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from capture_gate import gate_commitment_data, parse_iso_date
+
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("a meeting commitment needs a non-empty title")
+    if not (source_ref or "").strip():
+        raise ValueError(f"meeting commitment '{title}' needs a source_ref")
+
+    due_str = (due or "").strip()
+    data: dict = {
+        "title": title,
+        "kind": kind,
+        "due": due_str,
+        "source_ref": source_ref,
+    }
+    if no_due:
+        data["no_due"] = True
+    if owner_id:
+        data["owner_id"] = owner_id
+    elif owner_external:
+        data["owner_external"] = owner_external
+    # MC1: normalize scalar + list counterparty inputs — single stays
+    # byte-identical (scalar only), multi writes the list + primary scalar.
+    from commitment_parties import build_counterparty_fields
+    data.update(build_counterparty_fields(
+        counterparty_id=counterparty_id, counterparty_name=counterparty_name,
+        counterparty_ids=counterparty_ids, counterparty_names=counterparty_names,
+    ))
+    if evidence:
+        data["evidence"] = evidence[:200]
+    if meeting_date:
+        data["meeting_date"] = meeting_date
+    if source_event_seq is not None:
+        data["source_event_seq"] = source_event_seq
+    if urgency:
+        data["urgency"] = urgency
+    if pending_review:
+        data["pending_review"] = True
+        if review_reason:
+            data["review_reason"] = review_reason
+
+    gate_commitment_data(
+        data,
+        subject=f"meeting commitment {source_ref}",
+        classification_confidence=classification_confidence,
+    )
+
+    data["status"] = "open"
+    if due_str and parse_iso_date(due_str):
+        if _dt.date.fromisoformat(due_str[:10]) < _dt.datetime.now(
+            _dt.timezone.utc
+        ).date():
+            data["status"] = "overdue"
+
+    # Stage E: resolved owner/counterparty ids are person references — the
+    # dual-layer reader links via person_ids.
+    pids = [p for p in (person_ids or []) if p]
+    if owner_id and owner_id not in pids:
+        pids.append(owner_id)
+    from commitment_parties import counterparty_ids as _cp_ids
+    for _cid in _cp_ids(data):  # MC1: every resolved counterparty
+        if _cid not in pids:
+            pids.append(_cid)
+
+    ev: dict = {
+        "type": "commitment",
+        "source_skill": source_skill,
+        "primary_thread_id": primary_thread_id,
+        "person_ids": pids,
+        "data": data,
+    }
+    if classification_confidence is not None:
+        ev["classification_confidence"] = classification_confidence
+    return ev
+
+
 def build_decision_event(
     summary: str,
     *,
@@ -288,6 +406,7 @@ def verify_claims(
 
 
 __all__ = [
+    "build_meeting_commitment_event",
     "PENDING_REVIEW_CONFIDENCE_FLOOR",
     "MEETING_WRITE_TYPES",
     "build_decision_event",

@@ -213,6 +213,24 @@ Reply-rate + median-latency patterns from the `email_outcome` events (written si
 
 Fires: a workspace with ≥ 8 terminal email outcomes in the 30-day window; otherwise skipped.
 
+### Pass 7c — Capture-gate tuning proposals (v4.6.1 S3, W4c follow-up — PROPOSE only, the gate never self-adjusts)
+
+The W4c relevance gate accumulates the user's Not-mine / Drop / dismiss verdicts as labeled corrections; this pass turns them into consented tuning. ONE call:
+
+```python
+from capture_gate import propose_gate_directives, apply_gate_proposal
+proposals = propose_gate_directives("<WORKSPACE>",
+    cooldown_fingerprints=<proposal_ledger declined fingerprints>)
+```
+
+The helper mines `commitment_resolved` (dropped/not-mine), `commitment_reassigned`, and `chat_dismissal` outcomes per counterparty org, with its own small-n floors baked in (≥5 captured for the group, ≥70% dismissed, cap 3) — below the floors it returns `[]` and this pass says nothing. Render each proposal as a REVIEW item on the same confirm/edit/skip widget as Pass 7b, using the proposal's `plain` line: *"You set aside 12 of the last 15 things I captured about [vendor] — want me to keep those on file without asking?"*
+
+- **On `confirm`:** `apply_gate_proposal(workspace_root, proposal)` — ONE tap writes ONE per-org observed-only directive through the customization layer (origin `learned`), nothing else. Log the approval to `proposal_ledger` (`loop_gate_tuning`).
+- **On `skip`/decline:** log the proposal's `fingerprint` (`cgd_<hash>`) to `proposal_ledger` with the standard 60-day cooldown — a declined proposal stays quiet, and the NEXT run passes those fingerprints back via `cooldown_fingerprints`.
+- **Never auto-apply.** A proposal the user didn't tap changes nothing; no capture or scheduled path may call `apply_gate_proposal` (its contract says user-approval-only). Items with a due date or money still always surface regardless of any directive (the gate's asymmetric-caution rail) — say so in the proposal line when relevant.
+
+Fires: only when `propose_gate_directives` returns ≥1 proposal; contract + spec: `shared/COMMITMENT_SCHEMA.md` § Observed tier ("Verb-driven tuning").
+
 ### Pass 8 — Classification review (batched, silent-by-default)
 
 This is the **only user-interactive pass** in the skill. It exists because silent capture (per `shared/PASSIVE_CAPTURE.md`) deliberately never interrupts the CEO during the week — all provisional and low-confidence classifications are queued here. See `references/ORG_AND_THREAD_MODEL.md` for the full model.

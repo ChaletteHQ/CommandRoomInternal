@@ -323,10 +323,22 @@ cd "$PLUGIN_ROOT" && python3 shared/scripts/brief_writer.py <<'JSON'
     "needs": "<the single most important reader-action, or 'Nothing from you.'>"
   },
   "sections": [
+    {"heading": "The week in numbers",
+     "tiles": [
+       {"label": "Meetings", "value": "6"},
+       {"label": "You owe", "value": "4"},
+       {"label": "Owed to you", "value": "7"},
+       {"label": "Decisions", "value": "3"},
+       {"label": "New people", "value": "2"}
+     ]},
     {"heading": "Decisions this week", "body": "..."},
-    {"heading": "What you owe (external)", "body": "..."},
+    {"heading": "What you owe (external)",
+     "table": {"headers": ["What", "For whom · due"],
+               "rows": [["Send the packet", "Sam Sample · Fri Jul 11"]]}},
     {"heading": "What you owe (internal projects)", "body": "..."},
-    {"heading": "What they owe you", "body": "..."},
+    {"heading": "What they owe you",
+     "table": {"headers": ["What", "From whom · age"],
+               "rows": [["Updated NetSuite mapping", "Bo Sample · 10 days"]]}},
     {"heading": "Meetings worth noting", "body": "..."},
     {"heading": "Email threads worth noting", "body": "..."},
     {"heading": "New people who came up", "body": "..."},
@@ -339,6 +351,12 @@ cd "$PLUGIN_ROOT" && python3 shared/scripts/brief_writer.py <<'JSON'
 }
 JSON
 ```
+
+**Visual layer (v4.6.1 S3 — the prep-v2 pattern extended here per F-60's follow-up; M directive: tiles/tables over bullet walls in recurring deliverables):**
+
+- **"The week in numbers" stat-tile band opens the doc** — 1-5 tiles, every value counted from THIS window's events (the same numbers Phase 4 already derived), never estimated. **A tile with no data is DROPPED, never rendered empty**; when nothing is countable the whole section is omitted (brief_writer's `_add_stat_tiles` refuses empty tiles at the render chokepoint, same as prep).
+- **The two owe sections render as two-column tables** (what | who · due/age) instead of bullets — same drop rule: no rows, no section. Cap 10 rows per direction with a final "+N more" row.
+- Everything else stays prose/bullets — the tiles and tables carry the scannable layer; no decorative charts, no fabricated numbers, substrate-derived only.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "I made 2 calls: theme-led · internal/external split view"

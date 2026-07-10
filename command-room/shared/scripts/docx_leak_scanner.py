@@ -36,9 +36,16 @@ scan_docx_for_leaks(path) themselves.
 from __future__ import annotations
 
 import re
+import sys
 import zipfile
 from pathlib import Path
 from typing import List
+
+try:
+    from vocabulary_policy import marketing_patterns
+except ImportError:  # pragma: no cover — direct-path import fallback
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from vocabulary_policy import marketing_patterns
 
 
 class LeakScanError(RuntimeError):
@@ -68,12 +75,11 @@ _FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
     ("voice_validator_passed", r"\bvalidator passed\b"),
     ("voice_classifier", r"\bclassification_confidence\b"),
 
-    # Marketing-speak forbidden words (per brief authoring rules)
-    ("marketing_ecosystem", r"\becosystem\b"),
-    ("marketing_synergy", r"\bsynergy\b"),
-    ("marketing_leverage", r"\bleverage\b"),
-    ("marketing_holistic", r"\bholistic\b"),
-    ("marketing_stakeholder", r"\bstakeholder\b"),
+    # Marketing-speak forbidden words — sourced from the ONE shared
+    # vocabulary list (v4.6.1 S3, F-53 P3a: the voice gate reads the same
+    # list, so a word blocked in a docx can no longer lead an email).
+    # Add/remove words in shared/scripts/vocabulary_policy.py, never here.
+    *marketing_patterns(),
 ]
 
 

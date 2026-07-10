@@ -59,12 +59,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from event_types import KIND_VALUES  # noqa: E402
-
-try:
-    from confidence import CONFIDENCE_SURFACE_MIN  # noqa: E402
-except Exception:  # pragma: no cover
-    CONFIDENCE_SURFACE_MIN = 0.7
+from capture_gate import gate_commitment_data  # noqa: E402
 
 # Scope + cost bounds (MC3): chat volume is unbounded, the scan is not.
 DEFAULT_WINDOW_DAYS = 7
@@ -257,6 +252,8 @@ def build_slack_commitment_event(
     no_due: bool = False,
     counterparty_id: Optional[str] = None,
     counterparty_name: Optional[str] = None,
+    counterparty_ids: Optional[List[str]] = None,
+    counterparty_names: Optional[List[str]] = None,
     evidence: str = "",
     channel: str = "",
     message_ts: str = "",
@@ -290,79 +287,11 @@ def build_slack_commitment_event(
             f"(W4c's observed tier will store them when it lands)"
         )
 
-    # Stage D: kind is classified AT EXTRACTION, never defaulted here.
-    if kind not in KIND_VALUES:
-        raise SlackItemError(
-            f"Slack commitment {source_ref} needs data.kind, one of "
-            f"{sorted(KIND_VALUES)} — classify it at extraction "
-            f"(counterparty promise -> promise; self-owed -> task; "
-            f"scheduling intent -> scheduling). 'I'll send X to [person]' "
-            f"has a counterparty — it is a promise, not a task."
-        )
-
-    # S2 due-nudge: propose a due from the message language (resolve relative
-    # phrases — "by Friday", "end of week" — against the MESSAGE's date, not
-    # the scan date) or set no_due explicitly. Silence is not an option.
-    if no_due is True:
-        if due:
-            raise SlackItemError(
-                f"Slack commitment {source_ref} sets BOTH data.due={due!r} "
-                f"and data.no_due: true — pick one"
-            )
-    elif not _parse_iso_date(due):
-        raise SlackItemError(
-            f"Slack commitment {source_ref} needs a due date: propose "
-            f"data.due as YYYY-MM-DD from the message language (resolve "
-            f"relative phrases against the message's date) or set "
-            f"data.no_due: true explicitly (S2 due-nudge; got due={due!r})"
-        )
-
-    # Stage E + the promise-vs-task rule (same as every capture writer).
-    if kind == "task" and (counterparty_id or counterparty_name):
-        raise SlackItemError(
-            f"Slack commitment {source_ref} is kind 'task' but carries a "
-            f"counterparty ({counterparty_id or counterparty_name!r}) — a "
-            f"deliverable owed to/by a named person is a promise, not a task; "
-            f"reclassify"
-        )
-
-    # Safety inversion (v4.5.2, folded into every capture leg): pending_review
-    # defaults ON whenever attribution is not confidently resolved — absence
-    # of the flag is not consent (CRU auto-resolution gates on it). Never
-    # unsets an extractor-set True.
-    reasons: List[str] = []
-    if counterparty_name and not counterparty_id:
-        reasons.append(f"counterparty '{counterparty_name}' has no person record")
-    if kind == "promise":
-        if not counterparty_id and not counterparty_name:
-            reasons.append("no counterparty identified for a promise")
-        if not owner_id:
-            reasons.append("no resolved owner")
-    if (
-        isinstance(classification_confidence, (int, float))
-        and classification_confidence < CONFIDENCE_SURFACE_MIN
-    ):
-        reasons.append(
-            f"extraction confidence {classification_confidence} below threshold"
-        )
-    if reasons:
-        pending_review = True
-        if not review_reason:
-            review_reason = "; ".join(reasons)
-
     due_str = (due or "").strip()
-    status = "open"
-    if due_str and _parse_iso_date(due_str):
-        if _dt.date.fromisoformat(due_str[:10]) < _dt.datetime.now(
-            _dt.timezone.utc
-        ).date():
-            status = "overdue"
-
     data: dict = {
         "title": title,
         "kind": kind,
         "due": due_str,
-        "status": status,
         "source_ref": source_ref,
         # No parent event exists for a Slack message (unlike the meeting/email
         # legs) — the permalink IS the provenance; readers trace via source_ref.
@@ -373,10 +302,12 @@ def build_slack_commitment_event(
         data["owner_id"] = owner_id
     elif owner_external:
         data["owner_external"] = owner_external
-    if counterparty_id:
-        data["counterparty_id"] = counterparty_id
-    if counterparty_name and not counterparty_id:
-        data["counterparty_name"] = counterparty_name
+    # MC1: normalize scalar + list counterparty inputs (single byte-identical).
+    from commitment_parties import build_counterparty_fields
+    data.update(build_counterparty_fields(
+        counterparty_id=counterparty_id, counterparty_name=counterparty_name,
+        counterparty_ids=counterparty_ids, counterparty_names=counterparty_names,
+    ))
     if evidence:
         data["evidence"] = evidence[:200]
     if channel:
@@ -388,13 +319,34 @@ def build_slack_commitment_event(
         if review_reason:
             data["review_reason"] = review_reason
 
+    # THE shared capture block (v4.6.1 W4c consolidation — one implementation
+    # for every writer): Stage-D kind, S2 due-nudge (resolve relative phrases
+    # against the MESSAGE's date, not the scan date), the promise-vs-task
+    # rule, and the pending_review safety inversion (absence of the flag is
+    # not consent; never unsets an extractor-set True).
+    gate_commitment_data(
+        data,
+        subject=f"Slack commitment {source_ref}",
+        classification_confidence=classification_confidence,
+        error_cls=SlackItemError,
+    )
+
+    data["status"] = "open"
+    if due_str and _parse_iso_date(due_str):
+        if _dt.date.fromisoformat(due_str[:10]) < _dt.datetime.now(
+            _dt.timezone.utc
+        ).date():
+            data["status"] = "overdue"
+
     # Stage E: a resolved counterparty is also a person reference — the
     # dual-layer reader links via person_ids.
     pids = [p for p in (person_ids or []) if p]
     if owner_id and owner_id not in pids:
         pids.append(owner_id)
-    if counterparty_id and counterparty_id not in pids:
-        pids.append(counterparty_id)
+    from commitment_parties import counterparty_ids as _cp_ids
+    for _cid in _cp_ids(data):  # MC1: every resolved counterparty
+        if _cid not in pids:
+            pids.append(_cid)
 
     event: dict = {
         "type": "commitment",

@@ -1,6 +1,6 @@
 ---
 name: log-resolution
-description: "Logs a `thread_resolved` event to events.jsonl when a LEGACY Command Room dashboard artifact fires its per-click `log resolved:` prompt. Current scheduled-chat widgets and dashboards do NOT route here — their ✓ clicks travel in the consolidated `apply choices: [...]` payload handled by apply-choices. Fires silently in chat — minimal response, no clutter. Triggers on the artifact's auto-sent prompts: `log resolved: [id]`, `log resolved: [id] ([kind])`."
+description: "Logs a `thread_resolved` event to events.jsonl when a LEGACY Command Room dashboard artifact fires its per-click `log resolved:` prompt. Current scheduled-chat widgets and dashboards do NOT route here — their ✓ clicks travel in the consolidated `apply choices: [...]` message handled by apply-choices. Fires silently in chat — minimal response, no clutter. Triggers on the artifact's auto-sent prompts: `log resolved: [id]`, `log resolved: [id] ([kind])`."
 ---
 
 # log-resolution

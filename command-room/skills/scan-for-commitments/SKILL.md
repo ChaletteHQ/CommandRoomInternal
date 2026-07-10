@@ -7,6 +7,7 @@ description: "One-shot bulk scan over historic Granola transcripts and Gmail thr
 
 - **Use scan-for-commitments for:** retroactive bulk extraction. The workspace has meeting events / interaction events from past Granola transcripts / Gmail threads, but no `type: commitment` events. This is the migration path that backfills them.
 - **Also use it for the Slack source (v4.6.0 MC3):** when the Slack connector is present, every scan includes a recent-window pass over the channels and DMs the user participates in ("scan slack for commitments" runs the Slack leg alone). When Slack is not connected, this leg does not exist — no errors, no mention of Slack anywhere in the output.
+- **The email leg covers BOTH directions (v4.6.2, BUG-3719):** inbound promises via the triaged `interaction` events (as always), plus an outbound **Sent pass** that scans the mail connector directly for the user's OWN sent promises — the lane that had no capture path (sent mail produces no interaction events, and a thread read+replied before triage never reached the inbox extractor). Forward daily coverage of the same lane is `reconcile-sent`'s sent-promise capture; this scan is the historical backfill.
 - **Use `meeting-notes` for:** real-time per-meeting commitment extraction going forward.
 - **Use `inbox-triage` for:** real-time per-email commitment extraction going forward.
 - **Use `workspace-manager` for:** explicit one-off commitment logging ("log that I owe Aria X by Friday").
@@ -80,7 +81,7 @@ I'll look across the 11 meetings and 47 email threads. Takes about 3-5 minutes.
 Want me to show you the list first before I add anything? (yes / no)
 ```
 
-If the Slack connector is present (Step 2's discovery gate), the audit adds one line: "I'll also look through your Slack channels and DMs from the last 7 days." If it's absent, Slack is never mentioned — anywhere in this skill's output.
+If the Slack connector is present (Step 2's discovery gate), the audit adds one line: "I'll also look through your Slack channels and DMs from the last 7 days." If it's absent, Slack is never mentioned — anywhere in this skill's output. If a mail search tool is present, the audit also adds: "I'll also read through mail you sent in that window, for promises you made." — same skip-not-fail rule when absent.
 
 If the user answers **yes** (or says "dry-run"), run the Step 5 dry-run preview first. If they answer **no** — they don't want to see the list first — proceed straight to commit mode. If they don't answer, default to the dry-run preview (the safe path).
 
@@ -96,13 +97,17 @@ For each inbound `interaction` event with `channel: "email"` (within the time wi
 
 If a source artifact is unavailable (transcript deleted, email purged), log to `_hq/CONFLICTS.md` and skip that event. Do not abort the scan — partial backfill is better than no backfill.
 
-**Slack source (v4.6.0 MC3).** Unlike the meeting/email legs, Slack does not start from existing events — it scans the connector directly over a recent window:
+**Outbound / Sent pass (v4.6.2, BUG-3719).** The inbound iteration above cannot see the user's OWN promises: interaction events exist only for triaged inbound threads, and nothing ever writes one for outbound mail — so a promise the user sent (especially in a thread they read and replied to before triage ran) was historically invisible to this scan too. Like the Slack leg, the Sent pass therefore scans the connector directly instead of starting from existing events:
+
+1. **Discovery gate:** resolve the mail search tool via `discover_mail_search_tool()` from `shared/scripts/tool_discovery.py` (Gmail / Outlook native parity). Absent → the Sent pass doesn't exist for this scan (skip-not-fail, zero mentions). Present-but-failing mid-scan → one honest line, the rest of the scan proceeds.
+2. **Fetch:** query `in:sent after:<window floor>` over the scan's window (default 30 days; a stated window widens/narrows it — same rules as the meeting/email legs). For each outbound message resolve `recipient_person_ids` against `entities.json` and capture the recipients' display names + resolved orgs (for counterparty receipts and the per-org capture override).
+3. **Direction doctrine (the Slack mirror, `slack_capture.classify_direction`'s email analog):** the user's own sent messages are the **primary promise source** — direction is fixed by the surface itself (Sent mail = the user's own words), so this pass extracts ONLY what the user promised. What correspondents owe the user stays with the inbound legs; quoted reply-chain text inside a sent message is NOT the user's words — extract from the user's newly-written text only. Unlike the meeting/email legs, Slack does not start from existing events — it scans the connector directly over a recent window:
 
 1. **Discovery gate:** resolve tools via `discover_slack_tool()` from `shared/scripts/tool_discovery.py` (operations: `search_channels`, `read_channel`, `read_thread`, `search_users`, `read_user_profile`). If `tool_id` is None, **the Slack leg does not exist for this scan** — skip it with zero errors and zero mentions (don't say "Slack not connected"; a workspace without Slack should never hear the word). If discovery succeeds but a call fails mid-scan (auth expired, rate limit), that's connector-down: finish the other sources and add ONE honest line to the summary ("I couldn't reach Slack just now — that part of the scan is incomplete"). Never fabricate, never abort the whole scan.
 2. **Identity first:** resolve the user's own Slack member id(s) once per scan — search users for the primary-user entity's name/email (`entities.json`, `resolve_primary_user`) and confirm via profile. If the user's Slack identity can't be resolved, the direction split below is impossible — skip the Slack leg with the one honest line rather than guessing.
 3. **Scope + cost bounds:** channels and DMs the user participates in, last **7 days** by default, hard message cap via `slack_capture.cap_messages` (default 400, newest kept). If the cap trims anything, the post-scan summary says how much was set aside — a silently-capped scan reads as full coverage.
 4. **Hygiene:** every raw message goes through `slack_capture.normalize_message` — bot posts, join/leave/topic noise, deleted messages, and empty text never reach extraction; edited messages are read at their LATEST text. Thread replies count as messages (fetch via `read_thread` when a parent in the window has replies).
-5. **Direction split (`slack_capture.classify_direction`):** the user's OWN sent messages are the **primary promise source** (what I promised); messages **naming the user** (mention or name) are the **owed-to-you source**. Everything else is third-party↔third-party chatter — out of scope for this leg (the builder refuses it; W4c's relevance gate + observed tier will store those as meeting/channel context when it lands — this leg is already shaped for that gate to drop in at capture).
+5. **Direction split (`slack_capture.classify_direction`):** the user's OWN sent messages are the **primary promise source** (what I promised); messages **naming the user** (mention or name) are the **owed-to-you source**. Everything else is third-party↔third-party chatter — never an open item (the builder refuses it); when such a message still clears the Stage-D capture floor, store it set-aside via `capture_gate.build_observed_event` (Step 3.5's observed tier) so it stays searchable and feeds prep without asking anything.
 
 ### Step 3 — Extract commitments per source
 
@@ -113,11 +118,42 @@ Apply the trigger logic from `shared/COMMITMENT_SCHEMA.md` § "Extraction trigge
 
 Below-floor items are skipped (they bury real promises — the rule that cut one live open set 71→33). If `_hq/config/commitment-rules.md` exists, read it BEFORE writing and skip any item matching a user-taught `never-track` pattern.
 
-For each qualifying match in a transcript or email body, prepare a `type: commitment` event in canonical shape. **For Slack messages, build the event through `slack_capture.build_slack_commitment_event()` (`shared/scripts/slack_capture.py`) — it enforces this entire block in code** (Stage-D kind, S2 due-nudge, Stage-E counterparty, pending_review inversion, `source_ref: slack:<permalink>`, ts backdated to the message time) and fails loud on anything the extraction skipped; resolve relative due phrases ("by Friday") against the MESSAGE's date, not the scan date. **Classify `data.kind` at capture (Stage D — REQUIRED; the gate rejects a kind-less commitment on the strict path):** counterparty determinable → `"promise"`; self-owed with no counterparty → `"task"`; scheduling intent → `"scheduling"`; genuinely ambiguous → `"promise"` + `data.pending_review: true`. **Counterparty receipts (Stage E, F5 — REQUIRED when determinable):** populate `data.counterparty_id` (and include it in `person_ids`) with who the deliverable is owed TO / who owes it; when the counterparty is named but has no person record, SHOULD set free-text `data.counterparty_name`. These feed the CRU candidacy gate directly (the Bug #103 recall fix); `requester_id` is retired for NEW writes (readers keep the alias chain forever). **Due-date nudge (S2):** propose a `due` from the source language OR set explicit `data.no_due: true` — undated items go to the weekly triage, not the aging view. Resolve owner names via `aliases.json` to canonical `person_id`. If owner can't be resolved, prepare the event with `owner_id: ""` and surface the unresolved name in the post-scan summary.
+For each qualifying match in a transcript or email body, prepare a `type: commitment` event in canonical shape. **For Sent-pass messages, build the event through `sent_capture.build_sent_commitment_event()` (`shared/scripts/sent_capture.py`) — same shared capture block in code, owner stamped from `resolve_primary_user` (never guessed, Bug #102), `source_ref: gmail:<message_id>`, ts backdated to the send time; extract PROMISES only, never completion statements ("just sent the deck" is evidence of doing, not a commissive), and resolve relative due phrases against the MESSAGE's send date. **For Slack messages, build the event through `slack_capture.build_slack_commitment_event()` (`shared/scripts/slack_capture.py`) — it enforces this entire block in code** (Stage-D kind, S2 due-nudge, Stage-E counterparty, pending_review inversion, `source_ref: slack:<permalink>`, ts backdated to the message time) and fails loud on anything the extraction skipped; resolve relative due phrases ("by Friday") against the MESSAGE's date, not the scan date. **Classify `data.kind` at capture (Stage D — REQUIRED; the gate rejects a kind-less commitment on the strict path):** counterparty determinable → `"promise"`; self-owed with no counterparty → `"task"`; scheduling intent → `"scheduling"`; genuinely ambiguous → `"promise"` + `data.pending_review: true`. **Counterparty receipts (Stage E, F5 — REQUIRED when determinable):** populate `data.counterparty_id` (and include it in `person_ids`) with who the deliverable is owed TO / who owes it; when the counterparty is named but has no person record, SHOULD set free-text `data.counterparty_name`. These feed the CRU candidacy gate directly (the Bug #103 recall fix); `requester_id` is retired for NEW writes (readers keep the alias chain forever). **Due-date nudge (S2):** propose a `due` from the source language OR set explicit `data.no_due: true` — undated items go to the weekly triage, not the aging view. Resolve owner names via `aliases.json` to canonical `person_id`. If owner can't be resolved, prepare the event with `owner_id: ""` and surface the unresolved name in the post-scan summary.
+
+### Step 3.5 — Relevance gate: open vs set-aside (v4.6.1 W4c)
+
+Every item that cleared Step 3 is routed by the shared relevance gate
+(`shared/scripts/capture_gate.py`) BEFORE it becomes an open commitment.
+Resolve the workspace context once per scan — `workspace_capture_context(root)`
+— then per item (passing the meeting's/thread's RESOLVED org for the per-org
+override via `resolve_capture_mode(root, org_id=…, org_name=…)`):
+
+1. **`classify_capture(data, …)` decides the tier.** Open only when the
+   workspace owner is a party (owner or counterparty — id or confident name
+   match; self-owed tasks count). Third-party↔third-party items and items
+   whose attribution can't be confidently resolved go to the **observed
+   tier**: build them with `capture_gate.build_observed_event(...)` instead
+   of a commitment event, append them in the same batch. Set aside ≠ dropped:
+   they stay searchable, feed call prep, and can be promoted later —
+   they just never ask for attention (no count, no triage row, no confirm row).
+2. **Caution rail (code-enforced, beats every mode):** anything carrying a
+   due date or a money amount ALWAYS lands open — `classify_capture` routes
+   it open and `build_observed_event` refuses it.
+3. **Modes (the customize layer, `shared/SKILL_CUSTOMIZATION.md` rails):**
+   `party-only` (default) / `team-delegation` (also ask about what the team
+   commits to) / `track-everything` (everything opens), plus per-org
+   overrides ("track everything from [client]; observed-only for networking
+   calls"). Read fresh at capture time via the capture_gate helpers — never
+   hardcode a mode.
+4. **Say what was set aside, by meeting, not by item:** the commit-mode
+   summary carries one line per source — "tracked 6 for you, set aside 11 as
+   other people's" — never a row per set-aside item. Use the plain phrase
+   "set aside" for the observed tier; never say "observed", "tier", or any
+   event name to the CEO.
 
 ### Step 4 — Dedup before writing
 
-Match on `(source_ref, title)`. If a `type: commitment` event already exists in events.jsonl with the same `data.source_ref` AND the same `data.title` (case-insensitive substring match — first 60 chars), skip it. This is the only safe way to make the scan idempotent across re-runs. The Slack leg uses the same key, codified — `slack_capture.already_captured(workspace_root, permalink, title)` — with the permalink as the per-message `source_ref` anchor. Cross-SOURCE duplicates (the same real promise made in Slack and again in an email) are NOT this step's job: the capture-time semantic dedup layer (`commitment_dedup`, v4.6.0 C4) fires inside the append itself and flags suspects for the confirm flow.
+Match on `(source_ref, title)`. If a `type: commitment` event already exists in events.jsonl with the same `data.source_ref` AND the same `data.title` (case-insensitive substring match — first 60 chars), skip it. This is the only safe way to make the scan idempotent across re-runs. The Slack leg uses the same key, codified — `slack_capture.already_captured(workspace_root, permalink, title)` — with the permalink as the per-message `source_ref` anchor. The Sent pass likewise — `sent_capture.already_captured(workspace_root, message_id, title)` — AND additionally runs each item through `capture_gate.matches_open_commitment()` against the open set (shared non-user party + content-token overlap): a sent restatement of a commitment already tracked from a meeting or a triaged thread MERGES into the existing item (skip the write; count it as merged in the summary) instead of double-tracking. Daily coverage of the same lane is `reconcile-sent`'s sent-promise capture — both writers share these exact dedup layers, so overlap between a backfill and the daily pass is safe by construction. Cross-SOURCE duplicates (the same real promise made in Slack and again in an email) are NOT this step's job: the capture-time semantic dedup layer (`commitment_dedup`, v4.6.0 C4) fires inside the append itself and flags suspects for the confirm flow.
 
 Also skip commitments where the source is already covered by a `commitment_resolved` or `thread_resolved` event for the same `source_ref` — there's no point creating a commitment that's already known to be done.
 
@@ -205,13 +241,15 @@ Does NOT fire on:
 - **Don't over-extract from "we should" / "we could".** These are discussion artifacts, not commitments. The schema doc lists qualifying vs disqualifying patterns — read it once per scan run.
 - **Slack: the permalink is the dedup anchor — fetch it, never synthesize it.** Use the permalink the connector returns for the message. A hand-built channel+ts URL that differs from the connector's spelling breaks idempotency (the same message re-captures on every scan).
 - **Slack: casual chat reads as commitment language.** "I'll take a look" / "on it" in Slack usually isn't a deliverable. The Stage-D capture floor (owner + deliverable + consequence) applies with full force — when in doubt in Slack, the answer is skip. Emoji-only replies, reactions, and acknowledgments are never commitments.
+- **Sent mail: your own quoted words come back at you.** Reply chains quote the user's earlier messages; extracting from quoted text re-captures an old promise under a NEW message id, which defeats `(source_ref, title)` dedup. Extract from the newly-written portion only — the restatement match is the backstop, not the plan.
+- **Sent mail: promises, not completions.** "Just sent the deck" / "attached is the report" is evidence of DOING (reconcile-sent's matcher closes on it), not a commissive. Only forward-looking promises open items.
 - **Slack: direction is not attribution.** The direction split decides which messages to READ; the owner still comes from the language. "Can you send me the deck by Friday?" in the user's OWN message is owed-to-you (the counterparty owes it), not a user promise.
 
 ---
 
 ## What It Doesn't Do
 
-- Does not extract third-party↔third-party Slack items — only what the user promised (own messages) or is owed (messages naming them) becomes an open commitment. Observed-tier storage for the rest arrives with W4c's relevance gate, which applies to this leg at capture.
+- Does not open third-party↔third-party items from ANY source — only what the user promised or is owed becomes an open commitment (plus team items in team-delegation mode, and anything carrying a due date or money). The rest is stored set-aside per Step 3.5 — kept, searchable, promotable, silent.
 - Does not send, post, or react in Slack — read-only, ever.
 - Does not add a Slack schedule — the Slack leg runs inside this skill's explicit trigger only; the existing daily inbox/commitments cadence covers surfacing (a dedicated Slack schedule is a future product decision, not this skill's call).
 - Does not extract from raw text the user pastes — that's `meeting-notes` (paste-fallback path).
@@ -226,6 +264,7 @@ Does NOT fire on:
 
 - Transcript fetch — resolved via `discover_transcript_tool()` (`shared/scripts/tool_discovery.py`). Native Granola or Fireflies; never hardcoded per-installation UUIDs (Rule 21 native parity).
 - Mail thread fetch — resolved via `discover_mail_thread_fetch_tool()`. Native Gmail (`get_thread`) or Outlook (`get_conversation`).
+- Mail search (the Sent pass, v4.6.2) — resolved via `discover_mail_search_tool()`; query `in:sent after:<window floor>` (Outlook: equivalent Sent folder query). Absent = the Sent pass doesn't exist; present-but-failing = one honest line, scan continues (skip-not-fail).
 - Slack reads — resolved via `discover_slack_tool()` (read-only: channel history, threads, channel/user search, profiles). Absent = the Slack leg doesn't exist; present-but-failing = one honest line, scan continues (skip-not-fail).
 - `_hq/data/events.jsonl` — append-only writer
 - `_hq/data/aliases.json` — read-only (owner resolution)

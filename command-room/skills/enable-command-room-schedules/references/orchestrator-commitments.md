@@ -130,6 +130,20 @@ for send in <list of sends since window>:
                     n_resolved += 1
             except (CommitmentIdError, PendingReviewError) as e:
                 print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
+        elif r['recommendation'] == 'partial_received':
+            # MC1: a send to ONE counterparty of a multi-counterparty commitment
+            # records that person's receipt — NEVER a whole close. Closure is
+            # proposed (Phase 4.5) once all are in.
+            from commitment_state import mark_partial_received
+            for cp in r.get('matched_counterparty_ids') or []:
+                try:
+                    mark_partial_received(
+                        workspace_root, r['commitment_id'],
+                        received_by='<user person_id>', source_skill='commitments',
+                        counterparty_id=cp, evidence=evidence,
+                    )
+                except CommitmentIdError as e:
+                    print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
         elif r['recommendation'] == 'pending_review':
             to_append.append(build_pending_review_event(
                 commitment_id=r['commitment_id'],
@@ -215,6 +229,19 @@ for msg in <list of inbound messages since window>:
                     n_resolved += 1
             except (CommitmentIdError, PendingReviewError) as e:
                 print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
+        elif r['recommendation'] == 'partial_received':
+            # MC1: an inbound delivery from ONE counterparty of a multi-
+            # counterparty owed-to-you item records that person's receipt only.
+            from commitment_state import mark_partial_received
+            for cp in r.get('matched_counterparty_ids') or []:
+                try:
+                    mark_partial_received(
+                        workspace_root, r['commitment_id'],
+                        received_by=r['owner_id'], source_skill='commitments',
+                        counterparty_id=cp, evidence=evidence,
+                    )
+                except CommitmentIdError as e:
+                    print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
         elif r['recommendation'] == 'commitment_updated':
             to_append.append(build_commitment_updated_event(
                 commitment_id=r['commitment_id'],
@@ -310,6 +337,19 @@ for r in results:
                 n_resolved += 1
         except (CommitmentIdError, PendingReviewError) as e:
             print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
+    elif r['recommendation'] == 'partial_received':
+        # MC1: a calendar event with ONE counterparty of a multi-counterparty
+        # scheduling commitment fulfills only that leg — record its receipt.
+        from commitment_state import mark_partial_received
+        for cp in r.get('matched_counterparty_ids') or []:
+            try:
+                mark_partial_received(
+                    workspace_root, r['commitment_id'],
+                    received_by=r['owner_id'], source_skill='commitments',
+                    counterparty_id=cp, evidence=r['evidence'],
+                )
+            except CommitmentIdError as e:
+                print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
     elif r['recommendation'] == 'pending_review':
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
@@ -384,6 +424,34 @@ Read events.jsonl. Apply base filter to every commitment event (every field read
 - **Aging cap (Sam Apr 29):** for `aging_undated` items only, exclude commitments logged ≥ 60 days ago with NO related event activity (no outreach_sent, no commitment_update, no chat_dismissal, no thread reply touching the commitment) in the last 30 days. These are ghost items that almost certainly resolved outside the system; surfacing them daily as "wrong person" / "really old" pollutes the widget. The user can still see them via `show more`. `overdue` and `due_near` items are unaffected — those have an explicit due date that gives the user a concrete reason to keep seeing them.
 
 **Header counts — the one bucket export (Phase 2 Stage A + v4.5.2 R4 + v4.6.0 MC2, MANDATORY).** The widget-header numbers (and the all-clear counters) MUST come from `commitment_state.count_commitments(opens, user_person_id=<M's person_id>, now_iso=<now>, movement=movement)["headline"]` over the FULL `load_open_commitments` set — `n_total = headline["total"]`, `n_you_owe = headline["you_owe"]`, `n_owed_to_you = headline["owed_to_you"]`, `n_unowned = headline["unowned"]`, `n_unconfirmed = headline["unconfirmed"]`, `n_stuck = headline["stuck"]`, `n_blocked = headline["blocked"]` — where `movement = commitment_activity.derive_commitment_movement("<WORKSPACE>/_hq/data/events.jsonl")` (v4.6.0 MC2: the REAL stuck metric — no movement 21+ days, or blocked on a named person; `blocked ⊆ stuck`. Derive the map ONCE per fire and pass the SAME map everywhere a movement-based number or row renders — the F-54 cross-surface-split rule. If `headline` carries no `stuck` key the derivation was unavailable: omit the segment, never render 0). **Never fold unowned or unconfirmed into a direction** — the pre-R4 rule here (`n_owed_to_you = they_owe + unowned`) is exactly why one dogfood day produced four different open counts across surfaces (F-47 P2b / F-56: this chat said 52 owed-to-you while triage said 40 + 18 unowned, from the same substrate). Unowned and unconfirmed render as their own numbers, identical on the morning brief, this chat, and commitment-triage. The confidence / dismissal / project-status / aging filters above decide which items SURFACE as actionable rows — they never shrink the header counts. This is the same export the morning brief and commitment-triage render; the 2026-07-01 audit found three surfaces disagreeing (104 vs 54 vs 105) because each hand-rolled this math. Note `load_open_commitments` now folds `commitment_updated` deferrals into the effective `data.due` (a `push to [date]` item stops rendering overdue) — never re-derive due from the raw original event.
+
+## NEEDS A QUICK CONFIRM — the daily confirm section, renders FIRST in the widget (v4.6.1 W4b)
+
+**Principle: unconfirmed items don't age into the pool — they escalate to confirmation** (F-13 P2b / F-56: owner misattributions persisted for days because nothing ever asked). The chat OPENS with this section — it renders ABOVE meeting_today and both directions, titled **"Needs a quick confirm"**. Skip the section entirely when every selector below returns empty (never pad).
+
+Build the row set in code — never hand-derive:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from confirm_flow import (select_confirm_items, select_promotion_proposals,
+                          load_open_person_proposals)
+from mute_ledger import active_dismissal_target_ids
+
+dismissed = active_dismissal_target_ids(<all events>, "<now ISO>")
+confirm_rows = select_confirm_items(opens, "<now ISO>", dismissed_ids=dismissed)
+promo_rows   = select_promotion_proposals(opens, dismissed_ids=dismissed)
+person_rows  = load_open_person_proposals(events_path, dismissed_target_ids=dismissed)
+```
+
+`opens` is the SAME projected set Phase 3 already loaded — no second read. Three row classes, each with its verb cluster (display labels from `verb_taxonomy` — never restate them):
+
+1. **Commitment rows** (`confirm_rows` — every capture younger than the 7-day escalation pin that is pending_review, unowned, or a suspected duplicate; the daily window tiles exactly with the pin, so no amber item ever falls between this section and the Unconfirmed block): one line each (title + who/what we think it involves + the `review_reason` when present, plain English). Actions: `mine` / `theirs to [name]` / `make task` / `drop`. Rows whose class list includes `suspected_duplicate` render INSTEAD as **"looks like a duplicate of [the flagged item's title] — merge, or keep both?"** (C4's contract) with actions `merge` / `keep both` / `drop` — the flagged target's title comes from looking its id up in `opens`.
+2. **Unknown-person rows** (`person_rows` — unadjudicated person proposals; these re-surface EVERY day until adjudicated, no age window — the F-46 P2b stranding fix): "[name] came up in [source context] — track them?" Actions: `add person` / `same as [existing]` / `proposal not relevant`.
+3. **Promotion-proposal rows** (`promo_rows` — kind=task items that gained a resolvable counterparty via reassign/edit/corroboration): **"Make it a commitment?"** framed as a question. Actions: `promote` / `not relevant` / `skip`. PROPOSE only — nothing auto-promotes, ever (4.6 fold-in, M decision).
+
+**Caps + counts:** cap the section at 8 rows per fire (oldest first, `+N more ride tomorrow` in the section title when trimmed) — confirm rows are light (no drafts, no original_thread accordion) and do NOT count toward the 7-item chase cap. Header counts are untouched: unconfirmed items count ONLY in `headline["unconfirmed"]` (R4's one bucket export) — never folded into a direction, and this section never changes the numbers.
+
+**Guardrails (restate nowhere else, enforce everywhere):** unconfirmed items NEVER enter chase — no chase draft is ever pre-staged on a confirm row (no auto-email on a guessed owner; the code paths already enforce this — `pending_review` is filtered out of the chase buckets and CRU). Rows re-surface daily until adjudicated: a verb click adjudicates; a snooze quiets for its stated TTL only. Every row embeds the commitment's `data.id` (or the proposal's seq) VERBATIM for stateless dispatch.
 
 ## MEETING TODAY — relevance bucket, renders FIRST in each direction (v4.5.2 C1 / F-44)
 
@@ -491,7 +559,15 @@ The reliability spec's W5 waiting-on chase, riding this orchestrator's Tue/Thu f
 
 # Phase 4 — Group by recipient (OWED TO YOU only)
 
-Within OWED TO YOU, if a single owner owes multiple things in the same bucket, merge into ONE chase email listing all items. Subject: "Circling back on a few things". Body lists each. Singletons stay single-subject. (This grouping does not happen in YOU OWE — each thing M owes is its own status email.)
+Within OWED TO YOU, if a single owner owes multiple things in the same bucket, merge into ONE chase email listing all items. Subject: "Quick check on a few things" (the old "Circling back..." subject is on the universal banned-phrase list — the voice gate now reads subjects too). Body lists each. Singletons stay single-subject. (This grouping does not happen in YOU OWE — each thing M owes is its own status email.)
+
+# Phase 4.5 — Multi-counterparty fan-out (MC1)
+
+A single commitment can name N counterparties — "send the deck to the board" is owed to three people at once (`data.counterparty_ids` carries the roster; `data.counterparty_id` stays the primary). Do NOT chase or close it as one blob:
+
+1. **Outstanding set:** call `commitment_parties.outstanding_counterparties(commitment)` — the roster minus everyone already received (`data.received_from` / `data.received_from_names`, folded onto the projection by the loader). Render **one row per OUTSTANDING counterparty**, grouped per person exactly like Phase 4's per-recipient grouping (received counterparties simply don't appear — they've delivered). A single-counterparty commitment has exactly one entry, so this reduces to today's behavior with zero change.
+2. **Per-person verb:** each fan-out row carries `mark received from [name]` (verb_taxonomy `mark received from [name]` → `commitment_state.mark_partial_received`), with the counterparty id embedded on the row so apply-choices dispatches statelessly. A YOU-OWE multi-counterparty item drafts one status note per outstanding recipient; an OWED-TO-YOU one drafts one nudge per outstanding recipient. Never chase a counterparty already in `received_from`.
+3. **Closure PROPOSAL, never auto-close:** when the projection carries `data.all_counterparties_received: true` (every counterparty is in), render a single "everyone's received — close it?" row (the `mark done` / `resolved` verb) INSTEAD of the fan-out. The item stays open until the user clicks; nothing here auto-closes. The CRU pre-render scans (2.5/2.6/2.7) already record per-person receipts rather than whole-closing a multi-counterparty item (`match_*` returns `recommendation: "partial_received"` with `matched_counterparty_ids` — dispatch each through `mark_partial_received`, never `close_commitment`).
 
 # Phase 5 — Apply severity tier (OWED TO YOU only, auto-tone by aging)
 
@@ -766,7 +842,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
     },
     "metadata": [                                       # v2.14.36+ DROPPED ("Originally", ...) — original_thread carries it
         ("To", "sam@example.com"),
-        ("Subject", "Q2 deck — status"),
+        ("Subject", "Q2 deck: status"),   # outbound subjects are dash-free (S3 subject gate)
     ],
     "body_lines": [...],                    # email-writer's draft
     "actions": ["1 send", "1 edit then send", "1 draft", "1 push to [date]", "1 prep deep work", "1 resolved", "1 snooze 3d", "1 add to my list"],  # v2.14.38+ — added `snooze 3d` and `add to my list` to standardize the deferral cluster across all daily-loop surfaces. v2.14.28: Skip dropped (functionally equivalent to no-action since the daily fire resurfaces unhandled items).
@@ -790,7 +866,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
     },
     "metadata": [                                       # v2.14.36+ DROPPED ("Originally", ...) — original_thread carries it
         ("To", "bo@example.com"),
-        ("Subject", "NetSuite mapping — timing"),
+        ("Subject", "NetSuite mapping: timing"),   # dash-free (S3 subject gate)
     ],
     "body_lines": [...],
     "actions": ["6 send", "6 edit then send", "6 draft", "6 follow-up call", "6 mark received", "6 escalate to memo", "6 snooze 3d", "6 add to my list"],  # v2.14.38+ — standardized deferral cluster (replaces `skip`).
@@ -805,7 +881,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
     "name": "Sam",
     "subject": "3 things overdue",
     "context_tag": "oldest committed Apr 8, 20 days overdue · firmer",
-    "metadata": [("To", "sam@example.com"), ("Subject", "Circling back on a few things")],
+    "metadata": [("To", "sam@example.com"), ("Subject", "Quick check on a few things")],
     "body_lines": [...],                    # grouped chase draft (lists the items in the EMAIL going to Sam)
     "sub_items": [
         {"id": "7a", "summary": "Q2 deck refresh (committed Apr 8)", "actions": ["7a mark received", "7a not relevant", "7a add to my list"]},
@@ -848,8 +924,9 @@ Sub-items render as:
 ```
 
 **Pre-build resolution rules (your job, BEFORE calling renderer):**
-- Resolve every `person_NNN` / `org_NNN` to canonical name in name + body_lines + context_tag
+- Resolve every `person_NNN` / `org_NNN` to canonical name in name + body_lines + context_tag — and the name is the RESOLVED record's spelling, never a transcript/ASR spelling (F-50 P2b; `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names)
 - Subject fallback per Rule 12 — never ship blank subjects
+- Every OUTBOUND draft subject passes the subject voice gate (v4.6.1 S3): `printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject` — no dashes as punctuation, no banned phrases, no vocabulary words (F-47 P2d's em-dash subject shipped from THIS surface). The inbound `original_thread.subject` stays verbatim — never rewrite the sender's own subject.
 - Source thread → `original_thread` field (v2.14.36+ MANDATORY when `source_ref` exists). Mirror the inbox-triage pattern. Drop the legacy inline `("Originally", ...)` metadata key — the renderer no longer paints it.
 - For producible deliverables (title contains "deck", "memo", "draft", "doc", "plan", "review"), append `← recommended` to the `annotations` array on the item — renderer appends it to the first line
 - For grouped items in YOU OWE direction: do NOT group — each item M owes is its own status email (only OWED TO YOU groups when one owner has multiple things)
@@ -985,6 +1062,21 @@ Three correction verbs for captures that landed WRONG, all registered in `verb_t
 - `N fix wording: <text>` / "that should say <text>" → `commitment_state.edit_commitment_wording(workspace_root, <item's data.id verbatim>, new_summary=<text>, edited_by=<user person_id>, source_skill="commitments")`. The item re-renders with the corrected text on every surface; the original stays in history. Confirm with the corrected line, e.g. `✓ Fixed — "send Michele the positioning brief".`
 - `N reassign to [name]` / "that's actually [name]'s" → resolve the name via the standard entity path (ambiguous → ask in one line, never guess), then `commitment_state.reassign_commitment(workspace_root, <id>, new_owner_id=<resolved person_id>, new_owner_name=<display name>, reassigned_by=<user person_id>, reason="user reassigned", source_skill="commitments", confirmed=True)`. The item leaves the user's you-owe and lands on the named owner — `not mine` DISCARDS, reassign ROUTES. Confirm: `✓ Routed to [name] — off your list.` (Unconfirmed/inferred reassignments — never from a typed name — stay in the unconfirmed bucket and are NEVER chased; no auto-email on a guessed owner.)
 - `N split into: A / B / C` (2+ parts, separated by newlines / semicolons / " / ") → `commitment_state.split_commitment(workspace_root, <id>, [{"title": ...}, ...], split_by=<user person_id>, source_skill="commitments", user_confirmed=True)`. Each part becomes its own commitment carrying the original's provenance; the original closes with a "split into …" note. Confirm by naming the N new items. Extraction pre-split stays the doctrine (M decision 2026-07-09) — this is the manual correction path, never an extraction substitute.
+
+## Confirm section actions (v4.6.1 W4b — "Needs a quick confirm" rows; apply-choices dispatches these on this orchestrator's `src`)
+
+All writes through the canonical helpers — never hand-built appends. Every handler is TERMINAL (state change + one plain-English ack line; no widget re-render, no draft):
+
+- `N mine` → `commitment_state.confirm_commitment_owner(workspace_root, <row's data.id verbatim>, owner_id=<user person_id>, confirmed_by=<user person_id>, source_skill="commitments")`. Ownership folds to the user and the confirm flag clears — the item joins you-owe on the next fire. Ack: `✓ Yours — [title].`
+- `N theirs to [name]` → resolve the name via the standard entity path (aliases first; ambiguous → ask in one line, never guess), then `commitment_state.reassign_commitment(workspace_root, <id>, new_owner_id=<resolved person_id>, new_owner_name=<display name>, reassigned_by=<user person_id>, reason="confirmed: theirs", source_skill="commitments", confirmed=True)` — the tapped name IS the explicit confirmation (S4's `reassign to [name]` is the chat-phrase twin). Ack: `✓ Routed to [name].` An unresolvable name → item-level error in the ack, nothing written.
+- `N make task` / `N drop` → the same dispatches as commitment-triage (`promote_task_to_commitment(new_kind="task")` / `close_commitment(resolution="dropped", user_confirmed=True)`) — the explicit click adjudicates a pending_review row.
+- `N merge` (duplicate rows) → `commitment_state.supersede_commitment(workspace_root, survivor_id=<the row's suspected_duplicate_of target verbatim>, superseded_id=<the row's data.id>, merged_by=<user person_id>, source_skill="commitments", evidence="user merged from the confirm section", user_confirmed=True)`. Honor `already_resolved` as a NO-OP with an honest ack. Ack: `✓ Merged — one item now, both sources kept.`
+- `N keep both` (duplicate rows) → `commitment_state.clear_review_flags(workspace_root, <id>, cleared_by=<user person_id>, source_skill="commitments")`. Ack: `✓ Kept both — they're separate items.`
+- `N promote` (promotion-proposal rows) → `promote_task_to_commitment(workspace_root, <id>, new_kind="promise", source_skill="commitments", reason="counterparty appeared — user promoted from the confirm section")`. Ack names the counterparty it will now be tracked against.
+- **Unknown-person rows** (the proposal's event seq is the row id; every branch ENDS with the tombstone — `confirm_flow.build_person_proposal_resolved_event(proposal_seq=<seq>, resolution=<...>, source_skill="commitments", ...)` appended via `event_gate.append_event` — the tombstone is what stops the daily re-surface, never skip it):
+  - `N add person` → apply-choices Step 3a (dedup-first `people_writer` path; `MultipleCandidatesError` → disambiguation widget), then the tombstone with `resolution="person_added"` + the new `person_id`. Ack: `✓ Added [name].`
+  - `N same as [existing]` → resolve the typed name via the standard entity path (ambiguous → disambiguation widget, never guess), then `people_writer.add_person_alias(workspace_root, <resolved person_id>, <the proposal's raw name>, source_skill="commitments")` — the permanent resolution improvement (aliases.json mapping + the person record; future captures of that spelling resolve correctly, the F-13 P2b/F-56 fix) — then the tombstone with `resolution="same_as"` + person_id + alias. If `add_person_alias` raises the already-mapped-elsewhere conflict, surface it plainly and write NO tombstone (the proposal stays open for a human decision). Ack: `✓ Saved — "[raw name]" is [canonical name].`
+  - `N proposal not relevant` → the tombstone with `resolution="not_relevant"`, nothing else written. Permanent (not a timed mute). Ack: counted in the consolidated line, no per-item callout.
 
 "show muted" / "show snoozed" in this chat → the mute ledger (show-my-list's ledger mode): every live snooze with its remaining time and an Unmute action.
 

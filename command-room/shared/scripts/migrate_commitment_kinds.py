@@ -67,7 +67,8 @@ def _has_counterparty_signal(ev: dict, user_id: str) -> bool:
     if _commitment_field(ev, "requester_id"):
         return True
     d = ev.get("data") or {}
-    if d.get("counterparty_id") or d.get("counterparty_name") or d.get("owner_external"):
+    from commitment_parties import counterparty_ids as _cp_ids, counterparty_names as _cp_names
+    if _cp_ids(d) or _cp_names(d) or d.get("owner_external"):
         return True
     others = {
         p for p in (ev.get("person_ids") or []) + (d.get("person_ids") or [])

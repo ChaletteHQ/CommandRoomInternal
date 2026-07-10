@@ -25,6 +25,11 @@ VIOLATION CATEGORIES (negative — flag presence of):
   - mojibake             — UTF-8 mis-decode bytes (â€œ â€" etc.)
   - telemetry_narration  — "pack_run seq", "Logged: pack_run", "(seq N-N)"
   - threshold_rationale  — "Degraded baseline mode", "obs=N", "absolute thresholds"
+  - internal_vocab_leak  — the shared INTERNAL_VOCAB list (vocabulary_policy.py):
+                           substrate, dispatch layer, payload, canonical
+                           renderer/writer/reader/path, audit marker,
+                           <run-summary> tags, bootloader, fire-marker,
+                           bare "seq N" refs (v4.6.1 S3 — the F-14 pile)
   - sender_email_leak_in_first_line — email appears in item first line instead of in To: metadata
 
 VIOLATION CATEGORIES (positive — flag absence of, v2.10.8+):
@@ -44,7 +49,15 @@ conservatively — when in doubt, flag.
 from __future__ import annotations
 
 import re
+import sys as _sys
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
+
+try:
+    from vocabulary_policy import internal_vocab_patterns as _internal_vocab_patterns
+except ImportError:  # pragma: no cover — direct-path import fallback
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from vocabulary_policy import internal_vocab_patterns as _internal_vocab_patterns
 
 
 @dataclass
@@ -140,6 +153,15 @@ PATTERNS: list[tuple[str, str, str]] = [
     ("engineer_phrase_leak", r"pending_enrichment rows queued", "pending_enrichment phrasing leak"),
     ("engineer_phrase_leak", r"truncated mid-file at", "truncated mid-file phrasing leak"),
     ("engineer_phrase_leak", r"engagement-state should reclassify", "engagement-state phrasing leak"),
+    # Internal architecture vocabulary (v4.6.1 S3 — the F-14 pile, sourced
+    # from the ONE shared list in vocabulary_policy.INTERNAL_VOCAB; the
+    # dogfood-quoted narrations "closing it in the substrate", "through the
+    # canonical renderer", "Writing the audit marker", raw <run-summary>
+    # tags, and bare seq numbers in Sources lines all match here)
+    *(
+        ("internal_vocab_leak", _rx, f"{_tid} internal-vocabulary leak")
+        for _tid, _rx in _internal_vocab_patterns()
+    ),
 ]
 
 # Item icons and the type each implies

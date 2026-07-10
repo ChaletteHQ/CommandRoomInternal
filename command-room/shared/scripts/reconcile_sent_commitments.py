@@ -83,8 +83,23 @@ def reconcile_sent(
         if isinstance(ts, str) and (cursor_ts is None or ts > cursor_ts):
             cursor_ts = ts
 
+        # BUG-3719 self-closure guard: a commitment CAPTURED FROM this very
+        # message (sent-promise capture, source_ref gmail:<message_id>) must
+        # never be closed BY this message — the promise's origin is not its
+        # completion evidence. Without this, any catch-up / wide re-scan that
+        # re-fetches the message closes the promise it opened last run,
+        # breaking the "an over-wide window is always safe" invariant.
+        mid = str(msg.get("message_id") or "").strip()
+        own_ref = f"gmail:{mid}" if mid else None
+        opens_for_msg = open_commitments
+        if own_ref:
+            opens_for_msg = [
+                c for c in open_commitments
+                if str((c.get("data") or {}).get("source_ref") or "") != own_ref
+            ]
+
         results = match_send_to_commitments(
-            open_commitments=open_commitments,
+            open_commitments=opens_for_msg,
             sender_person_id=user_person_id,
             recipient_person_ids=msg.get("recipient_person_ids") or [],
             subject=msg.get("subject"),
@@ -226,6 +241,7 @@ def reconcile_and_receipt(
     source_skill="morning-briefing",
     outcome_watch_summary=None,
     fired_via="scheduled",
+    sent_commitment_items=None,
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -235,6 +251,17 @@ def reconcile_and_receipt(
     Everything else — load opens, read cursor, match, write the
     `commitment_resolved` events for HIGH-confidence closes, advance the cursor —
     happens here.
+
+    `sent_commitment_items` (v4.6.2, BUG-3719) — commissives the skill
+    extracted from the SAME Step-2 fetch (the user's own outbound promises,
+    Stage-D floor applied; shape per `sent_capture.capture_sent_items`).
+    When not None, this run also OPENS commitments for promises with no
+    matching open item: each item runs the shared capture block, dedups
+    against the PRE-close open set via `capture_gate.matches_open_commitment`
+    (cross-channel restatements merge, never double-track), routes through
+    W4c's relevance gate, and lands in one locked append. A promise never
+    logged can now be rescued by the same daily pass that closes handled
+    ones. None (the default) = pre-4.6.2 behavior, byte-identical.
 
     Returns a receipt:
       {
@@ -249,11 +276,15 @@ def reconcile_and_receipt(
         "events_written": int,
         "resolved": [ {commitment_id, title, ts} ],   # for the undo line
         "pending":  [ {commitment_id, title, ts} ],    # for the confirm line
+        "n_opened": int,             # BUG-3719 capture pass (0 when not run)
+        "opened":  [ {title, message_id, kind, due, pending_review} ],
+        "capture": dict|None,        # full capture_sent_items summary
         "summary": str,              # code-generated line the brief pastes verbatim
       }
 
     Idempotent across a day: a re-run fetches only newer Sent mail; an empty
-    batch closes nothing and leaves the cursor where it is.
+    batch closes nothing and leaves the cursor where it is; a re-extracted
+    commissive is skipped by (source_ref, title) + restatement dedup.
     """
     cursor_before, raw = _read_cursor(workspace_root)
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -330,6 +361,27 @@ def reconcile_and_receipt(
             }], holder=source_skill)
             reviews_written += 1
 
+    # BUG-3719 (v4.6.2): OPEN commitments from the user's own sent commissives
+    # that match nothing open — the rescue path for promises the unread-gated
+    # inbox triage never saw (thread read+replied same day → never a triage
+    # candidate → the outbound promise never scanned; close-only reconcile
+    # could never reconcile a promise that was never logged). Dedup runs
+    # against the PRE-close `opens` projection loaded above, so a sent
+    # restatement merges into its original even when this same fire's matcher
+    # just closed it (a promise already tracked is never double-tracked).
+    # Per-item gate failures land LOUDLY in capture["errors"] + the audit
+    # counts — never a crash after the closes above already landed.
+    capture = None
+    if sent_commitment_items is not None:
+        from sent_capture import capture_sent_items
+        capture = capture_sent_items(
+            workspace_root,
+            sent_commitment_items,
+            user_person_id=user_person_id,
+            opens=opens,
+            source_skill=source_skill,
+        )
+
     # Advance the cursor to the newest Sent ts we saw (never backwards).
     cursor_after = cursor_before
     new_ts = res.get("cursor_ts")
@@ -392,6 +444,14 @@ def reconcile_and_receipt(
             k: outcome_watch_summary.get(k)
             for k in ("checked", "replied", "no_reply_7d", "bounced", "still_pending")
         }
+    # BUG-3719: when the capture pass ran (even finding nothing), the audit
+    # carries its counts — the same one-verifiable-trace-per-fire doctrine as
+    # the outcome watch. Absent fields = a pre-4.6.2 run or items not passed.
+    if isinstance(capture, dict):
+        audit_event["data"]["n_opened"] = capture["n_opened"]
+        audit_event["data"]["n_capture_merged"] = capture["n_merged"]
+        audit_event["data"]["n_capture_observed"] = capture["n_observed"]
+        audit_event["data"]["n_capture_errors"] = capture["n_errors"]
     _append(events_path, [audit_event])
 
     if n_fetched == 0:
@@ -404,6 +464,10 @@ def reconcile_and_receipt(
         tail = f", {n_pend} to confirm" if n_pend else ""
         summary = (f"Reconciled your sent mail through {_short_date(cursor_after)}: "
                    f"closed {n_auto} you'd already handled{tail}.")
+    n_opened = capture["n_opened"] if isinstance(capture, dict) else 0
+    if n_opened:
+        summary += (f" Started tracking {n_opened} new "
+                    f"promise{'s' if n_opened != 1 else ''} from your sent mail.")
 
     return {
         "ran": True,
@@ -420,6 +484,10 @@ def reconcile_and_receipt(
         "reviews_written": reviews_written,
         "resolved": _slim(auto_close),
         "pending": _slim(pending),
+        # BUG-3719 capture pass (additive; zeros/None when items not passed).
+        "n_opened": n_opened,
+        "opened": list(capture["opened"]) if isinstance(capture, dict) else [],
+        "capture": capture,
         "summary": summary,
     }
 

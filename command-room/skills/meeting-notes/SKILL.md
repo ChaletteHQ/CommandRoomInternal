@@ -43,7 +43,7 @@ You **append** to `[Project]/SESSION_NOTES_[NAME].md` as a human-readable narrat
 
 You **do not write** to `entities.json` projects (that's workspace-manager) or people (that's people-crm). For a **new person**, the durable record is the `person_proposal` event (Step 5f) — a chat suggestion ("say add [name]") on its own is NOT capture; dismiss that chat and the proposal is stranded forever (F-46 P2b). For a **project state change**, surface a suggestion: "Sounds like Project Y is now blocked — want me to mark it that way?" Owner skills execute on the next turn.
 
-**Canonicalize every person and project reference via `aliases.json` before persisting any event.** No raw Gmail names or Slack handles in events.
+**Canonicalize every person and project reference via `aliases.json` before persisting any event.** No raw Gmail names or Slack handles in events. **And render from the canonical record too (v4.6.1 S3 / F-50 P2b):** every name the user SEES — the chat card header, SESSION_NOTES Attendees line, the meeting event's title, the brief docx — uses the resolved record's `canonical_name`, never the transcript's ASR spelling ("Myra Samples" rendered for a correctly-resolved Mira Sample). Transcript spellings survive only in verbatim evidence quotes and in an open `person_proposal`'s as-heard `name`. Full rule: `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names.
 
 Additionally, this skill implements `shared/PASSIVE_CAPTURE.md`. The Granola connector read when processing a transcript emits corresponding events per that contract's rules (meeting event + per-decision events + per-commitment events, all dedup'd via source_ref hash).
 

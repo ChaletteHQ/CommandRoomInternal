@@ -52,6 +52,7 @@ ROUTING_HELPERS = frozenset({
     "brief_writer",
     "advisor_profile_writer",
     "reconcile_sent_commitments",
+    "sent_capture",  # BUG-3719 (v4.6.2) — capture_sent_items routes through event_gate.append_event -> atomic_append_jsonl
     "stall_detector",
     "skill_config_writer",
     "decision_match",

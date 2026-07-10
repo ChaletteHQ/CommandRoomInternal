@@ -779,6 +779,21 @@ def load_open_commitments(
         `pending_review` (+ review_reason) so the item counts as unconfirmed
         and never enters chase; a confirmed one (W4b Theirs→[name], or the
         user naming the person) clears the flag.
+
+    v4.6.1 W4b — the confirm-flow adjudication fold, same doctrine:
+      * OWNER CONFIRM ("Mine"): a `commitment_updated` carrying
+        `data.owner_confirmed: true` (commitment_state.confirm_commitment_owner)
+        folds `new_owner_id` (+ name) into the projection and clears
+        `pending_review` / `review_reason` — the item leaves the unconfirmed
+        bucket and joins its confirmed direction.
+      * REVIEW CLEAR ("Keep both"): a `commitment_updated` carrying
+        `data.review_flags_cleared: true` (commitment_state.clear_review_flags)
+        clears `pending_review`, `review_reason`, AND the C4
+        `suspected_duplicate_of` / `suspected_duplicate_score` flags —
+        confirmed distinct, both items stay open.
+      Ordering is append-order-aware ACROSS the reassignment fold: a Mine
+      confirm followed by a later unconfirmed reassignment re-stamps
+      pending_review (latest adjudication wins), and vice versa.
     Split closers (`commitment_superseded` with `data.split_into`) close the
     original through the standard closer chain but are NOT merges — the C4
     survivor-provenance fold is skipped for them; split children carry their
@@ -835,6 +850,11 @@ def load_open_commitments(
     # the item sits in the unconfirmed bucket and never enters chase — the
     # W4b no-auto-email-on-a-guessed-owner guardrail).
     reassignments: dict[str, dict] = {}
+    # commitment id → latest confirm-flow adjudication (v4.6.1 W4b): a
+    # commitment_updated carrying owner_confirmed ("Mine") or
+    # review_flags_cleared ("Keep both"). Applied in append order against
+    # the reassignment fold — the latest adjudication decides pending_review.
+    confirmations: dict[str, dict] = {}
     # commitment target → latest kind override (Stage D fold: the
     # `commitment_reclassified` marker is ADDITIVE — promote/migrate never
     # delete/recreate; the projector applies the label change read-side).
@@ -847,6 +867,18 @@ def load_open_commitments(
     # (data.merged_source_refs / data.merged_from). Read-side only; history
     # is never rewritten.
     merged_onto: dict[str, dict] = {}
+    # commitment target → accumulated per-person receipts (v4.6.0 MC1): each
+    # `commitment_partial_received` records ONE counterparty delivering on a
+    # multi-counterparty commitment (id or free-text name). The loader unions
+    # them onto the projection (`data.received_from` / `received_from_names`)
+    # and stamps `data.all_counterparties_received` when the whole roster has
+    # delivered — the PROPOSE-closure signal (never a closer; the item stays
+    # open until the user closes it). Keyed by id AND seq alias (mirrors the
+    # kind-override fold), so a receipt referencing either resolves.
+    received_ids_by_id: dict[str, set] = {}
+    received_names_by_id: dict[str, set] = {}
+    received_ids_by_seq: dict[int, set] = {}
+    received_names_by_seq: dict[int, set] = {}
 
     def _as_seq(value):
         if isinstance(value, bool):
@@ -961,6 +993,41 @@ def load_open_commitments(
                 if d.get("new_summary"):
                     slot["summary"] = d["new_summary"]
                     slot["summary_seq"] = ev.get("seq")
+            # W4b adjudication fold: Mine (owner_confirmed) / Keep both
+            # (review_flags_cleared). Keyed on the explicit booleans the
+            # commitment_state writers stamp — a generic update never
+            # accidentally clears a review flag. Latest wins per target.
+            if target and (d.get("owner_confirmed") or d.get("review_flags_cleared")):
+                confirmations[str(target)] = {
+                    "owner_id": d.get("new_owner_id"),
+                    "owner_name": d.get("new_owner_name"),
+                    "clear_flags": bool(d.get("review_flags_cleared")),
+                    "seq": ev.get("seq"),
+                    "idx": idx,
+                }
+        elif et == "commitment_partial_received":
+            # MC1 receipt fold: union the delivering counterparty (id and/or
+            # free-text name) onto the target. Accumulate — never overwrite;
+            # append-only marks pile up until the roster is complete.
+            target = (
+                d.get("commitment_id")
+                or d.get("target_id")
+                or ev.get("commitment_id")
+            )
+            rid = d.get("received_counterparty_id")
+            rnm = d.get("received_counterparty_name")
+            sv = _as_seq(d.get("commitment_seq"))
+            if target:
+                tkey = str(target)
+                if isinstance(rid, str) and rid.strip():
+                    received_ids_by_id.setdefault(tkey, set()).add(rid.strip())
+                if isinstance(rnm, str) and rnm.strip():
+                    received_names_by_id.setdefault(tkey, set()).add(rnm.strip())
+            if sv is not None:
+                if isinstance(rid, str) and rid.strip():
+                    received_ids_by_seq.setdefault(sv, set()).add(rid.strip())
+                if isinstance(rnm, str) and rnm.strip():
+                    received_names_by_seq.setdefault(sv, set()).add(rnm.strip())
         elif et == "commitment_reassigned":
             # S4 reassignment fold: latest event wins wholesale (a second
             # reassignment replaces the first, including its confirmed flag).
@@ -977,6 +1044,7 @@ def load_open_commitments(
                     "new_counterparty_name": d.get("new_counterparty_name"),
                     "confirmed": bool(d.get("confirmed")),
                     "seq": ev.get("seq"),
+                    "idx": idx,
                 }
         elif et == "commitment":
             status = _commitment_field(ev, "status") or "open"
@@ -1018,31 +1086,58 @@ def load_open_commitments(
             if wu.get("summary"):
                 patch["summary"] = wu["summary"]
                 patch["summary_updated_by_seq"] = wu["summary_seq"]
+        # Adjudication folds, applied in APPEND ORDER (v4.6.0 S4 reassignment
+        # + v4.6.1 W4b owner-confirm / review-clear): the latest adjudication
+        # decides pending_review; owner/counterparty folds compose, later
+        # events overriding earlier ones. data.owner_id is first in the alias
+        # chain, so the patch wins over legacy owner / owner_person_id
+        # spellings.
+        adjudications = []
         ra = reassignments.get(cid)
         if ra:
-            # S4 reassignment fold: EFFECTIVE owner/counterparty from the
-            # latest commitment_reassigned. data.owner_id is first in the
-            # alias chain, so the patch wins over legacy owner /
-            # owner_person_id spellings. An UNCONFIRMED reassignment stamps
-            # pending_review (the item sits in the unconfirmed bucket and
-            # never enters chase — no auto-email on a guessed owner); a
-            # confirmed one clears it (the reassignment IS the adjudication).
-            if ra.get("new_owner_id"):
-                patch["owner_id"] = ra["new_owner_id"]
-                if ra.get("new_owner_name"):
-                    patch["owner_name"] = ra["new_owner_name"]
-            if ra.get("new_counterparty_id"):
-                patch["counterparty_id"] = ra["new_counterparty_id"]
-                if ra.get("new_counterparty_name"):
-                    patch["counterparty_name"] = ra["new_counterparty_name"]
-            patch["reassigned_by_seq"] = ra["seq"]
-            if ra["confirmed"]:
-                patch["pending_review"] = False
+            adjudications.append(("reassign", ra))
+        cf = confirmations.get(cid)
+        if cf:
+            adjudications.append(("confirm", cf))
+        adjudications.sort(key=lambda pair: pair[1]["idx"])
+        for kind, entry in adjudications:
+            if kind == "reassign":
+                # An UNCONFIRMED reassignment stamps pending_review (the item
+                # sits in the unconfirmed bucket and never enters chase — no
+                # auto-email on a guessed owner); a confirmed one clears it
+                # (the reassignment IS the adjudication).
+                if entry.get("new_owner_id"):
+                    patch["owner_id"] = entry["new_owner_id"]
+                    if entry.get("new_owner_name"):
+                        patch["owner_name"] = entry["new_owner_name"]
+                if entry.get("new_counterparty_id"):
+                    patch["counterparty_id"] = entry["new_counterparty_id"]
+                    if entry.get("new_counterparty_name"):
+                        patch["counterparty_name"] = entry["new_counterparty_name"]
+                patch["reassigned_by_seq"] = entry["seq"]
+                if entry["confirmed"]:
+                    patch["pending_review"] = False
+                else:
+                    patch["pending_review"] = True
+                    patch["review_reason"] = (
+                        "reassigned — confirm the new owner before this is chased"
+                    )
             else:
-                patch["pending_review"] = True
-                patch["review_reason"] = (
-                    "reassigned — confirm the new owner before this is chased"
-                )
+                # W4b Mine / Keep both: the explicit user click IS the
+                # adjudication — pending_review clears, review_reason drops;
+                # Keep both additionally clears the C4 duplicate flags
+                # (confirmed distinct — both items stay open).
+                if entry.get("owner_id"):
+                    patch["owner_id"] = entry["owner_id"]
+                    if entry.get("owner_name"):
+                        patch["owner_name"] = entry["owner_name"]
+                patch["pending_review"] = False
+                patch["review_reason"] = None
+                patch["owner_confirmed_by_seq"] = entry["seq"]
+                if entry.get("clear_flags"):
+                    patch["suspected_duplicate_of"] = None
+                    patch["suspected_duplicate_score"] = None
+                    patch["review_cleared_by_seq"] = entry["seq"]
         ko = kind_overrides_by_id.get(cid) or (
             kind_overrides_by_seq.get(seq) if seq is not None else None
         )
@@ -1063,8 +1158,28 @@ def load_open_commitments(
                 patch["merged_source_refs"] = refs
             if merged["from"]:
                 patch["merged_from"] = list(merged["from"])
+        # MC1 receipt fold: union the accumulated per-person receipts (id +
+        # seq keyings) onto the projection, then derive the propose-closure
+        # flag over the EFFECTIVE roster (computed on the merged copy below,
+        # so it sees any reassignment fold's counterparty change).
+        rec_ids: set = set(received_ids_by_id.get(cid, set()))
+        rec_names: set = set(received_names_by_id.get(cid, set()))
+        if seq is not None:
+            rec_ids |= received_ids_by_seq.get(seq, set())
+            rec_names |= received_names_by_seq.get(seq, set())
+        if rec_ids:
+            patch["received_from"] = sorted(rec_ids)
+        if rec_names:
+            patch["received_from_names"] = sorted(rec_names)
         if patch:
             c = {**c, "data": {**(c.get("data") or {}), **patch}}
+        if rec_ids or rec_names:
+            # Derived, in-memory only: PROPOSE closure when every counterparty
+            # has delivered. Never a closer — the item stays open until the
+            # user closes it (PROPOSE, never auto-close).
+            from commitment_parties import all_counterparties_received as _all_rcv
+            if _all_rcv(c):
+                c["data"]["all_counterparties_received"] = True
         out.append(c)
     _OPEN_COMMITMENTS_CACHE[cache_key] = (sig, out)
     return list(out)
@@ -1166,12 +1281,18 @@ def match_send_to_commitments(
         # Stage E (F5) extraction receipts: the counterparty the extractor
         # linked at capture feeds the candidacy gate DIRECTLY — the structural
         # fix for the Bug #103 recall class (the title-token fallback below
-        # stays for historic events that never got a receipt).
-        counterparty_id = _d.get("counterparty_id")
-        if counterparty_id:
-            person_ids.add(counterparty_id)
+        # stays for historic events that never got a receipt). MC1: union the
+        # FULL counterparty roster (legacy single + counterparty_ids list) so a
+        # send to ANY of a multi-counterparty commitment's people is a
+        # candidate.
+        from commitment_parties import (
+            counterparty_ids as _cp_ids,
+            counterparty_names as _cp_names,
+            has_multiple_counterparties as _multi_cp,
+        )
+        person_ids.update(_cp_ids(_d))
         title = _commitment_field(ev, "title") or ""
-        counterparty_name = _d.get("counterparty_name") or ""
+        counterparty_name = " ".join(_cp_names(_d))
         # Recipient is involved if a resolved id is in person_ids (incl. the
         # Stage E counterparty receipt) OR a recipient name token appears in
         # the title (the #103 recall fallback) OR matches the free-text
@@ -1193,6 +1314,24 @@ def match_send_to_commitments(
             rec = "no_action"
         if rec == "auto_resolve" and _is_pending_review(ev):
             rec = "pending_review"
+        # MC1: a send to ONE counterparty of a MULTI-counterparty commitment
+        # fulfills only THAT person's portion — it must NOT whole-close the
+        # item (the "send the deck to the board" bug: chasing/closing one
+        # board member for all). Downgrade auto_resolve → partial_received and
+        # name the matched counterparties so the caller records a per-person
+        # receipt instead of a full closure. Single-counterparty items are
+        # untouched (guard only fires on multi), so all pre-MC1 behavior and
+        # tests hold byte-identically.
+        matched_cp_ids: list = []
+        matched_cp_names: list = []
+        if rec == "auto_resolve" and _multi_cp(_d):
+            roster_ids = set(_cp_ids(_d))
+            matched_cp_ids = [i for i in _cp_ids(_d) if i in recipient_set]
+            matched_cp_names = [
+                nm for nm in _cp_names(_d)
+                if recipient_name_tokens & set(_tokenize(nm))
+            ]
+            rec = "partial_received"
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -1200,6 +1339,8 @@ def match_send_to_commitments(
             "title": title,
             "owner_id": sender_person_id,
             "primary_thread_id": ev.get("primary_thread_id") or "",
+            "matched_counterparty_ids": matched_cp_ids,
+            "matched_counterparty_names": matched_cp_names,
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)
@@ -1282,6 +1423,14 @@ def match_transcript_to_commitments(
 
         if recommendation == "auto_resolve" and _is_pending_review(ev):
             recommendation = "pending_review"
+        # MC1: never whole-close a multi-counterparty commitment on a single
+        # transcript match — a mention that the deliverable was "sent" doesn't
+        # prove every counterparty received it. Downgrade to a per-person
+        # receipt (the caller can't tell WHICH from a transcript, so it leaves
+        # the item open for explicit per-person marking — safe by default).
+        from commitment_parties import has_multiple_counterparties as _multi_cp
+        if recommendation == "auto_resolve" and _multi_cp(ev):
+            recommendation = "partial_received"
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -1389,6 +1538,17 @@ def match_inbound_to_commitments(
 
         if recommendation == "auto_resolve" and _is_pending_review(ev):
             recommendation = "pending_review"
+        # MC1: an inbound delivery from ONE counterparty of a multi-
+        # counterparty owed-to-you item closes only that person's leg —
+        # downgrade the whole close to a per-person receipt (the sender is the
+        # matched counterparty). Single-counterparty items unchanged.
+        from commitment_parties import has_multiple_counterparties as _multi_cp
+        matched_cp_ids: list = []
+        if recommendation == "auto_resolve" and _multi_cp(ev):
+            from commitment_parties import counterparty_ids as _cp_ids
+            if sender_person_id in _cp_ids(ev):
+                matched_cp_ids = [sender_person_id]
+            recommendation = "partial_received"
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -1399,6 +1559,8 @@ def match_inbound_to_commitments(
             "has_completion_signal": has_completion,
             "has_schedule_shift_signal": has_schedule_shift,
             "has_new_ask_signal": has_new_ask,
+            "matched_counterparty_ids": matched_cp_ids,
+            "matched_counterparty_names": [],
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)
@@ -1423,6 +1585,11 @@ def _commitment_counterparties(ev: dict, user_person_id: str) -> set[str]:
     req = _commitment_field(ev, "requester_id")
     if req:
         ids.add(req)
+    # MC1: the explicit counterparty roster (legacy single + counterparty_ids
+    # list, unioned by the one helper) — so "send the deck to the board" sees
+    # every board member, not just the first.
+    from commitment_parties import counterparty_ids as _cp_ids
+    ids.update(_cp_ids(ev))
     ids.discard(user_person_id)
     return ids
 
@@ -1537,6 +1704,7 @@ def match_calendar_to_commitments(
                     "accepted": accepted,
                     "overlap": overlap,
                     "calendar_event_id": cev.get("calendar_event_id") or "",
+                    "matched_cp": sorted(attendees & counterparties),
                 }
 
         if best is None:
@@ -1557,6 +1725,16 @@ def match_calendar_to_commitments(
         if recommendation == "auto_resolve" and _is_pending_review(ev):
             recommendation = "pending_review"
 
+        # MC1: a calendar event with ONE counterparty of a multi-counterparty
+        # commitment fulfills only that person's leg — downgrade the whole
+        # close to a per-person receipt (matched attendees only). Single-
+        # counterparty items unchanged.
+        from commitment_parties import has_multiple_counterparties as _multi_cp
+        matched_cp_ids: list = []
+        if recommendation == "auto_resolve" and _multi_cp(ev):
+            matched_cp_ids = list(best.get("matched_cp") or [])
+            recommendation = "partial_received"
+
         evidence = (
             f"Calendar event "
             f"{'(accepted) ' if best['accepted'] else ''}"
@@ -1573,6 +1751,8 @@ def match_calendar_to_commitments(
             "calendar_event_id": best["calendar_event_id"],
             "has_scheduling_intent": has_sched,
             "counterparty_accepted": best["accepted"],
+            "matched_counterparty_ids": matched_cp_ids,
+            "matched_counterparty_names": [],
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)

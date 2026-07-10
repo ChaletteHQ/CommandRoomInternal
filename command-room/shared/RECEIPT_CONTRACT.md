@@ -59,6 +59,14 @@ every writer calls one helper; every reader goes through one parser.
 (`meetings_processed`, `items_drafted_text`, `needs_attention_ids`, ...)
 ride along via `extra_data`.
 
+The `sent_reconcile` audit additionally carries `cursor_from` / `cursor_to` /
+`sent_scanned_count` / `n_closed` / `n_pending` (the Bug #98-v3 ungameable
+trace), `outcome_watch` counts when the watch ran, and — when the v4.6.2
+sent-promise capture pass ran (BUG-3719) — `n_opened` / `n_capture_merged` /
+`n_capture_observed` / `n_capture_errors`. Absent capture fields = a
+pre-4.6.2 run or a fire whose caller passed no extracted items; readers
+never treat absence as zero-with-certainty.
+
 ## Receipt types per task
 
 | Task | Receipt type(s) | Run-counted type |

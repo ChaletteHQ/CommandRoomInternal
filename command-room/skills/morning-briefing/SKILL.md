@@ -426,6 +426,24 @@ Render rules (M's four settled choices, 2026-07-08):
 - Both sections render only when non-empty (never pad). Reminder rows never mention `personal`, event names, ids, or the word "reminder lane" — plain English only.
 - These phrases route to the `show-my-reminders` skill's writer helpers (`shared/scripts/reminders.py`) — the brief itself stays read-only (its one write remains the pack_run receipt).
 
+### Step 3g: Confirm-section pointer count (v4.6.1 W4b — one number, read-only)
+
+The daily Commitments chat opens with the "Needs a quick confirm" section (W4b; the selector covers every unadjudicated amber capture younger than the 7-day escalation pin). The brief carries ONE pointer line when that section will be non-empty — never the rows themselves (the Commitments chat is the triage point; the brief just points). Compute the count with the same selectors that chat uses, over the open set Step 3 already loaded:
+
+```python
+from confirm_flow import (select_confirm_items, select_promotion_proposals,
+                          load_open_person_proposals, confirm_pointer_line)
+from mute_ledger import active_dismissal_target_ids
+
+dismissed = active_dismissal_target_ids(<all events>, "<now ISO>")
+n_confirm = (len(select_confirm_items(opens, "<now ISO>", dismissed_ids=dismissed))
+             + len(select_promotion_proposals(opens, dismissed_ids=dismissed))
+             + len(load_open_person_proposals(events_path, dismissed_target_ids=dismissed)))
+pointer = confirm_pointer_line(n_confirm)   # None when the section is empty
+```
+
+`pointer` is the exact line the template renders — when it is None the line is OMITTED entirely (never pad, never render "0 items"). These items are ALREADY inside `headline["unconfirmed"]` (they count nowhere else); the pointer adds no numbers to the commitments line, and reminders (Step 3f) are a different lane entirely — never fold the two.
+
 ## Step 4: Build the Digest
 
 Format the output as a structured, scannable digest. Skip any section that has nothing to report — never pad an empty section into existence. (The template below shows every POSSIBLE section; a typical day renders a handful.)
@@ -504,6 +522,14 @@ When headline["blocked"] > 0, say who the wait is on in plain English, e.g.
 "2 of them waiting on people you've already chased". If headline carries NO
 "stuck" key (movement derivation unavailable), OMIT the segment — never render
 0 for a number that wasn't computed.]
+
+[Confirm pointer — Step 3g's `pointer` line VERBATIM, its own line right
+after the commitments line. Renders ONLY when the confirm section is
+non-empty (pointer is not None) — omit entirely otherwise. ONE line, never
+the items themselves, never a count folded into the commitments line above,
+and placed clear of the reminders sections (different lane — reminders are
+the user's own pins; this points at captures awaiting a confirm). v4.6.1 W4b.]
+[N] new items need a 10-second confirm — they're in your Commitments chat.
 
 [Top 3 moves before noon — the answer to "what should I do." This is the most important section. Surface it right after commitments so it's seen in the first 15 seconds.]
 Top 3 moves today

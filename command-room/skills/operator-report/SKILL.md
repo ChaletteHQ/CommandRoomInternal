@@ -274,6 +274,13 @@ Next [period]'s projection
   Based on current cadence: [N+] commitments captured, [N+] briefings, ~[N] hours absorbed.
 ```
 
+**Visual layer for the .docx (v4.6.1 S3 — the prep-v2 pattern per F-60's follow-up; M directive: tiles/tables over bullet walls in recurring deliverables).** The chat render keeps the template above; the `.docx` route through `brief_writer` upgrades two surfaces:
+
+- **Stat-tile band at the top** (first section, `tiles` key): the report's headline counts — commitments captured · decisions logged · meetings processed · briefings delivered · ~hours absorbed. 1-5 tiles, every value one of the Step-3 counts (substrate-derived), never estimated beyond what Step 3 already computes. **A tile with a zero/unknown value is DROPPED, never rendered empty** — brief_writer's renderer refuses empty tiles; when nothing is countable, skip the band.
+- **"Things that get more valuable" renders as a two-column table** (`table` key: asset | current size), replacing the four hanging-indent lines. No rows with unknown counts — drop the row, and drop the table if no rows survive.
+
+Everything else stays as the template renders it. No decorative charts, no fabricated numbers.
+
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "[N] cleanups · People layer: [N] interactions · every draft renders in your voice"
 - Good: "[N] weekly workspace tidy-ups · People memory: [N] interactions · every draft comes out in your voice"

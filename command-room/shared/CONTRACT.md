@@ -48,7 +48,7 @@ This format is produced by `shared/scripts/brief_path.py` `get_brief_artifact_ur
 
 Per M's Apr 30 standing rule: *"no technical language post widget."* After the widget posts (and the Links: section, when present), the chat turn is DONE. Forbidden in any apply-time response or trailing commentary:
 
-- Internal IDs: `person_NNN`, `org_NNN`, `project_NNN`, `event_NNN`
+- Internal IDs: `person_NNN`, `org_NNN`, `project_NNN`, `event_NNN` — and the name substituted for a resolved ID MUST be the record's `canonical_name`, never a transcript/ASR/email-header spelling (F-50 P2b rendered "Myra Samples" for a correctly-resolved Mira Sample; full rule + the unresolved-name carve-outs in `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names)
 - Internal data files: `events.jsonl`, `entities.json`, `aliases.json`, `staging_emissions.jsonl`, `known-newsletters.txt`, `events.schema.json`
 - Internal `_hq/` paths: `_hq/staging/`, `_hq/data/`, `_hq/views/`, `_hq/deliverables/`, `_hq/tmp/` (note: `_hq/meetings/` is allowed because it's a user-facing file location for clickable artifacts)
 - Internal event-type names in narration: `chat_dismissal event written`, `pack_run complete`, `commitment_resolved logged`, `commitment_updated logged` (v2.14.6+), `commitment_review_proposed logged` (v2.14.6+), `outreach_sent appended`, `pattern_break_detected × N`, etc.

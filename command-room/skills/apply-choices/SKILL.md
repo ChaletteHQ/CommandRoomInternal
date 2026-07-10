@@ -1,6 +1,6 @@
 ---
 name: apply-choices
-description: "Internal dispatch layer: receives the consolidated 'apply choices: [...]' payload emitted when the user clicks Apply on any Command Room widget (the daily chat surfaces, review widgets, onboarding setup), parses the action tuples, routes each to its owning writer through the canonical paths (closures via the single closure path, drafts via email-writer, feedback into the capture stores), and posts ONE consolidated plain-English acknowledgment. Fires ONLY on the exact 'apply choices: ' prefix followed by a JSON array — never on natural language. Every tuple carries its source id, so dispatch is stateless; the fire-marker window is fallback only. Companion to the widget spec and renderer; used by all scheduled orchestrators plus on-demand widget surfaces. Dispatch table, action registry, and per-surface handlers: Routing section in the body."
+description: "Handles the Apply button on Command Room widgets — you never need to type this. Receives the consolidated 'apply choices: [...]' message a widget sends when the user clicks Apply (the daily chat surfaces, review widgets, onboarding setup), carries out each selected action through its owning skill (closures via the single closure path, drafts via email-writer, feedback into the capture stores), and posts ONE consolidated plain-English acknowledgment. Fires ONLY on the exact 'apply choices: ' prefix followed by a JSON array — never on natural language. Every action carries its source id, so no session state is needed. Action registry and per-surface handlers: Routing section in the body."
 ---
 
 # apply-choices
@@ -132,6 +132,7 @@ For each entry in the parsed array, route to the corresponding handler in the so
 | `edit` (no bracket — non-email contexts only) | string | The full edited body text — replace `body_lines` with this verbatim. |
 | `push meeting [date]`, `push to [date]`, `schedule catchup [when]` | string (natural language: "monday at 2", "tomorrow afternoon", "2026-05-12") | Parse the natural-language datetime via the same chrono / date-parser logic the orchestrator uses for free-text user replies. Empty input or unparseable string → surface item-level error in the consolidated ack ("couldn't read 'sometime soon' as a date — try again with a clearer time"). |
 | `mark received` (no input — fires `commitment_resolved` directly) | — | No input expected. |
+| `mark received from [name]` (MC1 — multi-counterparty per-person receipt) | string | Which recipient delivered — the counterparty's name/id. On a fan-out row the widget embeds the counterparty id, so the input is usually pre-filled from the row's `data-counterparty`. Dispatches `commitment_state.mark_partial_received(commitment_id, counterparty_id=<resolved>/counterparty_name=<free text>)`. The item stays OPEN; when the returned `propose_closure` is true, the ack adds "everyone's received — say close it" (PROPOSE only, never auto-close). |
 | `add as person to <Org Name>`, `add as new org <Org Name>` | optional string | The free-text content if user adds a note — record per orchestrator's handler. The specific org name is parsed from the action verb itself (per Rule 5 specific-name patterns). |
 | `add context [text]`, `add more context [text]` (back-compat alias) | string | The free-text context to fold into the entity record. |
 | `context [text]` (Upcoming Meetings unified affordance, v2.14.37+) | string | Route intent-aware to the meeting handler: question-shaped input → synthesized answer; statement-shaped → call-prep brief regeneration. Use the same heuristic as `shared/CHAT_ACTION_WIDGET.md`: question-shaped if it ends with `?` OR the first word matches `(what\|why\|how\|when\|who\|which\|is\|are\|was\|were\|did\|does\|do\|will\|can\|could\|should\|would)` (case-insensitive); otherwise statement-shaped. |
@@ -141,6 +142,9 @@ For each entry in the parsed array, route to the corresponding handler in the so
 | `reminder push [date]` | string | Natural-language date for the new pin day ("Friday", "next Tuesday", "2026-07-18"). REQUIRED — the widget holds Apply until it's filled (F-17). |
 | `fix wording [text]` (S4) | string | The corrected title/summary text, verbatim — REQUIRED. Dispatches `commitment_state.edit_commitment_wording`; empty input holds per the F-17 contract. |
 | `reassign to [name]` (S4) | string | The real owner's name — REQUIRED. Resolve via the standard entity-resolve path (ambiguous → disambiguation widget, never guess), then `commitment_state.reassign_commitment(..., confirmed=True)`. |
+| `theirs to [name]` (W4b) | string | The real owner's name — REQUIRED. Same handler as `reassign to [name]` (resolve the name, never guess; `confirmed=True` — the typed/tapped name IS the confirmation). |
+| `same as [existing]` (W4b) | string | The existing contact's name — REQUIRED. Resolve via the standard entity path (ambiguous → disambiguation widget), then `people_writer.add_person_alias(workspace_root, <resolved person_id>, <the proposal's raw name>)` + the proposal tombstone (see the commitments confirm-section handlers). |
+| `add person` (W4b) | optional string | Free-text correction to the proposal's inferred org/role — folds into the Step 3a `create_person` call. Empty = accept inferred values. |
 | `split into [items]` (S4) | string | 2+ child titles, split on newlines / semicolons / " / " — REQUIRED. Dispatches `commitment_state.split_commitment`; fewer than 2 parsed titles → item-level error in the ack ("a split needs at least two pieces"). |
 | `confirm [type]` on entity proposal | string (optional) | Free-text corrections to inferred entity details. Empty = accept inferred values. |
 | `edit [type]`, `edit [change]` | string | Free-text override of the inferred type / change. |
@@ -429,6 +433,8 @@ fp = dismissal_fingerprint(surface="<cr-inbox|cr-commitments|pulse|...>",
 - `snooze [duration]`, `snooze 3d`, `snooze 14d`, `keep`, `add to my list`, `not relevant` — record the state, no widget. For `add to my list`: write a `commitment_to_discuss` event to events.jsonl with `data.source_event_seq` pointing back to the originating item's source; show-my-list reads these later when the user types `show my list`. For `snooze 14d`: see "Intro-followup-check dispatch" below — this verb also schedules a future re-emit, not just a dismissal.
 - `landed`, `didnt land` — intro-followup-check resolution verbs (v3.13.2+). Each writes a domain-specific lifecycle event. See "Intro-followup-check dispatch" subsection below.
 - `fix wording [text]`, `reassign to [name]`, `split into [items]`, `unmute` — S4 lifecycle verbs, all terminal. Each fires its `commitment_state` / `mute_ledger` writer immediately (see the commitment-triage and show-my-list source entries in Step 2 for the exact calls) and confirms in plain English — the corrected line, the new owner, the N new items, or when the unmuted item re-surfaces. No widget re-render.
+- `mark received from [name]` — MC1 per-person receipt (v4.6.0), terminal. Dispatch `commitment_state.mark_partial_received(workspace_root, <commitment_id>, received_by=<user id>, source_skill="apply-choices", counterparty_id=<resolved id from the row's embedded `data-counterparty`>` OR `counterparty_name=<free text when unresolved>)`. The item stays OPEN — this is a receipt, not a closure. Ack names who was marked and how many remain ("Marked Priya received — 1 of 3 board members left"); when the return's `propose_closure` is true, add the closure PROPOSAL to the ack ("everyone's received — say close it to close it out"). NEVER auto-close and NEVER stage a chase to a received counterparty.
+- `mine`, `theirs to [name]`, `merge`, `keep both`, `add person`, `same as [existing]`, `proposal not relevant` — W4b confirm-section verbs (v4.6.1), all terminal. Dispatched per `orchestrator-commitments.md` § "Confirm section actions": `mine` → `commitment_state.confirm_commitment_owner`; `theirs to [name]` → `commitment_state.reassign_commitment(..., confirmed=True)` after the standard name-resolve; `merge` → `commitment_state.supersede_commitment(..., user_confirmed=True)` (survivor = the row's flagged duplicate target); `keep both` → `commitment_state.clear_review_flags`; the three person verbs run their entity write (Step 3a create / `people_writer.add_person_alias` / nothing) and then append the proposal tombstone via `confirm_flow.build_person_proposal_resolved_event` + `event_gate.append_event` — the tombstone is what stops the proposal re-surfacing, so it is never skipped, even for `proposal not relevant`. Acks in plain English; never event-type names. Guardrail restated: none of these ever stage or send a chase email — confirmation changes state, chase happens on later fires against CONFIRMED items only.
 
   **v3.13.0+ — orphan-note carrier:** when the widget's `+ Add context` field had text but no action button was selected on that item, the renderer synthesizes a fallback `{n, action: "add to my list", context: "<typed text>"}` choice (see `chat_output_renderer.py` `crApplyAll` orphan-note capture). Apply-choices must store that `context` value on the resulting `commitment_to_discuss` event's `data.summary` field so show-my-list renders it under the item:
 
@@ -581,7 +587,7 @@ from cru_match import (
     match_send_to_commitments,
     build_pending_review_event,
 )
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
+from commitment_state import close_commitment, mark_partial_received, CommitmentIdError, PendingReviewError
 from atomic_write import atomic_append_jsonl
 
 workspace_root = '<absolute path to the workspace root>'
@@ -616,6 +622,20 @@ for r in results:
                 n_resolved += 1
         except (CommitmentIdError, PendingReviewError) as e:
             print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
+    elif r['recommendation'] == 'partial_received':
+        # MC1: a send to ONE counterparty of a multi-counterparty commitment
+        # records THAT person's receipt — never a whole close. Closure is
+        # PROPOSED (never auto) once everyone is in.
+        for cp in r.get('matched_counterparty_ids') or []:
+            try:
+                mark_partial_received(
+                    workspace_root, r['commitment_id'],
+                    received_by='<sender_person_id>', source_skill='apply-choices',
+                    counterparty_id=cp,
+                    evidence=f\"Sent via Cowork — Subject: {<subject>}\",
+                )
+            except (CommitmentIdError,) as e:
+                print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
     elif r['recommendation'] == 'pending_review':
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],

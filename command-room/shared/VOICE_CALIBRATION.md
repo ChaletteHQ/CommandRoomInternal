@@ -97,9 +97,19 @@ Strip or rewrite these phrases before returning any output. These are LLM tells 
 - "Warm regards" same.
 - "Looking forward to hearing back" unless it's in the voice block.
 
+### Subject lines (v4.6.1 S3 — the gate covers subjects, not just bodies)
+
+- **No dashes as punctuation in email subject lines** — no em dash, no en dash, no spaced hyphen. Use a comma, a colon, or rewrite ("Q2 deck — status" → "Q2 deck: status"). Hyphenated compounds ("follow-up", "check-in") stay legal. This is the BRAND_VOICE hard rule applied to the one surface the body gate never saw: F-47 P2d and F-53 shipped em-dash subjects twice in one dogfood day. Subjects have NO pile-up allowance — one dash fails.
+- The banned phrases and vocabulary words above apply to subjects too — a subject that leads with "Circling back" or "leverage" is still the voice.
+- Enforced by `voice_tell_detector.scan_subject` (`--context subject` on the CLI). Every surface that mints a subject — email-writer Phase 3.5, the commitments-chat chase drafts, follow-up-ritual — runs it before showing the draft.
+
+### Vocabulary (one shared list, one owner)
+
+The corporate-vocabulary words neither gate lets through — currently `ecosystem`, `synergy`, `leverage`, `holistic`, `stakeholder` — live in **`shared/scripts/vocabulary_policy.py`**, the single owner. Both gates read it: the leak gate (`docx_leak_scanner`) hard-fails a docx save on them; the voice gate (`voice_tell_detector`) fails drafts on them. Never add a vocabulary word to a gate's local list — S3 exists because the two lists were disjoint and "leverage" was blocked in a docx while leading an email the same day (F-53 P3a). Client carve-out: a Voice Block Taboo the CEO demonstrably uses feeds through `allow_phrases` and is never blocked.
+
 The client-specific voice block MAY override individual items in this list if the CEO demonstrably uses them. The override must be explicit (e.g., "Voice Block: CEO uses 'Hope this finds you well' — do not strip").
 
-**Sync rule (B2):** the canonical machine-readable encoding of this banned-phrase list lives in `shared/scripts/voice_tell_detector.py` (`_FAIL_PHRASES`), the save-time gate that enforces it. The two MUST change together — add a phrase here and add the matching rule there. `tests/run_voice_tell_detector_test.py` asserts the detector's fail-rule count is ≥ this list's bullet count, so a one-sided edit fails the battery loudly. The override carve-out above maps to the detector's `allow_phrases` hook (a Voice Block Taboo a client demonstrably uses is fed through and never hard-blocked).
+**Sync rule (B2):** the canonical machine-readable encoding of this banned-phrase list lives in `shared/scripts/voice_tell_detector.py` (`_FAIL_PHRASES`), the save-time gate that enforces it. The two MUST change together — add a phrase here and add the matching rule there. `tests/run_voice_tell_detector_test.py` asserts the detector's fail-rule count is ≥ this list's bullet count, so a one-sided edit fails the battery loudly. The override carve-out above maps to the detector's `allow_phrases` hook (a Voice Block Taboo a client demonstrably uses is fed through and never hard-blocked). Vocabulary WORDS are the exception: they live in `vocabulary_policy.py` (one owner, both gates) — not in `_FAIL_PHRASES` and not here.
 
 ---
 

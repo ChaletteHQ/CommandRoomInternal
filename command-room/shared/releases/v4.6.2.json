@@ -1,0 +1,41 @@
+{
+  "version": "4.6.2",
+  "headline": "The marathon finale — uncertain captures now come to you, noisy captures stay quiet, promises to groups track per person, and promises you make by email get captured too.",
+  "items": [
+    {
+      "id": "v462_announce_confirm_flow",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your daily Commitments chat now opens with a short 'Needs a quick confirm' section: anything captured with an unclear owner or a suspected duplicate comes to you with one-tap answers — Mine, Theirs (naming the person), or Drop. Answering 'Same as [person]' when a name was misheard teaches the workspace permanently. Ten seconds a day, and nothing uncertain ever silently becomes fact.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v462_announce_quiet_capture",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Capture got quieter: things OTHER people promise each other in your meetings no longer land on your list — they're kept as background context and only surface if they come up again. Your open list stays proportional to what you actually owe and are owed. Items with a date or money attached always surface, and you can tune the strictness ('customize how commitments are captured') any time.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v462_announce_multi_recipient",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Promises to a group now track per person: 'send the deck to the board' chases each board member individually, you can mark each one received as replies come in, and the item proposes closing itself only when everyone has delivered — you always make the final call.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v462_announce_sent_mail_capture",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Promises you make in emails you SEND are now captured too — 'I'll get you the numbers Friday' in a reply becomes a tracked item automatically, and if it restates something already tracked, the two merge instead of doubling up.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v462_announce_polish",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Plus a polish pass everywhere: people are always named by their correct name from your records (not how a transcript misheard them), email subject lines follow your voice rules, snoozed items are reviewable with 'show muted', and the morning brief carries a one-line health note when a background task needs attention.",
+      "action": "announce_only"
+    }
+  ]
+}

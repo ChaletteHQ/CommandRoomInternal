@@ -171,6 +171,8 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
               workspace_root=ws)
    ```
 
+   **Name spelling (v4.6.1 S3 / F-50 P2b):** `title`'s attendee name — and every attendee name in the sections — is the RESOLVED person record's spelling (`entity_resolve` display_name / `canonical_name`), never a calendar-invite or transcript spelling. Raw spellings survive only inside verbatim quotes; an unresolved attendee keeps the as-heard spelling until a record exists. Full rule: `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names.
+
    **Multi-attendee prefix rule:** Talking Points and Questions to Ask use `→ <FirstName>:` prefixes ONLY when the meeting has 2+ external attendees. Single external attendee = no prefix. Internal-only meetings follow the same rule for 2+ internal attendees.
 
    **Internal-only meetings (per Phase 3 v2.14.36+):** same five blocks, same pipeline — `supporting_sections` swaps Relationship Context for "Project events since last meeting" per `call-prep/SKILL.md` "Internal-meeting variant"; pass `contract_profile="call_prep_internal"` to `make_brief`. The internal "Walk-out" objective is `exec_header.verdict`, same as external.

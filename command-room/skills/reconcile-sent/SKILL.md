@@ -1,13 +1,13 @@
 ---
 name: reconcile-sent
-description: "Silent scheduled maintenance task (3x weekdays) with three write jobs: close commitments the CEO completed by sending email directly from Gmail outside the product's draft path; watch earlier sends for terminal outcomes (replied / no reply / bounced) as learning signal; and persist mid-confidence matches for one-click confirm in the next Commitments chat. Runs from the SILENT_TASKS registry — no widget, no chat surface; its work appears as receipts and items quietly checked off. Manual fire: 'reconcile my sent mail'. Honors pending-review flags (never auto-resolves them) and keeps its single-responsibility isolation — nothing else folds into this task. Does NOT fire on 'follow up' phrasings (follow-up-ritual / email-writer) or 'scan for commitments' (scan-for-commitments — historic bulk extraction). Matching paths and cursor mechanics: Routing section in the body."
+description: "Silent scheduled maintenance task (3x weekdays) with four write jobs: close commitments the CEO completed by sending email directly from Gmail outside the product's draft path; open a new commitment when a sent reply carries a promise nothing tracks yet; watch earlier sends for terminal outcomes (replied / no reply / bounced) as learning signal; and persist mid-confidence matches for one-click confirm in the next Commitments chat. Runs from the SILENT_TASKS registry — no widget, no chat surface. Manual fire: 'reconcile my sent mail'. Honors pending-review flags (never auto-resolves them) and keeps its single-responsibility isolation — nothing else folds into this task. Does NOT fire on 'follow up' phrasings (follow-up-ritual / email-writer) or 'scan for commitments' (scan-for-commitments — historic bulk extraction). Matching paths and cursor mechanics: Routing section in the body."
 ---
 
 # Reconcile Sent — silent commitment reconciliation
 
-This task is all write-side work — three silent write jobs (commitment closures,
-the email-outcome watch, the voice reconcile) and no visible deliverable to hide
-behind. Reconciliation is write-side maintenance (cursor semantics + idempotent
+This task is all write-side work — four silent write jobs (commitment closures,
+the sent-promise capture, the email-outcome watch, the voice reconcile) and no
+visible deliverable to hide behind. Reconciliation is write-side maintenance (cursor semantics + idempotent
 closures); the morning brief is a read-mostly render. They were co-located and
 the invisible write lost every time (Bug #98-v3). Here the writes ARE the job,
 so there is nothing to deprioritize them against — the same reason the silent
@@ -15,8 +15,8 @@ Sunday `cleanup` task runs reliably.
 
 ## Skill Boundary (v2.1)
 
-- **Use reconcile-sent for:** the silent background pass over Gmail Sent — closing already-handled commitments, watching tracked sends for outcomes, logging voice corrections. It renders nothing.
-- **Use `inbox-triage` for:** inbound mail — triage, classification, reply drafts.
+- **Use reconcile-sent for:** the silent background pass over Gmail Sent — closing already-handled commitments, OPENING commitments from sent promises nothing tracks yet (v4.6.2), watching tracked sends for outcomes, logging voice corrections. It renders nothing.
+- **Use `inbox-triage` for:** inbound mail — triage, classification, reply drafts. Its commitment extractor covers both directions but only ever sees `is:unread in:inbox` threads — a thread the CEO read and replied to the same day never reaches it. THIS task's sent-promise capture is the rescue path for exactly those outbound promises (the BUG-3719 class: a promise made in the CEO's own reply, in a thread triage never scanned, aging silently until the counterparty chases).
 - **Use `morning-briefing` for:** the reader-facing brief; it reads the closures this task wrote.
 - **Use `show-my-list` for:** viewing open commitments on demand.
 
@@ -25,6 +25,7 @@ Sunday `cleanup` task runs reliably.
 Every write goes through a locked helper — never a hand-rolled append:
 
 - `commitment_resolved` events + the `sent_reconcile` audit event + the `workspace.sent_reconcile_cursor` advance — via `reconcile_sent_commitments.reconcile_and_receipt` (one call, Step 3).
+- NEW `commitment` opens (and `commitment_observed` set-asides) from the CEO's own sent promises — the SAME `reconcile_and_receipt` call (its `sent_commitment_items=` argument, Step 2c → Step 3), which routes them through `sent_capture.capture_sent_items` → the shared capture block (`capture_gate.gate_commitment_data`), the W4c relevance gate, restatement dedup vs the open set, and one locked `event_gate.append_event` batch.
 - Terminal `email_outcome` events (`replied` / `no_reply_7d` / `bounced`) — via `email_outcomes.watch_and_receipt` (Step 2b).
 - Voice-correction appends under `_hq/voice/` — via `voice_corrections.reconcile_sent_against_snapshots` (Step 4b).
 
@@ -85,7 +86,13 @@ summary = watch_and_receipt("<abs workspace root>", thread_states, source_skill=
 
    `watch_and_receipt` appends one terminal `email_outcome` event per resolved send (`replied` / `no_reply_7d` / `bounced`) and is idempotent (a re-run re-loads pending and the now-terminal sends are already excluded). Hold `summary` — Step 3 passes it into `reconcile_and_receipt(..., outcome_watch_summary=summary)` so the audit event records the reply counts. **Stay silent — produce no chat output for this phase;** the reply/latency patterns surface later through `insight-generator`'s Outcome-patterns pass, never here. Budget: ≤25 thread fetches + ≤25 `rfc822msgid:` fallback searches per fire; on connector-budget exhaustion, stop and leave the rest pending (idempotence makes that safe). A send with neither a stored thread id nor a resolvable `rfc822msgid:` is skipped and ages out of the 21-day window — never guess a thread by recipient+subject.
 
-3. **Run the orchestrator — ONE call. It does the matching, the `commitment_resolved` writes, the cursor advance, AND emits the `sent_reconcile` audit event.**
+2c. **Sent-promise extraction (v4.6.2, the BUG-3719 fix) — reuses the Step-2 fetch; no second Gmail pass.** Read each Step-2 sent message and extract NEW commissives — promises the CEO made in their own outbound words ("I'll send corrected invoices next week", "we'll reconcile the billing internally and reissue"). The Stage-D capture floor (`shared/COMMITMENT_SCHEMA.md` § "Extraction triggers") applies with full force: clear owner (the CEO — this pass reads only their own sent words), clear deliverable, real consequence. Rules:
+   - **Promises only, not completions.** "Just sent the deck" / "here's the file" is evidence of DOING — that's Step 3's matcher's job (it closes). Extract only forward-looking commissives. Polite filler ("I'll take a look", "will do") is below the floor — when in doubt, skip (same rule as the Slack leg).
+   - **This pass never extracts what's owed TO the CEO.** Inbound asks are `inbox-triage`'s lane; direction here is fixed by the surface — Sent mail, the CEO's own words, the CEO's own promises.
+   - Per commissive, build an item dict: `{"message_id", "ts" (the message's send time), "title", "kind"` (counterparty determinable → `"promise"`; the recipient almost always is)`, "due"` resolved from the language against the MESSAGE's send date (or `"no_due": true` — silence is rejected by the gate)`, "counterparty_id"` (recipient resolved via `entities.json`, else `"counterparty_name"`)`, "evidence"` (the promise sentence)`, "org_id"/"org_name"` (the recipient's resolved org, for the per-org capture override)`, "person_ids", "classification_confidence"}`. Hold the list as `sent_items` — Step 3 writes them; do NOT append them yourself.
+   - Skip extraction for messages already covered (`sent_capture.already_captured(root, message_id, title)`) — cheap, and re-runs stay idempotent either way (Step 3 re-checks).
+
+3. **Run the orchestrator — ONE call. It does the matching, the `commitment_resolved` writes, the sent-promise capture (opens + restatement merges + set-asides), the cursor advance, AND emits the `sent_reconcile` audit event.**
 
 ```python
 import sys; sys.path.insert(0, "shared/scripts")
@@ -97,8 +104,11 @@ receipt = reconcile_and_receipt("<abs workspace root>", sent_messages,
                                 user_person_id=user_id,
                                 source_skill="reconcile-sent",
                                 outcome_watch_summary=summary,   # from Step 2b
+                                sent_commitment_items=sent_items,  # from Step 2c — [] when nothing extracted, never None
                                 fired_via="scheduled")  # "manual" on a chat-phrase / Run Now fire (v4.5.2 receipt contract)
 ```
+
+   The capture pass dedups each item against the open set as it stood BEFORE this run's closes (`capture_gate.matches_open_commitment` — shared non-user party + content overlap), so a sent restatement of a meeting-sourced or triage-sourced commitment MERGES into the item that already tracks it instead of double-tracking. Items route through the W4c relevance gate (the CEO is a party to their own promise → opens under party-only; an org-level observed-only override still sets aside; dated/money items always open). Per-item extraction failures land loudly in `receipt["capture"]["errors"]` — non-empty means the extraction must be fixed and the run repeated (idempotency makes that safe); never ignore it silently.
    **Resolve the user via `resolve_primary_user`, never by guessing** — on real workspaces the `is_primary_user` flag is often unset, so a hand-resolved user can come back wrong/None and the matcher's owner gate (`owner_id == user`) then matches nothing (Bug #102, the other half of why reconciliation closed 0).
 
 4. **Self-validate against the event (mandatory).** Read the audit back and confirm it's this run's:
@@ -121,10 +131,11 @@ reconcile_sent_against_snapshots("<abs workspace root>", sent_messages)   # reus
 
    It matches each sent message to a `_hq/voice/draft-snapshots.jsonl` row (by `gmail_message_id`, else recipient + normalized subject + a 7-day window), classifies the drafted-vs-sent diff, and appends voice corrections. Silent and non-blocking — it never affects the commitment reconciliation receipt; on any error, continue.
 
-5. **Surface only if something closed (otherwise stay silent — this is a background task).**
+5. **Surface only if something closed or opened (otherwise stay silent — this is a background task).**
    - `receipt["resolved"]` non-empty → one line, delivered the same way other scheduled tasks deliver (Slack DM / email / saved note per the workspace's delivery preference): *"Closed N follow-ups you'd already sent — [titles]. Say `undo` to reopen any."*
+   - `receipt["opened"]` non-empty → *"Started tracking N promise[s] from your sent mail — [titles]. Say `not mine [n]` to drop any."* (Plain language only — never "captured a commissive" or any event name.)
    - `receipt["pending"]` non-empty → *"Did you already handle these? [title] — `mark done [n]`."*
-   - Nothing closed → no output. Silence is correct; the audit event is the proof it ran.
+   - Nothing closed, nothing opened → no output. Silence is correct; the audit event is the proof it ran. (Restatement merges and set-asides are silent by design — they surface through the weekly cleanup note's set-aside line, not here.)
 
 ## Self-heal
 The FIRST fire on a workspace fetches a **30-day window regardless of the cursor**
@@ -136,8 +147,9 @@ workspace already had its first run under the cursor-only behavior (so the backl
 is still stranded), a one-time "catch up my sent mail" clears it.
 
 ## What it does NOT do
-- It does not render a morning brief or a commitments view — the brief reads the closures this task wrote.
-- It does not fetch inbound mail, triage, or draft replies — that's `inbox-triage`.
+- It does not render a morning brief or a commitments view — the brief reads the closures and opens this task wrote.
+- It does not fetch inbound mail, triage, or draft replies — that's `inbox-triage`. The sent-promise capture opens items ONLY from the CEO's own outbound words — it never opens owed-to-you items from what correspondents wrote.
+- It does not double-track a promise that already exists — a sent restatement of a tracked commitment merges via the restatement match; the same message re-scanned is skipped by `(source_ref, title)`.
 - It never advances the cursor without a real fetch behind it — the audit event + validator make that checkable.
 - It does not surface reply/outcome patterns — Step 2b only WRITES the `email_outcome` events silently; `insight-generator`'s Outcome-patterns pass is the reader-facing surface.
 
@@ -148,4 +160,4 @@ Runs as a scheduled task and follows `shared/RELIABILITY.md`: skip-not-fail when
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Silent maintenance task with three silent write jobs: (1) close commitments the CEO completed by sending a follow-up DIRECTLY from Gmail (outside the product's draft->send path), (2) watch earlier tracked sends for reply/no-reply/bounce outcomes, (3) reconcile final sent bodies against draft snapshots for voice corrections. Fires as a scheduled task on weekday mornings (6:45 AM, before the morning brief) and can be run manually with 'reconcile my sent mail' / 'reconcile sent'. A wide one-time catch-up runs via 'catch up my sent mail' / 'reconcile the last N days' / 'reconcile my backlog' — fetches a 30-day window regardless of the cursor to clear a stranded backlog. The core pass: fetch Gmail Sent (since the cursor, or a 30-day window on a first run / catch-up), match against open commitments, write the closures + advance the cursor, and self-validate that the work actually landed; the outcome watch and voice reconcile ride the same fetch. It does NOT produce a reader-facing brief — the morning brief reads what this task wrote. This split exists because reconciliation is an invisible substrate write that loses to visible deliverables when co-located with them (Bug #98-v3: three folds into the brief/inbox were all skipped; the brief diagnosed the structural cause itself and recommended moving it out).
+> Silent maintenance task with four silent write jobs: (1) close commitments the CEO completed by sending a follow-up DIRECTLY from Gmail (outside the product's draft->send path), (2) open a new commitment when a sent reply carries a promise nothing tracks yet (v4.6.2 — the rescue path for outbound promises in threads that were read and replied before inbox triage ever saw them), (3) watch earlier tracked sends for reply/no-reply/bounce outcomes, (4) reconcile final sent bodies against draft snapshots for voice corrections. Fires as a scheduled task on weekday mornings (6:45 AM, before the morning brief) and can be run manually with 'reconcile my sent mail' / 'reconcile sent'. A wide one-time catch-up runs via 'catch up my sent mail' / 'reconcile the last N days' / 'reconcile my backlog' — fetches a 30-day window regardless of the cursor to clear a stranded backlog. The core pass: fetch Gmail Sent (since the cursor, or a 30-day window on a first run / catch-up), match against open commitments, write the closures + advance the cursor, and self-validate that the work actually landed; the sent-promise capture, outcome watch, and voice reconcile all ride the same fetch. It does NOT produce a reader-facing brief — the morning brief reads what this task wrote. This split exists because reconciliation is an invisible substrate write that loses to visible deliverables when co-located with them (Bug #98-v3: three folds into the brief/inbox were all skipped; the brief diagnosed the structural cause itself and recommended moving it out).

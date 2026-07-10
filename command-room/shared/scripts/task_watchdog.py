@@ -804,6 +804,40 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
     }
 
 
+def brief_watchdog_line(workspace_root, *, verdict=None, now=None):
+    """The morning brief's LIGHT daily watchdog pass (v4.6.1 S3 — the R3
+    discovery: system-health's docstring promised this line while the
+    morning-brief orchestrator called nothing, so the brief inherited no
+    watchdog at all).
+
+    ONE line, receipts-only, derived SOLELY from health_verdict's
+    partition — no per-task detail, no cause guessing, no second scan:
+
+      problems > 0   → "N of your background tasks need attention — say
+                        health check for the detail."
+      problems == 0  → None (never pad the brief with an all-clear; the
+                        brief's job is today's work, not green checkmarks)
+      cloud vantage  → None (this chat can't see the scheduler; staying
+                        quiet beats a false alarm — system-health owns
+                        the vantage explanation when asked directly)
+
+    Pass a precomputed `verdict` to avoid a second receipt scan when the
+    caller already ran health_verdict this fire.
+    """
+    if verdict is None:
+        verdict = health_verdict(workspace_root, now=now)
+    if verdict.get("vantage") is not None:
+        return None
+    n = len(verdict.get("problems") or [])
+    if n == 0:
+        return None
+    if n == 1:
+        return ("1 of your background tasks needs attention — "
+                "say health check for the detail.")
+    return (f"{n} of your background tasks need attention — "
+            "say health check for the detail.")
+
+
 def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
     """R2 schedule-parity check (cleanup's weekly pass). Detect + report —
     NO config writes; `schedule_config` stays a sparse override store.
@@ -967,6 +1001,7 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> l
 
 __all__ = [
     "RECEIPT_SPECS",
+    "brief_watchdog_line",
     "check_tasks",
     "check_schedule_parity",
     "check_workspace_binding",

@@ -118,7 +118,10 @@ def _emit_gate_ran_chat_email(
             "source_skill": "turn_backstop",
             "data": {
                 "surface": "chat_email",
-                "gates": ["voice"],
+                # honest gate list — the scan below runs BOTH detectors
+                # (voice tells + the shared-vocabulary leak scan); the
+                # pre-S3 hardcoded ["voice"] under-reported leak findings
+                "gates": ["voice", "leak"],
                 "result": "fail" if fail_count else "pass",
                 "fail_count": fail_count,
                 "items_scanned": item_count,

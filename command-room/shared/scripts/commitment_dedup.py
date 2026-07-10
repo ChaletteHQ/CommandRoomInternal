@@ -158,20 +158,26 @@ def _person_name_index(workspace_root) -> dict:
     return out
 
 
-def _counterparty_signal(ev_data: dict, name_index: dict) -> tuple[Optional[str], set]:
-    """(counterparty_id or None, name-token set) for one commitment's data.
-    The token set unions the free-text counterparty_name with the id's
-    entities-resolved names, so an id-only writer and a name-only writer can
-    still agree on WHO."""
+def _counterparty_signal(ev_data: dict, name_index: dict) -> tuple[frozenset, set]:
+    """(counterparty-id SET, name-token set) for one commitment's data. MC1:
+    the id set is the FULL roster (legacy single + counterparty_ids list), so
+    two captures of the same multi-counterparty commitment agree when their
+    rosters OVERLAP. The token set unions every free-text counterparty name
+    with each id's entities-resolved names, so an id-only writer and a
+    name-only writer can still agree on WHO."""
+    from commitment_parties import (
+        counterparty_ids as _cp_ids,
+        counterparty_names as _cp_names,
+    )
     d = ev_data if isinstance(ev_data, dict) else {}
-    cp_id = d.get("counterparty_id") or None
+    ids = {str(c) for c in _cp_ids(d)}
     toks: set = set()
-    name = d.get("counterparty_name")
-    if isinstance(name, str):
+    for name in _cp_names(d):
         toks |= {t for t in _tokenize(name) if len(t) >= 3}
-    if cp_id and cp_id in name_index:
-        toks |= name_index[cp_id]
-    return (str(cp_id) if cp_id else None), toks
+    for cid in ids:
+        if cid in name_index:
+            toks |= name_index[cid]
+    return frozenset(ids), toks
 
 
 def _title_of(data: dict) -> str:
@@ -305,11 +311,16 @@ def score_suspected_duplicate(
     owner_corroborated = bool(new_owner and open_owner and str(new_owner) == str(open_owner))
 
     # 3. Counterparty gate.
-    new_cp_id, new_cp_toks = _counterparty_signal(new_data, name_index)
-    open_cp_id, open_cp_toks = _counterparty_signal(d_open, name_index)
+    new_cp_ids, new_cp_toks = _counterparty_signal(new_data, name_index)
+    open_cp_ids, open_cp_toks = _counterparty_signal(d_open, name_index)
     cp_corroborated = False
-    if new_cp_id and open_cp_id:
-        if new_cp_id != open_cp_id:
+    if new_cp_ids and open_cp_ids:
+        # MC1: both sides carry resolved counterparties — they must SHARE at
+        # least one. Two captures of "send the deck to the board" overlap on
+        # the board members; two fully-disjoint rosters are different
+        # commitments (hard veto). Reduces to id-equality for singletons, so
+        # single-counterparty behavior is byte-identical.
+        if not (new_cp_ids & open_cp_ids):
             return None
         cp_corroborated = True
     else:

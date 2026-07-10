@@ -70,6 +70,9 @@ Every skill that *produces* commitment events MUST follow this schema. Every ski
 | `owner_external` | when the owner is named but has no entity record yet (`owner_id` is null) | Free-text name string (e.g., `"Rakesh"`) so the surface skill can render "owed to you by Rakesh — add as contact." When `owner_id` is non-null this field is omitted. v2.14.19+: enables the reachability-filter surfacing pattern. |
 | `counterparty_id` | REQUIRED when determinable (Stage E 2026-07, F5 — extraction receipts) | Canonical `person_NNN` of who the deliverable is owed TO (or, for owed-to-you items, who owes it). Also included in `person_ids`. Feeds the CRU candidacy gate DIRECTLY (`match_send_to_commitments`) — without it the matcher leans on the title-token fallback and misses real completions (the Bug #103 recall class; live yield was 4 closes / 644 scanned). **Retires `requester_id` / `requester_person_id` for NEW writes** — readers keep the `_COMMITMENT_FIELD_ALIASES` chain forever, so the 228 historic requester_* events stay readable. |
 | `counterparty_name` | SHOULD set when the counterparty is named but resolves to no person record | Free-text name (e.g., `"Rakesh"`, `"Jordan Lee"`). The matcher's candidacy gate matches recipient display names / email local-parts against it (Stage E), so a receipt survives even when entity resolution couldn't land an id. |
+| `counterparty_ids` | ONE commitment owed to MULTIPLE people (v4.6.0 MC1) — set ONLY when the source explicitly names 2+ recipients ("send the deck to **the board**") | Ordered list of RESOLVED counterparty `person_NNN` ids, primary first. When set, `counterparty_id` is ALSO set to element 0 (the legacy scalar stays valid forever, so any reader degrades to the first counterparty). **No history migration** — single-counterparty commitments never carry this key. Every consumer unions `{counterparty_id} ∪ counterparty_ids` via `shared/scripts/commitment_parties.py` (the ONE reader — `counterparty_ids()` / `primary_counterparty_id()` / `outstanding_counterparties()`). Each id is also in `person_ids`. Build with `commitment_parties.build_counterparty_fields` (keeps single-counterparty output byte-identical). |
+| `counterparty_names` | multi-counterparty items with 2+ UNRESOLVED counterparties (v4.6.0 MC1) | List of free-text names, DISJOINT from `counterparty_ids` (a resolved counterparty carries an id, not a name). Same reader union as above. |
+| `received_from` / `received_from_names` | NEVER written on a `commitment` event — accumulated on the PROJECTION by the loader from `commitment_partial_received` events (v4.6.0 MC1) | Resolved ids / free-text names of counterparties who have delivered. When every counterparty is in, the loader stamps `all_counterparties_received: true` (derived, in-memory) — the PROPOSE-closure signal (never an auto-close). |
 | `pending_review` | when the commitment was extracted by a low-confidence pass | Boolean. If true, surface skill should flag for explicit user review. Bypasses auto-chase paths until confirmed. |
 | `review_reason` | when `pending_review` is true | One-line plain-English explanation of why review is needed (e.g., "Owner is external person — no entity record yet"). Used by Pulse and Commitments surfaces to compose review prompts. |
 
@@ -117,6 +120,87 @@ Producers do NOT need to update status over time; that's a re-scan/aggregation c
 
 ---
 
+## Observed tier — the capture relevance gate (v4.6.1 W4c)
+
+**Principle: capture everything, gate only surfacing.** No setting loses data;
+the observed tier is the full record, so the line is movable retroactively —
+that is what makes user customization of the gate safe.
+
+**The gate (runs at capture, after the Stage-D/S2/Stage-E block — one shared
+implementation, `shared/scripts/capture_gate.py`):** an extracted item enters
+the ledger as an OPEN `commitment` only if the workspace owner is a party
+(owes it or is owed it — owner/counterparty id match, or a confident name
+match; a `task`/`scheduling`/`agenda` item with no party fields is presumed
+self-owed). Everything else is stored as a `commitment_observed` event
+(`data.tier: "observed"`): third-party↔third-party items, and **amber** items
+whose attribution can't be confidently resolved — amber is SILENT by default,
+not ask. Observed items are searchable, feed prep context, and are promotable
+— but create **no open item, no count, no triage row, no confirm-section
+row** (a dedicated event type keeps them out of every open-set reader by
+construction; see `EVENT_TYPES.md`).
+
+**Modes (customize layer — SCL1 directives under `_hq/custom/`, the
+`scan-for-commitments` policy file governs every capture writer; read fresh
+at capture time via `capture_gate.resolve_capture_mode` /
+`workspace_capture_context`):**
+
+| Mode | Behavior |
+|---|---|
+| `party-only` (DEFAULT) | only items where the owner is a party open |
+| `team-delegation` | also open items a team member commits to (people in the workspace's own org — `relationship_type: "self"`) |
+| `track-everything` | pre-W4c behavior; everything opens |
+| `observed-only` (org-override value) | keep everything from that org on file without asking |
+
+Directive grammar: `capture mode: <mode>` (global) · `for <org name or id>:
+<mode>` (per-org override — routed via the capture source's RESOLVED org;
+overrides beat the global mode). Outcome language only, never numeric
+thresholds. Fail-open: when the primary user can't be resolved, the gate is
+inert (track-everything) — a broken entities file must never silently swallow
+real commitments.
+
+**Asymmetric caution rail (beats every mode and override):** an item carrying
+a due date (parseable `data.due`) or a money amount (currency symbol + number,
+or number + currency word — deliberately conservative; bare "5k" doesn't
+match) ALWAYS surfaces as open. Enforced twice: `classify_capture` routes it
+open, and `build_observed_event` refuses to store it observed.
+
+**Corroboration (the checkable promotion rule — never vibes):** an observed
+item is promoted into the confirm flow when a LATER event from a DIFFERENT
+source (`commitment`/`interaction`/`meeting`/`note`, distinct non-empty
+`source_ref`, later timestamp) BOTH (i) shares a party — a person id, or a
+≥3-char name token — AND (ii) overlaps its content — stopword-stripped
+title-token Jaccard ≥ 0.5, or ≥ 3 shared content tokens
+(`capture_gate.corroborates` / `find_corroborations`). An explicit user
+reference ("track that", or the track-it affordance on a prep render)
+promotes unconditionally. Promotion = `capture_gate.promote_observed`:
+appends a REAL `commitment` with `data.pending_review: true`,
+`data.promoted_from: <obs id>`, and a review_reason — the daily confirm
+section picks it up purely by data contract. Idempotent; the observed event
+stays in history (append-only, no rewrite). Prep context
+(`prep_context_observed`) SURFACES observed items for meetings with those
+parties but never auto-promotes — a weekly recurring meeting must not
+re-create the confirm-row volume the gate removed.
+
+**Audit affordance:** the weekly cleanup note carries one line — "N items set
+aside this week — review" — backed by `capture_gate.observed_counts(root,
+since_ts=<7 days ago>)`. A filter whose rejects are cheaply inspectable is a
+filter the user can trust.
+
+**Verb-driven tuning (consent, never silent):** Not-mine/Drop signals already
+in the log (`commitment_resolved` with a dropped/not-mine resolution,
+`commitment_reassigned`, `chat_dismissal`) are mined per counterparty org by
+`capture_gate.propose_gate_directives` (floors: ≥5 captured, ≥70% dismissed;
+cap 3). **The weekly insights pass consumes these as PROPOSALS** ("You set
+aside 12 of the last 15 things I captured about [vendor] — want me to keep
+those on file without asking?") riding the existing confirm/edit/skip widget;
+an approval calls `capture_gate.apply_gate_proposal` — ONE tap writes ONE
+per-org `observed-only` directive through `skill_custom_writer.add_directive`
+(origin `learned`); a decline lands the fingerprint (`cgd_<hash>`) in the
+proposal ledger's 60-day cooldown. The gate NEVER adjusts itself — a proposal
+the user didn't approve changes nothing.
+
+---
+
 ## Resolution (how commitments close)
 
 **THE closure path (Phase 2 Stage B, F2):** every closer writes through `shared/scripts/commitment_state.py::close_commitment(workspace_root, commitment_id, *, resolved_by, evidence, source_skill, resolution="done"|"dropped"|"superseded", user_confirmed=...)`. It normalizes legacy id spellings (bare int `86`, `seq_86`, `event_086`, `commitment_seq_86` → canonical via seq lookup), raises `CommitmentIdError` when nothing matches (no orphan tombstones — 74 existed in the live substrate), is idempotent over the FULL resolved-id set, never auto-resolves a `pending_review` item (`PendingReviewError` unless `user_confirmed=True` from an explicit user action), and appends through the Phase 1 gate. Matching logic (cru_match Paths 1–5) stays with the callers; only the write is centralized. Migrated closers: log-resolution, apply-choices, the workspace-manager catch-all, reconcile-sent, the Commitments orchestrator (2.5/2.6/2.7 + resolved/mark-received verbs), orchestrator-inbox 5.5, orchestrator-past-meetings, calendar-writer 3.5, meeting-notes, follow-up-ritual.
@@ -149,7 +233,11 @@ The aggregator removes the commitment from open queues when it sees a `commitmen
 **Merge / supersession (`commitment_superseded`, v4.6.0 C4):** capture dedup is source-scoped (`(source_ref, title)` content hashes), so the same real-world commitment captured by different writers — meeting transcript (`granola:X`), follow-up email (`gmail:Y`), nightly sweep (`session:Z`) — lands as distinct open items. Two layers close the hole:
 
 1. **Capture-time flagging (`shared/scripts/commitment_dedup.py`, hooked inside the single append path — caller-agnostic like the gate):** each new `commitment` is compared against the OPEN set within a 14-day window under a conservative rule — owner ids must not conflict, counterparty signals must agree (ids, or lenient name-token match with the Bug #103 title fallback), and the name-stripped titles must overlap strongly (higher bar when no person field corroborates). A suspect is NEVER dropped or auto-merged: it lands with `data.pending_review: true` + `data.suspected_duplicate_of: <open item's id>` + `data.suspected_duplicate_score`, so the confirm flow renders "looks like a duplicate of X — merge / keep both". Fail-open: a check failure appends the batch unflagged. `CR_DEDUP_CHECK=0` disables.
-2. **The merge writer (`commitment_state.supersede_commitment(workspace_root, survivor_id, superseded_id, *, merged_by, source_skill, evidence, user_confirmed)`):** emits `commitment_superseded` — `data.commitment_id`/`data.commitment_seq` reference the SUPERSEDED item (closed through the standard closer chains, honored by the loader since v3.14.5), `data.superseded_by` names the survivor, `data.merged_source_refs` unions both sides' provenance. `load_open_commitments` folds the union onto the survivor's in-memory copy (`data.merged_source_refs` / `data.merged_from`) — the survivor "carries" every absorbed source without any history rewrite. Same guards as `close_commitment`: id normalization, loud `CommitmentIdError`, idempotent re-merge, `PendingReviewError` unless `user_confirmed=True` (merging IS the adjudication of a flagged suspect), lock-spanned scan→append. Surfaces: the W4b Merge verb once it ships; until then the chat phrase ("merge those two" / "same commitment") documented in commitment-triage.
+2. **The merge writer (`commitment_state.supersede_commitment(workspace_root, survivor_id, superseded_id, *, merged_by, source_skill, evidence, user_confirmed)`):** emits `commitment_superseded` — `data.commitment_id`/`data.commitment_seq` reference the SUPERSEDED item (closed through the standard closer chains, honored by the loader since v3.14.5), `data.superseded_by` names the survivor, `data.merged_source_refs` unions both sides' provenance. `load_open_commitments` folds the union onto the survivor's in-memory copy (`data.merged_source_refs` / `data.merged_from`) — the survivor "carries" every absorbed source without any history rewrite. Same guards as `close_commitment`: id normalization, loud `CommitmentIdError`, idempotent re-merge, `PendingReviewError` unless `user_confirmed=True` (merging IS the adjudication of a flagged suspect), lock-spanned scan→append. Surfaces: the W4b `merge` verb (v4.6.1 — confirm section + the triage Unconfirmed block) and the chat phrase ("merge those two" / "same commitment") documented in commitment-triage.
+
+**Confirm-flow adjudication (`commitment_updated` markers, v4.6.1 W4b):** two more append-only adjudications ride `commitment_updated`, written ONLY by their `commitment_state` writers and folded read-side by `load_open_commitments`: **Mine** (`confirm_commitment_owner` — `data.owner_confirmed: true` + `data.new_owner_id`; ownership folds to the user and `pending_review` clears, so the item leaves the unconfirmed bucket) and **Keep both** (`clear_review_flags` — `data.review_flags_cleared: true`; clears `pending_review`, `review_reason`, and the C4 `suspected_duplicate_*` flags — confirmed distinct). Adjudication folds are append-order-aware against `commitment_reassigned`: the LATEST adjudication decides `pending_review` (a Mine followed by a later unconfirmed reassignment re-stamps the flag, and vice versa). Unconfirmed items never enter chase and count only in the headline `unconfirmed` bucket; adjudication is always an explicit user action — no writer may auto-confirm.
+
+**Per-person receipt (`commitment_partial_received`, v4.6.0 MC1):** a multi-counterparty commitment ("send the deck to the board") is fulfilled one counterparty at a time. `commitment_state.mark_partial_received(workspace_root, commitment_id, *, received_by, source_skill, counterparty_id=|counterparty_name=)` appends a `commitment_partial_received` naming WHICH counterparty delivered (`data.received_counterparty_id` / `received_counterparty_name`; `data.commitment_id` + `commitment_seq` identify the item — the append gate rejects an id-less one as a dead letter). It is NOT a closer — `load_open_commitments` accumulates `data.received_from` / `received_from_names` on the projection and stamps `data.all_counterparties_received: true` when the roster is complete. Closure is then PROPOSED (the daily chase renders "everyone's received — close it?"), never automatic — the user closes via the normal closure path. The CRU matchers (`match_send_/inbound_/calendar_to_commitments`) return `recommendation: "partial_received"` with `matched_counterparty_ids` for a multi-counterparty match instead of `auto_resolve`, so a send/reply/event to ONE counterparty records that person's receipt rather than whole-closing the item. Single-counterparty commitments are entirely unaffected (the matcher downgrade fires only on multi).
 
 **Deferral (`commitment_updated`, read since Phase 2 Stage A):** a commitment's due date moves via a `commitment_updated` event carrying `data.commitment_id` + `data.new_due` (the orchestrator `push to [date]` verb; `due` / `due_date` accepted as variants). The original commitment event is NEVER rewritten — `load_open_commitments` folds the latest due-carrying update into the returned commitment's effective `data.due` (with `data.due_updated_by_seq` provenance), so consumers reading `_commitment_field(ev, "due")` see the pushed date and a deferred item stops rendering overdue. Updates without a due field (scope/summary changes via `change_summary`) don't affect the effective due.
 
@@ -164,8 +252,12 @@ The aggregator removes the commitment from open queues when it sees a `commitmen
 | `follow-up-ritual` | Same trigger as meeting-notes (it invokes meeting-notes internally) | `meeting` event |
 | `scan-for-commitments` | One-shot bulk scan over historic Granola/Gmail data | varies — re-creates source events if missing |
 | `scan-for-commitments` (Slack leg, v4.6.0 MC3) | Recent-window Slack channel/DM scan when the connector is present | none — no parent event; provenance is `source_ref: slack:<permalink>` |
+| `reconcile-sent` (sent-promise capture, v4.6.2 BUG-3719) | Daily silent Sent pass — opens the user's OWN outbound promises nothing tracks yet | none — no parent event (nothing writes outbound `interaction` events); provenance is `source_ref: gmail:<message_id>` |
+| `scan-for-commitments` (Sent pass, v4.6.2 BUG-3719) | Historical outbound backfill over the mail connector's Sent folder | none — same `gmail:<message_id>` provenance |
 
 Slack-based commitments are extracted by `scan-for-commitments`'s Slack leg (v4.6.0 MC3) via `shared/scripts/slack_capture.py` — same Stage-D/S2/Stage-E capture block as every writer, `source_ref: slack:<permalink>` (the spelling this schema reserved), user's-own-messages as the promise source / messages-naming-the-user as the owed-to-you source, third-party items refused at the builder. Slack absent = the leg doesn't exist (skip-not-fail). Real-time per-message Slack extraction (an inbox-triage analog) still does not exist — the recent-window scan is the coverage today.
+
+**Sent-mail promises (v4.6.2, BUG-3719):** the user's own outbound email promises are captured via `shared/scripts/sent_capture.py` — the Slack direction doctrine's email analog (the user's sent messages are the PRIMARY promise source; direction is fixed by the surface, so this lane never opens owed-to-you items). Two callers share the one implementation: `reconcile-sent`'s daily capture pass (`reconcile_and_receipt(..., sent_commitment_items=...)`, the rescue for threads read+replied before inbox-triage's `is:unread in:inbox` gate ever saw them) and `scan-for-commitments`' Sent pass (historical backfill). Owner is always the resolved primary user; same capture block, W4c relevance gate, and `(source_ref, title)` idempotency as every writer — PLUS capture-side restatement dedup (`capture_gate.matches_open_commitment`: shared non-user party + content-token overlap vs the open set) so a sent restatement of a meeting- or triage-sourced commitment merges into the existing item instead of double-tracking. Note inbox-triage's extractor DOES cover outbound language in the threads it sees — the gap this lane closes is upstream of extraction: read-before-triage threads never became candidates at all.
 
 ---
 

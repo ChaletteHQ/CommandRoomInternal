@@ -124,6 +124,8 @@ For each meeting:
    JSON
    ```
 
+   **Name spelling (v4.6.1 S3 / F-50 P2b):** every attendee name in `title`, the Attendees section, and the meeting event's title comes from the RESOLVED person record (`entity_resolve` display_name — the record's `canonical_name`), never the transcript's spelling. The dogfood rendered "Myra Samples" on this surface while resolution had correctly matched Mira Sample. Transcript spellings survive only inside verbatim evidence quotes (Notable quotes keeps its original text); an attendee with no record yet (open `person_proposal`) keeps the as-heard spelling until adjudicated. Full rule: `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names.
+
    **Section list is the canonical past_meeting set — `skills/meeting-notes/SKILL.md` "SESSION_NOTES Format" is the source of truth for what meeting-notes extracts.** Same ordering every fire. Omit any section with no signal — never include placeholder/`TBD` content. Don't paraphrase heading names. **If you add or rename a section, update both `meeting-notes/SKILL.md` AND this template in the same commit — they MUST stay in sync.**
 
    **Scope Changes & Financial — conditional inclusion (v3.6.3+):** these two sections are forwardable by default (vendors / clients / partners expect scope and dollar changes documented), but ONLY include them when actual signal exists. Skip Scope Changes if no scope shift came up in the meeting. Skip Financial if zero dollar amounts / budget / revenue figures were discussed. The "omit if no signal" rule applies harder here than to Decisions/Commitments — empty Financial/Scope sections in a forwardable doc look like extraction failure to the recipient.
@@ -460,6 +462,20 @@ See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the f
 **v2.13.0 enforcement:** renderer raises `CanonicalActionError` on non-canonical verbs (e.g., `[your call]` is not canonical — use `decide [text]`; `manually` is not canonical — use `add context [text]`; `search emails` was dropped). Raises `LeakDetectedError` on forbidden patterns. Both blocking; fix the data view.
 
 **Empty-state rule (v2.14.19+):** if zero meetings happened in the last 24h (or all of them resolved cleanly with no pending sub-items), DO NOT improvise a "no meetings to process" widget by hand-typing HTML. Build `data_view = {"widget_mode": "all_clear_summary", "header": "Past Meetings — nothing to process", "sub_header": "<weekday>, <date> · <time> check", "counters": [{"label": "Last 24h", "value": n_meetings}, {"label": "Auto-processed", "value": n_auto}, {"label": "Pending review", "value": 0}, {"label": "Skipped", "value": n_skipped}], "summary_line": "All transcripts were either auto-processed cleanly or skipped (internal/personal). Nothing pending your call.", "tracked_items": [], "footer": None}` and pass to `render_chat_output_widget()`. NEVER hand-build the empty-state widget. See `orchestrator-commitments.md` for the full diagnosis (v2.14.18 fresh-install bug).
+
+**Step 1b — Claim audit (v4.6.1 S3, MANDATORY — count from disk before ANY surface speaks; F-50 P2a: this widget + its summary claimed 7 decisions while disk had 6).** Same contract meeting-notes ships (its Step 9a3), same shared primitive:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from meeting_capture import count_meeting_writes
+
+# once per processed meeting, AFTER all Phase 5 appends
+counts_by_meeting = {m["source_ref"]: count_meeting_writes("<WORKSPACE>", m["source_ref"])
+                     for m in meetings}
+# each -> {"meeting": 1, "meeting_processed": 1, "decision": 2, "commitment": 4, "person_proposal": 1, ...}
+```
+
+Every number ANY Phase 6 surface renders — the widget header counts, each meeting item's "N decisions / N commitments" lines, the quick_read enumeration, and the `pack_run` receipt's counts — comes from `counts_by_meeting`, never from extraction intent. If a count is lower than what Phase 5 attempted, a write FAILED: say so plainly in the quick_read ("captured 3 decisions for the Jono call but only 2 saved — say 'process the call Jono' to retry the missing one") and never render the failed item as logged. The regression suite for the primitive lives with meeting-notes (`run_meeting_notes_writer_parity_test.py`) — this paragraph is the surface half of F-50 P2a.
 
 **Step 2 — build data_view, render widget HTML, post via show_widget (v2.10.9+):**
 

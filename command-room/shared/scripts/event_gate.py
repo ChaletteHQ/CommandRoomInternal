@@ -319,6 +319,18 @@ def gate_events(
                     "must route the item somewhere. Write through "
                     "commitment_state.reassign_commitment."
                 )
+        # 4c (v4.6.0 MC1) — the same dead-letter rule for a per-person
+        # receipt: a `commitment_partial_received` that names no commitment
+        # records a delivery against nothing. Written through
+        # commitment_state.mark_partial_received (always stamps the id); this
+        # catches hand-built appends.
+        if etype == "commitment_partial_received" and not _has_closure_id(ev):
+            raise EventGateError(
+                "commitment_partial_received event carries no readable "
+                f"commitment id (holder={holder}) — an id-less partial "
+                "receipt records a delivery against nothing. Write through "
+                "commitment_state.mark_partial_received."
+            )
         if etype == "chat_dismissal_cleared":
             data = ev.get("data")
             data = data if isinstance(data, dict) else {}

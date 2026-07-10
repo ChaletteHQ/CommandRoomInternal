@@ -1,5 +1,30 @@
 # Command Room — Changelog
 
+## v4.6.2 — 2026-07-09 — The marathon finale (W4b, W4c, S3, MC1 + BUG-3719)
+
+Completes the 20-item build program that started with the 2026-07-07/08 live dogfood. Battery 177 -> 186 suites since 4.6.0, all green. Every item independently built in an isolated worktree, adversarially reviewed against the findings' disk evidence, and merged with integration batteries.
+
+### W4b — the confirm flow
+The daily Commitments chat opens with "Needs a quick confirm": every capture with an unclear owner, unknown person, or suspected duplicate, with one-tap Mine / Theirs->[name] / Make task / Drop verbs. "Same as [person]" writes a permanent alias — every confirmation teaches the resolver. Person proposals re-surface daily until adjudicated (the stranding fix); unconfirmed 7+ days pins to the top of triage; 30+ days cleanup proposes Drop. Unconfirmed items never enter chase and count only in their own bucket.
+
+### W4c — the relevance gate + observed tier
+Third-party commitments observed in meetings/Slack no longer create open items — they land as `commitment_observed` events (a separate type, so every existing reader excludes them by construction): searchable, prep-visible, promoted to the confirm flow only on corroboration (a checkable rule, not vibes). Strictness modes via the customize layer (party-only default / team-delegation / track-everything + per-org overrides); due-date or money items always surface; the weekly cleanup note reports what was set aside. Also consolidates the Stage-D capture gate into ONE shared module (capture_gate.py) for all four capture writers.
+
+### S3 — the language and polish sweep (9 items)
+Names render from entities, never transcript spellings. Email SUBJECT lines pass the no-dash voice gate; one shared vocabulary policy feeds both the leak and voice gates. A greppable banned-terms guard (substrate/payload/canonical-*/dispatch-layer/seq refs/run-summary tags) makes the internal-vocabulary leak class unshippable. Update-bridge Rule 9/10 resolved (Rule 10 wins). Plus: the confirm window tiles exactly with the 7-day pin (no 1-7d dead zone), the morning brief gains its one-line health note, past-meetings gets the claim audit, weekly-recap + operator-report get the stat-tile/table visual layer, and insight-generator proposes capture-gate tuning with one-tap consent.
+
+### MC1 — multi-counterparty commitments
+One commitment, N counterparties: optional `data.counterparty_ids` alongside the legacy single field (readers union both forever, zero migration). Per-person receipts via `commitment_partial_received`; chase fans out one nudge per OUTSTANDING counterparty; closure is PROPOSED when everyone has delivered, never executed. Critical fix found mid-build: a send to ONE group member was auto-resolving the whole commitment — multi-counterparty matches now downgrade to partial receipts across all four CRU paths. Legacy single-counterparty behavior asserted byte-identical.
+
+### BUG-3719 — sent-mail commitment capture (client-reported)
+Promises made in SENT email are now captured: reconcile-sent gains a capture pass (owner = user, full Stage-D floor, restatement-merge against the open set so cross-channel duplicates fold), and scan-for-commitments gains the outbound/Sent leg mirroring the Slack direction doctrine. Bonus fix: an origin-message guard stops a wide re-scan from reading a promise as its own completion.
+
+### Customer migration impact
+No re-registration, no schema migration, no data repair. All history remains readable. Announce items in shared/releases/v4.6.2.json.
+
+### What's NOT in this ship (4.7 candidates, logged)
+Shareable-copy skill (F-63, needs its own spec) · reconcile-sent auto-recording per-person receipts · observed-tier expiry · first-class sub-items · incremental event index · supervised converter APPLY runs (dry-run tools shipped in 4.6.0).
+
 ## v4.6.1 — 2026-07-09 — Marketplace install hotfix (`_comment` in hooks config)
 
 v4.6.0 could not be installed or updated in Cowork on any client repo: the remote marketplace validator rejected the plugin with `status=failed_content` / "Unknown hook field(s) ['_comment'] in hooks config." Every repo carrying v4.6.0 core was affected fleet-wide (confirmed when two freshly-provisioned client repos, CommandRoomCategory and CommandRoomAZ2, failed sync identically).
