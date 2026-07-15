@@ -320,7 +320,7 @@ batch = [
         "send Bowie the revised onboarding deck",
         permalink=MSG_USER_PROMISE["permalink"], kind="promise",
         direction=sc.DIRECTION_USER_SENT, owner_id="person_001",
-        counterparty_id="person_042", due="2026-07-11",
+        counterparty_id="person_042", due=_FUTURE_DUE,
         evidence=MSG_USER_PROMISE["text"], channel="#general",
         message_ts=MSG_USER_PROMISE["ts"], classification_confidence=0.9),
     # owed to you (names_user lane): owner = the counterpart, user is counterparty
@@ -328,7 +328,7 @@ batch = [
         "Bowie to send the Q3 vendor shortlist",
         permalink=MSG_OWED_TO_USER["permalink"], kind="promise",
         direction=sc.DIRECTION_NAMES_USER, owner_id="person_042",
-        counterparty_id="person_001", due="2026-07-08",
+        counterparty_id="person_001", due=_PAST_DUE,
         evidence=MSG_OWED_TO_USER["text"], channel="#general",
         message_ts=MSG_OWED_TO_USER["ts"], classification_confidence=0.85),
 ]
