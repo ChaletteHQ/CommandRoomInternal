@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory() as td:
     append_event(
         events_path, R.build_reminder_cleared_event(rid), holder="test"
     )
-    rows = R.load_active_reminders(ws, "2026-07-15", surface="m_facing")
+    rows = R.load_active_reminders(ws, "2026-07-15", surface="m_facing")  # DATE_GUARD_OK: this IS the injected as-of clock, not data compared to the real clock
     check("cleared one-shot never renders again", rows == [], f"got {rows}")
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ rows = R.active_reminders(evs, "2026-07-13", surface="m_facing")
 check("re-armed occurrence pins on its day", rows[0]["status"] == "pinned")
 
 check("monthly clamps Jan 31 → Feb 28", R.next_occurrence("2026-01-31", "monthly").isoformat() == "2026-02-28")
-check("monthly Dec → Jan year rollover", R.next_occurrence("2026-12-15", "monthly").isoformat() == "2027-01-15")
+check("monthly Dec → Jan year rollover", R.next_occurrence("2026-12-15", "monthly").isoformat() == "2027-01-15")  # DATE_GUARD_OK: pure calendar arithmetic (next_occurrence); no real clock involved
 check("every_days cron-lite", R.next_occurrence("2026-07-01", {"every_days": 10}).isoformat() == "2026-07-11")
 
 # Late clear on a high-frequency repeat: advance PAST the clear date.
@@ -191,11 +191,11 @@ check("clock re-runs from the keep (3d after keep = bold)", rows[0]["escalation"
 
 # push moves the pin date entirely.
 evs3.append(
-    dict(R.build_reminder_updated_event(eid, action="push", remind_from="2026-07-20"), ts=ts("2026-07-08"))
+    dict(R.build_reminder_updated_event(eid, action="push", remind_from="2026-07-20"), ts=ts("2026-07-08"))  # DATE_GUARD_OK: remind_from data; active_reminders reads it against an injected as-of date
 )
 rows = R.active_reminders(evs3, "2026-07-10", surface="m_facing")
 check("pushed reminder unpins until the new date", rows[0]["status"] != "pinned")
-rows = R.active_reminders(evs3, "2026-07-20", surface="m_facing")
+rows = R.active_reminders(evs3, "2026-07-20", surface="m_facing")  # DATE_GUARD_OK: this IS the injected as-of clock, not data compared to the real clock
 check(
     "pushed reminder pins fresh on the new date (no stale escalation)",
     rows[0]["status"] == "pinned" and rows[0]["escalation"] == "none",

@@ -58,11 +58,11 @@ Resolve `participants` against entities.json. For unrecognized email addresses, 
 
 ## Calendar (Google Calendar or Outlook Calendar)
 
-Query: events where `start >= window_start AND start <= window_end`. List events; capture `{event_id, title, start, end, attendees (with emails), location, htmlLink|webLink, organizer_email}`.
+Query: events where `start >= window_start AND start <= window_end`. List events; capture `{event_id, title, start, end, attendees (with emails), location, event_url (the deep-link the calendar connector returns — `connector_adapters/calendar.py::deep_link` prefers it), organizer_email}`.
 
 Per event:
 ```jsonl
-{"type":"meeting","ts":"<ISO>","seq":<seq>,"data":{"event_id":"<id>","title":"<title>","start":"<ISO>","end":"<ISO>","attendees":["<email>","..."],"location":"<loc>","status":"occurred","source_ref":"<htmlLink>","inferred_from":["historical_backfill"]}}
+{"type":"meeting","ts":"<ISO>","seq":<seq>,"data":{"event_id":"<id>","title":"<title>","start":"<ISO>","end":"<ISO>","attendees":["<email>","..."],"location":"<loc>","status":"occurred","source_ref":"<gcal:event_id or the connector event id>","inferred_from":["historical_backfill"]}}
 ```
 
 For new attendee emails, same provisional-person logic as mail.

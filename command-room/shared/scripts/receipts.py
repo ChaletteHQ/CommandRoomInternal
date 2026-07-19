@@ -113,6 +113,9 @@ CANONICAL_TASK_IDS = frozenset({
     "commitment-triage",
     "dormant-scan",
     "stalled-projects",
+    "maintenance",   # MAINT1 — the single silent dispatcher task (the five silent ids above live on as its JOBS and keep their receipt vocabularies forever)
+    "staff-meeting",  # LB1 R3 — the weekly Staff Meeting chat (opt-in later-add)
+    "deal-signals",   # LB1 D7 — the deal-signal detector job inside `maintenance`
 })
 
 # Renames where the canonical form is NOT just a cr-strip + underscore fix.
@@ -180,6 +183,18 @@ RECEIPT_TYPES: dict[str, dict] = {
     # for the project-side scan: what was surfaced, so the next scan can
     # dedup its own nags and value receipts can count the work).
     "stalled-projects":   {"types": frozenset({"pack_run"})},
+    # MAINT1 — the dispatcher task's own per-fire audit event. The five job
+    # ids above (cleanup / reconcile-sent / monthly-report / weekly-insights /
+    # session-sweep) keep their own receipt types: those are the JOB success
+    # signals the dispatcher's due-ness rule reads; maintenance_run only says
+    # the dispatcher itself fired and what was due/completed/failed.
+    "maintenance":        {"types": frozenset({"maintenance_run"})},
+    # LB1 R3 — the Staff Meeting chat's per-fire receipt (scheduled or the
+    # on-demand `staff meeting` fire, fired_via distinguishes).
+    "staff-meeting":      {"types": frozenset({"pack_run"})},
+    # LB1 D7 — the deal-signal detector's job receipt (the dispatcher's
+    # due-ness rule reads it; written by deal_signal_detector.run_deal_signal_job).
+    "deal-signals":       {"types": frozenset({"pack_run"})},
 }
 
 # Types that identify their task by TYPE alone (exactly one writer each).
@@ -192,6 +207,7 @@ _TYPE_IMPLIES_TASK = {
     "value_receipt_generated": "monthly-report",
     "pulse_run": "pulse",
     "dont_forget_run": "pulse",
+    "maintenance_run": "maintenance",
 }
 
 ALL_RECEIPT_TYPES = frozenset().union(*(spec["types"] for spec in RECEIPT_TYPES.values()))

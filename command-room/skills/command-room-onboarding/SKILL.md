@@ -1,6 +1,6 @@
 ---
 name: command-room-onboarding
-description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that establishes the customer's named AI operator, scans every connected source (Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, meeting transcripts), builds the workspace files and data layer, calibrates the customer's writing voice from sent mail, and proves the system back to them before handing off to the permanent coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately). Works for solo CEOs, holdco operators, VCs, advisors, and service-business owners. Full phase map and fences: Routing section in the body."
+description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that names the AI operator, scans every connected source, builds the workspace data layer, calibrates the writing voice from sent mail, and proves the system back before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately). Full phase map and fences: Routing section in the body."
 ---
 
 # Command Room Onboarding — M1 (2026-05-23)
@@ -485,6 +485,15 @@ Detection rule: a connector is "detected" iff at least one of its MCP tools is c
 
 If multiple are wired, all contribute. The inventory line above names whichever ones are detected.
 
+#### 1a.i-b — Account-enumeration gate (R11, `shared/ACCOUNT_SCOPE.md`) — runs BEFORE any mail/calendar scan
+
+Enumerate **ACCOUNTS, not connectors** — a single connector can front multiple mailboxes (Superhuman-class), and two connectors can front one mailbox. Where a connector exposes a whoami-class tool (`get_account_info` / `get_me` / profile reads — check the fire-time tool list), call it and collect the account ADDRESSES it fronts. A connector with no whoami (native Gmail) contributes its one implied account with the address unconfirmed (binding `user_asserted`).
+
+- **Exactly ONE account enumerated** → classify it `business-primary` SILENTLY via `connector_config.set_account_classification(root, address, role="business-primary")` + an `account_classified` event through `event_gate.append_event`. Zero friction — a single-account workspace never sees a question.
+- **More than one account** → ask ONE question, listing the addresses: *"I can see mail for [A] and [B]. Which is your business account? The other stays out of your business records until you tell me otherwise — you can reclassify any account later by telling me it's personal, business, or a second business email (workspace-manager owns those verbs)."* Classify the answer(s) via the same setter; accounts the user doesn't classify stay `unclassified`.
+- **Unclassified accounts are EXCLUDED from the backfill scan below** (state machine §7a — fail-closed-on-new): 1a.ii's mail/calendar fetches run only against classified, in-scope accounts. Never scan an account of unknown role — sent-mail scanning attributes commitments to the owner, and a personal account's history must not be filed before the user ever assigned it a role. When the user later classifies it business, OFFER the backfill of the skipped window (E-9 — never silent).
+- All writes go through the `connector_config.py` setter as a declared delegate (workspace-manager owns the block; never a raw entities.json edit). Bind each address to the server-id(s) that front it (`binding` param) so outbound routing works from day one.
+
 #### 1a.ii — Extract from connectors (Tier A + Tier B — 60-day metadata window)
 
 | Source | Window | Adaptive cap (ceiling) | Tiered fetch |
@@ -900,7 +909,7 @@ Choose by **sent-email count** (voice signal), read from the Phase 1 scan / `BRA
 > *• Workspace Map pinned to your sidebar*
 >
 > *Two things to do on your own time, whenever you're ready:*
-> *• Want me running on a daily rhythm — a morning brief, inbox triage, a Friday recap? Open a new chat and say `set up command room schedules` and I'll set those up.*
+> *• Want me running on a daily rhythm — a morning brief, inbox triage, a Friday recap, a Monday staff meeting? Open a new chat and say `set up command room schedules` and I'll set those up.*
 > *• Want the sharp read of your last week? Say `weekly recap` in a new chat anytime.*
 >
 > *This chat is now your home with me. Come back here anytime — that's how you'll spend most of your time with me going forward. I'll be your coach.*

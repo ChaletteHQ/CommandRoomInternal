@@ -86,7 +86,7 @@ MEETING_DATA = {
     "kind": "promise", "id": "cmt_MEETING",
     "title": "Send positioning briefs and collected feedback to Michele before the call",
     "owner_id": "person_001", "counterparty_id": "person_017",
-    "counterparty_name": "Michele Jewett",
+    "counterparty_name": "Michele Sample",
     "due": "2026-07-08", "source_ref": "granola:m1",
 }
 
@@ -236,7 +236,7 @@ def test_near_miss_stays_unflagged():
                                 "title": "Send Michele the June invoice",
                                 "owner_id": "person_001",
                                 "counterparty_id": "person_017",
-                                "counterparty_name": "Michele Jewett",
+                                "counterparty_name": "Michele Sample",
                                 "due": "2026-07-10", "source_ref": "gmail:g7"}}],
                  holder="scan-for-commitments")
     d = _events(ws)[1]["data"]
@@ -304,7 +304,7 @@ def test_entities_expand_id_to_name():
     ep = _events_path(ws)
     (ws / "_hq" / "data" / "entities.json").write_text(json.dumps({
         "workspace": {}, "orgs": [], "threads": [],
-        "people": [{"id": "person_017", "canonical_name": "Michele Jewett",
+        "people": [{"id": "person_017", "canonical_name": "Michele Sample",
                     "aliases": ["Michelle"]}],
     }), encoding="utf-8")
     # Open item: counterparty ID only, no name anywhere (title names no one).
@@ -398,7 +398,7 @@ def test_merge_guards():
         {"type": "commitment", "source_skill": "t",
          "data": {"kind": "promise", "id": "cmt_Y", "title": "Ship the launch email to Dana",
                   "owner_id": "person_001", "counterparty_name": "Dana",
-                  "due": "2026-08-01", "source_ref": "gmail:b"}},
+                  "due": "2026-08-01", "source_ref": "gmail:b"}},  # DATE_GUARD_OK: dedup identity field only; suite clock is pinned via NOW
     ], holder="t")
 
     try:

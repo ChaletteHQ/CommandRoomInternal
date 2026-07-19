@@ -135,12 +135,58 @@ def main():
     check("untouched commitments #2/#3 remain open",
           _commitment_id(opens[1]) in remaining and _commitment_id(opens[2]) in remaining, remaining)
 
+    test_self_closure_guard_cross_format()
     test_reconcile_and_receipt()
     test_audit_event_and_validator()
     test_recipient_name_recall_fallback()
 
     print(f"\n=== Summary: {passed} passed, {failed} failed ===\n")
     return 0 if failed == 0 else 1
+
+
+def test_self_closure_guard_cross_format():
+    """R16 HARD INVARIANT (BUG-3719): a message must never close the commitment
+    it opened — ACROSS provenance formats. The guard keys on the canonical
+    dedup key, so a legacy `gmail:<Id>` source_ref (any case) and a structured
+    provenance re-observation of the SAME message reduce to one identity.
+    Written BEFORE the guard was migrated off the byte-compare (which missed
+    case drift and structured provenance)."""
+    print("\n[8] self-closure guard holds across old/new provenance formats")
+    body = "Bob, sending the Q2 financial review deck I owed you."
+    subj = "Q2 financial review deck"
+
+    # (a) LEGACY spelling with case drift: opened with gmail:MsgCASE, the same
+    # message re-fetched with a lowercased id. Byte-compare misses this.
+    c_legacy = commitment(11, USER, "Send Bob the Q2 financial review deck", [BOB])
+    c_legacy["data"]["source_ref"] = "gmail:MsgCASE"
+    res = rsc.reconcile_sent([c_legacy], [{
+        "message_id": "msgcase", "ts": "2026-06-01T09:00:00",
+        "recipient_person_ids": [BOB], "subject": subj, "body": body,
+    }], user_person_id=USER)
+    check("legacy source_ref (case-drifted) never closes its own promise",
+          res["auto_close"] == [] and res["pending"] == [],
+          str(res["auto_close"] or res["pending"]))
+
+    # (b) STRUCTURED provenance on the commitment (new writers): same message
+    # observed via message_id. Must also be excluded.
+    c_struct = commitment(12, USER, "Send Bob the Q2 financial review deck", [BOB])
+    c_struct["data"]["provenance"] = {"provider": "gmail", "native_id": "MsgCASE"}
+    res2 = rsc.reconcile_sent([c_struct], [{
+        "message_id": "MSGCASE", "ts": "2026-06-01T09:05:00",
+        "recipient_person_ids": [BOB], "subject": subj, "body": body,
+    }], user_person_id=USER)
+    check("structured-provenance commitment never closed by its own message",
+          res2["auto_close"] == [] and res2["pending"] == [],
+          str(res2["auto_close"] or res2["pending"]))
+
+    # (c) A DIFFERENT message must still close it (the guard must not
+    # over-exclude and freeze the commitment open forever).
+    res3 = rsc.reconcile_sent([c_legacy], [{
+        "message_id": "otherMsg", "ts": "2026-06-02T09:00:00",
+        "recipient_person_ids": [BOB], "subject": subj, "body": body,
+    }], user_person_id=USER)
+    check("a different message still closes the commitment",
+          len(res3["auto_close"]) == 1, str(res3))
 
 
 def test_recipient_name_recall_fallback():

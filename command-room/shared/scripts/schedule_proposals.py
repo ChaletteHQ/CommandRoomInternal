@@ -17,13 +17,19 @@ DESIGN RULES:
 - **Propose, never auto-register.** Registration requires Cowork's
   first-fire approval UX; silent registration attempts are a known
   reliability trap. The proposal line routes the CEO to the EXISTING add
-  path ("say 'add relationship moves'"); nothing here registers anything.
+  path ("say 'add staff meeting'"); nothing here registers anything.
 - **Thresholds in ONE table** (`PROPOSAL_THRESHOLDS`) — tunable here and
   nowhere else.
-- **Never both:** relationship-moves consumes dormancy detection, so
-  dormant-customer-scan is offered only as the LIGHTER alternative when
-  relationship-moves doesn't land (not qualified, or proposed before and
-  still not added).
+- **LB1 R4 (M ruling 2026-07-14): the standalone relationship-moves chat is
+  no longer proposed to new installs — the Staff Meeting is offered instead
+  (it absorbs the moves as its "This week's moves" section, reusing the same
+  machinery). EXISTING relationship-moves registrations are untouched — this
+  module never proposed removals and still doesn't; their supersede is a
+  later bridge migration, not this build.**
+- **Never both:** the Staff Meeting's moves section consumes dormancy
+  detection (as relationship-moves did), so dormant-customer-scan is offered
+  only as the LIGHTER alternative when the staff meeting doesn't land (not
+  qualified, or proposed before and still not added).
 - **No nagging:** each surfaced proposal logs a `schedule_add_proposed`
   event (registered type); the same proposal is suppressed for
   REPROPOSE_SUPPRESSION_WEEKS afterward.
@@ -49,16 +55,23 @@ from event_time import event_dt  # noqa: E402
 # THE threshold table — the one place R3's numbers live.
 # ---------------------------------------------------------------------------
 PROPOSAL_THRESHOLDS = {
-    "relationship-moves": {
+    # LB1 R4 — staff-meeting inherits relationship-moves' proposal slot (its
+    # "This week's moves" section needs the same substrate the standalone
+    # chat did), plus a queue-readiness path: a workspace whose brain has a
+    # standing confirm queue earns the weekly review even before the client
+    # mix matures.
+    "staff-meeting": {
         # org mix: prospects + clients tracked in entities.json
         "min_prospect_plus_client_orgs": 8,
         # substrate readiness: at least this many distinct DAYS carrying
-        # dormancy_signal events (aligned with relationship-moves' own
+        # dormancy_signal events (aligned with the moves section's own
         # dormancy baselines — it needs accumulated cadence history).
         "min_dormancy_signal_days": 14,
+        # OR-path: open Living Brain proposals waiting on the user
+        "min_open_brain_proposals": 3,
     },
     "dormant-customer-scan": {
-        # the lighter alternative when relationship-moves doesn't land
+        # the lighter alternative when the staff meeting doesn't land
         "min_client_orgs": 5,
     },
 }
@@ -156,37 +169,70 @@ def propose_later_add_tasks(
         prior = last_proposed.get(tid)
         return bool(prior and (now - prior) < _dt.timedelta(weeks=REPROPOSE_SUPPRESSION_WEEKS))
 
-    rm_thresholds = PROPOSAL_THRESHOLDS["relationship-moves"]
-    rm_qualified = (
-        mix["prospect"] + mix["client"] >= rm_thresholds["min_prospect_plus_client_orgs"]
-        and len(dormancy_days) >= rm_thresholds["min_dormancy_signal_days"]
+    sm_thresholds = PROPOSAL_THRESHOLDS["staff-meeting"]
+    mix_qualified = (
+        mix["prospect"] + mix["client"] >= sm_thresholds["min_prospect_plus_client_orgs"]
+        and len(dormancy_days) >= sm_thresholds["min_dormancy_signal_days"]
     )
-    if "relationship-moves" not in registered and rm_qualified and not suppressed("relationship-moves"):
-        return [{
-            "task": "relationship-moves",
-            "reason": f"{mix['prospect']} prospects + {mix['client']} clients, "
-                      f"{len(dormancy_days)} days of dormancy signal",
-            "line": (
-                f"You're tracking {mix['prospect']} prospects and {mix['client']} clients — "
-                f"a weekly outreach pack keeps them warm. Say 'add relationship moves' and it "
-                f"runs Sunday evenings, ready Monday morning."
-            ),
-        }]
+    # Queue-readiness OR-path: a standing confirm queue earns the weekly
+    # review on its own. Tolerant read — proposal machinery never blocks
+    # the Monday note.
+    n_open_proposals = 0
+    try:
+        import brain_proposals
 
-    # Lighter alternative — only when relationship-moves did NOT land this
+        n_open_proposals = len(brain_proposals.load_open_proposals(workspace_root))
+    except Exception:
+        pass
+    queue_qualified = n_open_proposals >= sm_thresholds["min_open_brain_proposals"]
+    # A registered relationship-moves already covers the moves value (R4:
+    # existing registrations untouched) — on those workspaces only the
+    # queue path proposes the staff meeting.
+    if "relationship-moves" in registered:
+        sm_qualified = queue_qualified
+    else:
+        sm_qualified = mix_qualified or queue_qualified
+    # A recent relationship-moves offer suppresses the staff meeting too —
+    # it carries the same moves value under a new name, and re-offering it
+    # inside the window is the exact weekly nag R3's suppression exists to
+    # prevent (R4: prior RM offers count as offered-before).
+    sm_suppressed = suppressed("staff-meeting") or suppressed("relationship-moves")
+    if "staff-meeting" not in registered and sm_qualified and not sm_suppressed:
+        if queue_qualified:
+            reason = f"{n_open_proposals} proposals waiting on you"
+            line = (
+                f"Your brain has {n_open_proposals} suggestions waiting on a decision — "
+                f"a weekly Staff Meeting reviews everything in one sitting: what I did on my "
+                f"own, what's waiting on you, and this week's relationship moves. Say "
+                f"'add staff meeting' and it runs Monday mornings."
+            )
+        else:
+            reason = (f"{mix['prospect']} prospects + {mix['client']} clients, "
+                      f"{len(dormancy_days)} days of dormancy signal")
+            line = (
+                f"You're tracking {mix['prospect']} prospects and {mix['client']} clients — "
+                f"a weekly Staff Meeting keeps them warm and reviews everything waiting on "
+                f"you in one sitting. Say 'add staff meeting' and it runs Monday mornings."
+            )
+        return [{"task": "staff-meeting", "reason": reason, "line": line}]
+
+    # Lighter alternative — only when the staff meeting did NOT land this
     # round (unqualified, already registered, or previously proposed and
-    # still not added). Never both.
+    # still not added). Never both. Prior relationship-moves offers count
+    # as "offered before" (the CEO already passed on the moves value).
     dcs_qualified = mix["client"] >= PROPOSAL_THRESHOLDS["dormant-customer-scan"]["min_client_orgs"]
-    rm_previously_offered = "relationship-moves" in last_proposed
+    sm_previously_offered = ("staff-meeting" in last_proposed
+                             or "relationship-moves" in last_proposed)
     if (
         dcs_qualified
         and not suppressed("dormant-customer-scan")
-        # a registered relationship-moves consumes dormancy detection — never
-        # offer the scan on top of it
+        # a registered moves surface consumes dormancy detection — never
+        # offer the scan on top of one
         and "relationship-moves" not in registered
-        # only when relationship-moves did NOT land this round: unqualified,
+        and "staff-meeting" not in registered
+        # only when the staff meeting did NOT land this round: unqualified,
         # or offered before and still not added (the CEO passed on it)
-        and (not rm_qualified or rm_previously_offered)
+        and (not sm_qualified or sm_previously_offered)
     ):
         return [{
             "task": "dormant-customer-scan",

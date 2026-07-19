@@ -116,6 +116,8 @@ KNOWN_STATUS = STATUS_ENUM | {
     "complete", "in_progress", "incomplete",                     # onboarding checkpoints
     "ok", "failed", "degraded", "partial", "success", "error",   # pack_run telemetry
     "sent", "draft", "snoozed", "pending", "dismissed",          # misc event statuses
+    "written", "deduped_refire",  # t3 FB-7 driver receipt outcomes (surface_drivers)
+    "held", "already_held",       # FB-19 hold_item outcomes (mute_ledger)
 }
 
 # ---- extraction patterns ----

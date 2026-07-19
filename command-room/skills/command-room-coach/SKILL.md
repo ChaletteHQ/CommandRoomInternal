@@ -134,6 +134,17 @@ That's a mirror. The CEO reads it and feels seen.
 
 ---
 
+## Phase 2A′: Since you were last here (SPEC LB1 — the change-feed beat + the card)
+
+Right after the Mirror, before the Insights: what the workspace did on its own since the CEO's last coach session, and what's waiting on their eyes. **≤3 lines of prose + the card — the beat spends seconds, not attention** (the proportion guard, Hard rule 9, binds it).
+
+- **The lines:** `change_feed.changes_since(<last coach_session event ts, else 7d>)` (`shared/scripts/change_feed.py`) — render up to 3 of its lines verbatim, substance first, drop-empty. Nothing to narrate → skip the prose entirely (no "all quiet" filler; the Mirror already carried the energy).
+- **The card:** `brain_proposals.select_confirm_card(WORKSPACE_ROOT, "coach")` (`shared/scripts/brain_proposals.py`) — when non-empty, post the "Needs your eyes" widget (one all-batch widget, `data_view["source_skill"] = "cr-brain"`, verbs per `shared/CHAT_ACTION_WIDGET.md` § Living Brain card, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`)). The selector already applied the cap (5), the per-detector limit, and the R2 cross-surface dedup — an item the morning brief showed today doesn't re-show here. Render the returned `overflow_line` verbatim when present. Empty card → no widget, no mention.
+- **First-run gate:** honor the same `daily_confirm_card` config the brief reads (skill_config/system-health.json, default on) — `"off"` skips the card, keeps the lines.
+- The beat never blocks: feed/projector errors → skip the beat silently and continue to 2B (the coach session is the product; the beat is a rider).
+
+---
+
 ## Phase 2B: The Insights — 2-3 things the CEO can't see themselves doing
 
 **This is the wow moment.** The Mirror earns attention. The Insights spend it.
@@ -419,8 +430,8 @@ Better to skip than to render generic.
    - BAD: "95% of what you've captured is sitting in the substrate without a corresponding 'done' event."
    - GOOD: "Command Room caught 221 things you committed to. Only 11 got marked done. The catching works; the closing muscle isn't firing."
 8. **Never narrate the silent read.** No "scanning your workspace…" status messages. The CEO sees the report, not the build.
-9. **Mirror length: 8-12 lines of prose. Insights: 2-3. Outputs: 3-5. Hold the proportions.** A wall of 8 insights and 1 output reverses the energy curve — the wow has to land in Phase 2B and the leverage has to land in Phase 2C.
-10. **The proportions are the choreography.** Mirror earns attention → Insights spend it on wow → Outputs cash it in for action. Skip any phase and the next one underdelivers.
+9. **Mirror length: 8-12 lines of prose. Since-you-were-last-here (2A′): ≤3 lines + the card. Insights: 2-3. Outputs: 3-5. Hold the proportions.** A wall of 8 insights and 1 output reverses the energy curve — the wow has to land in Phase 2B and the leverage has to land in Phase 2C. The 2A′ beat is a rider, never a section that competes with the Mirror.
+10. **The proportions are the choreography.** Mirror earns attention → the 2A′ beat proves the system worked while they were gone → Insights spend the attention on wow → Outputs cash it in for action. Skip any phase and the next one underdelivers.
 
 ## Routing (full trigger corpus)
 

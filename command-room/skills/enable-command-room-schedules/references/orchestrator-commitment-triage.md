@@ -2,7 +2,7 @@
 
 This file is the EXACT prompt the bootloader cats and executes for `taskId: commitment-triage`. Fires 3:00 PM Friday local time per `shared/scripts/schedule_config.py` `DEFAULT_SCHEDULES` (`0 15 * * 5`) — AFTER friday-wrap (13:00), so the wrap reads the week as it was and the triage cleans the open set before the weekend. NEW in Phase 2 Stage D (S4). **NOT a first-install task** — a fresh workspace's open set hasn't aged; it registers via `change-schedule` / Phase 6 `add` and `command-room-update-bridge`, never on a fresh workspace.
 
-**OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** every chat post follows `shared/CONTRACT.md`. Rules 1–18 are non-negotiable. Commitment Triage is a **widget action surface**, so the renderer-validator gates DO apply: `render_chat_output_widget` + `validate_rendered_widget` must pass with zero non-canonical verbs (the triage verb set IS canonical as of Stage D — see `CANONICAL_ACTIONS`). The leak scanner applies (no entity-ID leaks, no event-type names, no `_hq/` paths).
+**OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** (transport-updated EW2+T) every chat post follows `shared/CONTRACT.md`. Rules 1–18 are non-negotiable. Commitment Triage is a **widget action surface**: post via `widget_transport.render_and_persist` — the full validator chain (canonical verbs per `CANONICAL_ACTIONS` — the triage verb set IS canonical as of Stage D; data shape; leak scan: no entity-ID leaks, no event-type names, no `_hq/` paths; `validate_rendered_widget`) runs inside the one call — then pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`, never hand-composed HTML (`shared/CHAT_ACTION_WIDGET.md` § Transport, F-15).
 
 **Chat-output rules:** follow `references/SHARED_CHAT_OUTPUT_PROTOCOL.md`. Surface the link block per `shared/CHAT_ACTION_WIDGET.md` "Post-widget chat-links section" only if files were produced (usually none). The widget is the ENTIRE chat turn.
 
@@ -16,7 +16,7 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: comm
 
 **Forbidden — zero tolerance:**
 
-1. **No writing the rendered widget to disk.**
+1. **No writing the rendered widget to disk by hand.** (The transport's own persist into `_hq/.system/widgets/` is the ONE sanctioned write — `render_and_persist` performs it itself, per `shared/STOP_CONTRACT.md` rule 1. You never write widget HTML anywhere else, and never offer the persisted file to the user as a deliverable.)
 2. **No narrating what's in the widget.** The user can see the rows. Don't follow with "You have N stale items…".
 3. **No post-widget summary block.** The turn ends after the widget.
 4. **No closing anything at render time.** Every closure/defer/reclassify is a user click dispatched through apply-choices → `commitment_state`. Render-time writes are the F4 mutation class this surface exists to kill.
@@ -68,8 +68,8 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers — 
 Run `skills/commitment-triage/SKILL.md` Steps 1–4 against this workspace:
 
 1. Load the PROJECTED open set via `cru_match.load_open_commitments` (deferrals + reclassification markers already applied); header counts via `commitment_state.count_commitments` (the one counting API); stale tasks via `commitment_state.stale_tasks`.
-2. Sort by age, oldest first into the FULL-LIST layout (header stat tiles from `counts["headline"]` via `counters`, `30+ DAYS OLD` section, `reduced_verbs_reason` on pending_review rows) — the one triage design per the skill's Step 2 (F-18). Chunk with `show more` ONLY when the transmission ceiling forces it; annotate stale tasks with "still on your plate?".
-3. Render ONE `all_batch_widget` with the triage verb set (every row embeds `data.id` VERBATIM; `source_skill: "commitment-triage"` for `src` dispatch).
+2. Sort by age, oldest first into the FULL-LIST layout (header stat tiles from `counts["headline"]` via `counters`, `30+ DAYS OLD` section, `reduced_verbs_reason` on pending_review rows) — the one triage design per the skill's Step 2 (F-18). The transport carries any size — there is no transmission ceiling and no chunking (EW2+T; `show more` pagination remains a DESIGN choice per the skill's Step 2, never a size workaround). Annotate stale tasks with "still on your plate?".
+3. Render ONE `all_batch_widget` with the triage verb set (every row embeds `data.id` VERBATIM; `source_skill: "commitment-triage"` for `src` dispatch) and post it via `render_and_persist` → `show_widget` with `transport["html"]` as `widget_code` per the OUTPUT CONTRACT above.
 4. Dispatch happens later via apply-choices § `commitment-triage` — including the `undo` contract.
 
 # Phase 4 — Audit + STOP

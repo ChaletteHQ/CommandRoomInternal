@@ -316,6 +316,65 @@
         },
         "archive_reason": {
           "type": ["string", "null"]
+        },
+        "deal": {
+          "type": "object",
+          "description": "SPEC PIPE1 (v4.8): sales-deal fields, allowed ONLY on kind='deal' threads (thread_writer rejects it elsewhere). Namespaced so deal.stage (sales stage, string enum) never collides with the integer project-lifecycle `stage`. Written ONLY by shared/scripts/deal_state.py — the single writer/closure path; hand edits are the bug class the typed writers exist to kill. Consistency rules enforced in code: outcome='lost' requires a loss_reason; outcome is terminal and set only by deal_state.close_deal (won → thread status 'resolved', lost → 'archived'). `value` is user-stated or user-confirmed money — NEVER estimated (quantify.py discipline); absent value renders no money tag. Recency/rot derive from events via thread_activity — nothing here stores activity.",
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": ["number", "null"],
+              "description": "Deal value in `currency`. User-stated or confirmed only; never estimated. Null = unknown (ranges are out of v1 scope — store null + a note in `source`)."
+            },
+            "currency": {
+              "type": "string",
+              "default": "USD"
+            },
+            "stage": {
+              "type": "string",
+              "enum": ["lead", "qualified", "proposal_sent", "negotiating"],
+              "description": "Active sales stage (fixed v1 set). Won/lost are NOT stages — they are the terminal `outcome`."
+            },
+            "stage_entered": {
+              "type": ["string", "null"],
+              "format": "date",
+              "description": "Date the current stage was entered. Stamped by deal_state.set_stage; resets on every move, including backward moves."
+            },
+            "expected_close": {
+              "type": ["string", "null"],
+              "format": "date"
+            },
+            "forecast_category": {
+              "type": ["string", "null"],
+              "enum": ["commit", "best_case", "pipeline", null],
+              "description": "Categorical forecast judgment per deal (weighted-pipeline math is statistically meaningless at 5-50 deals; the haircut number is a secondary tile at most)."
+            },
+            "source": {
+              "type": ["string", "null"],
+              "description": "Free text — where the deal came from (e.g. 'referral — Jono'). Also holds value-range notes."
+            },
+            "outcome": {
+              "type": ["string", "null"],
+              "enum": ["won", "lost", null],
+              "description": "Terminal. Set only by deal_state.close_deal — never hand-written, never a stage."
+            },
+            "loss_reason": {
+              "type": ["string", "null"],
+              "enum": ["no_decision", "price", "competitor", "diy", "timing", "bad_fit", "other", null],
+              "description": "Required (in code) when outcome='lost'."
+            },
+            "loss_note": {
+              "type": ["string", "null"]
+            },
+            "opened_at": {
+              "type": ["string", "null"],
+              "format": "date"
+            },
+            "closed_at": {
+              "type": ["string", "null"],
+              "format": "date"
+            }
+          }
         }
       }
     },
@@ -330,6 +389,10 @@
         },
         "canonical_name": {
           "type": "string"
+        },
+        "legal_name": {
+          "type": ["string", "null"],
+          "description": "Formal registered company name when it differs from canonical_name (e.g. 'Acme Lab Inc.' vs the everyday 'Acme Labs'). Real data — admitted v4.8.1 (F-05) so records carrying it stop failing validation. Matched by org_writer.find_existing_org's name lookup; canonical_name remains the display source of truth."
         },
         "aliases": {
           "type": "array",

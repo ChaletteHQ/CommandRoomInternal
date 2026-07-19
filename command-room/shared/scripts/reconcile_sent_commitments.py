@@ -40,7 +40,22 @@ from cru_match import (  # noqa: E402
     match_send_to_commitments,
     build_commitment_resolved_event,
     load_open_commitments,
+    _commitment_id,
 )
+from connector_adapters.provenance import canonical_dedup_key  # noqa: E402
+
+
+# FS-11 (M ruling 2026-07-15): auto-close MODERATE-confidence sent-mail matches
+# too — the CEO said twice "if they are closed, just close them." Only
+# multi-candidate AMBIGUITY (one send that plausibly fulfills more than one open
+# commitment) stays a confirm proposal; every unambiguous moderate match closes
+# automatically, narrated in the change feed with an `undo` (commitment_close is
+# an AUTO_ALLOWED reversible class — the reopen reverser is the safety net).
+AUTO_CLOSE_MODERATE = True
+
+# TTL for the ambiguous confirm proposals that DO stay queued — an unconfirmed
+# commitment_review_proposed older than this expires instead of accumulating.
+REVIEW_PROPOSAL_TTL_DAYS = 14
 
 
 def _short_date(ts):
@@ -55,6 +70,7 @@ def reconcile_sent(
     sent_messages,
     *,
     user_person_id,
+    provider="gmail",
 ):
     """Match a batch of outbound Sent messages to open commitments.
 
@@ -63,17 +79,36 @@ def reconcile_sent(
         "auto_close": [ {commitment_id, score, title, owner_id, primary_thread_id,
                          message_id, ts, evidence} ],   # HIGH confidence
         "pending":    [ same shape ],                   # MEDIUM — confirm before close
+        "partial":    [ {commitment_id, title, primary_thread_id, score,
+                         receipts: [{counterparty_id, message_id, ts, evidence}],
+                         skipped_names: [str]} ],       # HYG1: multi-cp per-person receipts
         "cursor_ts":  str | None,                       # max message ts seen (advance the cursor)
       }
 
-    Each commitment appears at most once across BOTH lists — the highest-scoring
-    send wins, and auto_close takes precedence over pending for the same id.
+    Each commitment appears at most once across auto_close/pending — the
+    highest-scoring send wins, and auto_close takes precedence over pending
+    for the same id.
+
+    HYG1 Item 1 (the MC1 4.7 wire-up): a `partial_received` recommendation —
+    cru_match's downgrade of an AUTO-RESOLVE-grade match against a
+    multi-counterparty commitment — now lands in `partial` instead of being
+    dropped. Rules: only counterparties with RESOLVED ids ride `receipts`
+    (name-only matches land in `skipped_names` — never guess an id from a
+    name token at write time); one receipt per (commitment, counterparty)
+    within the batch; a commitment with a partial receipt this run is
+    EXCLUDED from `pending` (the per-person receipt is the more precise
+    record of the same send evidence — a whole-close confirm next to it
+    would double-surface). The BUG-3719 self-closure guard applies
+    unchanged: the own-message filter runs BEFORE matching, so a receipt is
+    never recorded from the message that opened the commitment.
+
     Pure: no I/O, no clock. The caller emits the events + persists the cursor.
     """
     if not user_person_id:
-        return {"auto_close": [], "pending": [], "cursor_ts": None}
+        return {"auto_close": [], "pending": [], "partial": [], "cursor_ts": None}
 
     best: dict[str, dict] = {}      # commitment_id → best proposal so far
+    partial_by_cid: dict[str, dict] = {}  # commitment_id → accumulated receipts
     cursor_ts = None
 
     for msg in sent_messages or []:
@@ -84,18 +119,23 @@ def reconcile_sent(
             cursor_ts = ts
 
         # BUG-3719 self-closure guard: a commitment CAPTURED FROM this very
-        # message (sent-promise capture, source_ref gmail:<message_id>) must
-        # never be closed BY this message — the promise's origin is not its
-        # completion evidence. Without this, any catch-up / wide re-scan that
-        # re-fetches the message closes the promise it opened last run,
-        # breaking the "an over-wide window is always safe" invariant.
+        # message (sent-promise capture) must never be closed BY this message —
+        # the promise's origin is not its completion evidence. Without this,
+        # any catch-up / wide re-scan that re-fetches the message closes the
+        # promise it opened last run, breaking the "an over-wide window is
+        # always safe" invariant.
+        #
+        # R16 (connector-agnostic-v1): identity is the CANONICAL dedup key, so
+        # the guard holds across formats — a legacy `gmail:<Id>` source_ref
+        # (any case) and a structured-provenance re-observation of the same
+        # message reduce to one key (the old byte-compare missed both).
         mid = str(msg.get("message_id") or "").strip()
-        own_ref = f"gmail:{mid}" if mid else None
+        own_key = canonical_dedup_key(provider=provider or "gmail", native_id=mid) if mid else None
         opens_for_msg = open_commitments
-        if own_ref:
+        if own_key:
             opens_for_msg = [
                 c for c in open_commitments
-                if str((c.get("data") or {}).get("source_ref") or "") != own_ref
+                if canonical_dedup_key(event=c) != own_key
             ]
 
         results = match_send_to_commitments(
@@ -112,6 +152,43 @@ def reconcile_sent(
         )
         for r in results:
             rec = r.get("recommendation")
+            if rec == "partial_received":
+                # HYG1: an auto-grade match on a multi-counterparty item —
+                # accumulate ONE receipt per resolved counterparty; name-only
+                # matches are reported, never written.
+                cid = r.get("commitment_id")
+                if not cid:
+                    continue
+                slot = partial_by_cid.setdefault(cid, {
+                    "commitment_id": cid,
+                    "title": r.get("title") or "",
+                    "primary_thread_id": r.get("primary_thread_id") or "",
+                    "score": r.get("score"),
+                    "receipts": [],
+                    "skipped_names": [],
+                })
+                if (r.get("score") or 0) > (slot["score"] or 0):
+                    slot["score"] = r.get("score")
+                seen_cps = {x["counterparty_id"] for x in slot["receipts"]}
+                evidence = (
+                    "delivered by your sent message"
+                    + (f" \"{msg.get('subject')}\"" if msg.get("subject") else "")
+                    + (f" ({_short_date(ts)})" if _short_date(ts) else "")
+                )
+                for cp_id in r.get("matched_counterparty_ids") or []:
+                    if cp_id and cp_id not in seen_cps:
+                        slot["receipts"].append({
+                            "counterparty_id": cp_id,
+                            "message_id": msg.get("message_id") or "",
+                            "ts": ts or "",
+                            "evidence": evidence,
+                        })
+                        seen_cps.add(cp_id)
+                if not r.get("matched_counterparty_ids"):
+                    for nm in r.get("matched_counterparty_names") or []:
+                        if nm and nm not in slot["skipped_names"]:
+                            slot["skipped_names"].append(nm)
+                continue
             if rec not in ("auto_resolve", "pending_review"):
                 continue  # no_action — ignore
             cid = r.get("commitment_id")
@@ -146,11 +223,39 @@ def reconcile_sent(
                     best[cid] = proposal
 
     auto_close = [p for p in best.values() if p["recommendation"] == "auto_resolve"]
-    pending = [p for p in best.values() if p["recommendation"] == "pending_review"]
+    # A commitment with a partial receipt this run leaves pending — the
+    # per-person receipt is the more precise record of the same evidence.
+    partial = [p for p in partial_by_cid.values() if p["receipts"] or p["skipped_names"]]
+    partial_cids = {p["commitment_id"] for p in partial if p["receipts"]}
+    pending_all = [
+        p for p in best.values()
+        if p["recommendation"] == "pending_review"
+        and p["commitment_id"] not in partial_cids
+    ]
+    # FS-11: promote UNAMBIGUOUS moderate matches to auto-close. Ambiguity = one
+    # sent message that matched more than one open commitment at moderate grade
+    # (which one did the send actually fulfill? — keep those for confirm). A
+    # moderate match that is 1:1 with its send is closed, flagged `moderate` so
+    # the feed narrates it honestly ("probably handled — undo if not").
+    from collections import Counter as _Counter
+    _msg_key = lambda p: (p.get("message_id") or f"__nomid_{p['commitment_id']}")
+    _msg_counts = _Counter(_msg_key(p) for p in pending_all)
+    pending = []
+    for p in pending_all:
+        if AUTO_CLOSE_MODERATE and _msg_counts[_msg_key(p)] == 1:
+            promoted = dict(p)
+            promoted["moderate"] = True
+            promoted["evidence"] = "probably handled — " + (
+                p.get("evidence") or "matched an outbound send")
+            auto_close.append(promoted)
+        else:
+            pending.append(p)
     auto_close.sort(key=lambda p: p["score"] or 0, reverse=True)
     pending.sort(key=lambda p: p["score"] or 0, reverse=True)
+    partial.sort(key=lambda p: p["score"] or 0, reverse=True)
 
-    return {"auto_close": auto_close, "pending": pending, "cursor_ts": cursor_ts}
+    return {"auto_close": auto_close, "pending": pending, "partial": partial,
+            "cursor_ts": cursor_ts}
 
 
 def to_resolved_events(closures, *, source_skill, seq_start):
@@ -242,6 +347,7 @@ def reconcile_and_receipt(
     outcome_watch_summary=None,
     fired_via="scheduled",
     sent_commitment_items=None,
+    provider="gmail",
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -291,9 +397,11 @@ def reconcile_and_receipt(
     opens = load_open_commitments(str(events_path))
     n_open_before = len(opens)
 
-    res = reconcile_sent(opens, sent_messages or [], user_person_id=user_person_id)
+    res = reconcile_sent(opens, sent_messages or [], user_person_id=user_person_id,
+                         provider=provider)
     auto_close = res["auto_close"]
     pending = res["pending"]
+    partial = res.get("partial") or []
 
     # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
     # legacy-id normalization, loud refusal of orphan tombstones, full-set
@@ -330,6 +438,73 @@ def reconcile_and_receipt(
             # proposal is dropped rather than written as an orphan tombstone.
         auto_close = [c for c in auto_close if str(c["commitment_id"]) in closed_or_already]
 
+    # HYG1 Item 1 (the MC1 4.7 wire-up): auto-record per-person receipts for
+    # partial_received recommendations — non-destructive by construction
+    # (mark_partial_received NEVER closes; a completed roster only stamps the
+    # derived all_counterparties_received PROPOSE-closure signal). Idempotent
+    # per (commitment, counterparty): a counterparty already in the item's
+    # accumulated received_from (the pre-close `opens` projection) never gets
+    # a second receipt — the write-side mirror of the orchestrator's "never
+    # chase a counterparty already in received_from". Name-only matches were
+    # already routed to skipped_names by reconcile_sent (never guess an id).
+    n_partial_receipts = 0
+    partial_recorded: list = []      # slim rows for the receipt
+    partial_propose_closure: list = []  # rosters completed by this run
+    partial_skipped_names: list = []
+    if partial:
+        from commitment_parties import received_from_ids as _rcv_ids
+        from commitment_state import mark_partial_received
+        already_by_cid = {}
+        for c in opens:
+            already_by_cid[str(_commitment_id(c))] = set(_rcv_ids(c))
+        for p in partial:
+            already = already_by_cid.get(str(p["commitment_id"]), set())
+            recorded_cps = []
+            proposed = False
+            for r in p["receipts"]:
+                cp_id = r["counterparty_id"]
+                if cp_id in already:
+                    continue
+                try:
+                    result = mark_partial_received(
+                        workspace_root,
+                        p["commitment_id"],
+                        # Person-shaped like every other caller (apply-choices
+                        # passes sender_person_id, the orchestrator owner_id) —
+                        # the sender IS the user in a Sent reconcile. A skill
+                        # string here would surprise any future reader of
+                        # data.received_by.
+                        received_by=user_person_id,
+                        counterparty_id=cp_id,
+                        evidence=r.get("evidence") or "delivered by an outbound send",
+                        source_skill=source_skill,
+                    )
+                except Exception:
+                    # A bad id / race is logged by the writer's own guards;
+                    # never let one receipt failure abort the reconcile run.
+                    continue
+                if result.get("status") == "received":
+                    n_partial_receipts += 1
+                    recorded_cps.append(cp_id)
+                    already.add(cp_id)
+                    if result.get("propose_closure"):
+                        proposed = True
+            for nm in p.get("skipped_names") or []:
+                partial_skipped_names.append(
+                    {"commitment_id": p["commitment_id"], "name": nm}
+                )
+            if recorded_cps:
+                partial_recorded.append({
+                    "commitment_id": p["commitment_id"],
+                    "title": p.get("title") or "",
+                    "counterparty_ids": recorded_cps,
+                })
+            if proposed:
+                partial_propose_closure.append({
+                    "commitment_id": p["commitment_id"],
+                    "title": p.get("title") or "",
+                })
+
     # Stage E (F5): the 0.30–0.55 pending band MUST NOT evaporate. Persist
     # each pending proposal as a commitment_review_proposed event so the next
     # Commitments chat surfaces it for one-click confirm/deny — before this,
@@ -357,6 +532,19 @@ def reconcile_and_receipt(
                     "proposed_resolution": "auto_resolve",
                     "match_score": round(p.get("score") or 0, 3),
                     "evidence": p.get("evidence") or "matched an outbound send",
+                    # FB-19: the row's own name. Without it the LB1 adapter
+                    # has no title, `_row_name` falls back to the shape label,
+                    # and the card renders a bare "Housekeeping — matched your
+                    # sent message X" with nothing to identify WHAT matched
+                    # (the live 2026-07-16 render). The title is right here in
+                    # hand at write time — dropping it was the whole bug.
+                    "title": p.get("title") or "",
+                    # FS-11: only genuinely ambiguous matches reach here now
+                    # (unambiguous moderate matches auto-closed above). Carry a
+                    # TTL so an un-adjudicated proposal expires instead of
+                    # accumulating; the LB1 review adapter drops expired ones.
+                    "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
+                    "ambiguous": True,
                 },
             }], holder=source_skill)
             reviews_written += 1
@@ -380,6 +568,7 @@ def reconcile_and_receipt(
             user_person_id=user_person_id,
             opens=opens,
             source_skill=source_skill,
+            provider=provider,
         )
 
     # Advance the cursor to the newest Sent ts we saw (never backwards).
@@ -425,6 +614,9 @@ def reconcile_and_receipt(
             "sent_scanned_count": n_fetched,
             "n_closed": n_auto,
             "n_pending": n_pend,
+            # HYG1 Item 1 — per-person receipts auto-recorded this run
+            # (extend the data dict, no new event type).
+            "n_partial_receipts": n_partial_receipts,
         },
     }
     try:
@@ -468,6 +660,19 @@ def reconcile_and_receipt(
     if n_opened:
         summary += (f" Started tracking {n_opened} new "
                     f"promise{'s' if n_opened != 1 else ''} from your sent mail.")
+    if n_partial_receipts:
+        summary += (
+            f" Noted delivery to {n_partial_receipts} "
+            f"recipient{'s' if n_partial_receipts != 1 else ''} on group items"
+            " — those stay open until everyone's received theirs."
+        )
+    if partial_propose_closure:
+        titles = ", ".join(
+            f"\"{p['title']}\"" for p in partial_propose_closure if p.get("title")
+        ) or "a group item"
+        summary += (
+            f" Everyone on {titles} has now received theirs — close it when ready."
+        )
 
     return {
         "ran": True,
@@ -484,6 +689,11 @@ def reconcile_and_receipt(
         "reviews_written": reviews_written,
         "resolved": _slim(auto_close),
         "pending": _slim(pending),
+        # HYG1 Item 1 — per-person receipt pass (additive).
+        "n_partial_receipts": n_partial_receipts,
+        "partial": partial_recorded,
+        "partial_propose_closure": partial_propose_closure,
+        "partial_skipped_names": partial_skipped_names,
         # BUG-3719 capture pass (additive; zeros/None when items not passed).
         "n_opened": n_opened,
         "opened": list(capture["opened"]) if isinstance(capture, dict) else [],

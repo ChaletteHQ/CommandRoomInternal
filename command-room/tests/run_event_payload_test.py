@@ -38,11 +38,19 @@ VALID = [
     {"type": "pack_run", "data": {"task_id": "morning-brief"}},
     {"type": "pattern_break_detected", "data": {"person_id": "person_4", "eligible_event_count": 12}},
     {"type": "reminder", "data": {"id": "rem_1", "summary": "renew filing", "remind_from": "2026-07-10", "personal": True, "origin": "user_explicit"}},
-    {"type": "reminder_updated", "data": {"reminder_id": "rem_1", "action": "push", "remind_from": "2026-07-20", "origin": "user_explicit"}},
+    {"type": "reminder_updated", "data": {"reminder_id": "rem_1", "action": "push", "remind_from": "2026-07-20", "origin": "user_explicit"}},  # DATE_GUARD_OK: payload contract shape only; no clock comparison
     {"type": "reminder_cleared", "data": {"reminder_id": "rem_1", "origin": "user_explicit"}},
     {"type": "commitment_observed", "data": {"title": "Stacy to send Rick the report", "source_ref": "granola:m9", "tier": "observed", "observed_reason": "between other people", "id": "obs_abc123def456"}},
     {"type": "visual_gate", "data": {"doc": "_hq/meetings/CallPrep_2026-07-10.docx", "rendered": True, "findings": ["empty or placeholder tile"], "fixed": True}},
     {"type": "visual_gate", "data": {"doc": "_hq/meetings/CallPrep_2026-07-10.docx", "rendered": False, "findings": [], "fixed": False, "skipped_reason": "no renderer on this machine"}},  # skipped-path shape
+    {"type": "deal_created", "data": {"thread_id": "project_017", "org_id": "org_acme", "stage": "lead", "value": 40000}},  # PIPE1
+    {"type": "deal_created", "data": {"thread_id": "project_018", "org_id": "org_acme", "stage": "qualified", "adopted": True}},  # PIPE1 adoption shape (no value — never estimated)
+    {"type": "deal_updated", "data": {"thread_id": "project_017", "expected_close": "2026-08-15"}},  # DATE_GUARD_OK: payload contract shape only; no clock comparison
+    {"type": "deal_stage_changed", "data": {"thread_id": "project_017", "from_stage": "lead", "to_stage": "proposal_sent"}},
+    {"type": "deal_won", "data": {"thread_id": "project_017", "org_id": "org_acme", "value": 40000, "converted_prospect": True}},
+    {"type": "deal_lost", "data": {"thread_id": "project_017", "org_id": "org_acme", "loss_reason": "price", "loss_note": "budget cut"}},
+    {"type": "deal_update_proposed", "data": {"thread_id": "project_017", "proposal_kind": "stage", "proposed_stage": "proposal_sent", "evidence": "sent the proposal over"}},  # Part 2, registered up front
+    {"type": "deal_update_dismissed", "data": {"thread_id": "project_017", "fingerprint": "abc123"}},  # Part 2, registered up front
     {"type": "some_unconstrained_type", "data": {"anything": True}},  # no schema -> pass
 ]
 
@@ -71,7 +79,7 @@ def test_type_mismatch_flagged():
     check("wrong-typed property flagged", any("draft_event_seq" in x for x in v))
 
 
-def test_coverage_is_23_types():
+def test_coverage_is_34_types():
     types = set(epc.covered_types())
     # 10 original load-bearing types + the Phase 2 Stage D commitment-family
     # additions (commitment_reclassified / commitment_reopened) + the v4.5.2
@@ -82,15 +90,25 @@ def test_coverage_is_23_types():
     # chat_dismissal_cleared) + the v4.6.1 W4b proposal tombstone
     # (person_proposal_resolved) + the v4.6.1 W4c observed tier
     # (commitment_observed) + the OUT2 §3 render-then-critique audit
-    # (visual_gate) - each registered per EVENT_TYPES.md with
-    # named consumers.
+    # (visual_gate) + the PIPE1 deal lane (deal_created / deal_updated /
+    # deal_stage_changed / deal_won / deal_lost, written only by
+    # deal_state.py, plus the two Part 2 detector types registered up
+    # front) + the LB1 Living Brain lane (brain_proposal /
+    # brain_proposal_resolved / brain_proposal_expired / brain_change_undone,
+    # written only by brain_proposals.py / brain_undo.py / the cleanup expiry
+    # sweep) - each registered per EVENT_TYPES.md with named consumers.
     expected = {"commitment", "commitment_resolved", "decision", "meeting", "meeting_processed",
                 "interaction", "email_drafted", "email_sent", "pack_run", "pattern_break_detected",
                 "commitment_reclassified", "commitment_reopened", "prep_brief",
                 "reminder", "reminder_updated", "reminder_cleared", "commitment_superseded",
                 "commitment_updated", "commitment_reassigned", "chat_dismissal_cleared",
-                "person_proposal_resolved", "commitment_observed", "visual_gate"}
-    check("exactly the 23 load-bearing types are covered", types == expected)
+                "person_proposal_resolved", "commitment_observed", "visual_gate",
+                "deal_created", "deal_updated", "deal_stage_changed",
+                "deal_won", "deal_lost", "deal_update_proposed",
+                "deal_update_dismissed",
+                "brain_proposal", "brain_proposal_resolved",
+                "brain_proposal_expired", "brain_change_undone"}
+    check("exactly the 34 load-bearing types are covered", types == expected)
 
 
 def test_warn_only_hook_never_blocks():
@@ -112,7 +130,7 @@ def main():
     test_valid_payloads_pass()
     test_missing_required_fails_with_named_key()
     test_type_mismatch_flagged()
-    test_coverage_is_23_types()
+    test_coverage_is_34_types()
     test_warn_only_hook_never_blocks()
     print()
     if _failures:

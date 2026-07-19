@@ -119,6 +119,54 @@ def atomic_write_json(
     atomic_write_text(path, content)
 
 
+class SubstrateRegressionError(Exception):
+    """Raised when an events.jsonl in-place append is refused because the file
+    on disk regressed below the recorded seq high-water mark (FS-04) — a stale
+    lineage clobbered the live file (the multi-machine Drive last-writer-wins
+    hazard). The batch is quarantined, never lost."""
+
+
+def _seqhw_path(events_path: Path) -> Path:
+    return events_path.with_name(events_path.name + ".seqhw")
+
+
+def _read_seqhw(events_path: Path) -> int | None:
+    """The recorded max seq high-water for this events log, or None if no
+    sidecar yet. The sidecar lives next to events.jsonl (Drive-synced), so it
+    travels with the file and — being small — syncs down BEFORE the big log,
+    which is exactly what makes a stale-log/fresh-sidecar clobber detectable."""
+    p = _seqhw_path(events_path)
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        v = raw.get("max_seq")
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+        return None
+
+
+def _write_seqhw(events_path: Path, max_seq: int) -> None:
+    import datetime as _dt
+    try:
+        atomic_write_json(
+            _seqhw_path(events_path),
+            {"max_seq": int(max_seq),
+             "updated": _dt.datetime.now(_dt.timezone.utc).isoformat()},
+        )
+    except Exception:
+        pass  # the sidecar is a guard, never a hard dependency of the write
+
+
+def check_substrate_regression(events_path: str | Path) -> dict | None:
+    """Read the FS-04 regression marker if one was left by a refused append.
+    system-health / morning-briefing call this to surface the LOUD alarm.
+    Returns the marker dict (with `quarantine_path`, counts, seqs) or None."""
+    p = Path(events_path).with_name(Path(events_path).name + ".seqregression.json")
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def atomic_append_jsonl(
     path: str | Path,
     events: list[dict[str, Any]] | dict[str, Any],
@@ -219,6 +267,28 @@ def atomic_append_jsonl(
             from event_gate import gate_events
         events = gate_events(events, strict_enum=True, holder=holder)
 
+        # ACCOUNT-SCOPE WALL (connector-agnostic-v1, R2/R3) — the writer-side
+        # privacy guarantee, run at this same single chokepoint. A personal /
+        # out-of-scope account's mail can never enter events.jsonl; a
+        # provenance-REQUIRED family with no provenance is rejected (the R2
+        # fail-open fix). NO-OP unless the workspace has classified accounts
+        # (R4) — every existing workspace behaves exactly as today. Only raises
+        # the deliberate AccountScopeError; an internal error degrades to
+        # "allow the write" so a broken account map never bricks the substrate.
+        try:
+            from account_scope_gate import enforce_scope
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            try:
+                from account_scope_gate import enforce_scope
+            except Exception:
+                enforce_scope = None
+        except Exception:
+            enforce_scope = None
+        if enforce_scope is not None:
+            events = enforce_scope(events, path=path, holder=holder)
+
         # SEMANTIC DEDUP AT CAPTURE (v4.6.0 C4) — the `(source_ref, title)`
         # dedup key is source-scoped, so the same real commitment captured by
         # different writers (meeting + follow-up email + nightly sweep) lands
@@ -316,7 +386,57 @@ def atomic_append_jsonl(
                     ev["ts"] = now_iso
 
         new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs)
+
+        # FS-04 — seq high-water regression guard. If the file on disk regressed
+        # below the recorded high-water (a stale lineage clobbered it via Drive
+        # last-writer-wins), REFUSE the in-place append (writing it would append
+        # to the stale lineage and let the clobber win again), QUARANTINE the
+        # batch to a side file so nothing is lost, drop a LOUD marker, and RAISE.
+        # CR_SEQ_HIGHWATER=0 disables (emergencies / intentional resets).
+        if is_events and os.environ.get("CR_SEQ_HIGHWATER", "1") != "0":
+            hw = _read_seqhw(path)
+            if hw is not None and path.exists() and existing_max_seq < hw:
+                import datetime as _dt
+                stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                q_path = path.with_name(path.name + f".quarantine-{stamp}.jsonl")
+                try:
+                    q_existing = q_path.read_text(encoding=encoding) if q_path.exists() else ""
+                    if q_existing and not q_existing.endswith("\n"):
+                        q_existing += "\n"
+                    atomic_write_text(q_path, q_existing + new_lines, encoding=encoding)
+                except Exception:
+                    pass
+                marker = path.with_name(path.name + ".seqregression.json")
+                try:
+                    atomic_write_json(marker, {
+                        "detected": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                        "file_max_seq": existing_max_seq,
+                        "sidecar_max_seq": hw,
+                        "n_quarantined": len(evs),
+                        "quarantine_path": str(q_path),
+                        "holder": holder,
+                    })
+                except Exception:
+                    pass
+                raise SubstrateRegressionError(
+                    f"events.jsonl regressed below the seq high-water "
+                    f"(on-disk max seq {existing_max_seq} < recorded {hw}) — a "
+                    f"stale lineage clobbered the live log. Refused the in-place "
+                    f"append; quarantined {len(evs)} event(s) to {q_path.name}. "
+                    f"Recover the live log (Drive version history + merge) before "
+                    f"re-firing; see the substrate-regression alarm in a health "
+                    f"check or the morning brief."
+                )
+
         atomic_write_text(path, existing + new_lines, encoding=encoding)
+
+        # FS-04 — advance the high-water mark AFTER a clean write.
+        if is_events and os.environ.get("CR_SEQ_HIGHWATER", "1") != "0":
+            new_max = max((int(e["seq"]) for e in evs
+                           if isinstance(e.get("seq"), (int, float))
+                           and not isinstance(e.get("seq"), bool)
+                           and e["seq"] < 10**10), default=existing_max_seq)
+            _write_seqhw(path, max(new_max, existing_max_seq))
 
         # SPEC A3 — maintain the source_ref dedup index while still holding the
         # writer lock (events branch only). Best-effort: an index failure must
@@ -431,12 +551,21 @@ def acquire_write_lock(
                 # Race: file disappeared between exists() and stat(). Retry the loop.
                 continue
             if age > stale_after_s:
-                # Stale — reclaim. Best-effort delete; if another writer
-                # grabs it first, we'll loop again on our next attempt.
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass  # someone else cleared it; great
+                # Stale — reclaim. Best-effort; if another writer grabs it
+                # first, we'll loop again on our next attempt. v4.8.1 (F-11):
+                # reclaim goes through _clear_lock_file so a refused unlink
+                # (cloud-sync client briefly holding the file) mv-asides
+                # instead of crashing the writer; if even the rename fails,
+                # fall into the timeout below rather than spinning forever.
+                if not _clear_lock_file(lock_path):
+                    if _time.monotonic() - start > timeout_s:
+                        raise TimeoutError(
+                            f"Write lock on {path.name} is stale but cannot be "
+                            f"cleared (unlink and rename both refused by the "
+                            f"mount). Waited {timeout_s:.1f}s."
+                        )
+                    _time.sleep(0.1)
+                    continue
             else:
                 # Fresh lock held by someone else. Wait + retry.
                 if _time.monotonic() - start > timeout_s:
@@ -480,6 +609,49 @@ def acquire_write_lock(
         return lock_path
 
 
+def _clear_lock_file(lock_path: Path, unlink_retries: int = 3,
+                     retry_delay_s: float = 0.05) -> bool:
+    """Remove a lock sentinel, tolerating cloud-sync mounts (v4.8.1, F-11).
+
+    Unlink with brief retries first, mv-aside second. Returns True when the
+    lock file is out of the way (deleted, renamed, or already gone), False
+    only when both unlink and rename are refused.
+
+    WHY THE RETRIES (F-11, integration-2026-07): the seven
+    `entities.json.lock.stale.*` files from one multi-write session were NOT
+    crashed writers — every write succeeded. They were mv-aside litter: on a
+    Drive-synced workspace the sync client briefly holds each freshly-created
+    lock file, the release-time unlink gets OSError-refused, and the old code
+    renamed immediately. The hold is transient (ms), so a couple of short
+    retries clears almost every case without littering. The mv-aside stays as
+    the backstop; cleanup Rule 9 (`cleanup_actions.sweep_stale_locks`, weekly)
+    archives whatever still lands.
+    """
+    import os as _os
+    import time as _time
+
+    for attempt in range(max(1, unlink_retries)):
+        try:
+            lock_path.unlink()
+            return True
+        except FileNotFoundError:
+            return True  # someone else cleared it; done
+        except OSError:
+            if attempt + 1 < max(1, unlink_retries):
+                _time.sleep(retry_delay_s)
+    # Unlink keeps getting refused — mv-aside with the deterministic
+    # stale-name (`<file>.lock.stale.<epoch>.<pid>`, the exact pattern the
+    # weekly sweep archives into _archive/stale-locks/).
+    try:
+        stale_path = lock_path.with_suffix(
+            lock_path.suffix + f".stale.{int(_time.time())}.{_os.getpid()}"
+        )
+        _os.rename(str(lock_path), str(stale_path))
+        return True
+    except OSError:
+        return False
+
+
 def release_write_lock(lock_path: Path) -> None:
     """Release a write lock acquired via acquire_write_lock. Idempotent —
     silently no-ops if the lock file is already gone (someone else reclaimed
@@ -487,27 +659,13 @@ def release_write_lock(lock_path: Path) -> None:
 
     v3.13.8: handles sandbox-mount OSError on unlink via mv-aside fallback
     (Bug #21 — Drive-mounted workspaces sometimes refuse unlink but permit
-    rename). The leftover `.stale.*` files get cleaned by weekly Tidy Up.
+    rename). v4.8.1 (F-11): unlink is retried briefly before the mv-aside so
+    a transient sync-client hold doesn't litter a `.stale.*` file per write;
+    leftover `.stale.*` files are archived by cleanup Rule 9's weekly sweep.
+    If even the rename fails, this is a release-time non-fatal; the lock will
+    eventually be reclaimed as stale by acquire_write_lock.
     """
-    import os as _os
-    import time as _time
-
-    try:
-        lock_path.unlink()
-        return
-    except FileNotFoundError:
-        return
-    except OSError:
-        # Sandbox mount doesn't permit unlink — try mv-aside with a deterministic
-        # stale-name. If even rename fails, this is a release-time non-fatal;
-        # the lock will eventually be reclaimed as stale by acquire_write_lock.
-        try:
-            stale_path = lock_path.with_suffix(
-                lock_path.suffix + f".stale.{int(_time.time())}.{_os.getpid()}"
-            )
-            _os.rename(str(lock_path), str(stale_path))
-        except OSError:
-            pass
+    _clear_lock_file(lock_path)
 
 
 # ---------------------------------------------------------------------------
@@ -551,12 +709,91 @@ def _read_lock_payload(lock_path: Path) -> tuple[int, float]:
     return pid, epoch
 
 
+def _pid_alive_windows(pid: int) -> bool:
+    """Windows pid-liveness via OpenProcess + WaitForSingleObject.
+
+    A running process's handle stays unsignalled, so WaitForSingleObject(h, 0)
+    returns WAIT_TIMEOUT. Once it exits, the handle signals and we get
+    WAIT_OBJECT_0. That distinction is the liveness answer.
+
+    Deliberately NOT using GetExitCodeProcess/STILL_ACTIVE: a process that exits
+    with code 259 is indistinguishable from one still running.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    SYNCHRONIZE = 0x00100000
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    WAIT_TIMEOUT = 0x00000102
+    ERROR_ACCESS_DENIED = 5
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    # Explicit prototypes are mandatory: ctypes defaults restype to c_int, which
+    # truncates a 64-bit HANDLE and yields a bogus handle on win64.
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        # Access-denied means the pid exists but belongs to another user or a
+        # protected process — same call as the POSIX PermissionError branch:
+        # it's alive, just not ours. Anything else (chiefly
+        # ERROR_INVALID_PARAMETER) means no such process.
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
-    """Best-effort pid-liveness check that works on Windows and POSIX."""
+    """Best-effort pid-liveness check that works on Windows and POSIX.
+
+    WINDOWS MUST NOT GO THROUGH os.kill (found 2026-07-15).
+
+    `os.kill(pid, 0)` is the standard POSIX liveness idiom: signal 0 is a no-op
+    probe that checks existence and sends nothing. On Windows it means something
+    else entirely. CPython's os.kill special-cases the signal value BEFORE it
+    ever reaches TerminateProcess:
+
+        if (signal == CTRL_C_EVENT || signal == CTRL_BREAK_EVENT)
+            err = GenerateConsoleCtrlEvent((DWORD)signal, (DWORD)pid);
+
+    and on Windows CTRL_C_EVENT == 0. So `os.kill(pid, 0)` does not probe the
+    process — it broadcasts a real Ctrl+C to the console process group. The call
+    returns normally (so the old code reported "alive"), and the Ctrl+C lands
+    asynchronously a beat later, killing whatever shares that console: the test
+    runner, a CI job, the operator's terminal.
+
+    Observed: tests/run_all.py died with KeyboardInterrupt inside
+    WaitForSingleObject on 4/4 runs, always at run_atomic_write_multi_test.py —
+    the only suite reaching this path — with nobody at the keyboard. The
+    traceback was indistinguishable from a human pressing Ctrl+C, because it is
+    the same signal.
+
+    The no-console case is no better: GenerateConsoleCtrlEvent fails, OSError is
+    raised, the old `except OSError: return False` reports "dead" — for every pid
+    it is ever asked about. A live writer's lock then reads as abandoned and gets
+    reclaimed, which is precisely what the lock exists to prevent.
+
+    Regression coverage: tests/run_pid_alive_windows_test.py
+    """
     import os as _os
+    import sys as _sys
 
     if pid <= 0:
         return False
+
+    if _sys.platform == "win32":
+        return _pid_alive_windows(pid)
+
     try:
         _os.kill(pid, 0)
         return True
@@ -647,8 +884,17 @@ def multi_write_context(
         except FileExistsError:
             existing_pid, lock_epoch = _read_lock_payload(lock_path)
             if existing_pid == 0 and lock_epoch == 0.0:
-                # Corrupt / unreadable lock — reclaim.
-                release_write_lock(lock_path)
+                # Corrupt / unreadable lock — reclaim. v4.8.1 (F-11, second-eyes
+                # finding 1): a reclaim whose unlink AND rename are both refused
+                # must fall into the timeout, not spin forever.
+                if not _clear_lock_file(lock_path):
+                    if _time.monotonic() - start > timeout_s:
+                        raise AtomicWriteLockError(
+                            f"Could not clear corrupt multi_write lock at "
+                            f"{lock_path} after {timeout_s:.0f}s (unlink and "
+                            f"rename both refused by the mount)."
+                        )
+                    _time.sleep(1.0)
                 continue
 
             now = _time.time()
@@ -656,8 +902,17 @@ def multi_write_context(
             alive = _pid_alive(existing_pid)
 
             if not alive or stale_by_time:
-                # Reclaim a dead-pid or time-stale lock.
-                release_write_lock(lock_path)
+                # Reclaim a dead-pid or time-stale lock (same F-11 contract:
+                # unclearable → timeout, never an infinite loop).
+                if not _clear_lock_file(lock_path):
+                    if _time.monotonic() - start > timeout_s:
+                        raise AtomicWriteLockError(
+                            f"Stale multi_write lock at {lock_path} cannot be "
+                            f"cleared after {timeout_s:.0f}s (unlink and rename "
+                            f"both refused by the mount); holder "
+                            f"pid={existing_pid} is dead or expired."
+                        )
+                    _time.sleep(1.0)
                 continue
 
             if _time.monotonic() - start > timeout_s:

@@ -102,6 +102,25 @@ from atomic_write import atomic_write_json, atomic_write_json_locked, atomic_app
 from entities_io import entities_collection  # noqa: E402
 
 
+def _enforce_record_scope(workspace_root, *, provenance=None, source_ref=None,
+                          account_address=None, holder="people_writer") -> None:
+    """The CRM record wall (ACCOUNT_SCOPE §2, review fix 7) — delegate to
+    account_scope_gate.enforce_record_scope. Import defensively: a missing
+    module must never brick a person write (never-brick posture)."""
+    try:
+        from account_scope_gate import enforce_record_scope, AccountScopeError
+    except ImportError:
+        return
+    try:
+        enforce_record_scope(workspace_root, provenance=provenance,
+                             source_ref=source_ref,
+                             account_address=account_address, holder=holder)
+    except AccountScopeError:
+        raise
+    except Exception:
+        return
+
+
 # Canonical person schema fields, mirrored from
 # shared/data-schemas/entities.schema.json $defs.person.properties.
 # DO NOT add fields here without first updating the schema. The whole point of
@@ -273,7 +292,8 @@ def _today_iso() -> str:
 
 
 def _now_iso() -> str:
-    return datetime.datetime.now().replace(microsecond=0).isoformat()
+    # FS-03: UTC-aware, not naive local (the F-15 naive-local-clock bug class).
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _normalize_name(s: str) -> str:
@@ -488,6 +508,61 @@ def get_person_display_names(record: dict) -> list[str]:
     return out
 
 
+def list_same_name_people(
+    workspace_root: str | Path,
+    name: str,
+    *,
+    include_archived: bool = False,
+    max_candidates: int = 8,
+) -> list[dict]:
+    """All person records sharing a name token with `name` (F13, v4.8.1).
+
+    The add-person elicit path's pre-check: before rendering the add form for
+    a sparse input ("add a new person: Quinn"), the form header must NAME the
+    existing same-name people ("You already have Quinn Sample and Quinn
+    Stone — one of them?") — never just gesture at collision risk.
+    `find_existing_person` can't provide that list: its exact-match tiers miss
+    first-name-only overlap with multi-token canonical names ("quinn" !=
+    "quinn sample"), and `entity_resolve.resolve_all` early-returns on the
+    first exact alias hit, so neither reliably surfaces ALL same-name records.
+
+    Token-level match: a record matches when ANY whitespace token of the query
+    equals (case-insensitive) ANY token of its canonical_name, aliases, or
+    nicknames. Deterministic, no fuzzy scoring — this feeds a form-header
+    line, not an auto-match; create-time dedup stays with
+    find_existing_person / create_person exactly as before.
+
+    Returns up to `max_candidates` records, archived excluded unless
+    `include_archived=True`; exact full-name matches sort first, then by
+    canonical_name.
+    """
+    query_norm = _normalize_name(name or "")
+    query_tokens = set(query_norm.split())
+    if not query_tokens:
+        return []
+
+    data = _load_entities(Path(workspace_root))
+    people = entities_collection(data, "people")
+
+    matches: list[dict] = []
+    for p in people:
+        if not include_archived and p.get("status") == "archived":
+            continue
+        surface_tokens: set[str] = set()
+        for surface in get_person_display_names(p):
+            surface_tokens.update(_normalize_name(surface).split())
+        if query_tokens & surface_tokens:
+            matches.append(p)
+
+    def sort_key(p: dict) -> tuple[int, str]:
+        canon_norm = _normalize_name(p.get("canonical_name", ""))
+        exact = 0 if canon_norm == query_norm else 1
+        return (exact, canon_norm)
+
+    matches.sort(key=sort_key)
+    return matches[:max_candidates]
+
+
 def _log_event(
     workspace_root: Path,
     event_type: str,
@@ -514,7 +589,7 @@ def _log_event(
     if before is not None:
         data["before"] = before
     event: dict[str, Any] = {
-        "ts": _now_iso(),
+        # FS-03: OMIT ts — the append gate stamps it UTC-aware.
         "type": event_type,
         "source_skill": source_skill,
         "data": data,
@@ -659,14 +734,29 @@ def create_person(
     needs_enrichment: bool = False,
     source_skill: str = "people_writer",
     skip_dedup: bool = False,
+    provenance: dict | None = None,
+    source_ref: str | None = None,
+    account_address: str | None = None,
 ) -> dict:
     """Create a person record. Returns the new record (with assigned id).
 
     Raises ValueError on schema violations. Raises DuplicatePersonError when an
     existing record matches by email / alias / canonical_name unless
     skip_dedup=True.
+
+    Account-scope wall (connector-agnostic-v1, review fix 7): when the CALLER
+    derived this record from a connector read, pass the read's provenance
+    (`provenance` dict / `source_ref` / `account_address` — the mailbox the
+    mail arrived through, NOT the contact's own email). A payload resolving to
+    an out-of-scope account raises AccountScopeError BEFORE any entities.json
+    write. Manual adds (no provenance kwargs) are unaffected. These kwargs are
+    scope inputs only — they are never stored on the person record.
     """
     workspace_root = Path(workspace_root)
+    _enforce_record_scope(workspace_root, provenance=provenance,
+                          source_ref=source_ref,
+                          account_address=account_address,
+                          holder=source_skill)
     if not skip_dedup:
         existing = find_existing_person(
             workspace_root,
@@ -703,18 +793,84 @@ def create_person(
     return record
 
 
+def auto_add_person(
+    workspace_root: str | Path,
+    *,
+    canonical_name: str,
+    email: str | None = None,
+    email_provenance: dict | str | None = None,
+    source_skill: str = "people_writer",
+    **create_kwargs,
+) -> dict:
+    """FS-11 (M ruling 2026-07-15) — auto-add a person from rich context, with
+    two guardrails that make auto-creation safe:
+
+      1. **Same-name dedup gate (runs BEFORE every auto-add).** If any existing
+         person shares a name token with `canonical_name`
+         (`list_same_name_people`), DO NOT auto-create — return
+         `{"status": "needs_confirm", "matches": [...]}` so the surface asks
+         "is this the same person?" instead of silently forking a duplicate.
+
+      2. **Observed-provenance email capture (F-08 extended to capture).** An
+         email is stored ONLY when it arrived with provenance — an OBSERVED
+         source (the message / meeting the person surfaced from). A caller
+         passing `email` WITHOUT `email_provenance` gets the person created
+         WITHOUT the email and `email_dropped_no_provenance=True` in the result;
+         a pattern-guessed / constructed address is NEVER written.
+
+    On success returns `{"status": "added", "record": {...},
+    "email_dropped_no_provenance": bool}`. Undo is ARCHIVE, not delete
+    (`update_person(..., status="archived")`) — the R1 archive-never-delete
+    reverser that `brain_undo` registers for person creation.
+    """
+    matches = list_same_name_people(workspace_root, canonical_name)
+    if matches:
+        return {"status": "needs_confirm", "matches": matches, "record": None}
+
+    email_dropped = False
+    stored_email = email
+    if email and not email_provenance:
+        # F-08 at capture time: no observed source → don't store the address.
+        stored_email = None
+        email_dropped = True
+
+    record = create_person(
+        workspace_root,
+        canonical_name=canonical_name,
+        email=stored_email,
+        source_skill=source_skill,
+        # provenance/source_ref for the SCOPE wall are passed through if the
+        # caller supplied them via create_kwargs; the email_provenance above is
+        # the capture guard, a distinct concern.
+        **create_kwargs,
+    )
+    return {"status": "added", "record": record,
+            "email_dropped_no_provenance": email_dropped}
+
+
 def update_person(
     workspace_root: str | Path,
     person_id: str,
     *,
     source_skill: str = "people_writer",
+    provenance: dict | None = None,
+    source_ref: str | None = None,
+    account_address: str | None = None,
     **fields: Any,
 ) -> dict:
     """Update fields on an existing person. Returns the updated record. Field
     names are validated against the schema; unknown keys raise ValueError with
     a remediation hint.
+
+    `provenance` / `source_ref` / `account_address` are account-scope inputs
+    (see create_person) — pass them when the update is derived from a connector
+    read; an out-of-scope account raises AccountScopeError before the write.
     """
     workspace_root = Path(workspace_root)
+    _enforce_record_scope(workspace_root, provenance=provenance,
+                          source_ref=source_ref,
+                          account_address=account_address,
+                          holder=source_skill)
     data = _load_entities(workspace_root)
     people = entities_collection(data, "people")
 

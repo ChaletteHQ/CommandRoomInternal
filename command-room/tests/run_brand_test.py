@@ -240,7 +240,15 @@ def main() -> int:
         check("schema: unknown palette key rejected",
               len(list(V.iter_errors({"palette": {"nope": "FFFFFF"}}))) > 0)
     except ImportError:
-        print("  SKIP jsonschema unavailable — schema checks skipped")
+        # Previously this printed a SKIP and let the suite pass, so the three
+        # schema assertions above had never run on any machine without
+        # jsonschema installed — the suite reported PASS while not checking.
+        # Same class as the G11 SKIP-but-PASS. Fail loudly instead.
+        print(
+            "ERROR: jsonschema required by the brand schema checks. "
+            "Install with: pip install -r requirements.txt"
+        )
+        sys.exit(2)
 
     print()
     if _failures:

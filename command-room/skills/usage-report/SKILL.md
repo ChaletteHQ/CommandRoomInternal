@@ -15,7 +15,7 @@ usage-report is **read-only over `_hq/data/events.jsonl`** — it appends nothin
 - `response_tokens_est` — char-count / 4 estimate of the chat response (widget HTML + Briefs/Sources sections)
 - `connector_call_count` — total tool calls during the fire
 - `connector_calls_by_connector` — breakdown (gmail, calendar, granola, drive, zapier)
-- `connector_calls_by_op` — per-operation breakdown (gmail.search_threads, calendar.list_events, etc.)
+- `connector_calls_by_op` — per-operation breakdown (e.g. `mail.search`, `calendar.list`, `transcript.fetch` — provider-neutral operation labels, not raw provider tool names)
 - `duration_ms` — total fire duration
 
 Token estimates are rough (chars/4 heuristic). Connector calls are the OTHER big cost driver — each MCP tool call has overhead.

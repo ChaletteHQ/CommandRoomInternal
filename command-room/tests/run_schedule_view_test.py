@@ -34,10 +34,13 @@ def check(name, cond, detail=""):
 # first-install tasks added since — session-sweep (Phase 5) is first-install,
 # so a HEALTHY workspace registers it (a fixture missing it would be a genuine
 # first-install ghost, which is what the parity check below asserts against).
+# MAINT1: the five silent tasks became jobs inside the single `maintenance`
+# task, so a HEALTHY post-migration workspace registers the 7 chats +
+# maintenance (a fixture missing maintenance would be a genuine first-install
+# ghost, which is what the parity check below asserts against).
 REGISTERED = {
     "morning-brief", "upcoming-meetings", "inbox", "commitments", "pulse",
-    "past-meetings", "friday-wrap", "cleanup", "weekly-insights",
-    "reconcile-sent", "monthly-report", "session-sweep",
+    "past-meetings", "friday-wrap", "maintenance",
 }
 
 
@@ -81,7 +84,7 @@ def main():
         check("sparse override wins for morning-brief",
               view["morning-brief"]["cron"] == "0 6 * * 1-5", repr(view["morning-brief"]))
         check("silent flag present for grouping",
-              view["cleanup"]["silent"] and not view["inbox"]["silent"])
+              view["maintenance"]["silent"] and not view["inbox"]["silent"])
         view_empty = sc.load_schedule_view(entities, set())
         check("empty registered set -> everything honestly not-added",
               all(not s["registered"] for s in view_empty.values()))
@@ -90,7 +93,7 @@ def main():
         before = entities.read_text(encoding="utf-8")
         parity = tw.check_schedule_parity(ws, REGISTERED)
         check("later-add ghost classified as expected (silent class for R3)",
-              sorted(parity["ghost_later_add"]) == ["commitment-triage", "relationship-moves"],
+              sorted(parity["ghost_later_add"]) == ["commitment-triage", "relationship-moves", "staff-meeting"],
               repr(parity))  # commitment-triage joined the later-add set in Phase 2 Stage D
         check("no first-install ghosts on the healthy fixture",
               parity["ghost_first_install"] == [], repr(parity))
@@ -107,7 +110,7 @@ def main():
         # falls back to workspace_config.json registered_taskIds
         parity3 = tw.check_schedule_parity(ws)
         check("defaults to workspace_config registered_taskIds",
-              sorted(parity3["ghost_later_add"]) == ["commitment-triage", "relationship-moves"],
+              sorted(parity3["ghost_later_add"]) == ["commitment-triage", "relationship-moves", "staff-meeting"],
               repr(parity3))  # commitment-triage joined the later-add set in Phase 2 Stage D
 
         print("== schedule_parity_checked is a registered event type")

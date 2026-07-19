@@ -1,6 +1,6 @@
 ---
 name: follow-up-ritual
-description: "Meeting transcript or recording → 60-second close-the-loop pack: summary, per-attendee action items, personalized follow-up email drafts ready to send. Triggers: 'follow up on that call', 'follow up on the meeting', 'follow up the meeting', 'follow up on the call', 'process the call and draft follow-ups', 'close the loop', 'close the loop on', 'follow-up ritual', 'draft follow-ups', 'draft follow ups', 'send follow-ups from my last call'. Also handles first-run personalization settings — use when the CEO says 'tune follow-up-ritual', 'show follow-up-ritual settings', 'reset follow-up-ritual to defaults'. Owns meeting-context `follow up` phrasing — meeting-notes does not fire on these. DOES NOT fire on 'follow up with [name] about [topic]' with no meeting in context (email-writer — a plain outbound draft; same for dormant-customer-scan and thread-resurrection hand-offs)."
+description: "Meeting transcript or recording → 60-second close-the-loop pack: summary, per-attendee action items, personalized follow-up email drafts ready to send. Triggers: 'follow up on that call', 'follow up on the meeting', 'follow up the meeting', 'follow up on the call', 'process the call and draft follow-ups', 'close the loop', 'close the loop on', 'follow-up ritual', 'draft follow-ups', 'draft follow ups', 'send follow-ups from my last call'. Plus 'tune follow-up-ritual'. Owns meeting-context `follow up` phrasing — meeting-notes does not fire on these. DOES NOT fire on 'follow up with [name] about [topic]' with no meeting in context (email-writer — a plain outbound draft; same for dormant-customer-scan and thread-resurrection hand-offs)."
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default
 template_version: 2.7.1
@@ -210,9 +210,12 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
            ],
        }],
    }
-   html = render_chat_output_widget(data_view, wrapper="fragment")
-   validate_rendered_widget(html)
-   # Pass html byte-for-byte to mcp__visualize__show_widget.
+   from widget_transport import render_and_persist
+   transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                                  persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                                  name_hint="follow-up-ritual")
+   # Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
+   # shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
    ```
 
    After posting the widget, surface the .docx recap link separately at the bottom per `shared/CONTRACT.md` Rule 3: build it with `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_docx_path))` — never hand-encode a `computer:///` URL. One-line summary above the link: "Drafted 3 follow-ups for Aria, Bowie, and Lyra. Logged 2 decisions. Added 4 new commitments to your tracker."
@@ -270,6 +273,8 @@ If zero on either side, omit that half of the line.
 `FollowUp_[Meeting]_[YYYY-MM-DD].docx` content structure (rendered via brief_writer):
 
 > **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: the pack **opens with "What YOU committed to in this room" before others' items** — the `owner_id == user_id` split is already computed (Step: Surface Open Commitments), so this is pure ordering. Pass `make_brief(brief_kind="followup_pack", ...)` an `exec_header` whose verdict names what the user walked out owing ("You own 2 items from this call — pricing redline by Thu, intro by Fri"); CHANGED = what got decided/closed; DECIDE/NEEDED follow the floor or the nothing-form. The **drafts widget IS the ASK block** (element 4, one-ask-surface) — the per-attendee draft widget is the reader-action surface; do NOT also render a prose "What I need from you" twin in the .docx.
+
+> **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("followup_pack", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions. Workspace exemplar (`_hq/exemplars/followup_pack/`) beats the shipped seed; `None` = compose on the structure below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header, the YOUR-items-first ordering, or the one-ask-surface rule, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the pack. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (shared with the visual pass below, warn-only). When the user gives structural feedback on a delivered pack ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="followup_pack", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
 **Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
@@ -425,3 +430,9 @@ Total stage time: ~90 seconds. Installable mental model.
 - **events.jsonl substrate** — commitment + decision logging (MASTER_TRACKER / DECISION_LOG views regenerate from it)
 - **meeting-notes skill** — reuse structured notes if already generated
 - **decision-log skill** — decision writer
+
+## Routing (full trigger corpus)
+
+The settings-trigger family for this skill, relocated verbatim from the pre-G11-diet description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Also handles first-run personalization settings — use when the CEO says 'tune follow-up-ritual', 'show follow-up-ritual settings', 'reset follow-up-ritual to defaults'.

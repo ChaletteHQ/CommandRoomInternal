@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Test battery for shared/scripts/task_watchdog.py (Phase 3 Reliability, W1).
+Test battery for shared/scripts/task_watchdog.py (Phase 3 Reliability, W1;
+task topology updated in MAINT1 — the five silent tasks became jobs inside
+the single `maintenance` task).
 
 Real-shape fixtures: a synthetic workspace with events.jsonl receipts in the
 exact shapes the orchestrators write (pack_run with kind/source_skill,
-sent_reconcile, cleanup_run), workspace_config.json with registered_taskIds,
-and scheduler records shaped like list_scheduled_tasks output.
+sent_reconcile, cleanup_run, maintenance_run), workspace_config.json with
+registered_taskIds, and scheduler records shaped like list_scheduled_tasks
+output.
 
 Acceptance case from SPEC-2.1: a synthetic workspace with a 5-day-dead
 morning-brief produces exactly ONE plain-English flag for it.
@@ -68,6 +71,15 @@ def pack_run(source_skill, kind, delta):
     }
 
 
+def maintenance_run(delta, **payload):
+    data = {"task_id": "maintenance", "kind": "maintenance", "status": "complete",
+            "fired_via": "scheduled", "jobs_due": [], "jobs_completed": [],
+            "jobs_failed": [], "skipped_disabled": []}
+    data.update(payload)
+    return {"type": "maintenance_run", "ts": _utc_iso(delta),
+            "source_skill": "maintenance", "data": data}
+
+
 def main():
     print("== expected_fires — pure machine-local cron math")
     fires = tw.expected_fires("0 16 * * 5", now=dt.datetime(2026, 7, 1, 9, 0), count=2)
@@ -88,8 +100,7 @@ def main():
           repr(fires))
 
     registered = ["morning-brief", "upcoming-meetings", "past-meetings", "inbox",
-                  "friday-wrap", "cleanup", "reconcile-sent", "monthly-report",
-                  "weekly-insights", "session-sweep"]
+                  "friday-wrap", "maintenance"]
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -104,17 +115,22 @@ def main():
             pack_run("past-meetings", "past_meetings", dt.timedelta(hours=20)),
             # friday-wrap: weekly, fired within the last week
             pack_run("friday-wrap", "friday_wrap", dt.timedelta(days=4)),
-            # cleanup: healthy (no match field needed)
+            # maintenance: healthy — fired 2 hours ago (MAINT1)
+            maintenance_run(dt.timedelta(hours=2),
+                            jobs_due=["session-sweep"],
+                            jobs_completed=["session-sweep"]),
+            # the maintenance JOBS leave their own receipts (job freshness):
             {"type": "cleanup_run", "ts": _utc_iso(dt.timedelta(days=2)), "data": {"actions_taken": []}},
-            # monthly-report: healthy
             {"type": "operator_report_generated", "ts": _utc_iso(dt.timedelta(days=10)), "data": {}},
-            # session-sweep: healthy — swept last night (Phase 5 / R1 receipt)
             {"type": "session_sweep_run", "ts": _utc_iso(dt.timedelta(hours=6)),
              "data": {"events_recovered": 2, "sessions_scanned": 3}},
-            # reconcile-sent: NO receipt ever → never_authorized (registered 30d ago)
+            {"type": "sent_reconcile", "ts": _utc_iso(dt.timedelta(hours=5)),
+             "data": {"task_id": "reconcile-sent", "kind": "reconcile-sent",
+                      "status": "complete", "fired_via": "scheduled",
+                      "sent_scanned_count": 2, "n_closed": 0}},
         ]
         ws = make_workspace(tmp, events, registered)
-        # weekly-insights receipt = view mtimes
+        # weekly-insights job receipt = view mtimes (pre-v4.5.2 fallback)
         views = ws / "_hq" / "views"
         views.mkdir(parents=True)
         (views / "TIMELINE.md").write_text("fresh", encoding="utf-8")
@@ -128,20 +144,36 @@ def main():
         check("fresh inbox is ok", by_task["inbox"]["status"] == "ok", by_task["inbox"]["status"])
         check("legacy cr-prefixed receipt still counts (upcoming-meetings ok)",
               by_task["upcoming-meetings"]["status"] == "ok", by_task["upcoming-meetings"]["status"])
-        check("receipt-less silent task is never_authorized",
-              by_task["reconcile-sent"]["status"] == "never_authorized",
-              by_task["reconcile-sent"]["status"])
-        check("silent flag comes from the SILENT_TASKS registry",
-              by_task["reconcile-sent"]["silent"] is True and by_task["inbox"]["silent"] is False)
-        check("weekly-insights uses the view-mtime fallback receipt",
-              by_task["weekly-insights"]["status"] == "ok", by_task["weekly-insights"]["status"])
-        check("session-sweep receipt (session_sweep_run) counts, and it's silent",
-              by_task["session-sweep"]["status"] == "ok" and by_task["session-sweep"]["silent"] is True,
-              repr(by_task["session-sweep"]))
+        check("maintenance task is ok on a fresh maintenance_run receipt",
+              by_task["maintenance"]["status"] == "ok", by_task["maintenance"]["status"])
+        check("maintenance silent flag comes from the SILENT_TASKS registry",
+              by_task["maintenance"]["silent"] is True and by_task["inbox"]["silent"] is False)
+        check("the five old silent taskIds are NOT reported as tasks anymore",
+              not any(t in by_task for t in ("cleanup", "reconcile-sent",
+                                             "monthly-report", "weekly-insights",
+                                             "session-sweep")), repr(sorted(by_task)))
         check("later-add relationship-moves is not_registered, not a failure",
               by_task["relationship-moves"]["status"] == "not_registered")
-        check("cleanup receipt matches without a source filter",
-              by_task["cleanup"]["status"] == "ok", by_task["cleanup"]["status"])
+
+        print("== per-JOB freshness (MAINT1 D8)")
+        jobs = {f["job"]: f for f in tw.check_maintenance_jobs(ws)}
+        check("all six jobs have a job-level check (deal-signals joined in LB1)",
+              sorted(jobs) == ["cleanup", "deal-signals", "monthly-report",
+                               "reconcile-sent", "session-sweep",
+                               "weekly-insights"], repr(sorted(jobs)))
+        check("fresh job receipts are ok (reconcile 5h / sweep 6h / cleanup 2d / monthly 10d)",
+              all(jobs[j]["status"] == "ok" for j in
+                  ("reconcile-sent", "session-sweep", "cleanup", "monthly-report")),
+              repr({j: f["status"] for j, f in jobs.items()}))
+        check("weekly-insights job uses the view-mtime fallback receipt",
+              jobs["weekly-insights"]["status"] == "ok", repr(jobs["weekly-insights"]))
+        task_recs = [{"taskId": t, "enabled": True, "prompt": "x"} for t in registered]
+        verdict = tw.health_verdict(ws, task_records=task_recs)
+        check("vantage guard not tripped (scheduler records provided)",
+              verdict["vantage"] is None)
+        check("healthy jobs add no job-level problems to the verdict",
+              not any(p.startswith("maintenance:") for p in verdict["problems"]),
+              repr(verdict["problems"]))
 
         print("== plain-English surface")
         lines = tw.plain_english_lines(reports)
@@ -153,8 +185,6 @@ def main():
         check("late line asserts no cause (sleep narrative banned), names the action",
               "asleep" not in mb_lines[0] and "Run Now" in mb_lines[0]
               and "can't tell" in mb_lines[0], mb_lines[0] if mb_lines else "")
-        check("never_authorized line names the one-time permission",
-              any("permission" in l and "Reconcile Sent" in l for l in lines), repr(lines))
         check("ok tasks emit nothing",
               not any("Inbox" in l for l in lines), repr(lines))
         check("later-add ghost emits nothing (change-schedule owns that render)",
@@ -162,6 +192,50 @@ def main():
         check("no jargon in any line",
               not any(tok in l for l in lines for tok in
                       ("pack_run", "events.jsonl", "_hq", "taskId", "cron")), repr(lines))
+
+        print("== never_authorized (W2 — the class MAINT1 shrinks to one grant)")
+        ws_na = make_workspace(Path(td) / "na", [], ["maintenance"])
+        na = {r["task"]: r for r in tw.check_tasks(ws_na)}
+        check("registered maintenance with zero receipts is never_authorized",
+              na["maintenance"]["status"] == "never_authorized",
+              na["maintenance"]["status"])
+        na_lines = tw.plain_english_lines(list(na.values()))
+        check("never_authorized line names the one-time permission",
+              any("permission" in l and "Maintenance" in l for l in na_lines), repr(na_lines))
+
+        print("== stale JOB inside a healthy maintenance task (chronic-failure surface)")
+        stale_events = [
+            # the task has been firing for weeks, three times recently
+            maintenance_run(dt.timedelta(days=20)),
+            maintenance_run(dt.timedelta(days=10)),
+            maintenance_run(dt.timedelta(hours=2)),
+            # four jobs healthy...
+            {"type": "session_sweep_run", "ts": _utc_iso(dt.timedelta(hours=5)),
+             "data": {"events_recovered": 0, "sessions_scanned": 1}},
+            {"type": "cleanup_run", "ts": _utc_iso(dt.timedelta(days=2)), "data": {"actions_taken": []}},
+            pack_run("weekly-insights", "weekly_insights", dt.timedelta(days=3)),
+            {"type": "operator_report_generated", "ts": _utc_iso(dt.timedelta(days=10)), "data": {}},
+            # ...but reconcile-sent stopped writing receipts 10 days ago
+            {"type": "sent_reconcile", "ts": _utc_iso(dt.timedelta(days=10)),
+             "data": {"task_id": "reconcile-sent", "kind": "reconcile-sent",
+                      "status": "complete", "fired_via": "scheduled",
+                      "sent_scanned_count": 2, "n_closed": 0}},
+        ]
+        ws_stale = make_workspace(Path(td) / "stale", stale_events, registered)
+        jf = {f["job"]: f for f in tw.check_maintenance_jobs(ws_stale)}
+        check("the 10-day-silent reconcile job is stale",
+              jf["reconcile-sent"]["status"] == "stale", repr(jf["reconcile-sent"]))
+        v2 = tw.health_verdict(ws_stale, task_records=task_recs)
+        check("verdict carries the job problem under a namespaced id",
+              "maintenance:reconcile-sent" in v2["problems"], repr(v2["problems"]))
+        job_lines = [l for l in v2["lines"] if "Reconcile Sent" in l]
+        check("one plain-English line: task running, job recorded nothing, one action",
+              len(job_lines) == 1 and "Run Now" in job_lines[0]
+              and "Maintenance" in job_lines[0], repr(job_lines))
+        check("summary does not claim everything's running while a job is stale",
+              "Everything's running" not in v2["summary_line"], v2["summary_line"])
+        check("brief watchdog line counts the job problem",
+              tw.brief_watchdog_line(ws_stale, verdict=v2) is not None)
 
         print("== receipt_gap (fired per scheduler, wrote nothing)")
         recs = [{"taskId": "past-meetings", "lastRunAt": _utc_iso(dt.timedelta(hours=1)),
@@ -201,20 +275,23 @@ def main():
     recs = [
         {"taskId": "inbox", "prompt": "# Scheduled task bootloader — inbox\nplugin-version: 4.4.0\n..."},
         {"taskId": "pulse", "prompt": "# Scheduled task bootloader — pulse\nplugin-version: 4.2.0\n..."},
-        {"taskId": "cleanup", "prompt": "# Command Room — weekly cleanup..."},
+        {"taskId": "maintenance", "prompt": "# Command Room — maintenance..."},
     ]
     findings = tw.check_prompt_versions(recs, "4.4.0")
     by = {f["task"]: f for f in findings}
     check("current stamp is silent", "inbox" not in by, repr(findings))
     check("stale stamp is flagged", by.get("pulse", {}).get("stale") is True, repr(findings))
-    check("unstamped legacy prompt is informational, not stale",
-          by.get("cleanup", {}).get("stamped") is False and by["cleanup"]["stale"] is False)
+    check("unstamped silent prompt is informational, not stale",
+          by.get("maintenance", {}).get("stamped") is False and by["maintenance"]["stale"] is False)
 
     print("== registry invariants")
     check("every SILENT_TASKS entry has a DEFAULT_SCHEDULES row",
           all(t in DEFAULT_SCHEDULES for t in SILENT_TASKS), repr(sorted(SILENT_TASKS)))
     check("every enabled default task has a receipt spec",
           all(t in tw.RECEIPT_SPECS for t in DEFAULT_SCHEDULES), repr(sorted(DEFAULT_SCHEDULES)))
+    from maintenance_dispatcher import MAINTENANCE_JOBS
+    check("every maintenance job has a receipt spec (job freshness readable)",
+          all(t in tw.RECEIPT_SPECS for t in MAINTENANCE_JOBS), repr(sorted(MAINTENANCE_JOBS)))
 
     print()
     if FAILURES:

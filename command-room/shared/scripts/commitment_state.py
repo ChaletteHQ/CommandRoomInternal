@@ -65,6 +65,7 @@ I/O lives in the explicitly-named `commitment_counts` /
 from __future__ import annotations
 
 import datetime
+import re
 import sys
 from typing import Any, Iterable, Optional
 
@@ -132,6 +133,55 @@ def commitment_kind(ev: dict) -> str:
     d = ev.get("data") or {}
     kind = d.get("kind")
     return kind if isinstance(kind, str) and kind else KIND_DEFAULT
+
+
+def later_route(ev: dict, user_person_id) -> str:
+    """t3 FB-3 (M ruling 2026-07-16): where a row's 'Later…' click lands.
+
+    Returns "defer" when the item is the user's own (owner_id == the primary
+    user — a due-date shift is meaningful, dispatch writes commitment_updated
+    with data.new_due) and "snooze" for everything else (owed-to-you /
+    unowned / visibility-only — shifting a date the counterparty owns would
+    rewrite THEIR commitment from a view-management click; the truthful
+    action is a chat_dismissal carrying data.snooze_until via the mute
+    ledger: the item stays open and simply stops rendering until the date).
+
+    Same ownership test count_commitments uses for the you-owe bucket. An
+    unresolvable primary user (None) degrades to "snooze" — never mutate a
+    due date on an item we can't prove is the user's own.
+    """
+    owner = _commitment_field(ev, "owner_id")
+    if owner and user_person_id and owner == user_person_id:
+        return "defer"
+    return "snooze"
+
+
+def parse_later_when(text, now_iso: str):
+    """Deterministic slice of the 'Later…' when-input (t3 FB-3): a bare
+    number of days ("5", "5 days", "5d") or an ISO date ("2026-08-01",
+    full timestamps accepted). Returns the target date as an ISO date
+    string, or None when the text needs the orchestrator's natural-language
+    date parsing ("friday", "next week") — None is a hand-off, not an error.
+
+    A number parses as now + N days; 0 and negatives are rejected (None) so
+    a typo like "-3" falls through to the NL layer's clearer error surface.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    today = _parse_date(now_iso)
+    if today is None:
+        return None
+    s = text.strip().lower()
+    m = re.fullmatch(r"(\d{1,3})\s*(?:d|day|days)?", s)
+    if m:
+        days = int(m.group(1))
+        if days <= 0:
+            return None
+        return (today + datetime.timedelta(days=days)).isoformat()
+    d = _parse_date(text.strip())
+    if d is not None:
+        return d.isoformat()
+    return None
 
 
 def _within_recent_window(activity_iso: Optional[str], now_iso: str,

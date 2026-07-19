@@ -64,7 +64,8 @@ class DuplicateEngagementError(Exception):
 
 
 def _now_iso() -> str:
-    return datetime.datetime.now().replace(microsecond=0).isoformat()
+    # FS-03: UTC-aware, not naive local (the F-15 naive-local-clock bug class).
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _entities_path(ws: Path) -> Path:
@@ -133,7 +134,7 @@ def _log_event(ws: Path, event_type: str, record: dict, source_skill: str, befor
     if before is not None:
         data["before"] = before
     atomic_append_jsonl(_events_path(ws), [{
-        "ts": _now_iso(),
+        # FS-03: OMIT ts — the append gate stamps it UTC-aware.
         "type": event_type,
         "source_skill": source_skill,
         "data": data,

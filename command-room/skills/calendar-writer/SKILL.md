@@ -109,7 +109,7 @@ Build a draft agenda by pulling:
 **Critical:** the calendar event is NOT created until the user explicitly clicks `send` via apply-choices. Per M's 2026-05-20 feedback #3, calendar-writer must confirm event details and get approval before writing to Google Calendar — no silent writes. The widget surfaces every field the user might want to edit (time, attendees, subject, body) so revisions happen in-place rather than requiring a regenerate.
 
 ```python
-from chat_output_renderer import render_chat_output_widget, validate_rendered_widget
+from widget_transport import render_and_persist
 
 data_view = {
     "widget_mode": "all_batch_widget",
@@ -146,9 +146,12 @@ data_view = {
         }],
     }],
 }
-html = render_chat_output_widget(data_view, wrapper="fragment")
-validate_rendered_widget(html)
-# Post html via mcp__visualize__show_widget. STOP. Wait for user's apply-choices reply.
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="calendar-writer")
+# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport; validators fire inside the call).
+# STOP. Wait for the user's apply-choices reply.
 ```
 
 The widget's `edit then send` action exposes the multi-field input (To / Subject / Body / Time / Duration / Location). The user can swap the time, drop attendees, edit the agenda, change the title — all in place. The Calendar MCP write doesn't fire until the user confirms via Apply.

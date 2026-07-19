@@ -56,6 +56,7 @@ Every skill that *produces* commitment events MUST follow this schema. Every ski
 | `status` | yes | `"open"` (default) or `"overdue"` (if due date is in the past at write time). Producers should compute `"overdue"` based on `now - due > 0`. |
 | `source_event_seq` | yes | The `seq` of the parent event (meeting / interaction / etc.) that this commitment was extracted from. Lets readers trace back to the source. |
 | `source_ref` | optional | Connector-scoped id of the underlying artifact: `granola:<meeting_id>`, `gmail:<message_id>`, `slack:<permalink>`. Used by `scan-for-commitments` for dedup on re-scan. |
+| `origin` | REQUIRED AT CAPTURE (connector-agnostic-v1, ACCOUNT_SCOPE §4a) | `"connector"` when the commitment was extracted from a connector read (inbox/sent/Slack/meeting scan — the code builders `sent_capture`/`slack_capture`/`meeting_capture`/`capture_gate` promote stamp it automatically); `"user_stated"` when the user stated it in chat ("I'll do X", "remind me to…"). Drives the account-scope wall: connector-origin is STRICT (provenance required + scope-checked); user_stated is exempt. Absent = legacy (provider-sniff scope check + a stderr warning) — new producers MUST stamp it. |
 
 ### Optional fields inside `data`
 
@@ -181,10 +182,23 @@ stays in history (append-only, no rewrite). Prep context
 parties but never auto-promotes — a weekly recurring meeting must not
 re-create the confirm-row volume the gate removed.
 
+**Expiry (HYG1 — derive-on-read, no scheduler):** an observed item that is
+older than `capture_gate.OBSERVED_EXPIRY_DAYS` (30) and was never promoted is
+EXPIRED: it stops counting in `observed_counts` (which reports it under a
+separate `expired` field for the audit line), stops corroborating
+(`find_corroborations` skips it — a stale observation must not promote off a
+fresh event), refuses promotion (`promote_observed` returns not-ok with the
+plain reason; re-capture from a current mention if it's still real), and
+never resurfaces in prep context. Promotion is permanent — an item promoted
+while live is unaffected by its observed source aging. The event itself is
+NEVER deleted (append-only doctrine); expired items stay in the log and stay
+searchable via transcript-search.
+
 **Audit affordance:** the weekly cleanup note carries one line — "N items set
 aside this week — review" — backed by `capture_gate.observed_counts(root,
-since_ts=<7 days ago>)`. A filter whose rejects are cheaply inspectable is a
-filter the user can trust.
+since_ts=<7 days ago>)`, which counts LIVE items only (expired items report
+separately and never inflate the sentence). A filter whose rejects are
+cheaply inspectable is a filter the user can trust.
 
 **Verb-driven tuning (consent, never silent):** Not-mine/Drop signals already
 in the log (`commitment_resolved` with a dropped/not-mine resolution,

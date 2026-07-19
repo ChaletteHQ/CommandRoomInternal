@@ -1,0 +1,27 @@
+{
+ "version": "4.8.0",
+ "headline": "Command Room now tracks your deals — and its background upkeep got simpler and more reliable.",
+ "items": [
+  {
+   "id": "v480_announce_deal_tracking",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Command Room now tracks deals. Say 'new deal [name] with [company], $40k' to open one, 'show my pipeline' for the full picture (totals, what's closing this month, what's gone quiet), 'move [deal] to negotiating' as it progresses, and 'mark [deal] won' or 'mark [deal] lost — [reason]' to close it. If a prospect signs, just say '[Company] signed' — the deal closes as won and they become a client in the same breath. Your morning brief will also quietly flag a deal that's been silent too long.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v480_reregister_maintenance",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "The five background upkeep tasks (sent-mail reconcile, chat sweep, weekly cleanup, weekly insights, monthly report) now run as one consolidated maintenance task that keeps its own ledger of what ran and what's owed — if your machine is closed when something was scheduled, it catches up at the next opportunity instead of silently skipping. To switch over, say `set up command room schedules` once — it takes about a minute and retires the five old tasks automatically.",
+   "action": "instruct_user"
+  },
+  {
+   "id": "v480_announce_hygiene",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "A few quiet improvements: when you send one email to some (but not all) people waiting on the same thing, that partial delivery is now recorded per person and the item stays open until everyone has it; casual observations that never got confirmed stop counting after 30 days (still searchable, just not cluttering your lists); and if a background task ever fails outright, your health check now says so in plain terms instead of staying silent.",
+   "action": "announce_only"
+  }
+ ]
+}

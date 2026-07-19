@@ -68,8 +68,12 @@ FORBIDDEN_NAME_PATTERNS = [
     r"pe-ai\.io",
     r"[Mm]isuma",
     r"PE AI Venture",
-    # v3.12.1 — surfaced by the 2026-05-20 broader sanitization sweep
-    r"Davidov",
+    # v3.12.1 — surfaced by the 2026-05-20 broader sanitization sweep.
+    # Case-insensitive since the HYG1 second-eyes review (2026-07-13): the
+    # hostname "MDAVIDOV-PC" sat in RECEIPT_CONTRACT.md and a health-truth
+    # fixture for weeks because the case-sensitive pattern only matched
+    # "Davidov". Hostnames embed the surname in caps — match any casing.
+    r"(?i)davidov",
     r"Spaeth",
     r"Dent Mechanic",
     r"Bedford",
@@ -82,6 +86,11 @@ FORBIDDEN_NAME_PATTERNS = [
     r"a-zbus",
     r"Smittipatana",
     r"Bluhm",
+    # HYG1 second-eyes review (2026-07-13): real collaborator/contact full
+    # names had landed in test fixtures via real-dogfood replay shapes
+    # (F-44/F-60). Fixture SHAPE stays real; names are placeholders.
+    r"Jewett",
+    r"\bBurg\b",
 ]
 
 # Structural layer (v3.6.3). The allowlist of email domains a plugin-source
@@ -215,6 +224,11 @@ COMMON_FIRST_NAMES = frozenset({
     # dictionary anyway.
     "Bailey", "Brett", "Reed", "Pierce", "Sarah", "Philippe", "Jonathan",
     "Matthew", "Daniel", "David", "Lyn", "Janet", "Sarah",
+    # HYG1 second-eyes review (2026-07-13): "Erick" (the k-spelling) slipped
+    # through every prior sweep because only "Eric" was in the dictionary;
+    # same for "Michele" (one l) vs "Michelle". Real workspace names — both
+    # observed leaking into shipped examples.
+    "Erick", "Michele",
 })
 
 

@@ -163,8 +163,10 @@ def render_all_fixture_widgets():
     return htmls
 
 
-BUTTON_LABEL_RE = re.compile(
-    r'<button class="cr-action"[^>]*>([^<]*)</button>'
+# T2.2 row diet — verbs render as <option>s inside the row dropdown;
+# footer buttons are unchanged. The label contract is identical.
+OPTION_LABEL_RE = re.compile(
+    r'<option value="[^"]+"[^>]*>([^<]*)</option>'
 )
 FOOTER_BUTTON_RE = re.compile(
     r'<button class="cr-btn-(?:apply|secondary)"[^>]*>([^<]*)</button>'
@@ -205,7 +207,7 @@ def main() -> int:
     expected = {
         "resolved": "Done",
         "mark done": "Done",
-        "push to [date]": "Defer",
+        "push to [date]": "Later…",  # t3 FB-3 — the merged Defer/Snooze option
         "skip": "Snooze (1 day)",
         "skip all": "Snooze rest (1 day)",
         "snooze 3d": "Snooze (3 days)",
@@ -214,7 +216,7 @@ def main() -> int:
         "make task": "Make task",
         "promote": "Make it a commitment",
         "reminder done": "Done",
-        "reminder push [date]": "Defer",
+        "reminder push [date]": "Later…",  # t3 FB-3 — lockstep with the commitment lane
         "reminder keep": "Keep",
     }
     for aid, want in expected.items():
@@ -243,14 +245,14 @@ def main() -> int:
         validate_rendered_widget(h) is None for h in htmls))
     seen_labels = set()
     for h in htmls:
-        seen_labels.update(m.strip() for m in BUTTON_LABEL_RE.findall(h))
+        seen_labels.update(m.strip() for m in OPTION_LABEL_RE.findall(h))
         seen_labels.update(m.strip() for m in FOOTER_BUTTON_RE.findall(h))
     check("fixture coverage: labels were extracted", len(seen_labels) > 20,
           f"only {len(seen_labels)}")
     for legacy in sorted(LEGACY_DISPLAY_LABELS):
-        check(f"legacy label {legacy!r} absent from every rendered button",
+        check(f"legacy label {legacy!r} absent from every rendered verb option",
               legacy not in seen_labels)
-    for want in ("Done", "Defer", "Snooze (1 day)", "Never track (permanent)",
+    for want in ("Done", "Later…", "Snooze (1 day)", "Never track (permanent)",
                  "Not relevant (60 days)", "Make it a commitment", "Keep",
                  "Snooze rest (1 day)"):
         check(f"taxonomy label {want!r} rendered somewhere", want in seen_labels)
@@ -259,16 +261,19 @@ def main() -> int:
     print("[4] F-58 — pressed-state + live counter enforced structurally")
     # ------------------------------------------------------------------
     html = htmls[0]
-    check("pressed-state CSS present", "button.cr-action.cr-selected" in html)
+    # T2.2 — the armed-state contract, ported to dropdowns: a non-empty
+    # selection is visibly distinct (.cr-select-armed), enforced structurally
+    # by validate_rendered_widget exactly as .cr-selected was for buttons.
+    check("armed-state CSS present", "select.cr-action-select.cr-select-armed" in html)
     check("counter reads 'of N selected'", "of 3 selected" in html)
     check("counter is live (id=cr-count)", 'id="cr-count"' in html)
     style_stripped = re.sub(r"<style>.*?</style>", "<style>.x{}</style>", html,
                             flags=re.S)
     try:
         validate_rendered_widget(style_stripped)
-        check("HTML without pressed-state CSS is rejected", False)
+        check("HTML without armed-state CSS is rejected", False)
     except WidgetFeedbackContractError:
-        check("HTML without pressed-state CSS is rejected", True)
+        check("HTML without armed-state CSS is rejected", True)
     try:
         validate_rendered_widget(html.replace('id="cr-count"', 'id="x"'))
         check("HTML without the counter is rejected", False)
@@ -286,19 +291,19 @@ def main() -> int:
           "add email then send" in REQUIRED_INPUT_ACTION_IDS)
     check("required_input_thing names the date",
           required_input_thing("push to [date]") == "date")
-    # The rendered triage widget: Defer button flagged required, wrapper
+    # The rendered triage widget: Defer option flagged required, wrapper
     # carries the baked reason element, footer carries the Apply-hold line.
-    defer_btn = re.search(
-        r'<button class="cr-action"[^>]*data-action="push to \[date\]"[^>]*>',
+    defer_opt = re.search(
+        r'<option value="push to \[date\]"[^>]*>',
         html)
-    check("Defer button rendered", defer_btn is not None)
-    if defer_btn:
-        check("Defer button carries data-input-required=1",
-              'data-input-required="1"' in defer_btn.group(0))
-        check("Defer button names the missing thing (date)",
-              'data-input-thing="date"' in defer_btn.group(0))
+    check("Defer option rendered", defer_opt is not None)
+    if defer_opt:
+        check("Defer option carries data-input-required=1",
+              'data-input-required="1"' in defer_opt.group(0))
+        check("Defer option names the missing thing (date)",
+              'data-input-thing="date"' in defer_opt.group(0))
     check("inline reason element baked into the wrapper",
-          "Defer needs a date" in html)
+          "Later… needs a date" in html)
     check("footer Apply-hold reason line present",
           'id="cr-apply-reason"' in html)
     check("JS validates before Apply (crValidate wired)",
@@ -317,15 +322,18 @@ def main() -> int:
         check("HTML with required inputs but no inline reason is rejected", False)
     except WidgetFeedbackContractError:
         check("HTML with required inputs but no inline reason is rejected", True)
-    # add email then send now renders its promised input (dead-toggle fix)
-    email_html = htmls[1]
+    # add email then send now renders its promised input (dead-toggle fix).
+    # T2.2 markup: the option carries data-input-type="email-text" (default
+    # attrs are omitted, so a truly input-less verb has NO data-input-type).
+    email_opt = re.search(
+        r'<option value="add email then send"[^>]*>',
+        _render([{ "n": 1, "name": "No address",
+                   "actions": ["add email then send", "skip"]}],
+                source="commitments"))
     check("add email then send is no longer input-less",
-          'data-input-type="none"' not in re.search(
-              r'<button class="cr-action"[^>]*data-action="add email then send"[^>]*>',
-              _render([{ "n": 1, "name": "No address",
-                         "actions": ["add email then send", "skip"]}],
-                      source="commitments")).group(0))
-    check("email fixture rendered", isinstance(email_html, str))
+          email_opt is not None
+          and 'data-input-type="email-text"' in email_opt.group(0))
+    check("email fixture rendered", isinstance(htmls[1], str))
 
     # ------------------------------------------------------------------
     print("[6] needs-confirm rows say WHY the verb set is reduced (F-59)")

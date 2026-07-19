@@ -100,7 +100,7 @@ def _f46_commitment(kind: str, owner: str, title: str, due: str, person_ids: lis
 F46_COMMITMENTS = [
     _f46_commitment("promise", "person_002",
                     "set up dedicated shared folder for weekly SOD submissions",
-                    "2026-07-20", ["person_002", "person_001"]),
+                    "2026-07-20", ["person_002", "person_001"]),  # DATE_GUARD_OK: writer-parity pass-through data; status is fixture-set, not derived
     _f46_commitment("task", "person_002",
                     "refine SOD dashboard and summary format", "", ["person_002"]),
     _f46_commitment("task", "person_002",
@@ -112,7 +112,7 @@ F46_COMMITMENTS = [
                     "", ["person_001", "person_002"]),
     _f46_commitment("scheduling", "person_001",
                     "next working session — Tue Jul 21, 8:00 AM PT",
-                    "2026-07-21", ["person_001", "person_002"]),
+                    "2026-07-21", ["person_001", "person_002"]),  # DATE_GUARD_OK: writer-parity pass-through data; status is fixture-set, not derived
 ]
 
 

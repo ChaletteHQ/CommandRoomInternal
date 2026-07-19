@@ -14,7 +14,7 @@ This applies to FIRST FIRES and to RE-RUNS ("regenerate with real data" / "show 
 
 ### Forbidden — zero tolerance
 
-1. **No writing the widget HTML or any rendered chat output to disk.** Not to `_hq/scheduled_outputs/`, not to `_hq/insights/`, not to `_hq/staging/`, not anywhere. The widget surface is `show_widget` ONLY.
+1. **No HAND-writing the widget HTML or any rendered chat output to disk.** Not to `_hq/scheduled_outputs/`, not to `_hq/insights/`, not to `_hq/staging/`, not anywhere. The widget surface is `show_widget` ONLY. (The ONE sanctioned disk write is the one `widget_transport.render_and_persist` performs itself into `_hq/.system/widgets/` — that file is the validation gate + audit trail; `transport["html"]` is the deliverable relayed as `widget_code`, T2. You never write it by hand and never offer it to the user as a deliverable.)
 
 2. **No narrating what's in the widget.** Phrases like `Regenerated with N items`, `What's in the widget above`, `Total scan results: X persons flagged`, `Files saved to _hq/...`, `Saved the standalone HTML at...`, `5 actionable items` are FORBIDDEN. The user can see the widget. Explaining it duplicates the surface.
 
@@ -26,9 +26,9 @@ This applies to FIRST FIRES and to RE-RUNS ("regenerate with real data" / "show 
 
 6. **Do NOT improvise a "save the output so the user can reopen it later" mode.** The widget is live in chat history. Saving rendered HTML to disk does NOT improve UX — the saved HTML's buttons aren't wired to Cowork's `sendPrompt`, so the artifact is dead on click.
 
-7. **No skipping `show_widget` after a clean validator pass (v2.14.37+).** If `render_chat_output_widget()` returns and `validate_rendered_widget(html)` passes without raising, you MUST call `mcp__visualize__show_widget(html)`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation. The validator pass IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute. The leak-scanner in `validate_chat_output` blocks these improvisation phrases at the renderer's Gate 3, but never produce them in the first place.
+7. **No skipping `show_widget` after a clean transport call (transport-updated T2).** If `widget_transport.render_and_persist()` returns without raising (it runs the full validator chain internally), you MUST call `mcp__visualize__show_widget` with `transport["html"]` as `widget_code` (the persisted page's validated bytes, verbatim). Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those conditions exist on this path, they are pure agent improvisation, and pagination (`page=N`, ~10 rows) keeps every page inside the relay budget. The clean transport call IS the contract — the page ships. If `show_widget` itself errors or is unavailable, SAY SO in plain English and STOP: surface the error string verbatim. Do not paraphrase, do not improvise a hand-built or compact widget, do not "summarize what the widget would have shown," do not chat-list the items as a substitute (the FS-08 silent-improvisation failure).
 
-8. **No markdown lists as a substitute for widget rendering (v2.14.37+).** If a user follow-up asks you to "surface past commitments" / "show what's open" / "list the X" — any kind of "render these items in chat" ask — the path is `render_chat_output_widget` → `validate_rendered_widget` → `show_widget`. Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust filter threshold to surface previously-noise-filtered items as `tracked_items`).
+8. **No markdown lists as a substitute for widget rendering (v2.14.37+).** If a user follow-up asks you to "surface past commitments" / "show what's open" / "list the X" — any kind of "render these items in chat" ask — the path is `render_and_persist` → `show_widget` with `transport["html"]` as `widget_code`. Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust filter threshold to surface previously-noise-filtered items as `tracked_items`).
 
 ### Self-check before posting anything
 
@@ -40,7 +40,7 @@ If you're about to write text in chat that comes AFTER a `show_widget` call, ask
 
 This file covers the **post-widget output surface** rules — what can / cannot follow `show_widget`. It does NOT cover:
 
-- The ZERO-MANIPULATION CONTRACT for the renderer output bytes (lives in each orchestrator's Phase 9 / equivalent — that's about what happens BETWEEN `render_chat_output_widget` and `show_widget`).
+- The ZERO-MANIPULATION CONTRACT for the renderer output bytes (lives in each orchestrator's Phase 9 / equivalent — that's about what happens BETWEEN the `render_and_persist` transport call and `show_widget`).
 - The canonical-action validator rules (lives in `chat_output_renderer.py::CANONICAL_ACTIONS`).
 - The leak-scanner pattern list (lives in `chat_output_renderer.py::_LEAK_PATTERNS`).
 

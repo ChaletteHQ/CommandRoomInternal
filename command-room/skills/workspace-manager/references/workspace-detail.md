@@ -62,14 +62,14 @@ The MASTER_TRACKER.md file lives at `[WORKSPACE_ROOT]/_hq/MASTER_TRACKER.md` and
 
 ### Gmail Search
 
-When checking for new emails, construct searches by combining (these reads are **name-lookup orientation only** per `references/SOURCE_OF_TRUTH.md` — used to construct Gmail query strings, not to determine "is this thread outstanding"):
+When checking for new emails, construct searches by combining (these reads are **name-lookup orientation only** per `references/SOURCE_OF_TRUTH.md` — used to build the search intent, not to determine "is this thread outstanding"):
 
 - **From contacts:** sender names / emails from PEOPLE.md (Tier 2 view, fine for name lookup)
 - **By project:** project name / key terms from MASTER_TRACKER.md (Tier 2 view, fine for name lookup)
-- **By date:** "since" modifier (Gmail search syntax: `after:YYYY-MM-DD`)
+- **By date:** a "since" floor (the `after` intent key, compiled per provider by `connector_adapters/mail.py`)
 - **By status:** for "is this blocker resolved" decisions, derive from `_hq/data/events.jsonl` — find `commitment_resolved` / `thread_resolved` events scoped to the relevant thread. The "Waiting On" row in MASTER_TRACKER is the search-term source; the resolution decision derives from events.jsonl per the canonical reader `cru_match.load_open_commitments`.
 
-**Example search:** `from:rae@example.com OR subject:Acme after:2026-04-08`
+**Example search intent:** `{"any_of": [{"from": "rae@example.com"}, {"subject": "Acme"}], "after": "2026-04-08"}` — compiled per provider by `connector_adapters/mail.py::compile_search`; never a hardcoded operator string.
 
 Keep results concise. If there are multiple emails, group by sender and summarize the thread in 1-2 lines. Don't quote full email bodies — just note: "Skyler sent the vendor quotes" or "Skyler's waiting on your feedback."
 

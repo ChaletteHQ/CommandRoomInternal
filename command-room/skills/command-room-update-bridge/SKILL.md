@@ -32,10 +32,10 @@ It is **conservative by design.** It does not modify existing data, does not run
 
 1. **Show before do.** Never auto-install. Always list what's missing first, get one confirmation, then install.
 2. **Don't deprecate user choice.** If the user has Command Atlas, Commitment Cockpit, or Pay Attention To pinned (artifacts retired in v2.7.9 / v3.11.0 from the defaults), do NOT auto-uninstall them. They're harmless. Optionally surface them as "from an older version and no longer updated — say 'unpin [name]' if you don't want them."
-3. **Idempotent.** Re-running this skill after a successful update detects the prior `plugin_update` event and either says "you're up to date" or surfaces the next pending update. Migrations the user explicitly declined are NOT re-prompted on subsequent runs (a `workspace_migration_skipped` event prevents the loop).
+3. **Idempotent.** Re-running this skill after a successful update detects the prior `plugin_update` event and either says "you're up to date" or surfaces the next pending update. Migrations the user explicitly declined are NOT re-prompted on subsequent runs (a `workspace_migration_skipped` event prevents the loop — enforced mechanically by the `shared/scripts/migration_adjudication.py` gate in Phase 1 detection, keyed on the migration id, never on marker phrases or log prose; FB-5).
 4. **Single confirmation for the install batch, calibration questions for migrations.** The artifact install + migration list goes through one parent confirmation. Migrations that need calibration (Yes/Sometimes/No questions) ask their own question after the parent confirmation — not a duplicate "are you sure?" prompt, but the actual calibration content.
 5. **Cowork-only for the artifact installs.** Mirror the same graceful degradation as `command-room-onboarding` Phase 1a's silent Quick Commands install: if `mcp__cowork__create_artifact` is unavailable, surface the chat-based fallback and skip artifact installs. Workspace migrations work fine without Cowork — keep applying them.
-6. **Surgical edits only on workspace files.** Phase 4.5 migrations append to existing sections; never regenerate, never reorder, never touch unrelated sections. If the target structure is missing (e.g., no `## Preferences` heading in CLAUDE.md), skip with a clear message — don't try to recover.
+6. **Surgical edits only on workspace files.** Phase 4.5 migrations append to existing sections; never regenerate, never reorder, never touch unrelated sections. If the target structure is missing (e.g., no `## Preferences` heading in CLAUDE.md), skip with a clear message — don't try to recover. (One sanctioned exception: `claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, and `claude_md_research_rule_v1` may append a whole NEW `## Session Rules` section at end of file when the heading is missing — appending a new section can't mangle existing structure, so it stays surgical/additive. See those migrations' Phase 4.5 entries.)
 7. **NEVER improvise an artifact. (Added v2.7.10 — hotfix.)** The canonical templates shipped WITH this plugin at `skills/enable-workspace-map/references/orgs-map-artifact.html` and `skills/enable-quick-commands/references/quick-commands-artifact.html` are the **only** source. If `mcp__cowork__create_artifact` fails for any reason — payload size limit, tool unavailable, tool error, truncated return, encoding mismatch — DO NOT generate a substitute. DO NOT hand-roll a "compact equivalent." DO NOT inline a different HTML page. DO NOT compress, summarize, or simplify the template on the fly. Surface the failure verbatim to the user, log `artifact_install_failed` with the exact error, and STOP. Hand-rolled substitutes shipped three independent bugs to a real client install on 2026-04-26 (see references/HISTORY.md). Improvising is now a forbidden behavior, not a fallback. If the canonical template is genuinely too large for the tool, that is a packaging problem to fix upstream in the plugin source repo, not a problem to route around in this skill.
 8. **Verify every artifact install before logging success. (Added v2.7.10 — hotfix.)** After `create_artifact` returns, sanity-check the install before writing the `artifact_installed` event:
    - **Size check:** Read back the installed artifact byte length. It must be ≥ 80% of the source template's byte length on disk. (Orgs Map source ≈ 30 KB → installed ≥ 24 KB. Quick Commands source size varies → installed ≥ 80% of source.) Anything smaller is a stub or truncation.
@@ -156,7 +156,7 @@ WORKSPACE_MIGRATIONS = [
   {
     id: "canonical_edit_surface_claude_md",                    // v3.13.0+; markers extended for the cr1 model (2026-06-22)
     target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
-    markers: ["plugin-source-v3", "commandroom1"],             // stale-marker semantics: ANY present means migration is PENDING (inverted vs. above)
+    markers: ["plugin-source-v3", "commandroom1"],             // stale-marker semantics: any ACTIONABLE hit means migration is PENDING (F-04 classification in detection logic below — prose mentions are advisory-only)
     marker_semantics: "stale_marker_pending",                  // see detection logic below
     type: "announce_with_replacement_block",                   // show user the replacement content for copy-paste
     blocking: false
@@ -164,7 +164,7 @@ WORKSPACE_MIGRATIONS = [
   {
     id: "canonical_edit_surface_infrastructure_md",            // v3.13.0+; markers extended for the cr1 model (2026-06-22)
     target_file: "[WORKSPACE_ROOT]/_hq/INFRASTRUCTURE.md",
-    markers: ["plugin-source-v3", "commandroom1"],             // stale-marker semantics: ANY present means migration is PENDING
+    markers: ["plugin-source-v3", "commandroom1"],             // stale-marker semantics: any ACTIONABLE hit means migration is PENDING (F-04 — prose mentions are advisory-only)
     marker_semantics: "stale_marker_pending",
     type: "announce_with_replacement_block",
     blocking: false
@@ -209,15 +209,89 @@ WORKSPACE_MIGRATIONS = [
     marker: "render_master_tracker.py",                        // new-renderer signature in the auto-generated header
     type: "skill_invocation",                                  // default semantics: marker absent → migration pending → run render_master_tracker.regenerate
     blocking: false
+  },
+  {
+    id: "connector_agnostic_account_map_v1",                   // connector-agnostic-v1 (N1 — additive, NEVER blocking)
+    target_file: "[WORKSPACE_ROOT]/_hq/data/entities.json",
+    marker: "workspace.accounts",                              // JSON-load check: workspace.accounts key exists (even empty)
+    type: "nudge_only",                                        // NEW semantics — see below; never a blocking prompt
+    blocking: false
+  },
+  {
+    id: "email_exclusion_rules_to_sender_scope_v1",            // connector-agnostic-v1 (the PASSIVE_CAPTURE §Privacy migration)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "migrated to sender scope",                        // note the migration leaves in place next to the prose rules
+    type: "skill_invocation",
+    blocking: false,
+    only_if: "claude_md_has_email_exclusion_rules"             // synthetic check: the prose section exists
+  },
+  {
+    id: "claude_md_email_rule_v1",                             // SPEC EW1 (mid-turn email-draft bypass — additive, never blocking)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "goes through the **email-writer** skill, end to end",  // the EW1 idempotency phrase (D3)
+    type: "silent_append",                                     // no calibration question — product-integrity default (the Phase 4.7 silent-add class; Rule 28: don't interrogate customers about defaults)
+    blocking: false,
+    apply_once: true                                           // see detection logic below — a deliberate deletion is respected, never re-added
+  },
+  {
+    id: "draft_posture_queue_on_click_v1",                     // FS-11 (M ruling 2026-07-15 — queue-on-click carried to client workspaces)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "nothing touches your mail drafts until you click",  // the queue-on-click idempotency phrase
+    type: "silent_append",                                     // product-integrity default; no calibration question
+    blocking: false,
+    apply_once: true                                           // a deliberate deletion is respected, never re-added
+  },
+  {
+    id: "claude_md_widget_rule_v1",                            // T2.2 (RV-3 PROMOTE-BLOCKING follow-up — the widget session rules that closed the F2 gate live)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "passed to show_widget",                           // the widget-rule idempotency phrase (lives in appended bullet 1; the two bullets append together, so one marker gates both)
+    type: "silent_append",                                     // no calibration question — product-integrity default (mirror of claude_md_email_rule_v1)
+    blocking: false,
+    apply_once: true                                           // a deliberate deletion is respected, never re-added
+  },
+  {
+    id: "claude_md_research_rule_v1",                          // RSR1 (research routing loss to the built-in deep-research skill — additive, never blocking)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "never the generic built-in deep-research",        // the RSR1 idempotency phrase (lives in appended bullet 1; the two bullets append together, so one marker gates both)
+    type: "silent_append",                                     // no calibration question — product-integrity default (mirror of claude_md_email_rule_v1)
+    blocking: false,
+    apply_once: true                                           // a deliberate deletion is respected, never re-added
+  },
+  {
+    id: "staff_meeting_cadence_mwf_v1",                        // FB-20 (M ruling 2026-07-16 — the brief went read-only; the staff meeting is now the sole adjudication surface)
+    target_file: "[WORKSPACE_ROOT]/_hq/data/entities.json",    // workspace.schedule_config["staff-meeting"]
+    marker: null,                                              // NOT marker-gated — a schedule is live config, not appended text; the adjudication gate below is the ONLY gate (see the section)
+    type: "calibration_question",                              // PROPOSE-AND-CONFIRM. NEVER silent_append: a schedule is the customer's, not ours
+    blocking: false,
+    apply_once: true                                           // one ask, ever — answered or declined, it never asks twice
   }
 ]
 ```
 
+**`connector_agnostic_account_map_v1` (N1) — additive, never a prompt.** Detection: JSON-load entities.json; pending iff `workspace.accounts` is absent entirely. Apply: seed an EMPTY map — `workspace.accounts = []` — via the delegated setter path (write through `connector_config.py` conventions / the locked entities writer; update-bridge is a declared delegate, NEVER a raw editor of the block), and emit ONE nudge line in the update summary: *"New: you can tell me which email accounts are business vs personal — say 'what accounts do I have' to see them, or '[address] is my personal account' to wall one off."* **An empty map is a NO-OP by design (R4)** — the live workspace behaves byte-identically until the user classifies an account. NEVER ask a blocking classification question from the bridge; classification is the user's move (workspace-manager verbs) or onboarding's account-enumeration gate on fresh installs.
+
+**`email_exclusion_rules_to_sender_scope_v1` — the structured-scope migration** (PASSIVE_CAPTURE § Privacy Surface): if the workspace CLAUDE.md carries an `email_exclusion_rules` prose list, convert each SENDER-shaped rule (an address or domain-address) to `connector_config.set_sender_scope_override(root, <business-primary account — or the sole account>, <sender>, write_to_business=False, reason="migrated from email_exclusion_rules")`. Append a one-line `<!-- migrated to sender scope YYYY-MM-DD -->` note next to the prose section — NEVER delete the user's prose (readers honor both during the transition; conservative wins). Pattern-shaped rules (subject regexes) stay prose and are skipped with a note in the summary. Skip the whole migration silently when the account map is empty (nothing to key overrides to yet — re-checked on the next bridge run after classification).
+
 Detection logic per migration:
+- **Adjudication gate runs FIRST — mechanized, keyed on migration id, NEVER on marker phrases (FB-5, T3).** Before any marker/validator check, run the durable adjudication lookup ONCE for the full candidate id list:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+python3 shared/scripts/migration_adjudication.py "$WORKSPACE" <migration_id_1> <migration_id_2> ...
+```
+
+  It prints one JSON record per id carrying its adjudication verdict — `applied`, `skipped`, or `unadjudicated` — plus the logged reason and the boolean `suppressed` flag. Any id whose record has `suppressed` true is REMOVED from the candidate list before its marker/validator check even runs — a logged adjudication (`workspace_migration_applied` OR `workspace_migration_skipped`) is durable, and marker absence can never resurrect it. The helper folds both events from events.jsonl (latest event per id wins; reads both the top-level and `data`-nested `migration_id` shapes) and treats only the documented deliberately-re-surface skip reasons (`user_deferred`, `awaiting_manual_apply`, `structural_mismatch`, `structural_mismatch_manual_fallback`) as non-suppressing — every other skip reason, including operator-authored free-form ones, suppresses. Do NOT decide "already adjudicated?" by grepping log lines, matching prose, or re-deriving it per migration — the FB-5 live bug re-proposed a skipped migration on every run forever because the gate consulted marker phrases instead of the event record. Two behaviors stay with their owning per-type logic, unchanged: `stale_marker_pending` migrations still re-surface after a `user_deferred`/`awaiting_manual_apply` skip via the live marker check (the helper already reports those reasons non-suppressing), and the "partially applied" edge case (applied event + marker later removed → confirm before re-adding) applies only to NON-apply-once migrations per the Edge cases section. The `redo workspace migrations` trigger re-runs this same lookup with `--ignore-skips` — which un-suppresses skipped (never applied) ids — that is how a customer opts back in; skip events are never deleted from the append-only log.
 - Read the `target_file`. If it doesn't exist, skip the migration silently (workspace is incomplete — not this skill's problem). EXCEPTION: for `voice_corpus_check`, file-not-found IS the trigger (the migration fires when the file is missing).
 - For string-marker migrations (DEFAULT semantics): search for the `marker` string. If found, migration is already applied — skip.
-- For string-marker migrations with `marker_semantics: "stale_marker_pending"` (INVERTED — canonical-edit-surface migrations): search for EACH string in `markers` (a list; a single `marker` string is treated as a one-item list). If ANY is FOUND, migration is PENDING (file has stale content that needs replacement). If ALL are ABSENT, migration is done or never needed — skip. This is the opposite of the default semantics; explicit `marker_semantics` field is required to use the inverted check (no implicit detection from migration id). The `commandroom1` marker intentionally re-flags files this migration previously "fixed" to the retired Option B text — the current replacement blocks avoid the token so a freshly-migrated file does not re-flag.
-- For migrations with `marker_semantics: "validator_check"` (v3.13.0+ — substrate migrations): the `marker` field is a synthetic name (not searched literally); the bridge runs an inline Python check matching the `only_if` clause. Examples: `only_if: "any_person_record_fails_validation"` → load entities.json, run people_writer._validate_person on every person record, migration pending if ANY raise ValueError. `only_if: "any_org_record_fails_validation"` → same but with org_writer._validate_org. `only_if: "any_person_can_be_attributed"` → run the backfill_org_attribution dry-run logic, migration pending if it would attach at least one person. These checks are cheap (read entities.json once + iterate); use them when the migration's apply-side is non-trivial (a real script run, not a single-string edit).
+- For string-marker migrations with `marker_semantics: "stale_marker_pending"` (INVERTED — canonical-edit-surface migrations): search for EACH string in `markers` (a list; a single `marker` string is treated as a one-item list). If ALL are ABSENT, the migration is done or never needed — skip. If a marker is FOUND, classify EACH hit line before acting (v4.8.1, F-04 — a keyword hit alone is NOT actionable):
+  - **Actionable hit → migration PENDING (full replacement flow):** the token sits in a **path/config context** — part of a filesystem path, git remote, repo slug, or URL (a `marketplaces/<token>/` segment, an `<org>/<token>` remote, a clone/push/install target) — AND the surrounding sentence still **directs the reader there**: names it as the edit surface, the push target, or the source of truth, or otherwise instructs future work against the retired location.
+  - **Advisory hit (keyword-only / prose):** every other occurrence — retirement notes and warnings ("do not edit", "retired", "renamed", "legacy", "frozen", "dead end", "superseded"), history sections, or any sentence whose point is that the location is NOT to be used. A doc that correctly explains the old name was retired is CURRENT, not stale; auto-replacing it would swap a correct, detailed section for a generic block (the F-04 false positive — a well-maintained workspace re-flagged on every bridge run because its docs *documented the retirement*). Path-shaped tokens inside such sentences (a warning that quotes the old path verbatim) are still advisory — context wins over shape.
+  - A file whose hits are ALL advisory produces **NO confirm item and NO replacement block** — at most one summary line: *"Your [file] mentions the retired plugin location in a history note — that's current, no action needed."* Do not log a migration event for advisory-only files; re-classification on future runs is cheap and stays silent-or-one-line.
+  - A file with at least one actionable hit runs the normal `announce_with_replacement_block` flow for that file.
+  - **When unsure which side a hit falls on, classify it advisory and say so** ("looked like a mention, not a live pointer — tell me if that section should still be rewritten"). A wrong auto-replacement destroys correct docs; a wrong advisory costs one sentence.
+
+  This inverted check requires the explicit `marker_semantics` field (no implicit detection from migration id). The markers intentionally re-flag files this migration previously "fixed" to the retired Option B text — the current replacement blocks avoid the marker tokens so a freshly-migrated file does not re-flag.
+- For migrations with `marker_semantics: "validator_check"` (v3.13.0+ — substrate migrations): the `marker` field is a synthetic name (not searched literally); the bridge runs an inline Python check matching the `only_if` clause. Examples: `only_if: "any_person_record_fails_validation"` → load entities.json, run people_writer._validate_person on every person record, migration pending if ANY raise ValueError. `only_if: "any_org_record_fails_validation"` → same but with org_writer._validate_org. **Only a ValueError RAISE counts as a failure** — `_validate_org` also RETURNS a list of advisory FYI strings (e.g. an off-enum `relationship_type` like a legacy `"network"`); a truthy return is NOT a validation failure and must never mark the migration pending (F-05: advisories have no repair rule, so treating them as failures re-opens the pending-forever loop). `only_if: "any_person_can_be_attributed"` → run the backfill_org_attribution dry-run logic, migration pending if it would attach at least one person. These checks are cheap (read entities.json once + iterate); use them when the migration's apply-side is non-trivial (a real script run, not a single-string edit).
 - For JSON-marker migrations (`workspace_shape_question`): JSON-load the file, check if `data["workspace"]["shape"]` exists. Skip if present.
 - For tier-marker migrations: JSON-load the file, check if ANY org in `data["orgs"]` has an explicit `tier` field. Skip if at least one does (assumed user has run org re-classification pass).
 - For `commitment_count` markers (`scan_for_commitments_retro`): scan events.jsonl, count events with `type: "commitment"`. If count ≥ 1, migration already applied (commitments are flowing through normal extraction) — skip. If count is 0 AND the workspace has ≥10 events with `type` in `{"meeting", "interaction", "meeting_processed", "note"}` (signal that meetings/calls have been ingested), the migration is pending — add to list. If 0 commitments AND <10 source events, the workspace is too new to retro-fit; skip silently.
@@ -229,6 +303,8 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from release_remediation_selector import version_lt; print(version_lt('<from_version>', '<threshold>'))"
 # prints True  -> from_version is below the threshold -> the only_if gate PASSES (migration applies)
 ```
+- For `apply_once: true` migrations with a non-null `marker` (`claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, `claude_md_research_rule_v1`, `draft_posture_queue_on_click_v1`): the marker check alone is NOT sufficient. The migration is pending ONLY when the marker string is absent from the target file AND the adjudication gate above reports the id `unadjudicated` — i.e. events.jsonl has NO `workspace_migration_applied` event AND NO suppressing `workspace_migration_skipped` event for this `migration_id`. A prior applied event with the marker now absent means the customer deliberately deleted the appended text — respect that; the bridge never re-adds. A prior skipped event means the operator declined the append — equally durable; never re-propose (the FB-5 live bug: `draft_posture_queue_on_click_v1` was skipped, but this gate only enumerated the applied event, so the skip was invisible and the migration re-proposed on every run). (Contrast with the `stale_marker_pending` migrations above, which deliberately re-surface until fixed.)
+- For `apply_once: true` migrations with `marker: null` (`staff_meeting_cadence_mwf_v1`): there is no text to grep for — the target is live config the customer may legitimately have set to ANY value, so a "does it look applied?" check cannot distinguish "already on Mon/Wed/Fri because we asked" from "on Mon/Wed/Fri because they chose it themselves" from "we asked and they said no." **The adjudication gate is the ONLY gate:** pending iff `migration_adjudication` reports the id `unadjudicated`. Never infer pending-ness from the config's current value — that is precisely how a declined proposal gets re-asked forever (the FB-5 class, and worse here, because re-asking about someone's calendar reads as nagging).
 - If marker check indicates "pending" AND any `only_if` gate passes, add to `pending_workspace_migrations`.
 
 Future migrations append to this list. The skill is forward-compatible: each migration carries its own metadata so new versions don't require touching detection logic.
@@ -237,7 +313,9 @@ Future migrations append to this list. The skill is forward-compatible: each mig
 
 ## Phase 2: Surface what changed
 
-If `missing_defaults` is empty AND `pending_workspace_migrations` is empty AND `pending_release_remediations` (Phase 4.8) is empty AND current version == last installed version → tell the user they're up to date:
+**FS-01 — run the idempotent Phase 4.7 state-gated blocks BEFORE any up-to-date early-exit.** On **full-update intent** (`update command room` / `check for updates` / `install latest` — see the Phase 4.7 intent table), the version-keyed manifest work may short-circuit when `current version == last installed version`, but Phase 4.7's *state-gated* idempotent blocks MUST still run first: the Staff Meeting later-add PROPOSAL (Phase 4.7 §, gated on not-registered + past-M1 + no-prior-proposal), the `SILENT_TASKS` registration assertion (Phase 5.9), the unconditional prompt hash-refresh, **and the post-4.7 orchestrator-rebind heads-up line (v3.14.3+ — surfaced unconditionally at the end of every full-update fire, same-version included; the T2 re-verify found it still missing because this enumeration didn't name it — FS-01 residual)**. These are gated on WORKSPACE STATE, not version, so a same-version re-fire (a stack that shipped without a bump, like a staging re-install) still owes them. The live dogfood took this early-exit and skipped Phase 4.7 entirely — the staff-meeting proposal and the rebind heads-up never surfaced. Only after those state-gated blocks run (surfacing nothing when their gates are already satisfied) may the up-to-date verdict below fire. Clients are unaffected in practice (a promote always bumps the version, so their bridge runs the full path); this bites same-version staging re-fires.
+
+If `missing_defaults` is empty AND `pending_workspace_migrations` is empty AND `pending_release_remediations` (Phase 4.8) is empty AND current version == last installed version AND the full-update Phase 4.7 state-gated blocks surfaced nothing → tell the user they're up to date:
 
 > *"You're all set. Both default dashboards are installed (Workspace Map, Quick Commands), your workspace is current, and there's nothing pending. Nothing to update.*
 >
@@ -419,6 +497,11 @@ If `HEAL_RAN=False` (the log was already clean — nothing to heal), **say nothi
 
 Run after artifact installs. For each migration in `pending_workspace_migrations`:
 
+**Customer-facing copy contract for EVERY migration in this phase (EW2+T, F-02):**
+
+- **Names, never ids.** Any string the customer sees — a calibration question, a confirm-widget item, a dry-run preview line, an update-summary line — describes records by their display name: resolve `canonical_name` from `entities.json` BEFORE composing ("one company record (Acme Co) has an off-schema field", never `org_020`). A record the resolver can't name renders as a plain-English descriptor ("one company record"), still never the internal id. Internal ids (`org_NNN` / `person_NNN` / `project_NNN`), event seqs, and schema field names are validator vocabulary, not customer vocabulary.
+- **Leak scan is mandatory.** Before posting any Phase 4.5 copy (chat text OR widget body), run `chat_output_renderer.scan_for_id_leaks()` over it and rewrite every hit — the entity-ID pattern catches the `org_020` class this rule exists for (a live bridge fire shipped that exact id into the confirm widget). Never post copy the scan flags.
+
 ### Migration: `prompt_restructuring_preference` (v2.7.9)
 
 **Calibration question (same wording as onboarding Phase 3):**
@@ -487,7 +570,7 @@ Narrate completion in one line:
 
 **Handle the answer:**
 
-- **"yes"** / *"go"* / *"sure"* → run the voice-scan flow used by onboarding Phase 1a's workspace build. Pull the last 10+ sent emails via `discover_mail_search_tool()` (`from:me` query, last 30 days, limit 30). Run them through the voice-extraction logic that produces BRAND_VOICE.md (tone, openings, closings, signature moves, banned phrases). Atomic-write `_hq/BRAND_VOICE.md` and `_hq/COMMUNICATION_PROFILE.md`. Append `workspace_migration_applied` event.
+- **"yes"** / *"go"* / *"sure"* → run the voice-scan flow used by onboarding Phase 1a's workspace build. Pull the last 10+ sent emails via `discover_mail_search_tool()` / the seam (the **from-me, last-30-days** intent, compiled per provider by `connector_adapters/mail.py`; limit 30). Run them through the voice-extraction logic that produces BRAND_VOICE.md (tone, openings, closings, signature moves, banned phrases). Atomic-write `_hq/BRAND_VOICE.md` and `_hq/COMMUNICATION_PROFILE.md`. Append `workspace_migration_applied` event.
 - **"not now"** / *"skip"* / *"no"* → log `workspace_migration_skipped` with `reason: "user_declined"`. User can run `seed voice` later if they change their mind.
 
 **Narrate completion in one line:**
@@ -498,7 +581,7 @@ Narrate completion in one line:
 
 ### Migration: `canonical_edit_surface_claude_md` and `canonical_edit_surface_infrastructure_md` (v3.13.0+)
 
-**Trigger gate:** fires if ANY of the stale markers `plugin-source-v3` or `commandroom1` appears anywhere in the target file (`CLAUDE.md` for the first migration, `_hq/INFRASTRUCTURE.md` for the second). Uses the inverted `stale_marker_pending` semantics — presence of a marker means the file has stale content from a retired source-of-truth model: `plugin-source-v3` = the pre-2026-05-12 Drive-edit era; `commandroom1` = the 2026-05-12 "Option B" marketplace-clone era, retired 2026-06-22 when its remote was renamed `oldtest`. Files this migration previously "fixed" to the Option B text re-flag on the second marker by design — that text is itself stale now.
+**Trigger gate:** fires if ANY of the stale markers `plugin-source-v3` or `commandroom1` appears in the target file (`CLAUDE.md` for the first migration, `_hq/INFRASTRUCTURE.md` for the second) **in an actionable path/config context per the v4.8.1 F-04 classification in the detection logic above** — a hit that only mentions the retired name in prose (a retirement note, a warning, a history section) downgrades to the one-line advisory and never reaches this flow. Uses the inverted `stale_marker_pending` semantics — an actionable marker means the file has stale content from a retired source-of-truth model: `plugin-source-v3` = the pre-2026-05-12 Drive-edit era; `commandroom1` = the 2026-05-12 "Option B" marketplace-clone era, retired 2026-06-22 when its remote was renamed `oldtest`. Files this migration previously "fixed" to the Option B text re-flag on the second marker by design — that text is itself stale now.
 
 **Why this migration exists:** the canonical edit surface is `~/repos/cr1-canonical/command-room/`, a dedicated working clone of `ChaletteHQ/cr1` (the cr1 model, current as of 2026-06-22). Two retired models linger in older workspace docs: the `Command Room/plugin-source-v3/` Drive-edit folder pattern, and the Option B model that named a staging marketplace clone under `~/.claude/plugins/marketplaces/` canonical. Out-of-date workspace docs cause Cowork sessions (and Code sessions) to write handoffs and ship instructions pointing at the wrong location (the 2026-06-22 stale-doc incident — see references/HISTORY.md).
 
@@ -558,7 +641,7 @@ Narrate completion in one line:
 
 **Why this migration exists:** parallel to the person-schema migration above, but for orgs (audit findings in references/HISTORY.md § 2026-05-20 substrate audit). Cleanup ensures every org passes `_validate_org` so writers can update them via `org_writer.update_org` without ValueError.
 
-**Approach (skill-invocation):** the bridge runs `python3 shared/scripts/org_writer.py repair-all [WORKSPACE_ROOT]`. Dry-run mode first, then apply on confirmation.
+**Approach (skill-invocation):** the bridge runs `python3 shared/scripts/org_writer.py repair-all [WORKSPACE_ROOT]`. Dry-run mode first, then apply on confirmation. The dry-run preview presents each affected record by its display name (resolve `canonical_name` before composing — per this phase's copy contract, F-02), never by `org_NNN` id.
 
 **Calibration question:**
 
@@ -598,7 +681,127 @@ This dual-writes `_hq/views/MASTER_TRACKER.md` + the back-compat `_hq/MASTER_TRA
 
 > *"✓ Refreshed your Master Tracker from current data — it had stopped auto-updating, now fixed."*
 
-No preview, no confirm. (The companion `weekly-insights` schedule-add in Phase 4.7 handles the analytical views — TIMELINE / RELATIONSHIPS / aging — which were frozen by the same class of bug.)
+No preview, no confirm. (The companion weekly-insights job — carried by the `maintenance` task Phase 4.7 registers, MAINT1 — handles the analytical views — TIMELINE / RELATIONSHIPS / aging — which were frozen by the same class of bug.)
+
+### Migration: `claude_md_email_rule_v1` (SPEC EW1 — email-delegation rule, silent append)
+
+**Trigger gate (apply-once — see the detection-logic bullet in Phase 1):** pending ONLY when the marker phrase `goes through the **email-writer** skill, end to end` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event in events.jsonl. A customer who deliberately deletes the rule is respected — the bridge never re-adds it; a logged skip is equally durable.
+
+**Why this migration exists:** when an email draft comes up as a sub-step of a bigger task (not as its own message), the request never routes through email-writer — so the customer's saved voice, length, and review rules are silently skipped (Bug #104 — see references/HISTORY.md). The workspace CLAUDE.md is the one file every session loads, including turns no skill fired on, so the standing rule lands there. Fresh onboardings get it from `references/claude-md-template.md`; this migration back-fills existing installs. This is a standing instruction, not a mechanical gate — the honest ceiling for same-turn enforcement (check-deliverables remains the detection story).
+
+**Approach (silent append — no calibration question, per the Phase 4.7 silent-add precedent and CONTRACT Rule 28's auto_apply default):** surgical edit only.
+
+1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append these two bullets at the end of that section's bullet list (preserving existing bullets exactly):
+
+```markdown
+- Every email you compose — a draft, a reply, a follow-up, or an email that comes up mid-task as part of something bigger — goes through the **email-writer** skill, end to end. It carries my saved voice, length, and review rules; composing anywhere else loses all of them.
+- Never write email text directly with a mail connector tool. If an email is worth drafting, run it through email-writer first, then show me the result.
+```
+
+2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only these two bullets at the end of the file. This is the sanctioned exception to Rule 6's skip-if-missing (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
+3. Re-check the marker phrase is now present, then log `workspace_migration_applied` with `migration_id: "claude_md_email_rule_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
+
+**Surface ONE plain-English line in the update summary (no question, no confirm):**
+
+> *"New: every email now routes through your email-writer voice rules, even when a draft comes up mid-task."*
+
+### Migration: `draft_posture_queue_on_click_v1` (FS-11 — email draft posture is queue-on-click)
+
+**Trigger gate (apply-once):** pending ONLY when the marker phrase `nothing touches your mail drafts until you click` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event. A customer who deletes the line is respected — never re-added; a logged skip is equally durable (this exact migration was the FB-5 live re-proposal loop when the gate ignored skip events).
+
+**Why this migration exists:** M's 2026-07-15 ruling settled the draft posture: show the editable draft first, and NOTHING reaches the mail backend until the user clicks — on that click the draft is queued AND the `email_drafted` event + voice snapshot are written (never at render/compose). The old "auto-queue on render" behavior is retired (it stacked unreviewed drafts and contradicted the zero-pre-click-write contract). M's own workspace CLAUDE.md already carries this; this migration carries the same standing preference to every client workspace so a session that never fires email-writer still knows the posture.
+
+**Approach (silent append — no calibration question):** surgical edit only.
+
+1. Locate the `## Preferences` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append this bullet at the end of that section (preserving existing content exactly):
+
+```markdown
+- **Draft posture (queue-on-click):** Show the editable draft first — nothing touches your mail drafts until you click Save draft or Send. On that click, the draft is saved to your mail backend's Drafts (never auto-sent) and the draft record + voice snapshot are written at the same moment. Drafts are never queued on render/compose.
+```
+
+2. If the `## Preferences` heading is missing (older or hand-edited installs): skip per Rule 6 (do not fabricate the section) and note the skip in the summary — the posture still holds via the email-writer contract; only the standing CLAUDE.md note is deferred.
+3. Re-check the marker phrase is present, then log `workspace_migration_applied` with `migration_id: "draft_posture_queue_on_click_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
+
+**Surface ONE plain-English line in the update summary (no question, no confirm):**
+
+> *"Updated: email drafts now stay on your screen until you click — one click saves to Drafts (and records it), nothing auto-queues before you approve."*
+
+### Migration: `claude_md_widget_rule_v1` (T2.2 — the widget-transport session rules, silent append)
+
+**Trigger gate (apply-once — see the detection-logic bullet in Phase 1):** pending ONLY when the marker phrase `passed to show_widget` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event in events.jsonl. A customer who deliberately deletes the rules is respected — the bridge never re-adds them; a logged skip is equally durable.
+
+**Why this migration exists:** the F2 delivery gate only went GREEN live (RV-3, 2026-07-15) when TWO always-loaded workspace session rules bound the runtime to the transport: (1) every widget is built via `render_and_persist` and its returned `html` relayed byte-exact — hand-composition skips the validators and shipped stale rows (FS-08/RV-1); (2) after a successful `render_and_persist`, the `show_widget` call is the MANDATORY immediate next step — the runtime otherwise delivered a text summary over a fitted, persisted page (RV-2), which strips the customer's one-tap actions. Skill-text mandates alone kept losing to the hand-build instinct; the workspace CLAUDE.md is the one surface that reliably binds (the Bug #104 / EW1 precedent — delegation went 0/3 → 3/3 the same way). Fresh onboardings get both rules from `references/claude-md-template.md`; this migration back-fills existing installs. **Without it, client runtimes will improvise exactly as the dogfood workspace did pre-rule — this migration is promote-blocking for the T2 stack.**
+
+**Approach (silent append — no calibration question, per the Phase 4.7 silent-add precedent and CONTRACT Rule 28's auto_apply default):** surgical edit only.
+
+1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append these two bullets at the end of that section's bullet list (preserving existing bullets exactly):
+
+```markdown
+- Every Command Room widget — commitments, staff meeting, any row-list or action card — is produced by `widget_transport.render_and_persist` and its returned `html` passed to show_widget **byte-exact**. Never hand-compose widget HTML, never restyle, never re-derive the data inline: hand-built widgets skip the validators (leak scan, action contract, dedup against closures) and have shipped stale rows and broken wire formats. If the helper errors, say so and stop — do not improvise a widget.
+- After a successful `render_and_persist`, the show_widget call with `transport["html"]` is not optional — it is the immediate next step, before any prose. Summarizing the data as chat text while a fitted, validated page sits persisted is a contract violation (it strips my one-tap actions). Text-instead-of-widget is allowed only when the transport itself failed or `pagination["over_budget"]` is set — and then say so explicitly.
+```
+
+2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only these two bullets at the end of the file — the same sanctioned Rule-6 exception `claude_md_email_rule_v1` uses (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
+3. Re-check the marker phrase is now present, then log `workspace_migration_applied` with `migration_id: "claude_md_widget_rule_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
+
+**Surface ONE plain-English line in the update summary (no question, no confirm):**
+
+> *"New: your action cards (commitments, staff meeting) now always come through the checked build path — every page is validated before it reaches your screen, and it always arrives with its one-tap buttons, never as a text summary."*
+
+### Migration: `claude_md_research_rule_v1` (RSR1 — the research-routing session rules, silent append)
+
+**Trigger gate (apply-once — see the detection-logic bullet in Phase 1):** pending ONLY when the marker phrase `never the generic built-in deep-research` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event in events.jsonl. A customer who deliberately deletes the rules is respected — the bridge never re-adds them; a logged skip is equally durable.
+
+**Why this migration exists:** the host platform ships a generic built-in deep-research skill whose description claims any topic — it sits in the same semantic space as this plugin's `research` skill, so on "research [X]" / "deep dive on [X]" the router frequently picks the built-in one. The customer then gets a workspace-blind report: no entity framing, no Tavily / Vibe Prospecting enrichment, and findings that evaporate instead of compounding where call-prep and briefings can reuse them. We cannot edit or remove the built-in skill in client installs; the workspace CLAUDE.md is the one surface unconditionally in context that reliably wins routing ambiguity (the Bug #104 / EW1 precedent, re-proven by T2.2's widget rules). The second bullet makes the source tier client-visible on every fire — the honest-fallback line that keeps a silent Tavily/Vibe skip auditable by the customer. Fresh onboardings get both rules from `references/claude-md-template.md`; this migration back-fills existing installs.
+
+**Approach (silent append — no calibration question, per the Phase 4.7 silent-add precedent and CONTRACT Rule 28's auto_apply default):** surgical edit only.
+
+1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append these two bullets at the end of that section's bullet list (preserving existing bullets exactly):
+
+```markdown
+- Any research ask — "research [X]", "deep dive on [X]", "look into [X]", "what's the story on [X]", "background on [person]" — runs through the **research** skill, never the generic built-in deep-research skill. The built-in one can't see my workspace: it skips the entity framing, skips the Tavily and Vibe Prospecting connectors, and its findings evaporate instead of being saved where call-prep and briefings can reuse them.
+- When research runs, the chat reply names which source tier actually ran (Vibe Prospecting / Tavily / built-in web) in one line. Built-in web is the fallback floor, not the default — if an upgrade connector is connected it must be used.
+```
+
+2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only these two bullets at the end of the file — the same sanctioned Rule-6 exception `claude_md_email_rule_v1` and `claude_md_widget_rule_v1` use (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
+3. Re-check the marker phrase is now present, then log `workspace_migration_applied` with `migration_id: "claude_md_research_rule_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
+
+**Surface ONE plain-English line in the update summary (no question, no confirm):**
+
+> *"New: research requests now always run through your workspace-aware research flow — framed against your own projects and people, saved where your meeting prep can reuse them, and always telling you which search sources actually ran."*
+
+### Migration: `staff_meeting_cadence_mwf_v1` (SPEC FB-20 — Staff Meeting moves Mon-only → Mon/Wed/Fri, PROPOSED never imposed)
+
+**Why this is a question and not a silent write.** FB-20 made the morning brief read-only, which makes the Staff Meeting the ONLY surface where anything gets confirmed. Once a week is too slow to be the only door — so the shipped default for NEW installs moved to Mon/Wed/Fri 9:00. But an existing customer's schedule is **theirs**: they may have moved it, may guard their calendar, may want it Monday. A schedule is live config, not product text — **never rewrite it silently, and never treat "they're already on our new default" as consent.** Propose, then honor the answer, forever.
+
+**Gate (the ONLY gate — this migration has no marker; see the `marker: null` rule in the detection logic):** pending iff `migration_adjudication` reports `staff_meeting_cadence_mwf_v1` `unadjudicated`. Do NOT read the current cron to decide whether to ask. Additional pre-checks before proposing — if any fails, skip SILENTLY with no event (nothing to propose; asking would be noise):
+1. `staff-meeting` is actually REGISTERED on this workspace (a `list_scheduled_tasks` record exists). An unregistered task has no schedule to change — the new default applies whenever they register it, no migration needed.
+2. Its live cron still parses as the old Mon-only shape (`0 9 * * 1`). **If the customer has ANY other custom cron, skip silently and log nothing** — they have already expressed a preference about this task's timing, and overwriting a considered choice with our new default is exactly the imposition this migration exists to avoid.
+
+**The ask (one question, plain English, their answer is final):**
+
+> *"One thing worth changing: your Staff Meeting runs Mondays only. Now that your morning brief is just a brief — it reads, it doesn't ask — the Staff Meeting is the only place things actually get confirmed, and once a week is a long time to sit on a deal signal. Want me to move it to Monday / Wednesday / Friday at 9? Your call — Monday-only is a perfectly good answer if that's the rhythm you want."*
+
+- **"Yes"** / *"sure"* / *"do it"* / *"mwf"* → apply (below), log `workspace_migration_applied`.
+- **"No"** / *"leave it"* / *"Monday's fine"* → change NOTHING. Log `workspace_migration_skipped` with `reason: "user_declined_cadence_change"` (a free-form reason → suppresses forever per the adjudication contract; `redo workspace migrations` is how they opt back in).
+- **A different cadence** (*"make it Tue/Thu"*, *"daily"*, *"2pm instead"*) → do NOT hand-roll it here. Log `workspace_migration_applied` (the cadence question is settled) and route them: *"Say `change my schedule` and I'll set it to exactly that."* **`change-schedule` is the only skill that mutates a live cron** — this bridge does not reimplement it.
+
+**Applying (the "yes" path only):**
+
+Hand off to `change-schedule`'s canonical path — write `workspace.schedule_config["staff-meeting"]` in entities.json AND re-anchor the live task's cron. Convert 9:00 from the workspace timezone to machine-local first via `schedule_config.workspace_time_to_machine(9, 0, WORKSPACE_ROOT)` (R8 — cron evaluates in machine time; an unconverted "9am" fires an hour off on a machine whose clock differs). The stored `label` stays the user's time ("9 AM Mon, Wed, Fri"); the stored `cron` carries the converted machine-local time. When the two differ, say so once.
+
+**⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK (v4.5.2 R2 / F-51 — the change-schedule doctrine, binding here too).** Re-anchoring moves the NEXT occurrence. It does not create a missed slot, and today's newly-added Wednesday slot did not exist when Wednesday 9:00 passed. Do NOT run the staff meeting "to catch up", do NOT invoke its orchestrator, do NOT compute or write lateness for any slot the change itself created, and do NOT narrate one ("you missed today's" is false). A customer who says yes to a cadence change gets a config write and a confirmation line — never a surprise staff meeting in the same turn.
+
+Log the migration:
+- On success → `workspace_migration_applied` with `migration_id: "staff_meeting_cadence_mwf_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
+- On decline → `workspace_migration_skipped` with the same fields plus `reason: "user_declined_cadence_change"`.
+- On silent pre-check skip (unregistered / custom cron) → **no event at all.** Nothing was proposed, so there is nothing to adjudicate; writing a skip here would durably suppress a question the customer never got asked.
+
+Narrate completion in one line:
+
+> *"✓ Staff Meeting now runs Mon/Wed/Fri at 9 AM."*
+
+(Or, for declined): *"Kept it Mondays. Say `change my schedule` any time."*
 
 ### Future migrations
 
@@ -640,11 +843,19 @@ Same shape as the Inbox-add precedent. No question; the customer sees a notice a
 
 Detection logic (extracted to a helper so future "add missing canonical task" cases can reuse it): use `release_detectors.v3_14_3_friday_wrap_missing.is_friday_wrap_missing()` against `_hq/data/events.jsonl`. If `applies=True`, run the silent-add path above.
 
-**Silent-task generic-add loop (Phase 3 / SPEC-2.3 — replaces the per-task Cleanup / Reconcile-Sent / Weekly-Insights add paths):** the silent background tasks are NOT among the chat taskIds enumerated above; they register separately via `enable-command-room-schedules` **Step 1.D**, so the chat-completeness check is structurally blind to them (Bug #82's class — see references/HISTORY.md § Bug #82 silent-task registration miss). As of Phase 3 the check is one loop over the **`SILENT_TASKS` registry** in `shared/scripts/schedule_config.py` (currently cleanup / reconcile-sent / monthly-report / weekly-insights): for EVERY registry task missing from the registered set on a workspace past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register it with its default cadence, then surface one plain-English line built from the registry's `description` + `reason`, e.g.:
+**Silent-task generic-add loop (Phase 3 / SPEC-2.3 — replaces the per-task Cleanup / Reconcile-Sent / Weekly-Insights add paths):** the silent background tasks are NOT among the chat taskIds enumerated above; they register separately via `enable-command-room-schedules` **Step 1.D**, so the chat-completeness check is structurally blind to them (Bug #82's class — see references/HISTORY.md § Bug #82 silent-task registration miss). As of Phase 3 the check is one loop over the **`SILENT_TASKS` registry** in `shared/scripts/schedule_config.py` (currently one task, `maintenance` — MAINT1): for EVERY registry task missing from the registered set on a workspace past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register it with its default cadence, then surface one plain-English line built from the registry's `description` + `reason`.
 
-> *"Adding the weekly Cleanup to your scheduled tasks — tidies your workspace and heals anything that drifted, and leaves a short Monday note only if something needs your eyes. One Run Now tap to authorize."*
+**Supersede step (MAINT1, D5 — this loop is the auto-migration vehicle for existing installs):** after registering a registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py` and disable every listed taskId still registered+enabled via `update_scheduled_task(enabled: false)`. Idempotent and never deletes — re-running the bridge converges on the same end state (the five old silent tasks off, one `maintenance` task on). A custom cron override the customer had on the old `reconcile-sent` task migrates onto the `maintenance` task cron (the one 1:1 cadence mapping); overrides on the other four can't map onto a single task cron — leave them in place (parity ignores superseded ids) and note the old time couldn't carry over in the same line. Surface exactly ONE plain-English migration line:
 
-No question (CONTRACT.md Rule 28 — default-task registration isn't a customer decision). A future silent task added to the registry is covered by this loop with zero edits to this file. The legacy per-task detectors (`release_detectors.v3_18_2_cleanup_missing`, `v3_18_12_reconcile_sent_missing`) remain valid as detection helpers where present; the inline check — taskId absent from the registered set AND a prior `schedule_created` event exists — is the canonical shape. **Self-heals ride along:** reconcile-sent's first fire reconciles the accumulated backlog from the stored cursor forward; weekly-insights' first fire (once the workspace has ≥14 days of events) recomputes all 5 analytical views.
+> *"Your background upkeep now runs as one 'Maintenance' entry in the Scheduled section — authorize it once with Run Now there. The old background entries are switched off."*
+
+No question (CONTRACT.md Rule 28 — default-task registration isn't a customer decision). A future silent JOB ships inside the already-authorized `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`) with no registration change at all, and a future silent TASK added to the registry is covered by this loop with zero edits to this file. The legacy per-task detectors (`release_detectors.v3_18_2_cleanup_missing`, `v3_18_12_reconcile_sent_missing`) remain valid as detection helpers for pre-MAINT1 workspaces; the inline check — taskId absent from the registered set AND a prior `schedule_created` event exists — is the canonical shape. **Self-heals ride along:** the maintenance task's first fire runs every job the dispatcher reports due, so the reconcile backlog clears from the stored cursor forward and stale analytical views recompute (once the workspace has ≥14 days of events) without any extra step.
+
+**Staff Meeting later-add PROPOSAL (LB1 R3 — propose with one-tap accept, NEVER silently registered):** on the full-update intent path, **run the registered-set readback FIRST and quote it (FS-16 — MANDATORY):** before deciding anything, read the live registered set from the scheduler MCP and state its verdict explicitly in your working notes for this block — the literal check, e.g. *"registered taskIds: [...13 ids...]; staff-meeting IS in the set → proposal gate CLOSED"*. The proposal fires ONLY when that quoted readback shows `staff-meeting` ABSENT. Never propose from "this feature is new in the update" — feature newness is not user absence (the FS-16 live miss proposed the Staff Meeting one sentence after confirming all chats registered, burning the 6-week suppression record on a no-op). If `staff-meeting` IS in the quoted set, this whole block is a silent no-op — no proposal, no suppression record, no mention. Then, only on a quoted-ABSENT readback: if the workspace is past M1 install (any prior `schedule_created` event exists) AND no `schedule_add_proposed` event for `staff-meeting` exists within the last 6 weeks (the `schedule_proposals` suppression window — read it before surfacing), surface exactly ONE proposal line (render the time from `load_schedule_config()`'s label):
+
+> *"New in this update: a weekly Staff Meeting — everything your workspace changed on its own, everything waiting on your eyes, and this week's relationship moves, reviewable in one sitting. Say `add staff meeting` and it runs [config label time]."*
+
+Then log the suppression record via `schedule_proposals.log_proposal(ws, "staff-meeting")`. **This deliberately breaks from the Friday-Wrap silent-add shape:** the Staff Meeting is opt-in by M ruling (2026-07-14) — an accept ("add staff meeting", or any yes-shaped reply to this line) routes through change-schedule / registration Phase 6 `add`; silence registers nothing and the proposal stays quiet for 6 weeks. Do NOT propose the standalone `relationship-moves` chat anywhere in this flow anymore (R4 — the Staff Meeting absorbs it as its "This week's moves" section); workspaces with relationship-moves ALREADY registered keep it untouched — no disable, no supersede, no mention (their migration is a later bridge wave, not this one).
 
 **Unconditional prompt refresh (Phase 3 / W4):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1 hash-compare against every registered prompt — never skip it because "the tasks look registered." Bootloaders are stamped with the plugin version at registration (Phase 1.B `<PLUGIN_VERSION>` substitution), so after any plugin upgrade the composed bootloader's hash differs from the registered one and the refresh lands automatically; the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) is the detector for prompts this refresh hasn't reached yet. This replaces hoping Rule 16 was obeyed.
 
@@ -934,9 +1145,9 @@ Don't list the add-ons inline. The user can discover them at their pace.
 
 **CLAUDE.md exists but `## Preferences` heading is missing.** Pre-v2.4 workspaces may have a different structure. Skip the workspace-migration with `reason: "structural_mismatch"`. Tell the user: *"Your CLAUDE.md is missing the Preferences section — that's a bigger change than I can safely make on my own. Say `restart onboarding` if you want a clean rebuild, or skip this for now."* Don't try to recover automatically.
 
-**User declined a workspace migration on a prior run.** Detection sees the prior `workspace_migration_skipped` event with `reason: "user_declined"`. Skip in the candidate list. The migration is removed from `pending_workspace_migrations` for this run. The user can opt back in by saying `redo workspace migrations` (which clears the skip events and re-runs Phase 4.5).
+**User declined a workspace migration on a prior run.** The Phase 1 adjudication gate (`shared/scripts/migration_adjudication.py` — keyed on the migration id, never on marker phrases) sees the prior `workspace_migration_skipped` event and reports the id suppressed; the migration is removed from `pending_workspace_migrations` for this run. ANY skip reason suppresses except the documented deliberately-re-surface ones (`user_deferred`, `awaiting_manual_apply`, `structural_mismatch`, `structural_mismatch_manual_fallback`). The user can opt back in by saying `redo workspace migrations` (which re-runs the gate with `--ignore-skips` so skipped ids surface again and Phase 4.5 re-runs — skip events stay in the append-only log, never deleted).
 
-**Workspace migration partially applied.** If a prior run logged `workspace_migration_applied` but the marker check fails (user manually edited or removed the line afterward), treat as pending and re-prompt. Don't silently re-apply — the user clearly modified something on purpose, so confirm before re-adding.
+**Workspace migration partially applied.** If a prior run logged `workspace_migration_applied` but the marker check fails (user manually edited or removed the line afterward), the adjudication gate keeps the id suppressed on normal runs — never silently re-apply; the user clearly modified something on purpose. The re-add path is `redo workspace migrations`: on that flow, an applied-event id whose marker is now absent re-prompts with an explicit confirm before re-adding (apply-once migrations stay excluded — a deliberate deletion there is final unless the user asks on the redo flow).
 
 **`create_artifact` returns success but Rule 8 verification fails. (Added v2.7.10.)** This means the tool accepted the call but what landed in Cowork doesn't match the canonical template — possible causes: tool truncation, encoding mishandling on the wire, payload limit silently clipped the input. Mark the install failed via `artifact_install_failed` with `reason: "verification_failed:<which>"`. Surface to user: *"Workspace Map installed but didn't pass my check — what landed doesn't match the original. Don't pin it yet. Restart Cowork and say `update command room` to retry, or report the problem if it keeps happening."* Do NOT pin, do NOT log `artifact_installed`, do NOT continue to the next artifact in the batch.
 

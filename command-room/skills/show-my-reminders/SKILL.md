@@ -106,7 +106,7 @@ Scheduled ([N])
   special marking — never label a row "personal".
 - Close with the verbs, once, in plain English: *"Say 'done with the
   reminder', 'defer it to [day]' ('push it to Friday' works too), or 'keep'
-  on any of these."* Done / Defer / Keep are the taxonomy words — the same
+  on any of these."* Done / Later… / Keep are the taxonomy words — the same
   labels any reminder widget renders, so prose and buttons never diverge
   (F-13 P2a).
 - Empty state: *"No reminders right now. Say 'remind me about [thing] on
@@ -115,7 +115,7 @@ Scheduled ([N])
 This surface is a **pure read** in v1 — no widget, so no fire-marker either
 (done/push/keep arrive as chat phrases). The widget verbs ARE registered
 (v4.5.2 S2): `reminder done` / `reminder push [date]` / `reminder keep` in
-`shared/scripts/verb_taxonomy.py`, displaying **Done / Defer / Keep**, with
+`shared/scripts/verb_taxonomy.py`, displaying **Done / Later… / Keep**, with
 dispatch spec'd in apply-choices § `show-my-reminders` — any future widget
 render uses those rows, never ad-hoc verbs.
 

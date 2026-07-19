@@ -1,6 +1,6 @@
 ---
 name: inbox-triage
-description: "Morning inbox pass: reads overnight email, classifies into Reply Now / Decision Needed / FYI / Discard / Deep Read. Surfaces the 3–5 that matter, drafts replies for 2–3. Triggers: 'triage my inbox', 'inbox triage', 'what's in my inbox', 'process my inbox', 'go through my email', 'email triage', 'morning email pass'. Owns all 'inbox' + deep-email phrasing. Also handles first-run personalization settings — use when the user says 'tune inbox triage', 'tune inbox-triage', 'show inbox triage settings', 'show inbox-triage settings', 'reset inbox triage to defaults', 'reset inbox-triage to defaults'. Does NOT fire on bare 'morning briefing' or 'brief me' — those go to morning-briefing for the daily digest."
+description: "Morning inbox pass: reads overnight email, classifies into Reply Now / Decision Needed / FYI / Discard / Deep Read. Surfaces the 3–5 that matter, drafts replies for 2–3. Triggers: 'triage my inbox', 'inbox triage', 'what's in my inbox', 'process my inbox', 'go through my email', 'email triage', 'morning email pass'. Owns all 'inbox' + deep-email phrasing. Plus 'tune inbox-triage'. Does NOT fire on bare 'morning briefing' or 'brief me' — those go to morning-briefing for the daily digest."
 ---
 
 ## Skill Boundary (v2.1)
@@ -20,9 +20,13 @@ When drafting replies (Reply Now bucket + "draft a decision-needed response" flo
 
 ## Writer Contract
 
-Every email read during triage emits an inbound `interaction` event to `events.jsonl` per `shared/PASSIVE_CAPTURE.md`. Drafted replies (when sent) emit corresponding outbound interaction events. Dedup via source_ref hash prevents double-counting across morning-briefing, workspace-manager, and this skill.
+Every email read during triage from an **in-scope** account emits an inbound `interaction` event to `events.jsonl` per `shared/PASSIVE_CAPTURE.md` (v3). Drafted replies (when sent) emit corresponding outbound interaction events. Dedup via source_ref hash prevents double-counting across morning-briefing, workspace-manager, and this skill.
 
-**Commitment extraction (v2.7.15+).** When an email body contains explicit commitment language — either an inbound promise from a counterparty ("I'll send the deck by Friday", "I owe you the contract") or an outbound promise the user is making in a draft ("I'll get back to you with…", "Will deliver by…") — emit a `type: commitment` event alongside the `interaction`. Schema and trigger conditions in `shared/COMMITMENT_SCHEMA.md`. See "Step: Extract Commitments" below for the recipe. This is the gmail-side counterpart to `meeting-notes`'s commitment extraction; together they're the only routine producers of new commitment events for typical CEO workflow (Slack-side extraction is a v2.7.16 candidate).
+**Connector-agnostic + account-scope (connector-agnostic-v1).** Resolve mail tools through the seam — `tool_discovery.discover_for_category("email", "<op>", tools, declared=connector_config.declared_backend("email"))`, falling back to `discover_mail_search_tool` / `discover_mail_thread_fetch_tool` / `discover_mail_draft_tool` (empty map = today's behavior, R4). Never name a provider tool, query operator, provider field, or URL host directly — express intent (unread, in-sent, since) and let `connector_adapters/mail.py` compile it per provider. **Account scope (R1, `shared/ACCOUNT_SCOPE.md`):** an email from a `write_to_business: off` account (personal / mixed-unknown-sender) may still be *surfaced* in the triage list if its `surface` dial is on, but **no `interaction` event is written for it** — the writer wall (`account_scope_gate.enforce_scope`, enforced structurally inside the append path) rejects a provenance whose `account_id` resolves out-of-scope. Where the account map is empty, every account is in-scope (unchanged behavior).
+
+**Promote-queue (R8, ACCOUNT_SCOPE §8) — the mixed-account business-by-association loop.** A `mixed`-role account files by association: mail whose sender resolves to a known entity (person_ids/counterparty resolved) writes normally; a sender NOT in the entity graph is walled. For each such walled sender that *looks* business (a real human, business domain or business content — not bulk/newsletter), append ONE `person_proposal` event via `event_gate.append_event` with `data: {name, email, promote_queue: true, origin: "connector", account_address: <the mixed account>, provenance: <the read's provenance>, evidence: <one line>}` (the `promote_queue: true` flag is what makes the proposal writable despite the wall — it IS the review surface), deduped against open proposals for the same email. Surface it in the triage output as *"[Name] ([email]) on [account] looks like business — file them? (`file it` / `keep personal`)"*. On **`file it`**: hand to people-crm — it creates the person as a USER-CONFIRMED add (`create_person` WITHOUT provenance kwargs — the user is the authority; the record wall is for unconfirmed connector derivations) and future mail from that sender is in scope by association. On **`keep personal`**: write a per-sender override via `connector_config.set_sender_scope_override(root, <account>, <sender>, write_to_business=False, reason="user demoted")` so the proposal never re-fires. Never promote silently — the write dial stays fail-closed throughout (H-G).
+
+**Commitment extraction (v2.7.15+).** When an email body contains explicit commitment language — either an inbound promise from a counterparty ("I'll send the deck by Friday", "I owe you the contract") or an outbound promise the user is making in a draft ("I'll get back to you with…", "Will deliver by…") — emit a `type: commitment` event alongside the `interaction`, with **`data.origin: "connector"`** (it was extracted from a connector read — ACCOUNT_SCOPE §4a; the account-scope wall treats connector-origin commitments strictly). Schema and trigger conditions in `shared/COMMITMENT_SCHEMA.md`. See "Step: Extract Commitments" below for the recipe. This is the gmail-side counterpart to `meeting-notes`'s commitment extraction; together they're the only routine producers of new commitment events for typical CEO workflow (Slack-side extraction is a v2.7.16 candidate).
 
 ---
 
@@ -126,22 +130,22 @@ Optional modifiers:
 ## How It Works
 
 1. **Define window (v3.13.0+ — unread is the primary inclusion criterion; time window is for ranking only).**
-   - **Inclusion criterion:** `is:unread in:inbox` is the canonical query. Every unread thread is a candidate regardless of how old it is. This closes the 2026-05-20 mis-classification gap where a 28-day stale LAST_TRIAGE timestamp caused a silent collapse to a 24h window, missing an active $300K Dustin thread whose last message was 2 days old.
+   - **Inclusion criterion:** the **unread-in-inbox** intent is the canonical query (compiled to the connected provider's operators by `connector_adapters/mail.py` — never a hardcoded operator string). Every unread thread is a candidate regardless of how old it is. This closes the 2026-05-20 mis-classification gap where a 28-day stale LAST_TRIAGE timestamp caused a silent collapse to a 24h window, missing an active $300K Dustin thread whose last message was 2 days old.
    - **Ranking criterion:** time window (the difference between now and LAST_TRIAGE) ranks recency within the candidate set. Threads with messages in the last few days rank higher; older threads rank lower. But age never excludes — that's the unread state's job.
-   - **No silent window collapse.** Pre-v3.13.0: if `now - LAST_TRIAGE` was large, the skill silently shrunk the window to 24h. v3.13.0+: large gaps trigger a full `is:unread in:inbox` sweep, surfacing every old-but-active unread thread in the main brief body (not in a "notes for next pass" footnote).
-2. **Pull unread / flagged email** via Gmail connector.
+   - **No silent window collapse.** Pre-v3.13.0: if `now - LAST_TRIAGE` was large, the skill silently shrunk the window to 24h. v3.13.0+: large gaps trigger a full **unread-in-inbox** sweep, surfacing every old-but-active unread thread in the main brief body (not in a "notes for next pass" footnote).
+2. **Pull unread / flagged email** via the declared mail connector (resolved through the seam per the Writer Contract; empty map = today's behavior).
 3. **Enrich each message.**
    - Sender importance: VIP if in `_hq/PEOPLE.md` with `tier: board|investor|customer|top-vendor`; otherwise rank by historical reply frequency
    - Project context: existing OPEN commitments tied to the project this email belongs to. **Use `shared/scripts/cru_match.py::load_open_commitments(events.jsonl_path)`** filtered by `primary_thread_id` or by counterparty `person_id` — NOT MASTER_TRACKER (per `references/SOURCE_OF_TRUTH.md`, MASTER_TRACKER is a Tier 2 view and may be stale). `load_open_commitments` is the canonical reader: it handles all 5 commitment-event shape variants and treats both `commitment_resolved` and `thread_resolved` as valid closers, so commitments that fired through the dashboard ✓ done path are correctly filtered out.
    - Urgency signals: deadlines mentioned in the body, explicit "need by…" phrasing
-3.5. **`get_thread` BEFORE classifying state (v3.13.0+ MANDATORY — closes the "stalled on you" inversion bug).**
+3.5. **Fetch the full thread BEFORE classifying state (v3.13.0+ MANDATORY — closes the "stalled on you" inversion bug).**
 
-   Pre-v3.13.0 this skill derived thread state from `search_threads` results alone — which return a TRUNCATED, NON-LATEST slice of the thread (a snippet from an older matching message, NOT the newest message). On 2026-05-20 this produced a load-bearing failure: the Dustin / Adan Designs thread (active $300K offer cluster) was filed as *"stalled — no reply from you in 10 days"* when the actual state was that Dustin owed M the next deliverable (M replied May 18, Dustin confirmed he'd build it out — ball was in his court, not stalled on M's).
+   Pre-v3.13.0 this skill derived thread state from mail-SEARCH results alone — which return a TRUNCATED, NON-LATEST slice of the thread (a snippet from an older matching message, NOT the newest message). On 2026-05-20 this produced a load-bearing failure: the Dustin / Adan Designs thread (active $300K offer cluster) was filed as *"stalled — no reply from you in 10 days"* when the actual state was that Dustin owed M the next deliverable (M replied May 18, Dustin confirmed he'd build it out — ball was in his court, not stalled on M's).
 
-   **The rule:** before asserting "needs reply" / "Reply Now" / "stalled" / "no reply in N days" / "awaiting them" / who-owes-the-reply for any thread, call `get_thread(threadId, messageFormat=FULL_CONTENT)` and read the LAST message in the returned `messages` array. Do NOT infer state from `search_threads` snippets or the search result's partial `messages` list.
+   **The rule:** before asserting "needs reply" / "Reply Now" / "stalled" / "no reply in N days" / "awaiting them" / who-owes-the-reply for any thread, call the resolved **thread-fetch** tool (`discover_mail_thread_fetch_tool` / `discover_for_category("email","thread_fetch",…)`) requesting FULL message content, and read the LAST message in the returned `messages` array. Do NOT infer state from mail-search snippets or the search result's partial `messages` list. (On providers whose thread-fetch returns full content by default, the full-content request is a no-op; the point is: read the newest message, not a search snippet.)
 
    **Determining ball-in-court from the latest message:**
-   - If the newest message has `SENT` in `labelIds` OR `sender == <the primary user's address>` (resolve the person_id via `shared/scripts/primary_user.py::resolve_primary_user(workspace_root)`, then read that person record's email(s) from entities.json — never hard-code an address): **the user has already replied → classify as "awaiting counterparty" / "owed-to-you"**, NOT "Reply Now" or "stalled on you".
+   - If the connector marks the newest message as SENT BY THE USER (the provider's sent-flag — a sent label, a sent-items folder membership, whatever the connector's message shape exposes; resolved per provider by the adapter, never a hardcoded field name) OR `sender == <the primary user's address>` (resolve the person_id via `shared/scripts/primary_user.py::resolve_primary_user(workspace_root)`, then read that person record's email(s) from entities.json — never hard-code an address): **the user has already replied → classify as "awaiting counterparty" / "owed-to-you"**, NOT "Reply Now" or "stalled on you".
    - Only classify "Reply Now" / "stalled on you" when the newest message is INBOUND (from the counterparty).
    - When the newest message is inbound AND contains a forward-looking promise from the counterparty ("I'll send X by Y", "Will deliver…"), emit a `type: commitment` event (owed-to-you) per `shared/COMMITMENT_SCHEMA.md` instead of a reply prompt.
    - **Calendar-close exception (v3.14.7+).** The latest-message check only sees EMAIL replies. A scheduling thread ("can we set a time?", "propose times", "Monday works") usually closes on the CALENDAR — the user replies by creating an invite, so the newest *message* stays inbound and this would mis-file it as "Reply Now". Before classifying a scheduling-flavored thread (detect via `cru_match.detect_scheduling_intent` on the subject/last message, or obvious phrasing — "set a time / propose times / when works / lock / book / move the call") as Reply Now, check the calendar (native Calendar MCP `list_events`, never Zapier per `EMAIL_DRAFT_PROTOCOL.md` §3c) for an event with that counterparty. If the user organized an event created/updated at or after the counterparty's last message, OR the counterparty has `accepted` an invite, the loop is closed → classify as **owed-to-you / handled**, NOT Reply Now. This mirrors morning-briefing Step 3c-bis and the Path 5 substrate resolver (`cru_match.match_calendar_to_commitments`).
@@ -320,29 +324,31 @@ cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
-from chat_output_renderer import render_chat_output_widget, validate_rendered_widget
+from widget_transport import render_and_persist
 data_view = json.loads('''<DATA_VIEW_JSON>''')
-html = render_chat_output_widget(data_view, wrapper='fragment')
-validate_rendered_widget(html)
-print(html)
+transport = render_and_persist(data_view=data_view, wrapper='fragment',
+                               persist_dir='<WORKSPACE>/_hq/.system/widgets',
+                               name_hint='inbox-triage')
+print(transport['html'])
 "
-# Pass rendered HTML to mcp__visualize__show_widget byte-for-byte.
+# Pass the rendered HTML (transport["html"]) to mcp__visualize__show_widget as widget_code (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
-**Action semantics** — same lazy contract as email-writer Phase 4 (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The draft text lives in the widget; NO Gmail draft exists until the user acts:
-- `N send` — apply-choices creates the Gmail draft and sends it in one motion (native Gmail MCP `create_draft` → `send_draft`, or Zapier-threaded send if `In-Reply-To` is set). Logs `email_drafted` + `email_sent`.
+**Action semantics** — same lazy contract as email-writer Phase 4 (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The draft text lives in the widget; NO connector draft exists until the user acts (the tool named is the resolved draft/send path on the declared backend per EMAIL_DRAFT_PROTOCOL §0.5/§3c — Gmail via Zapier leg, Superhuman native, read-only backend degrades to paste):
+- `N send` — apply-choices creates the draft and sends it in one motion via the resolved send dispatch (EMAIL_DRAFT_PROTOCOL §3c order). Logs `email_drafted` + `email_sent`.
 - `N edit then send` — inline edit input on the widget; on Apply, the send fires.
-- `N draft` — apply-choices creates the Gmail draft on click; it lands in Gmail Drafts for later. Logs `email_drafted`.
-- `N skip` — NO Gmail call (nothing was created at fire time). Records a `chat_dismissal` event.
+- `N draft` — apply-choices creates the draft on click; it lands in the connector's Drafts for later. Logs `email_drafted`.
+- `N skip` — NO connector call (nothing was created at fire time). Records a `chat_dismissal` event.
 
 **Decision Needed / Deep Read / FYI items do NOT get the widget surface** — those don't carry a draft to send. Decision Needed renders as a normal list item with a "decide" action; Deep Read as a list with attachment notes; FYI as a one-line summary.
 
-**Sources section stays.** Below the widget, append the canonical `Sources:` section linking each triaged thread per `_hq/CONVENTIONS_SOURCE_LINKS.md`. Use the URL the Gmail MCP returns on `get_thread` / `search_threads` — never synthesize. Format: `[Sender — short subject](https://mail.google.com/mail/u/0/#all/{thread_id})`.
+**Sources section stays.** Below the widget, append the canonical `Sources:` section linking each triaged thread per `_hq/CONVENTIONS_SOURCE_LINKS.md`. Use **the URL the mail connector returns** on the thread-fetch/search call — never synthesize a provider URL host (`connector_adapters/mail.py::deep_link` prefers the returned URL and degrades to no link if none is returned, N8). Format: `[Sender — short subject](<connector-returned thread URL>)`.
 
 ```markdown
 Sources:
-- [Aria (Acme) — pricing redline?](https://mail.google.com/mail/u/0/#all/198abcd...)
-- [Skyler — call reschedule](https://mail.google.com/mail/u/0/#all/198defg...)
+- [Aria (Acme) — pricing redline?](<connector-returned thread URL>)
+- [Skyler — call reschedule](<connector-returned thread URL>)
 ```
 
 If no sources were referenced (rare), omit the section.
@@ -374,6 +380,16 @@ If no sources were referenced (rare), omit the section.
 - **If inbox > 200 messages, warn and ask whether to run** — this may take a minute and hit rate limits. Offer to restrict to VIP senders only.
 - **Don't over-classify.** Err toward Reply Now + Decision Needed getting smaller rather than padding the "top 5" with weak items.
 
+## Capability surface (A6 — feature-detected, connector-agnostic-v1)
+
+Everything here is gated on the DECLARED backend's capability manifest (`connector_adapters.capabilities.supports(provider, <key>)`, detected row overriding the known default). A backend without the capability degrades per the tell-once/silent-skip split: a capability the user would notice missing gets ONE plain-English note per session ("your mail connector doesn't do X — skipping that part"); a pure convenience is skipped silently. Never hard-fail, never fake it.
+
+- **Splits pre-classification (`splits`).** When the backend exposes inbox Splits (Important/Other — Superhuman-class), fetch the split assignment per thread BEFORE scoring and use it as a prior: an "Other"-split thread starts with a noise penalty, an "Important"-split thread skips the automated-domain demotion. The five-bucket classification still runs — Splits sharpen the priors, they never replace the read. No splits capability → silent skip (scoring is unchanged from today).
+- **Inbox hygiene (`unsubscribe`, `mark_spam`).** When supported, the Discard bucket may OFFER (never auto-fire) two extra per-item actions: `N unsubscribe` (recurring newsletter the CEO never opens) and `N spam`. Both are user-click actions through apply-choices, logged as `chat_dismissal`-class events with the action noted. Capability absent → the actions simply don't render (silent).
+- **Attachment→workspace pipe (`attachments`).** When the backend can read attachments and a triaged item's attachment is clearly workspace-relevant (a contract, a deck the CEO owes a review on), OFFER "pull [filename] into the workspace" — on click, fetch via the connector's attachment tool and route the FILE through `file-documents`' routing rules (never dump to root). Read-only attachment capability = offer only on explicit ask; absent → silent skip.
+
+Deferred from A6 (logged in the build report): inline scheduling and the NL-retrieval primitive — no consumer contract firm enough to write against yet (YAGNI posture; the manifest keys exist, wiring lands with their first real consumer).
+
 ## Scheduling
 
 The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the standard schedule set — customers turn it on via `set up command room schedules` and adjust it via `change my schedule`. Do NOT offer to register a separate ad-hoc recurring run from this skill.
@@ -399,3 +415,9 @@ The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the stan
 - **`_hq/data/events.jsonl`** — open-commitment overlap (Tier 1 source, read via `cru_match.load_open_commitments`)
 - **`_hq/voice/voice-block-inbox-triage.md`** (optional) — customer voice override (per `shared/VOICE_CALIBRATION.md`)
 - **morning-briefing skill** — embedding target
+
+## Routing (full trigger corpus)
+
+The settings-trigger family for this skill, relocated verbatim from the pre-G11-diet description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Also handles first-run personalization settings — use when the user says 'tune inbox triage', 'tune inbox-triage', 'show inbox triage settings', 'show inbox-triage settings', 'reset inbox triage to defaults', 'reset inbox-triage to defaults'.

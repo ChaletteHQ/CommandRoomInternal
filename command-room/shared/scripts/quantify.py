@@ -135,13 +135,12 @@ def _index_by_id(seq) -> dict:
     return out
 
 
-def _resolve_org(item: dict, entities) -> Optional[dict]:
-    """commitment/thread → its thread → that thread's org. None if the chain
-    can't be completed from the substrate (no raise)."""
+def _resolve_thread(item: dict, entities) -> Optional[dict]:
+    """commitment/thread → its thread record. None if the chain can't be
+    completed from the substrate (no raise)."""
     if not isinstance(entities, dict):
         return None
     threads = _index_by_id(entities.get("threads") or entities.get("projects"))
-    orgs = _index_by_id(entities.get("orgs"))
 
     # Find the relevant thread id: a commitment points at primary_thread_id;
     # a thread IS the item (its own id).
@@ -152,20 +151,50 @@ def _resolve_org(item: dict, entities) -> Optional[dict]:
     thread = threads.get(thread_id) if thread_id else None
     if thread is None and isinstance(item, dict) and item.get("id") in threads:
         thread = threads[item["id"]]
+    return thread
 
-    if thread is None:
+
+def _resolve_org(item: dict, entities) -> Optional[dict]:
+    """commitment/thread → its thread → that thread's org. None if the chain
+    can't be completed from the substrate (no raise)."""
+    thread = _resolve_thread(item, entities)
+    if thread is None or not isinstance(entities, dict):
         return None
-
+    orgs = _index_by_id(entities.get("orgs"))
     org_id = thread.get("affiliation_id") or thread.get("org_id")
     if not org_id or org_id == "personal":
         return None
     return orgs.get(org_id)
 
 
+def _nested_deal_value(candidate) -> Optional[str]:
+    """A PIPE1 deal thread's `deal.value` — the stated per-deal figure. Reads
+    the nested object only; still no estimation (absent/invalid → None)."""
+    if not isinstance(candidate, dict):
+        return None
+    deal = candidate.get("deal")
+    if not isinstance(deal, dict):
+        return None
+    amount = _format_money(deal.get("value"))
+    if amount is None:
+        return None
+    return f"{amount} deal"
+
+
 def _money_part(item: dict, entities) -> Optional[str]:
-    """Trace to the org and read a revenue/deal-value field. Also accepts a
-    value carried directly on the item (commitment/thread). Returns None when
-    no such field exists — the no-fabrication guarantee."""
+    """Trace to the money figure, in priority order (SPEC PIPE1 extended the
+    trace): (1) the item's own nested `deal.value` (the item IS a deal
+    thread), (2) the resolved thread's `deal.value` (a commitment on a deal
+    thread), (3) the org's revenue/deal-value fields, (4) a value annotated
+    directly on the item. A stated per-deal figure beats the org-level
+    convention fields — an org can have three deals. Returns None when no
+    such field exists — the no-fabrication guarantee."""
+    thread = _resolve_thread(item, entities)
+    for deal_carrier in (item, thread):
+        tag = _nested_deal_value(deal_carrier)
+        if tag is not None:
+            return tag
+
     candidates = []
     org = _resolve_org(item, entities)
     if isinstance(org, dict):

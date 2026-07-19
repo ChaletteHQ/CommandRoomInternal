@@ -12,10 +12,21 @@ A1 writer lock by `atomic_append_jsonl`, rebuildable from events.jsonl, and
 verified weekly by cleanup.
 
 Key namespaces (absorbs the documented hash drift — skills disagree on which
-value they compute, so we index both):
+value they compute, so we index all three):
   - `h:<dedup_hash>`  the PASSIVE_CAPTURE 12-hex hash (`data.dedup_hash` or the
                       top-level `source_ref_hash` in the WORKSPACE_API shape)
   - `r:<sha256(normalized source_ref)[:16]>`  the raw `data.source_ref` string
+  - `c:<canonical_dedup_key>`  (R15/H-K, connector-agnostic-v1) the
+                      provider:native_id canonical key from
+                      connector_adapters.provenance — bridges a legacy
+                      `gmail:<id>` string row and a NEW structured
+                      `{provider,native_id}` provenance so a post-migration
+                      re-observation of the SAME artifact reduces to one item.
+                      Added additively (the r:/h: keys stay byte-stable so an
+                      on-disk index from a prior release is never invalidated —
+                      `_norm_source_ref`/`_r_key` are unchanged; the canonical
+                      normalization is the new c: path, not a mutation of the
+                      existing one).
 
 The index is a CACHE over events.jsonl (the source of truth); corruption
 self-heals via `rebuild`. Index writes must NEVER fail an event append.
@@ -68,7 +79,32 @@ def _keys_of(event: dict) -> Set[str]:
     source_ref = data.get("source_ref") or event.get("source_ref")
     if isinstance(source_ref, str) and source_ref.strip():
         keys.add(_r_key(source_ref))
+    # c: canonical dedup key (R15/H-K) — bridges legacy string provenance and
+    # the new structured {provider,native_id} form. Best-effort; never raises
+    # (this runs inside atomic_append's writer lock — an index hiccup must
+    # never fail an event write).
+    ck = _canonical_key(event)
+    if ck:
+        keys.add("c:" + ck)
     return keys
+
+
+def _canonical_key(event: dict) -> Optional[str]:
+    """The connector_adapters.provenance canonical key for an event, or None.
+    Isolated + defensive so an import/parse failure degrades to h:/r: only."""
+    try:
+        from connector_adapters.provenance import canonical_dedup_key
+    except Exception:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from connector_adapters.provenance import canonical_dedup_key
+        except Exception:
+            return None
+    try:
+        return canonical_dedup_key(event=event)
+    except Exception:
+        return None
 
 
 def _load_idx(workspace_root) -> Set[str]:
@@ -149,6 +185,12 @@ def check(workspace_root, source_ref: Optional[str] = None,
         return True
     if source_ref and _r_key(source_ref) in idx:
         return True
+    # Canonical-key bridge (R15): a legacy source_ref string also hits a
+    # structured re-observation of the same artifact (indexed under c:).
+    if source_ref:
+        ck = _canonical_key({"data": {"source_ref": source_ref}})
+        if ck and ("c:" + ck) in idx:
+            return True
     return False
 
 

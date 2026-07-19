@@ -46,10 +46,29 @@ Two layers, one module:
      ONLY SURFACING — no mode loses data, so the line is movable
      retroactively.
 
+     ACCOUNT-SCOPE QUALIFICATION (connector-agnostic-v1, 2026-07-11 — R1).
+     "CAPTURE EVERYTHING / no mode loses data" is scoped to IN-SCOPE
+     accounts. Per shared/ACCOUNT_SCOPE.md the two-dial model overrides this
+     doctrine for out-of-scope accounts: a connector read from an account
+     whose `write_to_business` dial is OFF (personal / mixed-account unknown
+     sender) files NOTHING — not even an observed-tier event. The relevance
+     gate here decides what SURFACES vs OPENS *within* the business-scoped
+     stream; the account-scope wall decides whether the item enters the
+     stream at all, and it runs FIRST. Where the account map is empty (live
+     client mid-upgrade), every account is in-scope and the original blanket
+     doctrine holds unchanged (R4). The structural enforcement is the
+     writer-side scope check landing in Phase 3 (event_gate/capture_gate/
+     sent_capture/slack_capture/people_writer); this docstring records the
+     doctrine change that gates it.
+
      ASYMMETRIC CAUTION RAIL: an item carrying a due date or a money amount
      ALWAYS surfaces as open, regardless of mode or override (miss-cost
      asymmetry). `build_observed_event` enforces the rail in code by
-     refusing dated/money items.
+     refusing dated/money items. NOTE (R1): the forced-open rail applies only
+     to IN-SCOPE accounts — a due-date/money item from an out-of-scope
+     personal account is never force-opened into business records, because it
+     never passes the account-scope wall to reach this rail in the first
+     place.
 
      CORROBORATION (amber promotion — a checkable rule, not vibes): an
      observed item is promoted into the confirm flow (a real `commitment`
@@ -317,6 +336,51 @@ def _ev_time(ev) -> str:
     except Exception:
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         return ev.get("ts") or d.get("ts") or ""
+
+
+# ---------------------------------------------------------------------------
+# Observed-tier expiry (HYG1 Item 2 — the W4c deferred decay, derive-on-read).
+# ---------------------------------------------------------------------------
+#
+# W4c shipped the observed tier with "30d observed expiry NOT implemented" —
+# set-aside items accumulated forever: observed_counts grew unbounded, a
+# stale observation could corroborate-promote off a fresh event months later,
+# and cleanup's Beat-1 set-aside line inflated. Expiry is DERIVED AT READ
+# TIME — no scheduler, no new event type, and events are NEVER deleted
+# (append-only doctrine: an expired item stays in the log and stays
+# searchable via transcript-search; it just stops surfacing and promoting).
+#
+# An observed item is EXPIRED when it is older than OBSERVED_EXPIRY_DAYS and
+# was never promoted. Promotion is permanent — an item promoted while live
+# is a real commitment forever; the observed source aging changes nothing.
+#
+# M-tunable builder constant (flagged in the HYG1 report, PIPE1
+# haircut-weights style): 30 days matches the tier's design intent — an
+# observed item is context for the current stretch of work, not an archive.
+OBSERVED_EXPIRY_DAYS = 30
+
+
+def observed_expired(ev, *, promoted_ids=None, now=None) -> bool:
+    """True iff this observed event is past OBSERVED_EXPIRY_DAYS and was
+    never promoted. `promoted_ids` is the caller's precomputed
+    `_promoted_ids(events)` set (every reader below already has the event
+    list); `now` is an aware datetime for tests. An event with no parseable
+    timestamp never expires (conservative: visible beats silently-vanished)."""
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    oid = str(d.get("id") or "")
+    if oid and promoted_ids and oid in promoted_ids:
+        return False
+    ts = _ev_time(ev)
+    if not ts:
+        return False
+    try:
+        when = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_dt.timezone.utc)
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    return (now - when) > _dt.timedelta(days=OBSERVED_EXPIRY_DAYS)
 
 
 # ---------------------------------------------------------------------------
@@ -838,10 +902,11 @@ def _promoted_ids(events) -> set:
     }
 
 
-def find_corroborations(workspace_root, *, since_ts=None) -> list:
+def find_corroborations(workspace_root, *, since_ts=None, now=None) -> list:
     """Scan the event log for observed items whose corroboration has arrived.
     Returns `[{observed, corroborated_by}]` (first corroborating event per
-    item), excluding already-promoted items. One pass, never raises."""
+    item), excluding already-promoted items AND expired items (HYG1: a stale
+    observation must not promote off a fresh event). One pass, never raises."""
     events = list(_iter_ws_events(workspace_root, since_ts=since_ts))
     promoted = _promoted_ids(events)
     out = []
@@ -850,6 +915,8 @@ def find_corroborations(workspace_root, *, since_ts=None) -> list:
             continue
         oid = (obs.get("data") or {}).get("id")
         if oid and str(oid) in promoted:
+            continue
+        if observed_expired(obs, promoted_ids=promoted, now=now):
             continue
         for cand in events:
             if corroborates(obs, cand):
@@ -891,8 +958,17 @@ def promote_observed(
         return {"ok": False, "reason": f"no set-aside item matches {observed_ref!r}"}
     od = obs.get("data") or {}
     oid = str(od.get("id") or "")
-    if oid and oid in _promoted_ids(events):
+    promoted = _promoted_ids(events)
+    if oid and oid in promoted:
         return {"ok": True, "already": True}
+    if observed_expired(obs, promoted_ids=promoted):
+        # HYG1: past the 30-day window and never promoted — it no longer
+        # counts, surfaces, or promotes. The event itself stays in the log
+        # (append-only); re-observe the item fresh if it's still real.
+        return {"ok": False, "reason": (
+            f"set-aside item {observed_ref!r} is more than "
+            f"{OBSERVED_EXPIRY_DAYS} days old and expired — if it's still "
+            "real, capture it fresh from a current mention")}
 
     data: dict = {
         "title": od.get("title") or "",
@@ -905,6 +981,13 @@ def promote_observed(
             f"{corroborated_by or 'a later mention'}) — confirm before it counts"
         ),
     }
+    # Origin discriminator (ACCOUNT_SCOPE §4a): a promoted set-aside item was
+    # extracted from a connector read — stamp origin so the account-scope wall
+    # treats it STRICT. Stamped only when the observed item carried provenance
+    # (it always should — observed items require it); a legacy provenance-less
+    # one stays unstamped and gets the legacy scope_only treatment.
+    if data["source_ref"]:
+        data["origin"] = "connector"
     if parse_iso_date(due):
         data["due"] = (due or "").strip()[:10]
     else:
@@ -943,27 +1026,36 @@ def promote_observed(
 # ---------------------------------------------------------------------------
 
 
-def observed_counts(workspace_root, *, since_ts=None) -> dict:
+def observed_counts(workspace_root, *, since_ts=None, now=None) -> dict:
     """The weekly cleanup note's data: how many items the gate set aside.
-    Returns `{observed, promoted, by_reason}` for the window (all-time when
-    `since_ts` is None). Backs the one-liner
-    'N items set aside this week — review'. Never raises."""
+    Returns `{observed, promoted, expired, by_reason}` for the window
+    (all-time when `since_ts` is None). `observed` counts LIVE items only
+    (HYG1: the set-aside sentence must not inflate with 30-day-expired
+    items); `expired` is the audit-line count of never-promoted items past
+    the window. Backs the one-liner 'N items set aside this week — review'.
+    Never raises."""
     observed = 0
     promoted = 0
+    expired = 0
     by_reason: dict = {}
     events = list(_iter_ws_events(workspace_root, since_ts=since_ts))
+    promoted_ids = _promoted_ids(events)
     for ev in events:
         ts = _ev_time(ev)
         if since_ts and ts and ts < str(since_ts):
             continue
         d = ev.get("data") or {}
         if ev.get("type") == OBSERVED_TYPE:
+            if observed_expired(ev, promoted_ids=promoted_ids, now=now):
+                expired += 1
+                continue
             observed += 1
             reason = str(d.get("observed_reason") or "other")
             by_reason[reason] = by_reason.get(reason, 0) + 1
         elif ev.get("type") == "commitment" and d.get("promoted_from"):
             promoted += 1
-    return {"observed": observed, "promoted": promoted, "by_reason": by_reason}
+    return {"observed": observed, "promoted": promoted, "expired": expired,
+            "by_reason": by_reason}
 
 
 def prep_context_observed(workspace_root, attendee_person_ids, *, limit: int = 5) -> list:
@@ -984,6 +1076,8 @@ def prep_context_observed(workspace_root, attendee_person_ids, *, limit: int = 5
         d = ev.get("data") or {}
         if str(d.get("id")) in promoted:
             continue
+        if observed_expired(ev, promoted_ids=promoted):
+            continue  # HYG1: expired items never resurface in prep context
         ids, _ = _party_tokens(ev)
         if ids & want:
             hits.append(ev)

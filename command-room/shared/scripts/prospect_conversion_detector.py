@@ -30,6 +30,7 @@ Pure / substrate-only / no connectors / no mutation. stdlib only.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 import sys
 from pathlib import Path
 
@@ -151,7 +152,12 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
             oid = t.get("org") or t.get("org_id") or (t.get("affiliation_ids") or [None])[0]
             if oid:
                 thread_org[t.get("id")] = oid
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=TEXT_WINDOW_DAYS)).strftime("%Y-%m-%d")
         for ev in events:
+            ts = str(ev.get("ts") or "")
+            if ts and ts[:10] < cutoff:
+                continue  # the documented window, now enforced (lb1 review F4)
             text = _event_text(ev)
             if not _has_conversion_language(text):
                 continue

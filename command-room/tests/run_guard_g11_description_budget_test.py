@@ -17,7 +17,7 @@ when the skill loads. This guard makes both failure modes unshippable:
         characters of its description (front-loading — survives listing
         truncation). Primary trigger = the skill's first expected-case in
         tests/triggers.yaml. Skills with no trigger cases are exempt.
-  G11e  catalog total <= 45,000 chars (the whole-catalog startup budget;
+  G11e  catalog total <= CATALOG_BUDGET chars (the whole-catalog startup budget;
         59 skills at ~17k tokens preloaded per session was the disease).
 
 Full trigger families and fences live in each SKILL.md body's `## Routing`
@@ -40,13 +40,26 @@ FRONT_WINDOW = 250
 # Measured 47.6k at the v4.5.1 trim (down from 68.6k). RATCHET RULE: this
 # constant only goes DOWN (S2 body/desc diet lowers it further); raising it
 # requires M's sign-off in the PR description.
-CATALOG_BUDGET = 48000
+# 48000 -> 53000 per M's ruling 2026-07-15 (g11-budget branch): aligns with
+# the EOS fork's proven need so one constant serves canonical + forks, and
+# funds ~8 new skill descriptions after the same-branch trim pass (catalog
+# 46,566 at the raise). ~13.2k tokens preloaded at full utilization — still
+# well under the ~17k-token level that motivated G11e. Ratchet unchanged.
+CATALOG_BUDGET = 53000
 
 try:
     import yaml
 except ImportError:
-    print("SKIP - pyyaml unavailable")
-    sys.exit(0)
+    # Previously: print("SKIP - pyyaml unavailable"); sys.exit(0).
+    # exit(0) reads as PASS to run_all.py, so a missing dependency silently
+    # disabled this ship gate while the battery still reported green. A guard
+    # that cannot guard must not claim to have guarded. Matches the existing
+    # convention in run_trigger_test.py (ERROR + non-zero exit).
+    print(
+        "ERROR: pyyaml required by the G11 description-budget guard. "
+        "Install with: pip install -r requirements.txt"
+    )
+    sys.exit(2)
 
 
 def load_description(skill_dir):

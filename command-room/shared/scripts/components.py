@@ -328,6 +328,113 @@ def build_two_col_table_html(
     return "".join(parts)
 
 
+def build_table_html(
+    rows: List[List[str]],
+    *,
+    headers: Optional[List[str]] = None,
+    highlight_row_idx: Optional[int] = None,
+) -> str:
+    """Render an N-column table as an HTML fragment (SPEC OUT5 — the HTML
+    sibling of brief_writer._add_table; same validator, same semantics).
+
+    Markup-only: classes (`cr-table`, `cr-table-th`, `cr-table-row`,
+    `cr-row-hl`, `cr-table-td`) are styled by the consuming surface (the
+    premium brief template's CSS) — no palette constants here, per the
+    components-library posture. `highlight_row_idx` marks the recommended row
+    (`cr-row-hl`), matching the docx accent-tinted highlight. Zebra striping
+    is a CSS concern (nth-child), not markup."""
+    n_cols = validate_table(rows, headers, None)
+    parts: List[str] = ['<table class="cr-table">']
+    if headers:
+        parts.append(
+            '<thead><tr>'
+            + "".join(f'<th class="cr-table-th">{_html.escape(str(h))}</th>' for h in headers)
+            + '</tr></thead>'
+        )
+    parts.append('<tbody>')
+    for i, row in enumerate(rows):
+        cls = "cr-table-row cr-row-hl" if (
+            highlight_row_idx is not None and i == highlight_row_idx
+        ) else "cr-table-row"
+        cells = "".join(
+            f'<td class="cr-table-td">'
+            f'{_html.escape(str(row[j]) if j < len(row) else "")}</td>'
+            for j in range(n_cols)
+        )
+        parts.append(f'<tr class="{cls}">{cells}</tr>')
+    parts.append('</tbody></table>')
+    return "".join(parts)
+
+
+def build_matrix_html(
+    cells: Union[List[List[str]], Dict[tuple, str]],
+    *,
+    headers_row: Optional[List[str]] = None,
+    headers_col: Optional[List[str]] = None,
+    star_col_idx: Optional[int] = None,
+    flag_col_idx: Optional[int] = None,
+) -> str:
+    """Render an N×M comparison matrix as an HTML fragment (SPEC OUT5 — the
+    HTML sibling of brief_writer._add_matrix). Same normalization
+    (normalize_matrix), same star-highlight rule (star_cell_text), same
+    flag-word mapping (flag_key_for) — the flag KEY becomes a cell class
+    (`cr-flag-ok` / `cr-flag-warn` / `cr-flag-bad`) so the consuming surface
+    tints it, exactly as the docx backend maps the key to a brand tint hex."""
+    rows_data, n_cols = normalize_matrix(cells, headers_row)
+    parts: List[str] = ['<table class="cr-table cr-matrix">']
+    if headers_row:
+        head = ['<thead><tr>']
+        if headers_col:
+            head.append('<th class="cr-table-th"></th>')
+        head.extend(
+            f'<th class="cr-table-th">{_html.escape(str(h))}</th>' for h in headers_row
+        )
+        head.append('</tr></thead>')
+        parts.append("".join(head))
+    parts.append('<tbody>')
+    for i, row_data in enumerate(rows_data):
+        row_parts: List[str] = ['<tr class="cr-table-row">']
+        if headers_col:
+            label = headers_col[i] if i < len(headers_col) else ""
+            row_parts.append(
+                f'<th class="cr-matrix-rowhead">{_html.escape(str(label))}</th>'
+            )
+        for j in range(n_cols):
+            text = str(row_data[j]) if j < len(row_data) else ""
+            text = star_cell_text(text, j, star_col_idx)
+            cls = "cr-table-td"
+            if flag_col_idx is not None and j == flag_col_idx:
+                key = flag_key_for(text)
+                if key is not None:
+                    cls += " cr-" + key.replace("_", "-")
+            row_parts.append(f'<td class="{cls}">{_html.escape(text)}</td>')
+        row_parts.append('</tr>')
+        parts.append("".join(row_parts))
+    parts.append('</tbody></table>')
+    return "".join(parts)
+
+
+def build_timeline_html(points: List[Dict[str, str]]) -> str:
+    """Render the relationship-timeline strip as an HTML fragment (SPEC OUT5 —
+    the HTML sibling of brief_writer._add_timeline). Same validator (>= 2
+    points or refuse); the current point carries `cr-timeline-current` and the
+    same '  — this meeting' marker text the docx strip renders."""
+    validate_timeline(points)
+    parts: List[str] = ['<ul class="cr-timeline">']
+    for pt in points:
+        is_current = bool(pt.get("current"))
+        label = str(pt["label"]).strip()
+        if is_current:
+            label += "  — this meeting"
+        cls = "cr-timeline-label cr-timeline-current" if is_current else "cr-timeline-label"
+        parts.append(
+            f'<li><span class="cr-timeline-when">{_html.escape(str(pt["date"]).strip())}</span>'
+            f'<span class="{cls}">{_html.escape(label)}</span></li>'
+        )
+    parts.append('</ul>')
+    return "".join(parts)
+
+
 def _resolved(brand: Optional[dict], workspace_root: Optional[str],
               org_id: Optional[str]) -> dict:
     """The render theme for a standalone fragment — same precedence as the
@@ -380,4 +487,7 @@ __all__ = [
     "flag_key_for",
     "build_tile_band_html",
     "build_two_col_table_html",
+    "build_table_html",
+    "build_matrix_html",
+    "build_timeline_html",
 ]

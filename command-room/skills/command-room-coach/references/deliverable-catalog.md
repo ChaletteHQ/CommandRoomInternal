@@ -462,7 +462,28 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 
 ---
 
-## 2.8 — Un-tuned high-use skill offer (SPEC FRP1)
+## 2.8 — The pipeline snapshot (SPEC PIPE1)
+
+**Data tier:** either (works the moment ≥1 open deal thread exists; richer with accumulated deal events)
+**Delivery pattern:** direct
+**Target entity:** the open deal set — the offer NAMES at least one specific deal thread (the top-ranked one); zero open deals = entry ineligible (hard rule: never a generic "want a pipeline view?")
+**Signal condition:** ≥1 open `kind="deal"` thread. Stronger when a deal carries a rot flag (quiet past its stage window, or no next step) or ≥2 deals share an org — name the strongest signal.
+**Trigger chain:** `show my pipeline` (or `pipeline review` for the moved/stuck/closing framing)
+**Composes with:** `pipeline-tracker`
+**Synthesis spine:** open deal threads × observed activity (meetings/email/commitments on each thread) × stage clocks → ranked report: what's rotting, what's missing a next step, what's closing this month, with dollar tags only where a value was stated.
+**Wow line:** The report knows which deal is quietly dying — from the actual contact record, not a field someone forgot to update.
+**Render template:**
+> **Your pipeline snapshot**
+>
+> *Why now:* [the named signal — e.g. "[Deal] ([Org]) has been quiet [N] days in [stage]" / "[N] deals are tracked, [M] have no next step"]
+>
+> **To produce it:** Say `show my pipeline` — ranked, with one-tap moves per deal.
+>
+> *Pattern:* Pipeline snapshot — anytime, `show my pipeline`; `pipeline review` for the weekly framing.
+
+---
+
+## 2.9 — Un-tuned high-use skill offer (SPEC FRP1)
 
 **Data tier:** accumulated (a skill has accumulated real usage on factory settings)
 **Delivery pattern:** direct (a one-line offer, not a produced document)
@@ -480,6 +501,25 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 > **To do it:** Say `tune [skill]` — I'll walk the quick setup, or just tell me what you'd change.
 >
 > *Pattern:* Un-tuned high-use offer — shown once per skill; never repeated.
+
+## 2.10 — What your brain changed this week (SPEC LB1 — the Staff Meeting)
+
+**Data tier:** accumulated (the Living Brain has real activity: ≥1 auto-applied change or resolved/expired proposal in the last 7 days, OR ≥3 open proposals waiting — real counts from the change feed / queue, never invented)
+**Delivery pattern:** direct
+**Target entity:** workspace
+**Signal condition:** `change_feed.changes_since(<7d ago>)` returns ≥1 line, OR `brain_proposals.card_health_counts` shows `open >= 3`. Anchor the render in the actual counts.
+**Trigger chain:** `staff meeting` (the full one-tap surface) / `what did you change` (the read-only feed) — both route to `system-health`
+**Composes with:** `system-health` (owns the surface); the weekly `staff-meeting` scheduled chat (say `add staff meeting`) is the standing version
+**Synthesis spine:** change-feed aggregation (closures from sent mail × sweep recoveries × proposal resolutions/expiries) × the open-queue count → the week's "what ran itself" story with the queue as the ask.
+**Wow line:** The system names, with counts, what it handled without being asked — and hands over the exact list of what's waiting on a yes/no.
+**Render template:**
+> **What your brain changed this week**
+>
+> *Why now:* [N] things handled on their own this week ([the top feed line, verbatim]), and [M] suggestions are waiting on your yes/no.
+>
+> **To see it:** Say `staff meeting` — everything reviewable in one sitting, one tap each. Or `what did you change` for the read-only version.
+>
+> *Pattern:* Weekly review — say `add staff meeting` to make it a standing Monday chat.
 
 ---
 

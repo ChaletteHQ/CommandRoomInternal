@@ -38,8 +38,8 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Today's date.
 - Read entities.json (people, orgs, projects), aliases.json, events.jsonl.
 - M's `person_id` from entities.json.
-- **Discover NATIVE Calendar MCP tool ID** for the `schedule catchup [when]` handler — look for `mcp__*google_calendar_*` (`create_event`, `find_events`, etc.), EXCLUDING any `mcp__zapier_*` calendar tools. Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE: Zapier never handles calendar. If only Zapier-namespaced calendar tools are exposed, `schedule catchup` degrades to email-only (drafts the request without creating a tentative invite) and surfaces a one-time per-session note: `(Calendar invite couldn't be created — native Calendar MCP not connected. Email draft staged anyway.)`
-- Discover NATIVE Gmail MCP IDs for re-engagement / status-check / catchup-request drafts (`search_threads`, `create_draft`, `send_draft`).
+- **Resolve the calendar tools through the seam** for the `schedule catchup [when]` handler — `tool_discovery.discover_for_category("calendar", "<op>", tools, declared=connector_config.declared_backend("calendar"))` for the event-create / event-find operations, falling back to `discover_calendar_tool(tools, "<op>")` when no backend is declared (empty map = today's behavior, R4). Native calendar via the seam, Zapier-excluded — per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE Zapier never handles calendar (the seam excludes Zapier legs automatically). If no native calendar tool resolves, `schedule catchup` degrades to email-only (drafts the request without creating a tentative invite) and surfaces a one-time per-session note: `(Calendar invite couldn't be created — native Calendar MCP not connected. Email draft staged anyway.)` Never name a provider tool id directly.
+- Resolve the mail search + draft + send tools for re-engagement / status-check / catchup-request drafts via the seam (`discover_for_category("email", "<op>", tools, declared=connector_config.declared_backend("email"))` → `discover_mail_search_tool` / `discover_mail_draft_tool` fallback; send dispatch per EMAIL_DRAFT_PROTOCOL §0.5/§3c). Never name a provider tool directly. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
 - Discover Zapier-threaded-send tool per `EMAIL_DRAFT_PROTOCOL.md` §3c (limit to tools whose name OR description contains `Send Threaded Email`; never any other Zapier tool). Cached for the session. If none, fall back to native Gmail at send time.
 
 # Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
@@ -115,7 +115,7 @@ For each person in entities.json (excluding M, excluding flagged-orphan / left-c
 
    **Step A — once per fire.** Call `discover_live_check_tools()` to resolve the Gmail-search and Calendar-find tool IDs. Tool registry is stable for a session; cache the result.
 
-   **Step B — per candidate.** Invoke the discovered tools through MCP to fetch the latest Gmail thread (`from:me to:<email>` OR `from:<email>` `newer_than:7d`) AND the latest Calendar event with the candidate's email as attendee in the last 7 days. Pass both timestamps to `live_contact_check.live_contact_check()`. Use the returned `last_contact_iso` as the actual `last_interaction_date` for the cadence math below.
+   **Step B — per candidate.** Invoke the resolved tools through MCP to fetch the latest mail thread with the candidate (the **to/from-this-address within the last 7 days** intent — a DISJUNCTION: `{"any_of": [{"from_me": true, "to": "<addr>"}, {"from": "<addr>"}], "newer_than": "7d"}`, compiled per provider by `connector_adapters/mail.py` `compile_search`; on Gmail this reproduces the original sent-to-or-received-from OR-group query) AND the latest Calendar event with the candidate's email as attendee in the last 7 days. Pass both timestamps to `live_contact_check.live_contact_check()`. Use the returned `last_contact_iso` as the actual `last_interaction_date` for the cadence math below.
 
    **If a tool was not discovered or its lookup failed:** pass the `*_failed_reason` field and the helper records it in `sources_failed`. Render plain-English in the chat surface ("(Calendar lookup skipped — connector not connected)") so the user knows the flag is partial-signal rather than silently treating absence as evidence-of-absence.
 
@@ -396,7 +396,7 @@ Pass the rendered string into the data view as `header_pulse` (or directly as th
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError; print('OK')"
+python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; from chat_output_renderer import validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError; print('OK')"
 ```
 
 If stdout is not exactly `OK`, ABORT the fire and surface plain English: `(Renderer pre-flight failed — chat output deferred. Diagnostic: <error>.)` Do NOT post any widget.
@@ -411,7 +411,7 @@ If stdout is not exactly `OK`, ABORT the fire and surface plain English: `(Rende
 # (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
 import sys
 sys.path.insert(0, "shared/scripts")
-from chat_output_renderer import render_chat_output_widget
+from widget_transport import render_and_persist
 
 # Single section with all top-N cracks; pending people / dormant / entity proposals
 # go in sub_items under appropriate parent sections (or as a closing review section)
@@ -430,8 +430,11 @@ data_view = {
 # Strip None sections
 data_view["sections"] = [s for s in data_view["sections"] if s]
 
-html = render_chat_output_widget(data_view, wrapper="fragment")
-# Call mcp__visualize__show_widget with html as the widget body
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="pulse")
+# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
 The widget renders inline with per-item buttons; user clicks accumulate locally; "Apply all" fires `apply choices: [...]` consolidated payload that the `apply-choices` skill catches and dispatches through the reply handlers below.
@@ -469,7 +472,7 @@ Per Sam's Apr 30 ask: source links go in regular chat below the widget, not insi
         "date": "Apr 18, 2:11 PM",
         "subject": "NetSuite handoff timing",
         "body": "I'll send the updated mapping by end of next week — pulling in the new product hierarchy first...",
-        "url": "https://mail.google.com/mail/u/0/#all/<thread_id>",
+        "url": "<connector-returned thread URL>",
     },
     "metadata": [
         # v2.14.28+ — the customer needs enough on the card to make the action choice
@@ -478,7 +481,7 @@ Per Sam's Apr 30 ask: source links go in regular chat below the widget, not insi
         # phrases when a field genuinely lacks data — never silent-omit.
         ("Last contact", "18 days ago — Apr 18, Slack DM about Q3 OKR"),  # date + most-recent specific interaction (email subject, meeting topic, Slack thread, decision touched). NOT just "18 days ago" alone.
         ("Why they matter", "Direct report · NetSuite migration lead · Q3 OKR owner"),  # relationship + project + role. Pulled from entities.json person record. If person has no role / org / project tied → surface "(no role tracked yet — `add to my list` to triage)".
-        ("Open context", "[NetSuite handoff still pending — Bo owes the mapping doc](https://mail.google.com/...)"),  # what's specifically open between you (commitment owed, dropped thread, decision pending). Markdown link to the open thread / commitment source. If nothing's tracked → surface "(no open thread tracked — `Investigate` will pull cross-references)".
+        ("Open context", "[NetSuite handoff still pending — Bo owes the mapping doc](<connector-returned thread URL>)"),  # what's specifically open between you (commitment owed, dropped thread, decision pending). Markdown link to the open thread / commitment source. If nothing's tracked → surface "(no open thread tracked — `Investigate` will pull cross-references)".
         ("What's at stake", "NetSuite cutover Aug 4 — handoff doc gates 3 downstream tasks"),  # the consequence of NOT following up. Pulled from project/commitment metadata. If no clear stake → surface "(warm relationship at risk of going cold — typical pattern is silence → drift → lost over 60 days)".
     ],
     "actions": ["1 investigate", "1 draft re-engagement", "1 schedule catchup [when]", "1 resolved", "1 snooze 3d", "1 add to my list"],  # v2.14.38+ — standardized deferral cluster: snooze fixed at 3 days, add-to-my-list replaces skip.
@@ -495,11 +498,11 @@ When the Pulse item is surfacing a person because of a specific email thread, Gr
 - `date` — localized timestamp of the latest message (or meeting date for transcripts)
 - `subject` — message subject (or meeting title)
 - `body` — first ~800 chars of the message body (or relevant transcript section); truncate with ellipsis if longer
-- `url` — `https://mail.google.com/mail/u/0/#all/<thread_id>` for Gmail; `https://notes.granola.ai/d/<note_id>` for Granola
+- `url` — the deep-link the source connector returns (mail thread URL / transcript URL); `connector_adapters/mail.py::deep_link` prefers the returned URL and degrades to no link if none (N8) — never synthesize a provider host
 
-Pull via Gmail MCP `get_thread` or Granola MCP `get_meeting_transcript` at fire time. If the thread can't be retrieved (deleted, permission error), populate whatever fields ARE available (subject + author + date if known); body becomes `"(thread body unavailable — open in Gmail to read)"` and url stays populated so the customer can still click through. Don't silent-skip.
+Pull via the seam-resolved mail thread-fetch tool (`discover_for_category("email", "get_thread", …)` → `discover_mail_thread_fetch_tool` fallback) or the transcript tool (`discover_transcript_tool`) at fire time. If the thread can't be retrieved (deleted, permission error), populate whatever fields ARE available (subject + author + date if known); body becomes `"(thread body unavailable — open it in your mail client to read)"` and url stays populated so the customer can still click through. Don't silent-skip.
 
-Renderer wraps `original_thread` in a collapsible `<details>` block above the metadata, with a "↗ Open in Gmail" / "↗ Open in Granola" link prominently inside. Mirrors the inbox-triage accordion one-for-one — same UX the customer already knows from inbox. Per M's 2026-05-07 testing on Sam's bare card: *"there was not a link to the email, the description was very sparse."* Without the `original_thread` block + link, the Pulse card surfaces a person tied to an old thread but gives the customer no way to see that thread without re-prompting.
+Renderer wraps `original_thread` in a collapsible `<details>` block above the metadata, with a "↗ Open in [the source connector]" link prominently inside (label from the connector's returned URL host / provider label — never a hardcoded provider name). Mirrors the inbox-triage accordion one-for-one — same UX the customer already knows from inbox. Per M's 2026-05-07 testing on Sam's bare card: *"there was not a link to the email, the description was very sparse."* Without the `original_thread` block + link, the Pulse card surfaces a person tied to an old thread but gives the customer no way to see that thread without re-prompting.
 
 **Self-commitments + dormant items with no traceable source** (no email/transcript anchoring the cadence break — pure cadence-decay flag) → no `original_thread` field, no `<details>` block. Plain card. The chat output's Sources section at the end of the turn carries `(cadence-decay flag, no source thread)` provenance instead.
 
@@ -630,7 +633,7 @@ The action surface is a `show_widget`-rendered button group per item, with all s
 
 Sub-letter items (`a/b/c` for pending review records, `d1/d2` for dormant transitions, `e1/e2` for entity proposals) batch alongside main items in the same widget. Each sub-letter item gets its own button row inside the parent item's group; selections from sub-letters and main items are submitted together in one `apply choices:` payload.
 
-**No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the renderer; post what it returns — byte-for-byte.
+**No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the transport (`render_and_persist`); relay its page bytes (`transport["html"]`) as `widget_code` — the persisted render is sealed.
 
 **Required visual structure for ALL Pulse items (consistent with rest of orchestrators):**
 
@@ -703,7 +706,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 ## Person dormancy / pattern-break actions
 
 - `N investigate` → fire `tell me about [name]` chat skill. Cross-reference report.
-- `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — Send / Edit then send / To drafts / Edit then draft / Skip available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Noah's email — missing in entities.json, fill before send]`. The user can fill the To field via the multi-field edit affordance.
+- `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Noah's email — missing in entities.json, fill before send]`. The user can fill the To field via the multi-field edit affordance.
 - `N schedule catchup [when]` (v2.12.4+ free-text input) → parse the user's typed natural-language window (`next Tuesday afternoon`, `this Friday at 4pm`, `sometime next week`). If parseable to a specific time, create a tentative calendar invite at that time + draft the request email; if just a window, draft the request asking for the user's stated availability. Draft surfaces in the consolidated response widget.
 - `N resolved` (v2.14.1+ — dropped `[reason]`; v2.14.38+ unified verb across all surfaces) → the "expected / just busy" outcome on a person-dormancy item. NO input affordance — clean one-click action. Display label: `Resolved`. Confirmation: `✓ Resolved — <name>'s alert suppressed for 14 days.` Writes:
   1. **The 14-day suppression (made explicit, Phase 6).** Write a `dont_forget_feedback` event `{data: {person_id, feedback: "just_busy"}}` — this is the event Phase 3 step 6 already reads to skip the person for 14 days, and the event insight-generator Pass 14 mines. (Historically the 14-day suppression was implied; Phase 6 names the writer so the read/write contract is one thing. Also stamp `data.fingerprint`/`surface`/`item_class` per apply-choices Step 3f so Loop 2 can key on it.)

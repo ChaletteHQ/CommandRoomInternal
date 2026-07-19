@@ -134,6 +134,9 @@ def build_meeting_commitment_event(
         "kind": kind,
         "due": due_str,
         "source_ref": source_ref,
+        # Origin discriminator (ACCOUNT_SCOPE §4a): meeting-transcript capture
+        # is a connector read — the account-scope wall treats it STRICT.
+        "origin": "connector",
     }
     if no_due:
         data["no_due"] = True

@@ -27,7 +27,15 @@ TIERS (run in this order; --tier <name> runs just one)
            structurally cannot (per feedback_static_analysis_vs_runtime_exercise).
 
 Each test file is run as its own subprocess; a non-zero exit = fail (house
-convention, see any run_*_test.py). stdlib only, no external deps.
+convention, see any run_*_test.py).
+
+DEPENDENCIES: `pip install -r requirements.txt` (repo root) before running.
+The battery is stdlib-only EXCEPT for pyyaml, tzdata and jsonschema. That claim
+used to read "stdlib only, no external deps", which was untrue and cost real
+debugging time: two suites responded to a missing dependency by printing SKIP
+and exiting 0, so the battery reported green while those checks silently did not
+run. Both now fail loudly. If you add a suite with a third-party import, declare
+it in requirements.txt and make the absence loud.
 
 USAGE
   python tests/run_all.py                 # full battery, all tiers
@@ -40,6 +48,7 @@ Exit code is non-zero if ANY test fails — safe to wire into a ship gate.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -98,6 +107,28 @@ def discover() -> dict[str, list[Path]]:
     return tiers
 
 
+def _child_env() -> dict[str, str]:
+    """Env for each suite subprocess, with UTF-8 pinned.
+
+    Suites print ✓ and → as they report. Those glyphs have no cp1252 mapping, so
+    on Windows — where cp1252 is the locale encoding and stdout here is a pipe,
+    not a console — a suite dies with UnicodeEncodeError *while printing that a
+    check passed*. Non-zero exit, so the runner scores it FAIL: the assertion was
+    green and the announcement killed it. It presents as ~30 suites red at once
+    with no real defect behind any of them.
+
+    DEVELOPMENT.md and the CI job both set PYTHONUTF8/PYTHONIOENCODING, but a
+    developer who types the documented `python tests/run_all.py` gets the red wall
+    anyway. Same lesson as the dependency note above: a failure mode this
+    misleading should be impossible to trigger, not documented. Setting it here
+    makes the env vars belt-and-braces rather than load-bearing.
+
+    Direct single-suite runs (`python tests/run_foo_test.py`) still need the env
+    vars — this only covers suites spawned through the runner.
+    """
+    return {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
 def _last_meaningful_line(text: str) -> str:
     for line in reversed(text.strip().splitlines()):
         if line.strip():
@@ -114,6 +145,9 @@ def run_suite(path: Path) -> tuple[bool, str, float]:
             cwd=str(TESTS_DIR.parent),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_child_env(),
             timeout=300,
         )
     except subprocess.TimeoutExpired:
@@ -131,6 +165,12 @@ def run_suite(path: Path) -> tuple[bool, str, float]:
 
 
 def main() -> int:
+    # The runner echoes each suite's summary line, and those lines carry the same
+    # ✓/→ glyphs. Pinning UTF-8 on the children alone would just move the
+    # UnicodeEncodeError up here — the runner would die reporting a pass.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
     args = sys.argv[1:]
     quiet = "--quiet" in args
     tier_filter = None

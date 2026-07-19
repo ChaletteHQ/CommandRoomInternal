@@ -1,6 +1,6 @@
 ---
 name: meeting-notes
-description: "Process meeting notes from Granola or pasted text into structured artifacts — decisions, action items, SESSION_NOTES + Master Tracker updates. Triggers: 'process meeting', 'process the last call', 'process the call', 'meeting notes', 'meeting notes from', 'analyze this call', 'debrief from', 'log the meeting', 'summarize the call', 'summarize the meeting', 'action items from the meeting', 'action items from the call'. Also handles first-run personalization settings — use when the user says 'tune meeting notes', 'tune meeting-notes', 'show meeting notes settings', 'show meeting-notes settings', 'reset meeting notes to defaults', 'reset meeting-notes to defaults'. DOES NOT fire on 'follow up', 'draft follow-ups', 'close the loop' — those go to follow-up-ritual. DOES NOT fire on 'prep me for' — that goes to call-prep."
+description: "Process meeting notes from Granola or pasted text into structured artifacts — decisions, action items, SESSION_NOTES + Master Tracker updates. Triggers: 'process meeting', 'process the last call', 'process the call', 'meeting notes', 'meeting notes from', 'analyze this call', 'debrief from', 'log the meeting', 'summarize the call', 'summarize the meeting', 'action items from the meeting', 'action items from the call'. Plus 'tune meeting-notes'. DOES NOT fire on 'follow up', 'draft follow-ups', 'close the loop' — those go to follow-up-ritual. DOES NOT fire on 'prep me for' — that goes to call-prep."
 ---
 
 ## Skill Boundary (v2.1)
@@ -644,7 +644,7 @@ Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N co
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
 cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget; print('OK')"
+python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; print('OK')"
 ```
 
 If stdout is not exactly `OK`, ABORT and surface plain English: `(Quick hiccup on my side — couldn't post the formatted output. Say "process meeting" again in a moment and I'll retry.)` Do NOT fall back to hand-written prose.
@@ -653,7 +653,7 @@ If stdout is not exactly `OK`, ABORT and surface plain English: `(Quick hiccup o
 # Inside a python3 -c block invoked after `cd "$PLUGIN_ROOT"` (see preamble above)
 import sys
 sys.path.insert(0, "shared/scripts")
-from chat_output_renderer import render_chat_output_widget
+from widget_transport import render_and_persist
 
 data_view = {
     "widget_mode": "all_batch_widget",
@@ -662,13 +662,16 @@ data_view = {
     "sections": [{"title": None, "count": None, "items": [meeting_item]}],
     "save_confirmation": None,
 }
-html = render_chat_output_widget(data_view, wrapper="fragment")
-# Call mcp__visualize__show_widget with html as the widget body
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="meeting-notes")
+# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
 **Open-items surface — `show_widget` all-batch button widget (v2.10.9+).** Open items are M-only resolutions (a clarification needed, a decision M must make, an action with no resolved owner). They render as a `show_widget`-rendered card with per-item button rows; selections accumulate in widget local state, one "Apply all" button fires the consolidated `apply choices: [...]` payload that `apply-choices` skill catches and dispatches. See `shared/CHAT_ACTION_WIDGET.md` for the full widget spec. Probe results: `PROBE_RESULTS_past-meetings-open-items.md` (workspace root).
 
-**Posting rule:** the post is the rendered widget HTML, surfaced via `mcp__visualize__show_widget`. Do NOT paraphrase, do NOT compose chat strings, do NOT prepend or append narration. The widget IS the surface.
+**Posting rule:** the post is the rendered widget, surfaced via `mcp__visualize__show_widget` fed the persisted page bytes as `widget_code` per § Transport (never hand-composed HTML). Do NOT paraphrase, do NOT compose chat strings, do NOT prepend or append narration. The widget IS the surface.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "Got it — {brain_name} processed [Meeting]. Brief: Clean recap · no internal asks."
@@ -746,3 +749,9 @@ The full 12-step cascade. Use when the user says "process deep", "full analysis"
 - Does not write person records or project records directly — surfaces suggestions that `people-crm` / `workspace-manager` execute.
 - Does not run as a scheduled task — fires only on explicit user request with a transcript in hand.
 - Does not store raw transcript text in events.jsonl — summaries and source refs only.
+
+## Routing (full trigger corpus)
+
+The settings-trigger family for this skill, relocated verbatim from the pre-G11-diet description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+> Also handles first-run personalization settings — use when the user says 'tune meeting notes', 'tune meeting-notes', 'show meeting notes settings', 'show meeting-notes settings', 'reset meeting notes to defaults', 'reset meeting-notes to defaults'.

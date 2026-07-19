@@ -1,6 +1,6 @@
 ---
 name: insight-generator
-description: "Weekly synthesis pass that surfaces patterns the CEO wouldn't compute themselves and runs the product's learning reviews. Fires on: 'weekly insights', 'run insights', 'generate insights', 'what am I missing', 'synthesize the week', 'what should I pay attention to', 'cross-project patterns', 'what's drifting', 'show me the insight report', 'review project proposals' / 'new project proposals', 'review classifications', and as the Sunday scheduled weekly-insights task. Produces the analytical views (timeline, relationships, commitment aging, dormancy, themes) plus batched confirm/edit/skip proposals from the learning passes: classification and voice reviews, project/org proposals, sender-priority and dismissal-pattern rules, confidence calibration, chase policy, and extraction hints. Does NOT fire on 'list projects' (list-active) or coaching asks like 'what should I focus on' (command-room-coach). Pass-by-pass detail and fences: Routing section in the body."
+description: "Weekly synthesis pass that surfaces patterns the CEO wouldn't compute themselves and runs the product's learning reviews. Fires on: 'weekly insights', 'run insights', 'generate insights', 'what am I missing', 'synthesize the week', 'what should I pay attention to', 'cross-project patterns', 'what's drifting', 'show me the insight report', 'review project proposals' / 'new project proposals', 'review classifications', and as the maintenance task's Sunday insights job. Produces the analytical views (timeline, relationships, commitment aging, dormancy, themes) plus batched confirm/edit/skip proposals from the learning passes. Does NOT fire on 'list projects' (list-active) or coaching asks like 'what should I focus on' (command-room-coach). Pass-by-pass detail and fences: Routing section in the body."
 ---
 
 # Insight Generator — Command Room (v2.1)
@@ -57,6 +57,9 @@ The two interactive passes remain the main write paths:
 **Loop 5 (extraction hints, Phase 6 Round 3) — appends:**
 - One `extraction_hint_proposal` event per user action; the approved hint appends to `_hq/data/extraction-hints.md` via `extraction_hints.append_extraction_hint`. Decision + cooldown to `proposal_feedback.jsonl`.
 
+**Pass 16 (exemplar structure review, SPEC OUT8) — appends:**
+- One `exemplar_update_proposal` event per user action; the approved skeleton is written to `_hq/exemplars/<kind>/exemplar_1.md` via `exemplars.promote_workspace_exemplar` (workspace-side — NEVER the plugin's shipped seeds; the previous version rotates to `exemplar_2.md`; the scrub gate replaces entity names with placeholders and re-runs the leak scan before the write — residual findings REFUSE the write). Decision + cooldown to `proposal_feedback.jsonl`.
+
 All appends follow `shared/WORKSPACE_API.md` — reserve next seq, append atomically, regenerate affected views (MASTER_TRACKER, TIMELINE), log any failure to `_hq/CONFLICTS.md`.
 
 **Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` (the `dormancy_reviewed_at` field updates) MUST use `shared/scripts/atomic_write.py atomic_write_json`. ALL appends to `events.jsonl` and `classifier_feedback.jsonl` MUST use `atomic_append_jsonl`. Hand-rolled writes are forbidden — see `shared/WORKSPACE_API.md` § "Write atomically" + § "Append Protocol".
@@ -95,7 +98,7 @@ If M is the user AND M is building the Command Room plugin, the model may be tem
 ## When it fires
 
 1. **Explicit trigger:** user says "weekly insights", "what am I missing", "run insights", "synthesize the week", "what should I pay attention to", "show me the insight report", "generate insights".
-2. **Scheduled:** Sunday 19:00 workspace-local by default. Runs silently; result available on next session. See scheduled-tasks/ configuration.
+2. **Scheduled:** a job inside the `maintenance` background task (MAINT1) — due at the Sunday 5:45 PM fire, ordered AFTER the cleanup job so synthesis reads a settled substrate; a missed Sunday self-heals at the next fire. Runs silently; result available on next session.
 3. **On demand during briefings:** if `workspace-manager` detects the last insight report is >7 days old during a "what's going on" pass, it offers: "Want me to run the weekly insights while you catch up?"
 
 Do NOT fire on a fresh workspace (<14 days of events). There's not enough data to find patterns. Instead, respond: "Not enough history yet — give me about two weeks of activity and I'll start spotting patterns. So far I have [N] days."
@@ -244,7 +247,7 @@ This is the **only user-interactive pass** in the skill. It exists because silen
 
 Cap the review batch at **25 events** per session. If more exist, queue the excess for the next pass.
 
-**Review UX — a widget, not a typed-reply table (P1.1/P1.5 2026-07-02; the pre-v3.13.0 "reply with row-# + action" grammar is retired — it could never render through the validator).** Render via `render_chat_output_widget()` as REVIEW items, one per candidate. The layout below defines CONTENT only — what each item carries — never the transport:
+**Review UX — a widget, not a typed-reply table (P1.1/P1.5 2026-07-02; the pre-v3.13.0 "reply with row-# + action" grammar is retired — it could never render through the validator).** Render via `render_chat_output_widget()` as REVIEW items, one per candidate, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport). The layout below defines CONTENT only — what each item carries — never the transport:
 
 ```
 Item content (per candidate):
@@ -310,7 +313,7 @@ This means the CEO has skipped or missed three-plus weekly passes. Behavior:
 - No `classification_review` event is ever emitted speculatively. If the user closes the session mid-review, nothing is persisted — the same candidates surface next run (they'll still be provisional).
 
 **I. Alternative-project ties:**
-- If two alternative projects have equal signal strength, render both as "A" and "B" in order of (a) most-recent `last_activity` on the project, (b) alphabetical `display_name`. Never render three alternatives — if more exist, collapse the 3rd+ into a footnote "(+N more; say `expand row <#>` to see)."
+- If two alternative projects have equal signal strength, render both as "A" and "B" in order of (a) most-recent OBSERVED activity on the project (derive via `thread_activity.derive_thread_activity` — never the deprecated `last_activity` record stamp, which no writer maintains; `first_seen` is the zero-event fallback), (b) alphabetical `display_name`. Never render three alternatives — if more exist, collapse the 3rd+ into a footnote "(+N more; say `expand row <#>` to see)."
 
 **J. No alternatives exist (low-confidence event with no credible alt):**
 - Render the item's alternatives as "Could also be: a new project / not tied to any project". An `edit [change]` input of "new project" spawns one via workspace-manager (this skill hands off, doesn't create projects itself); "no project" / "not tied to any project" files it workspace-level.
@@ -402,7 +405,7 @@ For create (a `confirm` on a "New project" recommendation, or an `edit [change]`
 
 For merge (a `confirm` on a "Fold into: X" recommendation, or an `edit [change]` naming a project):
 1. Hand off to `workspace-manager` with payload: `{action: "reclassify_events", seqs: [the orphan event seqs that fed the proposal], new_primary_thread_id: merge_target}`.
-2. workspace-manager appends `reclassification` events (one per seq) and updates `last_activity` on the target.
+2. workspace-manager appends `reclassification` events (one per seq). (The reclassification events themselves ARE the recency signal — activity readers derive from events; nothing updates the deprecated `last_activity` record stamp, and no writer ever has — this sentence used to make the F-61 false-writer claim.)
 3. Back in this skill: append a `project_proposal` event (`{user_action: "merged", target_project_id, fingerprint}`) and a `classifier_feedback.jsonl` row.
 
 For decline (`not relevant`):
@@ -628,9 +631,9 @@ All the deterministic work is in `shared/scripts/triage_feedback.py` — this pa
 
 ---
 
-### Global proposal cap (Phase 6 — passes 8–15 share one weekly widget)
+### Global proposal cap (Phase 6 — passes 8–16 share one weekly widget)
 
-Passes 9, 10, 11, 13, 14 (and later 15) each keep their own 3-cap. On top of that, the weekly review honors ONE global ceiling so a busy week doesn't bury the CEO under a dozen prompts at once. `proposal_ledger.GLOBAL_PROPOSAL_CAP` (7) is that ceiling. Render the proposing passes in priority order — highest-leverage daily-surface passes first (13 sender-priority, 14 surface-preferences), then 9/10/11, then the Round-2 calibration passes below — and before rendering each pass call `proposal_ledger.remaining_global_slots(rendered_so_far)`; a pass renders at most `min(3, remaining)` proposals and queues the rest to its own `.*_queue.jsonl` for next week. The CEO sees a coherent short review, not five stacked widgets.
+Passes 9, 10, 11, 13, 14 (and later 15, 16) each keep their own 3-cap. On top of that, the weekly review honors ONE global ceiling so a busy week doesn't bury the CEO under a dozen prompts at once. `proposal_ledger.GLOBAL_PROPOSAL_CAP` (7) is that ceiling. Render the proposing passes in priority order — highest-leverage daily-surface passes first (13 sender-priority, 14 surface-preferences), then 9/10/11, then the Round-2 calibration passes below — and before rendering each pass call `proposal_ledger.remaining_global_slots(rendered_so_far)`; a pass renders at most `min(3, remaining)` proposals and queues the rest to its own `.*_queue.jsonl` for next week. The CEO sees a coherent short review, not five stacked widgets.
 
 ---
 
@@ -669,6 +672,16 @@ The substrate's front door improves from its own documented failures. Two miss c
 **Capture (writers tag; see the consumer skills):** decision-log tags a manually-logged decision `data.extraction_miss=True` when `extraction_hints.find_recent_meeting(new_event, meeting_events)` finds a processed meeting within 24h sharing an attendee (the manual commitment-log path uses the same helper); the inbound CRU leg (commitments orchestrator) marks `data.resolution_miss=True` when `is_resolution_miss(reply)` fires on a reply that carried NO CRU match — that leg already reads the reply body, so it is the privacy-correct home (reconcile-sent's outcome watch stays metadata-only); and the Phase-5 session-sweep's recoveries (`source_ref = "session:<id>"`) that overlap a processed meeting are consumed as extraction-miss signal too.
 
 **Monthly.** `load_misses(workspace_root, since_iso=<window>)` (all three sources) → `cluster_misses(rows, min_cluster=3)` → `propose_hints(clusters, existing_hints=extraction_hints.load_extraction_hints(workspace_root), cooldown_fingerprints=…, cap=3)`. Render one REVIEW item per proposal (*"I've missed 4 similar items you had to log by hand — want me to learn to catch that phrasing?"*), `confirm`/`edit [change]`/`skip`. On `confirm`, `append_extraction_hint(workspace_root, proposal["hint"])` (additive; deduped), append an `extraction_hint_proposal` event, log to `proposal_ledger` (`loop5_extraction_hints`). Decline → 60-day cooldown. Consumers: meeting-notes reads the hints at extraction time; cru_match reads them for resolution language.
+
+---
+
+### Pass 16 — Exemplar structure review (weekly, interactive, SPEC OUT8)
+
+Voice calibration (Pass 11) learns WORDS from corrections; this pass learns STRUCTURE the same way. Composers capture structural corrections — the user reorders, drops, or reshapes a delivered document — to `_hq/exemplars/corrections-<kind>.jsonl` (via `exemplars.append_structural_correction`; reconcile-sent's sent-doc diff and the composers' "make it like this" feedback are the two capture sites). When a pattern repeats, this pass proposes updating that kind's workspace exemplar — the structural gold standard every composer anchors on (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor"). Deterministic work is in `shared/scripts/exemplars.py`.
+
+**Weekly.** `load_structural_corrections(workspace_root)` → `propose_exemplar_updates(rows, cooldown_fingerprints=proposal_ledger.active_cooldowns(workspace_root, "pass16_exemplar_structure", now_iso=…), cap=3)`. Floor: **≥3 same-direction corrections on one kind** (same kind + direction + section). Render one REVIEW item per proposal — the helper's `plain` line only (*"You've moved the KPI table above the narrative in 3 recent board pack documents — make that the standard layout?"*), `confirm`/`edit [change]`/`skip`. On `confirm`, build the amended skeleton — PREFER the current exemplar with the confirmed change applied (it is already synthetic); when borrowing from the delivered doc, take STRUCTURE only and replace every name, figure, and claim with placeholders YOURSELF before promoting (the scrub gate only knows the workspace entity list — an untracked counterparty name or deal figure is yours to strip). Then run `exemplars.residual_name_candidates(new_text)` and put BOTH lists on the confirm card: the scrub replacements and the residual name-shaped tokens the entity list cannot vouch for; anything the user identifies as real gets replaced with a placeholder, never confirmed through. Write via `exemplars.promote_workspace_exemplar(workspace_root, kind, new_text, confirmed_residuals=<the user-confirmed list>)` — the scrub gate replaces entity names with placeholders, re-runs the leak scan, and refuses on any unconfirmed residual candidate; a refusal is surfaced honestly, never bypassed. The previous exemplar rotates to `exemplar_2.md`. Append an `exemplar_update_proposal` event (`{user_action, fingerprint, kind}`), log to `proposal_ledger` (`pass16_exemplar_structure`). Decline → 60-day cooldown; skip → soft defer, no cooldown. Atomic-reject + rollback as Pass 9.
+
+⛔ **Never a silent write:** shipped seeds under the plugin's `shared/exemplars/` are NEVER touched from a workspace; the ONLY exemplar writer is `promote_workspace_exemplar` after an explicit user confirm on this pass's widget (or the user asking for the change in so many words). Deleting `_hq/exemplars/<kind>/` is the reset — clean fallback to the shipped seed.
 
 ---
 
@@ -764,7 +777,7 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 
 ## Schedule Configuration
 
-The `weekly-insights` task (silent, Sun 7 PM) is registered by **enable-command-room-schedules Step 1.G** and back-filled by **command-room-update-bridge**. Do not register it from this skill; cadence changes go through **change-schedule**.
+The weekly-insights pass runs as a JOB inside the `maintenance` task (MAINT1), which is registered by **enable-command-room-schedules Step 1.D** and back-filled by **command-room-update-bridge**. Do not register anything from this skill; cadence changes go through **change-schedule** (moving `maintenance` moves all its slots; `pause weekly insights` pauses just this job).
 
 On the next session after a scheduled run, workspace-manager surfaces: "Your weekly insights from [date] are ready — want to see them?"
 

@@ -295,6 +295,9 @@ def build_slack_commitment_event(
         "source_ref": source_ref,
         # No parent event exists for a Slack message (unlike the meeting/email
         # legs) — the permalink IS the provenance; readers trace via source_ref.
+        # Origin discriminator (ACCOUNT_SCOPE §4a): Slack capture is a
+        # connector read — the account-scope wall treats it STRICT.
+        "origin": "connector",
     }
     if no_due:
         data["no_due"] = True

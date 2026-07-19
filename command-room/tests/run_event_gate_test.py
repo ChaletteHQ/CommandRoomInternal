@@ -231,7 +231,7 @@ def test_type_normalization():
         "ts": "2026-07-01T12:00:00Z",
         "type": "commitment_update",  # known drift spelling
         "source_skill": "orchestrator-commitments",
-        "data": {"commitment_id": "commitment_seq_142", "due": "2026-07-15"},
+        "data": {"commitment_id": "commitment_seq_142", "due": "2026-07-15"},  # DATE_GUARD_OK: event-shape validation only; the gate derives no status
     }
     atomic_append_jsonl(path, drift)
     ev = _read(path)[0]

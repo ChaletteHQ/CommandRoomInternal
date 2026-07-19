@@ -93,6 +93,13 @@ def load_dormancy_signals(workspace_root, window_days: int = 14) -> List[dict]:
     evidence means the relationship isn't actually cooling anymore)."""
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     events, _ = load_events_defensively(events_path)
+    # R5 reader-honor: dormancy never counts (or resurfaces) a scope-masked
+    # account's history. Defensive — failure leaves events unfiltered.
+    try:
+        from account_scope_gate import filter_masked_events
+        events = filter_masked_events(events)
+    except Exception:
+        pass
 
     now = _parse_ts(_now_iso())
     floor = None

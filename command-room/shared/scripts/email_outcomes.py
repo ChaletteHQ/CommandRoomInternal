@@ -101,6 +101,11 @@ def load_pending_tracked_sends(
         if floor_dt is not None and sent_dt is not None and sent_dt < floor_dt:
             continue
         d = ev.get("data") or {}
+        # Dual-format reads (connector-agnostic-v1): legacy id fields first
+        # (every historical row), structured provenance as the fallback for
+        # new-format rows (provenance.native_id = message id,
+        # provenance.thread_native_id = thread id).
+        prov = d.get("provenance") if isinstance(d.get("provenance"), dict) else {}
         pending.append(
             (
                 sent_dt,
@@ -108,8 +113,8 @@ def load_pending_tracked_sends(
                     "sent_event_seq": seq,
                     "draft_ref": d.get("draft_event_seq"),
                     "recipient": d.get("recipient"),
-                    "gmail_thread_id": d.get("gmail_thread_id"),
-                    "gmail_message_id": d.get("gmail_message_id"),
+                    "gmail_thread_id": d.get("gmail_thread_id") or prov.get("thread_native_id"),
+                    "gmail_message_id": d.get("gmail_message_id") or prov.get("native_id"),
                     "sent_ts": sent_ts,
                 },
             )

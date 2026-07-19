@@ -171,6 +171,12 @@ def detect_stalled_projects(workspace_root: str | Path) -> list[StallFlag]:
     flags: list[StallFlag] = []
 
     for thread in threads:
+        # PIPE1 fence (D7): kind='deal' threads report through the pipeline
+        # surface (deal_health's per-stage rot thresholds) — flagging them
+        # here too would double-alarm the same quiet deal with the wrong,
+        # project-generic threshold.
+        if thread.get("kind") == "deal":
+            continue
         flag = _evaluate_thread(thread, cfg, last_activity_by_thread, now)
         if flag is not None:
             flags.append(flag)

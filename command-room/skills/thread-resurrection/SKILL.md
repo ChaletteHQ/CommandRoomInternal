@@ -154,13 +154,15 @@ cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
-from chat_output_renderer import render_chat_output_widget, validate_rendered_widget
+from widget_transport import render_and_persist
 data_view = json.loads('''<DATA_VIEW_JSON>''')
-html = render_chat_output_widget(data_view, wrapper='fragment')
-validate_rendered_widget(html)
-print(html)
+transport = render_and_persist(data_view=data_view, wrapper='fragment',
+                               persist_dir='<WORKSPACE>/_hq/.system/widgets',
+                               name_hint='thread-resurrection')
+print(transport['html'])
 "
-# Pass to mcp__visualize__show_widget byte-for-byte.
+# Pass the rendered HTML (transport["html"]) to mcp__visualize__show_widget as widget_code (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
 **Action semantics** (per `apply-choices`):

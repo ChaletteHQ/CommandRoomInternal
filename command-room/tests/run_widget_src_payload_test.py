@@ -46,7 +46,10 @@ def main():
     html = widget("inbox")
     check("crSrc carries the data view's source_skill", 'const crSrc = "inbox";' in html)
     check("Apply-all stamps src on every choice", "choice.src = crSrc" in html)
-    check("orphan-note synthesized choices carry src too", "orphanChoice.src = crSrc" in html)
+    # T2.2 golfed the orphan-capture block; the synthesized choice variable
+    # is `c` and still stamps src before push.
+    check("orphan-note synthesized choices carry src too",
+          "action: 'add to my list'" in html and "c.src = crSrc" in html)
 
     print("== legacy fallback preserved")
     html2 = widget(None)

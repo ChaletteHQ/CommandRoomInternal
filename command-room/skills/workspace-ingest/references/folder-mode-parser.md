@@ -133,8 +133,12 @@ data_view = {
     ],
     "save_confirmation": None,
 }
-html = render_chat_output_widget(data_view)
-# Post via mcp__visualize__show_widget
+from widget_transport import render_and_persist
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="workspace-ingest")
+# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
 **Action semantics:**

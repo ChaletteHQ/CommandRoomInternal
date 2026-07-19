@@ -48,7 +48,7 @@ The number is still `compute_value_receipt`'s, in code. This section is *why* th
 |------|---------|
 | **On-demand (always works)** | "value receipt", "show me the receipt", "monthly value receipt" → previous full calendar month (or "value receipt this month" for month-to-date) |
 | **On-demand quarterly** | "quarterly value receipt", "quarterly roi receipt" → previous full calendar quarter, with a month-by-month table |
-| **Scheduled** | the `monthly-report` task, 7 AM on the 1st — runs the operator report AND this receipt for the previous month; on a quarter boundary also the quarterly roll-up |
+| **Scheduled** | the monthly-report job inside the `maintenance` task (MAINT1), due at the first fire on/after the 1st — runs the operator report AND this receipt for the previous month; on a quarter boundary also the quarterly roll-up |
 
 The on-demand trigger ALWAYS works, even if the scheduled fire is flaky.
 Scheduled-task delivery reliability is not yet something we lean on hard, so the
@@ -168,6 +168,19 @@ make_brief(
 person, project, or topic; if you find yourself wanting to, that content belongs
 in `operator-report`, not here. `value_receipt` is intentionally NOT an
 executive-header kind — it takes no `exec_header` and no `asks`.
+
+**Format selection (SPEC OUT5).** Before rendering, resolve the backend:
+`output_profile.resolve_format_for_kind("value_receipt", workspace_root,
+override=...)` — an explicit "as a doc" / "as HTML" in the ask beats the
+profile for that render. `"docx"` (the unconfigured default) → `make_brief`
+exactly as above. `"premium_html"` → `shared/scripts/premium_html.py`
+`make_premium_brief(brief_kind="value_receipt", ...)` with the SAME
+`receipt["sections"]` payload and the same `footer_text` (one assembly, two
+backends — the identical gate stack runs on both, parity-pinned by G16, incl.
+the leak scan this doc's privacy posture leans on). Output: the same
+`_hq/operator-reports/` path with `.html`; link via `get_brief_artifact_url()`;
+CHECK the file exists on disk after the call before linking. Never
+hand-compose HTML around the chokepoint.
 
 ### Step 5 — Surface the deliverable link
 

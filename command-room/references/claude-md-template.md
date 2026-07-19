@@ -27,6 +27,12 @@
 - "end session" always updates session notes for every project touched — never skip
 - Ask 2-3 grounded questions per interaction — specific, not generic
 - When the answer might be in the hot cache below, use it before reading files
+- Every email you compose — a draft, a reply, a follow-up, or an email that comes up mid-task as part of something bigger — goes through the **email-writer** skill, end to end. It carries my saved voice, length, and review rules; composing anywhere else loses all of them.
+- Never write email text directly with a mail connector tool. If an email is worth drafting, run it through email-writer first, then show me the result.
+- Every Command Room widget — commitments, staff meeting, any row-list or action card — is produced by `widget_transport.render_and_persist` and its returned `html` passed to show_widget **byte-exact**. Never hand-compose widget HTML, never restyle, never re-derive the data inline: hand-built widgets skip the validators (leak scan, action contract, dedup against closures) and have shipped stale rows and broken wire formats. If the helper errors, say so and stop — do not improvise a widget.
+- After a successful `render_and_persist`, the show_widget call with `transport["html"]` is not optional — it is the immediate next step, before any prose. Summarizing the data as chat text while a fitted, validated page sits persisted is a contract violation (it strips my one-tap actions). Text-instead-of-widget is allowed only when the transport itself failed or `pagination["over_budget"]` is set — and then say so explicitly.
+- Any research ask — "research [X]", "deep dive on [X]", "look into [X]", "what's the story on [X]", "background on [person]" — runs through the **research** skill, never the generic built-in deep-research skill. The built-in one can't see my workspace: it skips the entity framing, skips the Tavily and Vibe Prospecting connectors, and its findings evaporate instead of being saved where call-prep and briefings can reuse them.
+- When research runs, the chat reply names which source tier actually ran (Vibe Prospecting / Tavily / built-in web) in one line. Built-in web is the fallback floor, not the default — if an upgrade connector is connected it must be used.
 
 ## Preferences
 {{TONE_PREFS}}
@@ -34,6 +40,7 @@
 {{MEETING_PREFS}}
 {{SCHEDULE_PREFS}}
 {{PROMPT_RESTRUCTURING}}
+- **Draft posture (queue-on-click):** Show the editable draft first — nothing touches your mail drafts until you click Save draft or Send. On that click, the draft is saved to your mail backend's Drafts (never auto-sent) and the draft record + voice snapshot are written at the same moment. Drafts are never queued on render/compose.
 
 ## People
 | Who | Full Name | Role / Context |
@@ -111,7 +118,7 @@ The onboarding skill fills this template as its **final step** after the workspa
 |---------|--------|-----|
 | Me | Onboarding interview answers | 2 lines |
 | Quick Commands | Static (same for all users) | 5 lines |
-| Session Rules | Static + any user overrides from interview | 4 lines |
+| Session Rules | Static + any user overrides from interview | 10 lines |
 | Preferences | Onboarding interview: tone, format, schedule, prompt-restructuring questions | 4-7 lines |
 | People | _hq/PEOPLE.md — take the top 15-20 by interaction frequency or recency | 15-20 rows |
 | Active Projects | _hq/MASTER_TRACKER.md — Active + Scoping projects only | 5-15 rows |
@@ -122,13 +129,13 @@ The onboarding skill fills this template as its **final step** after the workspa
 ### Line budget:
 - Header + Me: ~5 lines
 - Quick Commands: ~7 lines
-- Session Rules: ~6 lines
+- Session Rules: ~12 lines (incl. the two email-writer rules + the two widget-transport rules + the two research-routing rules — the EW1 / T2.2 / RSR1 binding layer; see `claude_md_email_rule_v1` / `claude_md_widget_rule_v1` / `claude_md_research_rule_v1` in the update bridge)
 - Preferences: ~6-7 lines (5 base + optional `{{PROMPT_RESTRUCTURING}}` line if user opted in)
 - People table: ~22 lines (header + 20 rows)
 - Projects table: ~17 lines (header + 15 rows)
 - Terms table: ~17 lines (header + 15 rows)
 - Workspace pointers: ~6 lines
-- **Total: ~87 lines** (trim People or Terms if over 80)
+- **Total: ~91 lines** (trim People or Terms if over 80)
 
 ### `{{PROMPT_RESTRUCTURING}}` variable (added v2.7.9):
 This Preferences entry is optional and depends on a calibration question asked during onboarding (see `command-room-onboarding/SKILL.md` Phase 3). Three answer paths:

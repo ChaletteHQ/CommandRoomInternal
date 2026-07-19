@@ -478,6 +478,34 @@ class TestStallDetector(unittest.TestCase):
 
     # --- v3.14.1.x read-only contract ---
 
+    def test_deal_threads_excluded(self):
+        """PIPE1 fence (D7): kind='deal' threads never flag here — they
+        report through the pipeline surface's per-stage rot thresholds.
+        The deal thread below is 40 days quiet (well over the 14d active
+        threshold) and would flag without the fence; the sibling initiative
+        with the same quiet gap still flags — the fence is kind-scoped,
+        not a blanket suppression. The deal row deliberately carries NO
+        deal object (the pre-PIPE1 real-data shape) — the fence must not
+        crash on it or require the object."""
+        self._write_substrate_canonical(
+            threads=[
+                {"id": "project_001", "status": "active", "kind": "deal",
+                 "first_seen": _days_ago_date(60)},
+                {"id": "project_002", "status": "active", "kind": "initiative",
+                 "first_seen": _days_ago_date(60)},
+            ],
+            events=[
+                _event("meeting", "project_001", days_ago=40, seq=1),
+                _event("meeting", "project_002", days_ago=40, seq=2),
+            ],
+        )
+        flags = detect_stalled_projects(self.workspace)
+        flagged = {f["thread_id"] for f in flags}
+        self.assertNotIn("project_001", flagged,
+                         "kind=deal thread must be EXCLUDED from stall flags (PIPE1 fence)")
+        self.assertIn("project_002", flagged,
+                      "non-deal thread with the same gap still flags")
+
     def test_no_events_written_during_detection(self):
         self._write_substrate_canonical(
             threads=[{"id": "project_001", "status": "active",

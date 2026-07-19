@@ -107,7 +107,7 @@ def _commitment(seq, cid, title, *, owner="person_user", counterparty=None,
 
 
 USER = "person_user"
-ERICK = "person_erick"
+QUINN = "person_quinn"
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ edit_commitment_wording(root, "cmt_A", edited_by=USER, source_skill="commitments
                         new_summary="the June invoice, not July")
 append_event(_events_path(root), [{
     "type": "commitment_updated", "source_skill": "commitments",
-    "data": {"commitment_id": "cmt_A", "new_due": "2026-07-20"},
+    "data": {"commitment_id": "cmt_A", "new_due": "2026-07-20"},  # DATE_GUARD_OK: due-fold data; count paths take injected now_iso
 }], holder="test")
 edit_commitment_wording(root, "cmt_A", edited_by=USER, source_skill="commitments",
                         new_title="send Michele the JUNE invoice")
@@ -141,7 +141,7 @@ opens = load_open_commitments(_events_path(root))
 d = opens[0].get("data") or {}
 check("newest title wins", d.get("title") == "send Michele the JUNE invoice")
 check("summary fold independent", d.get("summary") == "the June invoice, not July")
-check("due fold untouched by wording edits", d.get("due") == "2026-07-20")
+check("due fold untouched by wording edits", d.get("due") == "2026-07-20")  # DATE_GUARD_OK: asserts the fold value, not a clock-derived status
 
 try:
     edit_commitment_wording(root, "cmt_NOPE", edited_by=USER,
@@ -165,13 +165,13 @@ counts = count_commitments(load_open_commitments(_events_path(root)),
 check("starts in you-owe", counts["you_owe"] == 1 and counts["headline"]["you_owe"] == 1)
 
 res = reassign_commitment(root, "cmt_B", reassigned_by=USER,
-                          source_skill="commitments", new_owner_id=ERICK,
-                          new_owner_name="Erick Sample",
-                          reason="not mine — Erick owns it", confirmed=False)
+                          source_skill="commitments", new_owner_id=QUINN,
+                          new_owner_name="Quinn Sample",
+                          reason="not mine — Quinn owns it", confirmed=False)
 check("reassign returns reassigned", res["status"] == "reassigned")
 opens = load_open_commitments(_events_path(root))
 check("owner is the new person",
-      _commitment_field(opens[0], "owner_id") == ERICK)
+      _commitment_field(opens[0], "owner_id") == QUINN)
 check("unconfirmed reassignment is pending_review", _is_pending_review(opens[0]))
 counts = count_commitments(opens, user_person_id=USER, now_iso="2026-07-09")
 check("leaves your you-owe", counts["you_owe"] == 0 and counts["headline"]["you_owe"] == 0)
@@ -181,7 +181,7 @@ check("not in the chaseable owed-to-you bucket until confirmed",
 
 # confirmed reassignment (the W4b Theirs->[name] / named chat phrase path)
 reassign_commitment(root, "cmt_B", reassigned_by=USER, source_skill="commitments",
-                    new_owner_id=ERICK, new_owner_name="Erick Sample",
+                    new_owner_id=QUINN, new_owner_name="Quinn Sample",
                     reason="user named the owner", confirmed=True)
 opens = load_open_commitments(_events_path(root))
 check("confirmed reassignment clears pending_review", not _is_pending_review(opens[0]))
@@ -218,7 +218,7 @@ root = _ws([_commitment(1, "cmt_C", "send Michele the positioning brief and the 
                         source_ref="granola:abc123")])
 res = split_commitment(root, "cmt_C", [
     {"title": "send Michele the positioning brief"},
-    {"title": "send Michele the invoice", "due": "2026-07-15"},
+    {"title": "send Michele the invoice", "due": "2026-07-15"},  # DATE_GUARD_OK: due carried as data; counts take injected now_iso
 ], split_by=USER, source_skill="commitment-triage", user_confirmed=True)
 check("split returns split + 2 children",
       res["status"] == "split" and len(res["children"]) == 2)
@@ -248,7 +248,7 @@ check("one split closer, note names the parts",
       and closer[0]["data"]["evidence"].startswith("split into 2 items")
       and closer[0]["data"]["commitment_id"] == "cmt_C")
 check("child due honored",
-      any((o.get("data") or {}).get("due") == "2026-07-15" for o in opens))
+      any((o.get("data") or {}).get("due") == "2026-07-15" for o in opens))  # DATE_GUARD_OK: asserts the captured due value, not a clock-derived status
 
 res2 = split_commitment(root, "cmt_C", [{"title": "a"}, {"title": "b"}],
                         split_by=USER, source_skill="x", user_confirmed=True)

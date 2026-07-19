@@ -1,6 +1,6 @@
 ---
 name: session-sweep
-description: "Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. Reads transcripts of sessions active since the last sweep, extracts only what never became a logged item, and records each through the standard write path with session provenance and content-hash dedup. Renders nothing — the morning brief and commitments list read what it wrote. Runs nightly from the SILENT_TASKS registry; manual: 'run session sweep', 'sweep my chats', 'sweep my sessions'. Does NOT fire on 'process the last call' (meeting-notes — MEETING transcripts), 'reconcile my sent mail' (reconcile-sent — Gmail), or 'backfill my history' / 'sweep the last 60 days' (session-backfill — the one-time supervised catch-up). Extraction rules and dedup contract: Routing section in the body."
+description: "Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. Reads sessions active since the last sweep, extracts only what never became a logged item, and records each through the standard write path with dedup. Renders nothing. Runs nightly in the maintenance task; manual: 'run session sweep', 'sweep my chats', 'sweep my sessions'. Does NOT fire on 'process the last call' (meeting-notes — MEETING transcripts), 'reconcile my sent mail' (reconcile-sent — Gmail), or 'backfill my history' / 'sweep the last 60 days' (session-backfill — the one-time supervised catch-up). Extraction rules and dedup contract: Routing section in the body."
 ---
 
 # Session Sweep — silent nightly transcript-to-history promotion
@@ -36,7 +36,7 @@ Before writing to any workspace file, this skill follows `shared/WORKSPACE_API.m
 
 | Mode | Trigger |
 |------|---------|
-| **Scheduled (primary)** | the `session-sweep` background task, ~10 PM nightly — AFTER past-meetings (5 PM) so it catches only what the meeting pass and every writing skill missed |
+| **Scheduled (primary)** | a job inside the `maintenance` background task (MAINT1) — due once per day, served at the day's FIRST fire (~6:45 AM): yesterday's chats, including evening ones after past-meetings, are swept before the 7:00 morning brief reads the substrate |
 | **Manual** | "run session sweep", "sweep my sessions", "sweep my chats", "catch up my chat history" |
 
 The extraction is mechanical (classify each transcript line as a real commitment / decision / interaction / deliverable, or not), so this task is fine to run on a fast, low-cost model.
@@ -86,16 +86,16 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
    items = [
      # commitment — full capture block (kind + due/no_due + counterparty):
      {"session_id": "<id>", "type": "commitment",
-      "summary": "Send the positioning briefs to Erick before tomorrow's call",
+      "summary": "Send the positioning briefs to Quinn before tomorrow's call",
       "data": {"kind": "promise", "due": "2026-07-08",
                "owner_id": "<primary user id>", "counterparty_id": "person_017"},
       "person_ids": ["person_017"]},
      # counterparty named but unresolved -> counterparty_name, no guessed id
      # (the write core stamps pending_review):
      {"session_id": "<id>", "type": "commitment",
-      "summary": "Soft-sell the video-testimonial idea to Michelle at tomorrow's call",
+      "summary": "Soft-sell the video-testimonial idea to Mira at tomorrow's call",
       "data": {"kind": "promise", "due": "2026-07-08",
-               "owner_id": "<primary user id>", "counterparty_name": "Michelle"}},
+               "owner_id": "<primary user id>", "counterparty_name": "Mira"}},
      # genuinely no date in the source -> say so explicitly:
      {"session_id": "<id>", "type": "commitment",
       "summary": "Move Evan to the new version as the first user",
@@ -156,4 +156,4 @@ Runs as a scheduled task and follows `shared/RELIABILITY.md`: skip-not-fail when
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. It reads the transcripts of the sessions active since the last sweep, extracts only what never became a logged item, and records each one to the CEO's history with the same dedup and identity rules every other capture uses. It renders nothing: the morning brief and the commitments list read what this pass wrote. Runs as a background task ~10 PM nightly, and can be run by hand with 'run session sweep', 'sweep my sessions', 'sweep my chats', 'catch up my chat history'. DOES NOT fire on 'process the last call' / 'past meetings' — that's meeting-notes / past-meetings, which capture MEETING transcripts (Granola); this pass captures CHAT sessions and deliberately runs after them to catch only what they missed. DOES NOT fire on 'reconcile my sent mail' — that's reconcile-sent (Gmail). DOES NOT fire on 'backfill my history' / 'sweep the last 60 days' — that's the one-time historical backfill (session-backfill), a supervised preview-and-confirm run.
+> Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. It reads the transcripts of the sessions active since the last sweep, extracts only what never became a logged item, and records each one to the CEO's history with the same dedup and identity rules every other capture uses. It renders nothing: the morning brief and the commitments list read what this pass wrote. Runs daily as a job inside the maintenance background task (served at the first fire of the day, before the morning brief), and can be run by hand with 'run session sweep', 'sweep my sessions', 'sweep my chats', 'catch up my chat history'. DOES NOT fire on 'process the last call' / 'past meetings' — that's meeting-notes / past-meetings, which capture MEETING transcripts (Granola); this pass captures CHAT sessions and deliberately runs after them to catch only what they missed. DOES NOT fire on 'reconcile my sent mail' — that's reconcile-sent (Gmail). DOES NOT fire on 'backfill my history' / 'sweep the last 60 days' — that's the one-time historical backfill (session-backfill), a supervised preview-and-confirm run.

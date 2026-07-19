@@ -25,11 +25,11 @@ Command Room is a Claude Code plugin distributed via the Cowork marketplace. The
 
 - **The substrate**: every meeting, email, decision, commitment, and intel item flows into a structured event log (`events.jsonl`) + a relationship/project graph (`entities.json`). This is the moat. Everything else is read or write against it.
 - **The daily loop**: 6 scheduled Cowork chats fire on cron (~7-9 AM weekdays). They synthesize what's happened, surface what needs attention, and draft replies. Most days the operator spends 5-15 minutes triaging the output of these chats.
-- **The on-demand surface**: ~46 skills accessible by trigger phrase. Writing (email, memo, one-pager, decision-memo, board-pack), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), scheduling (calendar-writer), surfacing (decision-revisit, thread-resurrection, dormant-customer-scan), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
+- **The on-demand surface**: ~47 skills accessible by trigger phrase. Writing (email, memo, one-pager, decision-memo, board-pack), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (decision-revisit, thread-resurrection, dormant-customer-scan), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
 - **Voice calibration**: every writing skill runs voice calibration on every fire so drafts sound like the operator. The voice corpus grows over time as the operator sends sent-mail samples.
 
 What it is NOT:
-- Not a CRM. There's no pipeline view, no deal stage tracking, no quote generation.
+- Not a full CRM. `pipeline-tracker` (SPEC PIPE1) covers deal tracking — stages, next steps, rot flags, won/lost with reasons, the pipeline view — built on the same substrate; but there is no quote generation, no contact-sync to external CRMs, no rep-level territory machinery.
 - Not a project manager. Doesn't replace Asana / Linear / Notion for task management — it tracks commitments + decisions, not story points.
 - Not a Slack outbound layer. People-crm reads Slack DMs; no skill drafts Slack messages the way `email-writer` drafts email. (Known gap as of v3.5.0; explicitly out of scope per the maintainer's v3.8.0 planning call.)
 - _Was_ not a calendar writer pre-v3.8.0 — `calendar-writer` (v3.8.0+) now schedules meetings, drafts substrate-aware agendas (open commitments with attendees), and creates Calendar events.
@@ -101,6 +101,17 @@ The three files above are the middle and top of a three-layer memory. Naming the
 
 **Why this matters:** before the L1→L2 promotion existed, memory depended on the *moment of capture* — a writing skill had to fire exactly when something happened, or it was gone. With the layers, memory stops depending on that moment. The episodic layer is always complete; the canonical layer catches up every night; the semantic layer consolidates every week. A missed capture is no longer a permanent hole — it is a leftover the next sweep collects.
 
+### The Living Brain — propose → confirm → narrate → undo (SPEC LB1)
+
+How the substrate grows ITSELF without either silently inventing facts or nagging the CEO to death. One contract, four verbs:
+
+- **Propose.** Every background detector writes uncertain observations through ONE entry point — `brain_proposals.propose()` (`shared/scripts/brain_proposals.py`) — as generic `brain_proposal` events. The 8 pre-LB1 proposal families (commitment reviews, person/org/project proposals, dormancy transitions, schedule adds) keep their own types and are adapter-read into the same queue; migrating them is a later wave. A proposal with no registered action verb is rejected at the source, a declined fingerprint stays away for 60 days (the shared `proposal_ledger`), a duplicate never re-enters.
+- **Confirm.** The queue reaches the CEO as the "Needs your eyes" card (≤5 items, money > identity > hygiene, max 2 per detector) riding the surfaces that already fire — morning brief, coach — and in full on the **Staff Meeting** (the opt-in Monday chat + the on-demand `staff meeting` trigger, owned by `system-health`; it also folds in the change feed and the relationship-moves top-3). Every resolution is a one-tap apply-choices dispatch (`src: "cr-brain"`) through the item's own single writer. An item shown on one daily surface today isn't re-shown on another the same day (the full-set Staff Meeting is exempt). Ignored proposals expire SILENTLY at their TTL (default 14 days) — cleanup's Monday note carries the open/expired counts so rot is visible without a nag.
+- **Auto-apply is a class table, not a confidence score.** Only change classes in `brain_proposals.AUTO_ALLOWED` — each with a registered, tested reverser in `brain_undo.REVERSERS` — may skip the confirm (today: HIGH-evidence sent-mail commitment closes, the shipped reconcile-sent precedent; plus structured-connector-fact contact creation, policy landed ahead of its detector). Identity- and money-shaped changes always confirm.
+- **Narrate + undo.** `change_feed.changes_since()` (`shared/scripts/change_feed.py`) is the user-facing READER over the audit substrate — "closed 3 commitments from your sent mail, recovered 2 items from your chats" — feeding the brief's CHANGED line, the coach's since-you-were-last-here beat, the Friday wrap's roll-up, and `what did you change`. Narration is never the enforcement artifact (enforcement binds to the audit events). Every narrated batch ends with the standard undo affordance; `brain_undo.undo_batch()` reverses additively — reopen events, mute clears, archive flips — never an edit or delete.
+
+First detector through the rails: the deal-signal detector (`shared/scripts/deal_signal_detector.py`, the `deal-signals` Sunday maintenance job) — observed stage/value/won language and deal-shaped activity on untracked orgs become confirm-tier proposals; nothing touches a deal until the CEO taps confirm.
+
 ---
 
 ## The scheduled chats — six daily + one weekly
@@ -109,9 +120,9 @@ These fire on cron (defaults: weekdays 6:30 AM–5 PM for the daily loop, plus F
 
 ### 1. morning-brief (cron 7:00 AM weekdays)
 
-Thin wrapper around the `morning-briefing` skill (the on-demand variant). Produces a markdown digest: today's calendar, overdue follow-ups, urgent inbox items, open commitment count split by direction. Markdown surface (not a widget) — this is the only daily-loop orchestrator that doesn't render a widget.
+Thin wrapper around the `morning-briefing` skill (the on-demand variant). Produces a markdown digest: today's calendar, overdue follow-ups, urgent inbox items, open commitment count split by direction. **The brief is prose end to end and renders NO widget on any fire (FB-20)** — it is a read-only surface by design. The brief-pack driver supplies two extra prose blocks: one sentence per open money-class deal signal (the one class that may never go silent, propose-only, adjudicated by chat phrase elsewhere) and a single queue-pointer line ("N things need your eyes — say `staff meeting`"). Adjudication belongs to the staff meeting, which is the sole surface that confirms items.
 
-**Why it exists separately from the other 5**: morning-brief is the most-frequently-fired and most lightweight surface. The other 5 build per-item action widgets; morning-brief just summarizes.
+**Why it exists separately from the other 5**: morning-brief is the most-frequently-fired surface. The other 5 are per-item action widgets end to end; morning-brief is a markdown digest and nothing else (FB-20) — the most-fired surface is the one that asks nothing of you.
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-morning-brief.md`.
 
@@ -226,6 +237,12 @@ About 47 skills total in `skills/`. Organized here by user intent so you can fin
 | `team-intelligence` | `my team`, `team status`, `prep for 1:1` | Direct-report focused — 1:1 briefs, weekly team rollup, commitment tracking by team member. |
 | `dormant-customer-scan` | `who went dark`, `dormant customer scan`, `who haven't I heard from` | Surfaces customers gone quiet vs their own historical cadence. |
 | `intro-broker` (v3.8.0+) | `intro [A] to [B]`, `connect [A] and [B]`, `introduce [A] to [B]` | Drafts two-sided intros voice-calibrated from your past intro_made events. Logs to the relationship graph; schedules a 30-day follow-up check. |
+
+### "Track a deal / the pipeline" (SPEC PIPE1)
+
+| Skill | Trigger | What it does |
+|---|---|---|
+| `pipeline-tracker` | `show my pipeline`, `pipeline review`, `new deal [name] with [org]`, `move [deal] to [stage]`, `mark [deal] won`, `mark [deal] lost`, `[Name] signed`, `we lost the [deal]`, `what deals are closing this month` | Deal lifecycle on the workspace substrate — a deal is a thread with stage / value / next-step tracking; rot derives from observed activity; won/lost close through one path with a reason. An explicit win on a prospect org converts them to a client in the same turn. Feeds the board pack's pipeline appendix and lost-deal concerns. |
 
 ### "Process meeting / capture something"
 
@@ -570,6 +587,9 @@ The inbound triage skill (`process-bug-report`) was moved to the chalette intern
 | Look someone up | `who is [name]` / `tell me about [name]` |
 | Prep a 1:1 | `prep for 1:1 with [name]` |
 | Find dormant customers | `who went dark` / `dormant customer scan` |
+| See your deal pipeline | `show my pipeline` / `pipeline review` |
+| Open a new deal | `new deal [name] with [org]` |
+| Move / close a deal | `move [deal] to [stage]` / `mark [deal] won` / `mark [deal] lost` |
 | Draft an email | `draft an email to [recipient]` |
 | Draft a memo | `write a memo on [topic]` |
 | Draft a one-pager | `one-pager on [topic]` |

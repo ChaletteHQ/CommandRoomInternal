@@ -107,6 +107,18 @@ The empty-state widget data view shape (`widget_mode: "all_clear_summary"`) alre
 
 
 
+## Connector drift during a scheduled fire (R13, connector-agnostic-v1 closeout)
+
+Applies to EVERY scheduled orchestrator that resolves a connector through the seam (`discover_for_category` / the `discover_*` helpers). Server UUIDs rotate on reconnect (CONTRACT Rule 22), so a fire WILL eventually find its declared backend missing.
+
+When seam resolution reports the declared backend NOT PRESENT (the drift reason, distinct from capability-absent) during a **scheduled/silent fire**:
+
+1. **Skip that connector's leg** for this fire, with the existing one-line plain-English note in the output (same shape as the connector-not-connected degradation). Never hard-fail the whole fire over one drifted connector.
+2. **Append ONE deduped `connector_detected` flag** via `event_gate.append_event` — `{"type": "connector_detected", "data": {"server_id": <the new/unmatched server id if visible>, "provider": <fingerprint match if any>, "fingerprint_matched": <bool>, "triggered_by": "scheduled_fire_drift"}}` — deduped against an already-open flag (an unresolved `connector_detected` with no later `connector_backend_changed` for the same category = open; don't append a second). This is what surfaces the re-pin confirm in the NEXT interactive session (workspace-manager's drift-detect prose).
+3. **NEVER prompt, never ask, never ingest from an unconfirmed server** in a silent fire. The ask happens interactively.
+
+Interactive sessions follow workspace-manager's drift-detect flow instead (confirm + re-pin via the setter).
+
 ## v2.10.6 — Architectural change: format is now deterministic Python, not LLM prose
 
 **The 12 chat-output rules below are now ENFORCED by `shared/scripts/chat_output_renderer.py` + `shared/scripts/chat_output_validator.py`. Orchestrators don't render their own chat strings anymore — they hand a structured data view to the renderer and the renderer produces the bytes.**
@@ -228,19 +240,15 @@ write:
 
 The link is the source attribution AND the affordance to drill in. Two birds.
 
-**URL helper (constructed from `source_ref` already stored on every event):**
+**URL helper — ALWAYS prefer the URL the connector RETURNS (connector-agnostic-v1, Rule 13/N8):** every mail/calendar/drive/chat tool returns a deep-link on the item; use it. `connector_adapters/mail.py::deep_link` / `calendar.py::deep_link` implement this (prefer returned URL → per-provider host fallback only when known → None, degrade the affordance, never emit a broken link). Never synthesize a provider URL host in skill prose. The per-provider host formats live in the adapters, not here.
 
-| Source type | URL pattern |
+| Source type | URL |
 |---|---|
-| Gmail thread | `https://mail.google.com/mail/u/0/#inbox/[thread_id]` |
-| Outlook email | `https://outlook.office.com/mail/inbox/id/[message_id]` |
-| Google Calendar event | `[event.htmlLink]` (already on the API response) |
-| Outlook Calendar event | `[event.webLink]` (Graph API) |
-| Granola transcript | `https://www.granola.ai/note/[note_id]` |
-| Drive doc | `[file.webViewLink]` (already on API response) |
-| OneDrive doc | `[file.webUrl]` (Graph API) |
-| Slack message | `https://[workspace].slack.com/archives/[channel_id]/p[ts_underscored]` |
-| Teams message | `[message.webUrl]` (Graph API) |
+| Mail thread (any backend) | the URL the mail connector returns for the thread |
+| Calendar event (any backend) | the deep-link the calendar connector returns on the event |
+| Granola transcript | the URL the transcript connector returns |
+| Drive / OneDrive doc | the `webViewLink` / `webUrl` the storage connector returns |
+| Slack / Teams message | the permalink the chat connector returns |
 | Local file (rare) | omit link; reference by name only ("the migration brief in your Aspen folder") |
 
 **When to link inline vs footer:**
@@ -248,7 +256,7 @@ The link is the source attribution AND the affordance to drill in. Two birds.
 - **Footer "Sources:"** block ONLY when an item needs ≥3 sources to back one claim, or when the chat output already has a lot of inline links and another would clutter. In that case the footer lists them as `[1] [Gmail thread](...), [2] [Granola transcript](...), [3] [Drive doc](...)`.
 - **NEVER** write `Sources: _hq/data/events.jsonl` — that's not a source, that's our internal substrate. Real sources are the things we read FROM (Gmail, Granola, Drive, etc.).
 
-**Privacy note:** Gmail thread URLs, Calendar htmlLinks, Drive webViewLinks, etc. all encode IDs but contain no body content. Safe to surface in chat.
+**Privacy note:** connector-returned thread/event/doc URLs encode IDs but contain no body content. Safe to surface in chat.
 
 ### Rule 3 — Global item numbering across sections
 

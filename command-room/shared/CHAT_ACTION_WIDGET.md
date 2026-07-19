@@ -17,7 +17,7 @@ See `PROBE_RESULTS_past-meetings-open-items.md` (workspace root) for the test re
 
 ## The widget shape
 
-Each scheduled-task skill calls `mcp__visualize__show_widget` with HTML that renders:
+Each scheduled-task skill calls `mcp__visualize__show_widget` (fed the persisted page's validated bytes as `widget_code` per § Transport, never hand-composed) with a widget that renders:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -45,13 +45,80 @@ Each scheduled-task skill calls `mcp__visualize__show_widget` with HTML that ren
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Per-item buttons
+### Per-item verb dropdown (T2.2 row diet — replaces the button group)
 
-Each item gets a horizontal button group containing the same actions that used to be the typed-number row. Click behavior:
+Each item gets ONE `<select>` (class `cr-action-select`) listing that row's
+registered actions, defaulting to **"— leave —"** (no choice). M approved
+dropdowns over the six-button row (RV feedback: "lighten the render and add
+more rows") — a row's verb chrome went from ~1.3KB of buttons to one compact
+control, which is what makes 12-15 rows per page fit the relay budget.
+Selection behavior:
 
-- **First click on a button:** widget records the choice for that item locally, button gets a "selected" visual state (bold border, color change, checkmark badge).
-- **Click a different button on the same item:** previous choice is replaced (one action per item — can't both `send` and `skip` the same item).
-- **Click the same button again:** deselects (item returns to "no choice yet" state).
+- **Pick a verb:** the select arms (gold `cr-select-armed` state — the F-58
+  visible-armed-state contract, ported from `.cr-selected`), and if the verb
+  needs an input its `.cr-action-input` wrapper opens below the row exactly
+  as it did for buttons.
+- **Pick a different verb on the same row:** the previous choice is replaced
+  (one action per item, enforced by the control itself).
+- **Pick "— leave —":** deselects (row returns to "no choice yet").
+- The option's `value` carries the FULL action string (brackets included) —
+  the `apply choices:` wire format is byte-identical to the button era.
+- The "+ Add context" note toggle is unchanged.
+- Legacy note: the onboarding Step-1 setup widget keeps option BUTTONS
+  (`cr-action` + `crToggle`) — its options are selection labels, not verbs;
+  `validate_rendered_widget` validates both shapes (selects are the ported
+  contract, not a weakened one).
+
+### Primary verb buttons (t3 FB-4 — M ruling 2026-07-16)
+
+A row's MAIN move renders as a visible one-tap button (`cr-action
+cr-action-primary`) next to the dropdown; the tail verbs stay in the
+dropdown (whose empty option reads **"— more —"** when primaries are
+present). Row-shape driven, so mixed surfaces route correctly:
+
+- **Commitment-shaped rows** (`resolved` / `mark done` present): **Done**.
+- **Email-shaped rows** (`send` / `draft` present): **Send** + **Draft**.
+
+Selection model is unchanged — tapping a primary ARMS the row (`.cr-selected`)
+and Apply still batches; a row has one armed verb (tapping a button clears the
+row's dropdown pick and vice versa). Primary buttons carry
+`data-input-type="none"`: Send/Done need nothing typed, and Draft's edit
+surface is the inline-editable body (below), not a popup editor — the
+dropdown's `edit then send` keeps the full To/Cc/Subject form.
+
+### 'Later…' — the merged Defer/Snooze option (t3 FB-3 — M ruling)
+
+Defer and Snooze read as two time-kicking verbs on one row, so a row that
+carries both `push to [date]` and `skip`/`snooze Nd` renders ONE **Later…**
+option and the separate snooze option is suppressed. Wire ids frozen —
+display + dispatch only:
+
+- The option's value stays `push to [date]`; its when-input accepts a
+  natural-language date OR a bare number of days ("5" = five days from
+  today; `commitment_state.parse_later_when` owns the deterministic slice).
+- Dispatch AUTO-ROUTES by ownership (`commitment_state.later_route`): the
+  user's OWN item → `commitment_updated` due-date shift; owed-to-you /
+  unowned / visibility-only → `chat_dismissal` carrying `data.snooze_until`
+  via the mute ledger (the item stays open, it just stops rendering until
+  the date).
+- Rows without `push to [date]` keep their snooze option unchanged, and the
+  footer **Snooze rest (1 day)** still mutes merged rows (their skip entries
+  ride the Apply payload directly since the dropdown no longer offers skip).
+
+### Inline-editable email body (t3 FB-10 — M ruling)
+
+The email draft body renders directly editable — click into it and type, no
+Edit button. The `cr-eb-body` wrapper is `contenteditable` and carries
+`data-original` (the queued text, innerText-shaped). On Apply, the widget
+serializes the CURRENT on-screen text; if it differs from `data-original`
+the choice carries `input: {"body": "<current text>"}` — queued equals
+visible, always. Reset restores the original. The orchestrator diffs
+rendered-vs-queued and logs the edit to the voice-corrections file exactly
+as an `edit then send` edit would be logged. An open `edit then send`
+multi-field editor wins over the inline body (it already carries body +
+To/Cc/Subject). Displayed bodies never show the `> ` blockquote-convention
+markers — the renderer strips them (t3 FB-12); they are markdown plumbing,
+and storage was never affected.
 
 ### Counter
 
@@ -63,7 +130,7 @@ HTML that carries action buttons without them.
 
 ### Bottom row buttons
 
-- **Apply all** — fires one `sendPrompt` with all current selections (see "Submission format" below). Disabled when 0 selections. **Disable-with-reason (v4.5.2 S2 — F-17):** when a selected action is missing its REQUIRED input (Defer without a date), Apply stays disabled and the reason renders on the footer's `#cr-apply-reason` line ("Apply is waiting on item 3 — Defer needs a date."), the offending row highlights, and the field shows an inline "needs a date" note. The hold clears live as the field fills. A widget must NEVER swallow an Apply click silently — that is exactly F-17 (M concluded the button was dead).
+- **Apply all** — fires one `sendPrompt` with all current selections (see "Submission format" below). Disabled when 0 selections. **Disable-with-reason (v4.5.2 S2 — F-17):** when a selected action is missing its REQUIRED input (Later… without a date), Apply stays disabled and the reason renders on the footer's `#cr-apply-reason` line ("Apply is waiting on item 3 — Later… needs a date."), the offending row highlights, and the field shows an inline "needs a date" note. The hold clears live as the field fills. A widget must NEVER swallow an Apply click silently — that is exactly F-17 (M concluded the button was dead).
 - **Reset** — resets all per-item selections to "no choice yet." No `sendPrompt`. Local state only. (Button label "Reset"; was "Clear".)
 - **Snooze rest (1 day)** — selects `skip` (the 1-day mute) for every unselected item, then fires Apply automatically. Convenience for "I've reviewed; snooze the rest until tomorrow." (Label was "Skip all"/"Dismiss rest" — renamed so the mute states its duration, F-59.)
 
@@ -107,7 +174,7 @@ The `apply-choices` skill (skills/apply-choices/SKILL.md — shipped v2.12.4) ow
 2. For each `{"n", "action"}` tuple, dispatch through the same handler the original typed-number row would have called. The orchestrator that emitted the widget cached the per-item context (recipient, subject, draft body, etc.) — `apply-choices` reads that cache to know what `1 send` means in the current context.
 3. Return one consolidated chat ack: `✓ Applied N choices: send (3), draft (1), skip (4).` Plus any heavyweight action output (sent email confirmations, draft bodies, expanded briefs) under a dedicated section.
 
-As of v2.10.9 end-of-day, `apply-choices` is built and all 5 orchestrators + `meeting-notes` Step 9 emit the widget directly via `mcp__visualize__show_widget`. No fallback typed-number-row path remains in production code — that mode existed only during the v2.10.9 build window before the renderer + apply-choices shipped.
+As of v2.10.9 end-of-day, `apply-choices` is built and all 5 orchestrators + `meeting-notes` Step 9 emit the widget via `mcp__visualize__show_widget` (as of T2: fed the persisted page's validated bytes as `widget_code` per § Transport, never hand-composed). No fallback typed-number-row path remains in production code — that mode existed only during the v2.10.9 build window before the renderer + apply-choices shipped.
 
 ## Post-widget chat-links section (v2.12.0+)
 
@@ -162,7 +229,7 @@ The post-widget markdown links section replaces `mcp__cowork__present_files` car
 
 User-facing reference. Every action label across all surfaces, with semantics. Action labels are stored lowercase as `data-action` attribute (canonical for parsing); display labels come from the verb taxonomy at render time.
 
-> **Source of truth (v4.5.2 S2 — F-59):** `shared/scripts/verb_taxonomy.py` is THE verb table — wire id, display label, event dispatched, surfaces, mute TTL, required-input flag. The renderer derives `CANONICAL_ACTIONS` and every button label from it; the tables below are the human-readable view and the table wins on conflict. One label per verb, everywhere: `resolved` displays **Done** (never "Resolved"), `push to [date]` displays **Defer** (never "Push to"), `skip` displays **Snooze (1 day)**, and every mute states its duration on the button — `Snooze (3 days)`, `Not relevant (60 days)`, `Never track (permanent)`. Prose that names an action names the same word as the button (F-13 P2a). Rows that offer a reduced verb set (needs-confirm items) pass `reduced_verbs_reason` so the row says WHY in one line (F-59).
+> **Source of truth (v4.5.2 S2 — F-59):** `shared/scripts/verb_taxonomy.py` is THE verb table — wire id, display label, event dispatched, surfaces, mute TTL, required-input flag. The renderer derives `CANONICAL_ACTIONS` and every button label from it; the tables below are the human-readable view and the table wins on conflict. One label per verb, everywhere: `resolved` displays **Done** (never "Resolved"), `push to [date]` displays **Later…** (never "Push to"; was "Defer" pre-t3 FB-3 — the merged Defer/Snooze option), `skip` displays **Snooze (1 day)**, and every mute states its duration on the button — `Snooze (3 days)`, `Not relevant (60 days)`, `Never track (permanent)`. Prose that names an action names the same word as the button (F-13 P2a). Rows that offer a reduced verb set (needs-confirm items) pass `reduced_verbs_reason` so the row says WHY in one line (F-59).
 
 ### Email-shaped items (Inbox, Commitments YOU OWE / OWED TO YOU)
 
@@ -171,8 +238,7 @@ User-facing reference. Every action label across all surfaces, with semantics. A
 | `send` | Send | Compose+send the current draft as-is. Zapier first if configured (best thread fidelity); falls back to native Gmail threaded; standalone last resort. Works without Zapier. |
 | `edit then send` | Edit then send | Widget exposes textarea pre-populated with body. User edits inline. Apply submits the edited body via `send`. Single round. |
 | `add email then send` | Add email then send | (v3.13.8+ Bug #44 recovery verb) Widget exposes a single-field email-address input. On submit, updates the To: field on the item + transitions to enabled `send`. Use when the recipient is identified (resolved person record) but no actionable email exists. Writes `contact_email_captured` event with `data.person_id` for downstream people-CRM persistence. |
-| `draft` | To drafts | Save current draft to Gmail Drafts as-is. |
-| `draft` (consolidated v2.14.4+; was previously two separate verbs) | Edit then draft | Widget exposes textarea. User edits. Apply saves the edited body to Gmail Drafts. |
+| `draft` (consolidated v2.14.4+; was previously two separate verbs) | Draft | One-tap primary button (t3 FB-4). Apply saves the current body — the card body is directly editable (t3 FB-10), so an inline edit rides the choice as `{"body": …}` — to the declared backend's Drafts. |
 | `escalate to memo` | Escalate to memo | Promote to memo-writer skill — generates a longer-form `.docx` memo when an email reply isn't enough. |
 | `skip` | Snooze (1 day) | Mute for 1 day. Resurfaces tomorrow. |
 
@@ -181,7 +247,7 @@ User-facing reference. Every action label across all surfaces, with semantics. A
 | Action | Display | What it does |
 |---|---|---|
 | `prep deep work` | Prep deep work | Generates a context-loaded prompt to paste into a new task. For when you want to dig in and do work on the commitment. No email/send. |
-| `push to [date]` | Defer | Widget exposes a free-text natural-language input ("monday at 2", "next thursday afternoon"). Reply handler parses on apply. Records deferral, updates the draft to mention the new date. Date is REQUIRED — an empty date holds Apply with the reason visible (F-17). |
+| `push to [date]` | Later… | Widget exposes a free-text input taking a date ("monday at 2", "next thursday") OR a bare number of days ("5"). Reply handler parses on apply (`parse_later_when` first, NL fallback). Dispatch auto-routes by ownership (t3 FB-3): own item → deferral (`commitment_updated`), otherwise a dated mute (`chat_dismissal` + `data.snooze_until`). The when is REQUIRED — an empty one holds Apply with the reason visible (F-17). |
 | `resolved` | Done | Mark commitment fulfilled. Won't surface again. **(Distinct from `skip`, the 1-day snooze.)** Wire id `resolved` retained (renamed v2.12.3 from `close`); displays Done everywhere (F-59). |
 
 ### Commitments OWED TO YOU only
@@ -206,7 +272,7 @@ When ONE person owes you multiple things in the same fire (e.g., five outstandin
 | Action | Display | What it does |
 |---|---|---|
 | `prep deep work` | Prep deep work | Generate a deep-work prompt as above. |
-| `push to [date]` | Defer | Defer the self-commitment (date required). |
+| `push to [date]` | Later… | Move the self-commitment's date (date or days, required). |
 | `mark done` | Done | Close the self-commitment — same display word as `resolved` (F-59). |
 | `skip` | Snooze (1 day) | 1-day mute. |
 
@@ -217,7 +283,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | Action | Display | What it does |
 |---|---|---|
 | `resolved` | Done | Close via `close_commitment(..., resolution="done", user_confirmed=True)`. |
-| `push to [date]` | Defer | `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere). |
+| `push to [date]` | Later… | Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere); owed-to-you/unowned → `chat_dismissal` with `data.snooze_until` via the mute ledger. |
 | `drop` | Drop | Close via `close_commitment(..., resolution="dropped", user_confirmed=True)` — deliberately let go, distinct from done. |
 | `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. When the user NAMES the real owner, route via `reassign to [name]` instead of dropping. |
 | `fix wording [text]` | Fix wording | `commitment_state.edit_commitment_wording` — corrects a mis-extracted title/summary; the projector renders the new text, history keeps the original (S4). |
@@ -280,13 +346,13 @@ W4a shipped reminders as a chat-phrase-only surface and deferred the widget
 verbs to the S2 taxonomy. These are the rows any reminder-rendering widget
 uses; dispatch goes through `shared/scripts/reminders.py` builders (see
 apply-choices § "Reminder dispatch"). Same display words as the commitment
-lane — Done closes, Defer moves the date — so one vocabulary covers both
+lane — Done closes, Later… moves the date — so one vocabulary covers both
 lanes when they share a brief widget.
 
 | Action | Display | What it does |
 |---|---|---|
 | `reminder done` | Done | Clear the reminder (`reminder_cleared`). It leaves the Pinned block; a referenced commitment is NOT touched — closing that is its own action. |
-| `reminder push [date]` | Defer | Move the pin date (`reminder_updated`, action `push`). Date REQUIRED — empty holds Apply with the reason (F-17 contract). Re-arms a cleared one-shot. |
+| `reminder push [date]` | Later… | Move the pin date (`reminder_updated`, action `push`). Date REQUIRED — empty holds Apply with the reason (F-17 contract). Re-arms a cleared one-shot. |
 | `reminder keep` | Keep | Acknowledge without clearing (`reminder_updated`, action `keep`) — resets the escalation clock, stays pinned. |
 
 ### Pulse — person dormancy/pattern-break
@@ -294,7 +360,7 @@ lanes when they share a brief widget.
 | Action | Display | What it does |
 |---|---|---|
 | `investigate` | Investigate | Fires `tell me about [name]` — pulls cross-references from across your data. Read-only. Use when you want context, not action. |
-| `draft re-engagement` | Draft re-engagement | Generates a re-engagement email draft to the person. The draft surfaces in the apply-time widget with Send / Edit then send / etc. (v2.12.4+) |
+| `draft re-engagement` | Draft re-engagement | Generates a re-engagement email draft to the person. The draft surfaces in the apply-time widget with the standard email-card controls (Send + Draft buttons, editable body — t3 FB-4/FB-10). |
 | `schedule catchup [when]` | Schedule catchup | Widget exposes a free-text natural-language input. User types "next Tuesday afternoon", "this Friday at 4pm", "sometime next week". Drafts the request email + creates tentative invite if a specific time was given. (v2.12.4+ — was no-input in earlier versions.) |
 | `resolved` | Done | State change. Suppresses the alert for 14 days. NO input affordance, NO textarea — clean one-click. (v2.14.1+ unified with Commitments YOU OWE `resolved`; v4.5.2 S2 displays Done everywhere.) Same display label, same behavior, same mental model as Commitments: "this isn't open anymore." |
 | `snooze [duration]` | *(deprecated — never rendered)* | Back-compat alias only. New widgets emit a FIXED duration verb whose label states it — `snooze 3d` → "Snooze (3 days)", `snooze 7d`/`14d`/`30d` likewise; pre-v2.14.38 in-flight widgets may still emit `snooze [duration]` with free text — apply-choices accepts BOTH (see its Step 3 table). A bare "Snooze" with an invisible duration is a banned label (F-59). |
@@ -380,8 +446,24 @@ When a meeting mentioned a commitment without a clear due date:
 | `context [text]` | Context | (v2.14.37+) Single unified context affordance — replaces `add more context [text]` + `ask question [text]`. Widget exposes a textarea; user types anything (background context, talking points, a question, an instruction). On Apply, the handler routes intent-aware: question-shaped input synthesizes an answer using prior meeting transcripts + recent emails with attendees + relevant decision-log entries (1-3 paragraphs with source citations); statement-shaped input re-runs call-prep with the added context folded in and regenerates the `.docx` brief. **Intent heuristic:** treat the input as question-shaped if it ends with `?` OR its first word matches `(what|why|how|when|who|which|is|are|was|were|did|does|do|will|can|could|should|would)` (case-insensitive); otherwise statement-shaped (brief regeneration). Per M's 2026-05-07 evening ask: *"we only need a 'Context' button… just one option that opens that up for you to interact how you wish."* |
 | `add more context [text]` | Add more context | (v2.12.4 - v2.14.36 alias, retained for back-compat) Translates at apply time to `context [text]`. New widgets emit `context [text]`; pre-v2.14.37 widgets in flight at upgrade still dispatch correctly. |
 | `ask question [text]` | Ask question | (v2.14.14 - v2.14.36 alias, retained for back-compat) Translates at apply time to `context [text]`. |
-| `push meeting [date]` | Push meeting | Widget exposes a free-text natural-language input ("monday at 2", "tomorrow afternoon", "2026-05-12"). The reply handler parses the natural language at apply time. Drafts the reschedule email; surfaces in the apply-time widget with Send / Edit then send / etc. (v2.12.4+ — replaces strict date picker.) |
+| `push meeting [date]` | Push meeting | Widget exposes a free-text natural-language input ("monday at 2", "tomorrow afternoon", "2026-05-12"). The reply handler parses the natural language at apply time. Drafts the reschedule email; surfaces in the apply-time widget with the standard email-card controls (t3 FB-4/FB-10). (v2.12.4+ — replaces strict date picker.) |
 | `skip` | Snooze (1 day) | 1-day mute. |
+
+### Living Brain card — "Needs your eyes" + Staff Meeting (SPEC LB1, `src: "cr-brain"`)
+
+The unified confirm card: ≤5 items on daily surfaces (`brain_proposals.DAILY_CONFIRM_CAP`), the COMPLETE paginated queue on the Staff Meeting surface. Rows come from `brain_proposals.select_confirm_card` / `load_open_proposals` — ONE queue mixing brain-family (`bp_*`) proposals with adapter-read legacy items. Each row embeds its proposal id and every target id VERBATIM (the F2 identity rule applies to the underlying commitment/thread/person ids too) and carries `context.kind` naming its family so apply-choices can dispatch per-kind. No row may require an input to unblock the batch (F-17): every input is optional — an empty confirm applies the proposal as-is and the ack says so.
+
+Brain-family rows (deal signals today; every new detector tomorrow):
+
+| Action | Display | What it does |
+|---|---|---|
+| `confirm proposal` | Confirm | Apply the proposed change through its class's single writer (deal moves via `deal_state`, creations via `deal_state.create_deal`), then retire the proposal. Optional textarea to correct inferred details first. |
+| `dismiss proposal` | Not relevant (60 days) | Decline — the tombstone plus a 60-day fingerprint cooldown in the shared ledger. The same suggestion stays away. |
+| `snooze proposal 7d` | Snooze (7 days) | Set it aside; re-surfaces in a week. The proposal's own TTL keeps running (default 14d — an ignored proposal expires silently). |
+
+Legacy-family rows keep their OWN shipped verbs, exactly as on their home surfaces (the adapters are read-only — migration is LB2): person proposals render `add person` / `same as [existing]` / `proposal not relevant` (W4b); commitment-review rows render `confirm` / `not relevant` (the orchestrator-commitments Phase 3.6 dispatch); dont-forget dormancy rows render `active` / `archive` / `snooze 14d`; entity proposals render `confirm [type]` / `not relevant`; schedule-add rows are pointer rows (registration only ever happens through the change-schedule add path). Dispatch table: `skills/apply-choices/SKILL.md` Step 2 `cr-brain`.
+
+Card-wide contract: ranking money > identity > hygiene then age; max 2 slots per detector per render; the overflow line teaches the full-queue phrase ("N more queued — say `staff meeting` to review everything."); batch Apply posts ONE consolidated ack; the narrated batch ends with the standard undo affordance ("Say `undo` to reverse this.") and the undo reverses ADDITIVELY (`brain_undo.undo_batch` — commitment reopens, mute clears, archive flips; never edit or delete prior events). Cross-surface dedup (R2): an item rendered on one daily surface today is not re-shown on another the same day — the Staff Meeting full set and explicit asks are exempt. Pagination on Staff Meeting is design, not a size fallback: the full queue renders one `page` of ~10 at a time (§ Transport), each page relayed as `widget_code`; `show more` re-fires the next page.
 
 ### Bulk row (every surface)
 
@@ -396,12 +478,54 @@ When a meeting mentioned a commitment without a clear due date:
 
 Every surface has 5–8 buttons because each one corresponds to a different real decision. Pre-v2.11.x the typed-number row exposed all of them as text; v2.11.x widget made them clickable; v2.12.x consolidates redundant variants (`edit firmer`/`edit softer` removed; `edit` + disposition combined; `keep` standardized to `skip`). The set is now near-minimal — every button is a meaningfully different action.
 
+## Transport — how the widget reaches the screen (T2 delivery rework, Bug #67)
+
+**THE posting path for every row-list / all-batch widget: render+validate+persist one page, then relay that page's validated bytes as `show_widget`'s `widget_code`.**
+
+**One-command drivers (T2.2 — the ~30-command prep killer):** the two big
+row-list surfaces have dedicated drivers in
+`shared/scripts/surface_drivers.py` that run the WHOLE pipeline (canonical
+loaders → projectors → data view → `render_and_persist(page=N)`) in one CLI
+invocation and print `CR-PAGINATION: {...}` plus the page bytes between
+`CR-WIDGET-HTML-BEGIN`/`CR-WIDGET-HTML-END` markers — relay those bytes as
+`widget_code`, byte-exact. `commitments` (commitment-triage Step 3) and
+`staff-meeting` (orchestrator Phase 5) MUST use their driver — one invocation
+per page per fire, never re-run for a page already in hand (RV-3
+double-render). Surfaces without a driver use the direct call below.
+
+```python
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+import sys; sys.path.insert(0, "shared/scripts")
+from widget_transport import render_and_persist
+transport = render_and_persist(
+    data_view=data_view,                     # widget_mode: "all_batch_widget"
+    wrapper="fragment",
+    persist_dir="<WORKSPACE>/_hq/.system/widgets",
+    name_hint="<surface id, e.g. commitments>",
+    page=1, page_size=10,                    # unbounded views: paginate. Omit page for small/bounded views.
+)
+# Deliver: pass transport["html"] to mcp__visualize__show_widget as `widget_code`, VERBATIM.
+# transport["html"] IS the persisted page's validated bytes. Do not edit it. Done.
+```
+
+Every validator fires inside the call — the renderer's canonical-action, data-shape, and leak checks, plus `validate_rendered_widget` (the wrapper + visible-feedback contract). The persisted file is the validation gate + the audit trail; `transport["html"]` is the deliverable.
+
+**Why THIS is the contract (Bug #67, confirmed twice in the 2026-07 dogfood cycles):** Cowork's `mcp__visualize__show_widget` schema is `loading_messages` (required) / `title` / `widget_code` — **there is no `file_uri` parameter.** The prior "hand the persisted file's URI to show_widget" mandate was impossible on the live runtime (no such parameter), so the runtime silently improvised a freelance render on every fire (FS-08) — the exact failure the transport exists to prevent. `widget_code` is the only carrier the runtime actually has. It accepts a page-sized payload (the live 133-row improvised widget rendered and its buttons worked); what it cannot carry is an unbounded set relayed byte-faithfully from context. Pagination + the diet-minified scaffold make each page fit one Cowork Read (25K-token cap), so the relay is faithful and mechanical.
+
+**Paginate by design — NOT a size fallback.** Unbounded views (the full commitment set, the Staff Meeting queue) render ONE page of ~10 rows per fire (`page=N`). `render_and_persist` slices, validates, and persists each page independently and stamps `transport["pagination"]`. The widget's position line teaches `show more`; a `show more` click re-fires the surface with `page=N+1`. Bounded surfaces (the daily ≤5 card, small fires) omit `page` and render the whole set — pagination is inert. This is the surface's DESIGN, decided by the data, never a reaction to a "transmission ceiling."
+
+**Zero-manipulation survives, translated.** Relay `transport["html"]` byte-for-byte as `widget_code` — never minify it, never whitespace-strip it, never "trim for size", never drop what looks like a duplicate wrapper, never edit the persisted file. The renderer already diet-minified the scaffold inside the call; the page is exactly as large as it needs to be. If a page still feels large, that is what pagination is for — LOWER `page_size`, never edit the bytes. `validate_rendered_widget` runs inside the transport and raises if a wrapper was dropped.
+
+**No silent fallback (FS-08).** After a clean `render_and_persist` call you MUST call `show_widget` with `transport["html"]`. If — and only if — `show_widget` itself errors or is unavailable, you MUST SAY SO in plain English and STOP: surface the error string verbatim (or `(Widget surface unavailable — re-fire when the visualize MCP is reachable.)`). Never improvise a hand-built widget, a compact freelance render, a custom wire prefix, or a chat-listed substitute; never narrate that the widget "couldn't transmit," "hit a payload limit," "was too large," or "validated but…" — none of those conditions exist on this path, and inventing one is the FS-08 silent-improvisation failure. A mandated call that cannot execute is reported, never worked around quietly.
+
+**Chat carries zero widget bytes (F-09):** no fragment of widget HTML — style blocks, `::view-transition-group` preludes, tags, minified CSS — ever appears in chat *text*. The bytes travel only as the `widget_code` parameter; if a CSS-looking prelude would precede the render in the chat transcript, that is a leak, and the leak scanner flags the echo.
+
 ## Posting contract — what the orchestrator MUST do, MUST NOT do (v2.11.3+)
 
 **MUST do:**
 
-1. Build the data view, set `widget_mode: "all_batch_widget"`, call `render_chat_output_widget(data_view)` to get HTML.
-2. Post the HTML via `mcp__visualize__show_widget`. **The widget HTML is the entire user-facing surface for the items.** No accompanying markdown narration, no "here's what you can do" prose, no recap of the widget's button labels.
+1. Build the data view, set `widget_mode: "all_batch_widget"`, and render + validate + persist it via `widget_transport.render_and_persist` (§ Transport above) — all validators fire inside the call. Unbounded views pass `page=N` and paginate; bounded views omit `page`.
+2. Post the widget by passing `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`. **The widget is the entire user-facing surface for the items.** No accompanying markdown narration, no "here's what you can do" prose, no recap of the widget's button labels.
 3. After the widget posts, if any `.docx` deliverables were produced this fire (briefs, prep docs, etc.), call `mcp__cowork__present_files` ONCE with an array of all absolute paths. Cowork emits inline file cards beneath the widget, named by the source filename (which already includes the meeting / project slug). This is the ONLY mechanism for clickable file surfaces — `computer://` links inside the widget HTML do not work (iframe sandbox blocks them).
 
 **MUST NOT do:**
@@ -409,12 +533,14 @@ Every surface has 5–8 buttons because each one corresponds to a different real
 1. **Do NOT narrate or paraphrase the widget's behavior in chat.** Lines like *"Click any action button per item, then Apply all to fire..."* are forbidden. The widget's footer counter + Apply button are self-explanatory; explaining them in markdown text duplicates the surface and signals fallback-mode behavior. If you ever feel like writing prose about what the buttons do, STOP — emit the widget and trust it.
 2. **Do NOT leak internal routing metadata into chat.** Forbidden patterns include `Domain match: x@y.com → Org Name (project_NNN, active)`, `Routing: stage 3 of 5`, `Confidence: 0.87`, `entities.json line 142`, internal entity IDs (`person_NNN`, `project_NNN`, `org_NNN`), event seq numbers, file paths under `_hq/staging/`, debug strings, "phase 4" labels. These are internal mechanics and never appear in user-facing output. The user sees PEOPLE NAMES and PROJECT NAMES — never the internal machinery. And the person name shown is the RESOLVED record's spelling (`canonical_name` via `entity_resolve`), never a transcript/ASR spelling — F-50 P2b rendered "Myra Samples" in a widget for a correctly-resolved Mira Sample. Raw spellings appear only inside verbatim evidence quotes or on genuinely unresolved rows (see `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names).
 3. **Do NOT include brief / .docx links inside the widget HTML.** The widget's `_render_widget_item` no longer renders `artifact_link` (v2.11.3+). The `artifact_link` field stays in the data shape so the orchestrator can collect paths for `present_files` — it does not appear in the widget body.
-4. **Do NOT fall back to markdown narration if `mcp__visualize__show_widget` is unavailable.** ABORT the fire and surface plain English: `(Widget surface unavailable — re-fire when the visualize MCP is reachable.)` Do not improvise a text-based action surface. The pre-flight check (`from chat_output_renderer import render_chat_output_widget; print('OK')`) catches the renderer-import case; if `show_widget` itself is missing, surface the same plain-English abort.
+4. **Do NOT fall back to markdown narration, a hand-built widget, or a compact freelance render if `mcp__visualize__show_widget` errors or is unavailable (FS-08 no-silent-fallback).** SAY SO in plain English and STOP: surface the error string verbatim, or `(Widget surface unavailable — re-fire when the visualize MCP is reachable.)` Do not improvise a text-based action surface, a custom wire prefix, or a "here's what it would have shown" summary. The pre-flight check (`from widget_transport import render_and_persist; print('OK')`) catches the renderer/transport-import case; if `show_widget` itself is missing or errors, surface the same plain-English abort. A mandated call that cannot execute is reported, never worked around quietly.
 5. **Do NOT post any commentary AFTER the widget + Links section.** No "Surfaced 5 items from this morning's scan." No "Cadence math is in early-baseline mode for almost everyone." No "Diversification rule pulled X into slot 1." No "Wrote pattern_break_detected × 5, dont_forget_run, pack_run to events.jsonl." No "Backup at events.YYYY-MM-DDTHHMM.dont_forget.bak.jsonl." No "I noted that in the Quick read." NO commentary at all about what you observed under the hood, what you wrote, what backups you made, what scoring decisions you made, what diversification did. (v2.12.5+ — per M's Apr 30 ask: *"this technical stuff should not show up."*)
 
    The widget IS the surface. The Links: section IS the source-link layer. After those two, the chat turn is DONE. If you want to write any of that diagnostic / process commentary, write it to `events.jsonl` as a `pack_run.notes` field (silent per Rule 9) — never to chat.
 
    This applies even if you think a note adds value ("FYI the Acme Co items a+e1 are the same signal"). The user can see that themselves; if they can't, the orchestrator's data-shape build is the bug — fix it there (merge the items) instead of explaining it after the fact.
+
+6. **Pass ONLY `transport["html"]` (the persisted page's validated bytes, verbatim) as `show_widget`'s `widget_code`, and do NOT echo any fragment of widget HTML into chat text** (style blocks included — the `::view-transition-group` prelude, F-09). Never hand-compose widget HTML, never post-process `transport["html"]`, and never relay an unbounded set in one page — paginate. The `widget_code` parameter is the only carrier; the bytes never appear in chat text. (T2)
 
 **Why these rules exist:** v2.11.0/v2.11.1/v2.11.2 surfaced cases where (a) brief paths inside widget rendered as unclickable text masquerading as links, (b) inbox orchestrator emitted both a widget AND a markdown paragraph describing the widget, (c) upcoming-meetings dumped routing metadata like `Domain match: sam@example.com → Category Company (project_002, active)` into chat. v2.11.3 closes these as forbidden patterns.
 
@@ -439,6 +565,7 @@ All 17 existing renderer tests still pass — markdown mode unchanged by the v2.
 | `orchestrator-past-meetings.md` | Per-meeting cards | All actions batch. Pending review sub-items (`Na`, `Nb`, `Nc`) batch within parent. |
 | `orchestrator-upcoming-meetings.md` | Per-meeting cards | All actions batch. The `open SLUG` action expands the brief inline AFTER Apply. |
 | `meeting-notes/SKILL.md` Step 9 | OPEN ITEMS section | All actions batch. Decisions are NOT in the widget — they auto-log at processing time per the v2.10.9 4-section card spec. The widget only handles M-only resolution items. |
+| `orchestrator-staff-meeting.md` + morning-briefing / coach card | Living Brain queue (`src: "cr-brain"`) | All actions batch. Per-kind dispatch via `context.kind` (see the LB1 action section above). Staff Meeting renders the FULL paginated queue + change feed + "This week's moves"; daily surfaces render the ≤5 card. |
 
 ## Apply-time output contract (v2.12.4+)
 
@@ -450,7 +577,7 @@ Three rules govern the post-Apply chat turn (enforced in `apply-choices/SKILL.md
 
 If any apply-time action produces an email draft (push meeting, draft re-engagement, follow-up call, status check, propose time, schedule catchup, etc.) OR a regenerated document (add more context regenerating the brief, escalate to memo producing a memo .docx), those outputs render through `render_chat_output_widget` as a NEW widget — not as inline markdown.
 
-The new widget's items use the same shape as email-shaped items: metadata, body_lines, original_thread (when relevant), action set `Send / Edit then send / To drafts / Edit then draft / Skip`. Documents render with `artifact_link` inline. The user can edit + send inline without retyping.
+The new widget's items use the same shape as email-shaped items: metadata, body_lines, original_thread (when relevant), action set `the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11)`. Documents render with `artifact_link` inline. The user can edit + send inline without retyping.
 
 ### Rule 2 — Mixed batches surface BOTH
 

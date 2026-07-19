@@ -23,6 +23,8 @@ description: "Never walk into a meeting or dinner wondering who-is-this-again. T
 - **Consumes from passive capture:** every inbound/outbound interaction event (v2.2 shape with `primary_thread_id` + `related_thread_ids[]` + `org_ids[]`) updates the relevant person's `last_interaction` date and associations via `update_person`. Associations inherit classification confidence — provisional and low-confidence events do not promote a project/org onto a person record until confirmed via `insight-generator` Pass 8.
 - **Conflict boundary:** team-intelligence shares the `person` entity type but scopes writes to `reports_to_id = CEO` records. No two skills write the same person record concurrently — people-crm is canonical owner, team-intelligence extends with commitment tracking (separate field namespace). Both go through `people_writer.py`.
 - **Atomic-write enforcement (v2.10.5+):** `people_writer.py` calls `atomic_write_json` internally — callers must NOT bypass to direct `path.write_text()` / `open(path, "w")`. Direct file writes have produced truncated-file incidents in v2.7-v2.10.4 and shape-drift incidents in v3.0-v3.1.
+- **Account-scope on connector-derived records (connector-agnostic-v1, ACCOUNT_SCOPE §2):** when a person/org record is derived from a CONNECTOR READ (a sender on triaged mail, a meeting attendee from a transcript), pass the read's provenance to the writer — `create_person(..., provenance=<the read's provenance dict>)` or `account_address=<the mailbox it arrived through>` (NOT the contact's own email). The record wall (`account_scope_gate.enforce_record_scope`) rejects an out-of-scope account's contact before the entities.json write. A manual add ("add Bob to my contacts") passes no provenance kwargs and is never walled.
+- **Promote-queue confirm/demote (R8, ACCOUNT_SCOPE §8):** inbox-triage writes `person_proposal` events (`data.promote_queue: true`) for mixed-account senders not in the entity graph. When the user CONFIRMS ("file it" / promotes the proposal), create the person as a **user-confirmed add — NO provenance kwargs** (the user is the authority; the record wall is for unconfirmed connector derivations); future mail from that sender is then in scope by association (the wall passes events referencing resolved entities on mixed accounts). Append a `person_proposal_resolved` event pointing at the proposal. When the user DEMOTES ("keep personal" / "this is actually personal"), do NOT create a record; write the teaching signal via `connector_config.set_sender_scope_override(root, <account>, <sender>, write_to_business=False, reason="user demoted")` so the proposal never re-fires. The write dial stays fail-closed throughout — a classification error hides business mail (safe), never pollutes records (H-G).
 
 ### Bash gate — pre-flight import check (v3.2+ MANDATORY)
 
@@ -167,6 +169,75 @@ Surfaces relationships that are stale so you can prioritize reconnection.
 ```
 
 Manually add new contacts or update existing ones.
+
+### Add-person elicit path (v4.8.1 — F13; extends the Bug #19 no-silent-create fix)
+
+When an add trigger arrives **sparse** — a name with no substance to store
+("add a new person: Quinn", "add Quinn to my contacts" with no org / role /
+email / context) — do NOT create, and do NOT render a bare elicit form either.
+The order is fixed:
+
+1. **Never silent-create.** Unchanged (Bug #19). A sparse add always goes
+   through an elicit step before any write.
+2. **Dedup BEFORE the form renders — both helpers, in code:**
+   `people_writer.find_existing_person(workspace_root, name=<input>)`
+   (catch `MultipleCandidatesError` — its `.candidates` are matches, not an
+   error condition) **and** `people_writer.list_same_name_people(workspace_root,
+   <input>)` for the token-level same-first-name list that
+   `find_existing_person`'s exact tiers cannot see.
+3. **Name the matches in the form header.** If either call surfaced records,
+   the elicit form's header MUST list them by canonical name with one-line
+   context (org / role when present) and offer them as pick-existing choices
+   alongside the create fields: *"You already have Quinn Sample (Acme Co)
+   and Quinn Stone (Northstar Partners) — one of them? If it's someone new,
+   add a detail below so the new Quinn doesn't collide."* Prospectively
+   acknowledging collision risk WITHOUT naming the existing people is the
+   exact F13 failure — the CEO can't disambiguate against a list they can't
+   see.
+4. **Pick-existing routes to update, never create.** Selecting a listed match
+   becomes `update_person` on that record; only an explicit "someone new" +
+   at least one distinguishing detail proceeds to `create_person` (whose own
+   dedup remains the final gate, unchanged).
+
+Zero matches → render the plain elicit form (name pre-filled, ask for org /
+role / email / how-you-met) — no invented "possible duplicates" line.
+
+Same-first-name examples above use the approved placeholder people
+(`references/PRIVACY_POLICY.md`) — never real contacts.
+
+### Auto-add path (RICH context — FS-11, M ruling 2026-07-15)
+
+When a person surfaces with **substance already attached** — a named attendee
+in a processed meeting, a sender on a triaged thread, a person named with role
++ org in a source the CEO is acting on — auto-add them (M: "yes, add people
+with rich context") through `people_writer.auto_add_person`, NOT the sparse
+elicit form. That helper enforces the two guardrails so auto-creation stays
+safe:
+
+1. **Same-name dedup gate runs BEFORE every auto-add.** `auto_add_person`
+   calls `list_same_name_people` internally and returns a
+   `needs_confirm` result (with `matches`) when any existing person
+   shares a name token — auto-add DOWNGRADES to the confirm/elicit path in that
+   case (never silently forks a duplicate). Only a zero-match name auto-creates.
+2. **Capture the email — but only from an OBSERVED source (F-08 extends to
+   capture).** Pass the address AND its `email_provenance` (the message /
+   meeting it was observed in). An address you cannot trace to an observed
+   source — a domain-pattern guess, a coworker's shape, "most likely" — is
+   NEVER stored: pass no email (or expect `email_dropped_no_provenance=True`).
+   The same ban that governs sending (F-08) governs what lands on the record.
+3. **Undo = archive, never delete.** The auto-add narrates in the change feed
+   with an `undo`; undo sets the record `status: "archived"` via
+   `update_person` (the R1 archive-never-delete reverser `brain_undo`
+   registers), never a hard delete — history is preserved.
+
+```python
+from people_writer import auto_add_person
+res = auto_add_person(ws, canonical_name="Quinn Sample", email="quinn@example.com",
+                      email_provenance={"source": "meeting", "meeting_id": "..."},
+                      role="VP Ops", primary_org_id="org_...")
+# res["status"] == "added"  → narrate "Added Quinn Sample — say `undo` to remove."
+# res["status"] == "needs_confirm" → surface res["matches"], ask before creating.
+```
 
 ## Person Profile Format
 

@@ -1,0 +1,13 @@
+{
+ "version": "4.7.1",
+ "headline": "Fix: the new account and connector commands now respond when you say them.",
+ "items": [
+  {
+   "id": "v471_announce_c1_verbs_routable",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "A quick fix on top of the account controls that shipped in the last update: saying 'what accounts do I have', '[address] is my personal account', or 'set my email backend to [connector]' now reliably reaches the right handler. If you tried one of these and got a generic answer instead of the real thing, it works now.",
+   "action": "announce_only"
+  }
+ ]
+}

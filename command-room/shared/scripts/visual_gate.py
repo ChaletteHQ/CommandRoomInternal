@@ -36,6 +36,7 @@ Prose contract: `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass".
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,85 @@ CHECKLIST = (
     "header/footer intact",
     "brand palette applied",
 )
+
+
+# ---------------------------------------------------------------------------
+# FS-12 — zero-table / data-heavy structural flag. memo-writer + one-pager
+# rendered data-bearing content as bullet walls in premium typography while
+# decision-memo-composer (same session family) structured its data into tables
+# + a star matrix. This is a WARN-ONLY structural pre-check the composers run
+# on their `sections` payload BEFORE the visual pass: if a document-shaped kind
+# carries data-bearing sections but ZERO table/matrix/tile structure, surface a
+# one-line nudge to restructure. Never blocks a save (warn-only, like the whole
+# gate).
+# ---------------------------------------------------------------------------
+
+# Document/decision kinds where tabular/comparative data should be structured,
+# not bulleted. (decision_memo already hard-validates its matrix; included for
+# completeness so the flag is consistent across the family.)
+_DATA_STRUCTURE_KINDS = frozenset({
+    "memo", "one_pager", "decision_memo", "board_pack",
+})
+
+_NUM_TOKEN_RE = re.compile(r"(?<![\w])(?:\$\s?\d|\d+\s?%|\d[\d,]*\.?\d*\s?[kKmMbB]?\b)")
+
+
+def _section_has_structure(sec: dict) -> bool:
+    if not isinstance(sec, dict):
+        return False
+    if isinstance(sec.get("table"), dict) and (sec["table"].get("rows")):
+        return True
+    if isinstance(sec.get("matrix"), dict) and (sec["matrix"].get("rows")):
+        return True
+    if sec.get("tiles"):
+        return True
+    if sec.get("timeline"):
+        return True
+    return False
+
+
+def _section_is_data_heavy(sec: dict) -> bool:
+    """Heuristic: a section carries comparative/tabular data when it has ≥3
+    bullets that each contain a number, OR its body text carries ≥3 numeric /
+    currency / percentage tokens. Bullet walls of metrics are the FS-12 shape."""
+    if not isinstance(sec, dict):
+        return False
+    bullets = sec.get("bullets") or []
+    numbered_bullets = sum(
+        1 for b in bullets
+        if isinstance(b, str) and _NUM_TOKEN_RE.search(b)
+    )
+    if numbered_bullets >= 3:
+        return True
+    body = sec.get("body") or ""
+    if isinstance(body, list):
+        body = " ".join(str(x) for x in body)
+    if isinstance(body, str) and len(_NUM_TOKEN_RE.findall(body)) >= 3:
+        return True
+    return False
+
+
+def flag_zero_table_data_heavy(sections: Sequence[dict], brief_kind: str) -> str:
+    """Return a one-line WARN string when a document-shaped kind has
+    data-bearing sections but no table/matrix/tile structure anywhere; else "".
+    """
+    if brief_kind not in _DATA_STRUCTURE_KINDS:
+        return ""
+    secs = list(sections or [])
+    if any(_section_has_structure(s) for s in secs):
+        return ""
+    heavy = [s for s in secs if _section_is_data_heavy(s)]
+    if not heavy:
+        return ""
+    names = ", ".join(
+        (s.get("heading") or "(untitled)") for s in heavy[:3]
+    )
+    return (
+        f"visual-grammar: {len(heavy)} data-bearing section(s) [{names}] are "
+        f"rendered as bullets with zero table/tile structure. Restructure the "
+        f"comparative data into a `table`/`matrix`/`tiles` primitive (see "
+        f"decision-memo-composer) before shipping (FS-12)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +206,135 @@ _DOCX_TO_PDF_LADDER: Sequence[Callable[[str, str], Optional[str]]] = (
     _docx_to_pdf_word_com,
     _docx_to_pdf_soffice,
 )
+
+
+# ---------------------------------------------------------------------------
+# SPEC OUT6 — the pptx→PDF rung for the board-deck companion. Same posture as
+# the docx ladder: best-effort, never raises, None = skipped (the skill logs a
+# skipped_reason audit note and proceeds). PowerPoint COM where present →
+# soffice (the soffice rung is format-agnostic — same CLI converts .pptx).
+# ---------------------------------------------------------------------------
+
+def _pptx_to_pdf_powerpoint_com(pptx_path: str, out_dir: str) -> Optional[str]:
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32com.client  # type: ignore  # pywin32 — absent on most sandboxes
+    except Exception:
+        return None
+    app = None
+    try:
+        pdf_path = str(Path(out_dir) / (Path(pptx_path).stem + ".pdf"))
+        app = win32com.client.DispatchEx("PowerPoint.Application")
+        # NB: PowerPoint refuses Visible=False; WithWindow=False on Open is
+        # the supported headless-ish path.
+        pres = app.Presentations.Open(
+            str(Path(pptx_path).resolve()), ReadOnly=True, Untitled=False,
+            WithWindow=False,
+        )
+        try:
+            pres.SaveAs(pdf_path, 32)  # 32 = ppSaveAsPDF
+        finally:
+            pres.Close()
+        return pdf_path if os.path.isfile(pdf_path) else None
+    except Exception:
+        return None
+    finally:
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:
+                pass
+
+
+_PPTX_TO_PDF_LADDER: Sequence[Callable[[str, str], Optional[str]]] = (
+    _pptx_to_pdf_powerpoint_com,
+    _docx_to_pdf_soffice,  # format-agnostic: soffice converts .pptx identically
+)
+
+
+# ---------------------------------------------------------------------------
+# SPEC OUT5 §3d — the .html rung for the premium brief. Same posture as every
+# other rung: best-effort, never raises, None = skipped (the skill logs a
+# skipped_reason audit note and proceeds). A headless Chromium-family browser
+# screenshots the file directly — no PDF intermediate. Edge headless ships on
+# stock Windows (the common client box), so most deployments get this with
+# zero installs; Chrome / Chromium cover the rest.
+# ---------------------------------------------------------------------------
+
+# Known install locations checked after PATH (Edge/Chrome don't register on
+# PATH by default on Windows).
+_BROWSER_CANDIDATES = (
+    "msedge", "msedge.exe", "chrome", "chrome.exe",
+    "google-chrome", "chromium", "chromium-browser",
+)
+_BROWSER_KNOWN_PATHS = (
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+)
+
+
+def _find_headless_browser() -> Optional[str]:
+    for name in _BROWSER_CANDIDATES:
+        found = shutil.which(name)
+        if found:
+            return found
+    for p in _BROWSER_KNOWN_PATHS:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _html_to_pngs_headless_browser(
+    html_path: str, out_dir: str, dpi: int, max_pages: int
+) -> Optional[List[str]]:
+    """Screenshot a saved .html deliverable via a headless browser. One tall
+    capture (an HTML brief has no page breaks — the top viewport is the
+    critique surface, mirroring the docx pages-1–2 cap). Never raises."""
+    browser = _find_headless_browser()
+    if not browser:
+        return None
+    profile_dir = None
+    try:
+        import time
+        out_png = Path(out_dir) / "page1.png"
+        # Fresh throwaway profile: without it a running desktop Edge/Chrome
+        # instance can swallow the headless launch into the existing process.
+        profile_dir = tempfile.mkdtemp(prefix="cr_visual_gate_profile_")
+        # 940px matches the premium template's page max-width; the height cap
+        # approximates the docx ladder's two-page critique window.
+        subprocess.run(
+            [
+                browser, "--headless", "--disable-gpu", "--hide-scrollbars",
+                "--no-first-run", f"--user-data-dir={profile_dir}",
+                f"--screenshot={out_png}", "--window-size=940,2200",
+                Path(html_path).resolve().as_uri(),
+            ],
+            check=True, capture_output=True, timeout=_SUBPROCESS_TIMEOUT_S,
+        )
+        # The Windows msedge.exe launcher exits before the real browser
+        # process flushes the capture — poll briefly rather than trusting the
+        # returncode's timing (observed live: rc 0, file lands ~1s later).
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if out_png.is_file() and out_png.stat().st_size > 0:
+                return [str(out_png)]
+            time.sleep(0.25)
+        return None
+    except Exception:
+        return None
+    finally:
+        # Best-effort: the throwaway profile is pure waste once the capture
+        # lands (or fails) — without this every visual-gate fire leaks a
+        # Chromium profile dir in temp (the G15 review's Windows temp-leak
+        # class). ignore_errors: the browser can hold handles briefly on
+        # Windows; a straggler dir is acceptable, unbounded accumulation is not.
+        if profile_dir:
+            shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +437,18 @@ def render_preview(
     anything at all goes wrong. NEVER raises into the caller — `None` is the
     universal "gate skipped" answer and MUST leave the calling skill's
     behavior identical to not having called this at all.
+
+    SPEC OUT6: a `.pptx` path takes the pptx→PDF rung (PowerPoint COM →
+    soffice) instead of the docx ladder; everything downstream (rasterize,
+    caps, temp-dir posture) is identical. Slides preview at the same page
+    caps — the deck's first two slides are the verdict + KPI slides, the
+    highest-value critique surface.
+
+    SPEC OUT5 §3d: a `.html` path (the premium brief) takes the headless-
+    browser rung — Edge headless ships on stock Windows; Chrome/Chromium
+    cover the rest — screenshotting the top of the document directly. Absent
+    browser = `None` = gate skipped with the standard audit note, exactly
+    like an absent docx renderer. Never raises, never blocks.
     """
     try:
         if os.environ.get("CR_VISUAL_GATE", "").strip().lower() in ("off", "0", "skip"):
@@ -243,8 +464,17 @@ def render_preview(
             return None
         # Session temp dir ONLY — never the workspace (previews are ephemeral).
         out_dir = tempfile.mkdtemp(prefix="cr_visual_gate_")
+        # SPEC OUT5 §3d: a .html deliverable takes the headless-browser rung —
+        # a direct screenshot, no PDF intermediate. Same contract: None =
+        # skipped, the skill logs skipped_reason and proceeds (never blocks).
+        if str(docx_path).lower().endswith((".html", ".htm")):
+            return _html_to_pngs_headless_browser(
+                str(docx_path), out_dir, dpi, max_pages
+            )
         pdf = None
-        for rung in _DOCX_TO_PDF_LADDER:
+        is_pptx = str(docx_path).lower().endswith(".pptx")
+        ladder = _PPTX_TO_PDF_LADDER if is_pptx else _DOCX_TO_PDF_LADDER
+        for rung in ladder:
             pdf = rung(str(docx_path), out_dir)
             if pdf:
                 break

@@ -31,8 +31,8 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Compute today's date.
 - Read entities.json + aliases.json.
 - Read voice calibration (cache once for the session).
-- **Discover NATIVE Gmail MCP IDs** (`search_threads`, `create_draft`, `send_draft`, `create_label`) — look at `mcp__*gmail_*` tools, EXCLUDING Zapier-namespaced ones (`mcp__zapier_*`). If user is on Microsoft 365 and Outlook is connected instead, discover Outlook equivalents (Graph API `mail/messages` endpoints + draft-creation patterns).
-- **Discover NATIVE Calendar MCP tool ID** for `accept` / `propose [time]` / `decline [reason]` calendar-invite handlers — look for `mcp__*google_calendar_*` tools (e.g. `respond_to_event`, `find_events`, `create_event`, `update_event`), EXCLUDING any `mcp__zapier_*` calendar tools. Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE — calendar never goes through Zapier. If the only calendar tool exposed is Zapier-namespaced, calendar-invite actions degrade gracefully: surface plain English `(Calendar invite responses unavailable — native Calendar MCP not connected.)` and continue with email-only actions.
+- **Resolve the mail tools through the seam** — `tool_discovery.discover_for_category("email", "<op>", tools, declared=connector_config.declared_backend("email"))` for the search / draft-create / send / label operations, falling back to `discover_mail_search_tool` / `discover_mail_draft_tool` / `discover_mail_send_tool` when no backend is declared (empty map = today's behavior, R4). Zapier legs are excluded from native discovery automatically (pinned server-ids + signature detection, R12/H-H). Never name a provider tool id directly — Superhuman/UUID servers carry no provider substring. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
+- **Resolve the calendar tools through the seam** for `accept` / `propose [time]` / `decline [reason]` calendar-invite handlers — `tool_discovery.discover_for_category("calendar", "<op>", tools, declared=connector_config.declared_backend("calendar"))` for the RSVP-respond / event-find / event-create / event-update operations, falling back to `discover_calendar_tool(tools, "<op>")` when no backend is declared (empty map = today's behavior, R4). Native calendar via the seam, Zapier-excluded — per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE calendar never goes through Zapier (the seam excludes Zapier legs automatically). If no native calendar tool resolves, calendar-invite actions degrade gracefully: surface plain English `(Calendar invite responses unavailable — native Calendar MCP not connected.)` and continue with email-only actions. Never name a provider tool id directly.
 - **Discover Zapier-threaded-send tool — v2.14.0+ MANDATORY helper-based:**
 
   ```bash
@@ -85,8 +85,7 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 
 # Phase 3 — Fetch unread mail
 
-**Gmail path:** `search_threads(query: "in:inbox is:unread newer_than:14d", pageSize: 50)`.
-**Outlook path:** equivalent Graph query for inbox unread, last 14 days, top 50.
+Fetch via the seam-resolved mail-search tool with the `{"in_inbox": true, "unread": true, "newer_than": "14d"}` intent (compiled per provider by `connector_adapters/mail.py`), pageSize 50 (or the connector's equivalent cap). Pass-through providers (Superhuman-class) take the structured intent directly.
 
 Parse response: list of threads with messages, dates, senders, subjects, snippets.
 
@@ -131,7 +130,9 @@ Per-thread "did the user already reply" check is structurally insufficient. Bare
 Fix at this layer: for each candidate thread that survived priority scoring, run ONE Gmail search per candidate:
 
 ```
-search_threads(query: "from:me to:<counterparty_email> newer_than:2d", pageSize: 5)
+<seam-resolved mail-search tool>(query = compile_search(
+    {"from_me": true, "to": "<counterparty_email>", "newer_than": "2d"},
+    <declared provider>), pageSize: 5)
 ```
 
 For each match in the result, compute crude n-gram overlap (3-grams or higher) between the match's body or subject and the candidate's last inbound message body or subject. If overlap ratio ≥ 0.30 (tunable), suppress the candidate from the top-5 surface — the user has already replied, just to a sibling thread. Log a `chat_suppressed` event with `reason: "counterparty_reply_in_sibling_thread"` and `suppressed_thread_id` for audit/cleanup visibility.
@@ -294,8 +295,8 @@ from receipts import log_receipt
 
 # Track connector calls during the fire (append to a list as each call fires)
 connector_calls = [
-    {"connector": "gmail", "operation": "search_threads", "ms": 320},
-    {"connector": "gmail", "operation": "get_thread", "ms": 180},
+    {"connector": "<declared provider>", "operation": "<seam-resolved search op>", "ms": 320},
+    {"connector": "<declared provider>", "operation": "<seam-resolved thread-fetch op>", "ms": 180},
     # ... etc
 ]
 
@@ -334,16 +335,16 @@ You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-writ
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, validate_rendered_widget, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; print('OK')"
+python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; from chat_output_renderer import validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; print('OK')"
 ```
 
 If stdout is not exactly `OK`, ABORT the fire. Surface the error to chat in plain English: `(Renderer pre-flight failed — chat output deferred. Diagnostic: <error>.)` Do NOT post any widget. Do NOT paraphrase. Do NOT continue.
 
-**⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, extended v2.14.37+):** the HTML returned by `render_chat_output_widget()` is sealed — pass it BYTE-FOR-BYTE to `mcp__visualize__show_widget`. No minification, no whitespace stripping, no "trimming for size", no removing what looks like duplicate elements. Every `<div class="cr-action-input">` wrapper is functionally required — dropping any of them silently breaks the matching button's input affordance (button selects gold but no textarea opens). MANDATORY: call `validate_rendered_widget(html)` immediately after `render_chat_output_widget()` and BEFORE invoking show_widget. The validator raises `WrapperContractError` if any wrapper has been dropped.
+**⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, transport-updated EW2+T):** the render is sealed — post via `widget_transport.render_and_persist` and pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`, never hand-composed or post-processed HTML. No minification, no whitespace stripping, no "trimming for size", no removing what looks like duplicate elements — not on `transport["html"]`, not on the persisted file. Every `<div class="cr-action-input">` wrapper is functionally required. The transport runs `validate_rendered_widget` internally and raises `WrapperContractError` if any wrapper is missing.
 
-**v2.14.37+ extension — `show_widget` mandatory after a clean validator pass.** If `render_chat_output_widget()` returns and `validate_rendered_widget(html)` passes, you MUST call `mcp__visualize__show_widget(html)`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," or any other reason is FORBIDDEN — none of those phrases exist in this codebase. If `show_widget` itself errors, surface the error string verbatim and STOP.
+**v2.14.37+ extension (EW2+T) — `show_widget` mandatory after a clean transport call.** If `render_and_persist()` returns without raising, you MUST call `mcp__visualize__show_widget` with `transport["html"]` as `widget_code`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," or any other reason is FORBIDDEN — none of those phrases exist in this codebase, and pagination (~10 rows/page) keeps every page inside the relay budget. If `show_widget` itself errors, surface the error string verbatim and STOP.
 
-**v2.14.37+ extension — markdown lists are not a substitute for widget rendering.** Triggered specifically by the 2026-05-07 cr-inbox follow-up where the agent emitted a 10-item markdown list in response to "surface past emails" instead of re-firing the widget with the noise filter peeled back. Any "surface past emails" / "show me the X" / "list the Y" follow-up goes through `render_chat_output_widget` → `validate_rendered_widget` → `show_widget`. Markdown bullet lists in chat as a substitute are FORBIDDEN. Re-fire with the adjusted filter threshold so noise-filtered-but-relevant items appear as read-only `tracked_items` rows in the widget.
+**v2.14.37+ extension — markdown lists are not a substitute for widget rendering.** Triggered specifically by the 2026-05-07 cr-inbox follow-up where the agent emitted a 10-item markdown list in response to "surface past emails" instead of re-firing the widget with the noise filter peeled back. Any "surface past emails" / "show me the X" / "list the Y" follow-up goes through `render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`). Markdown bullet lists in chat as a substitute are FORBIDDEN. Re-fire with the adjusted filter threshold so noise-filtered-but-relevant items appear as read-only `tracked_items` rows in the widget.
 
 See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the full diagnosis lineage.
 
@@ -388,7 +389,7 @@ If the three classes together yield zero rows, pass `tracked_items: []` and let 
 # (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
 import sys
 sys.path.insert(0, "shared/scripts")
-from chat_output_renderer import render_chat_output_widget
+from widget_transport import render_and_persist
 
 # Build data view from Phase 4-7 results
 data_view = {
@@ -404,7 +405,9 @@ data_view = {
     "quick_read": quick_read_summary,            # 1-3 sentences, omit if N <= 2 — see consistency rules below
 }
 
-html = render_chat_output_widget(data_view, wrapper="fragment")
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="inbox")
 
 # Phase 6 Loop 1 — cache each item's triage context alongside the recipient/
 # subject cache so apply-choices Step 3e can write the triage_feedback event at
@@ -413,14 +416,10 @@ html = render_chat_output_widget(data_view, wrapper="fragment")
 # a draft body was generated in Phase 6)}. This is per-item context the widget
 # already keys by n — extend it, don't add a second cache.
 
-# v2.14.34+ — MANDATORY structural validation. Catches dropped wrappers if
-# anything has touched the HTML between render() and show_widget. Pass
-# `html` BYTE-FOR-BYTE — no re-encoding, no "cleanup", no minification.
-from chat_output_renderer import validate_rendered_widget, WrapperContractError
-validate_rendered_widget(html)  # raises WrapperContractError on bypass
-
-# Call mcp__visualize__show_widget with `html` UNMODIFIED. The string from
-# render_chat_output_widget IS the payload. Do NOT post-process.
+# EW2+T (F-15): the transport runs the full validator chain (canonical
+# actions, data shape, leak scan, wrapper contract) and persists the sealed
+# render. Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — never
+# a hand-composed variant, never a post-processed one.
 ```
 
 The widget renders inline with per-item buttons; user clicks accumulate locally; "Apply all" fires `apply choices: [...]` consolidated payload that the `apply-choices` skill catches and dispatches through the reply handlers below. Do NOT compose chat strings or paraphrase — the widget HTML IS the post.
@@ -440,16 +439,16 @@ After posting the widget, emit a second chat turn with markdown source thread li
 ```markdown
 **Links:**
 
-1. [<Sender> — <subject>](https://mail.google.com/mail/u/0/#all/<thread_id>)
+1. [<Sender> — <subject>](<thread URL — the connector-returned URL, else connector_adapters.mail.deep_link(provider, thread_id)>)
 2. ...
 ```
 
 - Numbering matches the widget items exactly.
-- Use the URL the Gmail MCP returned on `get_thread` / `search_threads`. Don't synthesize.
+- Use the URL the mail MCP returned on the thread-fetch / search call; fall back to `connector_adapters.mail.deep_link` only when the connector returned none (N8: no known host for the provider → drop the link, never synthesize a broken one).
 - Inbox items have no `.docx` brief — just source thread links.
 - If 0 items have a thread URL (rare — should always exist for unread email), omit the block.
 
-This is the surface that lets the user open the original thread in Gmail and respond there if they want, per Sam's Apr 30 ask: *"this needs to be a response to an email. I'd want to see the link to the most recent email on the subject so you can click it and respond."*
+This is the surface that lets the user open the original thread in their mail client and respond there if they want, per Sam's Apr 30 ask: *"this needs to be a response to an email. I'd want to see the link to the most recent email on the subject so you can click it and respond."*
 
 The noise-breakdown line is REQUIRED in `sub_header` — surface even when all sub-counts are zero, so the filter's work is visible. Hidden noise is the bug; visible noise is the feature.
 
@@ -463,13 +462,13 @@ For every email-shaped item, populate `original_thread` with the source thread s
     "date": "<localized timestamp>",                # "Apr 28, 2:14 PM"
     "subject": "<exact subject line of the most recent message in the thread>",
     "body": "<plaintext body of the most recent message — first ~800 chars; truncate with ellipsis if longer>",
-    "url": "https://mail.google.com/mail/u/0/#all/<thread_id>",  # v2.12.4+ REQUIRED when known
+    "url": "<connector-returned thread URL, else connector_adapters.mail.deep_link(provider, thread_id)>",  # v2.12.4+ REQUIRED when known
 }
 ```
 
 The renderer wraps this in `<details>` so it's collapsed by default; user clicks "Original thread" to expand. Sam's Apr 30 ask: he wanted to see what he was responding to inline before reviewing the draft.
 
-**The `url` field is REQUIRED whenever a thread URL is available** (v2.12.4+, per M's Apr 30 ask: *"I dont see the link to see the original thread in gmail"*). The renderer adds an "↗ Open in Gmail" link at the top of the expanded block when `url` is set. Use the URL the Gmail MCP returns on `get_thread` / `search_threads` — don't synthesize.
+**The `url` field is REQUIRED whenever a thread URL is available** (v2.12.4+, per M's Apr 30 ask: *"I dont see the link to see the original thread in gmail"*). The renderer adds an "↗ Open in [mail client]" link at the top of the expanded block when `url` is set. Use the URL the mail MCP returns on the thread-fetch / search call — don't synthesize (deep_link is the only sanctioned fallback; it degrades to None for providers with no stable host, N8).
 
 If thread content can't be retrieved (rate limit, permission error, etc.), omit the entire `original_thread` field — the renderer skips the block silently. Don't surface partial data.
 
@@ -536,7 +535,7 @@ Handlers:
 - `N snooze 3d` (v2.14.38+) → write `chat_dismissal` event with 3-day TTL (`data.snooze_until: <today + 3d>`). Item won't re-surface in inbox until the date passes. Plain-English ack: `"Snoozed #N for 3 days."` only if mentioned in the consolidated ack.
 - `N not relevant` (v2.14.38+) → write `chat_dismissal` event with 60-day TTL AND `data.reason: "not_relevant"`. The 60-day window is internal mechanics — NEVER surface the duration in chat. Plain-English ack: `"Marked #N as not relevant."` only if mentioned. Used for "this shouldn't have been priority-routed" rather than "deal with later."
 
-**Zapier scope (v2.12.3+ — clarified per M's Apr 30):** Zapier is **only** used by `send` and `draft` paths (and their `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) variants). All other actions (`escalate to memo`, `accept` / `propose [time]` / `decline [reason]` for calendar invites, `skip`) don't touch Zapier. If Zapier isn't configured, only the send + drafts paths feel the difference: they fall back to native Gmail MCP `create_draft(threadId)` + `send_draft` (less robust threading; some thread splits possible) but still succeed. Every other action is Zapier-independent.
+**Zapier scope (v2.12.3+ — clarified per M's Apr 30):** Zapier is **only** used by `send` and `draft` paths (and their `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) variants). All other actions (`escalate to memo`, `accept` / `propose [time]` / `decline [reason]` for calendar invites, `skip`) don't touch Zapier. If Zapier isn't configured, only the send + drafts paths feel the difference: they fall back to the seam-resolved native draft-create (with the provider's threading field per `connector_adapters.mail.threading_field`) + native send where the backend supports it (less robust threading; some thread splits possible) but still succeed. Every other action is Zapier-independent.
 
 (Removed in v2.12.2: standalone `N edit` action — combined `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) replace it. Removed in v2.12.0: `N edit [change]` directive — direct text edit replaces directives.)
 

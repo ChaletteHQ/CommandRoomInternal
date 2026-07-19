@@ -1,6 +1,6 @@
 ---
 name: operator-report
-description: "Generates the CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered unasked, and a conservative time-absorbed estimate, every number computed in code. Fires on: 'operator report', 'show me the value', 'portfolio velocity', 'monthly operating report', plus 'tune operator-report', 'customize operator-report', 'show operator-report settings / customizations', 'reset operator-report customizations'. Output: chat summary plus forwardable .docx with trend context. Does NOT fire on 'weekly recap' / 'what happened this month' (weekly-recap — events digest, not lift accounting), 'value receipt' (value-receipt — the forwardable ROI receipt), or 'usage report' (usage-report — cost/volume telemetry). Full trigger list and section spec: Routing section in the body."
+description: "Generates the CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered unasked, and a conservative time-absorbed estimate, every number computed in code. Fires on: 'operator report', 'show me the value', 'portfolio velocity', 'monthly operating report', plus 'tune operator-report' and 'customize operator-report'. Output: chat summary plus forwardable .docx with trend context. Does NOT fire on 'weekly recap' / 'what happened this month' (weekly-recap — events digest, not lift accounting), 'value receipt' (value-receipt — the forwardable ROI receipt), or 'usage report' (usage-report — cost/volume telemetry). Full trigger list and section spec: Routing section in the body."
 ---
 
 # operator-report
@@ -192,6 +192,8 @@ Pull scheduled-task fire records. `pack_run` events carry `data.task_id` (NOT `o
 
 If scheduled-tasks aren't enabled (no `pack_run` events in window), surface a single-line note instead of the section: *"Your daily briefings and other scheduled work weren't turned on this period — you can flip them on anytime and they'll show up here next time."*
 
+**Optional section: Pipeline (SPEC PIPE1 — available to SCL1 ordering).** The "order sections: cash, pipeline, people" directive class now has a real pipeline source: when the workspace has ≥1 open deal thread, render a compact pipeline block — the `pipeline_math.pipeline_tiles` numbers (open $, closing this month, stalled, won-rate when ≥4 closes) plus one line per terminal event in the window ("Won [Deal] — $52K" / "Lost [Deal] — price") from `deal_state.load_deal_events`. All figures from `pipeline_math` / stated deal values — never re-derived in prose, never estimated. Zero open deals AND zero terminal events in window → the section renders nothing (not a placeholder), whether or not a directive ordered it.
+
 **Section 4: A conservative time estimate**
 
 This is the anchor at the bottom — not the headline. Use a transparent rubric so the number is defensible.
@@ -304,7 +306,7 @@ Renders as `## → **[Operator report — May 2026](computer://...)**` — same 
 
 ### Step 5 — Log
 
-Append the `operator_report_generated` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — never a hand-rolled JSON append. This receipt is the monthly-report task's RUN COUNTER (the value receipts the same fire emits are freshness signals only — one fire writes several of them), so exactly one per run:
+Append the `operator_report_generated` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — never a hand-rolled JSON append. This receipt is the monthly-report job's RUN COUNTER (the maintenance task's monthly leg, MAINT1) (the value receipts the same fire emits are freshness signals only — one fire writes several of them), so exactly one per run:
 
 ```python
 import sys
@@ -328,11 +330,11 @@ log_receipt(
 ## Scheduling
 
 This skill is invokable on-demand AND scheduled. Scheduled monthly run:
-- **Fires:** 1st of every month at 7am in the workspace's `schedule_timezone`
+- **Fires:** as the monthly-report job inside the `maintenance` task (MAINT1) — due at the first fire on/after the 1st of each month (~6:45 AM), self-healing to the next fire if the computer was off
 - **Window:** previous calendar month
 - **Output:** writes to `_hq/operator-reports/YYYY-MM.docx` + surfaces a one-line link in chat next time the user opens Command Room
 
-The scheduled fire is real (SPEC C1): the `monthly-report` task in `schedule_config.py` `DEFAULT_SCHEDULES` (`0 7 1 * *`) runs this report AND the `value-receipt` for the previous month, registered via `enable-command-room-schedules` Step 1.D (the `SILENT_TASKS` registry loop, Phase 3 / SPEC-2.3). (Before C1, this section claimed a monthly fire that was never actually wired into `DEFAULT_SCHEDULES` — folding both reports into the one monthly task is where that claim became real, and it avoids paying the overlapping substrate read twice.) The on-demand trigger always works regardless of scheduled-task reliability.
+The scheduled fire is real (SPEC C1, task topology updated in MAINT1): the monthly-report JOB inside the `maintenance` task (nominal cadence `0 0 1 * *` in `maintenance_dispatcher.MAINTENANCE_JOBS`) runs this report AND the `value-receipt` for the previous month; the task registers via `enable-command-room-schedules` Step 1.D (the `SILENT_TASKS` registry loop, Phase 3 / SPEC-2.3). (Before C1, this section claimed a monthly fire that was never actually wired into `DEFAULT_SCHEDULES` — folding both reports into the one monthly task is where that claim became real, and it avoids paying the overlapping substrate read twice.) The on-demand trigger always works regardless of scheduled-task reliability.
 
 ## What it doesn't do
 

@@ -67,8 +67,57 @@ class DiscoveryResult:
     platform: Optional[str] = None
 
 
-def _is_zapier(tool_id: str) -> bool:
-    return "mcp__zapier_" in (tool_id or "")
+import re as _re
+
+# tool_id shape: mcp__<server-id>__<operation>
+_TOOL_ID_RE = _re.compile(r"^mcp__(?P<server>.+?)__(?P<op>.+)$")
+
+# Zapier signature operations. A UUID-namespaced Zapier leg carries no
+# `mcp__zapier_` prefix (R12/H-H) — its tool names (`gmail_send_email`) mis-match
+# as native Gmail. `get_configuration_url` is the Zapier "configure this Zap"
+# tool and is a strong signature; a server exposing it is treated as Zapier even
+# when it isn't pinned by server-id in the manifest.
+_ZAPIER_SIGNATURE_OPS = frozenset({"get_configuration_url"})
+
+
+def _server_id_of(tool_id: str):
+    """Extract the MCP server-id from a fully-qualified tool id, or None."""
+    m = _TOOL_ID_RE.match((tool_id or "").strip())
+    return m.group("server") if m else None
+
+
+def zapier_servers(tools, pinned_ids=None) -> set:
+    """Server-ids that are the Zapier dispatch leg. Union of (a) ids pinned in
+    the manifest (`workspace.connectors._zapier_server_ids`, authoritative —
+    passed as `pinned_ids`) and (b) heuristic detection: any server exposing a
+    Zapier signature op (`get_configuration_url`). This closes the H-H trap in
+    BOTH the declared-backend path (pinned) and the empty-map fallback path
+    (heuristic) — a UUID server with `gmail_*` tools resolves as Zapier, never
+    native (R12)."""
+    ids = set(pinned_ids or [])
+    by_server = {}
+    for t in tools:
+        tid = getattr(t, "tool_id", t if isinstance(t, str) else "")
+        sid = _server_id_of(tid)
+        if not sid:
+            continue
+        op = tid.split("__")[-1].lower()
+        by_server.setdefault(sid, set()).add(op)
+    for sid, ops in by_server.items():
+        if ops & _ZAPIER_SIGNATURE_OPS:
+            ids.add(sid)
+    return ids
+
+
+def _is_zapier(tool_id: str, zapier_ids=None) -> bool:
+    """True if this tool belongs to a Zapier server. Legacy `mcp__zapier_`
+    prefix OR membership of the tool's server-id in `zapier_ids` (the R12 fix —
+    UUID-namespaced Zapier legs have no prefix)."""
+    if "mcp__zapier_" in (tool_id or ""):
+        return True
+    if zapier_ids:
+        return _server_id_of(tool_id) in zapier_ids
+    return False
 
 
 # ============================================================================
@@ -225,10 +274,11 @@ def discover_gmail_tool(
     tools_list = list(tools)
     candidates = 0
     op_norm = operation.lower().replace("_", "")
+    zap_ids = zapier_servers(tools_list)
 
     for t in tools_list:
         candidates += 1
-        if _is_zapier(t.tool_id):
+        if _is_zapier(t.tool_id, zap_ids):
             continue
         tid_lower = t.tool_id.lower()
         if any(hint in tid_lower for hint in _GMAIL_NATIVE_HINTS):
@@ -248,7 +298,8 @@ def discover_gmail_tool(
 # ============================================================================
 
 
-def discover_zapier_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
+def discover_zapier_send_tool(tools: Iterable[ToolDescriptor],
+                              zapier_ids=None) -> DiscoveryResult:
     """Discover the user's Zapier-threaded-send Zap.
 
     Three matching paths in priority order (per EMAIL_DRAFT_PROTOCOL.md §3c
@@ -259,14 +310,22 @@ def discover_zapier_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResul
          etc.)
       2. Tool description contains `Command Room` AND (`Send Threaded Email`
          OR `threaded`)
-      3. Permissive fallback: any `mcp__zapier_*` tool whose name or description
+      3. Permissive fallback: any Zapier tool whose name or description
          contains BOTH `gmail` (or `email`) AND (`send` OR `reply`). If
          multiple match, prefer ones containing `command`/`room`; fall back to
          first containing `send`. Calendar/Drive/Sheets tools won't match.
 
+    R12/H-H: "Zapier" is now recognized in a UUID-namespaced env too — the
+    server-id is matched against `zapier_ids` (the pinned
+    `_zapier_server_ids` list, passed by the caller) plus the
+    `get_configuration_url` signature heuristic. Without this, the UUID Zapier
+    leg is invisible to this discovery (no `mcp__zapier_` prefix) and the send
+    path silently can't fire.
+
     Returns the matched tool ID or None + plain-English reason.
     """
     tools_list = list(tools)
+    zap = zapier_servers(tools_list, zapier_ids)
     candidates = 0
 
     # Path 1: name slug match
@@ -277,7 +336,7 @@ def discover_zapier_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResul
     )
     for t in tools_list:
         candidates += 1
-        if not _is_zapier(t.tool_id):
+        if not _is_zapier(t.tool_id, zap):
             continue
         tid_lower = t.tool_id.lower()
         name_lower = (t.name or "").lower()
@@ -287,7 +346,7 @@ def discover_zapier_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResul
 
     # Path 2: description fuzzy match
     for t in tools_list:
-        if not _is_zapier(t.tool_id):
+        if not _is_zapier(t.tool_id, zap):
             continue
         desc = (t.description or "").lower()
         if "command room" in desc and ("send threaded email" in desc or "threaded" in desc):
@@ -297,7 +356,7 @@ def discover_zapier_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResul
     # send/reply action
     fallback_candidates = []
     for t in tools_list:
-        if not _is_zapier(t.tool_id):
+        if not _is_zapier(t.tool_id, zap):
             continue
         haystack = ((t.name or "") + " " + (t.description or "") + " " + t.tool_id).lower()
         has_mail = "gmail" in haystack or "email" in haystack
@@ -394,9 +453,12 @@ def _discover_mail_tool(
     """
     tools_list = list(tools)
     candidates = 0
+    # R12/H-H: exclude Zapier servers (pinned + heuristically detected) so a
+    # UUID Zapier leg exposing `gmail_send_email` is never matched as native.
+    zap_ids = zapier_servers(tools_list)
     for t in tools_list:
         candidates += 1
-        if _is_zapier(t.tool_id):
+        if _is_zapier(t.tool_id, zap_ids):
             continue
         platform = _match_platform(t.tool_id, _MAIL_PLATFORM_HINTS)
         if not platform:
@@ -655,9 +717,155 @@ def discover_drive_tool(
     )
 
 
+# ============================================================================
+# Server-id-first resolution (A1 keystone) + fingerprint re-pair (A1b)
+# ============================================================================
+
+
+def discover_for_category(
+    category: str,
+    operation: str,
+    tools: Iterable[ToolDescriptor],
+    declared: Optional[dict] = None,
+    zapier_ids=None,
+) -> DiscoveryResult:
+    """Server-id-first resolution — the primary discovery path (A1).
+
+    When a backend is DECLARED for the category (`declared` = the
+    `connector_config.declared_backend(category)` row, `{server_id, provider,
+    label}`), find the tool ON THAT SERVER whose operation matches. This is
+    deterministic and immune to the substring / H-H hazards entirely — the
+    Zapier leg is never the declared email backend.
+
+    When NO backend is declared (empty map), returns tool_id=None with a reason;
+    the caller then falls back to the substring `discover_*` helper below, which
+    IS today's behavior (R4). The `zapier_ids` set (from
+    `workspace.connectors._zapier_server_ids`) is honored so a pinned Zapier
+    server is excluded even on the fallback path."""
+    tools_list = list(tools)
+    zap = zapier_servers(tools_list, zapier_ids)
+    if declared and declared.get("server_id"):
+        sid = declared["server_id"]
+        op_norm = operation.lower().replace("_", "")
+        server_seen = False
+        for t in tools_list:
+            if _server_id_of(t.tool_id) != sid:
+                continue
+            server_seen = True
+            if _is_zapier(t.tool_id, zap):
+                continue
+            if op_norm in t.tool_id.lower().replace("_", ""):
+                return DiscoveryResult(
+                    tool_id=t.tool_id,
+                    candidates_considered=len(tools_list),
+                    platform=declared.get("provider"),
+                )
+        if not server_seen:
+            # R13 drift: the declared server-id is ABSENT from the fire-time
+            # registry (reconnect rotated the UUID, or the connector is off
+            # for this session). Distinct from capability-absent — the caller
+            # runs detect_backend_drift and follows the R13 split
+            # (interactive: confirm a re-pair; silent: skip the leg + flag).
+            return DiscoveryResult(
+                tool_id=None,
+                reason=(
+                    f"declared {category} backend (server {sid}, "
+                    f"{declared.get('provider')}) is NOT PRESENT in this "
+                    "session's tool registry — backend drift (R13); run "
+                    "tool_discovery.detect_backend_drift and confirm a "
+                    "re-pair interactively, or skip-and-flag on a silent fire."
+                ),
+                candidates_considered=len(tools_list),
+            )
+        return DiscoveryResult(
+            tool_id=None,
+            reason=(
+                f"declared {category} backend (server {sid}, "
+                f"{declared.get('provider')}) exposes no {operation!r} tool — "
+                "capability absent; degrade per RELIABILITY.md."
+            ),
+            candidates_considered=len(tools_list),
+        )
+    return DiscoveryResult(
+        tool_id=None,
+        reason=(
+            f"no declared {category} backend; caller falls back to substring "
+            "discovery (empty-map = today's behavior, R4)."
+        ),
+        candidates_considered=len(tools_list),
+    )
+
+
+def detect_backend_drift(tools: Iterable[ToolDescriptor], declared: Optional[dict],
+                         *, min_overlap: int = 2) -> Optional[dict]:
+    """R13 drift-detect, code half. Given the fire-time tool list and a
+    declared backend row ({server_id, provider, label}), returns None when the
+    declared server is present (no drift). When it is ABSENT, groups the
+    visible tools by server-id, fingerprints each server, and returns:
+
+      {"declared_server_id", "declared_provider",
+       "candidate_server_id": <the server whose fingerprint matches the
+                               declared provider, or None>,
+       "candidate_provider":  <its matched provider, or None>}
+
+    The PROSE half decides what to do with it (never this function):
+    interactive session → confirm the re-pair with the user, then re-pin via
+    connector_config.set_declared_backend + a connector_backend_changed event
+    (and a connector_detected event for the new server-id). Silent/scheduled
+    session → SKIP that connector's leg this fire + flag for the next
+    interactive session (a connector_detected event with
+    fingerprint_matched) — never prompt, never ingest through an unconfirmed
+    binding."""
+    if not declared or not declared.get("server_id"):
+        return None
+    tools_list = list(tools)
+    sid = declared["server_id"]
+    by_server: dict = {}
+    for t in tools_list:
+        s = _server_id_of(t.tool_id)
+        if s:
+            by_server.setdefault(s, []).append(t.tool_id)
+    if sid in by_server:
+        return None  # declared server present — no drift
+    want = (declared.get("provider") or "").lower() or None
+    cand_sid = None
+    cand_provider = None
+    for s, ids in by_server.items():
+        match = repair_backend(ids, min_overlap=min_overlap)
+        if match and (want is None or match.lower() == want):
+            cand_sid, cand_provider = s, match
+            break
+    return {
+        "declared_server_id": sid,
+        "declared_provider": declared.get("provider"),
+        "candidate_server_id": cand_sid,
+        "candidate_provider": cand_provider,
+    }
+
+
+def repair_backend(server_tool_ids, min_overlap: int = 2) -> Optional[str]:
+    """Fingerprint re-pair (A1b): given the tool-name set of a reconnected
+    server whose UUID changed, return the best-matching known provider (or
+    None). The caller CONFIRMS with the user before re-pinning — interactive
+    only; a silent/scheduled session skips-and-flags (R13). Delegates to the
+    capability manifest's fingerprints."""
+    try:
+        from connector_adapters.capabilities import best_fingerprint_match
+    except ImportError:
+        from pathlib import Path as _P
+        import sys as _sys
+        _sys.path.insert(0, str(_P(__file__).resolve().parent))
+        from connector_adapters.capabilities import best_fingerprint_match
+    return best_fingerprint_match(server_tool_ids, min_overlap=min_overlap)
+
+
 __all__ = [
     "ToolDescriptor",
     "DiscoveryResult",
+    "discover_for_category",
+    "detect_backend_drift",
+    "repair_backend",
+    "zapier_servers",
     "discover_calendar_tool",
     "discover_gmail_tool",
     "discover_zapier_send_tool",

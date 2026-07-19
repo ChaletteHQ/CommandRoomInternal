@@ -21,9 +21,12 @@ CONTRACT (mirrors Pass 9/10 cooldown semantics exactly)
 -------------------------------------------------------
   - Each proposing pass writes ONE row per user decision:
     {ts, pass, fingerprint, user_action, summary}
-    user_action in {"applied", "edited", "declined", "skipped"}.
-  - A `declined` fingerprint enters a 60-day cooldown (measured from the decline
-    ts) — the pass suppresses that fingerprint at scoring time until it expires.
+    user_action in {"applied", "edited", "declined", "skipped", "superseded"}.
+  - A `declined` OR `superseded` fingerprint enters a 60-day cooldown (measured
+    from the row ts) — the pass suppresses that fingerprint at scoring time
+    until it expires. `superseded` (T2.2 review F-4) = the proposal's premise
+    no longer holds (already-covered deal creation); same cooldown as declined,
+    truthful label.
     `skipped` is a soft defer (re-surfaces next run, no cooldown); `applied` /
     `edited` mean the rule landed in its override store.
   - `pass` namespaces the ledger so one file serves every loop without
@@ -61,7 +64,10 @@ GLOBAL_PROPOSAL_CAP = 7
 COOLDOWN_DAYS = 60
 
 _APPLIED = {"applied", "edited"}
-_DECLINE = "declined"
+# declined AND superseded both cool down (F-4): a covered/stale premise must
+# not re-propose any more than a user "no" would.
+_COOLDOWN_ACTIONS = {"declined", "superseded"}
+_DECLINE = "declined"  # kept for external readers
 
 
 def ledger_path(workspace_root) -> Path:
@@ -162,9 +168,9 @@ def active_cooldowns(
     cooldown_days: int = COOLDOWN_DAYS,
     rows: Optional[Iterable[dict]] = None,
 ) -> Set[str]:
-    """Fingerprints in `pass_name` that were DECLINED within the last
-    `cooldown_days` — the pass drops these from candidates at scoring time
-    (Pass 9/10 60-day cooldown, verbatim). `applied`/`edited` are NOT cooldowns
+    """Fingerprints in `pass_name` that were DECLINED or SUPERSEDED within
+    the last `cooldown_days` — the pass drops these from candidates at
+    scoring time (Pass 9/10 60-day cooldown, verbatim). `applied`/`edited` are NOT cooldowns
     (the rule already lives in its store); a later re-decline restarts the clock.
     Pass `rows` to score against an in-memory ledger (tests); otherwise loaded
     from disk."""
@@ -174,7 +180,7 @@ def active_cooldowns(
     for row in rows:
         if row.get("pass") != pass_name:
             continue
-        if row.get("user_action") != _DECLINE:
+        if row.get("user_action") not in _COOLDOWN_ACTIONS:
             continue
         fp = row.get("fingerprint")
         if not fp:

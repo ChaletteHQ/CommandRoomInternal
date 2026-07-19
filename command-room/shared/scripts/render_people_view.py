@@ -65,6 +65,14 @@ def _load_events(p: Path) -> list[dict]:
             continue
         if isinstance(obj, dict):
             out.append(obj)
+    # R5 reader-honor: people-view never derives last-contact (or any card
+    # signal) from a scope-masked account's history. Defensive — failure
+    # leaves events unfiltered.
+    try:
+        from account_scope_gate import filter_masked_events
+        out = filter_masked_events(out)
+    except Exception:
+        pass
     return out
 
 

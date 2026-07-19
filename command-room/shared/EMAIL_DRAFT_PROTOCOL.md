@@ -20,7 +20,9 @@ Applies to **every skill that emits a recipient-bound email draft, regardless of
 - `inbox-triage` (Reply Now bucket drafts)
 - Any future skill that emits a recipient-bound draft
 
-Every skill in this list MUST render its draft surface as a chat-action widget via `render_chat_output_widget(data_view, wrapper="fragment")` posted through `mcp__visualize__show_widget`. Plain-text previews in chat are NOT a valid alternative — they break editability and force back-and-forth chat-turn revisions. See §1 (lazy creation), §2 (numbered actions), §3c (Zapier-threaded send) for the per-action semantics every emitter follows.
+This includes email drafts that arise as **sub-steps of another skill's work or of a longer multi-step turn**: chain email-writer (the thread-resurrection precedent; CONTRACT Rule 30), don't compose inline.
+
+Every skill in this list MUST render its draft surface as a chat-action widget via `widget_transport.render_and_persist(data_view, wrapper="fragment")` — the full validator chain runs inside — passing `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code` (`shared/CHAT_ACTION_WIDGET.md` § Transport, Bug #67). Plain-text previews in chat are NOT a valid alternative — they break editability and force back-and-forth chat-turn revisions. See §1 (lazy creation), §2 (numbered actions), §3c (Zapier-threaded send) for the per-action semantics every emitter follows.
 
 ## 0. Plain-English chat output (v2.10.0+)
 
@@ -28,12 +30,22 @@ Every chat string the user sees must be plain executive English. Never leave `<N
 
 This is reinforcement for what each orchestrator's Phase 6/7/8/9 chat-format block specifies — when in doubt, follow the rule here.
 
-## 1. Lazy Gmail draft creation (the big rule)
+## 0.5 Connector-agnostic dispatch (connector-agnostic-v1 — READ FIRST; supersedes the Gmail-specific framing below)
 
-**Do NOT create Gmail drafts at fire time.** Generate draft TEXT only. Show full draft inline in the chat turn. Drafts get persisted to Gmail only when the user EXPLICITLY chooses one of these per-item actions:
+This protocol was written in Gmail terms. As of the connector-agnostic build it is **intent-based**: a skill expresses an intent (draft a reply, send this, create a draft) and a resolver maps it to whatever mail backend the workspace declared. Everything below (§1–§8) still holds — but wherever it names a Gmail tool, read it as "the resolved mail tool on the declared backend." The specifics:
 
-- `N send` → compose + send via Gmail. (Tries `create_draft` then `send_draft`, or `send_message` directly if MCP supports it.)
-- `N draft` → opens the inline edit field on the widget; on Apply, calls `create_draft` to land the draft in Gmail Drafts. (User reviews/edits via the widget, then the draft persists for further refinement in Gmail UI if desired.)
+1. **Resolve the backend server-id-first.** Get the declared mail backend from `connector_config.declared_backend("email")` and resolve the operation on that server via `tool_discovery.discover_for_category("email", "<op>", tools, declared=…)`. When no backend is declared (empty map), fall back to `discover_mail_draft_tool` / `discover_mail_send_tool` / `discover_mail_reply_tool` / `discover_mail_thread_fetch_tool` — that fallback IS today's behavior (R4). NEVER name a provider tool (`create_draft`, `send_draft`) directly in skill prose (Rule 21); the per-provider mapping lives in `connector_adapters/mail.py`.
+2. **Capability-gate every write.** Read the backend's capabilities from `connector_capabilities.json` (via `connector_adapters.capabilities.supports(provider, cap)`). If the backend can't draft/send (M's Microsoft 365 is READ-ONLY — H-F), **degrade to "here's the text to paste," never a hard fail** (A3). Draft/send/undo-send/threaded-reply availability all come from the manifest, not from assuming Gmail.
+3. **The Zapier leg is a GMAIL-ONLY dispatch row (H-D).** §3c below fires ONLY when the declared mail backend is **Gmail** — a Superhuman or Outlook workspace never inherits it (Superhuman sends natively via its own send tool; Outlook, when write-capable, sends via its own). The Zapier server is pinned by server-id in `workspace.connectors._zapier_server_ids` (R12) and recognized even in a UUID-namespaced env (no `mcp__zapier_` prefix) — see `discover_zapier_send_tool(tools, zapier_ids=…)`.
+4. **Provenance is structured.** A sent/drafted email records provenance `{connector, provider, native_id, account_id}` via `connector_adapters/provenance.py`, not a `gmail:`/`gcal:` string. Legacy rows stay readable (back-compat); the canonical dedup key reduces old+new to one identity.
+5. **Account-scope + outbound routing (R1/B3).** Outbound **never originates from an out-of-scope / personal account**; reply from the account the thread lives in; new outbound from the declared default (business-primary). A `write_to_business: off` account may still be *surfaced* (its mail can appear in a triage list) but a draft composed from it is a business action — route it from a business account. When the address↔server binding is **unverified** (some connectors expose no whoami — H-A, native Gmail), a fail-closed send **degrades to paste-text** rather than risk sending from the wrong account. See `shared/ACCOUNT_SCOPE.md` §5.
+
+## 1. Lazy draft creation (the big rule)
+
+**Do NOT create drafts at fire time.** Generate draft TEXT only. Show full draft inline in the chat turn. Drafts get persisted to the mail connector only when the user EXPLICITLY chooses one of these per-item actions (the tool named is the resolved draft/send tool on the declared backend per §0.5, NOT a hardcoded Gmail tool):
+
+- `N send` → compose + send via the resolved send path (§3c dispatch order).
+- `N draft` → opens the inline edit field on the widget; on Apply, calls the resolved draft tool to land the draft in the connector's Drafts. (User reviews/edits via the widget, then the draft persists for further refinement in the connector's UI if desired.)
 - `N edit then send` → opens the inline edit field; on Apply, sends.
 
 **v2.14.4+ canonical-verb consolidation:** the prior `to drafts` verb was merged into `draft` — same effect (lands in Gmail Drafts), with the edit-then-save flow as the default semantic. The renderer's CANONICAL_ACTIONS set rejects `to drafts` as a per-item verb; only the bulk action `to drafts all` retains the older shape. References below to "to drafts" describe the OLD shape — the current emit MUST use `draft`.
@@ -62,7 +74,9 @@ Modifier shortcuts the parser knows: `firmer`, `softer`, `shorter`, `longer`, `m
 
 Email-writer is invoked with the modifier as a voice-tilt directive when generating the rewrite.
 
-## 3. Gmail MCP defensive handling (verified limitations as of 2026-04-28)
+## 3. Mail-connector defensive handling (resolved backend; verified limitations as of 2026-04-28)
+
+> **Connector-agnostic note (see §0.5):** §3a/§3b below document real Gmail-backend limitations. They apply when the declared mail backend is Gmail. For other backends, the equivalent limitations come from the capability manifest (`connector_capabilities.json`): e.g. Superhuman supports native threaded send + labels + undo-send, so §3a/§3b don't apply; a read-only Outlook connector can't draft or send at all, so both degrade to paste-text (§0.5 point 2). Never assume a Gmail limitation on a non-Gmail backend, and never assume a Gmail capability either — read the manifest.
 
 ### 3a. `create_draft` may reject `threadId` parameter
 
@@ -130,9 +144,11 @@ If multiple tools match, prefer exact slug match over fuzzy match. If still ambi
 
 ### Dispatch (priority order on `N send`)
 
-1. **Zapier path** (preferred if configured): see "Zapier param contract" below. On success: confirm `✓ Sent (threaded) at HH:MM`. Write `outreach_sent` event with `via: "zapier"`. Done.
-2. **Native Gmail MCP threaded** (fallback): try `create_draft(threadId, ...)` then `send_draft`. If the schema rejects `threadId` (per §3a), fall through. On success: confirm `✓ Sent at HH:MM`. Write `outreach_sent` event with `via: "gmail_mcp_threaded"`.
-3. **Native Gmail MCP standalone** (last fallback): `create_draft(...)` without `threadId`, then `send_draft`. Surface inline note ONCE per session in plain English:
+> **Backend gate (connector-agnostic-v1, H-D):** this Zapier-first dispatch order applies **only when the declared mail backend is Gmail**. On a Superhuman backend, `N send` uses Superhuman's native send (`send_draft` on the declared Superhuman server, resolved via `discover_for_category`) — threaded natively, no Zapier leg, `via: "native_threaded"`. On a write-capable Outlook backend, `N send` uses Outlook's native send/reply. On a READ-ONLY backend (M's M365 — H-F), `N send` is unavailable and degrades to paste-text. The steps below are the **Gmail-backend** dispatch.
+
+1. **Zapier path** (preferred if configured, Gmail backend only): see "Zapier param contract" below. On success: confirm `✓ Sent (threaded) at HH:MM`. Write `outreach_sent` event with `via: "zapier"`. Done.
+2. **Native Gmail MCP threaded** (fallback): try the resolved threaded-reply path then send. If the schema rejects `threadId` (per §3a), fall through. On success: confirm `✓ Sent at HH:MM`. Write `outreach_sent` event with `via: "gmail_mcp_threaded"`.
+3. **Native Gmail MCP standalone** (last fallback): resolved draft tool without `threadId`, then send. Surface inline note ONCE per session in plain English:
    > *"(Sent as standalone — your Gmail connector doesn't support threaded send. Setting up the Zapier integration fixes this; the setup guide walks through it in about 5 minutes.)"*
 
    Confirm `✓ Sent at HH:MM`. Write `outreach_sent` event with `via: "gmail_mcp_standalone"`.
@@ -275,7 +291,7 @@ When deciding which surface to render, follow this ladder. Skills must NOT route
 | n>0 + closure-reversal detected (the recipient just closed the thread you're about to revive) | Confirmation widget per Strength #20 — surface the reversal and ask before proceeding. |
 | Read-only orientation (list-active style, no actions) | Chat-mode synthesis, NOT a widget. |
 
-All paths render via `widget_transport.render_and_persist` (canonical render → file URI → show_widget). Freelance render paths (direct show_widget with hand-built HTML) violate the v3.13.8 contract.
+All paths render via `widget_transport.render_and_persist` (canonical render + validate + persist → relay `transport["html"]` as `show_widget` `widget_code`). Freelance render paths (direct show_widget with hand-built HTML) violate the contract.
 
 Action labels in the rendered HTML MAY interpolate names and friendly text (e.g. "Send invite to Sam") but the wire-level action verb MUST be canonical lowercase (`send invite`). Per CONTRACT.md Rule 5.
 

@@ -96,7 +96,31 @@ class OrgNode:
 
 
 def _compute_last_activity(events: list[dict]) -> dict[str, str]:
-    """Return map of project_id → latest event ts, using primary_thread_id only."""
+    """Map of project_id → latest event ts (UTC ISO string).
+
+    Canonical path: thread_activity.derive_from_events with ALL_TYPES — the
+    settled C3 rule (related_thread_ids + legacy id/timestamp spellings
+    count, confidence floor applies, naive/aware stamps compare safely).
+    The old local loop matched top-level primary_thread_id + `ts` only, so
+    this tree could show a staler date than the workspace map for the same
+    project (the F-54 divergence class).
+
+    Defensive fallback keeps the old loop: render_tree is documented as
+    standalone-runnable, and a missing shared/scripts must never brick
+    list-active (never-brick posture).
+    """
+    try:
+        shared = Path(__file__).resolve().parents[2] / "shared" / "scripts"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        from thread_activity import ALL_TYPES, derive_from_events
+
+        return {
+            tid: act.ts.isoformat()
+            for tid, act in derive_from_events(events, activity_types=ALL_TYPES).items()
+        }
+    except Exception:
+        pass
     latest: dict[str, str] = {}
     for ev in events:
         pt = ev.get("primary_thread_id")
@@ -177,7 +201,12 @@ def build_tree(
             kind=proj.get("kind", "initiative"),
             affiliation_id=proj.get("affiliation_id"),
             parent_thread_id=proj.get("parent_thread_id"),
-            last_activity=last_activity.get(pid),
+            # Zero-event floor (C3 deprecation carve-out): stored stamp,
+            # then first_seen — the chain every other surface uses. Never
+            # overrides derived activity.
+            last_activity=(last_activity.get(pid)
+                           or proj.get("last_activity")
+                           or proj.get("first_seen")),
             aliases=alias_map.get(pid, []),
         )
 

@@ -9,7 +9,7 @@ text ("before tomorrow's call", "Thursday"), Stage-E counterparty fields were
 empty despite named people, and 5 items were classified `task` instead of
 `promise` (F-31). The next morning those items were INVISIBLE in the brief and
 every chase surface on the exact day they mattered — two of them were about
-that morning's 9:15 "Michele - Matthew - Erick" call (F-44).
+that morning's 9:15 "Michele - Sam - Quinn" call (F-44).
 
 Regresses both halves of the C1 fix:
 
@@ -30,7 +30,7 @@ Regresses both halves of the C1 fix:
   - The RAW F-31 shapes (undated, task-kind, counterparty-less, confidence-
     less — exactly as they sit on disk today) match today's 9:15 by
     name-mention, including the transcript-spelling drift "Michelle" ->
-    resolved attendee "Michele Jewett" (single-edit tolerance).
+    resolved attendee "Michele Sample" (single-edit tolerance).
   - meeting_linked survives every condition that hid the items before:
     no due date, kind=task, recent thread activity, missing confidence.
   - Post-fix shapes match by counterparty_id.
@@ -81,9 +81,9 @@ SESSION = "local_9c085d17-fb64-4425-84e3-702e820177a2"  # the real Jul 7 session
 # calendar: resolved attendee ids + display names (entities spelling).
 MEETING_915 = {
     "meeting_id": "granola:eb06c827",
-    "title": "Michele - Matthew - Erick",
+    "title": "Michele - Sam - Quinn",
     "attendee_person_ids": ["person_093", "person_001", "person_017"],
-    "attendee_names": ["Michele Jewett", "Erick Burg"],
+    "attendee_names": ["Michele Sample", "Quinn Stone"],
 }
 
 # ---------------------------------------------------------------------------
@@ -324,8 +324,8 @@ def test_raw_f31_events_match_todays_meeting():
           repr(ids))
     check("matched by name-mention despite empty counterparty fields",
           all(r["match"] == "name_mention" for r in rows))
-    check("'Michelle' in the sweep text matched resolved attendee 'Michele Jewett'",
-          any(r["matched_name"] == "Michele Jewett" for r in rows))
+    check("'Michelle' in the sweep text matched resolved attendee 'Michele Sample'",
+          any(r["matched_name"] == "Michele Sample" for r in rows))
     check("undated items carry due=None, not a crash or a drop",
           all(r["due"] is None for r in rows))
     check("Don / Brandon / Evan / Kevin items do NOT match this meeting",

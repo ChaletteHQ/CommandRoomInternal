@@ -36,6 +36,8 @@ NEEDED    Approve the redline (one tap below) · nothing else.
 - **Chat:** the same three lines after the date line.
 - **Widget:** the verdict is the widget header; the three lines render as the contract band; the ASK block is the widget's action set (see element 4 — one-ask-surface).
 
+**Per-kind restriction — the eyebrow is brief-family only (FS-13).** The `CHANGED / DECIDE / NEEDED` three-line eyebrow is a recurring-digest scaffold ("what moved since last time"). Document / decision kinds — `memo`, `one_pager`, `decision_memo`, `board_pack`, `contract_review`, `automation_scan`, `stress_test` (`brief_writer.EXEC_EYEBROW_EXCLUDED_KINDS`) — render the **VERDICT lead + rule ONLY**; `brief_writer._add_exec_header` drops the eyebrow lines for them. Applying the eyebrow universally misframed those docs and cost the one-pager its single page (the live 4/4 bleed). The reader's asks still land through the mandatory `asks` close (element 4).
+
 **Enforcement (HARD-REQUIRE — the OUT2 §4 flip, landed).** `STANDARD_KINDS` in `brief_writer` is the set of kinds required to carry an exec header. A `STANDARD_KIND` brief rendered WITHOUT `exec_header` (or with a blank verdict) **raises `ValueError` BEFORE `Document()` is built** — no partial file — and leaves a `brief_meta` severity="error" audit event as the substrate trace of the refused save. The warn-only staging release (EXEC1) gave scheduled-task orchestrator prompts a full release to catch up (CONTRACT Rule 16); the flip landed in the same commit as the orchestrator compliance sweep (upcoming-meetings passes `exec_header` on its call_prep path; past-meetings renders `past_meeting`, not a STANDARD_KIND; friday-wrap executes weekly-recap's phases, which pass it; no other scheduled orchestrator renders a `.docx`). The set now also carries the three EXEC1-deferred kinds: `contract_review` (verdict = the deal-breaker flag line), `automation_scan` (verdict = top opportunity + payback), `stress_test` (verdict = the kill-risk line).
 
 ### 2. Decision-forward ordering
@@ -132,10 +134,11 @@ One workspace-level profile shapes HOW every `.docx` composer renders, without a
 
 | Knob | Values | What it changes |
 |---|---|---|
-| `density` | **tight** · narrative | body-paragraph spacing only (narrative = looser line spacing for prose-preferring readers) |
-| `visual_bias` | **tiles_first** · prose_first | tiles/body order within a section (prose_first renders the body above the tile band) |
-| `page_cap` | **{}** · `{<kind>: N}` | WARN-ONLY: an over-cap render gets one stderr note; never blocks, never truncates |
-| `default_format` | **docx** | the only value for now — premium HTML lands with Wave 3; unknown values resolve back to docx |
+| `density` | **tight** · narrative | body-paragraph spacing only (narrative = looser line spacing for prose-preferring readers); applies to both backends |
+| `visual_bias` | **tiles_first** · prose_first | tiles/body order within a section (prose_first renders the body above the tile band); applies to both backends |
+| `page_cap` | **{}** · `{<kind>: N}` | WARN-ONLY: an over-cap render gets one stderr note; never blocks, never truncates; shared estimate on both backends |
+| `default_format` | **docx** · premium_html | the rendering backend for the LAUNCHED kinds (SPEC OUT5 — see "The premium HTML format" below); everything else stays docx regardless; unknown values resolve back to docx |
+| `format_by_kind` | **{}** · `{<kind>: docx\|premium_html}` | per-kind override beating `default_format` (SPEC OUT5); unknown/unlaunched kinds resolve to docx silently |
 
 **Who writes it — exactly two paths, both explicit:**
 1. **"tune output"** / "show output settings" / "reset output to defaults" — owned by workspace-manager ("output" is not a skill, so the bare-tune router rule can't resolve it).
@@ -144,6 +147,39 @@ One workspace-level profile shapes HOW every `.docx` composer renders, without a
 ⛔ **FENCE (do not cross):** the output profile has **NO first-run block and NO onboarding mention**. It never appears in a first-fire footer, an M1 batch, or any proactive offer — it is a power-user surface until Wave 3. A future session that adds it to `FIRST_RUN_PROTOCOL`'s catalog or an onboarding widget is violating a ratified decision (strategy Decision set, M 2026-07-09).
 
 Precedence note: the profile sits BELOW per-skill knobs and SCL1 directives in specificity — it sets the workspace-wide default; a skill's own config or a directive that says otherwise for that skill's documents wins.
+
+---
+
+## The premium HTML format (SPEC OUT5 — a second backend, one gate stack)
+
+The research skill's self-contained branded HTML brief, generalized into a client-selectable format. Rendered ONLY by `shared/scripts/premium_html.py` `make_premium_brief(...)` from `shared/templates/premium_brief.html` (which supersedes the retired `research_brief.html`) — never hand-filled; the old "replace the {{TOKENS}}" contract shipped zero artifacts on long turns (field report 2026-07-16, the prose-instructed class) and is dead.
+
+**Selection.** `output_profile.resolve_format_for_kind(kind, workspace_root, override=...)` — the composer calls it at render time and routes to `make_brief` (docx) or `make_premium_brief` (premium_html). Launched kinds: **board_pack, one_pager, value_receipt, research** (`output_profile.PREMIUM_LAUNCH_KINDS`); everything else renders docx regardless of profile. research is premium HTML by default (its shipped behavior); every other kind defaults docx — an unconfigured workspace is byte-identical to the pre-OUT5 world. A trigger-level "as a doc" / "as HTML" beats the profile for that render. Selection is written ONLY by `tune output` (workspace-manager) — no first-run block, no onboarding mention (the OUT2 §5 fence, unchanged).
+
+**Gate parity (the load-bearing invariant, guard G16).** Both backends run the ONE shared pre-save stack — `shared/scripts/brief_gates.py` `run_pre_save_gates` (input validation → recommendation-ordering → output-contract gate → voice-tell gate → exec-header requirement) — plus the shared page-cap warn and a post-save leak scan from the one forbidden-token list (`docx_leak_scanner.scan_docx_for_leaks` / `scan_html_for_leaks`, which also scans href/src targets). A gate belongs in `brief_gates`, never inline in a backend; `tests/run_guard_g16_gate_parity_test.py` enumerates both backends' recorded gate sets and fails naming the side that lags. Both backends emit the `gate_ran` audit event (`surface: "docx"` / `"premium_html"`) for the detectable-bypass join.
+
+**Payload.** `make_premium_brief` accepts the exact `make_brief` kwargs (sections with body / bullets / table / matrix / tiles / timeline — tables, matrices, tiles, and timelines render through `components.py`'s shared HTML fragment builders; exec_header; asks; brand/org resolution; footer_text), plus premium-only extras from the research heritage: section keys `people` / `events` / `sources`, cited-bullet dicts `{text, url, low_confidence}`, top-level `badges={"source": enriched|tavily|web, "confidence": high|medium|low}` and `source_summary`. Routing and naming mirror the docx twin — same folder, same filename, `.html`; link via `brief_path.get_brief_artifact_url()`; the composer CHECKS the file exists after the call (render asserted, never assumed).
+
+**Self-contained fence.** No external fonts, no CDN, no asset server, no remote stylesheet — brand fonts lead the stacks with system fallbacks; brand accent + fonts resolve per render through `brand.get_brand()` (workspace/org override honored; default brand = the premium default theme). The visual pass covers HTML too: `visual_gate.render_preview(<html path>)` screenshots via a headless browser (Edge ships on stock Windows) — absent browser = gate skipped with the standard audit note, never blocks.
+
+---
+
+## The exemplar anchor (SPEC OUT8 — structure calibration, seeds-first)
+
+Voice calibration taught the system WORDS from corrections; the exemplar library teaches it STRUCTURE the same way. One gold-standard structural exemplar per `STANDARD_KIND` — section order, where tiles/tables sit, target length, header treatment, as a concrete annotated skeleton — resolved per render by `shared/scripts/exemplars.py` `get_exemplar(kind, workspace_root)`:
+
+- **Workspace exemplar** (`_hq/exemplars/<kind>/exemplar_1.md`, learned) if present, else the **shipped seed** (`shared/exemplars/<kind>/exemplar_1.md`), else `None`. Deep preference, never a merge — an exemplar is an exemplar; halves don't combine. Absent = the composer proceeds on its defaults, byte-identical to the pre-OUT8 world (the brand-layer posture: read at render time, never cached across workspaces, never raises).
+- **Every composing skill that owns a `STANDARD_KIND`** loads its kind's exemplar before composing and anchors STRUCTURE on it: section order, visual placement, proportions.
+
+**PRECEDENCE (load-bearing): contract beats exemplar beats default.** An exemplar can never license skipping the exec header, the ask cap, the decision-order check, or any gate — it shapes what the gates leave free. There is no code path from an exemplar into `make_brief`'s enforcement; the chokepoint raises on a missing exec header no matter what any exemplar shows.
+
+**THE RAIL BOUNDARY.** Voice Blocks own WORDS (phrasing, vocabulary, tone — `shared/VOICE_CALIBRATION.md`); exemplars own LAYOUT (structure, order, visual placement). The two rails stay disjoint: a Voice Block never prescribes section order; an exemplar never prescribes phrasing.
+
+**STRUCTURE, NEVER FACTS.** No number, name, or claim may flow from an exemplar into a deliverable — exemplars are skeletons. Every exemplar declares its placeholder strings in a `<!-- tokens: … -->` comment; after saving a `STANDARD_KINDS` doc the composer runs `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar_text)` — findings earn at most one fix-and-resave (the visual-pass posture; warn-only, never blocks).
+
+**THE LEARNING LOOP (confirm-first, always).** Structural corrections append to `_hq/exemplars/corrections-<kind>.jsonl` (`exemplars.append_structural_correction` — observed by reconcile-sent for sent docs, or explicit "make it like this" feedback in chat). insight-generator Pass 16 batches them: ≥3 same-direction corrections on one kind propose a workspace-exemplar update through the standard proposal rail — NEVER a silent write. On confirm, `exemplars.promote_workspace_exemplar` runs the three-layer scrub gate — entity names → placeholders, then the shared leak scan, then `exemplars.residual_name_candidates` (name-shaped tokens and dollar figures NEITHER of the first two layers can vouch for — an untracked counterparty name passes both; every candidate must be confirm-listed on the proposal card and passed as `confirmed_residuals=`, or the write is REFUSED) — and rotates the previous version to `exemplar_2.md`.
+
+⛔ **FENCE:** the exemplar library has **no onboarding mention and no first-run block** — it works silently from seeds on day one; the learning loop activates on its own evidence. Seeds are synthetic-only (they promote fleet-wide — every byte is public). There is no exemplar verb; workspace exemplars are inspectable files and reset = delete the file.
 
 ---
 

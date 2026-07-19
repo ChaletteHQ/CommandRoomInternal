@@ -22,6 +22,8 @@ PUBLIC API:
   - create_org(workspace_root, *, canonical_name, domains=None, ...) → dict
   - update_org(workspace_root, org_id, **fields) → dict
   - repair_org(workspace_root, org_id) → dict (normalizes legacy keys)
+  - advisory_org_warnings(record) → list[str] (flag-only FYIs, e.g. off-enum
+    relationship_type; never an error, never a repair trigger — HYG2/F-05)
   - get_org_domains(record) → list[str]
   - get_org_display_names(record) → list[str] (canonical + aliases dedup'd)
 
@@ -46,12 +48,32 @@ from atomic_write import atomic_write_json_locked, atomic_append_jsonl  # noqa: 
 from entities_io import entities_collection  # noqa: E402
 
 
+def _enforce_record_scope(workspace_root, *, provenance=None, source_ref=None,
+                          account_address=None, holder="org_writer") -> None:
+    """The CRM record wall (ACCOUNT_SCOPE §2, review fix 7) — delegate to
+    account_scope_gate.enforce_record_scope. Import defensively: a missing
+    module must never brick an org write (never-brick posture)."""
+    try:
+        from account_scope_gate import enforce_record_scope, AccountScopeError
+    except ImportError:
+        return
+    try:
+        enforce_record_scope(workspace_root, provenance=provenance,
+                             source_ref=source_ref,
+                             account_address=account_address, holder=holder)
+    except AccountScopeError:
+        raise
+    except Exception:
+        return
+
+
 # Canonical org schema fields, mirrored from
 # shared/data-schemas/entities.schema.json $defs.org.properties.
 # DO NOT add fields here without updating the schema first.
 ALLOWED_ORG_FIELDS = {
     "id",                  # required, format org_<slug-or-number>
     "canonical_name",      # required
+    "legal_name",           # formal registered name, when it differs (F-05, v4.8.1)
     "aliases",              # array of strings
     "scope",                # enum
     "scope_label",          # free text if scope=other
@@ -74,12 +96,30 @@ ALLOWED_ORG_FIELDS = {
 
 REQUIRED_ORG_FIELDS = {"id", "canonical_name"}
 
+# Canonical relationship_type values, mirrored from
+# shared/data-schemas/entities.schema.json $defs.org.properties.relationship_type.enum.
+# DO NOT extend here without updating the schema first (lockstep test enforces).
+#
+# ADVISORY ONLY (HYG2 nit, F-05 lesson): an off-enum value (M's live workspace
+# carries a legacy `relationship_type: "network"`) is real data with no
+# sanctioned repair rule — flagging it as a hard error would reopen the F-05
+# flag-loop (validator flags forever, repair path can't clear it, every bridge
+# run re-surfaces the record). So the enum check NEVER raises, NEVER gates a
+# write, and NEVER makes a record a repair candidate. It surfaces as an FYI
+# via advisory_org_warnings() / the repair-all CLI only.
+RELATIONSHIP_TYPES = frozenset({
+    "operating", "partner", "board", "advisory", "investment", "client",
+    "portfolio_company", "beneficiary", "vendor", "prospect",
+    "service_provider", "other",
+})
+
 # Forbidden keys observed in M's workspace orgs (the 5 drifted records carry
 # these). The mapping tells the validator what to recommend.
 FORBIDDEN_ORG_FIELDS = {
     "name":             "canonical_name",
     "display_name":     "canonical_name",
     "nicknames":        "aliases",
+    "relationship":     "relationship_type",
     "created_at":       "(remove — track via org_created event in events.jsonl)",
     "created_by":       "(remove — track via org_created event in events.jsonl)",
     "pending_review":   "(remove — gate via events.jsonl)",
@@ -119,7 +159,10 @@ def _today_iso() -> str:
 
 
 def _now_iso() -> str:
-    return datetime.datetime.now().replace(microsecond=0).isoformat()
+    # FS-03: UTC-aware, not naive local. entities.json `last_updated` and any
+    # time-window consumer must never see a naive local timestamp (the −7h skew
+    # mis-placed events across the append-gate's UTC lineage).
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _normalize_name(s: str) -> str:
@@ -177,7 +220,41 @@ def _next_org_id(orgs: list[dict]) -> str:
     return f"org_{max_n + 1:03d}"
 
 
-def _validate_org(record: dict) -> None:
+def advisory_org_warnings(record: dict) -> list[str]:
+    """ADVISORY checks — flag-only. Never raises, never gates a write, never
+    triggers the repair path (the F-05 contract "anything the validator flags,
+    the repair path must clear" applies to ERRORS; advisories are exempt
+    precisely because there is no sanctioned auto-repair for them — only the
+    CEO can say what an off-enum relationship actually is).
+
+    Returns plain-English FYI strings, [] when clean.
+    """
+    warnings: list[str] = []
+    rt = record.get("relationship_type")
+    if rt is not None:
+        if not isinstance(rt, str):
+            warnings.append(
+                f"{record.get('id', '(no id)')}: relationship_type should be a "
+                f"string, got {type(rt).__name__} {rt!r} — advisory only, not "
+                f"repaired automatically."
+            )
+        elif rt not in RELATIONSHIP_TYPES:
+            warnings.append(
+                f"{record.get('id', '(no id)')}: relationship_type {rt!r} is not "
+                f"a canonical value ({', '.join(sorted(RELATIONSHIP_TYPES))}). "
+                f"Advisory only — kept as-is; set a canonical value via "
+                f"update_org when the CEO confirms one (use 'other' + "
+                f"relationship_label for anything that doesn't fit)."
+            )
+    return warnings
+
+
+def _validate_org(record: dict) -> list[str]:
+    """Hard-validate `record` (raises ValueError on schema violations), then
+    return advisory_org_warnings(record) — flag-only FYIs the caller may
+    surface or ignore. Existing callers ignore the return value; nothing
+    about the raise behavior changed (HYG2 relationship_type enum is advisory,
+    NOT a hard check — see RELATIONSHIP_TYPES)."""
     extras = set(record) - ALLOWED_ORG_FIELDS
     if extras:
         msgs = []
@@ -216,6 +293,22 @@ def _validate_org(record: dict) -> None:
                 f"last_interaction must be ISO date YYYY-MM-DD or null, "
                 f"got: {record['last_interaction']!r}"
             )
+    return advisory_org_warnings(record)
+
+
+def _append_org_note(record: dict, line: str) -> None:
+    """Append a migration note to `record['notes']` without losing anything
+    (second-eyes finding 3): string notes get the line appended; legacy
+    list-shaped notes (hand-rolled drift — the schema says string, but the
+    validator doesn't type-check notes) keep every element and gain the line
+    as a new one; empty/None becomes the line."""
+    existing = record.get("notes")
+    if isinstance(existing, str) and existing.strip():
+        record["notes"] = existing.rstrip() + " " + line
+    elif isinstance(existing, list):
+        record["notes"] = existing + [line]
+    else:
+        record["notes"] = line
 
 
 def _normalize_legacy_keys(record: dict) -> dict:
@@ -241,6 +334,42 @@ def _normalize_legacy_keys(record: dict) -> dict:
                     if isinstance(v, str) and v.strip() and v.strip() not in existing:
                         existing.append(v.strip())
                 out[new] = existing
+
+    # F-05 (v4.8.1): legacy `relationship` — MIGRATE, don't drop. The value is
+    # real relationship data from pre-schema records. Three cases:
+    #   - `relationship_type` absent          → rename (the value IS the data)
+    #   - equal to `relationship_type`        → redundant duplicate; safe to drop
+    #   - conflicts with `relationship_type`  → preserve the legacy value into
+    #     `notes` so nothing is silently discarded, then remove the key so the
+    #     record validates.
+    # The validator (_validate_org) and this repair path MUST stay in agreement:
+    # every field the validator flags must have a repair rule here (rename,
+    # dedup-drop, or preserve-into-notes) — otherwise the record re-flags on
+    # every future update, permanently (the F-05 flag-loop).
+    if "relationship" in out:
+        legacy_rel = out.pop("relationship")
+        current = out.get("relationship_type")
+        legacy_str = legacy_rel.strip() if isinstance(legacy_rel, str) else None
+        preserved = None
+        if legacy_str:
+            if current is None:
+                out["relationship_type"] = legacy_str
+            elif legacy_str != current:
+                preserved = repr(legacy_str)
+            # equal → redundant duplicate; dropping the key loses nothing
+        elif legacy_rel not in (None, ""):
+            # Non-string legacy value (list/dict/number — hand-rolled drift).
+            # Never rename it into the enum field, never silently discard it
+            # (second-eyes finding 2) — preserve verbatim into notes.
+            preserved = repr(legacy_rel)
+        if preserved is not None:
+            kept = (f"; kept relationship_type {current!r})."
+                    if current is not None else ").")
+            _append_org_note(
+                out,
+                f"Legacy 'relationship' field carried {preserved} "
+                f"(migrated {_today_iso()}{kept}",
+            )
 
     # Drop forbidden provenance keys whose home is events.jsonl.
     KEYS_TO_DROP = {
@@ -279,7 +408,8 @@ def _log_event(
     if before is not None:
         data["before"] = before
     event: dict[str, Any] = {
-        "ts": _now_iso(),
+        # FS-03: OMIT ts — the append gate stamps it UTC-aware. A hand-stamped
+        # `datetime.now()` was naive local (the F-15 naive-local-clock bug).
         "type": event_type,
         "source_skill": source_skill,
         "data": data,
@@ -299,8 +429,8 @@ def find_existing_org(
     """Look up an existing org. Match order, first hit wins:
 
       1. domain exact (case-insensitive against record's `domains[]` and legacy `domain`)
-      2. alias exact (case-insensitive against record's canonical_name + aliases)
-      3. canonical_name exact (whitespace-normalized lowercase)
+      2. name/alias exact (whitespace-normalized lowercase, against the record's
+         canonical_name + legal_name (F-05, v4.8.1) + aliases)
 
     Returns the matching record dict, or None.
     """
@@ -326,6 +456,9 @@ def find_existing_org(
             canon = o.get("canonical_name") or ""
             if _normalize_name(canon) in targets_normed:
                 return o
+            legal = o.get("legal_name")
+            if isinstance(legal, str) and _normalize_name(legal) in targets_normed:
+                return o
             for a in (o.get("aliases") or []):
                 if isinstance(a, str) and _normalize_name(a) in targets_normed:
                     return o
@@ -349,6 +482,9 @@ def create_org(
     org_id: str | None = None,
     source_skill: str = "unknown",
     skip_dedup: bool = False,
+    provenance: dict | None = None,
+    source_ref: str | None = None,
+    account_address: str | None = None,
 ) -> dict:
     """Create a new org record. Dedups by domain → alias → canonical_name
     before creating; raises DuplicateOrgError if a match is found (unless
@@ -359,9 +495,19 @@ def create_org(
     Writes the new record to entities.json (via the locked writer) AND emits
     an `org_created` event to events.jsonl.
 
+    Account-scope wall (review fix 7): when the org is derived from a
+    connector read (e.g. org-domain inference off an inbound mail), pass the
+    read's `provenance` / `source_ref` / `account_address` — an out-of-scope
+    account raises AccountScopeError before the write. Manual adds pass.
+    Scope inputs only; never stored on the record.
+
     Returns the created record.
     """
     workspace_root = Path(workspace_root)
+    _enforce_record_scope(workspace_root, provenance=provenance,
+                          source_ref=source_ref,
+                          account_address=account_address,
+                          holder=source_skill)
     data = _load_entities(workspace_root)
     orgs = entities_collection(data, "orgs")
 
@@ -696,6 +842,36 @@ def get_org_domains(record: dict) -> list[str]:
     return out
 
 
+def count_failing_orgs(workspace_root) -> dict:
+    """Entity-integrity summary for the system-health self-report (FS-09).
+
+    Loads entities.json and runs each org record through `_validate_org`,
+    counting how many fail the hard schema check. Returns
+    `{n_orgs, n_failing, failing_ids, unreadable}`. `unreadable=True` means the
+    entities file could not be parsed (JSONDecodeError / OSError) — a LOUD
+    corruption signal the health check must surface, never swallow (FS-15).
+    """
+    from pathlib import Path as _P
+    p = _P(workspace_root) / "_hq" / "data" / "entities.json"
+    try:
+        data = _load_entities(_P(workspace_root))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {"n_orgs": 0, "n_failing": 0, "failing_ids": [],
+                "unreadable": True, "path": str(p)}
+    orgs = data.get("orgs") or []
+    failing: list[str] = []
+    for rec in orgs:
+        if not isinstance(rec, dict):
+            failing.append("(malformed record)")
+            continue
+        try:
+            _validate_org(rec)
+        except ValueError:
+            failing.append(rec.get("id") or "(no id)")
+    return {"n_orgs": len(orgs), "n_failing": len(failing),
+            "failing_ids": failing, "unreadable": False}
+
+
 def get_org_display_names(record: dict) -> list[str]:
     """Return canonical_name + all aliases (deduplicated)."""
     out: list[str] = []
@@ -750,12 +926,17 @@ def main() -> int:
 
         candidates: list[tuple[dict, dict, list[str]]] = []  # (original, cleaned, dropped_keys)
         validation_failures: list[tuple[str, str, str]] = []  # (oid, display, error)
+        advisories: list[str] = []  # flag-only FYIs — never gate, never repair (HYG2/F-05)
 
         for o in orgs:
             oid = o.get("id")
             if not oid:
                 continue
             cleaned = _normalize_legacy_keys(o)
+            # Advise on the POST-normalization shape: a legacy `relationship`
+            # migrating into relationship_type this very run gets advised now,
+            # not on the next run (second-eyes res1 finding 4).
+            advisories.extend(advisory_org_warnings(cleaned))
             if cleaned == o:
                 continue
             display = (
@@ -771,6 +952,16 @@ def main() -> int:
                 continue
             dropped = sorted(set(o.keys()) - set(cleaned.keys()))
             candidates.append((o, cleaned, dropped))
+
+        # Advisories are FYI-only: printed, never counted as failures, never
+        # affect candidacy or the exit code (F-05 — an off-enum
+        # relationship_type like the live "network" must not re-enter a
+        # flag/repair loop).
+        if advisories:
+            print("Advisory (FYI only — nothing blocked, nothing auto-changed):")
+            for line in advisories:
+                print(f"  - {line}")
+            print()
 
         # Friendly per-record summary
         if validation_failures:

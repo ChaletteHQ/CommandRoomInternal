@@ -1,6 +1,6 @@
 ---
 name: enable-quick-commands
-description: "Install or rebuild the Quick Commands Live Artifact — curated cheat sheet of Command Room trigger phrases organized into 10 categories (Daily Loop · Workspace · People · Drafts · Meetings · Memory · Strategy · Ingest · Reporting · Maintenance, per the an earlier version typography pass). Pinned to the Cowork sidebar as a Layer 1 default in an earlier version Helps users discover deeper capabilities — every row is clickable, fires the trigger phrase into chat. Static reference (rebuilds on plugin update or `rebuild quick commands`, NOT auto-refreshed on a cron). Triggers: `install quick commands`, `enable quick commands`, `rebuild quick commands`. Also called silently by `command-room-update-bridge`."
+description: "Install or rebuild the Quick Commands Live Artifact — curated cheat sheet of Command Room trigger phrases organized into 10 categories (Daily Loop · Workspace · People · Drafts · Meetings · Memory · Strategy · Ingest · Reporting · Maintenance). Pinned to the Cowork sidebar as a Layer 1 default. Helps users discover deeper capabilities — every row is clickable, fires the trigger phrase into chat. Static reference (rebuilds on plugin update or `rebuild quick commands`, NOT auto-refreshed on a cron). Triggers: `install quick commands`, `enable quick commands`, `rebuild quick commands`. Also called silently by `command-room-update-bridge`."
 ---
 
 # enable-quick-commands (v2.9.0+)

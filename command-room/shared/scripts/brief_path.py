@@ -91,7 +91,7 @@ def get_brief_artifact_url(absolute_path: str) -> str:
     v3.13.0+ — Windows-form fix per the 2026-05-20 brief-link handoff:
 
       - **Windows absolute paths** (drive letter like `C:`): emit the literal
-        native form — `computer://C:\\Users\\asdas\\Desktop\\Claude\\Command
+        native form — `computer://C:\\Users\\Sample\\Desktop\\Claude\\Command
         Room\\...\\file.docx`. TWO slashes (not three), backslashes preserved,
         spaces UNENCODED. This is the form Cowork's Windows resolver opens
         reliably (verified by M's testing on 2026-05-20). The pre-v3.13.0
@@ -126,10 +126,10 @@ def get_brief_artifact_url(absolute_path: str) -> str:
     'computer:///workspace/_hq/meetings/Past_Meeting_x_2026-04-30.docx'
     >>> get_brief_artifact_url("C:/Users/Sample/CommandRoom/_hq/meetings/x.docx")
     'computer://C:\\\\Users\\\\Sample\\\\CommandRoom\\\\_hq\\\\meetings\\\\x.docx'
-    >>> get_brief_artifact_url("C:\\\\Users\\\\asdas\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx")
-    'computer://C:\\\\Users\\\\asdas\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx'
-    >>> get_brief_artifact_url("C:/Users/asdas/Desktop/Claude/Command Room/_hq/meetings/x.docx")
-    'computer://C:\\\\Users\\\\asdas\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx'
+    >>> get_brief_artifact_url("C:\\\\Users\\\\Sample\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx")
+    'computer://C:\\\\Users\\\\Sample\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx'
+    >>> get_brief_artifact_url("C:/Users/Sample/Desktop/Claude/Command Room/_hq/meetings/x.docx")
+    'computer://C:\\\\Users\\\\Sample\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx'
     """
     if not absolute_path:
         return ""

@@ -286,15 +286,26 @@ def _project_matters_fallback(
         })
         seq += 1
 
-    # Layer 3: stale active projects (last_touched > 21d, status=active)
+    # Layer 3: stale active projects (last touch > 21d, status=active).
+    # HYG1 Item 3: staleness derives from OBSERVED events (thread_activity),
+    # never the deprecated last_activity stamp — the fossil made genuinely
+    # active projects read stale (F-54 class). The record stamp remains the
+    # zero-event floor only.
     if len(matters) < 5:
+        try:
+            from thread_activity import derive_thread_activity
+            _activity = derive_thread_activity(workspace_root)
+        except Exception:
+            _activity = {}
         projects = entities.get("projects") or entities.get("threads") or []
         stale_projects = []
         for p in projects:
             stage = (p.get("stage") or p.get("status") or "active").lower()
             if stage != "active":
                 continue
-            last = p.get("last_touched") or p.get("last_activity")
+            act = _activity.get(p.get("id"))
+            last = (act.ts.isoformat() if act is not None
+                    else p.get("last_touched") or p.get("last_activity"))
             age_str, age_h = _humanize_age_simple(last, now)
             if age_h >= 21 * 24:
                 stale_projects.append((p, age_str, age_h))

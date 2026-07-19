@@ -52,6 +52,7 @@ expected until its phase lands.
 | `prep_brief` | BOTH prep paths — orchestrator-upcoming-meetings Phase 4 auto-prep AND call-prep on-demand 'prep me' — one per Call_Prep brief saved, via `receipts.log_prep_receipt` ONLY (v4.5.2 S1; F-29/F-29b) — `{meeting_id, slug, artifact, generated_by, fired_via, refreshed}`. NOT a task-run receipt: five briefs in one fire are five prep_brief events and ONE pack_run | morning-briefing no-prep detection (`receipts.prep_exists_for_meeting` — the "no prep" flag may only render when NO receipt exists for that meeting id), upcoming-meetings/call-prep refresh-in-place check, value-receipt |
 | `prep_weight_proposal` | insight-generator Pass 15 (Phase 6, Loop 3) — one per user decision on a proposed call-prep section-weight change; the applied weight lands in the call-prep skill config (`_hq/data/skill_config/call-prep.json`) | call-prep (reads section weights before rendering), usage-report |
 | `extraction_hint_proposal` | insight-generator Loop 5 pass (Phase 6, Round 3) — one per user decision on a proposed extraction hint; the applied hint appends to `_hq/data/extraction-hints.md` | meeting-notes (extraction prompt), cru_match (resolution language), usage-report |
+| `exemplar_update_proposal` | insight-generator Pass 16 (SPEC OUT8) — one per user decision on a proposed workspace-exemplar update (`{user_action, fingerprint, kind}`); the approved skeleton is written to `_hq/exemplars/<kind>/exemplar_1.md` via `exemplars.promote_workspace_exemplar` (scrub-gated, previous version rotated to `exemplar_2.md`) | insight-generator (60-day fingerprint cooldown via `proposal_ledger`), every STANDARD_KINDS composer (reads the exemplar at render time via `exemplars.get_exemplar`), usage-report |
 | `sender_priority_proposal` | insight-generator Pass 13 (Phase 6, Loop 1) — one per user decision on a proposed sender/domain priority rule (`user_action` applied/edited/declined/skipped, `fingerprint`); the applied rule lands in `_hq/data/sender-priority-rules.json` | insight-generator (60-day fingerprint cooldown via `proposal_ledger`), usage-report |
 | `surface_preference_proposal` | insight-generator Pass 14 (Phase 6, Loop 2) — one per user decision on a proposed suppression; the applied rule lands in `_hq/data/surface-preferences.json` | insight-generator (60-day cooldown), every widget orchestrator (reads the store to filter), usage-report |
 | `confidence_override_proposal` | insight-generator Loop 4 calibration (Phase 6, Round 2) — one per user decision on a proposed match-score threshold change; the applied value lands in `_hq/data/confidence-overrides.json` | `confidence.py` accessors (read the override), cru_match (thresholds), usage-report |
@@ -60,6 +61,7 @@ expected until its phase lands.
 | `dont_forget_feedback` | Pulse `resolved` on a person-dormancy item ("expected" / "just busy") writes it with `{person_id, feedback}` (Phase 6 Loop 2/quick win B made the writer explicit — it drives the existing 14-day suppression the dormancy pass already reads at Phase 3 step 6, and Quick Win B ALSO widens `cadence_override_days`) | Pulse dormancy pass (14-day suppression skip), insight-generator Pass 14 (dismissal mining, BOTH families), usage-report |
 | `session_sweep_run` | session-sweep nightly skill (Phase 5, R1) — one audit event per run: sessions scanned, events recovered | cleanup (R10 scheduled-output self-audit), value-receipt, weekly-recap |
 | `session_backfill_run` | session-sweep historical backfill (Phase 5, R2) — one audit event per confirmed backfill batch | cleanup, value-receipt, usage-report |
+| `maintenance_run` | `maintenance_dispatcher.maintenance_receipt` (MAINT1) — exactly one per `maintenance` task fire: `{fired_at_slot, jobs_due, jobs_completed, jobs_failed, skipped_disabled}`. The dispatcher's own receipt; each job's success stays its own receipt type | `maintenance_dispatcher.validate_maintenance_ran`, task_watchdog (task freshness + `check_maintenance_jobs` gate), usage-report |
 | `m1_voice_proof_shown` | command-room-onboarding Phase 5b voice proof (shipped v4.4.0; registered here retroactively — it was written without enum registration, the exact drift this registry stops) | usage-report, coach (onboarding-beat telemetry) |
 | `commitment_reclassified` | `commitment_state.promote_task_to_commitment` (Phase 2 Stage D — triage `make task`/`promote` verbs) + `shared/scripts/migrate_commitment_kinds.py` (S6 one-time partition, dry-run default) | the projector (`load_open_commitments` kind-override fold), `commitment_counts` by_kind, commitment-triage, `stale_tasks` |
 | `commitment_reopened` | `commitment_state.reopen_commitment` (Phase 2 Stage D — S4 triage undo; also the reconcile-sent `undo` affordance may migrate here) | the projector (`load_open_commitments` order-aware closure state), `close_commitment` idempotency (a reopened item may be re-closed), commitment-triage |
@@ -68,6 +70,25 @@ expected until its phase lands.
 | `chat_dismissal_cleared` | `mute_ledger.clear_dismissal` / `clear_dismissals` (v4.6.0 S4 — the Unmute verb on the `show muted` ledger + the triage batch-undo's mute reversal, F-20 P3a) | `mute_ledger.live_mutes` / `active_dismissal_target_ids` (THE dismissal-liveness readers — every surface that filters on an active `chat_dismissal` honors the clear), show-my-list render filter, relationship_moves exclusion pass, the Commitments/Pulse/Inbox orchestrator dismissal filters |
 | `person_proposal_resolved` | apply-choices confirm-section dispatch via `confirm_flow.build_person_proposal_resolved_event` (v4.6.1 W4b — the proposal tombstone: `Add person` writes it with `resolution: person_added` after `people_writer.create_person`; `Same as [existing]` with `resolution: same_as` after `people_writer.add_person_alias`; `Not relevant` with `resolution: not_relevant`, nothing else written) | `confirm_flow.load_open_person_proposals` (adjudicated proposals stop re-surfacing — the F-46 P2b stranding fix), usage-report |
 | `visual_gate` | `visual_gate.log_visual_gate` (SPEC OUT2 §3 — one per STANDARD_KINDS .docx the render-then-critique pass examined: `{doc, rendered, findings, fixed}`, plus `skipped_reason` when the preview ladder returned None; WARN-ONLY FOREVER at the code layer — the gate is judgment, not schema) | usage-report / insight-generator (mine it to prove the gate fires and to spot recurring visual defects; audit-trail type per the pack_run precedent — no code-shaped reader by design) |
+
+## Connector-agnostic lane (connector-agnostic-v1, 2026-07-11)
+
+Registered up front (Phase 1) so every later phase's source-of-truth check
+passes without re-opening the enum. Each is registered-but-not-yet-written
+until its phase lands (writer phase noted). Contract: `shared/ACCOUNT_SCOPE.md`
+(Layer B/C). Owner of the `workspace.connectors` / `workspace.accounts` blocks
+these describe = `workspace-manager` (WORKSPACE_API ownership map); onboarding
+and update-bridge write only as declared delegates through the
+`connector_config.py` setter.
+
+| Type | Writer (phase) | Named consumers |
+|---|---|---|
+| `connector_detected` | drift-detect in workspace-manager / a silent maintenance task (Phase 4, C2) — one event when a new MCP server-id or account address first appears; carries `{server_id, provider?, fingerprint_matched?}`. Silent/scheduled fires only FLAG (R13), never prompt | command-room-onboarding (classify-before-use gate), workspace-manager (drift reconcile + fingerprint re-pair confirm), usage-report |
+| `connector_backend_changed` | workspace-manager `set my email backend to [connector]` verb via the `connector_config.py` setter (Phase 4, C1); update-bridge additive migration writes it through the same delegated setter (N1) | `connector_config` readers (declared-backend resolution), command-room-update-bridge (migration idempotency), usage-report |
+| `account_classified` | command-room-onboarding account-enumeration gate (Phase 4, R11) + workspace-manager classify verbs, both via the `connector_config.py` setter — `{address, role, surface, write_to_business, binding_verified}` | the writer wall (`account_scope_gate.enforce_scope` at the `atomic_append_jsonl` chokepoint in atomic_write.py + `account_scope_gate.enforce_record_scope` in `people_writer`/`org_writer` — R2/R3), `connector_config` scope readers, usage-report |
+| `account_role_changed` | workspace-manager reclassify verbs (`[address] is my personal account`, `mark [account] out of scope`) via the setter (Phase 4, R10/C6) — `{address, old_role, new_role, old_dials, new_dials}`; a business→personal transition also emits `account_scope_masked` for the silent window | `connector_config` scope readers, the tombstone machinery (R5), usage-report, cleanup (misclassification audit trail) |
+| `account_scope_masked` | the tombstone machinery on a business→personal reclassification (Phase 4, R5/R10) — an IN-PLACE scope mask (never a row move): `{address, masked_account_id, from_seq?, reason}`. Readers honor it; events.jsonl rows are never physically moved (seq/source_event_seq chains, closure refs, dedup idempotency, `.source_refs.idx` all depend on them) | every substrate reader's scope-mask honor pass (people-view, CRU projector, dormancy, relationship-moves), cleanup, usage-report |
+| `account_scope_restored` | the tombstone machinery on a personal→business restore (Phase 4, R10) — un-masks previously masked rows + offers a rescan: `{address, masked_account_id, reason}` | the same scope-mask readers (restore path), command-room-onboarding (rescan offer), cleanup, usage-report |
 
 ## Reminder lane (v4.6.0 W4a)
 
@@ -101,6 +122,80 @@ The commitments/decisions/interactions the session sweep RECOVERS are written
 as the existing `commitment` / `decision` / `interaction` types through
 `append_event()` (dedup via `source_ref = "session:{session_id}"` in
 `.source_refs.idx`) — no parallel "swept" variants of existing families.
+
+## Deal lane (SPEC PIPE1, 2026-07-13)
+
+The deal-tracking vocabulary. All five Part 1 types are written ONLY by
+`shared/scripts/deal_state.py` — the single writer/closure path for `deal.*`
+fields (mirrors the commitment_state doctrine: one closer, loud failures,
+idempotent terminal writes). Payload shapes in `event-payloads.schema.json`.
+The two Part 2 types are registered up front per the wave pattern
+(registered-but-not-yet-written until the deal-signal detector ships).
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `deal_created` | deal_state.create_deal / adopt_deal | pipeline-tracker (open-set + digest deltas), board-pack-assembler (§7 pipeline appendix) |
+| `deal_updated` | deal_state.update_deal | pipeline-tracker (digest deltas) |
+| `deal_stage_changed` | deal_state.set_stage | pipeline-tracker (days-in-stage, digest moved-list), board-pack-assembler (§7 stage table) |
+| `deal_won` | deal_state.close_deal(outcome='won') | board-pack-assembler (§2 wins), value-receipt, operator-report, pipeline-tracker (won-rate tile, won-cycle median) |
+| `deal_lost` | deal_state.close_deal(outcome='lost') | board-pack-assembler (§4 concerns — the "lost-deal events" it already reads), pipeline-tracker (loss-pattern readout, won-rate tile) |
+| `deal_update_proposed` | `brain_proposals.propose()` on `kind: deal_update`/`deal_creation` (LB1 — written alongside the generic `brain_proposal` for the consumers named here; detector = `shared/scripts/deal_signal_detector.py`) | pipeline-tracker, cleanup |
+| `deal_update_dismissed` | `brain_proposals.resolve_proposal()` on a declined deal-kind proposal (LB1 — written alongside `brain_proposal_resolved`) | proposal_ledger carries the decline cooldown (resolve_proposal appends the ledger row; propose() reads active_cooldowns) — this event is the substrate record + usage-report signal |
+
+Hard rules:
+
+- **`deal.stage` is never won/lost** — won/lost are the terminal `outcome`,
+  written only by `close_deal` (a `deal_lost` without a valid `loss_reason`
+  is rejected at the writer).
+- **Observed signals never auto-flip.** Part 2 detector output is
+  propose-and-confirm only (`deal_update_proposed` → user confirm →
+  deal_state). User-EXPLICIT declarations ("Acme signed") mutate directly —
+  the never-auto-flip rule applies to what the system infers, not what the
+  user says (D6).
+- **No estimation.** `data.value` appears only when user-stated/confirmed;
+  absent value never becomes a guessed figure (quantify.py discipline).
+
+## Living Brain lane (SPEC LB1, 2026-07-14)
+
+The unified propose → confirm → narrate → undo layer. `brain_proposal` is the
+ONE generic proposal event every NEW detector writes through
+`shared/scripts/brain_proposals.py::propose()` — the 8 legacy proposal
+families keep their own types and are adapter-read into the same queue
+(migration is LB2). The `deal_update_proposed`/`deal_update_dismissed` pair
+above finally gets its writer in this lane: the deal-signal detector emits
+through `propose()` (a `brain_proposal` with `kind: "deal_update"` /
+`"deal_creation"`), and `propose()` writes the reserved legacy type alongside
+for the consumers PIPE1 already named.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `brain_proposal` | `brain_proposals.propose()` (the single entry point for every new detector; consults `proposal_ledger.active_cooldowns` + dedups on fingerprint before emitting; `tier: auto` is refused without a registered reverser in `brain_undo.REVERSERS` + an `AUTO_ALLOWED` change class) | morning-briefing (the "Needs your eyes" card), command-room-coach (Phase 2A′), weekly-recap (Phase 4 roll-up), system-health / Staff Meeting (full queue), apply-choices (`cr-brain` dispatch), cleanup (expiry sweep + card-health line) |
+| `brain_proposal_resolved` | `brain_proposals.resolve_proposal()` (via apply-choices `cr-brain` handlers; also appends the decision to `proposal_ledger` so cooldown math is shared with the learning loops) | `brain_proposals.load_open_proposals` projector (tombstone), change_feed, value-receipt (confirm taps = engagement) |
+| `brain_proposal_expired` | cleanup expiry sweep via `brain_proposals.expire_stale()` (silent TTL expiry — logged, never nagged) | `brain_proposals.load_open_proposals` projector (tombstone), cleanup (Monday-note card-health counts), usage-report |
+| `brain_change_undone` | `brain_undo.undo_batch()` (one per reversed change; the reversal itself is the class's additive reversing event — this is the narration-trail marker) | change_feed ("undid N changes"), system-health |
+
+Hard rules:
+
+- **Auto-apply is a class table, not a confidence score.** `tier: "auto"` is
+  legal ONLY for change classes in `brain_proposals.AUTO_ALLOWED` AND with a
+  reverser registered in `brain_undo.REVERSERS` — `propose()` raises
+  otherwise. Identity- and money-shaped changes are always `confirm`
+  (Bug #92 / PIPE1 D9). The one R1 exception: person/org creation from a
+  STRUCTURED CONNECTOR FACT (full name + address from mail/calendar, zero
+  same-name collision, past the noise gate) is `auto` — additive only,
+  archive reverser registered, narrated in the change feed. Prose-inferred
+  identities stay `confirm`; merges stay `confirm` permanently.
+- **Undo is additive.** Reversers append reversing events
+  (`commitment_reopened`, `chat_dismissal_cleared`, a status→archived
+  `person_updated`/`org_updated`) — never edit or delete prior events.
+- **Narration is never the enforcement artifact.** `change_feed.py` is a
+  READER over audit events + these tombstones; enforcement binds to the
+  audit events themselves (the reconcile-sent doctrine).
+- **Anti-fatigue is contract:** `DAILY_CONFIRM_CAP = 5` on daily surfaces,
+  max 2 slots per detector per render, TTL default 14d with silent expiry,
+  declined ⇒ 60d fingerprint cooldown via the shared ledger, and a proposal
+  whose `action_tuples` map to no registered verb is rejected at `propose()`
+  (no-consumer proposals never enter the queue).
 
 ## Commitment-family append contract (gate-enforced)
 

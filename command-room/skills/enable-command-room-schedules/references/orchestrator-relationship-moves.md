@@ -2,7 +2,7 @@
 
 This file is the EXACT prompt the bootloader cats and executes for `taskId: relationship-moves`. Fires 5:00 PM Sunday local time per `shared/scripts/schedule_config.py` `DEFAULT_SCHEDULES` (`0 17 * * 0`) — the output waits for the CEO Monday morning, an hour before the silent `cleanup` task. NEW in REL1. **NOT a first-install task** — it needs accumulated substrate for dormancy baselines, so it registers via `change-schedule` / Phase 6 `add` and `command-room-update-bridge`, never on a fresh workspace.
 
-**OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** every chat post follows `shared/CONTRACT.md`. Rules 1–18 are non-negotiable. Relationship Moves is a **widget action surface** (email-shaped items with send / edit then send / draft / skip), so the renderer-validator gates DO apply: `render_chat_output_widget` + `validate_rendered_widget` must pass with zero non-canonical verbs and email-shaped `metadata` on every item. The leak scanner applies (no entity-ID leaks, no internal phase labels, no `_hq/` paths).
+**OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** (transport-updated EW2+T) every chat post follows `shared/CONTRACT.md`. Rules 1–18 are non-negotiable. Relationship Moves is a **widget action surface** (email-shaped items with send / edit then send / draft / skip): post via `widget_transport.render_and_persist` — the full validator chain (canonical verbs, email-shaped `metadata` on every item, leak scan: no entity-ID leaks, no internal phase labels, no `_hq/` paths, `validate_rendered_widget`) runs inside the one call — then pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`, never hand-composed HTML (`shared/CHAT_ACTION_WIDGET.md` § Transport, F-15).
 
 **Chat-output rules:** follow `references/SHARED_CHAT_OUTPUT_PROTOCOL.md`. Surface the link block per `shared/CHAT_ACTION_WIDGET.md` "Post-widget chat-links section". The widget is the ENTIRE chat turn.
 
@@ -16,7 +16,7 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: rela
 
 **Forbidden — zero tolerance:**
 
-1. **No writing the rendered widget to disk** outside any canonical artifact path the skill defines.
+1. **No writing the rendered widget to disk by hand** — the transport's own persist into `_hq/.system/widgets/` (performed by `render_and_persist` itself, per `shared/STOP_CONTRACT.md` rule 1) and any canonical artifact path the skill defines are the only sanctioned writes.
 2. **No narrating what's in the widget.** The user can see the candidates. Don't follow with "Surfaced N people…" / "Scores were…".
 3. **No post-widget summary block.** The turn ends after the widget + Links section.
 4. **No padding to 3 candidates.** If the skill returns fewer, render fewer; if zero, render the `all_clear_summary` data view — never hand-built HTML, never invented candidates.

@@ -78,7 +78,7 @@ def _fixture_events():
     return [
         # Confirmed, user-owed: one overdue, one future-dated, one undated.
         _commitment(1, "cmt_a", owner=USER, due="2026-05-22"),           # overdue
-        _commitment(2, "cmt_b", owner=USER, due="2026-08-01"),
+        _commitment(2, "cmt_b", owner=USER, due="2026-08-01"),  # DATE_GUARD_OK: overdue is derived against now_iso=NOW, never the real clock
         _commitment(3, "cmt_c", owner=USER),
         # Confirmed, counterparty-owed: one overdue, one undated.
         _commitment(4, "cmt_d", owner="person_pedro", due="2026-06-01"),  # overdue
@@ -101,7 +101,7 @@ def _fixture_events():
         # Deferral: cmt_d pushed to the future — no longer overdue (Stage A fold).
         {"seq": 13, "ts": "2026-07-03T10:00:00Z", "type": "commitment_updated",
          "source_skill": "apply-choices",
-         "data": {"commitment_id": "cmt_d", "new_due": "2026-08-15"}},
+         "data": {"commitment_id": "cmt_d", "new_due": "2026-08-15"}},  # DATE_GUARD_OK: deferral fold data; buckets computed against now_iso=NOW
     ]
 
 

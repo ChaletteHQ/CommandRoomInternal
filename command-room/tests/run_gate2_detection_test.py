@@ -250,6 +250,27 @@ def test_detect_gate_bypass_join() -> None:
     print("PASS test_detect_gate_bypass_join")
 
 
+def test_detect_gate_bypass_counts_premium_html() -> None:
+    """SPEC OUT5 review fix — a launch kind rendered as premium HTML runs the
+    same gate stack and emits gate_ran(surface="premium_html"); the bypass
+    join must count it, or every HTML board pack / one-pager / value receipt
+    reads as a false-positive bypass in the weekly sweep."""
+    import deliverable_sweep as ds
+
+    ws = _fresh_ws()
+    ep = ws / "_hq" / "data" / "events.jsonl"
+    lines = [
+        {"seq": 1, "type": "board_pack_assembled", "data": {}},
+        {"seq": 2, "type": "gate_ran", "data": {"surface": "premium_html"}},
+    ]
+    ep.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    r = ds.detect_gate_bypass(ws)
+    assert r["deliverables"] == 1, r
+    assert r["docx_gate_ran"] == 1, r  # the counter spans both gated surfaces
+    assert r["suspected_bypass"] == 0, r
+    print("PASS test_detect_gate_bypass_counts_premium_html")
+
+
 def test_detect_gate_bypass_tolerates_malformed() -> None:
     import deliverable_sweep as ds
 
@@ -441,6 +462,7 @@ def main() -> int:
     test_sweep_workspace_flags_emits_and_is_readonly()
     test_summarize_for_user_is_plain_english()
     test_detect_gate_bypass_join()
+    test_detect_gate_bypass_counts_premium_html()
     test_detect_gate_bypass_tolerates_malformed()
     test_turn_backstop_catches_leak_in_email_body()
     test_turn_backstop_emits_with_resolved_root()

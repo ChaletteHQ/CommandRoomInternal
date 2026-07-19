@@ -243,7 +243,7 @@ def main():
     append_event(ep, [
         {"type": "commitment_updated", "source_skill": "commitments",
          "primary_thread_id": "tC",
-         "data": {"commitment_id": ids[2], "new_due": "2026-07-20",
+         "data": {"commitment_id": ids[2], "new_due": "2026-07-20",  # DATE_GUARD_OK: due folded as data; counts take now_iso=NOW, never the real clock
                   "reason": "user push"}},
         # Legacy consumer still writing a seq-alias closure — amnesty reads it.
         {"type": "commitment_resolved", "source_skill": "workspace-manager",
@@ -257,7 +257,7 @@ def main():
           len(opens) == 1
           and opens[0]["data"]["title"] == "Prep the QBR agenda", f"{len(opens)}")
     check("round-trip: deferred item carries the effective due (not overdue)",
-          opens[0]["data"]["due"] == "2026-07-20")
+          opens[0]["data"]["due"] == "2026-07-20")  # DATE_GUARD_OK: asserts the due-fold value itself, not a clock-derived status
 
     counts = commitment_counts(ws, now_iso=NOW)
     brief = compute_brief_state(open_commitments=opens, user_person_id=USER, now_iso=NOW)

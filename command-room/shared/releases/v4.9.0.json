@@ -1,0 +1,27 @@
+{
+ "version": "4.9.0",
+ "headline": "A calmer morning brief, a real decision meeting three times a week, denser action cards, and a polished HTML format for your documents.",
+ "items": [
+  {
+   "id": "v490_instruct_staff_meeting_cadence",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your morning brief is now a clean read-only digest — it tells you what's going on and stays out of your way. Anything that needs a decision from you moves to the Staff Meeting, which now runs Monday, Wednesday, and Friday and picks up a 'hold' option for items you want parked without dismissing. To switch to the new schedule, say `set up command room schedules` once — it takes about a minute.",
+   "action": "instruct_user"
+  },
+  {
+   "id": "v490_announce_premium_html",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Board packs, one-pagers, value receipts, and research briefs can now come out as a polished web-style HTML page instead of a Word document — same content, same quality checks, easier to read on screen. Research briefs use the new format by default; for everything else say `tune output` to choose per document type. You can always ask for 'as a doc' or 'as HTML' on any single request.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v490_announce_density_and_fixes",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your action cards got faster and denser — roughly two to three times more items fit on a page, with a compact dropdown for each row's actions. Also in this update: people already saved as contacts stop being re-suggested as new people, and a batch of reliability fixes across the daily loop landed after a full live re-verification pass.",
+   "action": "announce_only"
+  }
+ ]
+}

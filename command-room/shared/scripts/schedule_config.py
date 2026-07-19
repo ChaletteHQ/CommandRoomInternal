@@ -124,50 +124,24 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "label": "1 PM Fridays",
         "enabled": True,
     },
-    # v3.17.0 — Cleanup: dedicated weekly self-maintenance + brain self-heal.
-    # Sunday evening (CEO reviews the Monday-morning note). Its OWN task, NOT
-    # folded into Friday Wrap — keeps the CEO-facing recap lean while cleanup
-    # does silent off-hours plumbing. Empty Sunday slot, no collision.
-    "cleanup": {
-        "cron": "0 18 * * 0",
-        "label": "6 PM Sundays",
-        "enabled": True,
-    },
-    # v3.18.12 — Reconcile Sent: silent, single-purpose task that closes
-    # commitments the CEO completed by sending mail DIRECTLY from Gmail. The
-    # first fire is 6:45 AM weekdays — AFTER upcoming-meetings (6:30), BEFORE
-    # morning-brief (7:00) — so the brief reads an already-reconciled substrate
-    # instead of doing the work itself. Lives in its own task (not the brief)
-    # because an invisible substrate write loses to a visible deliverable when
-    # co-located: Bug #98-v3, the brief diagnosed this itself and recommended
-    # moving it out. Silent like cleanup; not a CEO-facing chat.
+    # MAINT1 (2026-07) — Maintenance: THE single silent background task. The
+    # five silent tasks (cleanup / reconcile-sent / monthly-report /
+    # weekly-insights / session-sweep) now run as JOBS inside this one task,
+    # dispatched by `shared/scripts/maintenance_dispatcher.py` (a job is due
+    # iff its last receipt is older than its own nominal-cron slot — code,
+    # never LLM-judged). One taskId = one Run Now grant, ever: future silent
+    # jobs land inside the already-authorized task instead of creating a new
+    # fleet-wide never_authorized risk per release.
     #
-    # Phase 3 / SPEC-2.4 (2026-07): default cadence raised to 3× weekdays so
-    # midday and end-of-day sends reconcile the same day instead of waiting
-    # for the next morning. The spec's 6:45/12:30/17:30 was normalized to a
-    # single 5-field cron (one task = one cronExpression), keeping the 6:45
-    # anchor before morning-brief and placing the evening pass after
-    # past-meetings (17:00). NEW-REGISTRATIONS-ONLY: registration never
-    # re-anchors an already-registered task's cron (that is change-schedule's
-    # job), so existing installs keep their live cadence untouched.
-    "reconcile-sent": {
-        "cron": "45 6,12,17 * * 1-5",
-        "label": "6:45 AM, 12:45 PM, and 5:45 PM weekdays",
-        "enabled": True,
-    },
-    # C1 (value receipts) — the monthly report task. Fires 7 AM on the 1st of
-    # every month and runs BOTH the operator report (CEO-self-facing operating
-    # lift) and the value receipt (forwardable counts + conservative hours) for
-    # the previous calendar month; on a quarter boundary (Jan/Apr/Jul/Oct) it
-    # also runs the quarterly value-receipt roll-up. operator-report claimed a
-    # monthly fire that was never actually wired into DEFAULT_SCHEDULES — this
-    # single task is where that claim becomes real, folding both reports into one
-    # fire so the overlapping substrate read isn't paid twice. Silent background
-    # task (no widget, no chat-orchestrator), registered like cleanup /
-    # reconcile-sent via enable-command-room-schedules Step 1.D (SILENT_TASKS registry loop).
-    "monthly-report": {
-        "cron": "0 7 1 * *",
-        "label": "7 AM on the 1st",
+    # Slots preserved from reconcile-sent's SPEC-2.4 cadence: the 6:45 anchor
+    # stays BEFORE the 7:00 morning brief (load-bearing — the brief reads an
+    # already-reconciled substrate, Bug #98-v3), and 17:45 lands after
+    # past-meetings (17:00) and after relationship-moves on Sundays (17:00).
+    # Daily (not weekday-only) so Sunday work (cleanup, insights) has a slot
+    # and the Saturday sweep runs; a fire with nothing due is a fast no-op.
+    "maintenance": {
+        "cron": "45 6,12,17 * * *",
+        "label": "6:45 AM, 12:45 PM, and 5:45 PM daily",
         "enabled": True,
     },
     # REL1 — Relationship Moves: weekly proactive outreach action pack. Fires
@@ -192,36 +166,39 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "label": "3 PM Fridays",
         "enabled": True,
     },
-    # v4.2.0 — Weekly Insights: silent Sunday synthesis that (re)computes the 5
-    # analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / DORMANT /
-    # THEMES) via the insight-generator skill. Fires 7 PM Sundays — AFTER
-    # relationship-moves (5 PM) and cleanup (6 PM), so the week's substrate is
-    # settled before synthesis. The insight-generator SKILL advertised a
-    # "Sunday 19:00 by default" schedule that was NEVER actually wired into
-    # DEFAULT_SCHEDULES — so every workspace that didn't manually run "run
-    # insights" had its analytical views frozen since install. This entry makes
-    # the long-claimed schedule real. Silent like cleanup / reconcile-sent /
-    # monthly-report; the skill self-guards on <14-day workspaces so a fresh
-    # install fire is a clean no-op.
-    "weekly-insights": {
-        "cron": "0 19 * * 0",
-        "label": "7 PM Sundays",
+    # LB1 R3 — Staff Meeting: the Living Brain's weekly review chat. The
+    # COMPLETE pending-proposal queue (paginated, exempt from daily dedup) +
+    # the change feed since the last staff meeting + "This week's moves"
+    # (the relationship-moves machinery rendered as a section — R4). Fires
+    # Monday 9 AM (Friday already carries wrap 13:00 + triage 15:00); the
+    # Sunday-evening maintenance jobs (deal-signals among them) have just
+    # refilled the queue. Weekly by DEFAULT, tunable via change-schedule
+    # like any chat — a second weekly slot is a user choice, never a
+    # default. NOT first-install — propose-only later-add posture, same as
+    # relationship-moves / commitment-triage: registers via change-schedule
+    # / registration Phase 6 add / update-bridge proposal, NEVER silently
+    # auto-registered.
+    # FB-20 (M's ruling 2026-07-16): Mon-only → Mon/Wed/Fri. The morning brief
+    # became read-only, so the staff meeting is the SOLE adjudication surface —
+    # a once-a-week confirm queue is now the only door, and a week is too long
+    # to hold a deal signal behind. "Run staff meeting more often instead" is
+    # the other half of de-carding the brief; this is that half.
+    # NEW INSTALLS ONLY. An existing registration keeps whatever cron it has:
+    # the update bridge PROPOSES this change (`staff_meeting_cadence_mwf_v1`)
+    # and never rewrites a customer's schedule silently.
+    "staff-meeting": {
+        "cron": "0 9 * * 1,3,5",
+        "label": "9 AM Mon, Wed, Fri",  # == cron_to_english(cron); see the
+                                        # lockstep guard in the FB-20 test
         "enabled": True,
     },
-    # Phase 5 / R1 — Session Sweep: silent nightly pass that promotes the
-    # episodic layer (session transcripts) into the canonical event log. Fires
-    # 10 PM DAILY — AFTER past-meetings (5 PM weekdays) so it catches whatever
-    # past-meetings and every writing skill missed, and daily (not weekday-only)
-    # so weekend ad-hoc chats are swept too. Off-hours because it is pure
-    # background maintenance. Silent like cleanup / reconcile-sent; auto-registered
-    # (background task, not a chat). Self-guards to a clean no-op on a fresh
-    # workspace with no recent sessions.
-    "session-sweep": {
-        "cron": "0 22 * * *",
-        "label": "10 PM daily",
-        "enabled": True,
-    },
-    # cr-refresh-workspace-map removed v2.14.25.
+    # cr-refresh-workspace-map removed v2.14.25. The five silent-task rows
+    # (cleanup 18:00 Sun / reconcile-sent 6:45,12:45,17:45 weekdays /
+    # monthly-report 7:00 on the 1st / weekly-insights 19:00 Sun /
+    # session-sweep 22:00 daily) were superseded by the single `maintenance`
+    # task in MAINT1 (2026-07) — their cadences live on as job-level nominal
+    # crons in maintenance_dispatcher.MAINTENANCE_JOBS, and the old taskIds
+    # are disabled on migration per SUPERSEDED_BY below.
 }
 
 
@@ -239,11 +216,7 @@ FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "past-meetings",
     "inbox",         # M1 — promoted into first-install set; surfaced to customer as `inbox-triage`
     "friday-wrap",   # v3.11.0 weekly rhythm; surfaced to customer as `weekly-recap`
-    "cleanup",       # v3.17.0 — silent weekly self-maintenance + brain self-heal; auto-registered (background task, not a chat)
-    "reconcile-sent",  # v3.18.12 — silent daily sent-mail reconciliation; auto-registered (background task, not a chat). Bug #98-v3.
-    "monthly-report",  # C1 — silent monthly operator-report + value-receipt fire (1st of month); auto-registered (background task, not a chat).
-    "weekly-insights",  # v4.2.0 — silent weekly analytical-view synthesis (insight-generator); auto-registered (background task, not a chat). Makes the never-wired "Sunday 19:00" schedule real; skill self-guards on <14-day workspaces.
-    "session-sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (memory layer); auto-registered (background task, not a chat). Self-guards to a no-op when no sessions were active in the window.
+    "maintenance",   # MAINT1 — THE silent background task; the five pre-MAINT1 silent taskIds (cleanup / reconcile-sent / monthly-report / weekly-insights / session-sweep) run as its jobs and are disabled on migration (SUPERSEDED_BY).
 })
 
 
@@ -274,94 +247,76 @@ FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
 # bootloaders — the skill body is read from the installed plugin at fire
 # time, so plugin upgrades propagate without re-registration.
 SILENT_TASKS: dict[str, dict] = {
-    "cleanup": {
-        "description": "Weekly self-maintenance + brain self-heal (silent)",
-        "reason": "tidies the workspace and heals data drift every Sunday night",
+    # MAINT1 (2026-07) — the registry's ONE entry. The five pre-MAINT1 silent
+    # tasks run as jobs inside this task; their execution contracts live in
+    # their own SKILL.md files, and the dispatcher (maintenance_dispatcher.py)
+    # decides due-ness in code. All three registration paths (Step 1.D loop,
+    # Phase 5.9 assertion, bridge Phase 4.7 loop) keep working UNCHANGED —
+    # they iterate this registry, which now registers/asserts one task.
+    "maintenance": {
+        "description": (
+            "Background maintenance — reconciles sent mail, sweeps sessions, "
+            "runs weekly cleanup + insights and the monthly report (silent)"
+        ),
+        "reason": (
+            "handles all the background upkeep in one place — closing "
+            "commitments you finished by email, catching unlogged decisions, "
+            "the weekly tidy and the monthly report"
+        ),
         "notify": False,
         "prompt": (
-            "# Command Room — weekly cleanup (silent Sunday self-maintenance)\n\n"
-            "Run the cleanup skill end-to-end for the Command Room workspace whose folder "
+            "# Command Room — maintenance (silent background dispatcher)\n\n"
+            "Run the Command Room maintenance pass for the workspace whose folder "
             "basename is {BASENAME}. Resolve the workspace per CONTRACT.md Rule 22 "
-            "(find _hq/ under the mount matching that basename), then follow EVERY phase of "
-            "skills/cleanup/SKILL.md in order: Phase 1 silent scan, Phase 2 auto-fix sweep, "
-            "Phase 3 substrate integrity (detect + heal), Phase 3.5 brain self-heal (Live State "
-            "render + idempotent migration), Phase 4 the three-beat Monday note "
-            "(what I tidied / what I handled for you / what is waiting on you), Phase 5 "
-            "(save the .docx only when substantive). Stay silent unless something needs the "
-            "CEO eyes. This is a maintenance note, NOT a chat-widget."
+            "(find _hq/ under the mount matching that basename), resolve the plugin "
+            "root, then:\n\n"
+            "1. Ask the dispatcher what is due — NEVER judge due-ness yourself: run "
+            "`python3 shared/scripts/maintenance_dispatcher.py <workspace_root>` from "
+            "the plugin root and hold its JSON plan. The `due` list is ordered — that "
+            "order is the contract (reconcile-sent first at 6:45, before the 7:00 "
+            "morning brief; weekly-insights after cleanup). If nothing is due, append "
+            "the run receipt via maintenance_dispatcher.maintenance_receipt (empty "
+            "lists, plus any skipped_disabled from the plan) and exit silently.\n"
+            "2. Execute each due job's skill END-TO-END, one at a time in plan order, "
+            "never in parallel: reconcile-sent -> skills/reconcile-sent/SKILL.md; "
+            "session-sweep -> skills/session-sweep/SKILL.md; cleanup -> "
+            "skills/cleanup/SKILL.md (every phase); weekly-insights -> "
+            "skills/insight-generator/SKILL.md; monthly-report -> the previous full "
+            "calendar month per skills/operator-report/SKILL.md then "
+            "skills/value-receipt/SKILL.md (quarter boundary adds the quarterly "
+            "roll-up).\n"
+            "3. A job COMPLETED only when its own receipt validator confirms its own "
+            "substrate receipt (validate_reconcile_ran / validate_sweep_ran / the "
+            "cleanup, insights, and report receipts per each SKILL.md). Never report "
+            "a job done without its receipt — an unreceipted job stays due and "
+            "self-heals at the next fire; list it in jobs_failed instead.\n"
+            "4. Finish with ONE maintenance_dispatcher.maintenance_receipt call "
+            "(jobs_due / jobs_completed / jobs_failed / skipped_disabled from what "
+            "actually happened) and confirm it landed via validate_maintenance_ran.\n\n"
+            "Each job keeps its own skill's surfacing rules — stay silent unless a "
+            "job's contract says something needs the CEO eyes (a closure line, the "
+            "Monday note, the monthly report links). This is silent maintenance, NOT "
+            "a chat-widget."
         ),
     },
-    "reconcile-sent": {
-        "description": "Daily sent-mail reconciliation (silent)",
-        "reason": "closes commitments you completed by sending mail straight from Gmail",
-        "notify": False,
-        "prompt": (
-            "# Command Room — reconcile sent mail (silent daily maintenance)\n\n"
-            "Run the reconcile-sent skill end-to-end for the Command Room workspace whose "
-            "folder basename is {BASENAME}. Resolve the workspace per CONTRACT.md "
-            "Rule 22 (find _hq/ under the mount matching that basename), then follow "
-            "skills/reconcile-sent/SKILL.md in order: read the cursor, do a REAL in:sent "
-            "fetch since the cursor, call reconcile_and_receipt, and self-validate via "
-            "validate_reconcile_ran that the sent_reconcile audit event actually landed. "
-            "Stay silent unless something closed (then one undo-affordance line). This is "
-            "silent maintenance, NOT a chat-widget."
-        ),
-    },
-    "monthly-report": {
-        "description": "Monthly operator report + value receipt (silent)",
-        "reason": "produces your monthly operating report and value receipt on the 1st",
-        "notify": False,
-        "prompt": (
-            "# Command Room — monthly report (silent, runs the operator report + value receipt)\n\n"
-            "Run the monthly reports end-to-end for the Command Room workspace whose "
-            "folder basename is {BASENAME}. Resolve the workspace per CONTRACT.md "
-            "Rule 22 (find _hq/ under the mount matching that basename). For the PREVIOUS "
-            "full calendar month: (1) follow skills/operator-report/SKILL.md to produce the "
-            "operating-lift report, then (2) follow skills/value-receipt/SKILL.md to produce "
-            "the forwardable value receipt (numbers from value_receipt.compute_value_receipt, "
-            "never hand-counted). If the 1st falls on a quarter boundary (January, April, "
-            "July, or October), ALSO run the quarterly value-receipt roll-up for the "
-            "previous full quarter (rollup=quarter). Save each .docx under "
-            "_hq/operator-reports/ and surface the deliverable links. Stay silent beyond the "
-            "links unless something needs the CEO eyes. These are reports, NOT chat-widgets."
-        ),
-    },
-    "weekly-insights": {
-        "description": "Weekly analytical-view synthesis (silent)",
-        "reason": "keeps your timeline, relationship, and aging views current every Sunday",
-        "notify": False,
-        "prompt": (
-            "# Command Room — weekly insights (silent Sunday synthesis)\n\n"
-            "Run the insight-generator skill end-to-end for the Command Room workspace "
-            "whose folder basename is {BASENAME}. Resolve the workspace per "
-            "CONTRACT.md Rule 22 (find _hq/ under the mount matching that basename). "
-            "Follow skills/insight-generator/SKILL.md: synthesize the week and recompute "
-            "the 5 analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / "
-            "DORMANT / THEMES) into _hq/views/ from current substrate. Self-guard: if the "
-            "workspace has <14 days of events, no-op silently (not enough signal to find "
-            "patterns). Stay silent unless something needs the CEO eyes — the result is "
-            "available on their next session. This is silent synthesis, NOT a chat-widget."
-        ),
-    },
-    "session-sweep": {
-        "description": "Nightly session sweep (silent)",
-        "reason": "catches commitments and decisions from your ad-hoc chats that never got logged",
-        "notify": False,
-        "prompt": (
-            "# Command Room — session sweep (silent nightly memory pass)\n\n"
-            "Run the session-sweep skill end-to-end for the Command Room workspace whose "
-            "folder basename is {BASENAME}. Resolve the workspace per CONTRACT.md "
-            "Rule 22 (find _hq/ under the mount matching that basename), then follow "
-            "skills/session-sweep/SKILL.md in order: resolve the session-transcript MCP at "
-            "runtime, list the sessions active since the last sweep (24h floor), read each "
-            "transcript, extract the commitments / decisions / interactions / deliverables "
-            "that never became events, and write them via session_sweep.sweep_and_receipt "
-            "(dedup + append_event + the session_sweep_run receipt in one call). "
-            "Self-validate with validate_sweep_ran. Self-guard: no active sessions in the "
-            "window is a clean silent no-op. Stay silent unless something needs the CEO "
-            "eyes. This is silent maintenance, NOT a chat-widget."
-        ),
-    },
+}
+
+
+# MAINT1 migration data (D5) — the registration paths read this map, not
+# prose: when a registry task is registered (Step 1.D / Phase 5.9 / bridge
+# Phase 4.7), any taskId listed under it that is still registered+enabled is
+# DISABLED via update_scheduled_task(enabled: false). Never deleted (no
+# delete API exists; disable is the only removal) and idempotent — disabling
+# an already-disabled task is a no-op, and re-runs converge on the same end
+# state: the five old ids off, exactly one `maintenance` task on.
+SUPERSEDED_BY: dict[str, list[str]] = {
+    "maintenance": [
+        "cleanup",
+        "reconcile-sent",
+        "monthly-report",
+        "weekly-insights",
+        "session-sweep",
+    ],
 }
 
 
@@ -408,8 +363,11 @@ DISPLAY_NAMES: dict[str, str] = {
     "relationship-moves": "Relationship Moves",  # REL1 — weekly Sunday outreach action pack
     "commitment-triage": "Commitment Triage",  # Phase 2 Stage D (S4) — weekly Friday full-open-set housekeeping chat
     "monthly-report": "Monthly Report",  # C1 — silent monthly operator-report + value-receipt fire (not a CEO-facing chat)
-    "weekly-insights": "Weekly Insights",  # v4.2.0 — silent weekly analytical-view synthesis (not a CEO-facing chat)
-    "session-sweep": "Session Sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (not a CEO-facing chat)
+    "weekly-insights": "Weekly Insights",  # v4.2.0 — silent weekly analytical-view synthesis (not a CEO-facing chat); a maintenance JOB as of MAINT1
+    "session-sweep": "Session Sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (not a CEO-facing chat); a maintenance JOB as of MAINT1
+    "maintenance": "Maintenance",  # MAINT1 — THE silent background dispatcher task (not a CEO-facing chat). cleanup / reconcile-sent / monthly-report keep their rows above for job-level renders.
+    "staff-meeting": "Staff Meeting",  # LB1 R3 — weekly Monday Living Brain review chat (opt-in later-add)
+    "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
 }
 
 
@@ -737,6 +695,7 @@ __all__ = [
     "DEFAULT_SCHEDULES",
     "FIRST_INSTALL_TASK_IDS",
     "SILENT_TASKS",
+    "SUPERSEDED_BY",
     "is_silent_task",
     "compose_silent_task_prompt",
     "later_add_task_ids",

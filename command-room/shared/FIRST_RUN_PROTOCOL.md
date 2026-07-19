@@ -55,7 +55,7 @@ question (CONTRACT Rule 17, speed over perfection).
 
 **AF (reserved for irreversible / outward-acting defaults only):** ask ONE question, only on
 the first relevant request, with a working default-escape. The entire AF class:
-- **email-writer draft posture** — gates whether anything auto-queues to Gmail (outbound). Closes the long-standing CLAUDE.md "draft posture: TBD".
+- **email-writer draft posture** — gates whether anything auto-queues to the declared mail backend's Drafts (outbound). Closes the long-standing CLAUDE.md "draft posture: TBD".
 - **follow-up-ritual send timing** — gates outbound email.
 - **contract-review standard-terms** — already AF; keeps its skip-escape.
 - **workspace-manager relationship_type** — already AF; permanently shapes the entity graph.
@@ -122,6 +122,8 @@ More than 3 decisions, or more than 4 options, belongs in freeform tune — not 
 | decision-memo-composer (OUT2 §5) | criteria persistence per decision type · weight display | STT |
 | stress-test (OUT2 §5) | depth (passes 3/5) · risk framing | STT |
 | automation-scanner (OUT2 §5) | ranking weights · horizon buckets | STT |
+| pipeline-tracker (PIPE1) | rot thresholds preset (standard/relaxed/aggressive) · weekly digest opt-in + day (preference only — registration stays propose-never-auto via the schedule setup's optional set) · value capture (exact number vs ranges-as-notes) | STT |
+| system-health (LB1 — the Living Brain card) | **daily_confirm_card: on / off** (default on — the ≤5-item "Needs your eyes" card on **coach**; off keeps the queue reachable via `staff meeting` / `what's waiting on me`. FB-20: the morning brief no longer renders this card on any setting — it is read-only, and points at the staff meeting instead) | STT (fr-item on the card's own first render) |
 
 **Domain-config aliases (OUT2 §5 — verbs without a second store):** `contract-review` and
 `team-intelligence` answer the same `tune / show settings / reset to defaults` vocabulary, but the

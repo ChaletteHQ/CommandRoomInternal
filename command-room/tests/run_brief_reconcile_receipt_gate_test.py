@@ -63,8 +63,12 @@ def main():
     check("reconcile-sent SKILL.md exists", bool(recon), recon_path)
     check("task calls reconcile_and_receipt", "reconcile_and_receipt" in recon)
     check("task self-validates via validate_reconcile_ran", "validate_reconcile_ran" in recon)
-    check("task does a REAL in:sent fetch (not reused data)",
-          "in:sent" in recon_low and ("real" in recon_low and "fetch" in recon_low))
+    # connector-agnostic-v1: the SKILL expresses the Sent query as the
+    # `in_sent` INTENT (compiled per provider by connector_adapters/mail.py)
+    # — the literal provider operator is banned from skill prose (grep-gate 1).
+    check("task does a REAL Sent fetch (not reused data)",
+          ("in_sent" in recon_low or "in:sent" in recon_low)
+          and ("real" in recon_low and "fetch" in recon_low))
     check("task names Bug #98-v3", "#98-v3" in recon_low or "98-v3" in recon_low)
     check("task has a wide first-run/catch-up lookback for stranded backlog (Bug #101)",
           ("catch up" in recon_low or "catch-up" in recon_low)

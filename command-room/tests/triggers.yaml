@@ -186,6 +186,35 @@
   expected: intel-intake
 
 # =========================================================
+# RESEARCH PHRASES (RSR1 — first coverage; the skill that loses
+# routing fights to the platform's built-in deep-research skill
+# had zero collision tests until 2026-07-16)
+# =========================================================
+- phrase: "research Acme Co"
+  expected: research
+- phrase: "deep dive on the freight brokerage market"
+  expected: research
+- phrase: "look into Northstar Partners"
+  expected: research
+- phrase: "what's the story on Acme Co"
+  expected: research
+- phrase: "background on Sam Sample"
+  expected: research
+  notes: "must stay with research, not people-crm — 'who is [name]' is the people-crm shape"
+- phrase: "what do we know about Acme Co"
+  expected: research
+  notes: "standalone chat trigger routes to research; intel-intake's same-named handler is internal-only (backticked, invisible to routing)"
+- phrase: "pull together research on AI pricing"
+  expected: research
+- phrase: "do some research on warehouse automation vendors"
+  expected: research
+- phrase: "research brief on warehouse automation vendors"
+  expected: research
+- phrase: "research Acme Co before my call Thursday"
+  expected: research
+  notes: "research runs and hands findings forward — 'prep me for' without a research ask is call-prep"
+
+# =========================================================
 # PEOPLE-CRM PHRASES
 # =========================================================
 - phrase: "who is Jessica Park"
@@ -774,6 +803,31 @@
   expected: workspace-manager
   notes: "no skill named → Layer 4 menu of adopting skills; must NOT hijack any single adopting skill"
 
+# connector & account management verbs (connector-agnostic-v1 C1) — must live in
+# the frontmatter DESCRIPTION, not just the body Routing corpus (v4.7.0 dogfood
+# bug: Cowork routes on the description only; body-only triggers freelance)
+- phrase: "what accounts do I have"
+  expected: workspace-manager
+- phrase: "set my email backend to Superhuman"
+  expected: workspace-manager
+- phrase: "set my calendar backend to Google Calendar"
+  expected: workspace-manager
+# ('use [connector] for email' is in the corpus for the semantic router, but the
+# mechanical matcher can't anchor it — any literal stem ('for email') is too
+# generic and would collide. No yaml case; covered by the real router only.
+- phrase: "jane@acme.com is my personal account"
+  expected: workspace-manager
+- phrase: "jane@acme.com is my business account"
+  expected: workspace-manager
+- phrase: "jane@acme.com is a second business email"
+  expected: workspace-manager
+- phrase: "mark jane@acme.com out of scope"
+  expected: workspace-manager
+- phrase: "stop filing jane@acme.com"
+  expected: workspace-manager
+- phrase: "add account jane@acme.com"
+  expected: workspace-manager
+
 # =========================================================
 # COMMITMENT TRIAGE (Phase 2 Stage D, S4)
 # =========================================================
@@ -836,6 +890,13 @@
   expected: cleanup
 - phrase: "maintenance"
   expected: cleanup
+  notes: "EW2+T F-14: routes to cleanup the SKILL, whose Step 0 runs the background-maintenance dispatcher for maintenance-shaped phrases — NOT a full cleanup pass."
+- phrase: "run my maintenance"
+  expected: cleanup
+  notes: "EW2+T F-14 manual dispatcher fire — cleanup Step 0 (due-jobs plan, execute or report nothing due)."
+- phrase: "run maintenance now"
+  expected: cleanup
+  notes: "EW2+T F-14 manual dispatcher fire — cleanup Step 0."
 
 # 7. commitment logging split
 - phrase: "log a commitment"
@@ -952,3 +1013,84 @@
 - phrase: "remind me to revisit the pricing decision"
   expected: decision-revisit
   notes: "fence: revisit phrasing stays with decision-revisit, not the reminder lane"
+
+# =========================================================
+# DEAL LANE (SPEC PIPE1, 2026-07-13) — pipeline-tracker
+# claims the pipeline/deals namespace; pins BOTH directions
+# of the D6 verb fence + the D11 hijack guards.
+# =========================================================
+- phrase: "show my pipeline"
+  expected: pipeline-tracker
+- phrase: "pipeline"
+  expected: pipeline-tracker
+- phrase: "pipeline review"
+  expected: pipeline-tracker
+- phrase: "show my deals"
+  expected: pipeline-tracker
+- phrase: "what deals are closing this month"
+  expected: pipeline-tracker
+- phrase: "new deal with Northstar Partners"
+  expected: pipeline-tracker
+  notes: "D6 carve-out: NOT the workspace-manager new-project gate"
+- phrase: "Acme signed"
+  expected: pipeline-tracker
+  notes: "D6: deal-outcome verbs moved out of workspace-manager's conversion trigger list; the win closes the deal AND converts the prospect atomically"
+- phrase: "closed the deal with Acme"
+  expected: pipeline-tracker
+- phrase: "we lost the Beacon Logistics deal"
+  expected: pipeline-tracker
+- phrase: "sent the proposal to Acme yesterday"
+  expected: pipeline-tracker
+  notes: "D11 mechanically-safe claim — 'sent the proposal', never bare 'proposal'"
+- phrase: "my deal is stalling"
+  expected: pipeline-tracker
+- phrase: "revenue in play"
+  expected: pipeline-tracker
+- phrase: "tune pipeline-tracker"
+  expected: pipeline-tracker
+
+# D6 other direction — workspace-manager KEEPS the administrative verbs
+- phrase: "Acme is now a client"
+  expected: workspace-manager
+- phrase: "new prospect Northstar Partners"
+  expected: workspace-manager
+  notes: "org + engagement only; the deal thread is a separate, offered step"
+
+# D11 hijack guards — deliberately unowned deal-adjacent utterances
+- phrase: "deal with it"
+  expected: none
+  notes: "bare 'deal' (singular) is never a trigger"
+- phrase: "close the deal on my screen"
+  expected: none
+- phrase: "who owes me money"
+  expected: none
+  notes: "M ruling 2026-07-13: stays UNOWNED — AR is not pipeline; AR proper stays gated on an accounting connector"
+
+# email-writer latent-collision fix (pre-existing, found by the PIPE1 audit):
+# 'remind me to' phrasings never draft, even containing 'follow up with'
+- phrase: "remind me to follow up with Acme Friday"
+  expected: show-my-reminders
+
+# LB1 — the Living Brain self-report + Staff Meeting (system-health owns all four families)
+- phrase: "what did you change"
+  expected: system-health
+  notes: "LB1 change-feed read (Step 4) — the on-demand 'what did the system do' surface"
+- phrase: "what's waiting on me"
+  expected: system-health
+  notes: "LB1 pending-queue read (Step 4)"
+- phrase: "staff meeting"
+  expected: system-health
+  notes: "LB1 R3 — the full Living Brain review surface (Step 5); the scheduled staff-meeting chat wraps the same surface. NOT meeting-notes ('process the meeting') and NOT call-prep ('prep me for the board meeting')."
+- phrase: "run our staff meeting"
+  expected: system-health
+- phrase: "add staff meeting"
+  expected: change-schedule
+  notes: "LB1 R3 registration path — the add flows through change-schedule -> registration Phase 6, like every later-add task"
+
+# LB1 hijack guards — meeting-shaped phrases that must NOT reach the staff-meeting surface
+- phrase: "process the staff meeting notes"
+  expected: meeting-notes
+  notes: "a transcript of a real-world staff meeting is meeting-notes' job"
+- phrase: "prep me for the staff meeting"
+  expected: call-prep
+  notes: "an upcoming real-world staff meeting on the calendar is call-prep's job"

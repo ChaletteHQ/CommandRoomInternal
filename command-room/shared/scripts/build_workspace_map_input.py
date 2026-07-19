@@ -83,8 +83,19 @@ def _project_status(project: dict[str, Any]) -> str:
     return str(raw).lower()
 
 
-def _project_last_when(project: dict[str, Any]) -> str | None:
-    """Schema A uses 'last_touched', schema B uses 'last_activity'."""
+def _project_last_when(project: dict[str, Any],
+                       activity: dict | None = None) -> str | None:
+    """Last-touched display source (HYG1 Item 3 — the C3 fossil-reader
+    retirement): OBSERVED recency first — the newest event on the thread via
+    thread_activity.derive_thread_activity (the caller derives the map ONCE
+    per build and passes it) — then the stored record stamp
+    (last_touched / last_activity) as the ZERO-EVENT FLOOR only (the
+    DATA_CONTRACT carve-out: ingest legitimately stamps it for threads with
+    no event history)."""
+    if activity is not None:
+        act = activity.get(project.get("id"))
+        if act is not None:
+            return act.ts.isoformat()
     return project.get("last_touched") or project.get("last_activity")
 
 
@@ -457,6 +468,7 @@ def _project_projects(
     entities: dict[str, Any],
     owes_by_project: dict[str, dict[str, int]],
     now: datetime,
+    activity: dict | None = None,
 ) -> list[dict[str, Any]]:
     """Project entities → template-expected project shape. Drops archived."""
     out: list[dict[str, Any]] = []
@@ -464,7 +476,7 @@ def _project_projects(
         status = _project_status(p)
         if status == "archived":
             continue
-        last_str, last_h = _humanize_age(_project_last_when(p), now)
+        last_str, last_h = _humanize_age(_project_last_when(p, activity), now)
         owes = owes_by_project.get(p["id"], {"youOwe": 0, "theyOwe": 0})
         out.append(
             {
@@ -595,8 +607,17 @@ def main() -> int:
 
     aggregates = _aggregate_commitments(events, user_id, people_by_id, projects_by_id, now)
 
+    # HYG1 Item 3: last-touched display comes from OBSERVED activity, derived
+    # ONCE per build; the stored record stamp is the zero-event floor only.
+    try:
+        from thread_activity import derive_thread_activity
+        activity = derive_thread_activity(args.workspace_root)
+    except Exception:
+        activity = {}
+
     orgs = _project_orgs(entities)
-    projects = _project_projects(entities, aggregates["owes_by_project"], now)
+    projects = _project_projects(entities, aggregates["owes_by_project"], now,
+                                 activity=activity)
     people = _project_people(entities, aggregates["threads_records"], aggregates["owes_by_person"], now)
     threads = aggregates["threads_records"]
     commitments = aggregates["commitments"]

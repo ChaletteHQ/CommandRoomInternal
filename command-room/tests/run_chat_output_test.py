@@ -361,8 +361,11 @@ def test_widget_action_input_attribute_contract():
         "widget_mode": "all_batch_widget",
     }
     html = render_chat_output_widget(data)
-    btn_actions = set(re.findall(
-        r'<button class="cr-action"[^>]*data-action="([^"]+)"', html
+    # T2.2 row diet: verbs render as <option>s in the row's dropdown; the
+    # contract is unchanged — an input-affordance action's option value and
+    # its wrapper's data-input-for-action must be byte-identical.
+    opt_actions = set(re.findall(
+        r'<option value="([^"]+)" data-input-type="(?!none)[^"]+"', html
     ))
     wrapper_actions = set(re.findall(
         r'<div class="cr-action-input"[^>]*data-input-for-action="([^"]+)"', html
@@ -373,19 +376,19 @@ def test_widget_action_input_attribute_contract():
         "push meeting [date]",
     }
     _check(
-        "all input-affordance buttons render in the widget",
-        expected_inputs.issubset(btn_actions),
-        f"missing buttons: {expected_inputs - btn_actions}",
+        "all input-affordance verbs render as dropdown options",
+        expected_inputs.issubset(opt_actions),
+        f"missing options: {expected_inputs - opt_actions}",
     )
     _check(
-        "every input-affordance button has a matching wrapper (byte-identical action)",
+        "every input-affordance option has a matching wrapper (byte-identical action)",
         expected_inputs.issubset(wrapper_actions),
         f"missing wrappers: {expected_inputs - wrapper_actions}",
     )
     _check(
-        "click handler uses iterating dataset comparison (not querySelector w/ CSS.escape)",
+        "wrapper lookup uses iterating dataset comparison (not querySelector w/ CSS.escape)",
         "dataset.inputForAction" in html and "querySelectorAll('.cr-action-input')" in html,
-        "crFindInputWrapper appears to use the old CSS.escape path",
+        "crWrap appears to use the old CSS.escape path",
     )
 
 
@@ -481,11 +484,13 @@ def test_per_subitem_note_field():
     # toggle button reveals it. Test the wrapper, the toggle button, and the
     # textarea (now starts hidden).
     for sid in ("5a", "5b", "5c"):
-        # The sub-item-note div with the right note-for-n
-        pattern = f'<div class="cr-item-note cr-sub-item-note" data-note-for-n="{sid}">'
-        _check(f"sub-item {sid} has its own note field wrapper", pattern in html)
+        # T2.2 row diet: the outer div lost its (unused) data attr; the
+        # toggle + field carry data-note-for-n, which is what the JS reads.
+        pattern = f'data-note-for-n="{sid}">+ Add context</button>'
+        _check(f"sub-item {sid} has its own note toggle", pattern in html)
         # The toggle button with the right note-for-n
-        toggle_pattern = f'<button class="cr-note-toggle" type="button" data-note-for-n="{sid}" onclick="crToggleNote(this)">+ Add context</button>'
+        # T2.2 row diet: note toggles are JS-bound (no inline onclick).
+        toggle_pattern = f'<button class="cr-note-toggle" type="button" data-note-for-n="{sid}">+ Add context</button>'
         _check(f"sub-item {sid} has its own '+ Add context' toggle button", toggle_pattern in html)
         # The hidden-by-default note input still has matching data-note-for-n
         input_pattern = f'data-note-for-n="{sid}" style="display:none;" />'
@@ -494,11 +499,11 @@ def test_per_subitem_note_field():
     # Parent item should still have its own note field too (untouched by v2.14.33).
     _check(
         "parent item still has its own (non-sub) note field",
-        '<div class="cr-item-note" data-note-for-n="5">' in html,
+        'data-note-for-n="5">+ Add context</button>' in html,
     )
 
     # Total: 1 parent + 3 sub-items = 4 cr-note-field elements
-    note_field_count = html.count('class="cr-input-field cr-note-field"')
+    note_field_count = html.count('class="cr-note-field"')
     _check(
         f"4 note-field inputs rendered (1 parent + 3 sub-items), got {note_field_count}",
         note_field_count == 4,
@@ -559,11 +564,19 @@ def test_universal_add_context_button_on_pending_subitems():
     }
     html = render_chat_output_widget(data)
 
-    # Each sub-item should have an Add context button with proper data-action.
+    # Each sub-item's dropdown should carry the Add-context option (T2.2 —
+    # verbs render as <option>s; the wrapper contract is unchanged).
     for sid in ("4a", "4b"):
-        pattern = f'data-n="{sid}" data-action="add context [text]"'
-        _check(f"sub-item {sid} has Add context button with correct data-action", pattern in html)
-        # And a matching input wrapper for that button (the wrapper machinery — what's broken in field).
+        sel_match = re.search(
+            rf'<select class="cr-action-select" data-n="{sid}"[^>]*>(.*?)</select>',
+            html, re.DOTALL)
+        _check(f"sub-item {sid} renders a verb dropdown", sel_match is not None)
+        _check(
+            f"sub-item {sid} dropdown carries add context [text]",
+            sel_match is not None
+            and 'value="add context [text]"' in sel_match.group(1),
+        )
+        # And a matching input wrapper for that option (the wrapper machinery — what's broken in field).
         wrapper_pattern = f'data-input-for-n="{sid}" data-input-for-action="add context [text]"'
         _check(f"sub-item {sid} has matching add-context input wrapper", wrapper_pattern in html)
 
@@ -721,14 +734,11 @@ def test_checkmark_css_emits_proper_hex_escape():
     import re
 
     print("test_checkmark_css_emits_proper_hex_escape")
-    data = {
-        "header": "x",
-        "sections": [{"title": None, "items": [
-            {"n": 1, "name": "a", "subject": "b", "metadata": [], "body_lines": ["x"], "actions": ["1 skip"]},
-        ]}],
-        "widget_mode": "all_batch_widget",
-    }
-    html = render_chat_output_widget(data)
+    # T2.2: row verbs are dropdowns, so the pressed-state button CSS ships
+    # only on button widgets (conditional emission). The octal-escape
+    # contract still guards the button block — pin it on the full sheet.
+    import chat_output_renderer as _r
+    html = _r._WIDGET_CSS_MIN
     m = re.search(r'cr-selected::before\s*\{\s*content:\s*"([^"]*)"', html)
     _check("cr-selected::before content rule found", m is not None)
     if m:
@@ -1151,6 +1161,364 @@ def test_onboarding_setup_missing_n_raises():
     _check("ValueError raised for missing 'n'", raised)
 
 
+def test_view_transition_css_echo_caught():
+    """EW2+T (F-09): a Cowork platform `::view-transition-group` style block
+    echoed into chat text is a leak. The token exists nowhere in
+    plugin-produced HTML, so the pattern can't false-positive on widget
+    scans — any hit is the byte-relay echo."""
+    from chat_output_renderer import scan_for_id_leaks
+
+    print("test_view_transition_css_echo_caught")
+    echoed = "::view-transition-group(root) { animation-duration: 0.3s; }"
+    findings = scan_for_id_leaks(echoed)
+    _check("::view-transition echo flagged",
+           any("platform CSS echo" in label for label, _ in findings))
+    clean = scan_for_id_leaks("Here are today's drafts, ready for review.")
+    _check("plain chat text stays clean",
+           not any("platform CSS echo" in label for label, _ in clean))
+
+
+def _js_open_string_lines(js: str) -> list[tuple[int, str, str]]:
+    """Return (line_no, quote_char, line_excerpt) for every line of `js` that
+    ENDS inside an open ' or " string literal. Our widget JS never spans a
+    string across a raw newline (template literals are unused), so any hit is
+    a Python-eaten escape — the t3 FB-1 bug class."""
+    problems: list[tuple[int, str, str]] = []
+    for ln, line in enumerate(js.split("\n"), 1):
+        if line.strip().startswith("//"):
+            # Whole-line comments never reach the page (_minify_js drops
+            # them) and may carry apostrophes — skip, don't tokenize.
+            continue
+        i, n, q = 0, len(line), ""
+        while i < n:
+            c = line[i]
+            if c == "\\":
+                i += 2
+                continue
+            if q:
+                if c == q:
+                    q = ""
+            elif c in ("'", '"'):
+                q = c
+            i += 1
+        if q:
+            problems.append((ln, q, line[:90]))
+    return problems
+
+
+def test_widget_js_string_literals_close_on_every_line():
+    """t3 FB-1 regression (2026-07-16): the t2.2 block refactor dropped the
+    double-escape on `out.join('\\\\n')` inside the NON-raw Python triple-quote
+    holding _JS_CORE. Python ate the escape and emitted a literal newline
+    inside a JS string literal — an unterminated string, a SyntaxError, and a
+    100%-dead widget script: no change listeners, counter frozen at
+    '0 of N selected', Apply never enables. Confirmed live on commitments,
+    staff-meeting, and email-draft cards (one shared template).
+
+    Same class as the v2.14.35 CSS `\\\\2713` octal-escape bug. This test
+    tokenizes EVERY emitted JS block (source + minified + the composed
+    template) and fails on any line that ends inside an open string literal,
+    so no future Python-eaten escape can ship a dead script again."""
+    import chat_output_renderer as cor
+
+    print("test_widget_js_string_literals_close_on_every_line")
+    blocks = {
+        "_JS_SELECT": cor._JS_SELECT,
+        "_JS_BUTTONS": cor._JS_BUTTONS,
+        "_JS_NOTES": cor._JS_NOTES,
+        "_JS_SKIP": cor._JS_SKIP,
+        "_JS_CORE": cor._JS_CORE,
+        "_JS_SELECT (min)": dict(cor._JS_FEATURE_BLOCKS_MIN)["cr-action-select"],
+        "_JS_CORE (min)": cor._JS_CORE_MIN,
+        "_WIDGET_JS_TEMPLATE (min)": cor._WIDGET_JS_TEMPLATE_MIN,
+    }
+    for name, js in blocks.items():
+        bad = _js_open_string_lines(js)
+        _check(
+            f"{name}: every line closes its string literals",
+            not bad,
+            "; ".join(f"line {ln} open {q!r}: {txt}" for ln, q, txt in bad[:3]),
+        )
+
+
+def test_widget_js_parses_with_node_when_available():
+    """Deepest structural layer renderable HTML allows offline: parse the
+    fully-composed widget JS with Node when a `node` binary exists (skips
+    silently when it doesn't — the string-literal tokenizer above is the
+    always-on guard). A parse failure here is the FB-1 class: the entire
+    script is dead in the iframe."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    import chat_output_renderer as cor
+
+    print("test_widget_js_parses_with_node_when_available")
+    node = shutil.which("node")
+    if not node:
+        _check("node not on PATH — parse layer skipped (tokenizer still ran)", True)
+        return
+    js = (
+        cor._WIDGET_JS_TEMPLATE_MIN
+        .replace("__TOTAL_ITEMS__", "2")
+        .replace("__CR_SRC__", '"test"')
+    )
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".js", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("new Function(require('fs').readFileSync(__filename + '.src', 'utf8'));")
+        probe = f.name
+    with open(probe + ".src", "w", encoding="utf-8") as f:
+        f.write(js)
+    try:
+        res = subprocess.run(
+            [node, probe], capture_output=True, text=True, timeout=30
+        )
+        _check(
+            "composed widget JS parses under Node",
+            res.returncode == 0,
+            (res.stderr or "").strip()[:200],
+        )
+    finally:
+        import os as _os
+
+        for p in (probe, probe + ".src"):
+            try:
+                _os.unlink(p)
+            except OSError:
+                pass
+
+
+def test_dropdown_f58_f17_wiring_present():
+    """t3 FB-1/FB-2: the F-58 visible-feedback + F-17 required-input contract,
+    pinned on the DROPDOWN template (the t2.2 verb-select port). Renders a
+    two-row commitments-shaped view and asserts the emitted page carries the
+    full working wiring: the select change handler + its bind, the counter /
+    Apply / apply-hold reason elements, armed-state CSS, and the F-17 payload
+    riding the required option (data-input-required + data-input-thing) with
+    its when-input wrapper + inline reason element."""
+    from chat_output_renderer import render_chat_output_widget
+
+    print("test_dropdown_f58_f17_wiring_present")
+    data = {
+        "source_skill": "commitment-triage",
+        "header": "Commitments needing action",
+        "sections": [
+            {
+                "title": "You owe",
+                "items": [
+                    {
+                        "n": "cmt_fixture_a",
+                        "display_n": 1,
+                        "name": "Send the revised proposal to Alex Partner",
+                        "actions": ["mark done", "push to [date]", "skip"],
+                    },
+                    {
+                        "n": "cmt_fixture_b",
+                        "display_n": 2,
+                        "name": "Review the vendor contract draft",
+                        "actions": ["mark done", "push to [date]", "skip"],
+                    },
+                ],
+            }
+        ],
+    }
+    html = render_chat_output_widget(data, wrapper="fragment")
+
+    # F-58: the select handler is emitted AND bound.
+    _check("crSel handler emitted", "function crSel(" in html)
+    _check("change-event bind emitted", "addEventListener('change'" in html)
+    _check("counter updater emitted", "function crUpdateCounter(" in html)
+    # F-58: visible-feedback elements.
+    _check("live counter present", 'id="cr-count"' in html)
+    _check("Apply button present", 'id="cr-apply"' in html)
+    _check("apply-hold reason line present", 'id="cr-apply-reason"' in html)
+    _check("armed-state CSS present", ".cr-select-armed" in html)
+    # F-17 on dropdowns: the required payload rides the option.
+    _check(
+        "required option carries data-input-required",
+        'data-input-required="1"' in html,
+    )
+    _check("required option carries data-input-thing", "data-input-thing=" in html)
+    _check("when-input wrapper rendered", 'data-input-type="when-text"' in html)
+    _check("inline reason element rendered", "cr-input-reason" in html)
+    # The emitted script must be the LIVE one — no unterminated strings.
+    import re as _re
+
+    m = _re.search(r"<script>(.*?)</script>", html, _re.DOTALL)
+    _check("script block present", m is not None)
+    bad = _js_open_string_lines(m.group(1))
+    _check(
+        "emitted page script has no open string literals",
+        not bad,
+        "; ".join(f"line {ln}: {txt}" for ln, _, txt in bad[:3]),
+    )
+
+
+def _t3_cluster_view() -> dict:
+    """Shared t3 fixture: one commitment-shaped row (Done primary + the
+    FB-3 'Later…' merge) and one email-shaped row (Send/Draft primaries,
+    FB-10 editable body, FB-12 blockquote markers in body_lines).
+    Placeholder people only; no dates (G14-clean)."""
+    return {
+        "source_skill": "commitments",
+        "header": "Daily commitments",
+        "sections": [
+            {
+                "title": "You owe",
+                "items": [
+                    {
+                        "n": "cmt_fx_a",
+                        "display_n": 1,
+                        "name": "Send the revised proposal to Alex Partner",
+                        "actions": ["resolved", "push to [date]", "drop", "skip"],
+                    },
+                ],
+            },
+            {
+                "title": "Chase drafts",
+                "items": [
+                    {
+                        "n": "cmt_fx_b",
+                        "display_n": 2,
+                        "name": "Sam Sample",
+                        "subject": "Q2 deck follow-up",
+                        "metadata": [
+                            ("To", "sam@example.com"),
+                            ("Subject", "Re: Q2 deck"),
+                        ],
+                        "body_lines": [
+                            "> Hey Sam,",
+                            "> ",
+                            "> Following up on the Q2 deck — any blockers?",
+                            "> Matthew",
+                        ],
+                        "actions": ["send", "edit then send", "draft", "skip"],
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def test_later_merge_drops_snooze_from_dropdown():
+    """t3 FB-3 (M ruling): a row carrying both `push to [date]` and
+    skip/snooze renders ONE 'Later…' option — the separate snooze dropdown
+    option is suppressed. Rows without `push to [date]` keep snooze. Wire
+    ids frozen: the merged option's value stays `push to [date]`."""
+    from chat_output_renderer import render_chat_output_widget
+
+    print("test_later_merge_drops_snooze_from_dropdown")
+    html = render_chat_output_widget(_t3_cluster_view(), wrapper="fragment")
+    row1 = html.split('cr-action-select" data-n="cmt_fx_a"')[1].split("</select>")[0]
+    _check("row with push-to shows Later…", "Later…" in row1)
+    _check("row with push-to hides the snooze option", "Snooze" not in row1)
+    _check("merged option keeps the frozen wire id",
+           'value="push to [date]"' in row1)
+    row2 = html.split('cr-action-select" data-n="cmt_fx_b"')[1].split("</select>")[0]
+    _check("row without push-to keeps its snooze option", "Snooze (1 day)" in row2)
+
+
+def test_primary_verbs_render_as_buttons():
+    """t3 FB-4 (M ruling): commitment rows promote Done to a one-tap
+    button; email rows promote Send + Draft. Promoted verbs leave the
+    dropdown; the tail stays. Buttons carry the frozen wire attributes and
+    bind through crToggle (no inline onclick)."""
+    from chat_output_renderer import render_chat_output_widget
+
+    print("test_primary_verbs_render_as_buttons")
+    html = render_chat_output_widget(_t3_cluster_view(), wrapper="fragment")
+    _check("Done primary button on the commitment row",
+           'cr-action-primary" type="button" data-n="cmt_fx_a" '
+           'data-action="resolved"' in html)
+    _check("Send primary button on the email row",
+           'data-n="cmt_fx_b" data-action="send"' in html)
+    _check("Draft primary button on the email row",
+           'data-n="cmt_fx_b" data-action="draft"' in html)
+    row1_sel = html.split('cr-action-select" data-n="cmt_fx_a"')[1].split("</select>")[0]
+    _check("promoted verb left the dropdown", 'value="resolved"' not in row1_sel)
+    _check("button handler emitted", "function crToggle(" in html)
+    _check("button CSS emitted (multi-class trigger)", ".cr-selected" in html)
+    _check("cross-control exclusivity wired (button clears select)",
+           "crQ('.cr-action-select').forEach" in html.split("function crToggle")[1].split("function ")[0])
+
+
+def test_email_body_inline_editable():
+    """t3 FB-10 (M ruling): the email body renders directly editable —
+    contenteditable wrapper carrying data-original (the innerText-shaped
+    queued text) so Apply serializes the CURRENT on-screen text and the
+    orchestrator can diff for the voice-corrections log. Apply-time
+    serialization + Reset restore live in the core JS."""
+    from chat_output_renderer import render_chat_output_widget
+
+    print("test_email_body_inline_editable")
+    html = render_chat_output_widget(_t3_cluster_view(), wrapper="fragment")
+    _check("body wrapper is contenteditable",
+           '<div class="cr-eb-body" contenteditable="true"' in html)
+    _check("data-original stamped", "data-original=" in html)
+    _check("serializer emitted", "function crBodyText(" in html)
+    _check("apply-time body diff emitted", "crInlineBody(" in html)
+    _check("no separate Edit button rendered",
+           'data-action="edit then send"' not in html.split("cr-action-primary")[1].split("</div>")[0])
+    _check("editable-body CSS emitted", ".cr-eb-body[contenteditable]" in html)
+
+
+def test_blockquote_markers_stripped_from_widget_body():
+    """t3 FB-12: literal `> ` blockquote-convention prefixes in body_lines
+    are markdown plumbing — the widget draws its own quote bar. Strip at
+    render; storage stays untouched (M verified queued drafts land clean)."""
+    from chat_output_renderer import render_chat_output_widget
+
+    print("test_blockquote_markers_stripped_from_widget_body")
+    html = render_chat_output_widget(_t3_cluster_view(), wrapper="fragment")
+    body = html.split('<div class="cr-eb-body"')[1].split("</blockquote>")[0]
+    _check("no literal '> ' prefix in displayed body", "&gt; " not in body)
+    _check("body text renders", "Following up on the Q2 deck" in body)
+    # A mid-line '>' is content, not a marker.
+    from chat_output_renderer import _strip_blockquote_marker
+    _check("mid-line > preserved",
+           _strip_blockquote_marker("a > b") == "a > b")
+    _check("leading marker stripped",
+           _strip_blockquote_marker("> hello") == "hello")
+    _check("bare marker becomes empty line",
+           _strip_blockquote_marker(">") == "")
+
+
+def test_later_route_and_when_parse():
+    """t3 FB-3 dispatch helpers: later_route sends the user's own item to
+    defer and everything else to snooze; parse_later_when handles the
+    deterministic slice (bare days / ISO dates) and hands NL phrases back
+    as None. Dates computed relative to today (G14)."""
+    import datetime as _dt
+
+    import commitment_state as cs
+
+    print("test_later_route_and_when_parse")
+    me = "person:001"
+    own = {"data": {"owner_id": me}}
+    theirs = {"data": {"owner_id": "person:002"}}
+    unowned = {"data": {}}
+    _check("own item routes to defer", cs.later_route(own, me) == "defer")
+    _check("their item routes to snooze", cs.later_route(theirs, me) == "snooze")
+    _check("unowned routes to snooze", cs.later_route(unowned, me) == "snooze")
+    _check("unresolvable user degrades to snooze",
+           cs.later_route(own, None) == "snooze")
+
+    today = _dt.date.today()
+    now_iso = today.isoformat() + "T09:00:00Z"
+    _check("bare days parse",
+           cs.parse_later_when("5", now_iso)
+           == (today + _dt.timedelta(days=5)).isoformat())
+    _check("days with unit parse",
+           cs.parse_later_when("3 days", now_iso)
+           == (today + _dt.timedelta(days=3)).isoformat())
+    past = (today - _dt.timedelta(days=400)).isoformat()  # DATE_GUARD_OK: computed relative to today
+    _check("ISO date passes through", cs.parse_later_when(past, now_iso) == past)
+    _check("zero rejected", cs.parse_later_when("0", now_iso) is None)
+    _check("NL phrase hands off", cs.parse_later_when("friday", now_iso) is None)
+    _check("empty hands off", cs.parse_later_when("", now_iso) is None)
+
+
 def main():
     tests = [
         test_minimal_render,
@@ -1195,6 +1563,15 @@ def main():
         test_path_leak_computer_href_path_caught,
         test_path_leak_url_encoded_workspace_path_passes,
         test_onboarding_setup_missing_n_raises,
+        test_view_transition_css_echo_caught,
+        test_widget_js_string_literals_close_on_every_line,
+        test_widget_js_parses_with_node_when_available,
+        test_dropdown_f58_f17_wiring_present,
+        test_later_merge_drops_snooze_from_dropdown,
+        test_primary_verbs_render_as_buttons,
+        test_email_body_inline_editable,
+        test_blockquote_markers_stripped_from_widget_body,
+        test_later_route_and_when_parse,
     ]
     for t in tests:
         t()

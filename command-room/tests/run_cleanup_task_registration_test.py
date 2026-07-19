@@ -82,15 +82,22 @@ def main():
         "SILENT_TASKS" in enable and "Step 1.D" in enable and "list_scheduled_tasks" in enable,
         "gate must list_scheduled_tasks, loop SILENT_TASKS, and run Step 1.D for any absent task",
     )
-    # cleanup must still be covered — via the registry, not prose
+    # cleanup must still be covered — via the registry, not prose. As of
+    # MAINT1 the registry task is `maintenance` and cleanup is one of its
+    # JOBS: the gate registers the task; the dispatcher carries the job.
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.join(PLUGIN_ROOT, "shared", "scripts"))
     try:
-        from schedule_config import SILENT_TASKS as _ST
-        check("'cleanup' is in the SILENT_TASKS registry the gate loops",
-              "cleanup" in _ST, repr(sorted(_ST)))
+        from schedule_config import SILENT_TASKS as _ST, SUPERSEDED_BY as _SB
+        from maintenance_dispatcher import MAINTENANCE_JOBS as _MJ
+        check("the SILENT_TASKS registry the gate loops carries cleanup's task (maintenance)",
+              "maintenance" in _ST, repr(sorted(_ST)))
+        check("'cleanup' rides the maintenance task as a dispatcher job",
+              "cleanup" in _MJ, repr(sorted(_MJ)))
+        check("the legacy cleanup taskId is superseded data (disabled on migration, never deleted)",
+              "cleanup" in _SB.get("maintenance", ()), repr(_SB))
     except ImportError as e:
-        check("'cleanup' is in the SILENT_TASKS registry the gate loops", False, repr(e))
+        check("the SILENT_TASKS registry the gate loops carries cleanup's task (maintenance)", False, repr(e))
     print()
 
     # --- command-room-update-bridge: cleanup generic-add path ---

@@ -95,17 +95,24 @@ class SentItemError(ValueError):
     SlackItemError's sibling)."""
 
 
-def sent_source_ref(message_id: str) -> str:
-    """Provenance ref for a sent-mail capture: `gmail:<message_id>` — the
+def sent_source_ref(message_id: str, provider: str = "gmail") -> str:
+    """Provenance ref for a sent-mail capture: `<provider>:<message_id>` — the
     spelling COMMITMENT_SCHEMA.md reserves for email artifacts. The message
     id is the connector's canonical per-message id (stable across re-fetch),
-    so it is both the dedup anchor and traceable back to the send."""
+    so it is both the dedup anchor and traceable back to the send.
+
+    `provider` defaults to "gmail" (every historical row uses that prefix); a
+    non-Gmail declared backend passes its own provider so new refs are
+    honestly attributed. Dedup is format-proof either way: `already_captured`
+    compares CANONICAL keys (connector_adapters.provenance), not raw strings.
+    """
+    p = (provider or "gmail").strip().lower() or "gmail"
     mid = (message_id or "").strip()
-    if mid.startswith("gmail:"):
-        mid = mid[len("gmail:"):].strip()
+    if mid.lower().startswith(p + ":"):
+        mid = mid[len(p) + 1:].strip()
     if not mid:
         raise SentItemError("a sent-mail capture needs the message id")
-    return f"gmail:{mid}"
+    return f"{p}:{mid}"
 
 
 def _parse_iso_date(value) -> bool:
@@ -136,12 +143,21 @@ def build_sent_commitment_event(
     pending_review: bool = False,
     review_reason: str = "",
     source_skill: str = "reconcile-sent",
+    provider: str = "gmail",
 ) -> dict:
     """One qualifying sent message → one canonical `commitment` event dict,
     with the full capture block enforced in code (Stage-D kind, S2 due-nudge,
     Stage-E counterparty receipts, pending_review inversion). Construction
     only — append through `event_gate.append_event` (ids minted and seq
     stamped inside the writer lock; C4's semantic dedup fires there).
+
+    `provider` (closeout 2026-07-12) — the seam-resolved provider of the mail
+    connector the message was read from (DiscoveryResult.platform / the
+    declared email backend's provider tag). Defaults to "gmail" for caller
+    back-compat, but a non-Gmail backend MUST pass its own provider so the
+    `source_ref` is honestly attributed (`superhuman:<id>`, not
+    `gmail:<superhuman-id>`). Dedup is format-proof either way (canonical
+    keys), but provenance honesty is not optional.
 
     OWNER IS ALWAYS THE USER: this leg exists for the user's own outbound
     promises, so `owner_id` is stamped from `user_person_id` — which MUST be
@@ -157,7 +173,7 @@ def build_sent_commitment_event(
     title = (title or "").strip()
     if not title:
         raise SentItemError("a sent-mail commitment needs a non-empty title")
-    source_ref = sent_source_ref(message_id)
+    source_ref = sent_source_ref(message_id, provider)
     if not (user_person_id or "").strip():
         raise SentItemError(
             f"sent-mail commitment {source_ref} has no resolved user — "
@@ -173,6 +189,9 @@ def build_sent_commitment_event(
         "owner_id": user_person_id,
         "source_ref": source_ref,
         "channel": "email",
+        # Origin discriminator (ACCOUNT_SCOPE §4a): sent-mail capture is a
+        # connector read — the account-scope wall treats it STRICT.
+        "origin": "connector",
         # No parent event exists for a sent message (nothing writes outbound
         # interaction events — that gap IS BUG-3719); like the Slack leg, the
         # source_ref is the provenance and there is no source_event_seq.
@@ -234,32 +253,39 @@ def _title_key(title) -> str:
     return (str(title or "").strip().lower())[:_TITLE_DEDUP_CHARS]
 
 
-def already_captured(workspace_root, message_id: str, title: str) -> bool:
+def already_captured(workspace_root, message_id: str, title: str,
+                     provider: str = "gmail") -> bool:
     """Step-4 idempotency for the sent leg, codified: True when a commitment
-    with the same `gmail:<message_id>` source_ref AND the same title (ci,
-    first 60 chars — the scan's documented rule) is already on disk, OR the
-    source_ref is already covered by a `commitment_resolved` /
-    `thread_resolved` event. Shard-transparent via events_io. This keys on
-    the scan's own (source_ref, title) rule only — the restatement match
-    (`capture_gate.matches_open_commitment`) and C4's semantic append-path
-    layer run separately."""
+    with the same message identity AND the same title (ci, first 60 chars —
+    the scan's documented rule) is already on disk, OR the identity is already
+    covered by a `commitment_resolved` / `thread_resolved` event.
+    Shard-transparent via events_io.
+
+    R16 (connector-agnostic-v1): identity is the CANONICAL dedup key
+    (`connector_adapters.provenance.canonical_dedup_key`), so a legacy
+    `gmail:<Id>` source_ref (any case) and a structured-provenance row for the
+    SAME message reduce to one identity — the old raw byte-compare missed
+    both. This keys on the scan's own (identity, title) rule only — the
+    restatement match (`capture_gate.matches_open_commitment`) and C4's
+    semantic append-path layer run separately."""
     try:
         from events_io import iter_events
     except ImportError:  # pragma: no cover
         sys.path.insert(0, str(_HERE))
         from events_io import iter_events
+    from connector_adapters.provenance import canonical_dedup_key
 
-    ref = sent_source_ref(message_id)
+    want_key = canonical_dedup_key(sent_source_ref(message_id, provider))
     want_title = _title_key(title)
     for ev in iter_events(workspace_root):
-        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        ev_ref = str(data.get("source_ref") or "").strip()
-        if ev_ref != ref:
+        ev_key = canonical_dedup_key(event=ev)
+        if not ev_key or ev_key != want_key:
             continue
         etype = ev.get("type")
         if etype in ("commitment_resolved", "thread_resolved"):
             return True
         if etype == "commitment":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             ev_title = _title_key(data.get("title") or data.get("summary"))
             if ev_title and want_title and (
                 ev_title in want_title or want_title in ev_title
@@ -276,6 +302,7 @@ def capture_sent_items(
     opens=None,
     source_skill: str = "reconcile-sent",
     append: bool = True,
+    provider: str = "gmail",
 ) -> dict:
     """Run the full sent-capture pipeline over a batch of SKILL-extracted
     commissives and (when `append=True`) land the survivors in ONE locked
@@ -329,7 +356,7 @@ def capture_sent_items(
         mid = item.get("message_id") or ""
         title = item.get("title") or ""
         try:
-            if already_captured(workspace_root, mid, title):
+            if already_captured(workspace_root, mid, title, provider=provider):
                 skipped.append({"title": title, "message_id": mid})
                 continue
             ev = build_sent_commitment_event(
@@ -349,6 +376,7 @@ def capture_sent_items(
                 pending_review=bool(item.get("pending_review")),
                 review_reason=item.get("review_reason") or "",
                 source_skill=source_skill,
+                provider=provider,
             )
         except SentItemError as e:
             errors.append({"title": title, "message_id": mid, "error": str(e)})

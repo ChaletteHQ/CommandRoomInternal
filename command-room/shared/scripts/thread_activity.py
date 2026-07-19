@@ -35,9 +35,18 @@ documented `computed_last_activity` confidence rule (VIEW_GENERATION.md:
 events_io so rotated shards stay visible.
 
 Consumers (v4.5.2): stall_detector (stalled-projects), pulse Phase 4
-(orchestrator-dont-forget.md). Future candidates: build_workspace_map_input,
-build_dcc_input (still displaying the deprecated field — see
-ORG_AND_THREAD_MODEL.md deprecation note).
+(orchestrator-dont-forget.md). HYG1 Item 3 added: entity_resolve recency
+tiebreak, build_workspace_map_input, build_dcc_input. The fossil-readers
+follow-through added the two remaining hand-rolled derivations:
+render_master_tracker and list-active/render_tree (both via
+derive_from_events with ALL_TYPES — renderer "last touched" semantics,
+where every event type counts).
+
+Timestamps are normalized through event_time (R7): the live substrate
+carries three spellings (`ts` ×3533, `timestamp` ×156, `date` ×17 at the
+2026-07-01 audit). Before this, the scan parsed top-level `ts` only, so a
+thread whose latest activity was a legacy-spelled event silently read
+staler than it is — the mirror image of the fossil-reader bug class.
 
 THE DEPRECATION RULE (settled here, once)
 -----------------------------------------
@@ -74,6 +83,15 @@ CONFIDENCE_FLOOR = 0.40
 # box. Callers with a saved stalled-projects config pass its
 # activity_event_types instead (BOTH surfaces must pass the same set).
 DEFAULT_ACTIVITY_TYPES = frozenset({"meeting", "commitment", "decision", "interaction"})
+
+# Sentinel: every event type counts. Renderer semantics — MASTER_TRACKER's
+# "Last Activity" column and the list-active tree mean "last touched", so a
+# thread_updated or stage change legitimately bumps them. Day-count surfaces
+# (stalled-projects, pulse) must keep passing a real type set — the F-54
+# contract is that surfaces quoting a day-count share ONE set. A sentinel
+# object (not the string "all") so it can never be mistaken for an iterable
+# of type names.
+ALL_TYPES = object()
 
 
 class ThreadActivity(NamedTuple):
@@ -140,6 +158,73 @@ def event_thread_ids(ev: dict) -> list[str]:
     return ids
 
 
+def _event_dt(ev: dict) -> Optional[datetime]:
+    """Parsed, UTC-aware event timestamp, honoring all three live field
+    spellings (`ts` → `timestamp` → `date`) via event_time (R7). Defensive
+    fallback keeps the original ts-only parse so a missing sibling module
+    never bricks a staleness read (never-brick posture)."""
+    try:
+        from event_time import event_dt
+
+        dt = event_dt(ev)
+        return _ts_key(dt) if dt is not None else None
+    except ImportError:
+        pass
+    try:
+        return _ts_key(datetime.fromisoformat(ev["ts"].replace("Z", "+00:00")))
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def derive_from_events(
+    events: Iterable[dict],
+    activity_types: Optional[Iterable[str]] = None,
+    confidence_floor: float = CONFIDENCE_FLOOR,
+) -> dict[str, ThreadActivity]:
+    """The C3 fold over an in-memory event iterable — same rules as
+    derive_thread_activity, for callers that already hold the events
+    (render_master_tracker, list-active/render_tree load them once for
+    other columns too).
+
+    activity_types: a type set (None → DEFAULT_ACTIVITY_TYPES), or the
+    module's ALL_TYPES sentinel — renderer "last touched" semantics where
+    every event type counts. Never pass ALL_TYPES from a surface that
+    quotes a day-count (F-54 contract).
+    """
+    if activity_types is ALL_TYPES:
+        types = None
+    else:
+        types = frozenset(activity_types) if activity_types is not None else DEFAULT_ACTIVITY_TYPES
+    last: dict[str, ThreadActivity] = {}
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if types is not None and ev.get("type") not in types:
+            continue
+        conf = ev.get("classification_confidence")
+        if isinstance(conf, (int, float)) and not isinstance(conf, bool) and conf < confidence_floor:
+            continue
+        thread_ids = event_thread_ids(ev)
+        if not thread_ids:
+            continue
+        ts = _event_dt(ev)
+        if ts is None:
+            continue
+        seq = ev.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            seq = None
+        # Store UTC-aware so downstream day-count arithmetic against an
+        # aware `now` never mixes naive/aware (the F-15 legacy writer mix).
+        record = ThreadActivity(seq=seq, event_type=ev.get("type") or "", ts=ts)
+        for tid in thread_ids:
+            prior = last.get(tid)
+            if prior is None or record.ts > prior.ts:
+                last[tid] = record
+
+    return last
+
+
 def derive_thread_activity(
     workspace_root: str | Path,
     activity_types: Optional[Iterable[str]] = None,
@@ -158,38 +243,15 @@ def derive_thread_activity(
         confidence_floor: events with numeric classification_confidence
             below this are skipped (absent field = counted).
 
-    Recency is decided by `ts` (the honest signal); `seq` is carried for
-    traceability. An event with an unparseable/missing ts is skipped —
-    it can't be placed on a timeline.
+    Recency is decided by the event timestamp (the honest signal); `seq` is
+    carried for traceability. An event with an unparseable/missing
+    timestamp is skipped — it can't be placed on a timeline.
     """
-    types = frozenset(activity_types) if activity_types is not None else DEFAULT_ACTIVITY_TYPES
-    last: dict[str, ThreadActivity] = {}
-
-    for ev in _iter_events(Path(workspace_root)):
-        if ev.get("type") not in types:
-            continue
-        conf = ev.get("classification_confidence")
-        if isinstance(conf, (int, float)) and not isinstance(conf, bool) and conf < confidence_floor:
-            continue
-        thread_ids = event_thread_ids(ev)
-        if not thread_ids:
-            continue
-        try:
-            ts = datetime.fromisoformat(ev["ts"].replace("Z", "+00:00"))
-        except (AttributeError, KeyError, TypeError, ValueError):
-            continue
-        seq = ev.get("seq")
-        if not isinstance(seq, int) or isinstance(seq, bool):
-            seq = None
-        # Store UTC-aware so downstream day-count arithmetic against an
-        # aware `now` never mixes naive/aware (the F-15 legacy writer mix).
-        record = ThreadActivity(seq=seq, event_type=ev["type"], ts=_ts_key(ts))
-        for tid in thread_ids:
-            prior = last.get(tid)
-            if prior is None or record.ts > prior.ts:
-                last[tid] = record
-
-    return last
+    return derive_from_events(
+        _iter_events(Path(workspace_root)),
+        activity_types=activity_types,
+        confidence_floor=confidence_floor,
+    )
 
 
 def _ts_key(ts: datetime) -> datetime:
@@ -205,8 +267,10 @@ def _ts_key(ts: datetime) -> datetime:
 
 __all__ = [
     "derive_thread_activity",
+    "derive_from_events",
     "event_thread_ids",
     "ThreadActivity",
     "DEFAULT_ACTIVITY_TYPES",
+    "ALL_TYPES",
     "CONFIDENCE_FLOOR",
 ]

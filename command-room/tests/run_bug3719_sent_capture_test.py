@@ -116,7 +116,7 @@ _REPLY_ITEM = {
     "ts": "2026-07-08T17:20:00Z",
     "title": "send Dustin corrected, re-itemized invoices",
     "kind": "promise",
-    "due": "2026-07-15",
+    "due": "2026-07-15",  # DATE_GUARD_OK: shape data; suite pins now_iso and load_open_commitments keeps overdue items (MC3 sweep 2a12674)
     "counterparty_id": "person_003",
     "evidence": "I'll get the billing reconciled internally and send you corrected, re-itemized invoices next week.",
     "org_id": "org_002",
@@ -209,7 +209,7 @@ def test_a3_no_duplicate_of_existing():
         "data": {
             "title": "send Mira the corrected invoices",
             "kind": "promise",
-            "due": "2026-07-15",
+            "due": "2026-07-15",  # DATE_GUARD_OK: shape data; suite pins now_iso and load_open_commitments keeps overdue items (MC3 sweep 2a12674)
             "owner_id": user,
             "counterparty_id": "person_004",
             "source_ref": "granola:mtg_777",
@@ -221,7 +221,7 @@ def test_a3_no_duplicate_of_existing():
         {   # restatement of the tracked promise, different channel + wording
             "message_id": "sm_2001", "ts": "2026-07-08T18:00:00Z",
             "title": "send corrected invoices over to Mira",
-            "kind": "promise", "due": "2026-07-15",
+            "kind": "promise", "due": "2026-07-15",  # DATE_GUARD_OK: shape data; suite pins now_iso and load_open_commitments keeps overdue items (MC3 sweep 2a12674)
             "counterparty_id": "person_004", "person_ids": ["person_004"],
             "classification_confidence": 0.9,
         },
@@ -466,6 +466,41 @@ def test_backcompat_receipt_shape():
           "nothing to reconcile" in receipt["summary"], receipt["summary"])
 
 
+def test_provider_attribution_and_dedup():
+    """Closeout 2026-07-12 (item 3): the seam-resolved provider threads through
+    reconcile_and_receipt -> capture_sent_items -> sent_source_ref, so a
+    non-Gmail backend's captures are honestly attributed. Same-provider
+    re-observation dedups via the canonical key; DIFFERENT providers
+    deliberately do NOT dedup (different provider = different identity)."""
+    print("test_provider_attribution_and_dedup — closeout item 3 (honest provider refs)")
+    ws = copy_fixture()
+    user = resolve_primary_user(str(ws))
+    reply = dict(_REPLY)
+    reply["message_id"] = "sh_9001"
+    item = dict(_REPLY_ITEM)
+    item["message_id"] = "sh_9001"
+    item["title"] = "send Dustin the revised billing proposal"
+    reconcile_and_receipt(
+        str(ws), [reply],
+        user_person_id=user,
+        source_skill="reconcile-sent",
+        sent_commitment_items=[item],
+        fired_via="scheduled",
+        provider="superhuman",
+    )
+    refs = [
+        str((e.get("data") or {}).get("source_ref") or "")
+        for e in _events(ws)
+        if e.get("type") == "commitment" and "sh_9001" in str((e.get("data") or {}).get("source_ref") or "")
+    ]
+    check("superhuman capture writes an honestly-attributed superhuman:<id> ref",
+          refs == ["superhuman:sh_9001"], str(refs))
+    check("same-provider re-observation dedups (idempotent skip)",
+          sc.already_captured(str(ws), "sh_9001", item["title"], provider="superhuman"))
+    check("different provider = different identity (no cross-provider dedup)",
+          not sc.already_captured(str(ws), "sh_9001", item["title"], provider="gmail"))
+
+
 def main() -> int:
     ws, user = test_a1_sent_promise_opens_exactly_one()
     test_a2_email_only_commitment_reaches_surfaces(ws, user)
@@ -477,6 +512,7 @@ def main() -> int:
     test_pre_close_baseline()
     test_scan_pass_construction_only()
     test_backcompat_receipt_shape()
+    test_provider_attribution_and_dedup()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

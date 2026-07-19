@@ -27,6 +27,10 @@ Contains NOTHING client-specific. Never references a CEO's actual voice.
 
 Every writing skill has a section titled `## Voice Block` in its SKILL.md. This block contains the CEO's domain-specific voice for that skill. For the public plugin, the voice block is populated with a generic professional default. For client installs (the $10K customization), Chalette replaces the generic voice block with a calibrated one extracted from the client's actual writing samples.
 
+### The rail boundary — voice owns WORDS, exemplars own LAYOUT (SPEC OUT8)
+
+This rail calibrates phrasing, vocabulary, and tone. Document STRUCTURE — section order, visual placement, target length — is calibrated by the separate exemplar rail (`shared/scripts/exemplars.py`, seeds under `shared/exemplars/`, learned overrides under `_hq/exemplars/`; contract in `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor"). The two rails stay disjoint: a Voice Block never prescribes section order; an exemplar never prescribes phrasing. A correction that is purely structural (reordered sections, dropped a section, tiles-vs-prose) belongs in `_hq/exemplars/corrections-<kind>.jsonl`, not in a voice correction log.
+
 ---
 
 ## The two-step protocol

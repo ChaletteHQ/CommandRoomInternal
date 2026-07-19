@@ -49,7 +49,7 @@ every writer calls one helper; every reader goes through one parser.
           "status": "complete", "fired_via": "scheduled",
           "surfaced": 3, "duration_ms": 41800,
           "late_tier": "note",
-          "machine": "MDAVIDOV-PC",
+          "machine": "OPERATOR-PC",
           "telemetry": {"...": "build_pack_run_telemetry() output"},
           "errors": []}}
 ```

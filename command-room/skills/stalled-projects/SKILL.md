@@ -1,6 +1,6 @@
 ---
 name: stalled-projects
-description: "Surface every project that has gone quiet — no meetings, commitments, or decisions within the threshold — so the CEO can resurrect, snooze, or archive each with one tap. Fires on: 'stalled projects', 'what's stalled', 'which projects went quiet', 'stale projects', 'what's gathering dust', plus 'tune stalled-projects' and 'show stalled-projects settings'. Renders a widget with draft re-engagement / status check / keep paused / snooze / archive actions dispatched through the standard path; suppressions learned from repeated dismissals are honored. Does NOT fire on 'who went dark' / 'dormant customers' (dormant-customer-scan — people, not projects), 'warm threads to revive' (thread-resurrection — conversations), or 'list projects' (list-active). Thresholds, scoring, and fences: Routing section in the body."
+description: "Surface every project that has gone quiet — no meetings, commitments, or decisions within the threshold — so the CEO can resurrect, snooze, or archive each with one tap. Fires on: 'stalled projects', 'what's stalled', 'which projects went quiet', 'stale projects', 'what's gathering dust', plus 'tune stalled-projects'. Renders a widget with draft re-engagement / status check / keep paused / snooze / archive actions dispatched through the standard path; suppressions learned from repeated dismissals are honored. Does NOT fire on 'who went dark' / 'dormant customers' (dormant-customer-scan — people, not projects), 'warm threads to revive' (thread-resurrection — conversations), or 'list projects' (list-active). Thresholds, scoring, and fences: Routing section in the body."
 ---
 
 ## Recommended Model
@@ -15,6 +15,7 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 - **Use `dormant-customer-scan` for:** people-focused cadence breaks (a customer relationship that's gone quiet). Different unit of analysis.
 - **Use `list-active` for:** rendering the whole project roster without filtering by activity.
 - **Use `cleanup` for:** broader workspace hygiene that includes stall as one check among many.
+- **Use `pipeline-tracker` for:** deal threads. `kind="deal"` threads are EXCLUDED from this scan by fence (SPEC PIPE1 D7 — `stall_detector.detect_stalled_projects` skips them in code): deal rot is stage-dependent (a negotiation goes stale in 7 days, a lead in 10) and reports through the pipeline surface's per-stage thresholds. One quiet deal must never be double-flagged by both scans.
 
 ## Writer Contract
 
@@ -265,7 +266,7 @@ The day-count here and Pulse Phase 4's stale-active day-count come from the SAME
 
 ### Rendering the surface
 
-Render flags as a widget via `render_chat_output_widget()` per CONTRACT.md Rule 1.
+Render flags as a widget via `render_chat_output_widget()` per CONTRACT.md Rule 1, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport).
 
 **Executive Output Standard (EXEC1, v3.20.0+) — queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue/ranked list, so the synthesis-lead rule FORBIDS a narrative lead — **the lead is a quantified count line**, not a theme: *"6 stalled · 2 touch revenue — $292K · oldest 47d."* Compute it from the flags: total count · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field — ONLY the figures that derive from substrate, never an estimate) · the oldest age. When building the item dict for `money_time_tag`, set its `last_activity` key from the flag's DERIVED baseline (today − `days_since_activity`) — never from the thread record's deprecated `last_activity` field, or the tile contradicts the row it sits on. Each item then carries its own quantify tag (`"47d quiet · $180K"`) when `money_time_tag` returns non-None; date-only otherwise. No manufactured "what this means about your portfolio" sentence — the reader's next act is triage.
 
@@ -307,3 +308,5 @@ v4.5.2 (C3, FINDINGS F-54): staleness now derives from events at read time via `
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Surface every project that has gone quiet — no meetings, commitments, decisions, or real conversations in the configured threshold — so the CEO can decide whether to resurrect, snooze, or archive each one before it falls through the cracks. Reads from the workspace activity timeline + project graph. Use when the CEO says 'show me stalled projects', 'show me stalled', 'what's stalled', 'stalled projects', 'stalled project check', 'what projects are stalled', 'which projects have stalled', 'projects that have gone quiet', 'show me projects that haven't moved', 'project hygiene check', 'show me dead projects', 'what should I prune'. Also handles first-run personalization settings — use when the CEO says 'tune my stall settings', 'tune stalled-projects', 'show stalled-projects settings', 'reset stalled-projects to defaults', 'reconfigure stalled-projects', 'change stalled-projects settings', 'change my stall settings', 'redo stalled-projects setup', 'change stall thresholds', 'show my stall settings', 'what are my stall settings', 'show stalled-projects config', 'reset stall settings'. Runs on demand and is wired into Pulse + Friday Wrap (in subsequent releases). DOES NOT fire on 'who went dark' or 'dormant customers' — that's `dormant-customer-scan`, which is people-focused, not project-focused. DOES NOT fire on 'show me my projects' or 'list active projects' — that's `list-active`, which renders the whole roster without filtering by activity. DOES NOT fire on bare 'cleanup' — that's `cleanup`, which surfaces multiple workspace hygiene checks of which stall is one.
+
+> DOES NOT fire on 'which deals are stalling' / 'deal is stalled' (pipeline-tracker, SPEC PIPE1 — this scan excludes deal threads in code, so a quiet deal is never double-flagged).

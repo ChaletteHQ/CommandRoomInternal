@@ -1,6 +1,6 @@
 ---
 name: enable-command-room-schedules
-description: "Sets up Command Room's scheduled chats and silent background tasks — registration is the writer of record for the schedule config. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats', and silently from the update bridge. Registers the daily action chats (morning brief, upcoming meetings, inbox, commitments, pulse, past meetings), the weekly surfaces (friday wrap), and the silent maintenance set from the SILENT_TASKS registry (cleanup, reconcile-sent, monthly report, weekly insights, session sweep), each set up to load its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'show my schedule' / 'pause [chat]' (change-schedule — the user-facing mutator). Registration mechanics, task set, and verify mode: Routing section in the body."
+description: "Sets up Command Room's scheduled chats and silent background tasks — registration is the writer of record for the schedule config. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats', and silently from the update bridge. Registers the daily action chats, the weekly surfaces, and one maintenance task carrying the SILENT_TASKS jobs, each loading its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'show my schedule' / 'pause [chat]' (change-schedule — the user-facing mutator). Registration mechanics, task set, and verify mode: Routing section in the body."
 ---
 
 ## Verify-only mode (preview without firing) — rewritten for the bootloader era (Phase 3 / P0.3)
@@ -12,7 +12,7 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
 **What changed in Phase 3 (P0.3):** the old flow checked markers where they no longer live and classified every HEALTHY install as "unknown / very old" (see references/HISTORY.md § Phase 3 / P0.3). Verification now checks each layer where that layer actually lives (bootloaders intentionally don't carry the OUTPUT CONTRACT marker; the contract lives in the on-disk orchestrator files the bootloader reads at fire time):
 
 1. **Read the installed plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` (resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 preamble: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)`).
-2. Call `mcp__scheduled-tasks__list_scheduled_tasks`. The Command Room set is every registered taskId that appears in `ORCHESTRATOR_MAP` (the chats) or the `SILENT_TASKS` registry (the background tasks) — bare taskIds, up to the full DEFAULT_SCHEDULES set (currently 12). Do NOT filter on a `cr-` prefix (retired v2.14.27; matches zero tasks on a current install).
+2. Call `mcp__scheduled-tasks__list_scheduled_tasks`. The Command Room set is every registered taskId that appears in `ORCHESTRATOR_MAP` (the chats) or the `SILENT_TASKS` registry (the background tasks) — bare taskIds, up to the full DEFAULT_SCHEDULES set (currently 10). Do NOT filter on a `cr-` prefix (retired v2.14.27; matches zero tasks on a current install).
 3. **Chat tasks — verify the registered prompt is a canonical bootloader:** check the same `REQUIRED_MARKERS` Phase 3.5 uses (`# Scheduled task bootloader`, `Resolve the plugin path`, `Read the orchestrator and execute it verbatim`, `Anti-improvisation contract`) plus correct `<TASK_ID>`/orchestrator-filename substitution and no leading frontmatter. A prompt missing the markers is a stub or a pre-bootloader pin → "refresh needed".
 4. **Chat tasks — read the registration version stamp:** parse `plugin-version:` from the registered prompt (stamped at registration, Phase 3/W4). Stamp == installed version → current. Stamp older → "registered under vX — refresh will land on the next `set up command room schedules` run". No stamp → "pre-stamp registration (older than Phase 3)" — informational, not a failure, because fire behavior always comes from the freshly-resolved plugin.
 5. **Contract layer — read from the FILES, not the prompts:** for each taskId in `ORCHESTRATOR_MAP`, read the on-disk `references/orchestrator-<name>.md` and confirm it carries the `OUTPUT CONTRACT` marker in its first 1500 chars (same assertion Step 1.A applies at registration). That is where the contract lives in the bootloader era; a registered prompt was never the right place to look for it.
@@ -224,6 +224,13 @@ For each legacy taskId found in the user's existing schedule, DISABLE it via `up
 | `cr-past-meetings` | **disable** (v2.14.27 — taskId rename) | `past-meetings` |
 | `cr-folder-bind-test` | **disable** (v2.14.27 — Cowork diagnostic test task left over from 2026-05-06 Q10/Q11 round; safe to disable, never intended to fire) | (none — diagnostic artifact) |
 | `cr-folder-bind-test-2` | **disable** (v2.14.27 — Cowork diagnostic test task left over from 2026-05-06 Q10/Q11 round; safe to disable, never intended to fire) | (none — diagnostic artifact) |
+| `cleanup` | disable + register (MAINT1 — now a job inside the maintenance task; driven by `SUPERSEDED_BY` in `schedule_config.py`, data not prose) | `maintenance` |
+| `reconcile-sent` | disable + register (MAINT1 — now the FIRST job at the 6:45 slot, still before the morning brief. A custom cron override on this taskId migrates onto the `maintenance` task cron — it was the one old silent task whose cadence maps 1:1) | `maintenance` |
+| `monthly-report` | disable + register (MAINT1 — now a job, due at the first fire on/after the 1st) | `maintenance` |
+| `weekly-insights` | disable + register (MAINT1 — now a job at the Sunday slot, ordered after cleanup) | `maintenance` |
+| `session-sweep` | disable + register (MAINT1 — now a job, served once daily at the first fire) | `maintenance` |
+
+**MAINT1 migration notes (idempotent, never deletes):** the five rows above are driven by the `SUPERSEDED_BY` map in `shared/scripts/schedule_config.py` — disable each superseded taskId found registered+enabled via `update_scheduled_task(enabled: false)`, register `maintenance` once via Step 1.D. Re-runs converge on the same end state (disabling an already-disabled task is a no-op; a registered `maintenance` with a matching prompt is skipped). Custom cron overrides on the OTHER four old taskIds (`workspace.schedule_config`) cannot map onto a single task cron — leave the override in place (parity ignores superseded ids) and tell the customer in plain English which old time can't carry over (e.g. *"Your cleanup used to run at a custom time — the background upkeep now runs as one task; say `change my schedule` if you want to move it."*). Surface ONE plain-English migration line in the install summary: *"Your background upkeep now runs as one 'Maintenance' entry in the Scheduled section — authorize it once with Run Now. The old background entries are switched off."*
 
 (No delete API exists in the scheduled-tasks MCP; disable is the safe operation. Disabled tasks remain in the user's Scheduled section as historical reference but won't fire. v2.14.27 customers running `set up command room schedules` will see ~13 disabled tasks accumulate in their sidebar — surface this in the install summary so it's not a surprise. Filesystem surgery is the only way to make the sidebar truly clean: quit Cowork, edit `scheduled-tasks.json` to remove disabled entries, optionally delete the corresponding `Documents/Claude/Scheduled/<taskId>/` folders, restart.)
 
@@ -241,10 +248,12 @@ ORCHESTRATOR_MAP = {
     "past-meetings":     "orchestrator-past-meetings.md",
     "friday-wrap":       "orchestrator-friday-wrap.md",   # NEW v3.11.0. Wraps the weekly-recap skill. Registered on first install. First weekly-rhythm task.
     "relationship-moves": "orchestrator-relationship-moves.md",  # REL1 — weekly Sunday outreach pack. NOT first-install (needs accumulated substrate).
+    "commitment-triage": "orchestrator-commitment-triage.md",  # Phase 2 Stage D (S4) — weekly Friday housekeeping chat. NOT first-install. (Row restored to this mirror 2026-07-14 — the JSON had it, the dict had drifted.)
+    "staff-meeting":     "orchestrator-staff-meeting.md",  # LB1 R3 — weekly Monday Living Brain review. NOT first-install; propose-only later-add (never silently registered).
 }
-# Seven tasks total — all user-facing chats. v2.14.27+ uses bare taskIds (no `cr-` prefix) so Cowork's sidebar title formatting renders cleanly: `inbox` → "Inbox", `commitments` → "Commitments", etc. Pre-v2.14.27 used `cr-*` prefix which displayed as "Cr inbox" / "Cr commitments" — the cr- prefix looked like a typo in the title. cr-refresh-workspace-map was REMOVED in v2.14.25. friday-wrap ADDED in v3.11.0 — first weekly-rhythm scheduled task.
+# Ten tasks total — all user-facing chats. v2.14.27+ uses bare taskIds (no `cr-` prefix) so Cowork's sidebar title formatting renders cleanly: `inbox` → "Inbox", `commitments` → "Commitments", etc. Pre-v2.14.27 used `cr-*` prefix which displayed as "Cr inbox" / "Cr commitments" — the cr- prefix looked like a typo in the title. cr-refresh-workspace-map was REMOVED in v2.14.25. friday-wrap ADDED in v3.11.0 — first weekly-rhythm scheduled task.
 #
-# First-install gating: on a FRESH workspace (workspace_config.json missing or empty registered_taskIds), only the subset in `shared/scripts/schedule_config.py FIRST_INSTALL_TASK_IDS` registers ({morning-brief, upcoming-meetings, past-meetings, inbox, friday-wrap} as of M1 2026-05-23; inbox added in M1 — pre-M1 was 4 tasks). The 2 remaining entries above (commitments, pulse) stay in the map for re-runs / management flows but are NOT auto-registered day 1. See Phase 3 first-install branching. (The silent background tasks — cleanup / reconcile-sent / monthly-report / weekly-insights — are ALSO in FIRST_INSTALL_TASK_IDS and register on first install, but via **Step 1.D below** as one loop over the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`, because they are not chat-orchestrators and are intentionally absent from this ORCHESTRATOR_MAP.)
+# First-install gating: on a FRESH workspace (workspace_config.json missing or empty registered_taskIds), only the subset in `shared/scripts/schedule_config.py FIRST_INSTALL_TASK_IDS` registers ({morning-brief, upcoming-meetings, past-meetings, inbox, friday-wrap} as of M1 2026-05-23; inbox added in M1 — pre-M1 was 4 tasks). The 2 remaining entries above (commitments, pulse) stay in the map for re-runs / management flows but are NOT auto-registered day 1. See Phase 3 first-install branching. (The silent background work — the `maintenance` task, MAINT1 — is ALSO in FIRST_INSTALL_TASK_IDS and registers on first install, but via **Step 1.D below** as one loop over the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`, because it is not a chat-orchestrator and is intentionally absent from this ORCHESTRATOR_MAP.)
 ```
 
 **Critical mismatch warnings:**
@@ -358,11 +367,13 @@ The composed bootloader for each task is what gets passed as the `prompt` parame
 
 **Why this matters (v2.14.24 architecture).** The bootloader closes the drift bug structurally — fires read from disk fresh every time, so a plugin upgrade is enough to update fire behavior (lineage: v2.14.20 → v2.14.21 → v2.14.24 in references/HISTORY.md). **Customers no longer have to re-run `set up command room schedules` after every plugin upgrade.** The hard read happens at fire time, not at registration time.
 
-**Step 1.D — Register the silent maintenance tasks (SPEC-2.3 registry loop — covers cleanup / reconcile-sent / monthly-report / weekly-insights and any future silent task).**
+**Step 1.D — Register the silent maintenance tasks (SPEC-2.3 registry loop — the registry currently holds ONE task, `maintenance`, and any future silent task registers through the same loop).**
 
 The silent background tasks are NOT chat-orchestrators (no widget, no `orchestrator-*.md`) — they are skill-invoking prompts registered separately from the chats. As of Phase 3 (2026-07) they are **data-driven from the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`** — one loop registers all of them, and a silent task added to that registry in a future release registers here with zero edits to this file. (Pre-registry, each task had its own prose block, and each block was a place to forget one — Bug #82 was exactly that miss; see references/HISTORY.md § Bug #82 silent-task registration miss.)
 
-Why each exists (the registry's `reason` field carries the customer-facing line): `cleanup` — weekly Sunday self-maintenance + brain self-heal (v3.17.0); `reconcile-sent` — sent-mail reconciliation, first pass BEFORE morning-brief so the brief reads an already-reconciled substrate (v3.18.12, Bug #98-v3; default cadence 3× weekdays as of Phase 3 / SPEC-2.4); `monthly-report` — operator report + value receipt on the 1st (C1); `weekly-insights` — Sunday analytical-view synthesis (v4.2.0, the fix for views frozen since install).
+As of MAINT1 (2026-07) the registry holds exactly one task: `maintenance` (`45 6,12,17 * * *` daily). It carries the six silent JOBS — reconcile-sent (first at 6:45, BEFORE the 7:00 morning brief, Bug #98-v3's load-bearing ordering), session-sweep, cleanup, weekly-insights, deal-signals (LB1 — Sunday, after insights), monthly-report — dispatched per fire by `shared/scripts/maintenance_dispatcher.py` (`due_jobs()` decides in code from receipts; the prompt never judges due-ness). One taskId means ONE Run Now grant ever: a future silent job lands inside the already-authorized task instead of creating a new fleet-wide permission gap per release (`task_watchdog`'s `never_authorized` class).
+
+**Supersede step (MAINT1, D5 — data-driven):** after registering each registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py`; every listed taskId still registered+enabled is disabled via `update_scheduled_task(enabled: false)`. Idempotent, never deletes (no delete API exists — disable is the only removal). This is the same disable-don't-delete pattern as the Phase 1 legacy migration table; the map is data so the bridge's Phase 4.7 loop applies the identical migration with zero prose duplication.
 
 Compose every silent task's registration parameters in one pass:
 
@@ -387,7 +398,7 @@ print(json.dumps({tid: {'chars': len(v['prompt']), 'cron': v['cron']} for tid, v
 
 Then, for each `task_id` in the composed set: register via `create_scheduled_task(taskId=task_id, prompt=<composed prompt>, cronExpression=<composed cron — from load_schedule_config() when the workspace has an override, else the composed default>, description=<composed description>, notifyOnCompletion=<composed flag>)`. **Idempotent:** if the task already exists with a matching prompt, skip; if it differs, `update_scheduled_task(taskId, prompt=...)` preserving cron/enabled (custom-cron preservation applies to silent tasks exactly as it does to the chats — never re-anchor a registered task's cron from here). Surface one install-summary line per task actually registered this run, e.g. `Registered the weekly cleanup (silent Sunday maintenance + brain self-heal)`.
 
-All four silent tasks ARE in `FIRST_INSTALL_TASK_IDS`, so they register on fresh installs AND re-runs. Because each prompt fires its skill (which reads from the installed plugin), plugin upgrades propagate automatically — no re-registration needed when a silent skill's logic changes.
+The `maintenance` task IS in `FIRST_INSTALL_TASK_IDS`, so it registers on fresh installs AND re-runs. Because the prompt asks the dispatcher what's due and then fires the due skills (all read from the installed plugin at fire time), plugin upgrades propagate automatically — no re-registration needed when a silent skill's logic changes, and a NEW silent job added to `maintenance_dispatcher.MAINTENANCE_JOBS` ships with zero registration changes at all.
 
 ### Cowork bug awareness — `update_scheduled_task` and #40835
 
@@ -430,6 +441,8 @@ Returned shape: `{taskId: {cron, label, enabled}, ...}` for every default task. 
 - **Per-chat times:** see `shared/scripts/schedule_config.py` `DEFAULT_SCHEDULES` (Morning Brief 7 AM / Upcoming 6:30 AM / Inbox 7:15 AM / Commitments 8:30 AM / Pulse 9 AM / Past Meetings 5 PM, weekdays; Friday Wrap 1 PM Fridays)
 
 ## Phase 3 — Register or refresh the 7 orchestrators (6 daily widgets + 1 weekly recap)
+
+**Later-add fence (MAINT1 / D7 — BINDING, before anything registers):** the registration set is NEVER expanded by trigger phrasing; "set up ALL command room scheduled tasks" registers the same first-install set, and every task in `later_add_task_ids()` is PROPOSED (one line each, register only on explicit per-task yes). The later-add chats (`commitments`, `pulse`, `relationship-moves`, `commitment-triage`, `staff-meeting`) are deliberately not first-install because they need accumulated workspace signal to fire well — an "all"-shaped request is enthusiasm, not consent to register tasks that will fire badly on day 1 (the observed 2026-07 field failure: a fresh client said "set up all command room scheduled tasks" and got all four later-add chats registered day 1, against the substrate gating).
 
 **First-install gate (M1 / 2026-05-23+):** before iterating ORCHESTRATOR_MAP, decide which subset of taskIds gets registered:
 
@@ -557,6 +570,7 @@ For each created schedule, log a `schedule_created` event (OMIT `seq`/`ts` — t
 ```jsonl
 {"type":"schedule_created","data":{"taskId":"<id>","cron":"<expr>","label":"<description>"}}
 ```
+**MANDATORY on EVERY registration path (FS-07).** This write fires whenever a task is newly registered — the Phase 3 first-install loop AND the Phase 6 `add` flow (`add staff meeting`, `add commitments`, …). A task that lands in Cowork's scheduler with no `schedule_created` event has no substrate record of its registration — that is the FS-07 gap (the live `add staff meeting` created the task + updated `workspace_config.json` but wrote nothing). One `schedule_created` per taskId actually created this run, never for a task that was already registered (idempotent skip).
 
 ## Phase 3.5 — Post-registration verification (v2.14.24+ — bootloader pattern)
 
@@ -710,7 +724,7 @@ The summary block branches on `FIRST_INSTALL` (set in Phase 0.C).
 
 ### If `FIRST_INSTALL = True` (M1 default)
 
-Shape (counts + names + times rendered from the actual registration set — the 9 tasks below are the current default set, shown as an example):
+Shape (counts + names + times rendered from the actual registration set — the 6 tasks below are the current default set, shown as an example):
 
 ```
 Command Room schedules registered:
@@ -723,10 +737,10 @@ Your daily and weekly chats:
 ✓ Friday Wrap          (1 PM Fridays — wraps your week into a recap)
 
 Working quietly in the background (no chat output unless something needs you):
-✓ Reconcile Sent       — closes commitments you completed by sending mail straight from Gmail
-✓ Cleanup              — tidies the workspace and heals data drift every Sunday night
-✓ Weekly Insights      — keeps your timeline, relationship, and aging views current every Sunday
-✓ Monthly Report       — produces your monthly operating report and value receipt on the 1st
+✓ Maintenance          — handles all the background upkeep in one place: closing
+                         commitments you finished by email, catching unlogged
+                         decisions from your chats, the weekly tidy and insight
+                         refresh, and the monthly report
 
 ONE-TIME INSTALL RITUAL — required by Cowork:
 
@@ -754,6 +768,8 @@ To manage anytime: `list my schedules`, `pause [task name]`, or
 ```
 
 ### If `FIRST_INSTALL = False` (existing workspace — refresh / add flow)
+
+**Substrate write on add (FS-07 — MANDATORY):** for every task this run actually registered (the `add <task>` flow's new taskId), log the `schedule_created` event exactly as the Phase 3 loop does (shape + OMIT-seq/ts rule above). The add flow registers with Cowork AND writes the substrate record — skipping the event (the live `add staff meeting` gap) leaves the task with no registration trace for the watchdog / receipts. Idempotent: no event for a task that was already registered.
 
 Same rendering rule: list what exists + what THIS RUN added (names + times from `load_schedule_config()`; live cron wins for already-registered tasks). Keep the migration notes below when they apply:
 
@@ -800,14 +816,14 @@ To manage anytime: `list my schedules`, `pause [task name]`, `change my schedule
 
 ## Phase 5.9 — Silent-task registration assertion (v3.18.2+, Bug #82 — UNCONDITIONAL, runs before any Phase 6 early-exit; Phase 3 / SPEC-2.3: one loop over the SILENT_TASKS registry)
 
-**This check is mandatory on EVERY invocation, including the re-run / "already configured" path.** Before surfacing the Phase 6 management prompt (or taking any "all current — nothing to do" early-exit), you MUST verify every task in the `SILENT_TASKS` registry (`shared/scripts/schedule_config.py`) is registered.
+**This check is mandatory on EVERY invocation, including the re-run / "already configured" path.** Before surfacing the Phase 6 management prompt (or taking any "all current — nothing to do" early-exit), you MUST verify every task in the `SILENT_TASKS` registry (`shared/scripts/schedule_config.py` — currently one task, `maintenance`) is registered, AND that every taskId its `SUPERSEDED_BY` entry lists is disabled (the MAINT1 migration is part of this gate: an existing install re-running setup gets the five old silent tasks switched off and `maintenance` registered here, even on the early-exit path).
 
 **Why this is its own gate.** The idempotency checks above iterate `ORCHESTRATOR_MAP` (the 7 chats). The silent tasks are intentionally NOT in that map — they are not chat-orchestrators and register separately via **Step 1.D**. So the "are all chats registered?" check is structurally blind to them: on an existing workspace (all 7 chats present), the skill reports "all current" and routes straight to Phase 6, and **Step 1.D is never reached** — exactly the v3.18.1 failure (Bug #82 — see references/HISTORY.md § Bug #82 silent-task registration miss). The silent tasks ARE in `FIRST_INSTALL_TASK_IDS`, so Phase 3's `target_set = existing | FIRST_INSTALL_TASK_IDS` already contains them — this gate makes the assertion explicit and unconditional so no branch can skip it. Looping over the registry (instead of one hand-written bullet per task, the pre-Phase-3 shape) means a future silent task cannot be forgotten here: it's covered the moment it lands in `SILENT_TASKS`.
 
 **Do this:**
 
 1. Call `mcp__scheduled-tasks__list_scheduled_tasks`.
-2. For EVERY `task_id` in `SILENT_TASKS`: if no task with that taskId is present → **run Step 1.D now for that task** (idempotent — if it somehow exists with a stale prompt, Step 1.D updates in place). This is the generalization of the Friday-Wrap generic-add path in `command-room-update-bridge` Phase 4.7.
+2. For EVERY `task_id` in `SILENT_TASKS`: if no task with that taskId is present → **run Step 1.D now for that task** (idempotent — if it somehow exists with a stale prompt, Step 1.D updates in place), including Step 1.D's supersede step (disable every still-enabled taskId in `SUPERSEDED_BY[task_id]`). This is the generalization of the Friday-Wrap generic-add path in `command-room-update-bridge` Phase 4.7.
 3. Surface one install-summary line per task this gate actually registered (from the registry's `description`/`reason` — don't announce a no-op).
 4. Only after the loop completes may you continue to Phase 6.
 
@@ -888,4 +904,4 @@ Plus shared specs:
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Sets up Cowork scheduled tasks for Command Room — daily + weekly action chats that produce drafts and surface decisions for review. On a fresh-install workspace (M1, 2026-05-23+), registers 5 tasks (`morning-brief`, `past-meetings`, `inbox`, `upcoming-meetings`, `friday-wrap`) — the 5 chats that establish the customer's daily and weekly rhythm. The remaining 2 defaults (`commitments`, `pulse`) get added later via operator-driven follow-up sessions once enough workspace signal exists for them to fire well. On re-runs against an already-configured workspace, the existing Phase 6 (`change` / `add` / `remove` / `reset`) management flow handles task adjustments. Each chat = 1 scheduled task = 1 persistent thread in Cowork's Scheduled section. **Phase 0.5 opens with a substantive vanilla-vs-Command-Room explainer** before any registration happens — customers learn why scheduled tasks loaded with their substrate beat vanilla scheduled tasks before they authorize the 5. Triggers: 'set up command room schedules', 'enable schedules', 'register my scheduled chats', 'verify command room prompts', 'check my command room version', 'which version are my tasks on'. DOES NOT fire on 'configure my schedules' / 'change my schedule' / 'customize my schedules' (change-schedule — cadence customization of already-registered chats; this skill registers them). Also called silently by `command-room-update-bridge` post-install + by `command-room-onboarding` for the historical-backfill registration (onboarding does NOT pass `--with-backfill` on the M1 first-install flow). Idempotent: re-runs surface the current set instead of duplicating.
+> Sets up Cowork scheduled tasks for Command Room — daily + weekly action chats that produce drafts and surface decisions for review. On a fresh-install workspace (M1, 2026-05-23+), registers 5 tasks (`morning-brief`, `past-meetings`, `inbox`, `upcoming-meetings`, `friday-wrap`) — the 5 chats that establish the customer's daily and weekly rhythm. The remaining 2 defaults (`commitments`, `pulse`) get added later via operator-driven follow-up sessions once enough workspace signal exists for them to fire well. On re-runs against an already-configured workspace, the existing Phase 6 (`change` / `add` / `remove` / `reset`) management flow handles task adjustments. Each chat = 1 scheduled task = 1 persistent thread in Cowork's Scheduled section. **Phase 0.5 opens with a substantive vanilla-vs-Command-Room explainer** before any registration happens — customers learn why scheduled tasks loaded with their substrate beat vanilla scheduled tasks before they authorize the 5. Triggers: 'set up command room schedules', 'enable schedules', 'register my scheduled chats', 'verify command room prompts', 'check my command room version', 'which version are my tasks on'. The registration set is NEVER expanded by trigger phrasing — "set up ALL command room scheduled tasks" registers the same first-install set, and later-add tasks are only ever proposed, never auto-registered (MAINT1 / D7 fence). DOES NOT fire on 'configure my schedules' / 'change my schedule' / 'customize my schedules' (change-schedule — cadence customization of already-registered chats; this skill registers them). Also called silently by `command-room-update-bridge` post-install + by `command-room-onboarding` for the historical-backfill registration (onboarding does NOT pass `--with-backfill` on the M1 first-install flow). Idempotent: re-runs surface the current set instead of duplicating.

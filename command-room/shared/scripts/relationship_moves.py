@@ -142,7 +142,11 @@ def compute_relationship_moves(
     """Load dormancy signals, score, dedupe, emit one `relationship_move_suggested`
     per returned candidate. `thread_totals` (thread-resurrection Phase 2 math, done
     SKILL-side) and `commitment_overdue` may be injected; otherwise commitments are
-    read from substrate and threads default to none. Returns ≤ top_n — never pads."""
+    read from substrate and threads default to none. Returns ≤ top_n — never pads.
+
+    R5 scope masks are honored TRANSITIVELY: both inputs are mask-filtered at
+    their source (dormancy.load_dormancy_signals and cru_match.
+    load_open_commitments) — a masked account's history never seeds a move."""
     try:
         import dormancy
         signals = dormancy.load_dormancy_signals(workspace_root)

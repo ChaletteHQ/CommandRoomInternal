@@ -25,10 +25,12 @@ from typing import Iterator, Optional
 
 try:
     from event_time import event_time
+    from read_alarm import record_read_alarm
 except ImportError:  # pragma: no cover
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     from event_time import event_time
+    from read_alarm import record_read_alarm
 
 _SHARD_RE = re.compile(r"^events-(\d{4})\.jsonl$")
 
@@ -86,18 +88,35 @@ def _floor_year(since_ts) -> Optional[int]:
 
 
 def _iter_file(p: Path) -> Iterator[dict]:
-    """Defensive line-by-line parse — skip blank / unparseable / non-dict lines."""
+    """Defensive line-by-line parse — skip blank / unparseable / non-dict lines.
+
+    FS-15: two failure shapes go ON THE RECORD (a `.readalarm.json` sidecar
+    the brief / system-health surface loudly) while the defensive skipping
+    itself is unchanged:
+      - the whole file EXISTS but won't read (OSError) — the reader would
+        otherwise serve an empty history silently;
+      - the FINAL non-blank line won't parse — the partial-write / truncated
+        sync-cache signature. Interior junk lines stay tolerated silently
+        (historical malformed lines are recovered by recover_corruption, and
+        the fixtures deliberately contain some).
+    """
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except OSError as e:
+        if p.exists():
+            record_read_alarm(p, e, reader="events_io")
         return
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+    for i, line in enumerate(lines):
         try:
             ev = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            if i == len(lines) - 1:
+                record_read_alarm(
+                    p, f"final line unparseable (truncation signature): {e}",
+                    reader="events_io",
+                )
             continue
         # Admit only real events: a dict carrying a non-empty string `type`.
         # A structurally-valid-but-empty row ({}, {"type": null}) parses as a

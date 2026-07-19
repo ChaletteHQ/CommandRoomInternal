@@ -75,7 +75,7 @@ If the user replies `still broken` (or any equivalent — "didn't work", "same i
 
 ### Step 4b — Draft path (escalate=yes, or try-first didn't work)
 
-Use Gmail's `create_draft` (via the user's mounted Gmail connector). The draft must be saved as a draft — never sent. The user reviews and sends manually.
+Draft to the maintainer via the **declared mail backend** (connector-agnostic-v1 parity, N9) — resolve it with `tool_discovery.discover_for_category("email", "draft", tools, declared=connector_config.declared_backend("email"))`, falling back to `discover_mail_draft_tool(tools)` when no backend is declared (Gmail/Outlook/Superhuman all work; empty map = today's behavior). Do NOT name a provider tool directly. The draft must be saved as a draft — never sent. The user reviews and sends manually. If the backend is read-only (can't draft — e.g. a read-only Outlook, per the capability manifest), skip straight to the paste-text fallback below.
 
 **Subject:** `[Command Room bug] [last_skill or "unknown"] — [first 8 words of WHAT_HAPPENED]`
 
@@ -113,7 +113,7 @@ LAST 5 EVENTS
 
 After the draft is created, surface ONE line to the user:
 
-> *"Drafted in your Gmail — review and send when ready. Subject line: `[subject from above]`. Support has everything they need to verify."*
+> *"Drafted in your mail — review and send when ready. Subject line: `[subject from above]`. Support has everything they need to verify."*
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees in CHAT (the email body's AUTO-DIAGNOSIS block is the one sanctioned diagnostic surface — versions and skill names live there, not in chat lines) — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "This matches a known pattern: stale orchestrator taskId cache."
@@ -128,9 +128,9 @@ Then append a `bug_reported` event to `events.jsonl`:
 
 ### Step 5 — If anything in the pipeline itself fails
 
-If `create_draft` fails (Gmail connector not mounted, auth expired, etc.), fall back to surfacing the full email body as a code block in chat with one line:
+If the resolved draft call fails (no mail connector mounted, auth expired, read-only backend, etc.), fall back to surfacing the full email body as a code block in chat with one line:
 
-> *"Couldn't draft to Gmail directly — copy this and send to matthew@chaletteholdings.com:"*
+> *"Couldn't draft to your mail directly — copy this and send to matthew@chaletteholdings.com:"*
 
 Then paste the full email body. Don't lose the diagnosis just because the connector path failed.
 

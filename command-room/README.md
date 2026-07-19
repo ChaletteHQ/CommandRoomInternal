@@ -81,6 +81,7 @@ Grouped by role. Core skills are the daily drivers. Infrastructure skills run we
 | **One-Pager Composer** | Any topic → polished 1-page .docx brief. | "one-pager on [topic]" |
 | **Follow-Up Ritual** | Transcript → summary + action items + per-attendee email drafts in 60 seconds. | "follow-up ritual", "follow up on the call" |
 | **Dormant Customer Scan** | Surfaces customers gone dark vs historical cadence. Ranked by revenue × dormancy. | "dormant customers", "who's gone quiet" |
+| **Pipeline Tracker** | Deal tracking on the workspace substrate — stages, next steps, rot flags, won/lost with reasons. Ranked report, one-tap moves. | "show my pipeline", "new deal", "mark [deal] won" |
 | **Inbox Triage** | Morning inbox pass. Five-bucket classification + top-5 surfacing + reply drafts. | "triage inbox", "inbox triage" |
 | **Speech Prep** | Audience analysis + 3-point outline + hooks + Q&A prep. | "speech prep", "help me prepare for [audience]" |
 | **Stress Test** | Munger-method inversion. Maps paths to failure, reverses into safeguards. | "stress test", "pre-mortem", "what could go wrong" |

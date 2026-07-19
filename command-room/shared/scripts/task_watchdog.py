@@ -145,6 +145,11 @@ RECEIPT_SPECS: dict[str, dict] = {
 }
 RECEIPT_SPECS["weekly-insights"]["views"] = _INSIGHT_VIEWS
 
+# MAINT1: the five pre-MAINT1 silent taskIds live on in RECEIPT_SPECS as JOB
+# ids — check_tasks no longer reports them as tasks (they left
+# DEFAULT_SCHEDULES), but check_maintenance_jobs reads their receipts per-job
+# against the nominal crons in maintenance_dispatcher.MAINTENANCE_JOBS.
+
 # The version stamp the bootloader template carries as of Phase 3 (W4).
 # Registered prompts older than the stamp's introduction simply don't have
 # one — reported as "unstamped", which is informational, not a failure.
@@ -394,7 +399,19 @@ def read_workspace_config(workspace_root) -> dict:
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as e:
+        # FS-15 — a workspace_config.json that EXISTS but won't read makes
+        # every registered task look unregistered (the probable mechanism of
+        # the June workspace_config truncation). Keep the {} fallback (the
+        # watchdog must not crash the brief) but record the degradation so
+        # the brief / system-health surface it loudly. Alarm recording is
+        # best-effort: a broken read_alarm module must not turn this
+        # degraded read into a hard failure.
+        try:
+            from read_alarm import record_read_alarm
+            record_read_alarm(p, e, reader="task_watchdog")
+        except Exception:
+            pass
         return {}
 
 
@@ -552,6 +569,234 @@ def check_tasks(
             "catchup": catchup_info,
         })
     return reports
+
+
+def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
+    """MAINT1 (D8) — per-JOB receipt-gap check for the jobs inside the
+    `maintenance` task. Same posture as check_tasks: receipts are the only
+    served/not-served truth, and one missed nominal slot is tolerance (a
+    single fire can be cut short); missing BOTH of the two most recent
+    nominal slots is `stale`.
+
+    Statuses per job:
+      ok    — receipt within tolerance of the job's own nominal cadence.
+      never — no receipt ever (meaningful only once the maintenance task has
+              been firing across the job's slots — health_verdict gates on
+              that before flagging).
+      stale — receipted before, then stopped: missed the two most recent
+              nominal slots.
+
+    Returns [{job, display_name, status, last_receipt (ISO|None),
+    expected (ISO|None), second_expected (ISO|None)}] in registry order.
+    """
+    # Lazy import — maintenance_dispatcher imports this module's cron math at
+    # load; importing it back at module level would be a cycle.
+    from maintenance_dispatcher import MAINTENANCE_JOBS
+
+    now = now or _now_local()
+    receipts = last_receipts(workspace_root, list(MAINTENANCE_JOBS))
+    findings = []
+    for job_id, spec in MAINTENANCE_JOBS.items():
+        try:
+            recent = expected_fires(spec["nominal_cron"], now=now, count=2)
+        except CronParseError:
+            continue
+        last = receipts.get(job_id)
+        if last is None:
+            status = "never"
+        elif len(recent) >= 2 and last < recent[1] - _FIRE_GRACE:
+            status = "stale"
+        else:
+            status = "ok"
+        findings.append({
+            "job": job_id,
+            "display_name": task_display_name(job_id),
+            "status": status,
+            "last_receipt": last.isoformat() if last else None,
+            "expected": recent[0].isoformat() if recent else None,
+            "second_expected": recent[1].isoformat() if len(recent) >= 2 else None,
+        })
+    return findings
+
+
+def _maintenance_job_problems(workspace_root, reports, *, now=None):
+    """The job-level findings health_verdict folds in (MAINT1 D8). Job detail
+    is only meaningful when the maintenance TASK itself is firing — a broken
+    task already gets its own task-level line, and doubling it per job would
+    be noise. So this returns [] unless the maintenance task report exists,
+    is receipted, and is not itself a problem.
+
+    A `never` job is flagged only when the task has been firing since before
+    the job's second-most-recent nominal slot (the task had >= 2 chances to
+    serve it and never did) — a fresh install's first week stays quiet.
+
+    Returns (findings, lines): the stale-job findings + one plain-English
+    sentence each (facts + the one action, never a cause — R3).
+    """
+    maint = next((r for r in reports if r["task"] == "maintenance"), None)
+    if maint is None or not maint.get("last_fired"):
+        return [], []
+    if maint["status"] not in ("ok",) or maint.get("receipt_gap"):
+        return [], []
+    now = now or _now_local()
+    try:
+        findings = check_maintenance_jobs(workspace_root, now=now)
+    except Exception:
+        return [], []
+    # Oldest maintenance_run receipt = how long the task has been firing.
+    oldest_fire = None
+    try:
+        from receipts import iter_receipts as _iter_receipts
+
+        for r in _iter_receipts(workspace_root, task_ids=["maintenance"]):
+            dt_local = _to_local_naive(r["dt"]) if r["dt"] is not None else None
+            if dt_local is not None and (oldest_fire is None or dt_local < oldest_fire):
+                oldest_fire = dt_local
+    except Exception:
+        oldest_fire = None
+
+    problems, lines = [], []
+    for f in findings:
+        flag = False
+        if f["status"] == "stale":
+            flag = True
+        elif f["status"] == "never" and f["second_expected"] and oldest_fire is not None:
+            try:
+                flag = oldest_fire < _dt.datetime.fromisoformat(f["second_expected"]) - _FIRE_GRACE
+            except ValueError:
+                flag = False
+        if not flag:
+            continue
+        name = f["display_name"]
+        since = (f["last_receipt"] or "")[:10]
+        since_phrase = f" since {since}" if since else ""
+        lines.append(
+            f"Your Maintenance task is running, but its {name} pass hasn't "
+            f"recorded any work{since_phrase} — open the Maintenance task in "
+            f"the Scheduled section and press Run Now once, and check the "
+            f"result looks right."
+        )
+        problems.append(f)
+    return problems, lines
+
+
+# ---------------------------------------------------------------------------
+# Hard-failure surfacing (HYG1 Item 4 — the dead-letter scheduled_task_failure)
+# ---------------------------------------------------------------------------
+#
+# Orchestrators WRITE `scheduled_task_failure` on hard failures (dont-forget /
+# upcoming-meetings / historical-backfill error contracts) but nothing ever
+# READ the type — a task that fired and crashed mid-run looked healthy as
+# long as its receipt landed, and the failure event was a dead letter. This
+# reader closes the loop: recent failures surface in the health verdict as
+# fact-only problem lines. R3's cause-fabrication ban applies verbatim —
+# quote the event's own diagnostic, never speculate about why.
+
+FAILURE_WINDOW_DAYS = 7
+
+# The event's own diagnostic string, first non-empty of these data keys.
+_FAILURE_DETAIL_KEYS = ("error", "reason", "message", "detail", "note", "summary")
+
+
+def check_task_failures(workspace_root, *, now=None, reports=None,
+                        exclude_tasks=None):
+    """`scheduled_task_failure` events from the last FAILURE_WINDOW_DAYS,
+    grouped by task (ids normalized via receipts.normalize_task_id over
+    data.task_id → data.kind → source_skill), newest failure per task.
+
+    Gating (mirrors R3's newest-fire rule): a failure OLDER than the task's
+    newest successful receipt is history, not a finding — the task has
+    demonstrably run clean since. A task with no receipt at all keeps its
+    failure (there is nothing newer to vouch for it).
+
+    MAINT1 attribution: dispatcher-owned silent jobs attribute to the
+    failing sub-task when the event names one (its id is a MAINTENANCE_JOBS
+    key), else to `maintenance`.
+
+    `exclude_tasks`: task ids already in the verdict's problems bucket —
+    their task-level line already exists; doubling it with the failure
+    detail would be noise (same doctrine as the maintenance job findings).
+
+    Returns (findings, lines): findings are
+      {"task", "display_name", "ts" (ISO), "detail"} newest-first;
+    lines are one fact-only sentence each — what failed, when (localized),
+    the event's own diagnostic — plus the one action.
+    """
+    now = now or _now_local()
+    exclude = set(exclude_tasks or ())
+    floor = now - _dt.timedelta(days=FAILURE_WINDOW_DAYS)
+
+    try:
+        from maintenance_dispatcher import MAINTENANCE_JOBS
+        _dispatcher_jobs = set(MAINTENANCE_JOBS)
+    except Exception:
+        _dispatcher_jobs = set()
+
+    newest_by_task: dict[str, dict] = {}
+    for ev in _iter_events(workspace_root):
+        if ev.get("type") != "scheduled_task_failure":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        raw = d.get("task_id") or d.get("kind") or ev.get("source_skill") or ""
+        tid = _normalize_task_id(raw) if isinstance(raw, str) else ""
+        if not tid:
+            continue
+        # MAINT1 attribution: a dispatcher-owned sub-task keeps its own id
+        # (it IS the named failing job); an unnameable dispatcher failure
+        # arrives already stamped `maintenance` by the dispatcher itself.
+        ts_raw = ev.get("ts") or d.get("ts") or ""
+        try:
+            when = _dt.datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue  # an undatable failure can't be windowed honestly
+        when = _to_local_naive(when)
+        if when is None or when < floor:
+            continue
+        detail = next(
+            (str(d[k]).strip() for k in _FAILURE_DETAIL_KEYS
+             if isinstance(d.get(k), str) and d.get(k).strip()),
+            "no detail recorded",
+        )
+        prev = newest_by_task.get(tid)
+        if prev is None or when > prev["_when"]:
+            newest_by_task[tid] = {
+                "task": tid,
+                "display_name": task_display_name(tid),
+                "ts": when.isoformat(),
+                "detail": detail[:200],
+                "_when": when,
+            }
+
+    if not newest_by_task:
+        return [], []
+
+    # Newest-successful-receipt gate: one shared read for every affected id.
+    try:
+        receipts_by_task = last_receipts(workspace_root, list(newest_by_task))
+    except Exception:
+        receipts_by_task = {}
+
+    display_by_task = {}
+    for r in reports or []:
+        display_by_task[r.get("task")] = r.get("display_name")
+
+    findings, lines = [], []
+    for tid, f in sorted(newest_by_task.items(),
+                         key=lambda kv: kv[1]["_when"], reverse=True):
+        if tid in exclude:
+            continue
+        newest_receipt = receipts_by_task.get(tid)
+        if newest_receipt is not None and newest_receipt > f["_when"]:
+            continue  # ran clean since — history, not a finding
+        name = display_by_task.get(tid) or f["display_name"]
+        when_h = _human_time(f["_when"], workspace_root, now=now)
+        lines.append(
+            f"{name} hit an error mid-run at {when_h} — its own log says: "
+            f"\"{f['detail']}\". Its next scheduled run will show whether it "
+            "recovered, or run it now to check."
+        )
+        findings.append({k: v for k, v in f.items() if not k.startswith("_")})
+    return findings, lines
 
 
 # How fresh a run receipt must be for the vantage line to vouch that the
@@ -712,6 +957,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
             "reports": [],
             "on_schedule": [], "caught_up": [],
             "first_run_pending": [], "problems": [],
+            "maintenance_jobs": [],
+            "task_failures": [],
             "summary_line": vantage["line"],
             "lines": [],
             "info_lines": [],
@@ -735,6 +982,26 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
     lines = plain_english_lines(reports, binding=binding)
     info_lines = [_caught_up_line(r, workspace_root, now=now) for r in caught_up]
     info_lines += [_first_run_line(r, workspace_root, now=now) for r in first_run]
+
+    # MAINT1 (D8): per-JOB receipt gaps inside a healthy maintenance task —
+    # the task fired, a job chronically wrote nothing. Job findings ride the
+    # problem lines/counts but never move the task out of its bucket (the
+    # task DID run on schedule; the job inside it is what needs eyes).
+    job_problems, job_lines = _maintenance_job_problems(
+        workspace_root, reports, now=now
+    )
+    lines += job_lines
+
+    # HYG1 Item 4: recent hard failures (scheduled_task_failure) ride the
+    # problem lines/counts like the job findings — a failure never moves a
+    # task out of its partition bucket (its receipt may genuinely be on
+    # schedule; the mid-run crash is what needs eyes). Tasks already in the
+    # problems bucket are excluded — their task-level line exists.
+    failure_findings, failure_lines = check_task_failures(
+        workspace_root, now=now, reports=reports,
+        exclude_tasks={r["task"] for r in problems},
+    )
+    lines += failure_lines
 
     total = len(on_schedule) + len(caught_up) + len(first_run) + len(problems)
     fresh_unregistered = (
@@ -784,9 +1051,10 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
                 f"{len(first_run)} are waiting on their first run" if len(first_run) > 1
                 else "1 is waiting on its first run"
             )
-        if problems:
+        n_attention = len(problems) + len(job_problems) + len(failure_findings)
+        if n_attention:
             parts.append(
-                f"{len(problems)} need attention" if len(problems) > 1
+                f"{n_attention} need attention" if n_attention > 1
                 else "1 needs attention"
             )
         summary = "; ".join(parts) + "."
@@ -797,7 +1065,14 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
         "on_schedule": [r["task"] for r in on_schedule],
         "caught_up": [r["task"] for r in caught_up],
         "first_run_pending": [r["task"] for r in first_run],
-        "problems": [r["task"] for r in problems],
+        # Job-level findings count as problems (brief_watchdog_line's count,
+        # the "N need attention" math) under a namespaced id so consumers can
+        # tell a task from a job inside the maintenance task.
+        "problems": [r["task"] for r in problems]
+                    + [f"maintenance:{f['job']}" for f in job_problems]
+                    + [f"failure:{f['task']}" for f in failure_findings],
+        "maintenance_jobs": job_problems,
+        "task_failures": failure_findings,
         "summary_line": summary,
         "lines": lines,
         "info_lines": info_lines,
@@ -869,11 +1144,21 @@ def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
         if spec["enabled"] and not spec["registered"]:
             (ghosts_later if spec["later_add"] else ghosts_first).append(tid)
 
+    # MAINT1: superseded taskIds (the five old silent tasks) are disabled by
+    # migration, not removed — an override left behind for one of them is
+    # expected history, never drift. Same for the `maintenance_jobs` sub-dict
+    # (change-schedule's job-level pause store), which shares the
+    # schedule_config namespace but is not a taskId.
+    from schedule_config import SUPERSEDED_BY
+
+    superseded = {t for ids in SUPERSEDED_BY.values() for t in ids}
     orphans = []
     try:
         data = json.loads(entities.read_text(encoding="utf-8"))
         overrides = ((data.get("workspace") or {}).get("schedule_config") or {})
         for tid in overrides:
+            if tid == "maintenance_jobs" or tid in superseded:
+                continue
             if tid not in DEFAULT_SCHEDULES and tid not in registered_ids:
                 orphans.append(tid)
     except (OSError, json.JSONDecodeError):
@@ -1002,6 +1287,7 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> l
 __all__ = [
     "RECEIPT_SPECS",
     "brief_watchdog_line",
+    "check_maintenance_jobs",
     "check_tasks",
     "check_schedule_parity",
     "check_workspace_binding",

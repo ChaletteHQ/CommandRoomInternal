@@ -110,11 +110,43 @@ def test_persist_creates_persist_dir() -> None:
     print("PASS test_persist_creates_persist_dir")
 
 
+def test_transport_runs_wrapper_validation() -> None:
+    """EW2+T (F-15) — render_and_persist runs validate_rendered_widget as part
+    of the one-call canonical path. An input-needing action (Defer needs a
+    date) still round-trips because the renderer emits its wrapper; and the
+    validator is genuinely invoked (asserted via a monkeypatched spy)."""
+    import widget_transport as wt
+
+    tmp = Path(tempfile.mkdtemp(prefix="widget_validate_test_"))
+    # _MINIMAL_VALID_VIEW carries "edit then send" + "draft" — both
+    # input-needing actions, so the wrapper contract genuinely exercises.
+    view = _MINIMAL_VALID_VIEW
+    transport = render_and_persist(
+        data_view=view, wrapper="fragment", persist_dir=tmp / "widgets")
+    assert transport["path"].exists()
+
+    # Spy: replace the validator on the renderer module and confirm the
+    # transport calls it (the F-15 instruction-layer lesson mechanized at
+    # the code layer too — the transport can't silently skip validation).
+    import chat_output_renderer as cor
+    calls = []
+    original = cor.validate_rendered_widget
+    cor.validate_rendered_widget = lambda html: calls.append(len(html or ""))
+    try:
+        render_and_persist(data_view=view, wrapper="fragment",
+                           persist_dir=tmp / "widgets2")
+    finally:
+        cor.validate_rendered_widget = original
+    assert calls, "render_and_persist did not invoke validate_rendered_widget"
+    print("PASS test_transport_runs_wrapper_validation")
+
+
 def main() -> int:
     test_persist_writes_file_and_returns_uri()
     test_fragment_persists_with_utf8_bom()
     test_document_wrapper_no_bom()
     test_persist_creates_persist_dir()
+    test_transport_runs_wrapper_validation()
     print("\nALL widget_transport tests PASSED")
     return 0
 

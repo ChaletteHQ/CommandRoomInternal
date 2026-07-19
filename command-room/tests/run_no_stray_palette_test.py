@@ -60,10 +60,27 @@ HEX_ALLOWLIST = {
     # brand layer (client brand themes documents, never the product widget).
     # 92 hits verified as _WIDGET_CSS / _ALL_CLEAR_CSS / _ONBOARDING_SETUP_CSS
     # / _BRAND_LOGO_SVG values at pin time (139 total matches).
-    "shared/scripts/chat_output_renderer.py": (139, "product widget chrome (dark theme) + logo SVG"),
+    # T2: +4 for the `.cr-pagination` chrome (F2 paginate-by-design position
+    # line) — all reused existing brand colors (#14110F ink, #2A2520 border,
+    # #B5A998 muted, #B88B4A brass), no NEW palette introduced.
+    # 143 → 152 at T2.2: the row-verb dropdown block (_CSS_SELECTS) restates
+    # the SAME brand palette (#B88B4A gold / #3A3530 / #2A2520 / #1A1714 /
+    # #E8E0D6 / #5E4F3F) for select styling — no new color entered the file.
+    # 152 → 156 at t3 (FB-4 + FB-10): primary-verb button accent (#B88B4A ×2)
+    # and the inline-editable email body's focus ring (#B88B4A + the existing
+    # #221D17 focus background) — all four are REUSED brand tokens already in
+    # this file; no new color entered the palette.
+    "shared/scripts/chat_output_renderer.py": (156, "product widget chrome (dark theme) + logo SVG + T2.2 verb-dropdown styles + t3 primary-button/editable-body accents"),
     # Product-branded artifact templates (Chalette dark system) — same
     # product-chrome category as the widget CSS, self-contained by contract.
-    "shared/templates/research_brief.html": (18, "research-brief artifact template (product dark theme)"),
+    # SPEC OUT5: premium_brief.html SUPERSEDES research_brief.html (18 hits,
+    # retired). 16 = the format's FIXED dark neutral scale + the chip hues
+    # (teal/slate/forest/gold/carmine) + the monogram circle fill. The brand
+    # accent + fonts are NO LONGER hardcoded — they resolve per render through
+    # brand.get_brand() in premium_html._template_vars (that migration is the
+    # OUT5 deliverable; a new hex here should be a composition constant, never
+    # a brand color).
+    "shared/templates/premium_brief.html": (16, "premium-brief artifact template (product dark theme, brand-resolved accent)"),
     "skills/enable-quick-commands/references/quick-commands-artifact.html": (20, "quick-commands artifact template (product dark theme)"),
     "skills/enable-workspace-map/references/orgs-map-artifact.html": (13, "workspace-map artifact template (product dark theme)"),
 }
@@ -74,6 +91,10 @@ RGBCOLOR_ALLOWLIST = {
     # paired with the brand table_header fill) — verified 2026-07-10. All
     # other docx colors resolve via brand.get_brand() -> _rgb().
     "shared/scripts/brief_writer.py": (2, "white-on-table_header text contrast constant (2 header renders)"),
+    # SPEC OUT6: the pptx backend's single white — same white-on-table_header
+    # contrast constant the docx backend carries (also reused as the non-zebra
+    # table row fill). Every other deck color resolves via brand.get_brand().
+    "shared/scripts/deck_writer.py": (1, "white-on-table_header text contrast constant (pptx backend)"),
 }
 
 

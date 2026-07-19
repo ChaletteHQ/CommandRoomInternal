@@ -58,11 +58,17 @@ unowned and unconfirmed are their own lines everywhere, never folded into
 owed-to-you). `pending_review` rows are the `unconfirmed` bucket; they are
 excluded from you-owe/owed-to-you until confirmed.
 
-## Step 2 — Sort + annotate (ONE design: the full-list layout)
+## Step 2 — Sort + annotate (the full-list layout, delivered by design in pages)
 
-The full-list layout is THE triage design — M picked it over the 7-per-page
-variant during the v4.5.1 dogfood (F-18) and the paginated design is
-retired. One scrollable widget:
+The full-list layout is THE triage design — M picked it over the capped
+7-item daily-chat variant during the v4.5.1 dogfood (F-18): the full open set
+is surfaced, oldest first, nothing dropped. What CHANGED at T2 is delivery, not
+the layout: because the widget_code transport carries one page at a time (Bug
+#67 — there is no whole-widget carrier), the full list is delivered as pages of
+~10 rows (`page=N`, `show more` re-fires the next page). Every open item still
+reaches a page in the same order; the ordering, sections, tiles, and verbs
+below are unchanged — the reader just pages through them instead of scrolling
+one giant widget. One page's worth of the layout:
 
 - **Header stat tiles** from the bucket export: pass `counters` in the data
   view with `Open` / `You owe` / `Owed to you` / `Unowned` / `Unconfirmed`
@@ -108,10 +114,13 @@ retired. One scrollable widget:
   never age-buried. "Keep both" = clear the flag via `commitment_updated`
   (pending_review cleared, note "confirmed distinct"); merge = the flow
   below.
-- **Size fallback only (not a design):** if the full list exceeds the widget
-  transmission ceiling (~57KB, F-47's observed limit), chunk at the largest
-  count that transmits (40+ rows is proven) and offer `show more` — same
-  layout per chunk, never a different design.
+- **No size fallback (T2):** the full open set renders by DESIGN as pages of
+  ~10 rows (`page=N`), each relayed as `widget_code` per § Transport; `show
+  more` re-fires the next page. Never chunk mid-page, never right-size a page
+  below its design cap, never drop rows to fit a "transmission ceiling" (those
+  ceilings were byte-relay artifacts; a 199-commitment live fire proved the
+  relay wall — pagination is the fix). Every open item reaches a page; the
+  full-list layout renders the full list, one page at a time.
 
 ## Merging duplicates (chat-phrase path; the Merge verb ships in the W4b confirm flow, v4.6.1)
 
@@ -149,7 +158,7 @@ apply-choices — see its commitment-triage entry for the exact calls):
   say <text>". Mis-extractions were uncorrectable before S4; this appends a
   wording update the projector folds in (newest wins), and the original
   stays in history. Ack shows the corrected line.
-- **Reassign** — "that's actually Erick's" / "reassign #N to Erick".
+- **Reassign** — "that's actually Quinn's" / "reassign #N to Quinn".
   `Not mine` DISCARDS; reassign ROUTES: the item leaves your you-owe and
   lands on the named owner. Resolve the name via the standard entity path
   (ambiguous → ask, never guess); an explicit name from the user dispatches
@@ -167,25 +176,63 @@ Prose around these uses the SAME words as the verb rows — fix wording,
 reassign, split (F-13 P2a).
 
 
-## Step 3 — Render the widget
+## Step 3 — Render the widget (ONE driver call — T2.2)
 
-Standard all-batch surface per `shared/CHAT_ACTION_WIDGET.md` § "Commitment
-Triage": `render_chat_output_widget(data_view, wrapper="fragment")` →
-`validate_rendered_widget` → `mcp__visualize__show_widget`, byte-for-byte
-(zero-manipulation contract). Actions per row (display labels come from
+**The entire load → project → build → fit → persist pipeline is ONE CLI
+invocation** (`shared/scripts/surface_drivers.py` — it executes Steps 1–2's
+canonical helpers internally; those steps above remain the normative spec of
+what the view contains, never a to-do list of separate commands):
+
+```bash
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+python3 shared/scripts/surface_drivers.py commitments \
+    --workspace "<WORKSPACE>" --page 1
+```
+
+Stdout carries `CR-PAGINATION: {...}` (one line of JSON — page / total_pages
+/ has_more, for the position narration) followed by the persisted page's
+validated bytes between `CR-WIDGET-HTML-BEGIN` / `CR-WIDGET-HTML-END`
+markers. **Relay the bytes between the markers to `mcp__visualize__show_widget`
+as `widget_code`, byte-exact.** `widget_transport.render_and_persist` (all
+validators + the byte-budget fit + the audit persist into
+`_hq/.system/widgets/`) already ran inside the call — there is nothing else
+to prepare. A `show more` reply re-fires the SAME one-command driver with
+`--page N+1`.
+
+**Idempotent single call (RV-3 — the double-render fix):** run the driver
+exactly ONCE per page per fire. If you already hold the driver's output for
+the requested page, relay it — never re-run "to refresh" or "to be safe"
+(each re-run persists a duplicate audit page; that IS the double-render
+defect). Never hand-compose or post-process the HTML (the zero-manipulation
+contract: the persisted file IS the render), and never fall back to
+assembling the view yourself with piecemeal commands — the driver is the only
+sanctioned build path for this surface.
+
+The rendered widget is the standard all-batch surface per
+`shared/CHAT_ACTION_WIDGET.md` § "Commitment Triage": header stat tiles from
+the bucket export, the Unconfirmed block first, age sections oldest-first,
+a **Done** one-tap button per row (t3 FB-4) with the tail verbs in the
+row's `— more —` dropdown (T2.2 row diet; wire format unchanged).
+Actions per row (display labels come from
 `shared/scripts/verb_taxonomy.py` — never restate them in widget HTML):
 
-- promise/scheduling rows: `resolved` (**Done**) · `push to [date]`
-  (**Defer**) · `drop` · `not mine` · `make task` · `never track this`
-  (**Never track (permanent)**) · `skip` (**Snooze (1 day)**)
-- task rows: `resolved` (**Done**) · `push to [date]` (**Defer**) · `drop` ·
-  `promote` (**Make it a commitment**) · `never track this` · `skip`
+- promise/scheduling rows: `resolved` (**Done**, the button) · `push to
+  [date]` (**Later…**) · `drop` · `not mine` · `make task` · `never track
+  this` (**Never track (permanent)**) — `skip` stays dispatchable but its
+  dropdown option is suppressed by the t3 FB-3 merge (**Later…** covers it;
+  the footer Snooze rest still mutes).
+- task rows: `resolved` (**Done**, the button) · `push to [date]`
+  (**Later…**) · `drop` · `promote` (**Make it a commitment**) · `never
+  track this` — same `skip` suppression.
 
-Chat prose around the widget uses the SAME words as the buttons — done,
-defer, drop, not mine, make task, never track, snooze (F-13 P2a). A Defer
-click requires a date: the widget holds Apply and names the missing date
-inline (F-17) — never mention Apply being "stuck"; the widget explains
-itself.
+**Posting-block rule (t3 FB-11):** chat prose around the widget names ONLY
+the controls the rendered card visibly offers, using their exact labels —
+"tap **Done**, or pick from the row's menu (**Later…**, **Drop**, …)".
+Never enumerate verbs the card doesn't show, and never describe a dropdown
+row as if it had buttons. Same-vocabulary rule (F-13 P2a) still applies to
+every verb you do name. A Later… pick requires a date or a number of days:
+the widget holds Apply and names the missing input inline (F-17) — never
+mention Apply being "stuck"; the widget explains itself.
 
 Every row embeds the commitment's `data.id` VERBATIM (widget identity
 contract, Stage B). Pass `source_skill: "commitment-triage"` in the data view

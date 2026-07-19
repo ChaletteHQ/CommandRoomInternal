@@ -1,11 +1,11 @@
 ---
 name: cleanup
-description: Weekly self-maintenance. Keeps the workspace tidy without the CEO's attention — runs Sunday night (scheduled), auto-fixes what's safe, repairs damaged records, and leaves a short plain-English Monday-morning note only if something needs eyes. Triggers on "weekly cleanup", "clean up my workspace", "clean up the workspace", "tidy up", "maintenance", "deep clean". (Bare "clean up [a thing]" — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired audit phrases "weekly audit", "system review", "scan everything" and redirects them here. DOES NOT fire on "weekly recap" / "what happened this week" (that's weekly-recap), "level up command room" (opt-in add-ons), or "health check" / "system health" / "is everything running" (that's system-health — the scheduled-task watchdog, moved out of cleanup in Phase 3/W1).
+description: "Weekly self-maintenance. Tidies the workspace without the CEO's attention — runs Sunday night, auto-fixes what's safe, repairs damaged records, leaves a short Monday note only if something needs eyes. Triggers on 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean' (the full pass) — and 'maintenance', 'run my maintenance', 'run maintenance now' (the background-maintenance manual fire — run what's due or report nothing due; Step 0, NOT a cleanup pass). (Bare 'clean up [a thing]' — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired phrases 'weekly audit', 'system review', 'scan everything'. DOES NOT fire on 'weekly recap' / 'what happened this week' (that's weekly-recap), 'level up command room' (opt-in add-ons), or 'health check' / 'system health' / 'is everything running' (that's system-health — the scheduled-task watchdog)."
 ---
 
 # Cleanup
 
-One skill, one job: keep the customer's workspace tidy every week without requiring their attention. Runs Sunday night via `enable-command-room-schedules`, fixes what it safely can, heals corruption, and leaves a short plain-English Monday-morning note for anything that needs the CEO's eyes. Replaces the retired `weekly-audit`.
+One skill, one job: keep the customer's workspace tidy every week without requiring their attention. Runs weekly as a job inside the `maintenance` background task (MAINT1 — due at the Sunday 5:45 PM fire, and still due at the next fire if the computer was closed: `maintenance_dispatcher.due_jobs` self-heals missed weeks), fixes what it safely can, heals corruption, and leaves a short plain-English Monday-morning note for anything that needs the CEO's eyes. Replaces the retired `weekly-audit`.
 
 The shift from the old audit: cleanup does NOT hand the user a score, a dashboard, or a "want me to fix these?" prompt. For a non-technical CEO the answer to "should I fix this?" is always yes, so cleanup just does the safe fixes and surfaces only genuine judgment calls.
 
@@ -16,6 +16,19 @@ The shift from the old audit: cleanup does NOT hand the user a score, a dashboar
 - **Use `system-health` for:** "health check" / "system health" / "is everything running" — the scheduled-task watchdog (moved out of cleanup in Phase 3/W1).
 - **Use `level-up-command-room` for:** "level up command room" — the opt-in add-ons menu.
 - **Does NOT fire on** bare "clean up [a thing]" (an email, a doc, a list) — only workspace-shaped cleanup fires it.
+- **Maintenance-shaped phrases run Step 0 below, NOT a cleanup pass** — "run my maintenance", "run maintenance now", "run maintenance", bare "maintenance" (EW2+T, F-14).
+
+## Step 0 — Manual maintenance dispatch (EW2+T, F-14; runs INSTEAD of the phases below)
+
+Post-MAINT1, the bridge and the install ritual teach the customer they have a "Maintenance" background task — so the natural phrases "run my maintenance" / "run maintenance now" / bare "maintenance" mean **fire that task's due-jobs engine now**, not "run a full workspace cleanup" (the live D8 fire ran a duplicate cleanup pass instead; harmless but not what was asked). When the firing phrase is maintenance-shaped:
+
+1. Resolve the workspace + plugin root per CONTRACT Rule 22 (multiple plugins may be installed — filter the plugin_* candidates by this plugin's name, the MAINT-RUN discovery wobble).
+2. Ask the dispatcher what is due — NEVER judge due-ness yourself: `python3 shared/scripts/maintenance_dispatcher.py <workspace_root>` and hold its JSON plan (`due` is ordered; the order is the contract).
+3. **Nothing due →** one honest plain-English line built from the plan — *"Nothing's due — everything ran on schedule. Next up: [job] at [its next slot]."* — and STOP. Write NO `maintenance_run` receipt for a nothing-due manual poke: the watchdog reads `maintenance_run` for task freshness, and an empty manual receipt could mask a broken scheduled task.
+4. **Jobs due →** execute each due job's skill END-TO-END in plan order, one at a time, never in parallel — identical rules to the registered task prompt: a job COMPLETED only when its OWN receipt validator confirms its substrate receipt; an unreceipted job goes in jobs_failed and stays due (self-healing). Then finish with ONE `maintenance_dispatcher.maintenance_receipt(workspace_root, jobs_due=…, jobs_completed=…, jobs_failed=…, skipped_disabled=…, fired_via="manual")` and confirm it landed via `validate_maintenance_ran`.
+5. Chat output: one plain-English line per job that ran ("Reconciled your sent mail — closed 1, opened 2." / "Weekly cleanup done — the Monday note has 2 items."), plus each job's own must-surface lines per its SKILL.md. No event-type names, no receipts narration.
+
+Cleanup-shaped phrases ("weekly cleanup", "clean up my workspace", "clean up the workspace", "tidy up", "deep clean", "scan everything", "weekly audit", "system review") run the full pass below, exactly as before. When cleanup runs AS a job inside a maintenance fire (scheduled or Step-0 manual), it starts at Phase 1 directly — Step 0 is the entry router for the chat phrase only.
 
 ## Personification Contract (v3.13.8.4+)
 
@@ -28,7 +41,8 @@ Before surfacing the summary or composing the `.docx` report, read `shared/PERSO
 - **Auto-fix writer** for the safe maintenance actions in Phase 2 and the safe integrity remediations in Phase 3 (see those phases for the exact, bounded write set).
 - **Brain Live State renderer (v3.17.0+)** — re-renders each active project's `PROJECT_BRAIN` Live State block via the canonical `render_thread_live_state` / `render_brain_block` helpers (marked-region write, byte-preserves hand-written content) and runs the idempotent one-time brain migration (Phase 3.5). Never hand-edits a brain; only the helper touches the marked block.
 - **Derived-view + scaffold + lock writer (bounded, v3.19.x / SPEC CLEAN1)** — regenerates the views it owns from the substrate (`_hq/views/PEOPLE.md` via Phase 3.5c; `_hq/views/DECISION_LOG.md` via the **changed-only** `render_decision_log.regenerate_if_changed`, Phase 3.5d), scaffolds a **missing** `SESSION_NOTES_[NAME].md` (Phase 3c / D3 — never overwrites one that exists), and **archives** `*.lock.stale.*` sentinels older than 1 hour into `_archive/stale-locks/` (Phase 2 Rule 9 / D6 — moved, never deleted). Every one of these is idempotent: re-running on a clean workspace writes nothing.
-- **NEVER writes:** `entities.json` (except via the owner skills' helpers it delegates to), `events.jsonl` other than appending one `cleanup_run` event (+ the `corruption_recovery` event that `recover_corruption.py` appends on its own), `aliases.json`, the **analytical views** (`RELATIONSHIPS`/`TIMELINE`/`COMMITMENT_AGING`/`DORMANT`/`THEMES` — insight-generator owns those; cleanup only flags them stale) or `_hq/views/ALIASES.md` (people-crm owns it — flag only), and `classifier_feedback.jsonl`. Never deletes a user's folders or files; orphan folders are FLAGGED, not removed. Canonical entity mutation stays with the owner skills (workspace-manager / project-manager / people-crm).
+- **Living Brain expiry sweep (SPEC LB1, Phase 3j)** — appends the silent `brain_proposal_expired` tombstones for open proposals past their TTL, ONLY via `brain_proposals.expire_stale()` (the canonical sweep helper — never a hand-rolled append). Idempotent: nothing stale → nothing written.
+- **NEVER writes:** `entities.json` (except via the owner skills' helpers it delegates to), `events.jsonl` other than appending one `cleanup_run` event (+ the `corruption_recovery` event that `recover_corruption.py` appends on its own, + the Phase 3j expiry tombstones via `brain_proposals.expire_stale`), `aliases.json`, the **analytical views** (`RELATIONSHIPS`/`TIMELINE`/`COMMITMENT_AGING`/`DORMANT`/`THEMES` — insight-generator owns those; cleanup only flags them stale) or `_hq/views/ALIASES.md` (people-crm owns it — flag only), and `classifier_feedback.jsonl`. Never deletes a user's folders or files; orphan folders are FLAGGED, not removed. Canonical entity mutation stays with the owner skills (workspace-manager / project-manager / people-crm).
 
 ## Substrate validated every run
 
@@ -447,7 +461,7 @@ print(json.dumps(parity))
 ```
 
 - **`ghost_first_install`** (a first-install task enabled in the config/defaults but missing from the registered set) → real breakage; one Monday-note line: *"Your [Display Name] task is missing from the schedule — say 'set up command room schedules' to restore it."* (The watchdog layer above usually catches this too; don't double-report the same task.)
-- **`ghost_later_add`** (commitments / pulse / relationship-moves not registered) → EXPECTED, say nothing — the R3 proposal step owns that nudge.
+- **`ghost_later_add`** (commitments / pulse / relationship-moves / commitment-triage / staff-meeting not registered) → EXPECTED, say nothing — the R3 proposal step owns that nudge.
 - **`orphan_overrides`** (a `schedule_config` entry for a taskId that exists in neither DEFAULT_SCHEDULES nor the registered set — e.g. a legacy `cr-*` key) → one Monday-note line: *"An old schedule setting from a previous version is lingering — harmless, but say 'change my schedule' and 'back to defaults' if you ever want a clean slate."* FLAG ONLY: the only heal for an orphan override is a removal, and cleanup never removes; under sparse-config semantics there is no safe ADDITIVE heal (densifying would destroy the customized-cron signal), so the heal direction stays flag-only and `schedule_config_healed` remains registered-but-unwritten.
 - The audit event's counts are what make the weekly check auditable — never narrate the event name to the CEO.
 
@@ -466,7 +480,7 @@ print(json.dumps(proposals))
 "
 ```
 
-Thresholds live in ONE table (`schedule_proposals.PROPOSAL_THRESHOLDS`): relationship-moves needs ≥8 prospect+client orgs AND ≥14 days of accumulated dormancy signal; dormant-customer-scan (≥5 clients) is offered only as the lighter alternative when relationship-moves doesn't land — never both in one round. Surface each returned `line` verbatim in the Monday note's "worth a glance" tier, citing the real counts the helper already baked in. The add itself flows through the EXISTING paths (say `add relationship moves` → change-schedule / registration Phase 6 add) — cleanup registers NOTHING. A proposal that was surfaced is automatically suppressed for 6 weeks; an empty result adds no line.
+Thresholds live in ONE table (`schedule_proposals.PROPOSAL_THRESHOLDS`): the staff-meeting (LB1 R4 — it absorbed the standalone relationship-moves proposal slot; existing relationship-moves registrations are untouched) qualifies on ≥8 prospect+client orgs AND ≥14 days of accumulated dormancy signal, OR ≥3 open Living Brain proposals waiting on the user; dormant-customer-scan (≥5 clients) is offered only as the lighter alternative when the staff meeting doesn't land — never both in one round. Surface each returned `line` verbatim in the Monday note's "worth a glance" tier, citing the real counts the helper already baked in. The add itself flows through the EXISTING paths (say `add staff meeting` → change-schedule / registration Phase 6 add) — cleanup registers NOTHING. A proposal that was surfaced is automatically suppressed for 6 weeks; an empty result adds no line.
 
 Enforcement note (the #98 lesson, generalized): every check above binds to artifacts — substrate receipts, scheduler records, transcripts — never to what a fire *narrated*. The watchdog READS receipts; it does not trust narration.
 
@@ -526,6 +540,20 @@ stale_unconfirmed = select_unconfirmed_escalation(opens, "<now ISO>")["propose_d
 
 A non-empty result adds ONE line to the Monday note's Beat 1 (see below). Zero → nothing. No events written, no receipts beyond the standard cleanup_run, and this never touches the scheduled-task watchdog pass (3e-bis) or its note lines.
 
+### 3j. Living Brain proposal expiry sweep + card health (SPEC LB1)
+
+The anti-fatigue contract's back half: an ignored proposal expires SILENTLY at its TTL (default 14 days) — logged, never nagged — and the expiry count is visible here so queue rot reaches the CEO's dogfood without a nag. Two calls, both through the canonical module:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from brain_proposals import expire_stale, card_health_counts
+
+swept = expire_stale("<WORKSPACE>")          # appends brain_proposal_expired tombstones (bounded write, see Writer Contract)
+health = card_health_counts("<WORKSPACE>")   # {"open": N, "expired_in_window": M} — 30-day window
+```
+
+The sweep is the ONLY expiry writer (surfaces already exclude TTL-past items from render, so a missed Sunday never shows stale rows — the tombstone just makes the ledger explicit). Feed `health` into the Beat 1 card-health line below. Never narrate proposal ids or event types.
+
 ## Phase 4: Monday-Morning Report — the scorecard handshake (no scores)
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
@@ -553,12 +581,13 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 - **Session-notes backfilled** (Phase 3c, D3): *"[N] projects were missing a notes file — I started one for each so they stay current."* (Only counts files actually created; the helper never overwrites existing notes.)
 - **Stale insight views** (Phase 3.5e, D5): the single line — *"A few of your insight pages are behind — say `run insights` and I'll bring them current."* Add the >14-day insight-generator nudge when `insight_nudge.stale` is True.
 - **Long-unconfirmed items** (Phase 3i, v4.6.1 W4b): when `stale_unconfirmed` is non-empty, ONE line — *"[N] captured to-dos have sat unconfirmed for over a month — say `triage my commitments` and I'll queue them up to drop or keep."* PROPOSE only (the drop is a click on the triage surface, never automatic); omit on zero. Keep this line out of the watchdog cluster below — it's a substrate-hygiene item, not a schedule finding.
+- **Living Brain card health** (Phase 3j, LB1): when `health["open"] > 0` or `health["expired_in_window"] > 0`, ONE line — *"[N] suggestions are waiting on your yes/no — say `staff meeting` to run through them. [M] older ones expired quietly without an answer this month."* (Drop either half at zero; drop the line when both are zero.) This is the queue-rot visibility line — if the expired half keeps growing, the card cadence or the detectors need tuning, and this line is the evidence. Substrate-hygiene item — keep it out of the watchdog cluster.
 - **Lock files archived** (Phase 2 Rule 9, D6): fold the count into the "tidied up" line — *"…tidied away [N] leftover lock files."* Plain English; never say "lock.stale" or surface a path. (They're moved to `_archive/`, never deleted — but don't burden the CEO with that detail unless asked.)
 - **Deliverable voice/privacy flags** (Phase 3f, GATE2): when the sweep flagged docs, surface its plain-English `summary` verbatim — *"[N] documents produced recently didn't pass the quality gate — worth a glance before any go out: • [filename] — language that doesn't sound like you ('leverage')…"*. Filenames only, never `_hq/` paths or token jargon. When only `suspected_bypass` is non-zero, use the softer "produced without the quality check" line. Omit entirely on a clean sweep.
 - **Scheduled-task watchdog findings** (Phase 3e-bis, W1/R5/R10 + R3 truth rules): surface each returned line verbatim under the "worth a glance" tier — dead task, never-authorized task, folder rename, prompt drift, render-without-write, plus the R3 info lines (dated late catch-ups, first-run-pending). These lead the tier when present (a dead schedule starves every other surface). If the vantage guard fired (F-40), its single line replaces ALL per-task schedule claims. Omit entirely when the watchdog returns nothing (the common case). A task named in any of these lines is never simultaneously described as running normally elsewhere in the note.
 - **Events-lock contention** (Phase 2 Rule 10, A1): include ONLY when there were waits or timeouts this week — *"A few things tried to save to your activity log at the same moment this week — everything saved fine, nothing was lost."* Omit the line entirely on a quiet week (the common case). Never surface file paths, "lock_stats", wait/timeout counts, or lock vocabulary; the point is reassurance that it was handled, not a metric dump. The counters reset after this report.
 
-**Set-aside audit line (W4c — own paragraph, non-zero weeks only).** Read `capture_gate.observed_counts(workspace_root, since_ts=<7 days ago ISO>)` and, when `observed > 0`, add exactly one sentence to Beat 1: *"I also set aside [N] items from meetings and chats that looked like other people's to-dos — ask me to show them if you want a look."* Never a per-item list, never the words "observed" or "tier"; omit entirely at zero. (Visible rejects are what make the capture filter trustworthy.)
+**Set-aside audit line (W4c — own paragraph, non-zero weeks only).** Read `capture_gate.observed_counts(workspace_root, since_ts=<7 days ago ISO>)` and, when `observed > 0`, add exactly one sentence to Beat 1: *"I also set aside [N] items from meetings and chats that looked like other people's to-dos — ask me to show them if you want a look."* Never a per-item list, never the words "observed" or "tier"; omit entirely at zero. (Visible rejects are what make the capture filter trustworthy.) HYG1: `observed` counts LIVE items only — 30-day-expired set-asides report under the separate `expired` field and never inflate this sentence; nothing is deleted, they just age out of the surfaces.
 
 ### Beat 2 — What I handled for you (the value, this week)
 
@@ -586,7 +615,7 @@ Generate a `.docx` at `[WORKSPACE_ROOT]/_hq/cleanup-reports/[YYYY-MM-DD]-cleanup
 
 ## Reliability
 
-Runs as a scheduled task (Sundays — CEO reviews Monday AM) and implements `shared/RELIABILITY.md`. Point-in-time snapshot (no missed-fire catch-up; runs at next opportunity), runs normally during OOO, 15s per-connector / 60s aggregate timeout budget. This skill is also the backup snapshotter — daily snapshots of data files to `_hq/backups/`; snapshots older than 14 days are moved to `_archive/backups/` (archived, never deleted). Corrupted `entities.json` / `aliases.json` triggers auto-restore from `_hq/backups/[file]_[date].backup`; corrupted `events.jsonl` is healed via the Phase 3b recurring self-heal (quarantine, not restore — append-only).
+Runs as a job inside the `maintenance` scheduled task (Sunday evening slot — CEO reviews Monday AM; a missed Sunday self-heals at the next fire) and implements `shared/RELIABILITY.md`. Point-in-time snapshot (no missed-fire catch-up; runs at next opportunity), runs normally during OOO, 15s per-connector / 60s aggregate timeout budget. This skill is also the backup snapshotter — daily snapshots of data files to `_hq/backups/`; snapshots older than 14 days are moved to `_archive/backups/` (archived, never deleted). Corrupted `entities.json` / `aliases.json` triggers auto-restore from `_hq/backups/[file]_[date].backup`; corrupted `events.jsonl` is healed via the Phase 3b recurring self-heal (quarantine, not restore — append-only).
 
 ## Gotchas
 

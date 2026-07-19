@@ -146,7 +146,7 @@ def test_derivation_and_classification():
         # G — chase 2d ago via LEGACY seq spelling in commitment_id, event
         # names nobody but the COMMITMENT carries a counterparty → blocked
         # falls back to the commitment's own named person.
-        _commitment(7, 45, cid="cmt_g", counterparty="Michele Jewett"),
+        _commitment(7, 45, cid="cmt_g", counterparty="Michele Sample"),
         {"seq": 16, "ts": _iso(2), "type": "outreach_sent", "source_skill": "commitments",
          "data": {"commitment_id": "seq_7", "via": "gmail"}},
         # H — draft_created (staged, never sent) 2d ago → movement (not stuck
@@ -186,7 +186,7 @@ def test_derivation_and_classification():
           by_id.get("commitment_seq_6", {}).get("reason") == "no_movement")
     check("G: legacy seq id spelling resolves; blocked_on falls back to the "
           "commitment's counterparty",
-          by_id.get("cmt_g", {}).get("blocked_on") == "Michele Jewett",
+          by_id.get("cmt_g", {}).get("blocked_on") == "Michele Sample",
           by_id.get("cmt_g"))
     check("H: staged draft is movement but never blocks",
           "cmt_h" not in stuck_ids and "cmt_h" not in blocked_ids)

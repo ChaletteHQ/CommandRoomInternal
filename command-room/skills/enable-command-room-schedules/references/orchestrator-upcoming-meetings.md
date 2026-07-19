@@ -34,7 +34,7 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Create directory if missing: `_hq/staging/<today>/`.
 - Read entities.json + aliases.json.
 - Read M's primary email + first name from entities.json (`is_primary_user: true`).
-- **Discover NATIVE Calendar MCP tool ID** — look for `mcp__*google_calendar_*` tools (excluding any tool whose ID starts with `mcp__zapier_`). Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE: Zapier never handles calendar. If the only calendar tool exposed is Zapier-namespaced, ABORT with plain English: `(Native Calendar MCP not available — connect Google Calendar in Cowork → Settings → Connectors. Zapier Calendar isn't supported for this skill.)` Do NOT silently fall back to Zapier Calendar.
+- **Resolve the calendar tools through the seam** — `tool_discovery.discover_for_category("calendar", "<op>", tools, declared=connector_config.declared_backend("calendar"))`, falling back to `discover_calendar_tool(tools, "<op>")` when no backend is declared (empty map = today's behavior, R4). Native calendar via the seam, Zapier-excluded — per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE Zapier never handles calendar (the seam excludes Zapier legs automatically). If no native calendar tool resolves, ABORT with plain English: `(Native Calendar MCP not available — connect your calendar in Cowork → Settings → Connectors. Zapier Calendar isn't supported for this skill.)` Do NOT silently fall back to Zapier Calendar. Never name a provider tool id directly. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
 
 # Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
@@ -109,7 +109,7 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
    **Five-block gathering (the FINDINGS F-60 PROPOSAL, mandatory):**
 
    - **① Walk out with** — one sentence, the concrete win for THIS meeting. Becomes `exec_header.verdict`.
-   - **② Changed Since Last Touch** — events + reschedules + **overnight Gmail scoped to attendee addresses** since the last meeting with these attendees. Cost bound: ONE Gmail search per meeting (`from:` / `to:` the attendee addresses, after:last-touch date), cap 10 threads, newest first — never an unbounded mailbox scan. This is the block the F-60 Michele brief missed (Erick's two overnight deliverables were in Gmail; the auto path never looked).
+   - **② Changed Since Last Touch** — events + reschedules + **overnight mail scoped to attendee addresses** since the last meeting with these attendees. Cost bound: ONE seam-resolved mail search per meeting (the `{"any_of": [{"from": <attendee>}, {"to": <attendee>}], "after": <last-touch date>}` intent, compiled per provider by `connector_adapters/mail.py`), cap 10 threads, newest first — never an unbounded mailbox scan. This is the block the F-60 dogfood brief missed (an attendee's two overnight deliverables were in the mailbox; the auto path never looked).
    - **③ DECIDE** — the open decisions this meeting is positioned to close, from the decision log for this project, plus "Decisions Already On The Record" as the don't-relitigate companion (cap 5, `<decision> — <YYYY-MM-DD>`, omit if zero priors).
    - **④ OWED, both directions** — from `commitment_state.load_open_commitments` matched via `commitment_state.match_commitments_to_meetings` (counterparty OR name-mention in the item's own text; **undated items INCLUDED** — a missing due date must not hide an item on the day of the meeting, the F-44 blindness this block kills). Filter the matcher's rows to this meeting_id, then `prep_pipeline.build_owed_table(rows, user_person_id=..., now_date=...)`. Plus parked discuss-later items for these attendees via `prep_pipeline.discuss_later_bullets` (`commitment_to_discuss` events).
    - **⑤ Sourced talking points + questions** — every line cites its source in a trailing parenthetical (`(email, Jul 7)` / `(meeting, Jun 30)` / `(commitment, May 22)` / `(sweep, Jul 7)`). `assemble_prep_sections` REJECTS unsourced lines (`PrepContractError`) — no ungrounded filler, code-enforced. On rejection: ground the line in a real source or cut it, re-assemble.
@@ -228,16 +228,16 @@ You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-writ
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, validate_rendered_widget, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; from brief_path import get_brief_path, get_brief_artifact_url; print('OK')"
+python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; from chat_output_renderer import validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; from brief_path import get_brief_path, get_brief_artifact_url; print('OK')"
 ```
 
 If stdout is not exactly `OK`, ABORT the fire and surface plain English: `(Renderer pre-flight failed — chat output deferred. Diagnostic: <error>.)` Do NOT post any widget.
 
-**⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, extended v2.14.37+):** the HTML returned by `render_chat_output_widget()` is sealed — pass it BYTE-FOR-BYTE to `mcp__visualize__show_widget`. No minification, no whitespace stripping, no "trimming for size", no removing what looks like duplicate elements. Every `<div class="cr-action-input">` wrapper is functionally required — dropping any of them silently breaks the matching button's input affordance (button selects gold but no textarea opens). MANDATORY: call `validate_rendered_widget(html)` immediately after `render_chat_output_widget()` and BEFORE invoking show_widget. The validator raises `WrapperContractError` if any wrapper has been dropped.
+**⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, transport-updated EW2+T):** the render is sealed — post via `widget_transport.render_and_persist` and pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`, never hand-composed or post-processed HTML. No minification, no whitespace stripping, no "trimming for size", no removing what looks like duplicate elements — not on `transport["html"]`, not on the persisted file. Every `<div class="cr-action-input">` wrapper is functionally required. The transport runs `validate_rendered_widget` internally and raises `WrapperContractError` if any wrapper is missing.
 
-**v2.14.37+ extension — `show_widget` is mandatory after a clean validator pass.** If `render_chat_output_widget()` returns and `validate_rendered_widget(html)` passes without raising, you MUST call `mcp__visualize__show_widget(html)`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation. The validator pass IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute. The leak-scanner in `validate_chat_output` blocks these improvisation phrases at the renderer's Gate 3, but you should not rely on the post-render scan to catch a contract violation — never produce them in the first place.
+**v2.14.37+ extension (EW2+T) — `show_widget` is mandatory after a clean transport call.** If `render_and_persist()` returns without raising, you MUST call `mcp__visualize__show_widget` with `transport["html"]` as `widget_code`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation, and pagination (~10 rows/page) keeps every page inside the relay budget. The clean transport call IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute.
 
-**v2.14.37+ extension — markdown lists are not a substitute for widget rendering.** If a user follow-up asks you to "surface past emails" / "show the X" / "list the Y" — any kind of "render these items in chat" ask — the path is `render_chat_output_widget` → `validate_rendered_widget` → `show_widget`. Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust the noise-filter threshold so noise-filtered-but-relevant items now appear in `tracked_items`). See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the full diagnosis lineage (v2.14.18 → v2.14.20 → v2.14.34 → 2026-05-07 cr-commitments narrate-instead-of-show / cr-inbox markdown-instead-of-widget).
+**v2.14.37+ extension — markdown lists are not a substitute for widget rendering.** If a user follow-up asks you to "surface past emails" / "show the X" / "list the Y" — any kind of "render these items in chat" ask — the path is `render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`). Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust the noise-filter threshold so noise-filtered-but-relevant items now appear in `tracked_items`). See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the full diagnosis lineage (v2.14.18 → v2.14.20 → v2.14.34 → 2026-05-07 cr-commitments narrate-instead-of-show / cr-inbox markdown-instead-of-widget).
 
 **v2.13.0 enforcement:** renderer raises `CanonicalActionError` on non-canonical action verbs (e.g., `more context` is not canonical — use `context [text]`; `tweak [change]` was dropped — use `context [text]`; v2.14.37+ unified `add more context [text]` and `ask question [text]` into `context [text]`). Raises `LeakDetectedError` on forbidden patterns in body content (raw calendar URLs, routing leaks like `org_003`, verbose attendee bios, plus v2.14.37+ widget-improvisation phrases like "couldn't transmit" / "session payload" / "live widget surface"). Both blocking; fix the data view at the orchestrator level.
 
@@ -249,7 +249,7 @@ If stdout is not exactly `OK`, ABORT the fire and surface plain English: `(Rende
 # (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
 import sys
 sys.path.insert(0, "shared/scripts")
-from chat_output_renderer import render_chat_output_widget
+from widget_transport import render_and_persist
 
 data_view = {
     "widget_mode": "all_batch_widget",
@@ -259,16 +259,13 @@ data_view = {
     "save_confirmation": "Or: tell me about [name] for a deep cross-reference on any attendee.",
 }
 
-html = render_chat_output_widget(data_view, wrapper="fragment")
-
-# v2.14.34+ — MANDATORY structural validation. Catches dropped wrappers if
-# anything has touched the HTML between render() and show_widget. Pass
-# `html` BYTE-FOR-BYTE — no re-encoding, no "cleanup", no minification.
-from chat_output_renderer import validate_rendered_widget, WrapperContractError
-validate_rendered_widget(html)  # raises WrapperContractError on bypass
-
-# Call mcp__visualize__show_widget with `html` UNMODIFIED. The string from
-# render_chat_output_widget IS the payload. Do NOT post-process.
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="upcoming-meetings")
+# EW2+T (F-15): the transport runs the full validator chain (canonical
+# actions, data shape, leak scan, wrapper contract) and persists the sealed
+# render. Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — never
+# a hand-composed variant, never a post-processed one.
 ```
 
 The widget renders inline with per-meeting buttons; user clicks accumulate locally; "Apply all" fires `apply choices: [...]` payload that `apply-choices` catches and dispatches through the reply handlers below. The widget HTML IS the post — do not compose markdown chat strings.
@@ -461,7 +458,7 @@ Parse:
 - `snooze SLUG 3d` (v2.14.38+) → write `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Meeting card won't re-surface until the date passes. Plain-English ack only if mentioned: `"Snoozed #N for 3 days."`
 - `add to my list SLUG` (v2.14.38+) → write `commitment_to_discuss` event grouped by the meeting's primary attendee. Surfaces in `show my list`.
 - `skip SLUG` (deprecated v2.14.38+ — back-compat alias for in-flight pre-v2.14.38 widgets) → translate to `snooze 3d` semantics + same dismissal write.
-- `push SLUG to [when]` → parse the user's natural-language input (`monday at 2`, `tomorrow afternoon`, `2026-05-12`) into a target date/time. If parseable, draft reschedule email via email-writer per EMAIL_DRAFT_PROTOCOL. The draft surfaces inside the apply-choices consolidated response widget (v2.12.4+ — Send / Edit then send / To drafts / Edit then draft / Skip per the same widget contract as the source orchestrator). If unparseable, surface item-level error in the consolidated ack ("couldn't parse '<input>' as a date — re-fire and try a clearer time").
+- `push SLUG to [when]` → parse the user's natural-language input (`monday at 2`, `tomorrow afternoon`, `2026-05-12`) into a target date/time. If parseable, draft reschedule email via email-writer per EMAIL_DRAFT_PROTOCOL. The draft surfaces inside the apply-choices consolidated response widget (v2.12.4+ — the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) per the same widget contract as the source orchestrator). If unparseable, surface item-level error in the consolidated ack ("couldn't parse '<input>' as a date — re-fire and try a clearer time").
 - `tell me about [name]` → fire the people-crm "tell me about" cross-reference flow.
 
 For unrecognized → respond once in plain English: "Reply with `open SLUG`, `tweak SLUG [change]`, `regenerate SLUG`, `skip SLUG`, or `push SLUG to [date]`. Or `tell me about [name]` for a deep cross-reference."

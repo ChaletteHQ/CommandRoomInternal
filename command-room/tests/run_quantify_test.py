@@ -76,7 +76,7 @@ check("non-dict input → None", money_time_tag("not a dict", ENTS_WITH_DEAL, no
 # Test 4 — money-only tag (not yet overdue, but org has a value)
 # ============================================================================
 print("\n=== money only (not overdue) ===")
-future = {"type": "commitment", "primary_thread_id": "project_017", "data": {"due": "2027-01-01"}}
+future = {"type": "commitment", "primary_thread_id": "project_017", "data": {"due": "2027-01-01"}}  # DATE_GUARD_OK: money_time_tag takes injected now=NOW; 'future' is relative to that pin
 tag = money_time_tag(future, ENTS_WITH_DEAL, now=NOW)
 check("future due → money part only", tag == "$40K deal", f"got {tag!r}")
 

@@ -625,12 +625,15 @@ def summarize_for_user(result: dict, *, max_docs: int = 5) -> Optional[str]:
 
 # ---- gate_ran join (SPEC GATE2 D5 / GATE1 §3b standing detector) ----
 
-# Deliverable events that SHOULD have routed through brief_writer.make_brief,
-# which emits a gate_ran(surface="docx") event per rendered .docx. A deliverable
-# event in the window with no matching docx gate_ran is a suspected bypass (the
-# composer hand-rolled the doc, dodging the save-time gates). This is the cheap
-# complement to the content sweep — it can't see a hand-rolled doc that emitted
-# NO deliverable event either, which is exactly why scan-the-file (D2) is primary.
+# Deliverable events that SHOULD have routed through a render chokepoint —
+# brief_writer.make_brief (gate_ran surface="docx") or, since SPEC OUT5,
+# premium_html.make_premium_brief (surface="premium_html"; board_pack /
+# one_pager / value_receipt are launch kinds a profile can flip to HTML). A
+# deliverable event in the window with no matching gated-render event is a
+# suspected bypass (the composer hand-rolled the doc, dodging the save-time
+# gates). This is the cheap complement to the content sweep — it can't see a
+# hand-rolled doc that emitted NO deliverable event either, which is exactly
+# why scan-the-file (D2) is primary.
 _GATED_DELIVERABLE_EVENTS = frozenset(
     {
         "one_pager_drafted",
@@ -647,12 +650,17 @@ _GATED_DELIVERABLE_EVENTS = frozenset(
 def detect_gate_bypass(
     workspace_root: str | Path, *, since_ts: Optional[float] = None
 ) -> dict:
-    """Join deliverable events against docx gate_ran events over a window.
+    """Join deliverable events against gated-render gate_ran events (surface
+    "docx" or "premium_html" — both chokepoints run the same stack, SPEC OUT5)
+    over a window.
 
     Returns {"deliverables": int, "docx_gate_ran": int, "suspected_bypass": int,
-             "by_type": {<event_type>: count}}. A positive suspected_bypass count
-             means more gated-deliverable events were produced than gates ran —
-             i.e. some deliverable skipped make_brief. FLAG-only; never raises."""
+             "by_type": {<event_type>: count}}. `docx_gate_ran` keeps its
+             pre-OUT5 name for reader stability but counts BOTH deliverable
+             surfaces. A positive suspected_bypass count means more gated-
+             deliverable events were produced than gated renders ran — i.e.
+             some deliverable skipped the chokepoints. FLAG-only; never
+             raises."""
     import json
 
     result = {
@@ -705,7 +713,7 @@ def detect_gate_bypass(
                 deliverables += 1
                 by_type[etype] = by_type.get(etype, 0) + 1
             elif etype == "gate_ran" and _ts_ok(ev):
-                if (ev.get("data") or {}).get("surface") == "docx":
+                if (ev.get("data") or {}).get("surface") in ("docx", "premium_html"):
                     docx_gate_ran += 1
     except Exception:
         return result

@@ -240,6 +240,95 @@ def _scan_docx(docx_path: str | Path, raise_on_findings: bool) -> List[dict]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# SPEC OUT5 — the premium-HTML sibling of the .docx scan. Same canonical
+# forbidden-token list, same raise-on-findings posture, one scanner per file
+# format. Lives in this module ON PURPOSE: the pattern list must never fork.
+# ---------------------------------------------------------------------------
+
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_HTML_STYLE_SCRIPT_RE = re.compile(
+    r"<(style|script)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
+)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_URL_ATTR_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+
+
+def _html_visible_text(html_text: str) -> str:
+    """Reader-visible text of an HTML document, plus every href/src value.
+
+    Comments and <style>/<script> blocks are dropped (CSS/JS is not reader
+    text and its property names would only produce noise), remaining tags are
+    stripped, entities decoded, whitespace collapsed. Link/image TARGETS are
+    appended to the scanned text so a substrate path or internal ID hiding in
+    an href (invisible on the page, live on click) is caught exactly like body
+    prose."""
+    import html as _html_mod
+
+    urls = " ".join(_HTML_URL_ATTR_RE.findall(html_text))
+    text = _HTML_COMMENT_RE.sub(" ", html_text)
+    text = _HTML_STYLE_SCRIPT_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _html_mod.unescape(text)
+    text = _WHITESPACE_RE.sub(" ", text + " " + _html_mod.unescape(urls))
+    return text
+
+
+def scan_html_for_leaks(html_path: str | Path) -> List[dict]:
+    """Scan a saved premium-HTML deliverable for forbidden tokens (SPEC OUT5).
+
+    The exact contract of `scan_docx_for_leaks`, per file format: returns []
+    when clean, raises LeakScanError listing every match otherwise. An
+    unreadable or empty file is a LOUD failure (the Bug #54 posture — never a
+    false-clean). Called by `premium_html.make_premium_brief` after every
+    save, mirroring make_brief's post-render scan."""
+    html_path = Path(html_path)
+    if not html_path.exists():
+        raise FileNotFoundError(f".html not found: {html_path}")
+    try:
+        raw = html_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise LeakScanError(
+            f"Could not read {html_path.name} ({type(e).__name__}); "
+            f"unable to verify the document is leak-free."
+        )
+    if not raw.strip():
+        raise LeakScanError(
+            f"{html_path.name} is empty; unable to verify the document is leak-free."
+        )
+    findings = scan_text_for_leaks(_html_visible_text(raw))
+    if findings:
+        summary_lines = []
+        for f in findings[:10]:
+            summary_lines.append(f"  [{f['name']}] {f['match']!r} (…{f['context'][:60]}…)")
+        more = f"\n  …and {len(findings) - 10} more" if len(findings) > 10 else ""
+        raise LeakScanError(
+            f"Forbidden tokens in {html_path.name}:\n"
+            + "\n".join(summary_lines)
+            + more
+        )
+    return findings
+
+
+def collect_html_leaks(html_path: str | Path) -> List[dict]:
+    """Same as scan_html_for_leaks but never raises — findings for audit/report
+    callers (deliverable sweeps, weekly-audit). Unreadable file returns a
+    single synthetic finding so a sweep can FLAG it rather than pass it."""
+    try:
+        return scan_html_for_leaks(html_path)
+    except FileNotFoundError:
+        raise
+    except LeakScanError as e:
+        try:
+            raw = Path(html_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            raw = ""
+        if not raw.strip():
+            return [{"name": "unreadable", "pattern": "", "match": "",
+                     "context": str(e)}]
+        return scan_text_for_leaks(_html_visible_text(raw))
+
+
 def scan_docx_for_violations(docx_path: str | Path) -> dict:
     """SPEC GATE2 D2 — the unified content scanner. Given a .docx PATH, return
     EVERY voice tell + privacy/substrate leak in it, in one call, regardless of
@@ -314,6 +403,8 @@ __all__ = [
     "scan_docx_for_leaks",
     "collect_docx_leaks",
     "scan_text_for_leaks",
+    "scan_html_for_leaks",
+    "collect_html_leaks",
     "scan_docx_for_violations",
     "LeakScanError",
 ]

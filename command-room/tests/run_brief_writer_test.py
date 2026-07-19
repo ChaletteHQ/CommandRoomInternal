@@ -273,9 +273,12 @@ print("\n=== EXEC1: exec_header rendering ===")
 
 with tempfile.TemporaryDirectory() as tmp:
     p = os.path.join(tmp, "exec.docx")
+    # FS-13: the CHANGED/DECIDE/NEEDED eyebrow is brief-family only. weekly_recap
+    # is a brief-family STANDARD_KIND, so it renders the full eyebrow (memo /
+    # one_pager render the verdict lead ONLY — see the dedicated per-kind test).
     make_brief(
         p,
-        brief_kind="memo",
+        brief_kind="weekly_recap",
         title="Acme renewal is the only call this week",
         subtitle="Sat, Jun 14, 2026",
         exec_header={

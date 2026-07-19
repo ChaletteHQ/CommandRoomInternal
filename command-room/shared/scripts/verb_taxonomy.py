@@ -88,14 +88,27 @@ VERB_TAXONOMY = (
          family="commitment",
          notes="Self-commitment twin of `resolved`; scaffold-automation's "
                "deployed-yet check writes automation_deployed instead."),
-    _row("push to [date]", "Defer", "commitment_updated",
-         "Move the due date; the item stays open and re-ranks on the new date.",
+    _row("push to [date]", "Later…", "commitment_updated",
+         "Deal with it later — type a date or a number of days. Your own "
+         "item moves its due date; someone else's just leaves the view "
+         "until then.",
          ("commitments", "commitment-triage"),
          input="required", family="commitment",
-         notes="Display was 'Push to' on the daily chat and 'Defer' on triage "
-               "(F-59). 'Defer' wins. Date is REQUIRED — an empty date is the "
-               "F-17 silent-block; the widget names the missing date and holds "
-               "Apply with the reason visible."),
+         notes="t3 FB-3 (M ruling 2026-07-16): Defer + Snooze read as two "
+               "time-kicking verbs on one row — merged into ONE 'Later…' "
+               "option. Wire id frozen; display + dispatch only. The "
+               "when-input accepts a date OR a bare number of days "
+               "(commitment_state.parse_later_when). Dispatch AUTO-ROUTES "
+               "via commitment_state.later_route: the user's own item → "
+               "commitment_updated due-date shift (the old Defer); "
+               "owed-to-you / unowned → chat_dismissal with "
+               "data.snooze_until via the mute ledger (the item stays open, "
+               "it just stops rendering until the date). The renderer drops "
+               "a row's separate skip/snooze option when this verb is "
+               "present ('Later…' covers it). History: display was "
+               "'Push to' on the daily chat, 'Defer' after F-59. The when "
+               "is REQUIRED — an empty one is the F-17 silent-block; the "
+               "widget names the missing input and holds Apply."),
     _row("drop", "Drop", "commitment_resolved",
          "Close as deliberately let go (resolution: dropped) — distinct from Done.",
          ("commitment-triage", "commitments"), family="commitment",
@@ -105,7 +118,7 @@ VERB_TAXONOMY = (
          "Close as someone else's item (cross-attendee capture).",
          ("commitment-triage",), family="commitment",
          notes="Bare 'not mine' (no name) still closes as dropped. When the "
-               "user NAMES the real owner ('that's actually Erick's'), the "
+               "user NAMES the real owner ('that's actually Quinn's'), the "
                "item ROUTES instead via `reassign to [name]` (S4) — W4b's "
                "Theirs → [name] confirm verb dispatches the same event."),
     _row("fix wording [text]", "Fix wording", "commitment_updated",
@@ -222,7 +235,12 @@ VERB_TAXONOMY = (
          ("*",), mute_ttl_days=1, family="mute",
          notes="Wire id `skip` frozen (in-flight widgets + crSkipAll + every "
                "dispatch handler). F-59: Skip never said it was a 24h mute — "
-               "now the label does. One mute verb, visible durations."),
+               "now the label does. One mute verb, visible durations. "
+               "t3 FB-3: on rows that ALSO carry `push to [date]` the "
+               "renderer suppresses this option from the dropdown — 'Later…' "
+               "covers the kick-it case with an explicit date. The wire stays "
+               "dispatchable (chat phrase, in-flight widgets, Snooze-rest "
+               "footer button — all unchanged)."),
     _row("skip all", "Snooze rest (1 day)", "chat_dismissal",
          "Mute every unselected item for 1 day (bulk).",
          ("*",), mute_ttl_days=1, family="mute",
@@ -235,15 +253,29 @@ VERB_TAXONOMY = (
          ("scaffold-automation",), mute_ttl_days=7, family="mute"),
     _row("snooze 14d", "Snooze (14 days)", "chat_dismissal",
          "Check back in two weeks.",
-         ("dont-forget", "stalled-projects"), mute_ttl_days=14, family="mute",
+         ("dont-forget", "stalled-projects", "cr-pipeline", "cr-brain"),
+         mute_ttl_days=14, family="mute",
          notes="On the intro-followup check this writes intro_followup_check "
                "(a scheduled re-emit, not a dismissal) — see apply-choices."),
     _row("snooze 30d", "Snooze (30 days)", "decision_revisit_scheduled",
          "Push the decision-revisit window out 30 days.",
          ("decision-revisit",), mute_ttl_days=30, family="mute"),
+    _row("hold", "Hold (14 days)", "chat_dismissal",
+         "Park this until you answer; it stops re-rendering for 14 days.",
+         ("staff-meeting", "cr-brain"), mute_ttl_days=14, family="mute",
+         notes="FB-19 (M, 2026-07-16). Distinct from `snooze 14d` by INTENT, "
+               "identical in mechanism (a 14d chat_dismissal via "
+               "mute_ledger.hold_item, reason='held'): snooze is 'not now', "
+               "hold is 'I'm deciding — stop asking until I answer'. The live "
+               "case: two rows parked in chat re-rendered the next fire as if "
+               "nothing had been said, which reads as the system not "
+               "listening. Cleared early by mute_ledger.clear_dismissal the "
+               "moment the item IS answered — a hold outlives the question "
+               "only if the question goes unanswered. The row that offers it "
+               "MUST say the duration (the label does)."),
     _row("not relevant", "Not relevant (60 days)", "chat_dismissal",
          "Reject the proposal / dismiss the item; it won't re-surface for 60 days.",
-         ("dont-forget", "inbox", "past-meetings", "commitments"),
+         ("dont-forget", "inbox", "past-meetings", "commitments", "cr-brain"),
          mute_ttl_days=60,
          family="mute",
          notes="The 60-day cooldown was previously hidden by design "
@@ -265,14 +297,16 @@ VERB_TAXONOMY = (
          "Clear the reminder — it leaves the brief's Pinned block. Clearing "
          "never touches a referenced commitment.",
          ("morning-brief", "show-my-reminders"), family="reminder"),
-    _row("reminder push [date]", "Defer", "reminder_updated",
+    _row("reminder push [date]", "Later…", "reminder_updated",
          "Move the pin date; the reminder re-pins from the new day (re-arms a "
          "cleared one-shot).",
          ("morning-brief", "show-my-reminders"), input="required",
          family="reminder",
          notes="Chat phrase 'push it to Friday' keeps working; the button "
-               "says Defer — same word as the commitment lane's move-the-date "
-               "verb. Dispatch: reminders.build_reminder_updated_event("
+               "says Later… — same word as the commitment lane's move-the-date "
+               "verb (was 'Defer' pre-t3 FB-3; F-59's one-label rule keeps "
+               "the lanes in lockstep). Dispatch: "
+               "reminders.build_reminder_updated_event("
                "action='push', remind_from=<date>)."),
     _row("reminder keep", "Keep", "reminder_updated",
          "Acknowledge without clearing — resets the escalation clock, stays "
@@ -324,7 +358,10 @@ VERB_TAXONOMY = (
          ("dont-forget",), family="work"),
     _row("draft re-engagement", "Draft re-engagement", None,
          "Draft a re-engagement email (nothing sends until you do).",
-         ("dont-forget", "stalled-projects"), family="work"),
+         ("dont-forget", "stalled-projects", "cr-pipeline"), family="work",
+         notes="On the pipeline surface this is the deal follow-up draft — "
+               "hands to email-writer with the deal thread's context; "
+               "draft-never-send preserved."),
     _row("schedule catchup [when]", "Schedule catchup", None,
          "Draft the request (+ tentative invite when you type a time).",
          ("dont-forget",), input="optional", family="work"),
@@ -338,7 +375,7 @@ VERB_TAXONOMY = (
     # --- Review / proposal confirmations -------------------------------------
     _row("confirm", "Confirm", None,
          "Apply the proposed change to the person record.",
-         ("dont-forget",), family="review"),
+         ("dont-forget", "commitments", "cr-brain"), family="review"),
     _row("edit [change]", "Edit", None,
          "Type the corrected value; it applies instead of the proposal.",
          ("dont-forget", "decision-memo-composer"), input="optional",
@@ -348,13 +385,13 @@ VERB_TAXONOMY = (
          ("dont-forget",), input="optional", family="review"),
     _row("confirm [type]", "Confirm", None,
          "Confirm the entity proposal; override inferred details if typed.",
-         ("dont-forget",), input="optional", family="review"),
+         ("dont-forget", "cr-brain"), input="optional", family="review"),
     _row("edit [type]", "Edit", None,
          "Flip the inferred relationship type before confirming.",
          ("dont-forget",), input="optional", family="review"),
     _row("active", "Active", None,
          "Keep the project active (14-day re-propose cooldown).",
-         ("dont-forget",), family="review"),
+         ("dont-forget", "cr-brain"), family="review"),
     _row("keep paused", "Keep paused", None, "Already paused — no change.",
          ("dont-forget",), family="review"),
     _row("archive", "Archive", None,
@@ -364,7 +401,7 @@ VERB_TAXONOMY = (
     _row("add person", "Add person", "person_proposal_resolved",
          "Create the contact from the proposal (details inferred; type to "
          "correct them) — future captures of this name resolve to them.",
-         ("commitments",), input="optional", family="review",
+         ("commitments", "cr-brain"), input="optional", family="review",
          notes="W4b. Dispatch: people_writer.create_person via apply-choices "
                "Step 3a (dedup-first, disambiguation on MultipleCandidates), "
                "then the proposal tombstone (confirm_flow."
@@ -373,7 +410,7 @@ VERB_TAXONOMY = (
     _row("same as [existing]", "Same as", "person_proposal_resolved",
          "This name is an existing contact — saves the spelling as a "
          "shortcut so it resolves to them forever.",
-         ("commitments",), input="required", family="review",
+         ("commitments", "cr-brain"), input="required", family="review",
          notes="W4b. Dispatch: resolve the typed name via the standard "
                "entity path (ambiguous → ask, never guess), then "
                "people_writer.add_person_alias (aliases.json mapping + the "
@@ -384,7 +421,7 @@ VERB_TAXONOMY = (
          "person_proposal_resolved",
          "The name isn't worth tracking — the proposal is retired for good "
          "(nothing else is written).",
-         ("commitments",), family="review",
+         ("commitments", "cr-brain"), family="review",
          notes="W4b. A proposal tombstone, NOT a timed mute — the label says "
                "permanent (F-59 rule). Commitment rows keep the 60-day "
                "`not relevant` mute; this verb renders ONLY on "
@@ -401,6 +438,78 @@ VERB_TAXONOMY = (
     _row("add context [text]", "Add context", None,
          "Seed an interactive entity-creation flow with your free-form note.",
          ("past-meetings", "meeting-notes"), input="optional", family="review"),
+
+    # --- Deals (SPEC PIPE1 — the cr-pipeline widget; dispatch via deal_state) --
+    _row("move to [stage]", "Move stage", "deal_stage_changed",
+         "Move the deal to the stage you pick (backward moves allowed — "
+         "deals regress; days-in-stage resets).",
+         ("cr-pipeline",), input="required", family="deal",
+         notes="PIPE1. Dispatch: deal_state.set_stage — validates the fixed "
+               "v1 stage enum (lead/qualified/proposal_sent/negotiating); "
+               "won/lost are NOT stages, they dispatch mark won / mark lost."),
+    _row("set next step [text]", "Set next step", "commitment",
+         "Type the deal's next step with a date — it becomes a tracked "
+         "commitment on the deal thread (D3: the next step IS a commitment).",
+         ("cr-pipeline",), input="required", family="deal",
+         notes="PIPE1. Dispatch: a standard commitment capture with "
+               "primary_thread_id = the deal thread; closes only via "
+               "commitment_state.close_commitment. Clears the deal's "
+               "no-next-step flag on the next render."),
+    _row("mark won", "Mark won", "deal_won",
+         "Close the deal as won (thread resolves). On a prospect org the ack "
+         "offers the one-tap client conversion — nothing flips silently.",
+         ("cr-pipeline",), family="deal",
+         notes="PIPE1. Dispatch: deal_state.close_deal(outcome='won') — "
+               "idempotent; already_closed acks honestly. The widget verb "
+               "never passes convert_prospect=True; only the explicit "
+               "'[Name] signed' utterance family does (D6)."),
+    _row("mark lost [reason]", "Mark lost", "deal_lost",
+         "Close the deal as lost — pick the reason (thread archives).",
+         ("cr-pipeline",), input="required", family="deal",
+         notes="PIPE1. Dispatch: deal_state.close_deal(outcome='lost', "
+               "loss_reason=<pick>) — reason REQUIRED (F-17 hold-with-reason "
+               "when empty); enum: no_decision/price/competitor/diy/timing/"
+               "bad_fit/other, no_decision listed first (it's ~61% of real "
+               "losses)."),
+    _row("track deal", "Track deal", "deal_created",
+         "Adopt a pre-existing deal thread into the pipeline (attaches stage "
+         "tracking; nothing else changes).",
+         ("cr-pipeline",), family="deal",
+         notes="PIPE1 real-data shape: kind='deal' threads that predate the "
+               "deal object render as untracked rows with this one-tap "
+               "adoption. Dispatch: deal_state.adopt_deal."),
+
+    # --- LB1 Living Brain card ("Needs your eyes" / Staff Meeting) -----------
+    # Generic verbs for brain-family (bp_*) proposal rows. Legacy-family rows
+    # on the same card keep their OWN shipped verbs (add person / same as /
+    # proposal not relevant for person rows; confirm / not relevant for CRU
+    # review rows; confirm [type] / active / snooze 14d for dont-forget rows)
+    # — dispatch table in skills/apply-choices/SKILL.md Step 2 `cr-brain`.
+    _row("confirm proposal", "Confirm", "brain_proposal_resolved",
+         "Apply the proposed change through its standard writer and retire "
+         "the proposal.",
+         ("cr-brain",), input="optional", family="review",
+         notes="LB1. Dispatch per kind: deal_update → deal_state.set_stage/"
+               "update_deal/close_deal; deal_creation → deal_state."
+               "create_deal; then brain_proposals.resolve_proposal "
+               "(user_action applied — or edited when input was typed). "
+               "Typed input corrects inferred details before applying; an "
+               "empty input applies the proposal as-is and says so (F-17: "
+               "never blocks the batch)."),
+    _row("dismiss proposal", "Not relevant (60 days)", "brain_proposal_resolved",
+         "Decline the proposal — the same suggestion stays away for 60 days.",
+         ("cr-brain",), family="review",
+         notes="LB1. Dispatch: brain_proposals.resolve_proposal(user_action="
+               "'declined') — the tombstone plus the shared proposal_feedback"
+               ".jsonl cooldown row (60d fingerprint suppression at the "
+               "source). Deal-kind declines also write deal_update_dismissed "
+               "for the PIPE1-named consumers. Visible TTL per F-59."),
+    _row("snooze proposal 7d", "Snooze (7 days)", "chat_dismissal",
+         "Set the proposal aside for a week — it re-surfaces after.",
+         ("cr-brain",), mute_ttl_days=7, family="mute",
+         notes="LB1. The existing chat_dismissal TTL machinery (target_id = "
+               "the proposal id). The proposal's own TTL clock keeps running "
+               "— an ignored proposal still expires silently."),
 
     # --- Decisions ------------------------------------------------------------
     _row("revisit", "Revisit now", None,
@@ -457,7 +566,8 @@ DEPRECATED_ALIASES = {
 # F-18). The rendered-widget regression scan enforces this list.
 LEGACY_DISPLAY_LABELS = frozenset({
     "Resolved",        # → Done
-    "Push to",         # → Defer
+    "Push to",         # → Defer (itself retired at t3 FB-3) → Later…
+    "Defer",           # → Later… (t3 FB-3 — the merged Defer/Snooze option)
     "Skip",            # → Snooze (1 day)
     "Skip all",        # → Snooze rest (1 day)
     "Dismiss rest",    # old footer bulk label
@@ -496,6 +606,9 @@ _PLACEHOLDER_THING = {
 
 
 _THING_OVERRIDES = {
+    "move to [stage]": "stage",
+    "set next step [text]": "next step (with a date)",
+    "mark lost [reason]": "loss reason",
     "add email then send": "email address",
     "set date [when]": "date",
     "reminder push [date]": "date",

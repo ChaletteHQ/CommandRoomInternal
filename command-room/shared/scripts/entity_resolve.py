@@ -39,8 +39,9 @@ PUBLIC API:
 
 EXACT VS FUZZY VS PHONETIC:
   - Exact: case-insensitive whitespace-normalized match against alias `raw`,
-    person.canonical_name, person.aliases[], org.canonical_name, org.aliases[],
-    project.canonical_name. Confidence 1.0.
+    person.canonical_name, person.aliases[], org.canonical_name,
+    org.legal_name (F-05, v4.8.1), org.aliases[], project.canonical_name.
+    Confidence 1.0.
   - Fuzzy: difflib.SequenceMatcher ratio ≥ 0.85 against the same surfaces.
     Confidence == the ratio (0.85 - 1.0). Catches typos like Mark→Marc.
   - Phonetic: Soundex code match against names that share a sound-alike key.
@@ -64,6 +65,13 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+try:
+    from read_alarm import SubstrateReadError, record_read_alarm, remedy_line
+except ImportError:  # pragma: no cover
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from read_alarm import SubstrateReadError, record_read_alarm, remedy_line
 
 
 EntityType = Literal["person", "org", "project"]
@@ -190,7 +198,22 @@ def _soundex_tokens(s: str) -> list[str]:
 
 def _load_entities(workspace_root: Path) -> dict[str, Any]:
     path = workspace_root / "_hq" / "data" / "entities.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise  # fresh workspace — not corruption; pre-FS-15 behavior kept
+    except (json.JSONDecodeError, OSError) as e:
+        # FS-15 — an entities.json that EXISTS but won't read is corruption
+        # (or a sync cache serving a truncated copy). Record it, then raise
+        # a plain-English error instead of the raw traceback: resolution
+        # cannot proceed without the entity graph, and a cryptic
+        # JSONDecodeError mid-fire is how the model ends up improvising.
+        record_read_alarm(path, e, reader="entity_resolve")
+        raise SubstrateReadError(
+            f"Your workspace records file (entities.json) exists but would "
+            f"not read ({str(e)[:120]}) — likely mid-sync or a stale sync "
+            f"cache, and the records are NOT gone. {remedy_line()}"
+        ) from e
 
 
 def _load_aliases(workspace_root: Path) -> dict[str, Any]:
@@ -199,7 +222,11 @@ def _load_aliases(workspace_root: Path) -> dict[str, Any]:
         return {"mappings": {}}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        # FS-15 — keep the fallback (resolution degrades to canonical-name
+        # matching, which is survivable) but put the degradation ON THE
+        # RECORD so the brief / system-health surface it loudly.
+        record_read_alarm(path, e, reader="entity_resolve")
         return {"mappings": {}}
 
 
@@ -292,6 +319,14 @@ def _iter_match_surfaces(entities: dict):
         canon = o.get("canonical_name")
         if isinstance(canon, str) and canon.strip():
             yield ("org", o, canon, "canonical")
+        # legal_name (F-05, v4.8.1) — the formal registered name, when it
+        # differs from canonical. Without this surface, "pull up [legal name]"
+        # missed orgs the workspace knows (HYG2 nit).
+        # Source label is "legal name" (space, not snake_case) because it
+        # interpolates into the user-surfaceable `reason` string.
+        legal = o.get("legal_name")
+        if isinstance(legal, str) and legal.strip():
+            yield ("org", o, legal, "legal name")
         for alias in (o.get("aliases") or []):
             if isinstance(alias, str) and alias.strip():
                 yield ("org", o, alias, "alias")
@@ -471,6 +506,43 @@ def resolve_all(
     return results[:max_candidates]
 
 
+def _sort_by_observed_recency(candidates: list, workspace_root) -> list:
+    """HYG1 Item 3 — the C3 fossil-reader retirement. Sort candidate threads
+    by OBSERVED recency: the newest event on each thread via
+    thread_activity.derive_thread_activity, NEVER the deprecated
+    thread.last_activity stamp (F-54/F-61 — no writer maintains it; ranking
+    by it reported the wrong "newest" thread whenever real events disagreed
+    with the ingest-era fossil).
+
+    Fallback chain per thread: derived event ts → the stored last_activity
+    as a ZERO-EVENT FLOOR only (the DATA_CONTRACT carve-out: ingest
+    legitimately stamps it for threads with no event history) → first_seen.
+
+    PERF (entity_resolve is a hot path fired on nearly every routing turn):
+    the derivation runs LAZILY — a 0/1-candidate list returns immediately
+    and never scans events; only the rare multi-candidate disambiguation
+    walk pays one events pass. derive_thread_activity is NOT memoized
+    (the 4.6 incremental-index idea never shipped), so keeping this out of
+    the single-candidate path is what protects resolve latency."""
+    if len(candidates) <= 1:
+        return list(candidates)
+    try:
+        from thread_activity import derive_thread_activity
+        activity = derive_thread_activity(workspace_root)
+    except Exception:
+        activity = {}
+
+    def recency_key(p: dict) -> str:
+        act = activity.get(p.get("id"))
+        if act is not None:
+            # Aware-UTC isoformat; lexicographically comparable with the
+            # date-only fallbacks below (same YYYY-MM-DD prefix rules).
+            return act.ts.isoformat()
+        return p.get("last_activity") or p.get("first_seen") or ""
+
+    return sorted(candidates, key=recency_key, reverse=True)
+
+
 def resolve_to_linked_project(
     workspace_root: str | Path,
     query: str,
@@ -516,13 +588,13 @@ def resolve_to_linked_project(
                     candidates.append(proj)
         if not candidates:
             return None
-        # Sort by last_activity descending.
-        # NOTE (v4.5.2 C3): last_activity is DEPRECATED — an unmaintained
-        # ingest-era stamp (ORG_AND_THREAD_MODEL.md deprecation rule).
-        # Tolerated here as a static disambiguation TIEBREAK only, never a
-        # staleness claim; 4.6's incremental event index should replace it
-        # with derived recency. Do not copy this read into new code.
-        candidates.sort(key=lambda p: p.get("last_activity") or p.get("first_seen") or "", reverse=True)
+        # HYG1 Item 3: rank by OBSERVED recency (events, via the
+        # thread_activity derivation) — never the deprecated last_activity
+        # stamp (F-54/F-61: no writer maintains it; the fossil said thread A
+        # was newest while events said B). Derived LAZILY inside
+        # _sort_by_observed_recency: only the rare multi-candidate walk pays
+        # the event scan — the hot single-candidate resolve path never does.
+        candidates = _sort_by_observed_recency(candidates, workspace_root)
         proj = candidates[0]
         return ResolveResult(
             entity_type="project",
@@ -548,8 +620,8 @@ def resolve_to_linked_project(
                     candidates.append(proj)
         if not candidates:
             return None
-        # Deprecated-field tiebreak — same caveat as the sort above.
-        candidates.sort(key=lambda p: p.get("last_activity") or p.get("first_seen") or "", reverse=True)
+        # HYG1 Item 3 — observed-recency tiebreak, same rule as the sort above.
+        candidates = _sort_by_observed_recency(candidates, workspace_root)
         proj = candidates[0]
         return ResolveResult(
             entity_type="project",

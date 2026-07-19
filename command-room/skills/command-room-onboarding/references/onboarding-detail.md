@@ -112,7 +112,7 @@ Use these to deliver the three-layer value proposition. Pick the language that m
 #### Gmail Scan (if connected)
 
 Try to:
-1. Pull last 30 sent emails (use gmail_search_messages with "from:me" and sort by date descending)
+1. Pull last 30 sent emails (resolve the mail search tool via the seam — `discover_mail_search_tool()` / `discover_for_category("email","search",…)`; use the **from-me** intent, sorted by date descending — `connector_adapters/mail.py` compiles it per provider, never a hardcoded operator)
 2. Extract and group:
    - Frequent recipients (name + email, group by frequency: daily, weekly, occasional)
    - Recurring topics/subjects (watch for project names, initiative names, recurring patterns)
@@ -125,7 +125,7 @@ If this succeeds, you have HIGH confidence on contacts and communication style (
 #### Calendar Scan (if connected)
 
 Try to:
-1. Pull 14 days back + 14 days forward (use gcal_list_events for this time range)
+1. Pull 14 days back + 14 days forward (resolve the calendar tool via `discover_calendar_tool()` / `discover_for_category("calendar","find_events",…)`; the neutral start/end window is mapped to the provider's fields by `connector_adapters/calendar.py` — never a hardcoded field name)
 2. Extract and group:
    - Recurring meetings (these are ongoing workstreams — watch for the pattern)
    - Unique attendees (who's on their calendar? which names appear most?)

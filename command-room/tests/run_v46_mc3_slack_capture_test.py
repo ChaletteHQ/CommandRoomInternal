@@ -84,6 +84,14 @@ def expect_raises(label: str, fn, *args, needle: str = "", **kwargs) -> None:
 # ---------------------------------------------------------------------------
 NOW = datetime.datetime(2026, 7, 9, 18, 0, tzinfo=datetime.timezone.utc)
 
+# build_slack_commitment_event stamps status (open vs overdue) against the
+# REAL clock — no injectable now — so due-date fixtures must be computed
+# relative to today, never hardcoded (a hardcoded "future" date silently
+# becomes past and flips the expected status).
+_TODAY = datetime.datetime.now(datetime.timezone.utc).date()
+FUTURE_DUE = (_TODAY + datetime.timedelta(days=7)).isoformat()
+PAST_DUE = (_TODAY - datetime.timedelta(days=7)).isoformat()
+
 
 def _ts(days_ago: float, tail: str = "000100") -> str:
     return f"{(NOW - datetime.timedelta(days=days_ago)).timestamp():.0f}.{tail}"
@@ -231,15 +239,9 @@ check("under-cap passes through undropped",
 
 print("== capture block: Stage-D / S2 / Stage-E / inversion ==")
 PERMA = MSG_USER_PROMISE["permalink"]
-# Due dates are computed relative to the REAL clock — status (open vs overdue)
-# is decided against today, so a hardcoded "future" date becomes a time bomb the
-# day it passes (the original due="2026-07-11" went red on 2026-07-12). See the
-# MC3 dynamic-due-dates fix / hardcoded-future-date gotcha.
-_FUTURE_DUE = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
-_PAST_DUE = (datetime.date.today() - datetime.timedelta(days=14)).isoformat()
 BASE = dict(permalink=PERMA, kind="promise", direction=sc.DIRECTION_USER_SENT,
             owner_id="person_001", counterparty_id="person_042",
-            due=_FUTURE_DUE, message_ts=MSG_USER_PROMISE["ts"])
+            due=FUTURE_DUE, message_ts=MSG_USER_PROMISE["ts"])
 
 ev = sc.build_slack_commitment_event("send Bowie the revised onboarding deck", **BASE)
 check("source_ref is slack:<permalink>", ev["data"]["source_ref"] == f"slack:{PERMA}")
@@ -253,7 +255,7 @@ check("owner joins person_ids", "person_001" in ev["person_ids"])
 check("confident capture carries NO pending_review",
       "pending_review" not in ev["data"])
 check("future due -> status open", ev["data"]["status"] == "open")
-past = sc.build_slack_commitment_event("t", **{**BASE, "due": _PAST_DUE})
+past = sc.build_slack_commitment_event("t", **{**BASE, "due": PAST_DUE})
 check("past due -> status overdue at write", past["data"]["status"] == "overdue")
 
 expect_raises("Stage D: missing kind rejects",
@@ -320,7 +322,7 @@ batch = [
         "send Bowie the revised onboarding deck",
         permalink=MSG_USER_PROMISE["permalink"], kind="promise",
         direction=sc.DIRECTION_USER_SENT, owner_id="person_001",
-        counterparty_id="person_042", due=_FUTURE_DUE,
+        counterparty_id="person_042", due=FUTURE_DUE,
         evidence=MSG_USER_PROMISE["text"], channel="#general",
         message_ts=MSG_USER_PROMISE["ts"], classification_confidence=0.9),
     # owed to you (names_user lane): owner = the counterpart, user is counterparty
@@ -328,7 +330,7 @@ batch = [
         "Bowie to send the Q3 vendor shortlist",
         permalink=MSG_OWED_TO_USER["permalink"], kind="promise",
         direction=sc.DIRECTION_NAMES_USER, owner_id="person_042",
-        counterparty_id="person_001", due=_PAST_DUE,
+        counterparty_id="person_001", due=PAST_DUE,
         evidence=MSG_OWED_TO_USER["text"], channel="#general",
         message_ts=MSG_OWED_TO_USER["ts"], classification_confidence=0.85),
 ]

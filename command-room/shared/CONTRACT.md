@@ -16,7 +16,7 @@ If the renderer pre-flight import check fails: ABORT, surface plain-English erro
 
 ## Rule 2 — Apply-time drafts come back as a widget
 
-Per M's standing rule: *"if you need to send an email — the widget should open."* Whenever apply-time produces an email draft (push meeting, draft re-engagement, follow-up call, status check, propose time, schedule catchup, edit then send rewrite, etc.), the response includes a NEW widget with that draft surfaced through the same Send / Edit then send / To drafts / Edit then draft / Skip action set.
+Per M's standing rule: *"if you need to send an email — the widget should open."* Whenever apply-time produces an email draft (push meeting, draft re-engagement, follow-up call, status check, propose time, schedule catchup, edit then send rewrite, etc.), the response includes a NEW widget with that draft surfaced through the same the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) action set.
 
 Multiple drafts → ONE widget with N items, NEVER N separate widgets. Per M's ask: *"You can host all of those in the same widget."*
 
@@ -36,7 +36,7 @@ Every regenerated brief, memo, or other document produced by an action MUST surf
 
 4. **In-widget `artifact_link.url`** — kept as data-only per `orchestrator-upcoming-meetings.md` line 256 (Cowork's iframe sandbox doesn't reliably resolve `computer://` links inside widget HTML; the widget side is unpainted post-v2.12.0). The H2 link below the widget IS the surface that actually opens — don't try to paint anything inside the iframe.
 
-**URL format (v3.13.0+ — native Windows form):** Cowork's Windows local-file resolver opens the native form: `computer://C:\Users\asdas\Desktop\Claude\Command Room\...\file.docx` — TWO slashes (not three), backslashes preserved, spaces UNENCODED. URL-encoded variants (`%20` for space, `%3A%5C` for `:` and `\`) do NOT open. POSIX absolute paths (macOS/Linux) keep the existing `computer:///url-encoded-path` form — only the Windows-with-space case was broken pre-v3.13.0.
+**URL format (v3.13.0+ — native Windows form):** Cowork's Windows local-file resolver opens the native form: `computer://C:\Users\Sample\Desktop\Claude\Command Room\...\file.docx` — TWO slashes (not three), backslashes preserved, spaces UNENCODED. (The space in `Command Room` is the load-bearing part of this example, not the username.) URL-encoded variants (`%20` for space, `%3A%5C` for `:` and `\`) do NOT open. POSIX absolute paths (macOS/Linux) keep the existing `computer:///url-encoded-path` form — only the Windows-with-space case was broken pre-v3.13.0.
 
 This format is produced by `shared/scripts/brief_path.py` `get_brief_artifact_url()`. The path is hidden behind the link label — never appears as visible text per Rule 4.
 
@@ -179,12 +179,14 @@ Zapier scope = email `send` + `reply to email` only. NEVER calendar, drive, shee
 ## Rule 9 — Tool discovery is centralized
 
 Helpers in `shared/scripts/tool_discovery.py`:
+- **`discover_for_category(category, operation, tools, declared=…)` — SERVER-ID-FIRST resolution (connector-agnostic-v1, the primary path).** When a backend is declared for the category (`connector_config.declared_backend(category)`, keyed by MCP server-id), it resolves the operation on THAT server — deterministic, immune to the substring / H-H hazards. When no backend is declared (empty map), it returns None+reason and the caller falls back to the substring helpers below = today's behavior (R4).
 - `discover_calendar_tool()` — native-only, returns matched tool ID or None+reason.
-- `discover_gmail_send_tool()` — native Gmail send + reply tool IDs.
-- `discover_zapier_send_tool()` — permissive matching across name/description per `EMAIL_DRAFT_PROTOCOL.md` §3c, returns matched ID or None.
-- `discover_granola_tool()` — for past-meetings transcript fetch.
+- `discover_gmail_send_tool()` / `discover_mail_*()` — native mail send/reply/draft/search/thread-fetch across stacks.
+- `discover_zapier_send_tool(tools, zapier_ids=…)` — the gmail-only dispatch leg; recognizes a UUID-namespaced Zapier server by pinned server-id (`workspace.connectors._zapier_server_ids`) or the `get_configuration_url` signature (R12/H-H), not just the `mcp__zapier_` prefix.
+- `discover_granola_tool()` / `discover_transcript_tool()` — transcript fetch.
+- `repair_backend(server_tool_ids)` — fingerprint re-pair for a reconnected server whose UUID changed (A1b); confirm-with-user before re-pinning (interactive only, R13).
 
-Orchestrators import these helpers in Phase 2 setup. They do not pick namespaces themselves.
+Discovery is DATA-first: the declared backend + the capability manifest (`shared/data-schemas/connector_capabilities.json`) are the single source both `CONNECTORS.md` and discovery read, so the catalog/hint-map drift (N10) can't recur. Orchestrators import these helpers in Phase 2 setup. They do not pick namespaces themselves, and they never name a provider tool directly (Rule 21).
 
 ## Rule 10 — Multi-person items split, never stack
 
@@ -426,11 +428,11 @@ See `references/RELEASE_MANIFEST.md` "Action types" and "Action contract" for th
 
 Every chat post — orchestrator widget, post-widget Links section, apply-time response — runs through this chain. Failure at ANY step aborts the post and surfaces plain English to the user.
 
-1. **Renderer pre-flight (bash gate)** — `python3 -c "...; from chat_output_renderer import render_chat_output_widget; print('OK')"`. Must print exactly `OK`.
-2. **Canonical-action validator** — `render_chat_output_widget(data)` raises `ValueError` if any item has an action not in `CANONICAL_ACTIONS` (or specific-org variant).
+1. **Renderer pre-flight (bash gate)** — `python3 -c "...; from widget_transport import render_and_persist; print('OK')"`. Must print exactly `OK`.
+2. **Canonical-action validator** — the transport's internal `render_chat_output_widget(data)` raises `ValueError` if any item has an action not in `CANONICAL_ACTIONS` (or specific-org variant).
 3. **Required-fields validator** — every item has `n`. Every email-shaped item with original_thread has `url`. Every brief has `artifact_link.url`.
-4. **Leak scanner blocking gate** — `validate_chat_output(html)` raises `ValueError` if any forbidden pattern matches the rendered output. ABORT before posting.
-5. **Post via `mcp__visualize__show_widget`** — only after all 4 gates pass.
+4. **Leak scanner + wrapper-contract blocking gates** — `validate_chat_output(html)` raises `ValueError` on any forbidden pattern; `validate_rendered_widget(html)` raises `WrapperContractError` on a dropped input wrapper. Both run INSIDE `widget_transport.render_and_persist` (EW2+T). ABORT before posting.
+5. **Post via `mcp__visualize__show_widget`, passing `transport["html"]` (the persisted page's validated bytes, verbatim) as `widget_code`** — only after the transport call returns clean. Never hand-compose the HTML, never post-process it, and never relay an unbounded set in one page — paginate (`page=N`) for unbounded views (Bug #67; `shared/CHAT_ACTION_WIDGET.md` § Transport).
 6. **Post-widget Links section** — runs through the same leak scanner. ABORT on leak.
 7. **Apply-time response** (apply-choices) — runs the same chain. Same enforcement, no special path.
 
@@ -491,3 +493,28 @@ stories archive, superseded facts die.
 
 Reviewer checklist form: "does this diff change behavior? → grep the skill for
 the OLD behavior's vocabulary before approving."
+
+## Rule 30 — Email composition is email-writer's monopoly (SPEC EW1, 2026-07-13)
+
+Any turn that produces recipient-bound email text — a skill fire, a sub-step of
+another skill's work, or a freelance mid-task turn — MUST chain email-writer:
+read its SKILL.md and follow `shared/EMAIL_DRAFT_PROTOCOL.md` end to end. No
+skill and no freelance path composes email text directly via a mail connector
+tool. thread-resurrection's "revival draft via chained email-writer" is the
+established pattern; this rule generalizes it to every draft-producing turn.
+
+Why: the mid-turn bypass (Bug #104 — see references/HISTORY.md). Skills route
+on user messages only, so an email that arises as a sub-step of a bigger task
+never hits the router — and a turn that skips email-writer skips the customer's
+voice block, length target, two-pass critique, and voice-tell detector all at
+once. For turns where no skill fired at all, the binding is the email-delegation
+rule in the workspace CLAUDE.md (written by `references/claude-md-template.md`
+at onboarding; back-filled to existing installs by the update bridge's
+`claude_md_email_rule_v1` migration) — the one surface every session loads.
+
+Enforcement status (honest): GUIDANCE at runtime — a standing instruction, not
+a mechanical gate (same-turn hooks are dead in the runtime — the SPEC GATE2
+§2e finding; enforcement moved to detection, see skills/check-deliverables).
+Structural presence of the rule text across all four surfaces is test-enforced
+(`tests/run_email_delegation_rule_test.py`); check-deliverables remains the
+on-demand detection story.

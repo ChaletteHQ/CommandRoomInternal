@@ -644,14 +644,23 @@ def load_events_defensively(
     for fp in files:
         if not fp.exists():
             continue
+        # FS-15 — when the FINAL non-blank line of a file won't parse, that's
+        # the partial-write / truncated-sync-cache signature (not historical
+        # junk mid-file): record it in the `.readalarm.json` sidecar the
+        # brief / system-health surface loudly. The skipped[] contract is
+        # unchanged — callers should still surface it — but the sidecar makes
+        # the degradation survive callers that don't.
+        last_decode_error = None
         with open(fp, "r", encoding="utf-8") as f:
             for i, raw in enumerate(f, 1):
                 line = raw.strip()
                 if not line:
                     continue
+                last_decode_error = None
                 try:
                     ev = json.loads(line)
                 except json.JSONDecodeError as e:
+                    last_decode_error = f"JSONDecodeError: {e.msg}"
                     skipped.append(
                         {
                             "line": i,
@@ -672,6 +681,20 @@ def load_events_defensively(
                     )
                     continue
                 events.append(ev)
+        if last_decode_error:
+            try:
+                from read_alarm import record_read_alarm
+                record_read_alarm(
+                    fp,
+                    f"final line unparseable (truncation signature): "
+                    f"{last_decode_error}",
+                    reader="cru_match",
+                )
+            except Exception:  # pragma: no cover
+                # Best-effort: a broken read_alarm module (ImportError, or the
+                # SyntaxError a mid-update truncation leaves) must not turn a
+                # degraded read into a hard failure.
+                pass
     return events, skipped
 
 
@@ -823,6 +846,15 @@ def load_open_commitments(
             f"malformed events.jsonl lines in {path.name}: "
             f"{[s['line'] for s in skipped]}\n"
         )
+    # R5 reader-honor (connector-agnostic-v1): the commitment projector drops
+    # rows whose account identity matches a LIVE account_scope_masked (un-
+    # masked by account_scope_restored). Read-side only; rows never move.
+    # Defensive: any failure leaves the events unfiltered.
+    try:
+        from account_scope_gate import filter_masked_events
+        events = filter_masked_events(events)
+    except Exception:
+        pass
 
     open_evs: list[dict] = []
     # Closure state is ORDER-AWARE since Stage D's `commitment_reopened`
@@ -1836,10 +1868,15 @@ def build_pending_review_event(
     score: float,
     evidence: str,
     next_seq: int,
+    title: str = "",
 ) -> dict:
     """Build a `commitment_review_proposed` event — the next Pulse fire
     surfaces these as one-click `confirm / skip` items. Used for MEDIUM-
     confidence matches where auto-resolve is too aggressive.
+
+    `title` (FB-19) is the commitment's own name, carried so the card row can
+    say WHAT it is asking about. Without it the row renders as a bare shape
+    label ("Housekeeping") — the live 2026-07-16 defect.
     """
     return {
         "seq": next_seq,
@@ -1852,6 +1889,7 @@ def build_pending_review_event(
             "proposed_resolution": proposed_resolution,
             "match_score": round(score, 3),
             "evidence": evidence[:200] if evidence else "",
+            "title": title or "",
         },
     }
 

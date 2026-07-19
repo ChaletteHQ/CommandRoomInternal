@@ -1,20 +1,34 @@
-# Passive Capture Contract — v2.2
+# Passive Capture Contract — v3.0
 
-**Purpose:** Memory should accumulate without the CEO doing anything. Every connector read that surfaces a fact worth remembering should produce a corresponding event in `events.jsonl` — silently, on the same turn, as a side effect of the read.
+**Purpose:** Memory should accumulate without the CEO doing anything. Every connector read that surfaces a fact worth remembering *from an in-scope account* should produce a corresponding event in `events.jsonl` — silently, on the same turn, as a side effect of the read.
 
-**Applies to every skill that reads from:** Gmail, Google Calendar, Slack, Granola, Google Drive, or any other connector that exposes CEO-relevant activity.
+**Applies to every skill that reads from:** Gmail, Google Calendar, Slack, Granola, Google Drive, Superhuman, Outlook, or any other connector that exposes CEO-relevant activity.
 
-This contract sits alongside `WORKSPACE_API.md` and is read whenever a skill touches a connector.
+This contract sits alongside `WORKSPACE_API.md`, `ACCOUNT_SCOPE.md` (the two-dial account model), and is read whenever a skill touches a connector.
+
+> **v3.0 change (connector-agnostic-v1, 2026-07-11 — review requirement R1).**
+> "Read produces Write" is now qualified by the account map's **`write_to_business`
+> dial**. The prior blanket doctrine ("no mode loses data") is deliberately
+> relaxed for out-of-scope accounts: an account with `write_to_business: off`
+> is READ for surfacing (brief/reminders) but **NOTHING is filed** into the
+> substrate for it. This is amended here ONCE, in writing, before any skill's
+> Writer Contract prose is rewritten, so it is not rewritten twice. The
+> per-connector `PASSIVE_CAPTURE_OPTOUT.md` seam is the mechanical precedent —
+> v3 generalizes it to per-account/per-item via the account map. **Where the
+> account map is empty (live client mid-upgrade), behavior is unchanged: every
+> account is in-scope and the original blanket doctrine holds (R4).**
 
 ---
 
 ## Core Principle
 
-> Read produces Write. No user confirmation. No second turn.
+> Read produces Write — for in-scope accounts. Out-of-scope reads surface without filing. No user confirmation. No second turn.
 
-When a skill reads a Gmail thread, Calendar event, Slack message, or Granola transcript, it MUST append the corresponding events to `events.jsonl` as part of the same turn, via the Append Protocol in WORKSPACE_API.md.
+When a skill reads a mail thread, Calendar event, Slack message, or Granola transcript **from an account whose `write_to_business` dial is on** (or from a workspace with no account map yet — the empty-map case is in-scope by default, R4), it MUST append the corresponding events to `events.jsonl` as part of the same turn, via the Append Protocol in WORKSPACE_API.md.
 
-The CEO does not need to say "save this." The act of Claude reading it on the CEO's behalf is the authorization to persist it.
+When the read is from an account whose `write_to_business` dial is **off** (personal, or a mixed-account sender not tied to a known entity), the skill still performs the read for its primary purpose and MAY surface the item if the account's `surface` dial is on — but it appends **nothing** to the substrate. The writer helpers enforce this structurally (`ACCOUNT_SCOPE.md` §4): a provenance-required event whose `account_id` resolves out-of-scope is rejected at ingest.
+
+The CEO does not need to say "save this." The act of Claude reading it on the CEO's behalf is the authorization to persist it — **when the account it came from is in business scope.**
 
 **Exception:** raw content of an email body, Slack message, or transcript is NOT written verbatim to events.jsonl. The event stores a summary + entity references + source reference (message id, calendar id), not the full text.
 
@@ -186,17 +200,39 @@ CEO can pin a sample to always be included (protected from rolling eviction) by 
 
 ## Privacy Surface
 
-Passive capture respects:
+Passive capture respects, in this order:
 
-1. The `email_exclusion_rules` list in `CLAUDE.md` (CEO-defined senders or subject patterns to ignore).
-2. Any person record with `status: "archived"` — events referencing only archived people are suppressed (they still happen, but they're not worth tracking).
-3. Any thread with `status: "archived"` — same rule; updates to archived threads don't accumulate passive events.
+1. **The account map's `write_to_business` dial (v3.0 — the primary mechanism).**
+   An account with `write_to_business: off` files nothing, regardless of the
+   rules below. This supersedes the old `email_exclusion_rules` prose as the
+   governing wall. The wall is enforced structurally in the writer helpers per
+   `ACCOUNT_SCOPE.md` §4, not by this prose alone.
+1b. **Per-sender scope overrides (Layer B, LIVE as of connector-agnostic-v1).**
+   `workspace.accounts[].overrides.senders[<addr>].{surface, write_to_business}`
+   — read by the wall (`account_scope_gate`), written ONLY via
+   `connector_config.set_sender_scope_override` (delegated setter). This is
+   the structured replacement for the prose exclusion rules: "never file
+   newsletters@x" = `write_to_business: off` for that sender; "always show my
+   kids' school" = `surface: on` on a personal account.
+2. The legacy `email_exclusion_rules` list in `CLAUDE.md` (CEO-defined senders or
+   subject patterns to ignore) — **still honored during the transition**:
+   readers/capture paths apply BOTH the structured overrides and the prose
+   list; where they disagree, the more conservative (exclude) wins.
+   **Migration (one-time, additive):** `command-room-update-bridge` reads the
+   workspace CLAUDE.md's `email_exclusion_rules`, converts each SENDER-shaped
+   rule to `set_sender_scope_override(root, <account>, <sender>,
+   write_to_business=False, reason="migrated from email_exclusion_rules")`,
+   and leaves the prose in place with a migrated-note (never deletes user
+   config). Pattern-shaped rules (subject regexes) stay prose — the
+   structured store is sender-keyed by design (YAGNI: no rule-matrix).
+3. Any person record with `status: "archived"` — events referencing only archived people are suppressed (they still happen, but they're not worth tracking).
+4. Any thread with `status: "archived"` — same rule; updates to archived threads don't accumulate passive events.
 
 The CEO can disable passive capture for a specific connector by adding to `_hq/PASSIVE_CAPTURE_OPTOUT.md`:
 ```
 gmail: off
 ```
-When present, skills skip all Gmail-side capture but still perform connector reads for their primary purpose (e.g., surfacing emails in a briefing).
+When present, skills skip all Gmail-side capture but still perform connector reads for their primary purpose (e.g., surfacing emails in a briefing). **This per-connector seam is the mechanical precedent the v3.0 two-dial model generalizes to per-account/per-item** — a `write_to_business: off` account is exactly this opt-out, scoped to an account instead of a whole connector.
 
 ---
 

@@ -18,6 +18,6 @@
     "decision-memo-composer": ["criteria_persistence", "weight_display"],
     "stress-test": ["depth", "risk_framing"],
     "automation-scanner": ["ranking_weights", "horizon_buckets"],
-    "output_profile": ["density", "visual_bias", "page_cap", "default_format"]
+    "output_profile": ["density", "visual_bias", "page_cap", "default_format", "format_by_kind"]
   }
 }

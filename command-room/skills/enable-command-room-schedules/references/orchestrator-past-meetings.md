@@ -446,16 +446,16 @@ You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-writ
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, validate_rendered_widget, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; from brief_path import get_brief_path, get_brief_artifact_url; print('OK')"
+python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; from chat_output_renderer import validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; from brief_path import get_brief_path, get_brief_artifact_url; print('OK')"
 ```
 
 If stdout is not exactly `OK`, ABORT the fire. Surface plain English: `(Renderer pre-flight failed — chat output deferred. Diagnostic: <error>.)` Do NOT post any widget.
 
-**⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, extended v2.14.37+):** the HTML returned by `render_chat_output_widget()` is sealed — pass it BYTE-FOR-BYTE to `mcp__visualize__show_widget`. No minification, no whitespace stripping, no "trimming for size", no removing what looks like duplicate elements. Every `<div class="cr-action-input">` wrapper is functionally required — dropping any of them silently breaks the matching button's input affordance (button selects gold but no textarea opens). MANDATORY: call `validate_rendered_widget(html)` immediately after `render_chat_output_widget()` and BEFORE invoking show_widget. The validator raises `WrapperContractError` if any wrapper has been dropped.
+**⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, transport-updated EW2+T):** the render is sealed — post via `widget_transport.render_and_persist` and pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`, never hand-composed or post-processed HTML. No minification, no whitespace stripping, no "trimming for size", no removing what looks like duplicate elements — not on `transport["html"]`, not on the persisted file. Every `<div class="cr-action-input">` wrapper is functionally required. The transport runs `validate_rendered_widget` internally and raises `WrapperContractError` if any wrapper is missing.
 
-**v2.14.37+ extension — `show_widget` mandatory after a clean validator pass.** If `render_chat_output_widget()` returns and `validate_rendered_widget(html)` passes, you MUST call `mcp__visualize__show_widget(html)`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," or any other reason is FORBIDDEN — none of those phrases exist in this codebase. If `show_widget` itself errors, surface the error string verbatim and STOP.
+**v2.14.37+ extension (EW2+T) — `show_widget` mandatory after a clean transport call.** If `render_and_persist()` returns without raising, you MUST call `mcp__visualize__show_widget` with `transport["html"]` as `widget_code`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," or any other reason is FORBIDDEN — none of those phrases exist in this codebase, and pagination (~10 rows/page) keeps every page inside the relay budget. If `show_widget` itself errors, surface the error string verbatim and STOP.
 
-**v2.14.37+ extension — markdown lists are not a substitute for widget rendering.** Any "show me the X" / "surface the Y" / "list the Z" follow-up goes through `render_chat_output_widget` → `validate_rendered_widget` → `show_widget`. Markdown bullet lists in chat as a substitute are FORBIDDEN even when the user explicitly asks for one.
+**v2.14.37+ extension — markdown lists are not a substitute for widget rendering.** Any "show me the X" / "surface the Y" / "list the Z" follow-up goes through `render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`). Markdown bullet lists in chat as a substitute are FORBIDDEN even when the user explicitly asks for one.
 
 See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the full diagnosis lineage (Cowork's 2026-05-07 structural diagnostic, v2.14.34 D1 root cause + v2.14.37 narrate/markdown bypass closures).
 
@@ -483,7 +483,7 @@ Every number ANY Phase 6 surface renders — the widget header counts, each meet
 # (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
 import sys
 sys.path.insert(0, "shared/scripts")
-from chat_output_renderer import render_chat_output_widget
+from widget_transport import render_and_persist
 
 data_view = {
     "widget_mode": "all_batch_widget",
@@ -494,16 +494,13 @@ data_view = {
     "save_confirmation": skipped_summary,    # e.g. "Skipped: Office painting plan, Self-call 'Command room update'"
 }
 
-html = render_chat_output_widget(data_view, wrapper="fragment")
-
-# v2.14.34+ — MANDATORY structural validation. Catches dropped wrappers if
-# anything has touched the HTML between render() and show_widget. Pass
-# `html` BYTE-FOR-BYTE — no re-encoding, no "cleanup", no minification.
-from chat_output_renderer import validate_rendered_widget, WrapperContractError
-validate_rendered_widget(html)  # raises WrapperContractError on bypass
-
-# Call mcp__visualize__show_widget with `html` UNMODIFIED. The string from
-# render_chat_output_widget IS the payload. Do NOT post-process.
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="past-meetings")
+# EW2+T (F-15): the transport runs the full validator chain (canonical
+# actions, data shape, leak scan, wrapper contract) and persists the sealed
+# render. Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — never
+# a hand-composed variant, never a post-processed one.
 ```
 
 The widget renders inline with per-item buttons; user clicks accumulate locally; "Apply all" fires `apply choices: [...]` payload that `apply-choices` skill catches and dispatches through the reply handlers below. Do not compose chat strings or paraphrase — the widget HTML IS the post.

@@ -248,9 +248,9 @@ def main() -> int:
     # ---- schema registration + writer round-trip ----
     schema = json.loads((ROOT / "shared" / "data-schemas" / "skill_config.schema.json")
                         .read_text(encoding="utf-8"))["skills"]
-    check("schema: output_profile registered with the 4 knobs",
+    check("schema: output_profile registered with the 5 knobs (OUT5 adds format_by_kind)",
           sorted(schema.get("output_profile", [])) ==
-          ["default_format", "density", "page_cap", "visual_bias"])
+          ["default_format", "density", "format_by_kind", "page_cap", "visual_bias"])
     for s in ("board-pack-assembler", "decision-memo-composer",
               "stress-test", "automation-scanner"):
         check(f"schema: {s} registered (OUT2 §5)", s in schema)

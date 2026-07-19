@@ -35,7 +35,9 @@ def test_keys_of_shapes():
     check("data.dedup_hash shape", sri._keys_of({"data": {"dedup_hash": "abc123"}}) == {"h:abc123"})
     check("top-level source_ref_hash shape", sri._keys_of({"source_ref_hash": "def456"}) == {"h:def456"})
     r = sri._keys_of({"data": {"source_ref": "gmail:msg1"}})
-    check("data.source_ref shape -> r: key", len(r) == 1 and next(iter(r)).startswith("r:"))
+    # R15/H-K: source_ref now yields BOTH an r: key (raw) and a c: canonical key.
+    check("data.source_ref shape -> r: + c: keys",
+          len(r) == 2 and any(k.startswith("r:") for k in r) and "c:gmail:msg1" in r)
     check("no keys / shapeless -> empty set, no raise", sri._keys_of({}) == set() and sri._keys_of("x") == set())
 
 
@@ -47,8 +49,9 @@ def test_rebuild_mixed_and_malformed():
     events.append({"no_keys": True})
     ws = _ws(events)
     stats = sri.rebuild(ws)
-    # 500 events x (1 h-key + 1 r-key) = 1000 keys; malformed + no-key skipped.
-    check("rebuild key count = 1000", stats["keys"] == 1000)
+    # 500 events x (1 h-key + 1 r-key + 1 c-canonical-key) = 1500 keys (R15/H-K
+    # added the c: namespace); malformed + no-key skipped.
+    check("rebuild key count = 1500", stats["keys"] == 1500)
     check("rebuild counted 501 dict events (incl no_keys)", stats["events"] == 501)
     check("idx contains a known h-key", sri.check(ws, dedup_hash="h0001"))
     check("idx contains a known r-key (source_ref)", sri.check(ws, source_ref="src:1"))

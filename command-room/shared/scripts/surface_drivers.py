@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""One-command surface drivers (T2.2 scope 1e — kill the ~30-command prep).
+
+WHY THIS EXISTS
+The RV round measured a manual `commitments` fire spending ~30 shell/python
+round-trips assembling the data view before the widget rendered (load →
+project → count → escalate → sort → annotate → build → fit → persist), with
+the double-render nit (RV-3) riding on the re-runs. Every one of those steps
+is deterministic — so this module does ALL of them in ONE CLI invocation per
+surface and prints exactly what the runtime needs to relay:
+
+    python3 shared/scripts/surface_drivers.py commitments \
+        --workspace <WORKSPACE> [--page N] [--page-size 15]
+    python3 shared/scripts/surface_drivers.py staff-meeting \
+        --workspace <WORKSPACE> [--page N] [--moves-json <file>] \
+        [--fired-via scheduled|manual|catchup]
+
+STDOUT SHAPE (fixed contract — the skill texts pin it):
+
+    CR-PAGINATION: {"page": 1, "total_pages": 3, ...}
+    CR-WIDGET-HTML-BEGIN
+    <the persisted page's validated bytes, verbatim>
+    CR-WIDGET-HTML-END
+    CR-RECEIPT: {"task_id": ..., "status": "written"}   (only with --fired-via)
+
+FIRE RECEIPTS (FB-7): `--fired-via <run mode>` makes the page-1 invocation
+ALSO append the surface's canonical per-fire receipt (receipts.log_receipt)
+inside this same call — the 2026-07-16 live staff-meeting scheduled fire
+rendered its widget but never reached the prose receipt step that came after
+the widget post, so the render and the receipt are now one invocation that
+no orchestrator path can split. Pages 2+ (`show more`) never receipt.
+
+The runtime relays the bytes BETWEEN the BEGIN/END markers to
+`mcp__visualize__show_widget` as `widget_code`, byte-exact, and reads the
+pagination line for the position/`show more` narration. Nothing else needs
+running: `render_and_persist` (validators + byte-fit + persist + audit file)
+already ran inside this call.
+
+IDEMPOTENT-SINGLE-CALL (RV-3 double-render): one driver invocation per page
+per fire. The persisted audit file is written once per invocation; re-running
+the driver "to refresh" writes a second audit file and is exactly the
+double-render defect. If the transport output for the requested page is
+already in hand, relay it — never re-run.
+
+Views are built from the CANONICAL projectors only (cru_match /
+commitment_state / confirm_flow / brain_proposals) — the driver adds no
+judgment, no filtering, no re-derivation. Read-only against the substrate
+except for the transport's own persist into `_hq/.system/widgets/`.
+
+stdlib only.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+# The commitment-triage row verb sets (SKILL.md Step 3 — verbatim).
+_PROMISE_VERBS = ["resolved", "push to [date]", "drop", "not mine",
+                  "make task", "never track this", "skip"]
+_TASK_VERBS = ["resolved", "push to [date]", "drop", "promote",
+               "never track this", "skip"]
+# FB-20 — how many money-class items the brief names in prose before it
+# leaves the rest to the pointer's count. A render bound, never a silence:
+# every capped item is still inside `queue_pointer["count"]`, and money is
+# the only class that gets named at all.
+MONEY_PROSE_CAP = 3
+
+
+def _pointer_line(count: int) -> str:
+    """FB-20's ONE queue-pointer line — the brief's entire adjudication
+    affordance now that the card is gone. Drop-empty at zero: a brief with
+    nothing queued says nothing about the queue (never "0 things need your
+    eyes", never an all-clear pad)."""
+    if count <= 0:
+        return ""
+    noun = "thing needs" if count == 1 else "things need"
+    return f"{count} {noun} your eyes — say `staff meeting`."
+
+
+# Unconfirmed-block confirm cluster (W4b).
+_CONFIRM_VERBS = ["mine", "theirs to [name]", "make task", "drop"]
+_DUP_VERBS = ["merge", "keep both", "drop"]
+# pending_review rows outside the 7d escalation pin (explicit confirm-shaped
+# actions only — an explicit click IS confirmation).
+_PENDING_VERBS = ["resolved", "drop", "not mine"]
+
+_REDUCED_REASON = ("Fewer options — the owner is unconfirmed; clicking Done, "
+                   "Drop, or Not mine confirms it.")
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _events_path(ws: Path) -> Path:
+    return ws / "_hq" / "data" / "events.jsonl"
+
+
+def _age_days(ts: str, now_iso: str) -> int | None:
+    from event_time import parse_ts
+
+    a, b = parse_ts(ts), parse_ts(now_iso)
+    if a is None or b is None:
+        return None
+    return max(0, int((b - a).total_seconds() // 86400))
+
+
+def _due_phrase(due, now_iso: str) -> str:
+    if not due:
+        return "undated"
+    try:
+        d = _dt.date.fromisoformat(str(due)[:10])
+        today = _dt.date.fromisoformat(now_iso[:10])
+        if d == today:
+            return "due today"
+        if d < today:
+            return f"overdue since {d.strftime('%b')} {d.day}"
+        return f"due {d.strftime('%b')} {d.day}"
+    except ValueError:
+        return f"due {due}"
+
+
+def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) -> dict:
+    """The full commitment-triage data view (SKILL.md Steps 1-2, mechanized):
+    canonical loader + bucket export + escalation split + age sections +
+    per-row context tags + per-kind verb sets. Pure read."""
+    from commitment_activity import derive_commitment_movement
+    from commitment_state import (commitment_kind, count_commitments,
+                                  stale_tasks)
+    from confirm_flow import select_unconfirmed_escalation, unconfirmed_classes
+    from cru_match import load_open_commitments
+    from event_time import event_time
+    from primary_user import resolve_primary_user
+
+    ws = Path(workspace_root)
+    now_iso = now_iso or _now_iso()
+    events_path = _events_path(ws)
+    opens = load_open_commitments(events_path)
+    try:
+        user_id = resolve_primary_user(ws)
+    except Exception:
+        user_id = None
+    movement = derive_commitment_movement(events_path)
+    counts = count_commitments(opens, user_person_id=user_id,
+                               now_iso=now_iso, movement=movement)
+    stale_ids = {row.get("commitment_id") or row.get("id")
+                 for row in stale_tasks(opens, now_iso, movement=movement)}
+    esc = select_unconfirmed_escalation(opens, now_iso)
+    esc_ids = {row["commitment_id"] for row in esc["pin"]}
+    propose_drop_ids = {row["commitment_id"] for row in esc["propose_drop"]}
+
+    def _cid(ev) -> str:
+        d = ev.get("data") or {}
+        return d.get("id") or f"commitment_seq_{ev.get('seq')}"
+
+    display_n = 0
+    sections: list[dict] = []
+
+    # Unconfirmed block FIRST (v4.6.1 W4b escalation — never age-buried).
+    if esc["pin"]:
+        rows = []
+        for r in esc["pin"]:
+            display_n += 1
+            dup = bool(r.get("suspected_duplicate_of"))
+            lead = ""
+            if r["commitment_id"] in propose_drop_ids:
+                lead = (f"sat unconfirmed for {r['days_unconfirmed']} days — "
+                        f"drop it? · ")
+            tag = (f"{lead}captured {r['days_unconfirmed']} days ago — still "
+                   f"unconfirmed"
+                   + (f" · {r['review_reason']}" if r.get("review_reason") else ""))
+            rows.append({
+                "n": r["commitment_id"], "display_n": display_n,
+                "name": r.get("title") or "(untitled)",
+                "context_tag": tag,
+                "actions": _DUP_VERBS if dup else _CONFIRM_VERBS,
+            })
+        sections.append({"title": "Unconfirmed", "count": len(rows),
+                         "items": rows})
+
+    # Age sections, oldest first; escalation-pinned rows excluded (no
+    # double-surfacing).
+    aged: list[tuple[int, dict]] = []
+    for ev in opens:
+        cid = _cid(ev)
+        if cid in esc_ids:
+            continue
+        age = _age_days(ev.get("ts") or "", now_iso)
+        aged.append((age if age is not None else -1, ev))
+    aged.sort(key=lambda t: -t[0])
+
+    def _row(ev, age):
+        nonlocal display_n
+        display_n += 1
+        cid = _cid(ev)
+        d = ev.get("data") or {}
+        kind = commitment_kind(ev)
+        classes = unconfirmed_classes(ev)
+        pending = "pending_review" in classes
+        parts = []
+        if age >= 0:
+            parts.append(f"{age} days old" if age != 1 else "1 day old")
+        parts.append(_due_phrase(d.get("due"), now_iso))
+        parts.append("task (yours)" if kind == "task" else kind)
+        if cid in stale_ids:
+            parts.append("still on your plate?")
+        if pending and d.get("review_reason"):
+            parts.append(str(d.get("review_reason")))
+        row = {
+            "n": cid, "display_n": display_n,
+            "name": d.get("title") or d.get("summary") or "(untitled)",
+            "context_tag": " · ".join(parts),
+            "actions": (_PENDING_VERBS if pending
+                        else (_TASK_VERBS if kind == "task" else _PROMISE_VERBS)),
+        }
+        if pending:
+            row["reduced_verbs_reason"] = _REDUCED_REASON
+        return row
+
+    old_rows = [_row(ev, age) for age, ev in aged if age >= 30]
+    new_rows = [_row(ev, age) for age, ev in aged if age < 30]
+    if old_rows:
+        sections.append({"title": "30+ days old", "count": len(old_rows),
+                         "items": old_rows})
+    if new_rows:
+        sections.append({"title": "The rest", "count": len(new_rows),
+                         "items": new_rows})
+
+    h = counts["headline"]
+    counters = [
+        {"label": "Open", "value": h["total"]},
+        {"label": "You owe", "value": h["you_owe"]},
+        {"label": "Owed to you", "value": h["owed_to_you"]},
+        {"label": "Unowned", "value": h["unowned"]},
+        {"label": "Unconfirmed", "value": h["unconfirmed"]},
+    ]
+    return {
+        "source_skill": "commitment-triage",
+        "header": f"Commitment triage — {h['total']} open, oldest first",
+        "counters": counters,
+        "sections": sections,
+    }
+
+
+def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
+                             moves_rows: list | None = None) -> dict:
+    """The Staff Meeting queue view (orchestrator Phase 3+5, mechanized):
+    THE projector + D3 ranking + build_card_view. `moves_rows` (Phase 4's
+    email-shaped rows, connector-dependent so built by the orchestrator) are
+    appended as the THIS WEEK'S MOVES section when supplied."""
+    from brain_proposals import (build_card_view, load_open_proposals,
+                                 rank_proposals)
+
+    queue = rank_proposals(load_open_proposals(
+        workspace_root, "staff-meeting", now_iso=now_iso))
+    extra = ([{"title": "THIS WEEK'S MOVES", "items": list(moves_rows)}]
+             if moves_rows else None)
+    return build_card_view(queue, surface="staff-meeting",
+                           extra_sections=extra)
+
+
+def _last_brief_ts(workspace_root, now_iso: str) -> str:
+    """The CHANGED window's opening edge: the newest prior morning-brief
+    receipt's timestamp, else the newest `brief_state` event's ts, else
+    36 hours back (first-ever brief — one day plus slack so an overnight
+    install still gets a real window, never an empty-string scan)."""
+    from event_time import parse_ts
+    from receipts import iter_receipts
+
+    try:
+        receipts = iter_receipts(workspace_root, task_ids=["morning-brief"])
+        dts = [r["dt"] for r in receipts if r.get("dt") is not None]
+        if dts:
+            return max(dts).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+    try:
+        import json as _json
+        newest = None
+        p = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        if p.exists():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if '"brief_state"' not in line:
+                    continue
+                try:
+                    ev = _json.loads(line)
+                except Exception:
+                    continue
+                if ev.get("type") == "brief_state" and ev.get("ts"):
+                    newest = ev["ts"]
+        if newest:
+            return newest
+    except Exception:
+        pass
+    base = parse_ts(now_iso)
+    return (base - _dt.timedelta(hours=36)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
+                             now_iso: str | None = None) -> dict:
+    """t3 FB-9 — the morning brief's mandatory substrate blocks, assembled,
+    validated, and persisted in ONE call (the t2.2 skip-proofing pattern
+    that fixed commitments/staff-meeting). A live post-update fire skipped
+    the brain-card widget AND the substrate-alarm line while the pre-update
+    fire rendered both — instruction-layer MUSTs (FS-09) don't survive an
+    orchestrator that stops early; a driver whose single output carries
+    every block does.
+
+    Returns (and persists to `_hq/.system/briefs/`) the pack:
+
+      alarm_lines    substrate_health.substrate_alarm_lines — render
+                     VERBATIM at the very top of the brief (FS-04/05/06/15).
+      changed        change_feed.changes_since(<last brief ts>) — the lines
+                     the CHANGED contract line MUST cite when non-empty
+                     (FS-09; "Nothing material" over a non-empty feed is
+                     the bug).
+      brief_state    compute_and_log_brief_state's counts headline +
+                     needs_attention + reconcile_stale. THE one Step-3d
+                     derivation — the driver call writes the `brief_state`
+                     audit event, so the orchestrator must NOT call it
+                     again (one event per fire).
+      watchdog_line  task_watchdog.brief_watchdog_line — append verbatim
+                     when non-None (S3 light pass).
+      money_lines    FB-20's ONE carve-out: money-class proposals (deal
+                     signals) as one prose sentence each, propose-only —
+                     "Command Room thinks [Org] is a live deal — say staff
+                     meeting to confirm." Money is the one class that may
+                     never go silent, so it is NAMED in the brief; the
+                     adjudication still happens at the staff meeting, by
+                     chat phrase, with no widget. Capped at
+                     MONEY_PROSE_CAP (the pointer's count carries the rest —
+                     a cap is a render bound, never a silence).
+      queue_pointer  {count, line} — the live count of everything the staff
+                     meeting would render, and the ONE pointer line that
+                     replaces the card ("N things need your eyes — say
+                     staff meeting"). count == what `staff meeting` actually
+                     shows (same projector, same surface, same held/mute
+                     filters), so the number can never over-promise. Zero →
+                     empty line, nothing renders (drop-empty).
+
+    FB-20 (M's ruling 2026-07-16 — "the morning brief should just be a
+    morning brief"): this pack emits NO widget and NO confirm card. The
+    brief is a READ-ONLY prose surface; the staff meeting is the sole
+    adjudication surface (run it more often instead). A `transport` key from
+    this driver is a contract violation — the T3.2 relay machinery stays
+    intact for every OTHER surface, but the brief has exited the widget
+    business entirely. There is nothing to relay, so nothing can be dropped
+    on the way to the relay (the FB-18 failure mode is gone by construction,
+    not by instruction).
+
+    Every text line in the pack passes the chat-output leak scan before
+    return — a leaking canonical line fails HERE, loudly, not in M's chat.
+    Connector-dependent digest content (calendar, mail, Slack) remains the
+    orchestrator's job; this pack is the substrate half — the half that
+    kept getting skipped.
+    """
+    from chat_output_renderer import validate_chat_output
+    from change_feed import changes_since
+    from commitment_state import compute_and_log_brief_state
+    from cru_match import load_open_commitments
+    from primary_user import resolve_primary_user
+    from substrate_health import substrate_alarm_lines
+    from task_watchdog import brief_watchdog_line
+
+    if mode not in ("scheduled", "manual"):
+        raise ValueError(f"mode must be scheduled|manual; got {mode!r}")
+    ws = Path(workspace_root)
+    now_iso = now_iso or _now_iso()
+
+    alarm_lines = list(substrate_alarm_lines(ws) or [])
+
+    since_ts = _last_brief_ts(ws, now_iso)
+    feed = changes_since(ws, since_ts, now_iso=now_iso, max_lines=3)
+    changed_lines = [l.get("text", "") for l in (feed.get("lines") or [])
+                     if l.get("text")]
+
+    opens = load_open_commitments(_events_path(ws))
+    try:
+        user_id = resolve_primary_user(ws)
+    except Exception:
+        user_id = None
+    state = compute_and_log_brief_state(
+        ws, open_commitments=opens, user_person_id=user_id, now_iso=now_iso)
+    brief_state = {
+        "headline": (state.get("counts") or {}).get("headline") or {},
+        "needs_attention": state.get("needs_attention") or [],
+        "reconcile_stale": state.get("reconcile_stale"),
+    }
+
+    try:
+        watchdog = brief_watchdog_line(ws)
+    except Exception:
+        watchdog = None
+
+    # FB-20 — the queue POINTER (not the queue). The brief names no rows and
+    # renders no card; it points at the surface that adjudicates. The count
+    # comes from the staff-meeting projection so the pointer's promise and
+    # what `staff meeting` renders are the same number by construction (an
+    # over-promising count is its own dishonesty — the FS-09 class).
+    from brain_proposals import load_open_proposals, money_prose_lines
+    queue = load_open_proposals(ws, "staff-meeting", now_iso=now_iso)
+    # Auto-tier items are applied-then-narrated, never adjudicated (LB1
+    # review F5) — they are not "things that need your eyes".
+    queue = [i for i in queue if i.get("tier") != "auto"]
+    money_lines = money_prose_lines(queue, cap=MONEY_PROSE_CAP)
+    queue_pointer = {"count": len(queue), "line": _pointer_line(len(queue))}
+
+    # Leak-scan every text line the pack hands the orchestrator. Loud by
+    # design — there is no widget validator behind this one any more.
+    scannable = "\n".join(
+        alarm_lines + changed_lines + ([watchdog] if watchdog else [])
+        + money_lines
+        + ([queue_pointer["line"]] if queue_pointer["line"] else [])
+    )
+    if scannable.strip():
+        validate_chat_output(scannable)
+
+    pack = {
+        "surface": "morning-brief",
+        "mode": mode,
+        "now": now_iso,
+        "alarm_lines": alarm_lines,
+        "changed": {"since_ts": since_ts, "lines": changed_lines},
+        "brief_state": brief_state,
+        "watchdog_line": watchdog,
+        "money_lines": money_lines,
+        "queue_pointer": queue_pointer,
+    }
+
+    # Persist the pack (audit trail, parallel to the widget audit files).
+    try:
+        from atomic_write import atomic_write_text
+        out_dir = ws / "_hq" / ".system" / "briefs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now_iso[:19].replace(":", "-")
+        atomic_write_text(out_dir / f"morning-pack-{stamp}.json",
+                          json.dumps(pack, indent=2, ensure_ascii=False))
+    except Exception:
+        pass  # the pack in hand is what matters; the audit copy is best-effort
+
+    return pack
+
+
+# ---------------------------------------------------------------------------
+# Fire receipts (FB-7 — the receipt writes INSIDE the driver call)
+# ---------------------------------------------------------------------------
+
+# surface -> the canonical receipts.py task its fire receipts belong to.
+_SURFACE_TASKS = {"commitments": "commitment-triage",
+                  "staff-meeting": "staff-meeting"}
+
+# RV-3 guard: a NON-MANUAL driver re-run this close to an already-written
+# non-manual receipt is the same fire re-rendering (the live 2026-07-16
+# staff-meeting double-render), not a second run — one receipt, never two.
+# Manual fires never dedup: two back-to-back manual sweeps are two real
+# runs (F-08).
+_REFIRE_RECEIPT_GUARD = _dt.timedelta(minutes=15)
+
+
+def _log_fire_receipt(workspace_root, surface: str, view: dict,
+                      fired_via: str) -> dict:
+    """Append the surface's per-fire pack_run receipt via the canonical
+    helper (receipts.log_receipt — NEVER hand-rolled JSON). Runs inside
+    run_surface's page-1 invocation so the widget render and the receipt
+    can never be separated (FB-7: the scheduled staff-meeting fire posted
+    its widget, then the turn ended before the prose receipt step)."""
+    from receipts import iter_receipts, log_receipt, normalize_fired_via
+
+    task_id = _SURFACE_TASKS[surface]
+    via = normalize_fired_via(fired_via)
+    surfaced = sum(len(sec.get("items") or [])
+                   for sec in view.get("sections") or [])
+    if via != "manual":
+        now = _dt.datetime.now(_dt.timezone.utc)
+        recent = iter_receipts(workspace_root, task_ids=[task_id],
+                               since=now - _REFIRE_RECEIPT_GUARD)
+        if any(r["fired_via"] != "manual" for r in recent):
+            return {"task_id": task_id, "fired_via": via,
+                    "surfaced": surfaced, "status": "deduped_refire"}
+    log_receipt(workspace_root, task_id, fired_via=via, surfaced=surfaced)
+    return {"task_id": task_id, "fired_via": via, "surfaced": surfaced,
+            "status": "written"}
+
+
+def run_surface(surface: str, workspace_root, *, page: int = 1,
+                page_size: int = 15, now_iso: str | None = None,
+                moves_rows: list | None = None,
+                fired_via: str | None = None) -> dict:
+    """Build the view + render_and_persist ONE page. Returns the transport
+    dict (html / pagination / path). The CLI wraps this; tests call it
+    directly.
+
+    `fired_via` (scheduled | manual | catchup — the orchestrator's detected
+    run mode, Phase 2.9 `receipt_fired_via`) makes the PAGE-1 invocation
+    also write the surface's canonical per-fire receipt inside this same
+    call (see _log_fire_receipt; the written/deduped outcome rides back on
+    transport["receipt"]). Pages 2+ never receipt; omitting fired_via
+    renders only (legacy callers unchanged)."""
+    from widget_transport import render_and_persist
+
+    if fired_via is not None:
+        from receipts import FIRED_VIA, normalize_fired_via
+        if normalize_fired_via(fired_via) not in FIRED_VIA:
+            raise ValueError(
+                f"fired_via must be one of {sorted(FIRED_VIA)}; "
+                f"got {fired_via!r}")
+
+    ws = Path(workspace_root)
+    if surface == "commitments":
+        view = build_commitment_triage_view(ws, now_iso=now_iso)
+        name_hint = "commitment-triage"
+    elif surface == "staff-meeting":
+        view = build_staff_meeting_view(ws, now_iso=now_iso,
+                                        moves_rows=moves_rows)
+        name_hint = "staff-meeting"
+    else:
+        raise SystemExit(f"unknown surface {surface!r} "
+                         "(supported: commitments, staff-meeting)")
+    transport = render_and_persist(
+        data_view=view,
+        wrapper="fragment",
+        persist_dir=ws / "_hq" / ".system" / "widgets",
+        name_hint=name_hint,
+        page=page,
+        page_size=page_size,
+    )
+    if fired_via is not None and page == 1:
+        transport["receipt"] = _log_fire_receipt(ws, surface, view, fired_via)
+    return transport
+
+
+def main() -> int:
+    # Review F-5: Windows pipes default to cp1252 — the output carries
+    # non-ASCII (middots, warning glyphs) and would crash the CLI.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("surface",
+                    choices=["commitments", "staff-meeting", "morning-brief"])
+    ap.add_argument("--workspace", required=True)
+    ap.add_argument("--mode", default="scheduled",
+                    choices=["scheduled", "manual"],
+                    help="morning-brief only: scheduled renders the confirm "
+                         "card as a widget page; manual renders markdown "
+                         "lines (t3 FB-9)")
+    ap.add_argument("--page", type=int, default=1)
+    ap.add_argument("--page-size", type=int, default=15,
+                    help="requested rows/page ceiling (the byte-fit may lower it)")
+    ap.add_argument("--now", default=None, help="ISO now override (tests)")
+    ap.add_argument("--moves-json", default=None,
+                    help="staff-meeting only: JSON file with the Phase-4 "
+                         "moves rows (email-shaped item dicts)")
+    ap.add_argument("--fired-via", default=None,
+                    choices=["scheduled", "manual", "catchup"],
+                    help="the fire's run mode (the orchestrator's Phase-2.9 "
+                         "receipt_fired_via); when given, the page-1 "
+                         "invocation also writes the surface's canonical "
+                         "per-fire receipt inside this call (FB-7)")
+    args = ap.parse_args()
+
+    if args.surface == "morning-brief":
+        # t3 FB-9 — ONE call, every mandatory block. The orchestrator places
+        # each emitted block; the CR-BRIEF-PACK line is the checklist.
+        # FB-20: this surface emits PROSE ONLY — no widget block, no relay
+        # banner, nothing to post to show_widget. The brief is read-only by
+        # construction. (The banner + CR-WIDGET-HTML markers below this
+        # branch still serve commitments / staff-meeting unchanged.)
+        pack = build_morning_brief_pack(args.workspace, mode=args.mode,
+                                        now_iso=args.now)
+        print("CR-BRIEF-PACK: " + json.dumps(pack, ensure_ascii=False))
+        return 0
+
+    moves_rows = None
+    if args.moves_json:
+        moves_rows = json.loads(Path(args.moves_json).read_text(encoding="utf-8"))
+
+    transport = run_surface(
+        args.surface, args.workspace, page=args.page,
+        page_size=args.page_size, now_iso=args.now, moves_rows=moves_rows,
+        fired_via=args.fired_via)
+
+    pagination = transport.get("pagination") or {}
+    print("CR-PAGINATION: " + json.dumps(pagination))
+    print("CR-WIDGET-HTML-BEGIN")
+    print(transport["html"])
+    print("CR-WIDGET-HTML-END")
+    receipt = transport.get("receipt")
+    if receipt is not None:
+        print("CR-RECEIPT: " + json.dumps(receipt))
+    return 0
+
+
+__all__ = [
+    "build_commitment_triage_view",
+    "build_morning_brief_pack",
+    "build_staff_meeting_view",
+    "run_surface",
+]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

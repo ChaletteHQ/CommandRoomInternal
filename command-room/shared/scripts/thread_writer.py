@@ -43,9 +43,24 @@ ALLOWED_THREAD_FIELDS = {
     "cross_refs", "kind", "project_class", "owner_person_id",
     "stakeholder_person_ids", "last_activity", "next_step", "success_criteria",
     "first_seen", "session_count", "dormancy_reviewed_at", "archived_at",
-    "archive_reason", "roster_overrides",
+    "archive_reason", "roster_overrides", "deal",
 }
 REQUIRED_THREAD_FIELDS = {"id", "status"}
+
+# --- Deal object (SPEC PIPE1) — allowed ONLY on kind="deal" threads. --------
+# Single source for the enums; deal_state.py (the only writer of deal.* fields)
+# imports these. entities.schema.json $defs.project.deal mirrors them.
+DEAL_STAGES = ("lead", "qualified", "proposal_sent", "negotiating")
+DEAL_LOSS_REASONS = (
+    "no_decision", "price", "competitor", "diy", "timing", "bad_fit", "other",
+)
+DEAL_OUTCOMES = ("won", "lost")
+ALLOWED_DEAL_FIELDS = {
+    "value", "currency", "stage", "stage_entered", "expected_close",
+    "forecast_category", "source", "outcome", "loss_reason", "loss_note",
+    "opened_at", "closed_at",
+}
+DEAL_FORECAST_CATEGORIES = ("commit", "best_case", "pipeline")
 
 # Observed superset (schema enum is missing exploring/scoping/resolved).
 VALID_STATUSES = {
@@ -140,6 +155,63 @@ def _validate_thread(record: dict) -> None:
     stage = record.get("stage")
     if stage is not None and (not isinstance(stage, int) or isinstance(stage, bool)):
         raise ValueError(f"stage must be an integer or null, got: {stage!r}")
+    if "deal" in record:
+        _validate_deal(record)
+
+
+def _validate_deal(record: dict) -> None:
+    """SPEC PIPE1 — the deal object is allowed ONLY on kind='deal' threads,
+    with enum-validated sales fields. Guidance style mirrors
+    FORBIDDEN_THREAD_FIELDS: name the fix, not just the failure. Write deal.*
+    ONLY through shared/scripts/deal_state.py (the single writer/closure
+    path); this validation is the schema floor beneath it."""
+    deal = record["deal"]
+    if deal is None:
+        raise ValueError("deal must be an object, not null — omit the field entirely")
+    if not isinstance(deal, dict):
+        raise ValueError(f"deal must be an object, got: {type(deal).__name__}")
+    if record.get("kind") != "deal":
+        raise ValueError(
+            "a deal object is only allowed on kind='deal' threads "
+            f"(this thread's kind: {record.get('kind')!r}). Set kind='deal' "
+            "or drop the deal object.")
+    extras = set(deal) - ALLOWED_DEAL_FIELDS
+    if extras:
+        raise ValueError(
+            "deal object has fields not in the schema: "
+            f"{sorted(extras)}. Allowed: {sorted(ALLOWED_DEAL_FIELDS)}. "
+            "Update entities.schema.json $defs.project.deal AND "
+            "ALLOWED_DEAL_FIELDS first if you genuinely need a new field.")
+    stage = deal.get("stage")
+    if stage is not None and stage not in DEAL_STAGES:
+        raise ValueError(
+            f"deal.stage must be one of {list(DEAL_STAGES)}, got: {stage!r}. "
+            "Won/lost are the terminal deal.outcome, not stages; the integer "
+            "project-lifecycle stage is a different field.")
+    outcome = deal.get("outcome")
+    if outcome is not None and outcome not in DEAL_OUTCOMES:
+        raise ValueError(
+            f"deal.outcome must be won, lost, or null, got: {outcome!r} "
+            "(set only via deal_state.close_deal)")
+    reason = deal.get("loss_reason")
+    if reason is not None and reason not in DEAL_LOSS_REASONS:
+        raise ValueError(
+            f"deal.loss_reason must be one of {list(DEAL_LOSS_REASONS)}, got: {reason!r}")
+    if outcome == "lost" and reason is None:
+        raise ValueError(
+            "deal.outcome='lost' requires a loss_reason "
+            f"(one of {list(DEAL_LOSS_REASONS)}) — close via "
+            "deal_state.close_deal, which enforces this")
+    fc = deal.get("forecast_category")
+    if fc is not None and fc not in DEAL_FORECAST_CATEGORIES:
+        raise ValueError(
+            f"deal.forecast_category must be one of {list(DEAL_FORECAST_CATEGORIES)} "
+            f"or null, got: {fc!r}")
+    value = deal.get("value")
+    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        raise ValueError(
+            f"deal.value must be a number or null, got: {value!r} — never a "
+            "string or range; store null + a note in deal.source for ranges")
 
 
 def _coerce(record: dict) -> dict:
@@ -196,6 +268,7 @@ def create_thread(workspace_root: str | Path, *,
                   spawned_from_thread_id: str | None = None,
                   first_seen: str | None = None,
                   thread_id: str | None = None,
+                  deal: dict | None = None,
                   source_skill: str = "unknown",
                   skip_dedup: bool = False) -> dict:
     """Create a new thread record. Dedups by folder_name → canonical_name,
@@ -229,6 +302,7 @@ def create_thread(workspace_root: str | Path, *,
     if stakeholder_person_ids:  record["stakeholder_person_ids"] = list(stakeholder_person_ids)
     if parent_thread_id:        record["parent_thread_id"] = parent_thread_id
     if spawned_from_thread_id:  record["spawned_from_thread_id"] = spawned_from_thread_id
+    if deal is not None:        record["deal"] = deal
 
     record = _coerce(record)
     _validate_thread(record)

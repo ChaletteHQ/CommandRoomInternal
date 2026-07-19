@@ -1,0 +1,20 @@
+{
+  "version": "4.7.0",
+  "headline": "Command Room now works with whatever mail and calendar you connect — and you can tell it which email accounts are business and which are personal.",
+  "items": [
+    {
+      "id": "v470_announce_connector_agnostic",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Command Room no longer assumes Gmail. It now resolves whatever mail and calendar connectors you actually have — Outlook, Superhuman, Google, or something newer — and picks the right tools automatically. Nothing to configure; if your setup worked yesterday, it works the same today.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v470_announce_account_map",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "You can now tell Command Room what each connected email account is for. Say '[address] is my personal account' and that account's mail stays out of your business records permanently — important personal items can still show in your brief without ever being filed. Say 'what accounts do I have' to see the map. Until you classify an account, nothing changes.",
+      "action": "announce_only"
+    }
+  ]
+}

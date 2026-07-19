@@ -202,6 +202,106 @@ class DismissalNotFoundError(ValueError):
     dead-letter doctrine as CommitmentIdError)."""
 
 
+# FB-19 — how long a held item stays parked before it re-enters the queue on
+# its own. A hold is a PROMISE TO ASK AGAIN, not a delete: 14 days is long
+# enough that "I'm thinking about it" is respected, short enough that a
+# forgotten decision comes back rather than dying silently.
+HOLD_TTL_DAYS = 14
+
+# The reason string that marks a chat_dismissal as a HOLD rather than a plain
+# snooze. Same ledger, same liveness rule, same expiry mechanics — the reason
+# is what lets a surface say "you parked this" instead of "you snoozed this",
+# and what `show muted` reads to render the two families distinctly.
+HOLD_REASON = "held"
+
+
+def is_hold(ev: dict) -> bool:
+    """True iff this chat_dismissal was written as a hold (FB-19). Pure."""
+    if ev.get("type") != "chat_dismissal":
+        return False
+    return ((ev.get("data") or {}).get("reason") or "") == HOLD_REASON
+
+
+def hold_item(
+    workspace_root,
+    target_id: str,
+    *,
+    source_skill: str,
+    surface: str,
+    fingerprint: str = "",
+    item_class: str = "item",
+    ttl_days: int = HOLD_TTL_DAYS,
+    now_iso: Optional[str] = None,
+) -> dict:
+    """THE hold writer (FB-19 — M's ruling 2026-07-16).
+
+    Parks one queue item because the user explicitly said so IN CHAT ("hold
+    those two", "park that for now", "I'll think about it"). The item stops
+    re-rendering on every surface that honors the mute ledger until either
+    the user answers it (any surface calls `clear_dismissal` — a hold never
+    outlives its own question) or `ttl_days` elapses and it comes back on its
+    own.
+
+    WHY THIS EXISTS: two rows parked in chat on 2026-07-16 re-rendered
+    verbatim on the next fire, because "I'll think about it" had nowhere to
+    live — the ledger only understood clicked snoozes. A surface that re-asks
+    a question you just answered reads as not listening, and it is the
+    fastest way to teach someone to stop reading the card. A hold is the
+    durable record of "I heard you."
+
+    Mechanically this IS a `chat_dismissal` (no new event type, no new
+    reader): `data.reason = "held"` distinguishes it, `data.snooze_until`
+    carries the expiry, and every existing liveness path — `live_mutes`,
+    `active_dismissal_target_ids`, `brain_proposals.load_open_proposals` —
+    honors it for free. That also means the pointer count and the staff
+    meeting agree about held items by construction: the count comes from the
+    same filtered projector the card renders.
+
+    Idempotent: holding an already-held (live) item re-writes nothing and
+    returns {"status": "already_held"} — a user repeating themselves must not
+    silently extend the clock behind their back.
+    """
+    if not target_id or not str(target_id).strip():
+        raise ValueError(
+            "hold_item needs the queue item's target_id — an unanchored hold "
+            "would suppress nothing and lie about it")
+    target_id = str(target_id).strip()
+    if not isinstance(ttl_days, int) or isinstance(ttl_days, bool) or ttl_days <= 0:
+        raise ValueError(f"ttl_days must be a positive int; got {ttl_days!r}")
+
+    from writer_lock import events_writer_lock
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    now_iso = now_iso or _dt.datetime.now(
+        _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _parse_dt(now_iso) or _dt.datetime.now(_dt.timezone.utc)
+
+    with events_writer_lock(events_path, holder=f"hold_item:{source_skill}"):
+        events = _load_events(events_path)
+        if target_id in active_dismissal_target_ids(events, now_iso):
+            return {"status": "already_held", "target_id": target_id}
+        data = {
+            "target_id": target_id,
+            "surface": surface,
+            "item_class": item_class,
+            "reason": HOLD_REASON,
+            "snooze_until": (now + _dt.timedelta(days=ttl_days)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"),
+            "via": "hold",
+        }
+        if fingerprint:
+            data["fingerprint"] = fingerprint
+        ev = {
+            "type": "chat_dismissal",
+            "source_skill": source_skill,
+            "primary_thread_id": "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "held", "target_id": target_id,
+            "hold_expires": data["snooze_until"], "event": ev}
+
+
 def _load_events(events_jsonl_path) -> list:
     try:
         from cru_match import load_events_defensively

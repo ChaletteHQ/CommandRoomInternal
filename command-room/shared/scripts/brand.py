@@ -51,6 +51,13 @@ import re
 from pathlib import Path
 from typing import Optional, Union
 
+try:
+    from read_alarm import record_read_alarm
+except ImportError:  # pragma: no cover
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from read_alarm import record_read_alarm
+
 
 # ---------------------------------------------------------------------------
 # THE DEFAULT THEME — this is the deliverable (SPEC OUT1 §3c)
@@ -161,7 +168,14 @@ def _load_entities(entities: Union[dict, str, "os.PathLike", None]) -> Optional[
         return None
     try:
         data = json.loads(entities_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        # FS-15 — this exact fallback is the 2026-07-14 dogfood incident: a
+        # sync cache served a truncated entities.json for ~90 minutes and
+        # every document rendered DEFAULT_BRAND with no warning anywhere.
+        # The fallback stays (a doc render must not crash on a bad read) but
+        # the degradation goes ON THE RECORD so the brief / system-health
+        # surface it loudly.
+        record_read_alarm(entities_path, e, reader="brand")
         return None
     return data if isinstance(data, dict) else None
 

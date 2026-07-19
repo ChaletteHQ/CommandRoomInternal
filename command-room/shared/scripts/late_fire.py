@@ -95,10 +95,18 @@ from receipts import (  # noqa: E402
     receipt_task_id,
 )
 from schedule_config import (  # noqa: E402
+    SUPERSEDED_BY,
     CronParseError,
     is_silent_task,
     load_schedule_config,
     task_display_name,
+)
+
+# MAINT1: the five pre-MAINT1 silent taskIds keep the silent-class exemption
+# forever — a not-yet-migrated install still fires them, and their work is
+# still silent write-side maintenance (late is fine, they run in full).
+_SUPERSEDED_SILENT_IDS = frozenset(
+    t for ids in SUPERSEDED_BY.values() for t in ids
 )
 from task_watchdog import expected_fires  # noqa: E402
 
@@ -244,7 +252,7 @@ def check_lateness(
         out["tier"] = "manual"
         out["suppressed"] = "manual_fire"
         return out
-    if is_silent_task(task_id):
+    if is_silent_task(task_id) or task_id in _SUPERSEDED_SILENT_IDS:
         out["tier"] = "exempt"
         return out
 

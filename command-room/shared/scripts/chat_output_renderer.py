@@ -1095,6 +1095,16 @@ _LEAK_PATTERNS = [
     # Internal entity / event IDs
     (_leak_re.compile(r"\b(person|project|org|event|matter|engagement)_\d{3,}\b", _leak_re.IGNORECASE),
      "internal entity ID"),
+    # T3.1 (FB-13) — commitment / brain-proposal id shapes. These live in
+    # data-* wire attributes (blanked before the widget scan) and action
+    # tuples only; one in visible text or prose is the same leak class as
+    # an entity ID. `cmt_` ULIDs, `commitment_seq_N`, `bp_` proposal ids.
+    # IGNORECASE (T3.1 review F-2): display paths re-case text — section
+    # titles are .upper()'d, labels get first-letter capitalization — and
+    # `CMT_…` on screen is the same leak as `cmt_…`.
+    (_leak_re.compile(r"\b(?:cmt_[0-9A-Za-z]{10,}|commitment_seq_\d+|bp_[0-9a-f]{6,})\b",
+                      _leak_re.IGNORECASE),
+     "internal commitment/proposal ID"),
     # Routing / synthesis metadata
     (_leak_re.compile(r"\bDomain match\s*:", _leak_re.IGNORECASE), "routing-metadata leak"),
     (_leak_re.compile(r"\bRouting\s*:", _leak_re.IGNORECASE), "routing label"),
@@ -1185,6 +1195,14 @@ _LEAK_PATTERNS = [
      "widget-improvisation leak (too large)"),
     (_leak_re.compile(r"\brender\s+validated\s+(?:cleanly|but)\b", _leak_re.IGNORECASE),
      "widget-improvisation leak (render validated but...)"),
+    # EW2+T (F-09) — a Cowork platform style block (`::view-transition-group`
+    # animation CSS) echoed into chat text immediately before a show_widget
+    # render. The token exists nowhere in plugin-produced HTML, so any
+    # occurrence in scanned output is a widget-bytes echo. The widget_code
+    # transport (widget_transport.render_and_persist, relayed as widget_code)
+    # keeps bytes out of chat; this pattern catches any relay that slips past it.
+    (_leak_re.compile(r"::view-transition", _leak_re.IGNORECASE),
+     "platform CSS echo leak"),
 ]
 
 
@@ -1519,12 +1537,6 @@ def _render_all_clear_summary(data: dict, wrapper: str = "document") -> str:
     actions to validate). Leak scanner still runs on the rendered HTML.
     """
     parts: list[str] = []
-    if wrapper == "document":
-        parts.append("<!DOCTYPE html>")
-        parts.append('<html lang="en"><head><meta charset="utf-8">')
-    parts.append(f"<style>{_WIDGET_CSS}{_ALL_CLEAR_CSS}</style>")
-    if wrapper == "document":
-        parts.append("</head><body>")
     parts.append('<div class="cr-card cr-card-all-clear">')
     parts.append('<div class="cr-brand-strip">' + _BRAND_LOGO_SVG + '</div>')
 
@@ -1568,13 +1580,20 @@ def _render_all_clear_summary(data: dict, wrapper: str = "document") -> str:
     if footer:
         parts.append(f'<div class="cr-all-clear-footer">{_md_to_html(footer)}</div>')
 
-    # Close the cr-card wrapper. Document-mode also closes body+html.
+    parts.append('</div>')
+    content = "".join(parts)
+    css = _compose_widget_css(content) + _ALL_CLEAR_CSS_MIN
+    assembled: list[str] = []
     if wrapper == "document":
-        parts.append('</div></body></html>')
-    else:
-        parts.append('</div>')
-
-    html = "".join(parts)
+        assembled.append("<!DOCTYPE html>")
+        assembled.append('<html lang="en"><head><meta charset="utf-8">')
+    assembled.append(f"<style>{css}</style>")
+    if wrapper == "document":
+        assembled.append("</head><body>")
+    assembled.append(content)
+    if wrapper == "document":
+        assembled.append("</body></html>")
+    html = "".join(assembled)
 
     # Run the leak scanner on the rendered HTML — same Rule 4 enforcement as
     # the standard widget path. The CanonicalActionError + DataShapeError gates
@@ -1644,12 +1663,6 @@ def _render_onboarding_setup(data: dict, wrapper: str = "document") -> str:
     total = len(items)
 
     parts: list[str] = []
-    if wrapper == "document":
-        parts.append("<!DOCTYPE html>")
-        parts.append('<html lang="en"><head><meta charset="utf-8">')
-    parts.append(f"<style>{_WIDGET_CSS}{_ONBOARDING_SETUP_CSS}</style>")
-    if wrapper == "document":
-        parts.append("</head><body>")
     parts.append('<div class="cr-card cr-card-onboarding-setup">')
     parts.append('<div class="cr-brand-strip">' + _BRAND_LOGO_SVG + '</div>')
 
@@ -1680,15 +1693,25 @@ def _render_onboarding_setup(data: dict, wrapper: str = "document") -> str:
     parts.append("</div></div>")
     parts.append("</div>")
 
-    js = _WIDGET_JS_TEMPLATE.replace("__TOTAL_ITEMS__", str(total))
+    content = "".join(parts)
+    js = _compose_widget_js(content).replace("__TOTAL_ITEMS__", str(total))
     # W4 (Phase 3) — bake the emitting surface's id into the widget so every
     # Apply-all tuple carries {src}. Orchestrator data views pass source_skill;
     # legacy/absent -> empty string -> apply-choices uses the fire-marker fallback.
     js = js.replace("__CR_SRC__", _json_mod.dumps(str(data.get("source_skill") or "")))
-    parts.append(f"<script>{js}</script>")
+    css = _compose_widget_css(content) + _ONBOARDING_SETUP_CSS_MIN
+    assembled: list[str] = []
     if wrapper == "document":
-        parts.append("</body></html>")
-    html = "".join(parts)
+        assembled.append("<!DOCTYPE html>")
+        assembled.append('<html lang="en"><head><meta charset="utf-8">')
+    assembled.append(f"<style>{css}</style>")
+    if wrapper == "document":
+        assembled.append("</head><body>")
+    assembled.append(content)
+    assembled.append(f"<script>{js}</script>")
+    if wrapper == "document":
+        assembled.append("</body></html>")
+    html = "".join(assembled)
 
     # Leak scanner runs on the rendered HTML — same Rule 4 enforcement as
     # the standard widget path. Action-verb validators skipped (onboarding
@@ -1899,13 +1922,9 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     sections = data.get("sections", [])
     total = _count_total_selectable_items(sections)
 
+    # T2.2 — content renders FIRST; the <style>/<script> scaffold is composed
+    # from what the content actually contains (conditional emission).
     parts: list[str] = []
-    if wrapper == "document":
-        parts.append("<!DOCTYPE html>")
-        parts.append('<html lang="en"><head><meta charset="utf-8">')
-    parts.append(f"<style>{_WIDGET_CSS}</style>")
-    if wrapper == "document":
-        parts.append("</head><body>")
     parts.append('<div class="cr-card">')
     # Brand strip — inline Chalette Command Room stacked logo (v2.12.2+).
     # SVG colors adapted for dark widget background:
@@ -1951,6 +1970,20 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
         parts.append(_render_widget_section(section))
     parts.append("</div>")
 
+    # Paginate-by-design position line (T2, F2 rework). When the data view was
+    # sliced to one page (unbounded surfaces: commitments full set, Staff
+    # Meeting queue), show WHERE the reader is and teach the `show more` verb
+    # that re-fires the next page. Inert on single-page (bounded) fires.
+    pagination = data.get("pagination") or {}
+    if pagination.get("total_pages", 1) > 1:
+        _pg = int(pagination.get("page", 1))
+        _tp = int(pagination.get("total_pages", 1))
+        _more = (' · say <code>show more</code> for the next page'
+                 if pagination.get("has_more") else ' · end of the queue')
+        parts.append(
+            f'<div class="cr-pagination">Page {_pg} of {_tp}{_more}</div>'
+        )
+
     quick_read = data.get("quick_read", "")
     if quick_read:
         parts.append(f'<div class="cr-quick-read"><strong>Quick read:</strong> {_md_to_html(quick_read)}</div>')
@@ -1978,15 +2011,25 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
 
     parts.append("</div>")
 
-    js = _WIDGET_JS_TEMPLATE.replace("__TOTAL_ITEMS__", str(total))
+    content = "".join(parts)
+    js = _compose_widget_js(content).replace("__TOTAL_ITEMS__", str(total))
     # W4 (Phase 3) — bake the emitting surface's id into the widget so every
     # Apply-all tuple carries {src}. Orchestrator data views pass source_skill;
     # legacy/absent -> empty string -> apply-choices uses the fire-marker fallback.
     js = js.replace("__CR_SRC__", _json_mod.dumps(str(data.get("source_skill") or "")))
-    parts.append(f"<script>{js}</script>")
+    css = _compose_widget_css(content)
+    assembled: list[str] = []
     if wrapper == "document":
-        parts.append("</body></html>")
-    html = "".join(parts)
+        assembled.append("<!DOCTYPE html>")
+        assembled.append('<html lang="en"><head><meta charset="utf-8">')
+    assembled.append(f"<style>{css}</style>")
+    if wrapper == "document":
+        assembled.append("</head><body>")
+    assembled.append(content)
+    assembled.append(f"<script>{js}</script>")
+    if wrapper == "document":
+        assembled.append("</body></html>")
+    html = "".join(assembled)
 
     # Gate 2: leak-scanner blocking gate (raises LeakDetectedError on miss).
     # We scan the human-content portion of the HTML — header, sub_header, item
@@ -2002,6 +2045,15 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # in an href URL would otherwise trip the internal-path leak rule).
     paths_scannable = scannable
     scannable = _re_mod.sub(r'href="[^"]*"', 'href=""', scannable)
+    # T3.1 (FB-13) — data-* attributes are the F2-sanctioned wire home for
+    # ids (data-item-n / data-n / data-sub-id / data-note-for-n); a legacy
+    # commitment id shaped `event_NNNN` in `data-item-n` tripped the
+    # entity-ID pattern and refused a card whose VISIBLE text was clean
+    # (live morning-brief brain card, 2026-07-16). Blank data-* values the
+    # same way hrefs are blanked — every visible string stays fully scanned,
+    # and validate_rendered_widget's visible-span check still refuses any
+    # wire id that reaches row text.
+    scannable = _re_mod.sub(r'(\bdata-[a-z-]+=")[^"]*(")', r"\1\2", scannable)
     validate_chat_output(scannable, paths_text=paths_scannable)
 
     # Gate 3 (v2.14.35+): self-validate the structural button-to-wrapper invariant
@@ -2027,6 +2079,18 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
 import html as _html_mod
 import json as _json_mod
 import re as _re_mod
+
+
+# T2.2 display hygiene (RV-5), shared shape: what a WIRE id looks like when it
+# leaks whole into visible row text. Used by validate_rendered_widget's
+# visible-span check and by the sub-item renderer's label suppression (T3.1
+# FB-13 — a commitment id as a sub-item's visible label is the same class).
+_WIRE_ID_RE = _re_mod.compile(
+    r"^(?:bp_[0-9a-f]{6,}"
+    r"|(?:person|cru|org|project|dont_forget|schedule):\S+"
+    r"|(?:commitment_seq|seq|event)_\d+"
+    r"|cmt_\S+)$"
+)
 
 
 # ============================================================================
@@ -2070,7 +2134,9 @@ def validate_rendered_widget(html: str) -> None:
         # Let it pass; downstream show_widget will surface the real problem.
         return
 
-    # Every action button: <button class="cr-action" ... data-n="X" data-action="Y" data-input-type="Z" ...>
+    # Every action button (button-mode widgets — onboarding setup — plus any
+    # legacy hand-relayed HTML): <button class="cr-action" ... data-n="X"
+    # data-action="Y" data-input-type="Z" ...>
     # Order of attributes is renderer-controlled but we can't assume it. Use lookahead-style
     # extraction: find the button tag, then pull each attribute independently.
     btn_re = _re_mod.compile(r"<button\b[^>]*\bclass=\"cr-action\b[^\"]*\"[^>]*>", _re_mod.IGNORECASE)
@@ -2097,6 +2163,35 @@ def validate_rendered_widget(html: str) -> None:
         action_value = _html_mod.unescape(action_match.group(1))
         buttons_needing_wrapper.append((n_value, action_value, input_type))
 
+    # T2.2 row diet — verb DROPDOWNS. This is the button contract PORTED to
+    # selects, not a weakening: every <option> inside a `.cr-action-select`
+    # whose data-input-type isn't "none" needs the same (n, action) wrapper a
+    # button did — the select's data-n is the row id, the option's `value` is
+    # the action.
+    sel_re = _re_mod.compile(
+        r"(<select\b[^>]*\bclass=\"[^\"]*\bcr-action-select\b[^\"]*\"[^>]*>)(.*?)</select>",
+        _re_mod.IGNORECASE | _re_mod.DOTALL,
+    )
+    opt_re = _re_mod.compile(r"<option\b[^>]*>", _re_mod.IGNORECASE)
+    attr_value = _re_mod.compile(r"\bvalue=\"([^\"]*)\"")
+    selects_found = 0
+    for m in sel_re.finditer(html):
+        selects_found += 1
+        open_tag, body = m.group(1), m.group(2)
+        n_match = attr_n.search(open_tag)
+        n_value = _html_mod.unescape(n_match.group(1)) if n_match else ""
+        for om in opt_re.finditer(body):
+            tag = om.group(0)
+            v_match = attr_value.search(tag)
+            type_match = attr_input_type.search(tag)
+            if not (v_match and type_match):
+                continue
+            action_value = _html_mod.unescape(v_match.group(1))
+            input_type = type_match.group(1)
+            if not action_value or not input_type or input_type == "none":
+                continue
+            buttons_needing_wrapper.append((n_value, action_value, input_type))
+
     # Every wrapper: <div class="cr-action-input ..." ... data-input-for-n="X" data-input-for-action="Y" ...>
     wrap_re = _re_mod.compile(r"<div\b[^>]*\bclass=\"[^\"]*\bcr-action-input\b[^\"]*\"[^>]*>", _re_mod.IGNORECASE)
     attr_for_n = _re_mod.compile(r"\bdata-input-for-n=\"([^\"]*)\"")
@@ -2121,16 +2216,23 @@ def validate_rendered_widget(html: str) -> None:
     # selection CSS was broken) fail loudly BEFORE show_widget instead of
     # shipping invisible toggles.
     has_action_buttons = bool(btn_re.search(html))
-    if has_action_buttons:
+    has_action_selects = selects_found > 0
+    if has_action_buttons or has_action_selects:
         feedback_missing = []
-        # The pressed-state rule must live in actual CSS — the JS also names
-        # cr-selected (classList toggles), so scan only <style> blocks.
+        # The pressed/armed-state rule must live in actual CSS — the JS also
+        # names the classes (classList toggles), so scan only <style> blocks.
         style_blocks = "".join(
             _re_mod.findall(r"<style[^>]*>(.*?)</style>", html, flags=_re_mod.DOTALL)
         )
-        if ".cr-selected" not in style_blocks:
+        if has_action_buttons and ".cr-selected" not in style_blocks:
             feedback_missing.append(
                 "pressed-state CSS (.cr-selected rules inside a <style> block)"
+            )
+        # T2.2 — the select port of the same F-58 contract: an armed dropdown
+        # must be visibly distinct before Apply.
+        if has_action_selects and ".cr-select-armed" not in style_blocks:
+            feedback_missing.append(
+                "armed-state CSS (.cr-select-armed rules inside a <style> block)"
             )
         if 'id="cr-count"' not in html:
             feedback_missing.append('live selection counter (id="cr-count")')
@@ -2179,6 +2281,31 @@ def validate_rendered_widget(html: str) -> None:
             f"to ship the renderer's HTML byte-for-byte WITHOUT modification.\n\n"
             f"Missing wrappers (button exists, wrapper does not):\n"
             f"{sample_lines}{more_note}"
+        )
+
+    # T2.2 display hygiene (RV-5 M feedback): wire ids must never render as
+    # VISIBLE row text. Ids live in data-* attributes and action tuples only —
+    # "bp_d27b6b5244bb." or "person:135." as a row number/title is plumbing on
+    # screen. The canonical fix is `display_n` on the item (build_card_view
+    # assigns it); this check catches any path that leaks the wire id anyway.
+    # T3.1 (FB-13): cr-sub-id spans covered too — a sub-item whose sub_id is a
+    # wire id would otherwise render it as a visible label unchecked.
+    visible_spans = _re_mod.findall(
+        r'<span class="cr-(?:item-(?:num|name)|sub-id)">(?:<strong>)?([^<]*)', html
+    )
+    id_leaks = []
+    for text in visible_spans:
+        visible = _html_mod.unescape(text).strip().rstrip(".")
+        if visible and _WIRE_ID_RE.match(visible):
+            id_leaks.append(visible)
+    if id_leaks:
+        raise LeakDetectedError(
+            "Wire ids rendered as visible row text — refusing to post:\n  - "
+            + "\n  - ".join(sorted(set(id_leaks))[:10])
+            + "\nFix at the data-view layer: keep the wire id in `n` (it IS "
+            "the dispatch id) and pass a sequential `display_n` for the "
+            "visible row number; row titles come from the record's display "
+            "name, never its id."
         )
 
 
@@ -2282,6 +2409,13 @@ def _render_email_blockquote_html(metadata: list[tuple[str, str]], body_lines: l
     """
     if not metadata and not body_lines:
         return ""
+    # t3 FB-12: orchestrators sometimes paste the CONVENTIONS_EMAIL_PREVIEW
+    # blockquote convention (`> ` line prefixes) straight into body_lines.
+    # Those markers are markdown plumbing — the widget already draws the
+    # quote bar with CSS, so a literal "> " renders as visible junk in the
+    # displayed body. Storage is clean (M verified queued drafts land clean
+    # in Superhuman) — strip at render only.
+    body_lines = [_strip_blockquote_marker(l) for l in body_lines]
     parts = ['<blockquote class="cr-email-draft">']
     # Header lines (To, Cc, Subject) — bolded labels, mailto links handled via _md_to_html
     # v2.14.36+ — `Originally` is no longer rendered inline. The collapsible
@@ -2304,14 +2438,53 @@ def _render_email_blockquote_html(metadata: list[tuple[str, str]], body_lines: l
     # Spacer between header and body (per CONVENTIONS_EMAIL_PREVIEW — blank `>` line)
     if metadata and body_lines:
         parts.append('<div class="cr-eb-spacer"></div>')
-    # Body lines
-    for line in body_lines:
-        if line.strip():
-            parts.append(f'<div class="cr-eb">{_md_to_html(line)}</div>')
-        else:
-            parts.append('<div class="cr-eb-empty"></div>')
+    # Body lines — t3 FB-10 (M ruling): the body is DIRECTLY editable. Click
+    # into it and type; no Edit button. The wrapper carries the original
+    # plain text in data-original so Apply can serialize the CURRENT
+    # on-screen text and the orchestrator can diff rendered-vs-queued for the
+    # voice-corrections log. (`.cr-eb` stays the line class — the
+    # textarea-prepop JS and the mfe pre-population read it unchanged.)
+    if body_lines:
+        # data-original mirrors what innerText will read back (markdown
+        # stripped, not raw `**bold**` source) so an untouched body never
+        # false-positives as edited.
+        original_plain = "\n".join(
+            _visible_text(_md_to_html(l)) if l.strip() else "" for l in body_lines
+        )
+        parts.append(
+            f'<div class="cr-eb-body" contenteditable="true" '
+            f'spellcheck="false" '
+            f'data-original="{_html_mod.escape(original_plain, quote=True)}">'
+        )
+        for line in body_lines:
+            if line.strip():
+                parts.append(f'<div class="cr-eb">{_md_to_html(line)}</div>')
+            else:
+                parts.append('<div class="cr-eb-empty"><br></div>')
+        parts.append("</div>")
     parts.append("</blockquote>")
     return "".join(parts)
+
+
+def _visible_text(html: str) -> str:
+    """Tag-strip + entity-unescape a rendered line back to the plain text a
+    browser's innerText would report. Exact for the minimal markdown subset
+    `_md_to_html` emits (bold/italic/links — no nested block structure)."""
+    return _html_mod.unescape(_re_mod.sub(r"<[^>]+>", "", html or ""))
+
+
+def _strip_blockquote_marker(line: str) -> str:
+    """t3 FB-12: drop a leading markdown blockquote marker (`> ` / lone `>`)
+    from an email body line. Only the leading convention marker goes — a
+    `>` mid-line (quoted reply text, comparisons) is content and stays."""
+    if not isinstance(line, str):
+        return line
+    stripped = line.lstrip()
+    if stripped.startswith("> "):
+        return stripped[2:]
+    if stripped == ">":
+        return ""
+    return line
 
 
 def _detect_input_type(action: str) -> Optional[str]:
@@ -2463,45 +2636,72 @@ def _extract_email_fields(item: Optional[dict]) -> dict:
     return out
 
 
-def _render_action_button(action: str, item_n, item: Optional[dict] = None) -> tuple[str, str]:
-    """Render a single action as a toggleable HTML button (v2.12.4+ — returns (button, input) pair).
+def _render_action_option(action: str, item_n, item: Optional[dict] = None) -> tuple[str, str]:
+    """Render a single action as an <option> in the row's verb DROPDOWN
+    (T2.2 row diet — M approved dropdowns over the six-button row; RV/FS-10
+    density ask). Returns (option_html, input_html).
 
-    item_n is the data-n attribute (number or sub-letter id like '1a').
-    item (optional) is the parent item dict; used to pre-populate multi-field
-    edit inputs from the item's metadata + body_lines.
+    item_n is the row's data-n (number, sub-letter id like '1a', or a wire id
+    like a proposal id). item (optional) is the parent item dict; used to
+    pre-populate multi-field edit inputs from the item's metadata + body_lines.
 
-    Returns: tuple of (button_html, input_html). input_html is empty string for
-    actions without input affordances. Caller renders all buttons in the action
-    row first, then all input wrappers stacked below — so the input UI doesn't
-    get squeezed between flex-laid-out buttons (v2.12.4 layout fix).
+    The option's `value` carries the FULL action string (including brackets) —
+    the SAME contract the per-row buttons carried — so apply-choices dispatch
+    and the `apply choices:` wire format are byte-compatible. The F-17
+    required-input payload (data-input-required / data-input-thing) rides on
+    the option exactly as it rode on the button.
 
-    The data-action attribute carries the FULL action string (including brackets)
-    so the receiving skill can dispatch correctly.
+    input_html is empty string for actions without input affordances. Caller
+    renders the select first, then all input wrappers stacked below.
     """
     safe_action = _html_mod.escape(action, quote=True)
-    safe_n = _html_mod.escape(str(item_n), quote=True)
     label = _action_display_label(action)
     input_type = _detect_input_type(action)
 
-    # v4.5.2 S2 (F-17) — required-input contract. A selection whose required
-    # field is empty is INVALID: the widget highlights the row, names the
-    # missing thing inline, and holds Apply with the reason visible. The
-    # requirement + the missing-thing word ride on the button so the widget
-    # JS needs no separate lookup table.
+    # v4.5.2 S2 (F-17) — required-input contract, unchanged: the requirement
+    # + the missing-thing word ride on the OPTION so the widget JS needs no
+    # separate lookup table.
     is_required = action.lower() in REQUIRED_INPUT_ACTION_IDS
     thing = required_input_thing(action) if is_required else ""
 
-    btn_html = (
-        f'<button class="cr-action" type="button" '
-        f'data-n="{safe_n}" data-action="{safe_action}" '
-        f'data-input-type="{input_type or "none"}" '
-        f'data-input-required="{"1" if is_required else "0"}" '
-        f'data-input-thing="{_html_mod.escape(thing, quote=True)}" '
-        f'onclick="crToggle(this)">{_html_mod.escape(label)}</button>'
+    # Row diet: default attributes are OMITTED (absent dataset keys read as
+    # falsy in the JS, and the validator skips type-less options exactly as
+    # it skipped attribute-less buttons) — only input-bearing options carry
+    # data-input-type, only required ones carry the F-17 payload.
+    attrs = [f'value="{safe_action}"']
+    if input_type:
+        attrs.append(f'data-input-type="{input_type}"')
+    if is_required:
+        attrs.append('data-input-required="1"')
+        attrs.append(f'data-input-thing="{_html_mod.escape(thing, quote=True)}"')
+    opt_html = f'<option {" ".join(attrs)}>{_html_mod.escape(label)}</option>'
+    input_html = _render_action_input_wrapper(
+        action, item_n, item,
+        input_type=input_type, label=label,
+        is_required=is_required, thing=thing,
     )
+    return opt_html, input_html
+
+
+def _render_action_input_wrapper(
+    action: str,
+    item_n,
+    item: Optional[dict],
+    *,
+    input_type: Optional[str],
+    label: str,
+    is_required: bool,
+    thing: str,
+) -> str:
+    """The per-action input wrapper (`.cr-action-input`) — unchanged contract
+    from the button era (v2.12.4+): wrappers stack below the verb control and
+    open when their (n, action) is armed. Returns "" when the action needs no
+    input."""
+    safe_action = _html_mod.escape(action, quote=True)
+    safe_n = _html_mod.escape(str(item_n), quote=True)
 
     if input_type is None:
-        return btn_html, ""
+        return ""
 
     # Inline reason element, baked into every required action's wrapper so
     # the F-17 feedback needs no DOM construction at click time. Hidden until
@@ -2576,7 +2776,7 @@ def _render_action_button(action: str, item_n, item: Optional[dict] = None) -> t
             f'data-input-for-action="{safe_action}" '
             f'data-input-type="when-text" style="display:none;">'
             f'<input class="cr-input-field" type="text" '
-            f'placeholder="e.g. Monday at 2pm, tomorrow afternoon, next Thursday, 2026-05-12" />'
+            f'placeholder="e.g. Friday, 5 (days), or a date" />'
             f"{reason_html}"
             f"</div>"
         )
@@ -2605,7 +2805,69 @@ def _render_action_button(action: str, item_n, item: Optional[dict] = None) -> t
             f"{reason_html}"
             f"</div>"
         )
-    return btn_html, input_html
+    return input_html
+
+
+def _merge_later_verbs(actions: list) -> list:
+    """t3 FB-3 (M ruling): a row offering BOTH `push to [date]` and a
+    skip/snooze verb reads as two time-kicking options — the merged 'Later…'
+    option (`push to [date]`, whose dispatch auto-routes defer-vs-snooze by
+    ownership) covers both, so the separate skip/snooze DROPDOWN option is
+    suppressed. Display-layer only: the skip wire stays frozen and
+    dispatchable (chat phrase, in-flight widgets, the Snooze-rest footer),
+    and rows without `push to [date]` keep their snooze option unchanged."""
+    if not any(str(a).lower().startswith("push to") for a in actions):
+        return list(actions)
+    out = []
+    for a in actions:
+        low = str(a).lower()
+        if low == "skip" or _re_mod.fullmatch(r"snooze \d+d", low):
+            continue
+        out.append(a)
+    return out
+
+
+# t3 FB-4 (M ruling): per-surface primary verbs render as visible one-tap
+# buttons; the tail stays in the dropdown. Row-shape driven (not
+# source_skill driven) so mixed surfaces route correctly: an email-shaped
+# row inside the commitments chat still gets Send + Draft.
+_PRIMARY_EMAIL_VERBS = ("send", "draft")
+_PRIMARY_COMMITMENT_VERBS = ("resolved", "mark done")
+
+
+def _split_primary_verbs(actions: list) -> tuple[list, list]:
+    """Split a row's action list into (primary, tail). Email-shaped rows
+    (send/draft present) promote Send + Draft; commitment-shaped rows
+    promote the Done verb. Everything else — and rows matching neither
+    shape — stays in the dropdown. Wire ids untouched; this is display
+    layout only."""
+    low = {str(a).lower() for a in actions}
+    if low & set(_PRIMARY_EMAIL_VERBS):
+        primary_ids = _PRIMARY_EMAIL_VERBS
+    elif low & set(_PRIMARY_COMMITMENT_VERBS):
+        primary_ids = _PRIMARY_COMMITMENT_VERBS
+    else:
+        return [], list(actions)
+    primary = [a for a in actions if str(a).lower() in primary_ids]
+    tail = [a for a in actions if str(a).lower() not in primary_ids]
+    return primary, tail
+
+
+def _render_primary_button(action: str, item_n) -> str:
+    """One-tap primary verb button (t3 FB-4). Same selection model as the
+    dropdown — tap arms the row, Apply batches — and the same wire
+    attributes the legacy cr-action contract carries. Primary buttons are
+    always input-type "none": Send/Done need nothing typed, and Draft's
+    edit surface is the FB-10 inline-editable body, not a popup editor
+    (the dropdown's `edit then send` keeps the full To/Cc/Subject form)."""
+    safe_action = _html_mod.escape(action, quote=True)
+    safe_n = _html_mod.escape(str(item_n), quote=True)
+    label = _html_mod.escape(_action_display_label(action))
+    return (
+        f'<button class="cr-action cr-action-primary" type="button" '
+        f'data-n="{safe_n}" data-action="{safe_action}" '
+        f'data-input-type="none">{label}</button>'
+    )
 
 
 def _strip_action_n_prefix(action: str, item_n) -> str:
@@ -2636,15 +2898,21 @@ def _strip_action_n_prefix(action: str, item_n) -> str:
 
 
 def _render_widget_item(item: dict) -> str:
-    """Render one item as an HTML block with toggleable action buttons."""
+    """Render one item as an HTML block with a per-row verb dropdown (T2.2)."""
     n = item.get("n")
     if n is None:
         raise ValueError("Item missing required 'n' field")
 
     parts = [f'<div class="cr-item" data-item-n="{_html_mod.escape(str(n), quote=True)}">']
 
+    # T2.2 display hygiene (RV-5): `n` is the WIRE id (data-n, the apply
+    # payload); `display_n` is the visible row number. When a surface keys
+    # rows on wire ids (cr-brain proposal ids, commitment ids), it passes a
+    # sequential `display_n` so plumbing never renders as row-title text.
+    disp = item.get("display_n", n)
+
     # Header line
-    head_parts = [f'<span class="cr-item-num"><strong>{_html_mod.escape(str(n))}.</strong></span>']
+    head_parts = [f'<span class="cr-item-num"><strong>{_html_mod.escape(str(disp))}.</strong></span>']
     icon = item.get("icon", "")
     if icon:
         head_parts.append(f'<span class="cr-item-icon">{_html_mod.escape(icon)}</span>')
@@ -2698,18 +2966,38 @@ def _render_widget_item(item: dict) -> str:
     # `mcp__cowork__present_files` fallback. The renderer just doesn't paint
     # them inside the widget body anymore.
 
-    # Per-item action buttons (v2.12.4+ — buttons row first, input wrappers stacked below)
-    actions = item.get("actions", [])
+    # Per-item verb DROPDOWN (T2.2 row diet — replaces the per-row button
+    # group; wire format unchanged). Default option is "— leave —" (no
+    # selection); the select is the row's single verb control, input wrappers
+    # stack below exactly as in the button era.
+    safe_n = _html_mod.escape(str(n), quote=True)
+    safe_disp = _html_mod.escape(str(disp), quote=True)
+    # t3 FB-3: merge the Defer/Snooze pair into the one 'Later…' option.
+    actions = _merge_later_verbs(item.get("actions", []))
     if actions:
-        buttons_html = []
+        # t3 FB-4: primary verbs become visible one-tap buttons; the tail
+        # stays in the dropdown.
+        stripped_actions = [_strip_action_n_prefix(a, n) for a in actions]
+        primary, tail = _split_primary_verbs(stripped_actions)
+        controls_html = [
+            _render_primary_button(a, n) for a in primary
+        ]
+        options_html = ['<option value="">— more —</option>' if primary
+                        else '<option value="">— leave —</option>']
         inputs_html = []
-        for a in actions:
-            stripped = _strip_action_n_prefix(a, n)
-            btn, inp = _render_action_button(stripped, n, item)
-            buttons_html.append(btn)
+        for a in tail:
+            opt, inp = _render_action_option(a, n, item)
+            options_html.append(opt)
             if inp:
                 inputs_html.append(inp)
-        parts.append(f'<div class="cr-item-actions">{"".join(buttons_html)}</div>')
+        if tail:
+            controls_html.append(
+                f'<select class="cr-action-select" data-n="{safe_n}" '
+                f'data-disp="{safe_disp}">{"".join(options_html)}</select>'
+            )
+        parts.append(
+            f'<div class="cr-item-actions">{"".join(controls_html)}</div>'
+        )
         # v4.5.2 S2 (F-59) — when a row offers fewer verbs than its siblings
         # (needs-confirm items), it says WHY in one line. The orchestrator
         # passes the reason; unexplained reduced verb sets read as broken
@@ -2732,12 +3020,11 @@ def _render_widget_item(item: dict) -> str:
     # Apply. crApplyAll's existing `.cr-note-field` lookup still grabs the value.
     safe_n = _html_mod.escape(str(n), quote=True)
     parts.append(
-        f'<div class="cr-item-note" data-note-for-n="{safe_n}">'
+        f'<div class="cr-item-note">'
         f'<button class="cr-note-toggle" type="button" '
-        f'data-note-for-n="{safe_n}" '
-        f'onclick="crToggleNote(this)">+ Add context</button>'
-        f'<input class="cr-input-field cr-note-field" type="text" '
-        f'placeholder="Add context or ask a question (optional, captured with whatever action you fire)" '
+        f'data-note-for-n="{safe_n}">+ Add context</button>'
+        f'<input class="cr-note-field" type="text" '
+        f'placeholder="Add context (optional)" '
         f'data-note-for-n="{safe_n}" '
         f'style="display:none;" />'
         f"</div>"
@@ -2750,13 +3037,16 @@ def _render_widget_item(item: dict) -> str:
         for sub in sub_items:
             sub_id = sub.get("id", "")
             sub_summary = sub.get("summary", "")  # rendered as visible label v2.12.4+ (per M's Apr 30 6a-e visual-connection ask)
-            sub_actions = sub.get("actions", [])
-            sub_buttons_html = []
+            # t3 FB-3 + FB-4 — same merge + primary split as parent rows.
+            sub_actions = _merge_later_verbs(sub.get("actions", []))
+            sub_stripped = [_strip_action_n_prefix(a, sub_id) for a in sub_actions]
+            sub_primary, sub_tail = _split_primary_verbs(sub_stripped)
+            sub_options_html = ['<option value="">— more —</option>' if sub_primary
+                                else '<option value="">— leave —</option>']
             sub_inputs_html = []
-            for a in sub_actions:
-                stripped = _strip_action_n_prefix(a, sub_id)
-                btn, inp = _render_action_button(stripped, sub_id, item)
-                sub_buttons_html.append(btn)
+            for a in sub_tail:
+                opt, inp = _render_action_option(a, sub_id, item)
+                sub_options_html.append(opt)
                 if inp:
                     sub_inputs_html.append(inp)
             sub_summary_html = (
@@ -2778,8 +3068,14 @@ def _render_widget_item(item: dict) -> str:
             # know what name these mean." The summary text below the row
             # carries the meaning the user actually needs; the data-sub-id
             # attribute on the wrapper still routes the action correctly.
+            # T3.1 (FB-13): a wire-id-shaped sub_id (commitment/proposal ids —
+            # `cmt_*`, `event_NNN`, `cru:*`...) is plumbing, never a label;
+            # data-sub-id still routes the action.
             sid_str = str(sub_id)
-            show_sid_label = not _re_mod.match(r"^[a-z]\d+$", sid_str)
+            show_sid_label = not (
+                _re_mod.match(r"^[a-z]\d+$", sid_str)
+                or _WIRE_ID_RE.match(sid_str.strip().rstrip("."))
+            )
             sub_id_html = (
                 f'<span class="cr-sub-id"><strong>{_html_mod.escape(sid_str)}</strong></span>'
                 if show_sid_label
@@ -2792,13 +3088,20 @@ def _render_widget_item(item: dict) -> str:
             # textareas the user never used). Click-to-reveal keeps the affordance
             # available without the visual clutter.
             sub_safe_n = _html_mod.escape(sid_str, quote=True)
+            # T3.1 review F-1: data-disp feeds the JS hold message ("Apply is
+            # waiting on item N — …") — visible text composed client-side,
+            # which the render-time scan can never see (data-* values are
+            # blanked from the scannable). A suppressed sub_id (wire-id or
+            # routing-prefix shaped) must not be the display handle; fall
+            # back to the parent row's display number. data-n stays the
+            # wire id — dispatch untouched.
+            sub_disp = sub_safe_n if show_sid_label else safe_disp
             sub_note_html = (
-                f'<div class="cr-item-note cr-sub-item-note" data-note-for-n="{sub_safe_n}">'
+                f'<div class="cr-item-note cr-sub-item-note">'
                 f'<button class="cr-note-toggle" type="button" '
-                f'data-note-for-n="{sub_safe_n}" '
-                f'onclick="crToggleNote(this)">+ Add context</button>'
-                f'<input class="cr-input-field cr-note-field" type="text" '
-                f'placeholder="Add context or ask a question (optional, captured with whatever action you fire)" '
+                f'data-note-for-n="{sub_safe_n}">+ Add context</button>'
+                f'<input class="cr-note-field" type="text" '
+                f'placeholder="Add context (optional)" '
                 f'data-note-for-n="{sub_safe_n}" '
                 f'style="display:none;" />'
                 f"</div>"
@@ -2816,7 +3119,14 @@ def _render_widget_item(item: dict) -> str:
                 f'<div class="cr-sub-row">'
                 f'{sub_id_html}'
                 f'{sub_summary_html}'
-                f'<div class="cr-sub-actions">{"".join(sub_buttons_html)}</div>'
+                f'<div class="cr-sub-actions">'
+                + "".join(_render_primary_button(a, sub_id) for a in sub_primary)
+                + (
+                    f'<select class="cr-action-select" data-n="{sub_safe_n}" '
+                    f'data-disp="{sub_disp}">{"".join(sub_options_html)}</select>'
+                    if sub_tail else ""
+                )
+                + f"</div>"
                 f"</div>"
                 f"{sub_reduced_html}"
                 f"{sub_inputs_block}"
@@ -2868,14 +3178,25 @@ _BRAND_LOGO_SVG = (
 )
 
 
-_WIDGET_CSS = """
-/* Chalette Command Room — branded widget surface (v2.11.3+)
- * Brand colors derived from Chalette_CommandRoom_Logo_Stacked SVG:
- *   #B88B4A  gold/bronze (the "C" in Chalette, accent)
- *   #1A1714  warm charcoal (deep brown-black, primary dark)
- *   Typography: JetBrains Mono / system mono for the COMMAND ROOM wordmark
- * Selected button uses brand gold instead of generic green.
- */
+# ============================================================================
+# Widget CSS (T2.2 scaffold diet round 2 — conditional emission).
+#
+# The sheet is split into a CORE block (always emitted) plus FEATURE blocks,
+# each keyed by a trigger substring: a block ships ONLY when the rendered
+# content actually contains its trigger (an email blockquote, a sub-item
+# group, the multi-field editor, ...). `_compose_widget_css(content_html)`
+# assembles the sheet per render. Classes the JS ADDS at runtime
+# (.cr-select-armed, .cr-selected, .cr-item-invalid, .cr-input-missing,
+# .cr-action-input-just-opened, .cr-wrapper-missing) ride with the block
+# whose STATIC trigger guarantees their host elements exist — they are never
+# their own triggers (they aren't in the initial HTML).
+#
+# Brand colors derived from Chalette_CommandRoom_Logo_Stacked SVG:
+#   #B88B4A  gold/bronze (the "C" in Chalette, accent)
+#   #1A1714  warm charcoal (deep brown-black, primary dark)
+# ============================================================================
+
+_CSS_CORE = """
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
 html, body { background: transparent; }
@@ -2896,6 +3217,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .cr-item-subject { color: #D6CDC0; }
 .cr-item-context { color: #B5A998; }
 .cr-item-annotation { color: #B88B4A; font-style: italic; margin-left: 6px; }
+.cr-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; clear: both; }
+.cr-wrapper-missing { display: inline-block; margin-left: 8px; padding: 2px 8px; font-size: 11px; color: #C44A3D; background: rgba(196, 74, 61, 0.12); border: 1px solid rgba(196, 74, 61, 0.4); border-radius: 4px; font-style: italic; }
+.cr-verbset-note { margin-top: 4px; font-size: 12px; color: #8C7A65; font-style: italic; }
+""".strip()
+
+# Collapsible source-thread accordion (v2.12.1+).
+_CSS_ORIG = """
 .cr-orig-thread { margin: 6px 0 8px; padding: 0; background: #14110F !important; border: 1px solid #2A2520 !important; border-radius: 4px; color: #B5A998; }
 .cr-orig-summary { padding: 6px 12px; cursor: pointer; font-size: 12px; color: #B5A998 !important; user-select: none; outline: none; }
 .cr-orig-summary:hover { color: #E8E0D6 !important; background: #1A1714 !important; }
@@ -2906,6 +3234,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .cr-orig-subject { margin-bottom: 6px; color: #D6CDC0; }
 .cr-orig-line { margin: 2px 0; line-height: 1.45; }
 .cr-orig-empty { height: 4px; }
+""".strip()
+
+# Email draft blockquote (CONVENTIONS_EMAIL_PREVIEW).
+_CSS_EMAIL = """
 .cr-email-draft { margin: 8px 0; padding: 10px 14px; background: #221E1A !important; border-left: 3px solid #B88B4A !important; color: #E8E0D6 !important; border-radius: 4px; }
 .cr-eh { margin-bottom: 2px; color: #F5EFE6; }
 .cr-eh strong { color: #F5EFE6; }
@@ -2915,16 +3247,25 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .cr-eb-empty { height: 6px; }
 .cr-email-draft a { color: #C9A570 !important; text-decoration: none; }
 .cr-email-draft a:hover { text-decoration: underline; }
+/* t3 FB-10 — the body is directly editable: quiet at rest, an unmistakable
+ * edit surface on hover/focus. */
+.cr-eb-body[contenteditable] { cursor: text; border-radius: 4px; padding: 2px 4px; margin: 0 -4px; }
+.cr-eb-body[contenteditable]:hover { background: rgba(184, 139, 74, 0.07); }
+.cr-eb-body[contenteditable]:focus { outline: 1px solid #B88B4A; background: #221D17; box-shadow: 0 0 0 2px rgba(184, 139, 74, 0.18); }
+.cr-eb-empty { min-height: 6px; height: auto; }
+""".strip()
+
+# Inline source links per item.
+_CSS_SOURCES = """
 .cr-item-sources { margin: 6px 0; font-size: 12px; color: #B5A998; }
 .cr-item-sources a { color: #C9A570 !important; text-decoration: none; }
 .cr-item-sources a:hover { text-decoration: underline; }
-/* v2.14.18: cr-item-artifact / cr-artifact-link CSS removed. Inline brief links were retired in v2.14.14; surfaces moved to the post-widget Briefs section + present_files cards. Keeping the CSS around let the agent improvise an "Open full brief" pseudo-button inside the widget body that didn't actually resolve when clicked (M's v2.14.17 testing). */
-/* v2.14.14+ — explicit positioning + clear:both to prevent overlay bugs M reported
- * in v2.14.13 testing where Add more context / Push meeting / Edit-then-send inputs
- * appeared overlapping the button label. Belt-and-suspenders: position:static blocks
- * any inherited absolute positioning, clear:both pushes input rows to a new line
- * regardless of float context, display:block ensures full-width column layout. */
-.cr-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; clear: both; }
+""".strip()
+
+# Input wrappers + fields (v2.14.14+ explicit positioning + clear:both to
+# prevent the overlay bugs from M's v2.14.13 testing; v2.14.30 flash-open
+# animation cue; the JS adds .cr-action-input-just-opened at open time).
+_CSS_INPUTS = """
 .cr-item-inputs { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; clear: both; position: static; width: 100%; }
 .cr-action-input { width: 100%; padding: 10px 12px; background: #221E1A; border: 1px solid #3A3530; border-radius: 6px; box-sizing: border-box; position: relative !important; clear: both !important; display: block; margin-top: 4px; z-index: 5; }
 .cr-action-input[style*="display: block"], .cr-action-input[style*="display:block"] { display: block !important; }
@@ -2947,6 +3288,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .cr-input-field { width: 100%; padding: 6px 8px; font-size: 13px; font-family: inherit; line-height: 1.5; background: #14110F !important; color: #E8E0D6 !important; border: 1px solid #3A3530 !important; border-radius: 4px !important; resize: vertical; box-sizing: border-box; }
 .cr-input-field:focus { outline: none; border-color: #B88B4A !important; box-shadow: 0 0 0 2px rgba(184, 139, 74, 0.2); }
 textarea.cr-input-field { min-height: 60px; }
+.cr-item-invalid { border-left: 3px solid #C4703D !important; padding-left: 10px !important; background: rgba(196, 112, 61, 0.07); border-radius: 4px; }
+.cr-input-reason { margin-top: 4px; font-size: 12px; color: #E09A5F; }
+.cr-input-field.cr-input-missing { border-color: #C4703D !important; box-shadow: 0 0 0 1px rgba(196, 112, 61, 0.5) !important; }
+""".strip()
+
+# Multi-field email editor (v2.12.5+ inline To/Cc/Subject rows; body claims
+# the vertical space per M's v2.12.4 feedback).
+_CSS_MFE = """
 .cr-multi-field { padding: 8px 10px; }
 .cr-mfe-row { margin-bottom: 4px; }
 .cr-mfe-row:last-child { margin-bottom: 0; }
@@ -2958,6 +3307,22 @@ textarea.cr-input-field { min-height: 60px; }
 .cr-mfe-body { margin-top: 10px; }
 .cr-mfe-body .cr-mfe-label { font-size: 10px; margin-bottom: 4px; }
 .cr-mfe-body textarea.cr-input-field { min-height: 220px; font-size: 13px; line-height: 1.5; }
+""".strip()
+
+# Per-row verb DROPDOWN (T2.2 row diet — the six-button row's replacement).
+# .cr-select-armed is the F-58 visible-armed-state: the JS adds it on any
+# non-empty selection so an armed row is unmistakable before Apply.
+_CSS_SELECTS = """
+select.cr-action-select { padding: 5px 10px !important; font-size: 12px !important; font-weight: 500 !important; font-family: inherit !important; border: 1px solid #3A3530 !important; border-radius: 6px !important; background: #2A2520 !important; color: #E8E0D6 !important; cursor: pointer !important; max-width: 100%; }
+select.cr-action-select:hover { border-color: #5E4F3F !important; }
+select.cr-action-select:focus { outline: none; border-color: #B88B4A !important; box-shadow: 0 0 0 2px rgba(184, 139, 74, 0.2); }
+select.cr-action-select.cr-select-armed { border-color: #B88B4A !important; background: rgba(184, 139, 74, 0.16) !important; color: #B88B4A !important; font-weight: 700 !important; box-shadow: 0 0 0 2px rgba(184, 139, 74, 0.35) !important; }
+select.cr-action-select option { background: #1A1714; color: #E8E0D6; font-weight: 400; }
+""".strip()
+
+# Legacy per-item action BUTTONS — still used by the onboarding setup widget
+# (selection labels, not verbs) and validated for hand-relayed legacy HTML.
+_CSS_BUTTONS = """
 button.cr-action { padding: 5px 12px !important; font-size: 12px !important; font-weight: 500 !important; font-family: inherit !important; border: 1px solid #3A3530 !important; border-radius: 6px !important; background: #2A2520 !important; color: #E8E0D6 !important; cursor: pointer !important; transition: all 0.1s; position: relative; }
 button.cr-action:hover { background: #3A3530 !important; border-color: #5E4F3F !important; }
 /* v2.14.1+ — much more visible selected state per Drew's Apr 30 testing
@@ -2976,15 +3341,16 @@ button.cr-action.cr-selected { background: #B88B4A !important; color: #14110F !i
  * buttons. Double-escape `\\2713` so Python emits the literal `\2713`. */
 button.cr-action.cr-selected::before { content: "\\2713"; position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-weight: 700; color: #14110F; line-height: 1; pointer-events: none; }
 button.cr-action.cr-selected:hover { background: #C9A570 !important; border-color: #C9A570 !important; }
-/* v2.14.4+ — per-item context note field (universal across all widgets) */
-/* v2.14.36+ — collapsible "+ Add context" toggle button replaces the
-   v2.14.28-v2.14.35 always-visible textarea. M's 2026-05-07 reversal:
-   "Lets keep a context button for all and delete the static open box.
-   the static open box is bad for UI, makes it look too cluttered."
-   The button reads "+ Add context"; clicking reveals the textarea below.
-   Toggle button styled tighter than action buttons (it's a secondary
-   affordance, not a primary action). Active state when textarea is
-   visible inverts to gold. */
+/* t3 FB-4 — per-surface primary verbs as visible one-tap buttons (Done /
+ * Send / Draft). Gold-accented at rest so the row's main move is obvious;
+ * the selected state is the same .cr-selected treatment as every button. */
+button.cr-action.cr-action-primary { border-color: #B88B4A !important; color: #B88B4A !important; font-weight: 600 !important; }
+button.cr-action.cr-action-primary:hover { background: rgba(184, 139, 74, 0.16) !important; }
+""".strip()
+
+# Collapsible "+ Add context" note toggle + field (v2.14.36+ — M's 2026-05-07
+# reversal: click-to-reveal, never a static open box).
+_CSS_NOTES = """
 .cr-item-note { margin-top: 8px; }
 .cr-sub-item-note { margin-top: 6px; }
 .cr-note-toggle { padding: 4px 10px !important; font-size: 11px !important; font-weight: 500 !important; font-family: inherit !important; border: 1px dashed rgba(184, 139, 74, 0.35) !important; border-radius: 4px !important; background: transparent !important; color: #8A7A60 !important; cursor: pointer !important; transition: all 0.1s; letter-spacing: 0.04em; }
@@ -2994,9 +3360,10 @@ button.cr-action.cr-selected:hover { background: #C9A570 !important; border-colo
 .cr-note-field::placeholder { color: #8A7A60; font-style: italic; }
 .cr-note-field:hover { border-color: #6B5A40 !important; }
 .cr-note-field:focus { outline: none; border-color: #B88B4A !important; color: #FAF6EE !important; box-shadow: 0 0 0 2px rgba(184, 139, 74, 0.18); background: #221D17 !important; }
-/* v2.14.34+ — visible fallback when crFindInputWrapper returns null (renderer-bypass
-   bug class). Pre-v2.14.34 only console.warn fired; customers couldn't see the failure. */
-.cr-wrapper-missing { display: inline-block; margin-left: 8px; padding: 2px 8px; font-size: 11px; color: #C44A3D; background: rgba(196, 74, 61, 0.12); border: 1px solid rgba(196, 74, 61, 0.4); border-radius: 4px; font-style: italic; }
+""".strip()
+
+# Grouped sub-items (commitments 7a/7b, pending reviews).
+_CSS_SUBS = """
 .cr-sub-items { margin-top: 8px; padding-left: 16px; border-left: 2px solid #2A2520; }
 .cr-sub-item { margin: 8px 0; }
 .cr-sub-row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
@@ -3004,9 +3371,24 @@ button.cr-action.cr-selected:hover { background: #C9A570 !important; border-colo
 .cr-sub-summary { color: #D6CDC0; font-size: 12px; flex: 1 1 200px; padding-top: 4px; line-height: 1.5; }
 .cr-sub-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .cr-sub-inputs { margin-top: 6px; margin-left: 38px; display: flex; flex-direction: column; gap: 6px; }
+""".strip()
+
+_CSS_DIVIDER = """
 .cr-divider { border: 0; border-top: 1px solid #2A2520; margin: 12px 0; }
+""".strip()
+
+_CSS_PAGINATION = """
+.cr-pagination { padding: 8px 16px; background: #14110F !important; border-top: 1px solid #2A2520; color: #B5A998 !important; font-size: 12px; text-align: center; }
+.cr-pagination code { color: #B88B4A !important; font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace; font-size: 11px; }
+""".strip()
+
+_CSS_QUICKREAD = """
 .cr-quick-read { padding: 12px 16px; background: #221E1A !important; border-top: 1px solid #2A2520; color: #E8E0D6 !important; font-size: 12px; border-left: 3px solid #B88B4A; }
 .cr-quick-read strong { color: #B88B4A !important; font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace !important; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; }
+""".strip()
+
+# Footer (counter + Apply/Reset/Snooze-rest + the F-17 apply-hold reason).
+_CSS_FOOTER = """
 .cr-footer { padding: 12px 16px; background: #14110F !important; border-top: 1px solid #2A2520; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .cr-counter { color: #B5A998; font-size: 12px; }
 .cr-counter strong { color: #F5EFE6; font-size: 13px; }
@@ -3016,271 +3398,107 @@ button.cr-btn-apply:hover { background: #C9A570 !important; border-color: #C9A57
 button.cr-btn-apply:disabled { background: #3A3530 !important; border-color: #3A3530 !important; color: #5E4F3F !important; cursor: not-allowed !important; }
 button.cr-btn-secondary { padding: 6px 12px !important; font-size: 12px !important; font-family: inherit !important; border: 1px solid #3A3530 !important; border-radius: 6px !important; background: #2A2520 !important; color: #E8E0D6 !important; cursor: pointer !important; }
 button.cr-btn-secondary:hover { background: #3A3530 !important; border-color: #5E4F3F !important; }
-/* Header stat tiles (v4.5.2 S2 — F-18 full-list layout; shared with the
- * all-clear summary, which previously owned these rules). */
+.cr-apply-reason { flex-basis: 100%; font-size: 12px; color: #E09A5F; }
+""".strip()
+
+# Header stat tiles (v4.5.2 S2 — F-18 full-list layout; shared with the
+# all-clear summary).
+_CSS_TILES = """
 .cr-counter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 12px 0; }
 .cr-counter-card { background: #14110F; border: 1px solid #2A2520; border-radius: 6px; padding: 10px 12px; }
 .cr-counter-label { font-size: 11px; color: #8C7A65; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
 .cr-counter-value { font-size: 22px; color: #E8E0D6; font-weight: 500; }
-/* v4.5.2 S2 (F-17) — inline validation. A selected action missing its
- * required input highlights its row, names the missing thing next to the
- * field, and holds Apply with the reason on its own footer line. No state
- * change in this widget is ever invisible. */
-.cr-item-invalid { border-left: 3px solid #C4703D !important; padding-left: 10px !important; background: rgba(196, 112, 61, 0.07); border-radius: 4px; }
-.cr-input-reason { margin-top: 4px; font-size: 12px; color: #E09A5F; }
-.cr-input-field.cr-input-missing { border-color: #C4703D !important; box-shadow: 0 0 0 1px rgba(196, 112, 61, 0.5) !important; }
-.cr-apply-reason { flex-basis: 100%; font-size: 12px; color: #E09A5F; }
-/* v4.5.2 S2 (F-59) — one-line explanation on rows whose verb set is
- * reduced (needs-confirm items). */
-.cr-verbset-note { margin-top: 4px; font-size: 12px; color: #8C7A65; font-style: italic; }
 """.strip()
 
+# Feature blocks with their trigger substrings. A block is emitted iff its
+# trigger appears in the rendered CONTENT (the html between <style> and
+# <script>). Order preserves the original monolith's cascade.
+_CSS_FEATURE_BLOCKS: list[tuple[str, str]] = [
+    ("cr-orig-thread", _CSS_ORIG),
+    ("cr-email-draft", _CSS_EMAIL),
+    ("cr-item-sources", _CSS_SOURCES),
+    ("cr-action-input", _CSS_INPUTS),
+    ("cr-mfe-", _CSS_MFE),
+    ("cr-action-select", _CSS_SELECTS),
+    # Two triggers, one block (composition dedupes): the exact-token form for
+    # legacy/onboarding buttons, the t3 FB-4 primary-button class whose
+    # multi-class attribute the exact-token trigger can't see.
+    ('class="cr-action"', _CSS_BUTTONS),
+    ("cr-action-primary", _CSS_BUTTONS),
+    ("cr-note-toggle", _CSS_NOTES),
+    ("cr-sub-items", _CSS_SUBS),
+    ("cr-divider", _CSS_DIVIDER),
+    ("cr-pagination", _CSS_PAGINATION),
+    ("cr-quick-read", _CSS_QUICKREAD),
+    ('class="cr-footer"', _CSS_FOOTER),
+    ("cr-counter-grid", _CSS_TILES),
+]
 
-_WIDGET_JS_TEMPLATE = """
-const crSelections = {};
-const crTotalItems = __TOTAL_ITEMS__;
-// W4 (2026-07) — widget source id. Stamped into every Apply-all
-// choice tuple as `src` so apply-choices can dispatch statelessly (no
-// 60-minute fire-marker window). Empty string on legacy data views that
-// don't pass source_skill — apply-choices falls back to the fire-marker.
-const crSrc = __CR_SRC__;
 
-function crFindActionButton(n, action) {
-  // Dataset-iteration lookup, same rationale as crFindInputWrapper (action
-  // strings contain spaces/brackets that break attribute selectors in some
-  // Cowork iframe builds).
-  const btns = document.querySelectorAll('.cr-action');
-  const nStr = String(n);
-  for (let i = 0; i < btns.length; i++) {
-    if (btns[i].dataset.n === nStr && btns[i].dataset.action === action) return btns[i];
-  }
-  return null;
-}
+# ============================================================================
+# Widget JS (T2.2 scaffold diet round 2 — modular, conditionally emitted).
+#
+# The script is assembled per render from blocks keyed by content triggers
+# (`_compose_widget_js`): the select handler ships only when verb dropdowns
+# render, the button handler only for button widgets (onboarding), the note
+# toggle only when "+ Add context" renders, Snooze-rest only when its footer
+# button exists. Selection state lives in the DOM (armed selects / .cr-selected
+# buttons) — no bookkeeping object. The `apply choices:` wire format is
+# byte-compatible with the button era ({n, action, src?, input?, context?}).
+#
+# Notes carried over from the button-era template:
+#   - dataset-iteration lookups, never CSS attribute selectors (action strings
+#     contain spaces/brackets; some Cowork iframe builds fail the escaped
+#     selector silently — Sam's Apr 29 wrapper-never-opened bug).
+#   - bind immediately, never DOMContentLoaded (Cowork injects into an
+#     already-loaded iframe — the v2.11.1→v2.11.2 bug).
+#   - visible wrapper-missing caption (v2.14.34 — renderer-bypass class).
+# ============================================================================
 
-// v4.5.2 S2 (F-17) — inline validation with disable-with-reason. A selected
-// action whose REQUIRED input is empty (Defer without a date was the
-// original: the whole batch silently refused to apply and M concluded the
-// button was dead) now: highlights the row, reveals the field with an
-// inline "needs a date" line, and holds Apply with the reason printed next
-// to it. Returns the list of invalid selections.
-function crValidate() {
-  document.querySelectorAll('.cr-item-invalid').forEach(function (el) { el.classList.remove('cr-item-invalid'); });
-  document.querySelectorAll('.cr-input-reason').forEach(function (el) { el.style.display = 'none'; });
-  document.querySelectorAll('.cr-input-field.cr-input-missing').forEach(function (el) { el.classList.remove('cr-input-missing'); });
-  const invalid = [];
-  Object.entries(crSelections).forEach(function ([n, action]) {
-    const btn = crFindActionButton(n, action);
-    if (!btn || btn.dataset.inputRequired !== '1') return;
-    const wrapper = crFindInputWrapper(n, action);
-    let field = null;
-    if (wrapper) field = wrapper.querySelector('textarea, input');
-    const value = field && field.value ? field.value.trim() : '';
-    if (value) return;
-    invalid.push({
-      n: n,
-      label: btn.textContent || action,
-      thing: btn.dataset.inputThing || 'value'
-    });
-    const rowEl = btn.closest('.cr-sub-item') || btn.closest('.cr-item');
-    if (rowEl) rowEl.classList.add('cr-item-invalid');
-    if (wrapper) {
-      wrapper.style.display = 'block';
-      const reason = wrapper.querySelector('.cr-input-reason');
-      if (reason) reason.style.display = 'block';
-      if (field) field.classList.add('cr-input-missing');
-    }
-  });
-  return invalid;
-}
-
-function crUpdateCounter() {
-  const count = Object.keys(crSelections).length;
-  const el = document.getElementById('cr-count');
-  if (el) el.textContent = count;
-  const applyBtn = document.getElementById('cr-apply');
-  if (!applyBtn) return;
-  // v3.13.0+ — Apply is enabled if there are explicit selections OR if any
-  // "+ Add context" note field has non-empty text. This pairs with the
-  // orphan-context capture in crApplyAll: typed-but-not-action-selected
-  // notes get folded into the payload as `add to my list` entries, so the
-  // user needs to be able to actually click Apply with just a note typed.
-  let hasOrphanNote = false;
-  const noteFields = document.querySelectorAll('.cr-note-field');
-  for (let i = 0; i < noteFields.length; i++) {
-    const v = noteFields[i].value;
-    if (v && v.trim()) {
-      hasOrphanNote = true;
-      break;
-    }
-  }
-  // F-17 gate: invalid selections hold Apply AND say why, right next to it.
-  const invalid = crValidate();
-  const reasonEl = document.getElementById('cr-apply-reason');
-  if (invalid.length > 0) {
-    applyBtn.disabled = true;
-    if (reasonEl) {
-      const first = invalid[0];
-      reasonEl.textContent = (invalid.length === 1)
-        ? 'Apply is waiting on item ' + first.n + ' \\u2014 ' + first.label + ' needs a ' + first.thing + '.'
-        : 'Apply is waiting on ' + invalid.length + ' items \\u2014 fill the highlighted fields.';
-      reasonEl.style.display = 'block';
-    }
-    return;
-  }
-  if (reasonEl) { reasonEl.textContent = ''; reasonEl.style.display = 'none'; }
-  applyBtn.disabled = (count === 0) && !hasOrphanNote;
-}
-
-function crEsc(s) {
-  // CSS.escape polyfill for older Cowork iframe sandboxes.
-  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) { return '\\\\' + c; });
-}
-
-function crFindInputWrapper(n, action) {
-  // Iterate + compare via dataset rather than querySelector with attribute
-  // selectors. Action strings contain spaces and brackets ("add more context
-  // [text]"); CSS.escape was producing selectors that some Cowork iframe builds
-  // failed to match (silent matchless lookup), so the wrapper existed in the
-  // DOM but the click handler couldn't find it and the textarea never opened.
-  // Sam reported this Apr 29; v2.14.14 added defensive CSS that didn't help
-  // because the lookup itself was returning null.
-  const wrappers = document.querySelectorAll('.cr-action-input');
-  const nStr = String(n);
-  for (let i = 0; i < wrappers.length; i++) {
-    const w = wrappers[i];
-    if (w.dataset.inputForN === nStr && w.dataset.inputForAction === action) {
-      return w;
-    }
-  }
-  return null;
-}
-
-function crGetCurrentBody(itemEl) {
-  // Concatenate the .cr-eb body lines of the closest email-draft blockquote
-  const lines = itemEl.querySelectorAll('.cr-email-draft .cr-eb');
-  const out = [];
-  lines.forEach(l => out.push(l.textContent));
-  return out.join('\\n');
-}
-
-function crToggle(btn) {
-  const n = btn.dataset.n;
-  const action = btn.dataset.action;
-  // Hide any input wrapper currently showing for this item's other actions
-  document.querySelectorAll('.cr-action-input[data-input-for-n="' + crEsc(n) + '"]').forEach(w => {
-    w.style.display = 'none';
-  });
-  // Deselect all buttons for this item
-  const itemBtns = document.querySelectorAll('.cr-action[data-n="' + crEsc(n) + '"]');
-  const wasSelected = btn.classList.contains('cr-selected');
-  itemBtns.forEach(b => b.classList.remove('cr-selected'));
-
-  if (wasSelected) {
-    delete crSelections[n];
+_JS_SELECT = """
+function crSel(sel) {
+  const n = sel.dataset.n;
+  crHideWraps(n);
+  // t3 FB-4 — a row has ONE armed verb: picking from the dropdown clears
+  // the row's primary buttons.
+  crQ('.cr-action').forEach(b => { if (b.dataset.n === n) b.classList.remove('cr-selected'); });
+  if (sel.value) {
+    sel.classList.add('cr-select-armed');
+    const o = sel.options[sel.selectedIndex];
+    crOpenWrap(n, sel.value, o ? o.dataset.inputType : '', sel);
   } else {
-    btn.classList.add('cr-selected');
-    crSelections[n] = action;
-    // v2.14.36+ — only look up + open an input wrapper when the action actually
-    // needs one. Pre-v2.14.36 the wrapper-missing fallback fired on EVERY action
-    // (Mark received, Skip, Add as person to <org>, etc.) because the lookup
-    // ran unconditionally and `none`-typed actions never had wrappers — so the
-    // null return tripped the visible "⚠ input field missing — re-fire task to
-    // fix" caption on actions that legitimately had no input. M's 2026-05-07
-    // testing surfaced the false positives: warning showed up on click-to-confirm
-    // buttons that weren't supposed to need wrappers. Gate the lookup on
-    // `data-input-type !== 'none'` so the warning only appears when the data
-    // contract genuinely says a wrapper SHOULD have been emitted.
-    const btnInputType = btn.dataset.inputType;
-    if (!btnInputType || btnInputType === 'none') {
-      // Click-to-confirm action (skip, mark received, add as person to <org>,
-      // resolved, ...). No wrapper to open, no warning to surface. Done.
-      crUpdateCounter();
-      return;
-    }
-    // If this action has an input wrapper, show it (and pre-populate for `edit`)
-    const inputWrapper = crFindInputWrapper(n, action);
-    if (inputWrapper) {
-      inputWrapper.style.display = 'block';
-      // v2.14.30+ — defensive visibility fix per M's testing 2026-05-06 D1.
-      // Symptom: customer clicked Edit-then-send on cr-commitments (item with
-      // multi-field-email wrapper), button got selected state, but textarea
-      // didn't appear visibly. Cowork diagnostic showed wrapper exists in DOM
-      // with correct attrs and JS lookup is clean — most likely the wrapper
-      // opens BELOW the visible area of the iframe (multi-field-email is ~300px
-      // tall; if buttons are mid-screen, wrapper extends off-screen). Defensive:
-      // (1) explicit class trigger for animated flash so customer SEES that
-      // something opened, (2) more aggressive scrollIntoView with block:'center'
-      // (was 'nearest' which doesn't move enough when wrapper is just barely
-      // off-screen), (3) post-scroll focus so customer's caret lands in the
-      // first field.
-      inputWrapper.classList.add('cr-action-input-just-opened');
-      setTimeout(function () {
-        try {
-          inputWrapper.classList.remove('cr-action-input-just-opened');
-        } catch (e) {}
-      }, 1500);
-      const inputType = inputWrapper.dataset.inputType;
-      const field = inputWrapper.querySelector('textarea, input');
-      if (field) {
-        if (inputType === 'textarea-prepop' && !field.value.trim()) {
-          // Pre-populate textarea with current body so user can edit directly
-          const itemEl = btn.closest('.cr-item');
-          if (itemEl) field.value = crGetCurrentBody(itemEl);
-        }
-        // v2.14.30+ — scroll the WRAPPER (not the field) into the iframe's
-        // viewport center, then focus the field. block:'center' is more
-        // aggressive than 'nearest' so wrappers that open below the visible
-        // area get pulled up into view.
-        setTimeout(function () {
-          try {
-            inputWrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            field.focus();
-          } catch (e) {
-            console.warn('cr-widget: scrollIntoView/focus failed', e);
-          }
-        }, 50);
-      } else {
-        console.warn('cr-widget: input wrapper found but no textarea/input child', inputWrapper);
-      }
-    } else {
-      // v2.14.30+ — log when lookup fails so post-fire diagnostics can find the cause
-      console.warn('cr-widget: crFindInputWrapper returned null for', { n: n, action: action });
-      // v2.14.34+ — visible customer fallback. Pre-v2.14.34 this failure was
-      // silent on the customer's screen (only the console.warn fired, invisible
-      // to anyone not actively inspecting the iframe). Two days of misdiagnosis
-      // chasing CSS/scroll issues that were never the cause — the actual cause
-      // (renderer-bypass dropping the wrapper element) was invisible to the
-      // user. Now: append a visible caption next to the just-clicked button so
-      // the customer immediately knows the action's input affordance is broken
-      // and what to do (re-fire the task to get a fresh, structurally-valid widget).
-      if (!btn.parentElement.querySelector('.cr-wrapper-missing[data-for-action="' + crEsc(action) + '"]')) {
-        const warn = document.createElement('span');
-        warn.className = 'cr-wrapper-missing';
-        warn.dataset.forAction = action;
-        warn.textContent = '⚠ input field missing — re-fire task to fix';
-        btn.parentElement.appendChild(warn);
-      }
-    }
+    sel.classList.remove('cr-select-armed');
   }
   crUpdateCounter();
 }
+""".strip()
 
-// v2.14.36+ — toggle the per-item / per-sub-item context note textarea.
-// Click reveals the textarea below the button + focuses it; click again hides.
-// The textarea retains its `data-note-for-n` attribute so crApplyAll's
-// existing `.cr-note-field` lookup keeps working unchanged. Iterate via
-// dataset rather than CSS attribute selector for the same reason as
-// crFindInputWrapper — sub-ids like '7a' / 'd1' break some Cowork iframe
-// CSS-escape implementations.
+_JS_BUTTONS = """
+function crToggle(btn) {
+  const n = btn.dataset.n;
+  crHideWraps(n);
+  const was = btn.classList.contains('cr-selected');
+  crQ('.cr-action').forEach(b => { if (b.dataset.n === n) b.classList.remove('cr-selected'); });
+  // t3 FB-4 — tapping a primary button clears the row's dropdown pick.
+  crQ('.cr-action-select').forEach(s => {
+    if (s.dataset.n === n) { s.value = ''; s.classList.remove('cr-select-armed'); }
+  });
+  if (!was) {
+    btn.classList.add('cr-selected');
+    crOpenWrap(n, btn.dataset.action, btn.dataset.inputType, btn);
+  }
+  crUpdateCounter();
+}
+""".strip()
+
+_JS_NOTES = """
 function crToggleNote(btn) {
   const n = btn.dataset.noteForN;
-  const fields = document.querySelectorAll('.cr-note-field');
+  const fields = crQ('.cr-note-field');
   for (let i = 0; i < fields.length; i++) {
     if (fields[i].dataset.noteForN === n) {
       const f = fields[i];
-      const wasVisible = f.style.display !== 'none';
-      if (wasVisible) {
+      if (f.style.display !== 'none') {
         f.style.display = 'none';
         btn.classList.remove('cr-note-toggle-open');
       } else {
@@ -3292,6 +3510,173 @@ function crToggleNote(btn) {
     }
   }
 }
+""".strip()
+
+_JS_SKIP = """
+function crSkipAll() {
+  const armed = new Set();
+  crSelected().forEach(s => armed.add(String(s.n)));
+  const optioned = new Set();
+  crQ('.cr-action-select').forEach(s => {
+    if (armed.has(String(s.dataset.n))) return;
+    for (let i = 0; i < s.options.length; i++) {
+      if (s.options[i].value === 'skip') {
+        s.value = 'skip';
+        s.classList.add('cr-select-armed');
+        optioned.add(String(s.dataset.n));
+        break;
+      }
+    }
+  });
+  crQ('.cr-item, .cr-sub-item').forEach(el => {
+    const n = el.dataset.itemN || el.dataset.subId;
+    if (!n || armed.has(String(n))) return;
+    const b = el.querySelector('.cr-action[data-action="skip"]');
+    if (b) { b.classList.add('cr-selected'); optioned.add(String(n)); }
+  });
+  // t3 FB-3 — merged rows carry no dropdown skip option ('Later...' covers
+  // the visible surface); Snooze-rest still mutes them via direct payload
+  // entries (the skip WIRE stays live).
+  window.crExtraSkips = [];
+  crQ('.cr-item, .cr-sub-item').forEach(el => {
+    const n = el.dataset.itemN || el.dataset.subId;
+    if (!n || armed.has(String(n)) || optioned.has(String(n))) return;
+    const own = el.querySelector(':scope > .cr-item-actions, :scope > .cr-sub-row');
+    if (own && (own.querySelector('.cr-action-select') || own.querySelector('.cr-action'))) {
+      window.crExtraSkips.push(String(n));
+    }
+  });
+  crUpdateCounter();
+  crApplyAll();
+}
+""".strip()
+
+_JS_CORE = """
+const crTotalItems = __TOTAL_ITEMS__;
+const crSrc = __CR_SRC__;
+const crQ = s => document.querySelectorAll(s);
+const crG = id => document.getElementById(id);
+
+function crWrap(n, action) {
+  // dataset iteration, never CSS attribute selectors (action strings carry
+  // spaces/brackets; some Cowork iframe builds fail the escaped selector
+  // silently -- the Apr 29 wrapper-never-opened bug).
+  const ws = document.querySelectorAll('.cr-action-input');
+  const s = String(n);
+  for (let i = 0; i < ws.length; i++) {
+    if (ws[i].dataset.inputForN === s && ws[i].dataset.inputForAction === action) return ws[i];
+  }
+  return null;
+}
+
+function crHideWraps(n) {
+  const s = String(n);
+  crQ('.cr-action-input').forEach(w => { if (w.dataset.inputForN === s) w.style.display = 'none'; });
+}
+
+function crOpenWrap(n, action, type, ctl) {
+  if (!type || type === 'none') return;
+  const w = crWrap(n, action);
+  if (!w) {
+    console.warn('cr-widget: no input wrapper for', { n: n, action: action });
+    if (ctl && ctl.parentElement && !ctl.parentElement.querySelector('.cr-wrapper-missing')) {
+      const warn = document.createElement('span');
+      warn.className = 'cr-wrapper-missing';
+      warn.textContent = '\u26a0 input field missing \u2014 re-fire task to fix';
+      ctl.parentElement.appendChild(warn);
+    }
+    return;
+  }
+  w.style.display = 'block';
+  w.classList.add('cr-action-input-just-opened');
+  setTimeout(() => { try { w.classList.remove('cr-action-input-just-opened'); } catch (e) {} }, 1500);
+  const f = w.querySelector('textarea, input');
+  if (f) {
+    if (w.dataset.inputType === 'textarea-prepop' && !f.value.trim() && ctl) {
+      const item = ctl.closest('.cr-item');
+      if (item) {
+        const out = [];
+        item.querySelectorAll('.cr-email-draft .cr-eb').forEach(l => out.push(l.textContent));
+        f.value = out.join('\\n');
+      }
+    }
+    setTimeout(() => {
+      try {
+        w.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        f.focus();
+      } catch (e) { console.warn('cr-widget: scroll/focus failed', e); }
+    }, 50);
+  }
+}
+
+function crSelected() {
+  const out = [];
+  crQ('.cr-action-select').forEach(s => {
+    if (!s.value) return;
+    const o = s.options[s.selectedIndex];
+    out.push({ n: s.dataset.n, action: s.value, el: s,
+      disp: s.dataset.disp || s.dataset.n,
+      req: !!(o && o.dataset.inputRequired === '1'),
+      thing: (o && o.dataset.inputThing) || 'value',
+      label: ((o && o.text) || s.value).trim() });
+  });
+  crQ('.cr-action.cr-selected').forEach(b => {
+    out.push({ n: b.dataset.n, action: b.dataset.action, el: b,
+      disp: b.dataset.n,
+      req: b.dataset.inputRequired === '1',
+      thing: b.dataset.inputThing || 'value',
+      label: (b.textContent || b.dataset.action).trim() });
+  });
+  return out;
+}
+
+function crValidate() {
+  crQ('.cr-item-invalid').forEach(el => el.classList.remove('cr-item-invalid'));
+  crQ('.cr-input-reason').forEach(el => { el.style.display = 'none'; });
+  crQ('.cr-input-field.cr-input-missing').forEach(el => el.classList.remove('cr-input-missing'));
+  const invalid = [];
+  crSelected().forEach(sel => {
+    if (!sel.req) return;
+    const w = crWrap(sel.n, sel.action);
+    const f = w ? w.querySelector('textarea, input') : null;
+    if (f && f.value && f.value.trim()) return;
+    invalid.push(sel);
+    const rowEl = sel.el.closest('.cr-sub-item') || sel.el.closest('.cr-item');
+    if (rowEl) rowEl.classList.add('cr-item-invalid');
+    if (w) {
+      w.style.display = 'block';
+      const reason = w.querySelector('.cr-input-reason');
+      if (reason) reason.style.display = 'block';
+      if (f) f.classList.add('cr-input-missing');
+    }
+  });
+  return invalid;
+}
+
+function crUpdateCounter() {
+  const picks = crSelected();
+  const el = crG('cr-count');
+  if (el) el.textContent = picks.length;
+  const applyBtn = crG('cr-apply');
+  if (!applyBtn) return;
+  let orphan = false;
+  crQ('.cr-note-field').forEach(f => { if (f.value && f.value.trim()) orphan = true; });
+  const invalid = crValidate();
+  const reasonEl = crG('cr-apply-reason');
+  if (invalid.length > 0) {
+    applyBtn.disabled = true;
+    if (reasonEl) {
+      const first = invalid[0];
+      reasonEl.textContent = (invalid.length === 1)
+        ? 'Apply is waiting on item ' + first.disp + ' \u2014 ' + first.label + ' needs a ' + first.thing + '.'
+        : 'Apply is waiting on ' + invalid.length + ' items \u2014 fill the highlighted fields.';
+      reasonEl.style.display = 'block';
+    }
+    return;
+  }
+  if (reasonEl) { reasonEl.textContent = ''; reasonEl.style.display = 'none'; }
+  applyBtn.disabled = (picks.length === 0) && !orphan;
+}
 
 function crSendPrompt(text) {
   if (window.sendPrompt) window.sendPrompt(text);
@@ -3299,141 +3684,140 @@ function crSendPrompt(text) {
   else console.warn('sendPrompt unavailable');
 }
 
+function crNoteFor(n) {
+  const fields = crQ('.cr-note-field');
+  const s = String(n);
+  for (let i = 0; i < fields.length; i++) {
+    if (fields[i].dataset.noteForN === s) return fields[i];
+  }
+  return null;
+}
+
+function crInlineBody(n) {
+  // t3 FB-10 — the row's directly-editable email body, or null.
+  const items = crQ('.cr-item, .cr-sub-item');
+  const s = String(n);
+  for (let i = 0; i < items.length; i++) {
+    const rn = items[i].dataset.itemN || items[i].dataset.subId;
+    if (String(rn) !== s) continue;
+    return items[i].querySelector('.cr-eb-body[contenteditable]');
+  }
+  return null;
+}
+
+function crBodyText(el) {
+  // Normalized on-screen text: trim line-trailing space, collapse blank-line
+  // runs (an empty .cr-eb-empty line div reads back as TWO breaks via
+  // innerText), drop trailing blanks — the shape data-original carries.
+  const raw = (el.innerText || '').replace(/\\n{3,}/g, '\\n\\n');
+  const lines = raw.split('\\n').map(l => l.replace(/\\s+$/, ''));
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  return lines.join('\\n');
+}
+
 function crApplyAll() {
-  // F-17 backstop — Apply should already be disabled when a required input
-  // is missing, but never fire silently even if this is reached some other
-  // way (crSkipAll, stale DOM): re-validate, surface the reason, stop.
   if (crValidate().length > 0) {
     crUpdateCounter();
     return;
   }
-  const choices = Object.entries(crSelections).map(function ([n, action]) {
-    const choice = {n: n, action: action};
-    if (crSrc) choice.src = crSrc;  // W4 — stateless dispatch source id
-    const inputWrapper = crFindInputWrapper(n, action);
-    if (inputWrapper) {
-      const inputType = inputWrapper.dataset.inputType;
-      if (inputType === 'multi-field-email') {
-        // Gather all 4 fields (To, Cc, Subject, Body) into a structured input object
+  const choices = [];
+  const seen = new Set();
+  crSelected().forEach(sel => {
+    const choice = { n: sel.n, action: sel.action };
+    if (crSrc) choice.src = crSrc;
+    const w = crWrap(sel.n, sel.action);
+    if (w) {
+      if (w.dataset.inputType === 'multi-field-email') {
         const obj = {};
-        inputWrapper.querySelectorAll('.cr-mfe-field').forEach(function (f) {
-          const key = f.dataset.field;
-          if (key) obj[key] = f.value || '';
+        w.querySelectorAll('.cr-mfe-field').forEach(f => {
+          if (f.dataset.field) obj[f.dataset.field] = f.value || '';
         });
         if (Object.keys(obj).length) choice.input = obj;
       } else {
-        const field = inputWrapper.querySelector('textarea, input');
-        if (field && field.value && field.value.trim()) choice.input = field.value;
+        const f = w.querySelector('textarea, input');
+        if (f && f.value && f.value.trim()) choice.input = f.value;
       }
     }
-    // v2.14.28+ — per-item context note field restored. Captured alongside the action's
-    // primary input as the `context` field. Empty notes drop from the payload to keep
-    // signal clean. Iterate via dataset (not querySelector) for the same reason as
-    // crFindInputWrapper — avoids CSS.escape inconsistencies on attribute values.
-    const noteFields = document.querySelectorAll('.cr-note-field');
-    const nStr = String(n);
-    for (let i = 0; i < noteFields.length; i++) {
-      if (noteFields[i].dataset.noteForN === nStr) {
-        const v = noteFields[i].value;
-        if (v && v.trim()) choice.context = v.trim();
-        break;
+    // t3 FB-10 — serialize the CURRENT on-screen body at Apply time. An
+    // inline edit rides the choice as {body}; an open mfe editor wins
+    // (it already carries body + To/Cc/Subject).
+    if (!choice.input) {
+      const eb = crInlineBody(sel.n);
+      if (eb) {
+        const cur = crBodyText(eb);
+        const orig = (eb.dataset.original || '').trim();
+        if (cur.trim() !== orig) choice.input = { body: cur };
       }
     }
-    return choice;
+    const note = crNoteFor(sel.n);
+    if (note && note.value && note.value.trim()) choice.context = note.value.trim();
+    choices.push(choice);
+    seen.add(String(sel.n));
   });
-
-  // v3.13.0+ — orphan-context capture. If the user typed text into a per-item
-  // "+ Add context" field but did NOT click an action button on that item,
-  // the loop above never emitted a choice for that n. Walk every .cr-note-field
-  // looking for non-empty text whose item isn't already represented in choices,
-  // and append a fallback choice using the canonical `add to my list` action.
-  // This prevents the silent-data-loss bug where typed notes vanished on Apply.
-  const seenNs = new Set(choices.map(function (c) { return String(c.n); }));
-  const allNoteFields = document.querySelectorAll('.cr-note-field');
-  for (let i = 0; i < allNoteFields.length; i++) {
-    const noteField = allNoteFields[i];
-    const noteForN = noteField.dataset.noteForN;
-    if (!noteForN) continue;
-    const v = noteField.value;
-    if (!v || !v.trim()) continue;
-    if (seenNs.has(String(noteForN))) continue;  // already paired with an action — happy path
-    // Orphan note. Synthesize an `add to my list` choice carrying just the context.
-    const orphanChoice = {
-      n: noteForN,
-      action: 'add to my list',
-      context: v.trim()
-    };
-    if (crSrc) orphanChoice.src = crSrc;  // W4 — same source id as button choices
-    choices.push(orphanChoice);
-    seenNs.add(String(noteForN));
+  // t3 FB-3 — Snooze-rest entries for rows whose dropdown no longer offers
+  // skip (the 'Later...' merge); staged by crSkipAll.
+  if (window.crExtraSkips && window.crExtraSkips.length) {
+    window.crExtraSkips.forEach(n => {
+      if (seen.has(String(n))) return;
+      const c = { n: n, action: 'skip' };
+      if (crSrc) c.src = crSrc;
+      choices.push(c);
+      seen.add(String(n));
+    });
+    window.crExtraSkips = [];
   }
-
+  // Orphan-note capture (v3.13.0+): typed context with no action selected
+  // still applies, as the canonical `add to my list`.
+  crQ('.cr-note-field').forEach(f => {
+    const n = f.dataset.noteForN;
+    if (!n || seen.has(String(n))) return;
+    if (!f.value || !f.value.trim()) return;
+    const c = { n: n, action: 'add to my list', context: f.value.trim() };
+    if (crSrc) c.src = crSrc;
+    choices.push(c);
+    seen.add(String(n));
+  });
   if (choices.length === 0) return;
   crSendPrompt('apply choices: ' + JSON.stringify(choices));
 }
 
 function crClear() {
-  document.querySelectorAll('.cr-action.cr-selected').forEach(b => b.classList.remove('cr-selected'));
-  document.querySelectorAll('.cr-action-input').forEach(w => { w.style.display = 'none'; });
-  Object.keys(crSelections).forEach(k => delete crSelections[k]);
-  // v3.13.0+ — also clear the "+ Add context" note fields and collapse any
-  // open note containers, so Reset fully resets the widget. Without this,
-  // a stale typed note would persist after the user clicked Reset.
-  document.querySelectorAll('.cr-note-field').forEach(function (f) {
-    f.value = '';
-    f.dispatchEvent(new Event('input'));  // re-fire input event so crUpdateCounter sees the clear
+  crQ('.cr-action-select').forEach(s => { s.value = ''; s.classList.remove('cr-select-armed'); });
+  crQ('.cr-action.cr-selected').forEach(b => b.classList.remove('cr-selected'));
+  crQ('.cr-action-input').forEach(w => { w.style.display = 'none'; });
+  crQ('.cr-note-field').forEach(f => { f.value = ''; });
+  crQ('.cr-note-toggle-open').forEach(t => t.classList.remove('cr-note-toggle-open'));
+  // t3 FB-10 — Reset restores an inline-edited body to the queued text.
+  crQ('.cr-eb-body[contenteditable]').forEach(eb => {
+    const orig = eb.dataset.original;
+    if (orig !== undefined && crBodyText(eb).trim() !== orig.trim()) eb.innerText = orig;
   });
-  document.querySelectorAll('.cr-note-toggle-open').forEach(function (n) {
-    n.classList.remove('cr-note-toggle-open');
-  });
+  window.crExtraSkips = [];
   crUpdateCounter();
 }
 
-function crSkipAll() {
-  // Select 'skip' for any item that doesn't currently have a selection AND has a skip button
-  document.querySelectorAll('.cr-item').forEach(itemEl => {
-    const n = itemEl.dataset.itemN;
-    if (crSelections[n]) return;
-    const skipBtn = itemEl.querySelector('.cr-action[data-action="skip"]');
-    if (skipBtn) crToggle(skipBtn);
-  });
-  // Also process sub-items (they have their own data-n distinct from parent)
-  document.querySelectorAll('.cr-sub-item').forEach(subEl => {
-    const subId = subEl.dataset.subId;
-    if (crSelections[subId]) return;
-    const skipBtn = subEl.querySelector('.cr-action[data-action="skip"]');
-    if (skipBtn) crToggle(skipBtn);
-  });
-  crApplyAll();
-}
-
-// Bind handlers immediately. The widget script tag is at the end of <body>, so
-// all referenced elements exist by the time this runs. We do NOT wrap in
-// DOMContentLoaded because Cowork may inject this widget into an already-loaded
-// iframe — DOMContentLoaded would have already fired and listeners would never
-// attach (the v2.11.1 → v2.11.2 bug M reported on Apr 30).
 (function bindCrWidget() {
   try {
-    const applyBtn = document.getElementById('cr-apply');
-    if (applyBtn) applyBtn.addEventListener('click', crApplyAll);
-    const clearBtn = document.getElementById('cr-clear');
-    if (clearBtn) clearBtn.addEventListener('click', crClear);
-    const skipBtn = document.getElementById('cr-skip-all');
-    if (skipBtn) skipBtn.addEventListener('click', crSkipAll);
-    // v3.13.0+ — wire input events on every .cr-note-field so the Apply
-    // button enables/disables live as the user types. Without this, the user
-    // would have to click a no-op selection to trigger crUpdateCounter
-    // before Apply unlocks (the orphan-context-on-Apply path requires Apply
-    // to be clickable in the first place).
-    document.querySelectorAll('.cr-note-field').forEach(function (noteField) {
-      noteField.addEventListener('input', crUpdateCounter);
+    const a = crG('cr-apply');
+    if (a) a.addEventListener('click', crApplyAll);
+    const c = crG('cr-clear');
+    if (c) c.addEventListener('click', crClear);
+    const sk = crG('cr-skip-all');
+    if (sk && typeof crSkipAll === 'function') sk.addEventListener('click', crSkipAll);
+    if (typeof crSel === 'function') crQ('.cr-action-select').forEach(s => {
+      s.addEventListener('change', function () { crSel(s); });
     });
-    // v4.5.2 S2 (F-17) — typing into any action input re-validates live, so
-    // the "needs a date" hold clears the moment the date lands.
-    document.querySelectorAll('.cr-action-input').forEach(function (wrapper) {
-      wrapper.querySelectorAll('textarea, input').forEach(function (f) {
-        f.addEventListener('input', crUpdateCounter);
-      });
+    // t3 FB-4 — primary verb buttons bind here; the onclick guard keeps the
+    // onboarding widget's inline-onclick buttons from double-firing.
+    if (typeof crToggle === 'function') crQ('.cr-action').forEach(b => {
+      if (!b.getAttribute('onclick')) b.addEventListener('click', function () { crToggle(b); });
+    });
+    if (typeof crToggleNote === 'function') crQ('.cr-note-toggle').forEach(b => {
+      b.addEventListener('click', function () { crToggleNote(b); });
+    });
+    crQ('.cr-note-field').forEach(f => f.addEventListener('input', crUpdateCounter));
+    crQ('.cr-action-input').forEach(w => {
+      w.querySelectorAll('textarea, input').forEach(f => f.addEventListener('input', crUpdateCounter));
     });
     crUpdateCounter();
   } catch (e) {
@@ -3441,6 +3825,19 @@ function crSkipAll() {
   }
 })();
 """.strip()
+
+# JS feature blocks with triggers, emitted in this order (function
+# declarations hoist, and the bind IIFE lives at the end of _JS_CORE).
+_JS_FEATURE_BLOCKS: list[tuple[str, str]] = [
+    ("cr-action-select", _JS_SELECT),
+    ('class="cr-action"', _JS_BUTTONS),
+    ("cr-action-primary", _JS_BUTTONS),  # t3 FB-4 — see the CSS twin note
+    ("cr-note-toggle", _JS_NOTES),
+    ('id="cr-skip-all"', _JS_SKIP),
+]
+
+
+
 
 
 def _count_total_selectable_items(sections: list[dict]) -> int:
@@ -3454,6 +3851,269 @@ def _count_total_selectable_items(sections: list[dict]) -> int:
                 if sub.get("actions"):
                     total += 1
     return total
+
+
+# ============================================================================
+# Scaffold diet (T2, F2 rework) — render-time minification of the CSS + JS
+# scaffold, computed ONCE at import.
+#
+# WHY: the delivery contract changed from "hand a file:// URI to show_widget"
+# (impossible — show_widget has no file_uri param, Bug #67) to "paginate by
+# design and relay each validated PAGE's bytes as show_widget's `widget_code`."
+# For that relay to fit a single Cowork Read page (25K-token cap) the fixed
+# scaffold had to shrink: it was 35KB (CSS 16KB + JS 19KB + brand SVG), which
+# left almost no room per page. Minifying the two big constants at emit time
+# (source stays fully commented for maintainers) cuts the scaffold ~43% with
+# ZERO behavior change — every class, id, selector, and statement is preserved
+# byte-for-byte; only comments and inter-token whitespace go.
+#
+# SAFETY: CSS minification is QUOTE-AWARE — it never touches text inside a
+# quoted string, so attribute selectors that depend on a literal space
+# (`.cr-action-input[style*="display: block"]`) are preserved exactly. JS
+# minification is line-level only (drop whole-line `//` comments, strip leading
+# indentation, drop blank lines) — it never joins lines (ASI stays intact) and
+# never rewrites tokens, so string/regex literals and the `__TOTAL_ITEMS__` /
+# `__CR_SRC__` placeholders survive untouched.
+# ============================================================================
+
+def _minify_css(css: str) -> str:
+    """Quote-aware CSS minifier. Strips /* */ comments and collapses
+    inter-token whitespace WITHOUT ever editing the inside of a quoted string
+    (so `[style*="display: block"]` selectors keep their literal space)."""
+    # 1. Strip block comments (CSS has no line comments; strings can't contain
+    #    an unescaped `*/`, and none in our sheet contain `/*`).
+    out: list[str] = []
+    i, n = 0, len(css)
+    in_str = ""  # current quote char, or "" when outside a string
+    while i < n:
+        c = css[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:  # keep escaped char verbatim
+                out.append(css[i + 1])
+                i += 2
+                continue
+            if c == in_str:
+                in_str = ""
+            i += 1
+            continue
+        if c in "\"'":
+            in_str = c
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and css[i + 1] == "*":
+            j = css.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            continue
+        out.append(c)
+        i += 1
+    stripped = "".join(out)
+    # 2. Collapse whitespace runs to a single space OUTSIDE strings, then trim
+    #    spaces around structural punctuation ({ } ; : ,). Quote-awareness is
+    #    what makes `:` and `,` safe to trim (T2.2 diet round 2): the `:` in
+    #    `[style*="display: block"]` lives INSIDE a string and is never
+    #    touched; every unquoted `:`/`,` is declaration/selector punctuation
+    #    where surrounding spaces are cosmetic. Descendant-combinator spaces
+    #    (`.a .b`) survive because neither neighbour is punctuation. A `;`
+    #    whose next token is `}` drops entirely (the final-declaration
+    #    semicolon is redundant).
+    result: list[str] = []
+    i, n = 0, len(stripped)
+    in_str = ""
+    _PUNCT = "{};:,"
+    while i < n:
+        c = stripped[i]
+        if in_str:
+            result.append(c)
+            if c == "\\" and i + 1 < n:
+                result.append(stripped[i + 1])
+                i += 2
+                continue
+            if c == in_str:
+                in_str = ""
+            i += 1
+            continue
+        if c in "\"'":
+            in_str = c
+            result.append(c)
+            i += 1
+            continue
+        if c == ";":
+            # peek past whitespace: a `;` immediately before `}` is redundant
+            j = i + 1
+            while j < n and stripped[j].isspace():
+                j += 1
+            if j < n and stripped[j] == "}":
+                i += 1
+                continue
+            result.append(c)
+            i += 1
+            continue
+        if c.isspace():
+            j = i
+            while j < n and stripped[j].isspace() and not (stripped[j] in "\"'"):
+                j += 1
+            # peek non-space neighbours to decide whether to drop the run
+            prev = result[-1] if result else ""
+            nxt = stripped[j] if j < n else ""
+            if prev in _PUNCT or nxt in _PUNCT or prev == "" or nxt == "":
+                pass  # drop the whitespace run entirely
+            else:
+                result.append(" ")
+            i = j
+            continue
+        result.append(c)
+        i += 1
+    return "".join(result).strip()
+
+
+def _minify_js(js: str) -> str:
+    """Line-level JS minifier — safe because it never joins lines or rewrites
+    tokens. Drops whole-line `//` comments and blank lines, strips leading
+    indentation. Trailing `//` comments and `/* */` blocks are left alone
+    (stripping them risks matching inside a string/regex literal)."""
+    kept: list[str] = []
+    for raw in js.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("//"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+# Computed once at import — source constants stay fully commented above.
+#
+# Compat monoliths: the every-block concatenations. External callers/tests
+# that reference _WIDGET_CSS / _WIDGET_JS_TEMPLATE keep working; per-render
+# scaffolds are composed conditionally via _compose_widget_css/_js (T2.2).
+def _unique_blocks(blocks: list[tuple[str, str]]) -> list[str]:
+    """Every block once, first-trigger order (multi-trigger blocks — t3
+    FB-4's button block — must not double up in the compat monoliths)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, b in blocks:
+        if b not in seen:
+            out.append(b)
+            seen.add(b)
+    return out
+
+
+_WIDGET_CSS = "\n".join([_CSS_CORE] + _unique_blocks(_CSS_FEATURE_BLOCKS))
+_WIDGET_JS_TEMPLATE = "\n".join(
+    _unique_blocks(_JS_FEATURE_BLOCKS) + [_JS_CORE])
+
+_CSS_CORE_MIN = _minify_css(_CSS_CORE)
+_CSS_FEATURE_BLOCKS_MIN = [(t, _minify_css(b)) for t, b in _CSS_FEATURE_BLOCKS]
+_JS_CORE_MIN = _minify_js(_JS_CORE)
+_JS_FEATURE_BLOCKS_MIN = [(t, _minify_js(b)) for t, b in _JS_FEATURE_BLOCKS]
+
+_WIDGET_CSS_MIN = _minify_css(_WIDGET_CSS)
+_ALL_CLEAR_CSS_MIN = _minify_css(_ALL_CLEAR_CSS)
+_ONBOARDING_SETUP_CSS_MIN = _minify_css(_ONBOARDING_SETUP_CSS)
+_WIDGET_JS_TEMPLATE_MIN = _minify_js(_WIDGET_JS_TEMPLATE)
+
+
+def _compose_widget_css(content_html: str) -> str:
+    """T2.2 conditional CSS emission: core + only the feature blocks whose
+    trigger substring appears in the rendered content. Every block is
+    pre-minified at import; composition is a membership test + join.
+    A block listed under several triggers (t3 FB-4: the button block fires
+    on legacy buttons AND on primary buttons) emits once."""
+    parts = [_CSS_CORE_MIN]
+    seen: set[str] = set()
+    for trigger, block in _CSS_FEATURE_BLOCKS_MIN:
+        if trigger in content_html and block not in seen:
+            parts.append(block)
+            seen.add(block)
+    return "".join(parts)
+
+
+def _compose_widget_js(content_html: str) -> str:
+    """T2.2 conditional JS emission: only the handler blocks the content
+    actually wires (dropdowns / buttons / note toggles / Snooze-rest), then
+    the core (state, validation, Apply wire, bind). Multi-trigger blocks
+    emit once (see the CSS twin)."""
+    parts = []
+    seen: set[str] = set()
+    for trigger, block in _JS_FEATURE_BLOCKS_MIN:
+        if trigger in content_html and block not in seen:
+            parts.append(block)
+            seen.add(block)
+    parts.append(_JS_CORE_MIN)
+    return "\n".join(parts)
+
+
+# ============================================================================
+# Paginate-by-design (T2, F2 rework)
+#
+# Unbounded data views (the full commitment set, the Staff Meeting queue) MUST
+# be delivered one page at a time — a page is the unit the runtime relays as
+# `widget_code`. `paginate_data_view` slices a data view to a single page of
+# ~`page_size` top-level items, preserving section order and grouping (money >
+# identity > hygiene on the Staff Meeting), keeping every sub_item with its
+# parent, and stamping `pagination: {page, total_pages, page_size, has_more}`
+# so the renderer can draw the position line + `show more` affordance.
+#
+# Bounded surfaces (the daily ≤5 card, small fires) call with page=None and
+# render everything — pagination is inert (total_pages == 1, no position line).
+# ============================================================================
+
+def _iter_page_items(sections: list[dict]) -> list[tuple[int, dict]]:
+    """Flatten to a list of (section_index, item) in render order, counting
+    only top-level items that carry at least one action OR any actionable
+    sub_item (the paginate unit is the top-level row)."""
+    flat: list[tuple[int, dict]] = []
+    for si, section in enumerate(sections):
+        for item in section.get("items", []):
+            flat.append((si, item))
+    return flat
+
+
+def paginate_data_view(data: dict, *, page: int, page_size: int = 10) -> dict:
+    """Return a shallow copy of `data` sliced to a single page.
+
+    Rebuilds `sections` to contain only the top-level items that fall in the
+    requested page window, dropping any section left empty and preserving
+    section order/titles. Adds a `pagination` block the renderer consumes.
+
+    Args:
+      page: 1-indexed page number.
+      page_size: max top-level items per page (~10 by design).
+    """
+    sections = data.get("sections", []) or []
+    flat = _iter_page_items(sections)
+    total_items = len(flat)
+    page_size = max(1, int(page_size))
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    page = max(1, min(int(page), total_pages))
+    start = (page - 1) * page_size
+    end = start + page_size
+    keep_by_section: dict[int, list[dict]] = {}
+    for idx in range(start, min(end, total_items)):
+        si, item = flat[idx]
+        keep_by_section.setdefault(si, []).append(item)
+
+    new_sections: list[dict] = []
+    for si, section in enumerate(sections):
+        if si not in keep_by_section:
+            continue
+        sec_copy = dict(section)
+        sec_copy["items"] = keep_by_section[si]
+        new_sections.append(sec_copy)
+
+    sliced = dict(data)
+    sliced["sections"] = new_sections
+    sliced["pagination"] = {
+        "page": page,
+        "total_pages": total_pages,
+        "page_size": page_size,
+        "has_more": page < total_pages,
+        "total_items": total_items,
+    }
+    return sliced
 
 
 # CLI mode for shell-based callers

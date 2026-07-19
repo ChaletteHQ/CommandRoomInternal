@@ -128,12 +128,15 @@ data_view = {
 ### Step 2 — Render through the canonical pipeline
 
 ```python
-from chat_output_renderer import render_chat_output_widget
-html = render_chat_output_widget(data_view, wrapper="fragment")
-# Post via mcp__visualize__show_widget
+from widget_transport import render_and_persist
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="show-my-list")
+# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
+# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
-The canonical renderer applies all v2.13.0+ validators (action verbs in CANONICAL_ACTIONS, no leak patterns, data-shape OK). Same enforcement as scheduled-task surfaces.
+The canonical renderer applies all v2.13.0+ validators (action verbs in CANONICAL_ACTIONS, no leak patterns, data-shape OK, wrapper contract) inside the transport call. Same enforcement as scheduled-task surfaces.
 
 ### Step 3 — Write a fire-marker event so apply-choices can identify this surface (v2.14.19+)
 

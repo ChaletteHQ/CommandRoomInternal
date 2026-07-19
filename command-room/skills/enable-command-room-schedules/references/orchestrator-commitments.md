@@ -29,8 +29,8 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 - Compute today's date in local time.
 - Read entities.json + aliases.json.
 - Read voice calibration (cache once for the session).
-- **Discover NATIVE Gmail MCP tool IDs** (`search_threads`, `create_draft`, `send_draft`, `create_label`) — `mcp__*gmail_*` tools, EXCLUDING `mcp__zapier_*`.
-- **Discover NATIVE Calendar MCP tool ID** for `follow-up call` handler (drafts a calendar-invite request) — `mcp__*google_calendar_*` (`create_event` etc.), EXCLUDING any `mcp__zapier_*` calendar tools. Per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE: calendar never goes through Zapier. If only Zapier-namespaced calendar tools are exposed, `follow-up call` degrades to email-only (drafts a "let's grab 15 min" message without creating a tentative invite) with a one-time per-session note.
+- **Resolve the mail tools through the seam** — `tool_discovery.discover_for_category("email", "<op>", tools, declared=connector_config.declared_backend("email"))` for the search / draft-create / send / label operations, falling back to `discover_mail_search_tool` / `discover_mail_draft_tool` / `discover_mail_send_tool` when no backend is declared (empty map = today's behavior, R4). Zapier legs are excluded from native discovery automatically (pinned server-ids + signature detection, R12/H-H). Never name a provider tool id directly. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
+- **Resolve the calendar tools through the seam** for the `follow-up call` handler (drafts a calendar-invite request) — `tool_discovery.discover_for_category("calendar", "<op>", tools, declared=connector_config.declared_backend("calendar"))` for the event-create operation, falling back to `discover_calendar_tool(tools, "<op>")` when no backend is declared (empty map = today's behavior, R4). Native calendar via the seam, Zapier-excluded — per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE calendar never goes through Zapier (the seam excludes Zapier legs automatically: pinned server-ids + signature detection, R12/H-H). If no native calendar tool resolves, `follow-up call` degrades to email-only (drafts a "let's grab 15 min" message without creating a tentative invite) with a one-time per-session note. Never name a provider tool id directly.
 - Discover Zapier-threaded-send tool per `EMAIL_DRAFT_PROTOCOL.md` §3c (limit to tools whose name OR description contains `Send Threaded Email`; never any other Zapier tool — including, explicitly, no Zapier Calendar / Drive / Sheets tools). Cache for the session. If none, fall back to native Gmail at `N send` time — no error.
 - M's primary `user_id` from entities.json.
 
@@ -73,10 +73,7 @@ print(f'OPEN_COUNT={len(opens)}')
 "
 ```
 
-Then use the discovered mail-search tool (from Phase 2 — `discover_mail_search_tool()` in `tool_discovery.py`) to query outbound mail since the last fire:
-
-- Gmail: `q='from:me after:YYYY/MM/DD'` (or use `newer_than:Nd`)
-- Outlook: equivalent search-messages query with `from:me`
+Then use the seam-resolved mail-search tool (from Phase 2) to query outbound mail since the last fire — the `{"from_me": true, "after": "YYYY/MM/DD"}` intent (or `{"from_me": true, "newer_than": "Nd"}`), compiled per provider by `connector_adapters/mail.py`; pass-through providers take the structured intent directly.
 
 For each result, fetch the thread/message body via the discovered thread-fetch tool. Extract:
 - recipient email(s) → resolve to person_id(s) via `aliases.json` / `entities.json` lookup
@@ -177,10 +174,7 @@ This is the daily backstop to the real-time leg in `orchestrator-inbox.md` Phase
 - No mail search tool was discovered in Phase 2 (degraded — proceed without scan).
 - No open commitments where a counter-party is the owner (OWED-TO-YOU set empty).
 
-Otherwise, use the discovered mail-search tool to query INBOUND mail since the last fire:
-
-- Gmail: `q='in:inbox after:YYYY/MM/DD'` (or `newer_than:Nd`), EXCLUDING `from:me`
-- Outlook: equivalent inbox search since the window
+Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since the last fire — the `{"in_inbox": true, "after": "YYYY/MM/DD"}` intent (or with `newer_than`), compiled per provider by `connector_adapters/mail.py`; exclude the user's own outbound (drop results where the sender is the user) since inbound is the point of this scan.
 
 For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`; skip if unresolvable), extract subject + body. Then run `match_inbound_to_commitments` per inbound message:
 
@@ -281,15 +275,15 @@ print(f'CRU commitments inbound pre-render: resolved={n_resolved} updated={sum(1
 
 Per `shared/scripts/cru_match.py` Path 5. Phases 2.5/2.6 are message-direction scans — they only ever look at mail. A whole class of commitments is fulfilled NOT by a message but by an event appearing on the calendar: "set up the build call with Bo", "lock Monday with Rio", "find time with the integrator". The moment the user creates the invite the commitment is done, but with no calendar scan it stays surfaced as "reply to X to lock time" for days (the live scheduling-close bug, 2026-05-29: the user created a Monday invite at 8:29 AM, and the ~11 AM brief still said "reply to Bo to lock Monday" because the counter-party's "Monday is fine" email was still the thread's latest message).
 
-This is the daily backstop to the real-time leg in `calendar-writer` (which resolves when CR itself creates the event). Phase 2.7 catches invites the user made **directly in Google/Outlook calendar, outside Cowork** — exactly the case `calendar-writer` can't see. It also captures the counter-party's acceptance (`responseStatus: accepted`) as confirmation — the same signal the inbox classifier discards as calendar-noise.
+This is the daily backstop to the real-time leg in `calendar-writer` (which resolves when CR itself creates the event). Phase 2.7 catches invites the user made **directly in Google/Outlook calendar, outside Cowork** — exactly the case `calendar-writer` can't see. It also captures the counter-party's acceptance (via `connector_adapters.calendar.is_accepted(attendee, provider)` — the RSVP field name is per-provider and lives in the adapter) as confirmation — the same signal the inbox classifier discards as calendar-noise.
 
 **Precision is structural, not threshold-based** (per Path 5 docstring): a commitment auto-resolves only when it is owed BY the user, its title carries scheduling intent (`detect_scheduling_intent`), and a calendar event exists whose attendees include the commitment's counter-party and doesn't predate the commitment. A deliverable commitment ("send Bo the one-pager") never resolves just because a meeting got booked. Topic-match-without-scheduling-intent → `commitment_review_proposed`, not silent resolve.
 
 **Skip entirely if:**
-- No NATIVE Calendar MCP tool was discovered in Phase 2 (the `mcp__*google_calendar_*` / equivalent `list_events` reader — Zapier calendar tools excluded per `EMAIL_DRAFT_PROTOCOL.md` §3c). Degraded → proceed without scan.
+- No native calendar tool resolved through the seam in Phase 2 (the event-list reader via `discover_for_category("calendar", …)` / `discover_calendar_tool` — Zapier calendar tools excluded per `EMAIL_DRAFT_PROTOCOL.md` §3c). Degraded → proceed without scan.
 - No open commitments owned by the user (OWED-BY-YOU set empty).
 
-Otherwise, use the discovered Calendar tool to list events **created or updated since the last fire** (the `updated`/`created`/`timeMin` window; include events whose start is in the recent past or near future — a just-booked future meeting is the common case). For each event, resolve every attendee email → `person_id` (via `aliases.json` / `entities.json`; drop unresolvable attendees), capture the event `summary`, the `created`/`updated` ts, the `calendar_event_id`, and the set of attendee person_ids whose `responseStatus == "accepted"`. Then run `match_calendar_to_commitments` once over the whole event set:
+Otherwise, use the discovered Calendar tool to list events **created or updated since the last fire** (the created/updated window compiled via `connector_adapters.calendar.compile_window(start, end, provider)`; include events whose start is in the recent past or near future — a just-booked future meeting is the common case). For each event, resolve every attendee email → `person_id` (via `aliases.json` / `entities.json`; drop unresolvable attendees), capture the event `summary`, the `created`/`updated` ts, the `calendar_event_id`, and the set of attendee person_ids accepted per `connector_adapters.calendar.is_accepted(attendee, provider)`. Then run `match_calendar_to_commitments` once over the whole event set:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
@@ -440,7 +434,7 @@ from mute_ledger import active_dismissal_target_ids
 dismissed = active_dismissal_target_ids(<all events>, "<now ISO>")
 confirm_rows = select_confirm_items(opens, "<now ISO>", dismissed_ids=dismissed)
 promo_rows   = select_promotion_proposals(opens, dismissed_ids=dismissed)
-person_rows  = load_open_person_proposals(events_path, dismissed_target_ids=dismissed)
+person_rows  = load_open_person_proposals(events_path, dismissed_target_ids=dismissed, suppress_on_file=True)  # FS-19: already-a-contact rows never surface
 ```
 
 `opens` is the SAME projected set Phase 3 already loaded — no second read. Three row classes, each with its verb cluster (display labels from `verb_taxonomy` — never restate them):
@@ -457,7 +451,7 @@ person_rows  = load_open_person_proposals(events_path, dismissed_target_ids=dism
 
 Before the date buckets, build the meeting-relevance set. F-44's failure: sweep-recovered items about that very morning's 9:15 were invisible on every chase surface because all three buckets key on the due date (and the confidence floor drops confidence-less recovered captures besides). Relevance to a meeting happening TODAY is its own reason to surface — **a missing due date must not make a meeting-relevant item invisible on the day of the meeting.**
 
-1. Pull TODAY's calendar events (native Calendar MCP `list_events`, timeMin = start of today, timeMax = end of today, machine-local — a dedicated narrow fetch; do NOT reuse Phase 2.7's created/updated-since-window pull). Calendar unavailable → skip this bucket entirely (skip-not-fail); the date buckets below are unaffected.
+1. Pull TODAY's calendar events (the seam-resolved calendar list tool with the day window compiled via `connector_adapters.calendar.compile_window(<start of today>, <end of today>, provider)`, machine-local — a dedicated narrow fetch; do NOT reuse Phase 2.7's created/updated-since-window pull). Calendar unavailable → skip this bucket entirely (skip-not-fail); the date buckets below are unaffected.
 2. Resolve each event to `{"meeting_id", "title", "attendee_person_ids", "attendee_names"}` — attendee emails → person_ids via `entities.json`/`aliases.json`; attendee_names include display names PLUS alias spellings from `aliases.json`.
 3. Match in code — never hand-derive:
 
@@ -505,7 +499,7 @@ Per M's v2.14.18 testing: an owed-to-you commitment due today with no contact in
 
 **Total cap across all buckets — meeting_today plus the 6 date buckets (× 2 reachability sub-buckets where applicable): 7 items per fire (v3.13.7+).** meeting_today rows count toward the 7 and take priority (max 3, see above). Empty buckets are omitted entirely (no "0 items" placeholders).
 
-**Why 7, not 16 (v3.13.7 transmission-ceiling fix — Bug #14):** Session 22 testing surfaced that M's workspace at 218 open commitments → 11 surfaced items produced an 81KB+ widget that exceeded `mcp__visualize__show_widget`'s transmission ceiling and silently failed on every fire. The v3.13.0 widget boilerplate floor is ~31KB and per-item averages ~5-9KB (depending on `original_thread` body length); 11 items consistently exceeded the working limit. Capping at 7 items per fire keeps a typical commitments widget under 60KB with margin to spare.
+**Why 7, not 16 — a DESIGN cap (EW2+T reframe):** the cap originated as the v3.13.7 transmission-ceiling fix (Bug #14 — an 11-item, 81KB widget silently failed the byte relay on every fire). The widget_code transport with pagination (§ Transport) removed the byte ceiling, but the 7-cap SURVIVES on design grounds: the daily chat is an attention surface, and 7 chase-ready items is what a CEO actually processes in one sitting. Do not raise the cap because "the transport can carry more" — full-set review is commitment-triage's job, not the daily chat's.
 
 **For overflow ("I have more than 7"):** the `show more` bulk action stays canonical and triggers paginated re-render of the next 7 items via apply-choices dispatch (see Bulk actions section at the bottom of this file). The original 16-cap is preserved as the OVERALL pagination ceiling across all `show more` pages combined — pages of 7 until either 16 items shown or all items exhausted, whichever comes first. Beyond that, the user runs the substrate query directly via `show my list` (which is page-tolerant by design).
 
@@ -638,9 +632,9 @@ If stdout is not exactly `OK`, ABORT the fire and surface plain English: `(Rende
 
 ---
 
-## ⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+) — READ THIS BEFORE STEP 2
+## ⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, transport-updated EW2+T) — READ THIS BEFORE STEP 2
 
-**The HTML returned by `render_chat_output_widget(data_view, wrapper="fragment")` is sealed. You MUST pass it BYTE-FOR-BYTE to `mcp__visualize__show_widget`. Any post-processing is FORBIDDEN.**
+**The render is sealed. Post via `widget_transport.render_and_persist` (all validators fire inside) and pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code` — never hand-composed or post-processed HTML, and never a post-processed version of `transport["html"]` or the persisted file. Any post-processing is FORBIDDEN.** (`shared/CHAT_ACTION_WIDGET.md` § Transport — EW2+T, F-15.)
 
 Specifically forbidden — zero tolerance:
 
@@ -649,10 +643,10 @@ Specifically forbidden — zero tolerance:
 3. **No "cleaning up duplicates."** What looks like a duplicate `cr-action-input` is the wrapper for a different action on the same item. Each `data-input-for-action` value is unique per (n, action). Don't collapse them.
 4. **No filtering items the renderer included.** If the data_view passed all validators, every item the renderer emitted belongs in the widget.
 5. **No re-emitting the HTML in a different shape.** If the canonical output is judged suboptimal, the fix is in `chat_output_renderer.py`, not in agent post-processing.
-6. **(v2.14.37+) No skipping `show_widget` after a clean validator pass.** If `render_chat_output_widget()` returns and `validate_rendered_widget(html)` passes without raising, you MUST call `mcp__visualize__show_widget(html)`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation. The validator pass IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute. The leak-scanner in `validate_chat_output` blocks these improvisation phrases at the renderer's Gate 3, but never produce them in the first place.
-7. **(v2.14.37+) No markdown lists as a substitute for widget rendering.** If a user follow-up asks you to "surface past commitments" / "show what's open" / "list the X" — any kind of "render these items in chat" ask — the path is `render_chat_output_widget` → `validate_rendered_widget` → `show_widget`. Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust filter threshold to surface previously-noise-filtered items as `tracked_items`).
+6. **(v2.14.37+, EW2+T) No skipping `show_widget` after a clean transport call.** If `widget_transport.render_and_persist()` returns without raising, you MUST call `mcp__visualize__show_widget` with `transport["html"]`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation, and the widget_code transport removes the size wall those improvisations pointed at. The clean transport call IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute.
+7. **(v2.14.37+) No markdown lists as a substitute for widget rendering.** If a user follow-up asks you to "surface past commitments" / "show what's open" / "list the X" — any kind of "render these items in chat" ask — the path is `render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`). Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust filter threshold to surface previously-noise-filtered items as `tracked_items`).
 
-**MANDATORY pre-ship validation:** call `validate_rendered_widget(html)` immediately after `render_chat_output_widget()` returns and BEFORE invoking `show_widget`. The validator scans the HTML for the structural invariant (every input-needing button has its matching wrapper) and raises `WrapperContractError` if any wrapper is missing. If it raises, you've corrupted the renderer's output — re-render via the canonical path and DO NOT post until the validator passes clean.
+**Pre-ship validation is built in (EW2+T):** `render_and_persist` runs the full validator chain — the renderer's canonical-action / data-shape / leak checks AND `validate_rendered_widget` (every input-needing button has its matching wrapper; raises `WrapperContractError`). If it raises, fix the data view and re-render via the canonical path — never hand-patch HTML, never post until the transport call passes clean.
 
 **Why this contract exists:** 2026-05-07 cr-commitments fire visibly broken — Edit-then-send and Add-context buttons selected gold but no textareas opened. Two days of misdiagnosis chasing CSS / scroll / focus issues (v2.14.30 shipped defensive visibility hardening based on flawed premise). Cowork's structural diagnostic finally caught it: the agent post-minified the renderer's output and dropped 4/11 items' input wrappers. Renderer was correct; the bypass dropped wrappers silently. Same anti-pattern as v2.14.18 (empty-state hand-built widget). `validate_rendered_widget` is the structural defense — it makes this class of bug impossible to ship without raising loudly.
 
@@ -687,8 +681,12 @@ data_view = {
     ],
     "footer": None,  # NEVER add bottom buttons. The agent's instinct to add Show all open / Add email for X / Prep deep work: Y is what produced the v2.14.18 hand-built widget. Empty-state has no buttons.
 }
-html = render_chat_output_widget(data_view, wrapper="fragment")
-# Post via mcp__visualize__show_widget — same pipeline as the standard widget
+from widget_transport import render_and_persist
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="commitments")
+# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — same pipeline
+# as the standard widget (EW2+T, § Transport).
 ```
 
 **Why this rule exists:** in v2.14.18 the agent fired this orchestrator with 0 items qualifying after the bucket filter, judged the canonical empty-state as worse UX than a richer custom card, and bypassed the renderer entirely. Result: a hand-typed widget with hardcoded "Needing action: 0" counter, four model-improvised bottom buttons (`Show all open`, `Add email for Sloan`, `Add Rakesh as contact`, `Prep deep work: EB-5`), and zero validators run. Three contracts broken at once (Rule 1 widget format, Rule 5 canonical actions, Rule 19 data shape) — the enforcement chain is structurally unable to catch a renderer bypass because the validators run AT render time. The fix is to make the canonical empty-state look good enough that the agent has no incentive to improvise. NEVER hand-build the empty-state widget, even if you think the canonical version is mid-tier UX. If the canonical UX feels wrong, file a follow-up to improve `_render_all_clear_summary` in `chat_output_renderer.py` — do not improvise around it.
@@ -699,7 +697,7 @@ html = render_chat_output_widget(data_view, wrapper="fragment")
 # (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
 import sys
 sys.path.insert(0, "shared/scripts")
-from chat_output_renderer import render_chat_output_widget
+from widget_transport import render_and_persist
 
 # Build sections — one per direction × bucket combo. Empty buckets omitted.
 # v2.14.38+ — SECTION ORDER: OWED TO YOU first, then YOU OWE. Per M's
@@ -740,16 +738,13 @@ data_view = {
     "quick_read": quick_read,           # 1-3 sentences when N>2 and clustering signal exists
 }
 
-html = render_chat_output_widget(data_view, wrapper="fragment")
-
-# v2.14.34+ — MANDATORY structural validation. Catches dropped wrappers if
-# anything has touched the HTML between render() and show_widget. Pass
-# `html` BYTE-FOR-BYTE — no re-encoding, no "cleanup", no minification.
-from chat_output_renderer import validate_rendered_widget, WrapperContractError
-validate_rendered_widget(html)  # raises WrapperContractError on bypass
-
-# Call mcp__visualize__show_widget with `html` UNMODIFIED. The string from
-# render_chat_output_widget IS the payload. Do NOT post-process.
+transport = render_and_persist(data_view=data_view, wrapper="fragment",
+                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
+                               name_hint="commitments")
+# EW2+T (F-15): the transport runs the full validator chain (canonical
+# actions, data shape, leak scan, wrapper contract) and persists the sealed
+# render. Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — never
+# a hand-composed variant, never a post-processed one.
 ```
 
 The widget posts via `mcp__visualize__show_widget` instead of being a chat string. User clicks per-item buttons to select actions; widget batches selections and fires one consolidated `apply choices: [...]` payload on Apply all. The `apply-choices` skill catches that payload and dispatches each `{n, action}` through the reply handlers below. See `shared/CHAT_ACTION_WIDGET.md` for full widget behavior, `skills/apply-choices/SKILL.md` for the receiving end.
@@ -783,7 +778,7 @@ After posting the widget, emit a second chat turn with markdown source links per
 ```markdown
 **Links:**
 
-1. [<Recipient> — <subject>](https://mail.google.com/mail/u/0/#all/<thread_id>)
+1. [<Recipient> — <subject>](<connector-returned thread URL, else connector_adapters.mail.deep_link(provider, thread_id)>)
 2. (no source — Self-commitment)
 3. [<Granola transcript title> — <date>](https://notes.granola.ai/d/<note_id>)
 ...
@@ -791,10 +786,10 @@ After posting the widget, emit a second chat turn with markdown source links per
 
 - Numbering matches the widget items exactly.
 - Source URL per commitment item:
-  - If `data.source_ref` starts with `gmail:` → Gmail thread URL
+  - Mail-sourced (email provider prefix on `data.source_ref` / mail provenance) → the mail thread URL
   - If `data.source_ref` starts with `granola:` → Granola transcript URL
   - Self-commitments / undated items with no `source_ref` → render `(no source — <Self-commitment | undated>)` or skip
-- Use URLs returned by the connector (`get_thread`, `get_meeting_transcript`). Don't synthesize.
+- Use URLs returned by the connector (thread fetch, `get_meeting_transcript`). Don't synthesize (`connector_adapters.mail.deep_link` is the only sanctioned fallback; it returns None for providers with no stable host — drop the link, N8).
 - If 0 items have any source link, omit the block.
 
 Per Sam's Apr 30 ask: *"this needs to be a response to an email. I'd want to see the link to the most recent email on the subject so you can click it and respond."* For commitments where the user wants to respond on the original thread (instead of the new draft this orchestrator generated), the chat-link gives one-click access to Gmail.
@@ -812,7 +807,7 @@ Shape:
     "subject": "<latest message subject>",
     "body": "",                                                    # v3.13.7+ — DEFAULT EMPTY (was ~800 chars).
                                                                    # See "Body field is empty by default" note below.
-    "url": "https://mail.google.com/mail/u/0/#all/<thread_id>",    # v2.12.4+ — REQUIRED when known
+    "url": "<connector-returned thread URL, else connector_adapters.mail.deep_link(provider, thread_id)>",    # v2.12.4+ — REQUIRED when known
 }
 ```
 
@@ -838,7 +833,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
         "date": "Apr 12, 9:43 AM",
         "subject": "Q2 deck — original ask",
         "body": "Mira — can you have the Q2 deck refreshed by end of next week? I want to pull margin recovery in earlier...",
-        "url": "https://mail.google.com/mail/u/0/#all/<thread_id>",
+        "url": "<the connector-returned thread URL>",
     },
     "metadata": [                                       # v2.14.36+ DROPPED ("Originally", ...) — original_thread carries it
         ("To", "sam@example.com"),
@@ -862,7 +857,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
         "date": "Apr 18, 2:11 PM",
         "subject": "NetSuite mapping",
         "body": "I'll send the updated mapping by end of next week — pulling in the new product hierarchy first...",
-        "url": "https://mail.google.com/mail/u/0/#all/<thread_id>",
+        "url": "<the connector-returned thread URL>",
     },
     "metadata": [                                       # v2.14.36+ DROPPED ("Originally", ...) — original_thread carries it
         ("To", "bo@example.com"),
@@ -931,7 +926,7 @@ Sub-items render as:
 - For producible deliverables (title contains "deck", "memo", "draft", "doc", "plan", "review"), append `← recommended` to the `annotations` array on the item — renderer appends it to the first line
 - For grouped items in YOU OWE direction: do NOT group — each item M owes is its own status email (only OWED TO YOU groups when one owner has multiple things)
 
-**No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the renderer; post what it returns — byte-for-byte.
+**No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the transport (`render_and_persist`); relay its page bytes (`transport["html"]`) as `widget_code` — the persisted render is sealed.
 
 **Required visual structure for every email-shaped item (v2.14.36+ HARD CONTRACT — original_thread accordion replaces the legacy `Originally:` line):**
 
@@ -986,15 +981,15 @@ OWED TO YOU actions (direction B): `send`, `edit then send`, `draft`, `follow-up
 
 Self-commitment actions (no email recipient): `prep deep work`, `push to [date]`, `resolved`, `snooze 3d`, `add to my list`. v2.14.38+: `mark done` renamed to `resolved` for verb consistency across all surfaces.
 
-Display labels (Title Case applied at render time): `Prep deep work`, `Send`, `Edit then send`, `Draft`, `Push to`, `Resolved`, `Follow-up call`, `Mark received`, `Escalate to memo`, `Snooze (3 days)`, `Add to my list`.
+Display labels come from `shared/scripts/verb_taxonomy.py` (F-59 — never restate them locally): `resolved` displays **Done**, `push to [date]` displays **Later…** (t3 FB-3), the rest per their taxonomy rows. Rendering (t3 FB-4): email-shaped rows show **Send** + **Draft** one-tap buttons; commitment rows show **Done**; the tail sits in the row's `— more —` dropdown. Rows carrying `push to [date]` have their separate snooze dropdown option suppressed (the FB-3 merge — Later… covers it). Chat prose under the widget names ONLY the controls the card visibly shows, by their exact labels (t3 FB-11).
 
 Action semantics:
 
 - `prep deep work` — generates a context-loaded prompt for M to paste into a new task. Doesn't send anything; sets up a deep-work session. (Renamed v2.12.0 from `work on it` per Sam's Apr 30 confusion: *"is this for me? is this just claude talking?"*)
 - `send` — send the current draft as-is. No edit step.
-- `edit then send` — widget exposes textarea pre-populated with body; user edits inline; Apply sends the edited body. One round.
-- `draft` (consolidated v2.14.4+) — widget exposes textarea pre-populated with body; user reviews/edits; Apply saves to Gmail Drafts.
-- `push to [date]` (YOU OWE only) — widget exposes date picker; user picks new due date; Apply records the deferral and updates the draft to mention the new date.
+- `edit then send` — widget exposes the To/Cc/Subject/Body editor; user edits inline; Apply sends the edited body. One round. (Body-only changes don't need it — the card body is directly editable, t3 FB-10.)
+- `draft` (consolidated v2.14.4+) — one-tap button (t3 FB-4); the card body is the edit surface (t3 FB-10). Apply saves to the declared backend's Drafts.
+- `push to [date]` (YOU OWE only; displays **Later…**) — widget exposes a free-text when-input (a date or a bare number of days). Apply dispatches the t3 FB-3 auto-route (apply-choices § commitment-triage): a YOU-OWE item is the user's own, so it lands as the due-date deferral and updates the draft to mention the new date.
 - `resolved` — mark commitment fulfilled. Writes `commitment_resolved` event. Won't surface again. (Renamed v2.12.3 from `close`. v2.14.38: same verb now used for self-commitments — replaces the old `mark done`.)
 - `follow-up call` (OWED TO YOU only) — drafts a calendar-invite request for a quick 15-min sync.
 - `mark received` (OWED TO YOU only) — mark the commitment as fulfilled by the counterparty. Writes `thread_resolved` event for that commitment id.
@@ -1025,7 +1020,7 @@ Parse `N action` (with or without period). Dispatch by direction:
 ## YOU OWE actions
 
 - `N prep deep work` → generate a context-loaded prompt for M to paste into his main chat (see EMAIL_DRAFT_PROTOCOL §work-on-it OR the legacy reference at `references/orchestrator-commitment-nudge.md` for prompt template — that file is tombstoned but the template content is preserved in this file's appendix below). Renamed v2.12.0 from `work on it` per Sam's Apr 30 feedback that the original label confused him as chat content vs. an action affordance.
-- `N send` → per `EMAIL_DRAFT_PROTOCOL.md` §3c "Dispatch" + "Zapier param contract", dispatch in priority order: **Zapier first if configured** (matched `mcp__zapier_*` tool from Phase 2; build the payload via `shared/scripts/zapier_send.py` `extract_latest_message_id` + `build_zapier_send_payload` — the `thread_id` param wants the LATEST MESSAGE ID, not the Gmail thread-level ID, per the v2.14.38+ contract), **native Gmail threaded** as fallback (per §3a), **standalone** as last resort. Confirm `✓ Sent (threaded) at HH:MM` (Zapier) or `✓ Sent to [name] at HH:MM` (native). Write `outreach_sent` event with `via` field set to the path used. Commitment stays open with new context.
+- `N send` → per `EMAIL_DRAFT_PROTOCOL.md` §3c "Dispatch" + "Zapier param contract", dispatch in priority order: **Zapier first if configured** (the Zapier-send tool discovered in Phase 2 — by pinned server-id / signature, per `discover_zapier_send_tool`; build the payload via `shared/scripts/zapier_send.py` `extract_latest_message_id` + `build_zapier_send_payload` — the `thread_id` param wants the LATEST MESSAGE ID, not the Gmail thread-level ID, per the v2.14.38+ contract), **native Gmail threaded** as fallback (per §3a), **standalone** as last resort. Confirm `✓ Sent (threaded) at HH:MM` (Zapier) or `✓ Sent to [name] at HH:MM` (native). Write `outreach_sent` event with `via` field set to the path used. Commitment stays open with new context.
 - `N keep` → no-op. Confirm `N status kept in Drafts.` (When user says `draft`, lazy-create the Gmail draft now.)
 - `N edit then send` (v2.12.2+, with `input` field) → replace `body_lines` with user's edited input verbatim, then dispatch through the `N send` handler with the new body. Single round.
 - `N draft` (v2.14.4+ consolidated verb; `input` field carries the multi-field edit) → replace `body_lines` (and any edited To/Cc/Subject) with the user's edited input verbatim, then lazy-create the Gmail/Outlook draft. Single round. (Pre-v2.14.4 this was two separate verbs `to drafts` + `edit then draft` — consolidated; the renderer rejects the legacy forms.)
@@ -1059,7 +1054,7 @@ For `7a`, `7b`, `7c` style sub-items inside a grouped chase email:
 
 Three correction verbs for captures that landed WRONG, all registered in `verb_taxonomy` and dispatched through `commitment_state` (apply-choices § commitment-triage documents the exact calls — same handlers here):
 
-- `N fix wording: <text>` / "that should say <text>" → `commitment_state.edit_commitment_wording(workspace_root, <item's data.id verbatim>, new_summary=<text>, edited_by=<user person_id>, source_skill="commitments")`. The item re-renders with the corrected text on every surface; the original stays in history. Confirm with the corrected line, e.g. `✓ Fixed — "send Michele the positioning brief".`
+- `N fix wording: <text>` / "that should say <text>" → `commitment_state.edit_commitment_wording(workspace_root, <item's data.id verbatim>, new_summary=<text>, edited_by=<user person_id>, source_skill="commitments")`. The item re-renders with the corrected text on every surface; the original stays in history. Confirm with the corrected line, e.g. `✓ Fixed — "send Mira the positioning brief".`
 - `N reassign to [name]` / "that's actually [name]'s" → resolve the name via the standard entity path (ambiguous → ask in one line, never guess), then `commitment_state.reassign_commitment(workspace_root, <id>, new_owner_id=<resolved person_id>, new_owner_name=<display name>, reassigned_by=<user person_id>, reason="user reassigned", source_skill="commitments", confirmed=True)`. The item leaves the user's you-owe and lands on the named owner — `not mine` DISCARDS, reassign ROUTES. Confirm: `✓ Routed to [name] — off your list.` (Unconfirmed/inferred reassignments — never from a typed name — stay in the unconfirmed bucket and are NEVER chased; no auto-email on a guessed owner.)
 - `N split into: A / B / C` (2+ parts, separated by newlines / semicolons / " / ") → `commitment_state.split_commitment(workspace_root, <id>, [{"title": ...}, ...], split_by=<user person_id>, source_skill="commitments", user_confirmed=True)`. Each part becomes its own commitment carrying the original's provenance; the original closes with a "split into …" note. Confirm by naming the N new items. Extraction pre-split stays the doctrine (M decision 2026-07-09) — this is the manual correction path, never an extraction substitute.
 

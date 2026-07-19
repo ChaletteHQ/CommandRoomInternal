@@ -63,7 +63,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text  # noqa: E402
-from event_time import event_time  # noqa: E402
+from thread_activity import ALL_TYPES, derive_from_events  # noqa: E402
 
 # Shape-safe commitment reads (REQUIRED per VIEW_GENERATION.md MASTER_TRACKER
 # section). load_open_commitments returns open, not-yet-closed commitment events;
@@ -235,22 +235,29 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
     threads = _threads(view)
     org_by_id = {o["id"]: o for o in orgs if o.get("id")}
 
-    # --- last-activity per thread (max event ts, conf-floored) ---------------
-    last_act: dict[str, str] = {}
-    for ev in events:
-        tid = ev.get("primary_thread_id")
-        if not tid:
-            continue
-        conf = ev.get("classification_confidence")
-        if isinstance(conf, (int, float)) and conf < CONFIDENCE_FLOOR:
-            continue
-        ts = event_time(ev)
-        if ts and (tid not in last_act or ts > last_act[tid]):
-            last_act[tid] = ts
+    # --- last-activity per thread (C3 consolidated rule) ----------------------
+    # derive_from_events with ALL_TYPES: renderer "last touched" semantics
+    # (every event type counts, as this scan always did), but the thread-id
+    # resolution is the settled C3 rule — related_thread_ids and the legacy
+    # data-level spellings count too. The old hand-rolled loop matched
+    # primary_thread_id only, so a cross-referenced meeting bumped the
+    # workspace map and stalled-projects but not this column (the F-54
+    # same-project-two-numbers divergence class).
+    last_act: dict[str, str] = {
+        tid: act.ts.isoformat()
+        for tid, act in derive_from_events(events, activity_types=ALL_TYPES).items()
+    }
 
     def thread_last_activity(t: dict) -> str:
+        # Zero-event floor per the C3 deprecation carve-out: the stored
+        # last_activity stamp may be consulted only when a thread has no
+        # events (fresh-ingest records), then first_seen — same chain as
+        # entity_resolve / stall_detector / workspace-map / DCC.
         tid = t.get("id") or ""
-        return _localize_date(last_act.get(tid) or t.get("first_seen") or "", ws_str)
+        return _localize_date(
+            last_act.get(tid) or t.get("last_activity") or t.get("first_seen") or "",
+            ws_str,
+        )
 
     # --- org tree helpers ----------------------------------------------------
     def children_of(oid: str) -> list[dict]:

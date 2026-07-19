@@ -125,16 +125,16 @@ def main():
                   "change_summary": "scope narrowed to phase 1", "evidence": "email"}},
         # A later push — latest due-carrying update wins.
         {"seq": 4, "ts": "2026-06-29T10:00:00Z", "type": "commitment_updated",
-         "data": {"commitment_id": "cmt_B", "new_due": "2026-07-20"}},
+         "data": {"commitment_id": "cmt_B", "new_due": "2026-07-20"}},  # DATE_GUARD_OK: due-fold data; count/brief paths take now_iso=NOW
         # Update for an id that matches nothing — ignored, never a crash.
         {"seq": 5, "ts": "2026-06-29T11:00:00Z", "type": "commitment_updated",
-         "data": {"commitment_id": "cmt_GHOST", "new_due": "2026-08-01"}},
+         "data": {"commitment_id": "cmt_GHOST", "new_due": "2026-08-01"}},  # DATE_GUARD_OK: due-fold data for a ghost id; no clock comparison
     ]
     path = write_events(events)
     opens = load_open_commitments(path)
     os.unlink(path)
     eff_due = _commitment_field(opens[0], "due") if opens else None
-    check("latest due-carrying update wins", eff_due == "2026-07-20", f"due={eff_due!r}")
+    check("latest due-carrying update wins", eff_due == "2026-07-20", f"due={eff_due!r}")  # DATE_GUARD_OK: asserts the fold value, not a clock-derived status
     check("summary-only update did not erase the deferral chain",
           opens and (opens[0].get("data") or {}).get("due_updated_by_seq") == 4)
     check("unknown-target update ignored safely", len(opens) == 1)
@@ -185,7 +185,7 @@ def main():
                 "data": data}
 
     events = [
-        commitment(1, USER, "Send Bob the deck", due="2026-07-30"),
+        commitment(1, USER, "Send Bob the deck", due="2026-07-30"),  # DATE_GUARD_OK: due carried as data; counts take now_iso=NOW
         commitment(2, USER, "Draft the SOW", due="2026-06-01"),          # overdue → stuck
         commitment(3, USER, "Reply to the investor update"),             # undated
         commitment(4, "person_bob", "Bob returns the signed contract", kind="task"),  # undated

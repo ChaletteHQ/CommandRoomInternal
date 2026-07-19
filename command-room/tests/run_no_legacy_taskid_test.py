@@ -45,8 +45,13 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 # A cr-* value assigned to source_skill AND immediately closed by call/dict
 # punctuation — i.e. emitted, not described in prose.
+# `cr-brain` is EXEMPT: it is the current LB1 Living-Brain card src (the value
+# apply-choices dispatches the confirm card on), not a legacy daily-orchestrator
+# tag — every LB1 surface sets `data_view["source_skill"] = "cr-brain"`, and
+# `brain_proposals.build_card_view` stamps it for them. It is deliberately
+# current, so the ban carves it out by name.
 SOURCE_SKILL_EMIT = re.compile(
-    r"""source_skill["']?\s*[:=]\s*["']cr-[a-z0-9-]+["']\s*[,)}\]]"""
+    r"""source_skill["']?\s*[:=]\s*["']cr-(?!brain["'])[a-z0-9-]+["']\s*[,)}\]]"""
 )
 
 # The four daily orchestrators must use bare taskIds. (dont-forget→pulse and the

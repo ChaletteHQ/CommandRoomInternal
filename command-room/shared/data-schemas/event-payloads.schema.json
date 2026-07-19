@@ -111,6 +111,61 @@
     "required": [["reminder_id"], ["origin"]],
     "properties": {"reminder_id": "string", "action": "string", "remind_from": "string", "due": "string", "summary": "string", "origin": "string"}
   },
+  "deal_created": {
+    "description": "A deal thread opened for tracking (SPEC PIPE1). WRITTEN ONLY via deal_state.create_deal / adopt_deal (adopt = attaching a deal object to a pre-PIPE1 kind='deal' thread). data.value present only when the user stated it — never estimated.",
+    "required": [["thread_id"], ["org_id"], ["stage"]],
+    "properties": {"thread_id": "string", "org_id": "string", "stage": "string", "value": "number", "currency": "string", "name": "string", "adopted": "boolean"}
+  },
+  "deal_updated": {
+    "description": "A non-stage field changed on an open deal (value / expected_close / forecast_category / currency / source). WRITTEN ONLY via deal_state.update_deal; stage moves are deal_stage_changed, terminal outcomes are deal_won/deal_lost. Carries at least one changed field.",
+    "required": [["thread_id"], ["value", "expected_close", "forecast_category", "currency", "source"]],
+    "properties": {"thread_id": "string", "value": "number", "expected_close": "string", "forecast_category": "string", "currency": "string", "source": "string"}
+  },
+  "deal_stage_changed": {
+    "description": "A deal moved between active stages (SPEC PIPE1; backward moves allowed — deals regress; days-in-stage resets either way). WRITTEN ONLY via deal_state.set_stage.",
+    "required": [["thread_id"], ["from_stage"], ["to_stage"]],
+    "properties": {"thread_id": "string", "from_stage": "string", "to_stage": "string", "note": "string"}
+  },
+  "deal_won": {
+    "description": "Terminal win (SPEC PIPE1). WRITTEN ONLY via deal_state.close_deal(outcome='won') — idempotent; thread status flips to 'resolved'. data.converted_prospect true when the same call atomically ran the prospect->client conversion (D6 — the '[Name] signed' utterance).",
+    "required": [["thread_id"], ["org_id"]],
+    "properties": {"thread_id": "string", "org_id": "string", "value": "number", "converted_prospect": "boolean"}
+  },
+  "deal_lost": {
+    "description": "Terminal loss (SPEC PIPE1). WRITTEN ONLY via deal_state.close_deal(outcome='lost') — a valid loss_reason is REQUIRED (rejected without one); thread status flips to 'archived'. THE 'lost-deal events' board-pack-assembler section 4 reads.",
+    "required": [["thread_id"], ["org_id"], ["loss_reason"]],
+    "properties": {"thread_id": "string", "org_id": "string", "loss_reason": "string", "loss_note": "string", "value": "number"}
+  },
+  "deal_update_proposed": {
+    "description": "PIPE1 Part 2 (registered up front per the wave pattern; no writer until the deal-signal detector ships): a propose-and-confirm deal update surfaced from observed meeting/email signal. Nothing mutates until the user confirms through apply-choices -> deal_state.",
+    "required": [["thread_id"]],
+    "properties": {"thread_id": "string", "proposal_kind": "string", "proposed_stage": "string", "proposed_value": "number", "evidence": "string", "fingerprint": "string"}
+  },
+  "deal_update_dismissed": {
+    "description": "PIPE1 Part 2 (registered up front; no writer until the detector ships): the user dismissed a proposed deal update — the cooldown record the detector reads before re-proposing.",
+    "required": [["thread_id"]],
+    "properties": {"thread_id": "string", "fingerprint": "string", "reason": "string"}
+  },
+  "brain_proposal": {
+    "description": "A unified Living Brain proposal (SPEC LB1): one uncertain observation a detector wants confirmed (tier confirm) or narrated (tier auto — legal only for AUTO_ALLOWED change classes with a registered reverser; propose() raises otherwise). WRITTEN ONLY via brain_proposals.propose(), which consults proposal_ledger.active_cooldowns (declined-within-60d fingerprints suppressed at source) and dedups on fingerprint against open proposals. action_tuples must map to registered verb_taxonomy action ids (no-consumer proposals rejected at source, D10). Deal-kind proposals additionally write the reserved PIPE1 deal_update_proposed alongside.",
+    "required": [["proposal_id"], ["kind"], ["fingerprint"], ["tier"], ["detector"]],
+    "properties": {"proposal_id": "string", "kind": "string", "fingerprint": "string", "tier": "string", "evidence": "string", "action_tuples": "array", "ttl_days": "number", "detector": "string", "thread_id": "string", "org_id": "string", "person_id": "string", "render_line": "string"}
+  },
+  "brain_proposal_resolved": {
+    "description": "Adjudicates a brain_proposal (SPEC LB1 — the tombstone). WRITTEN ONLY via brain_proposals.resolve_proposal() from apply-choices cr-brain dispatch: user_action in applied|edited|declined|skipped (same vocabulary as proposal_feedback.jsonl — resolve_proposal also appends the ledger row so cooldown math is shared). The projector stops surfacing any proposal_id a tombstone references. declined starts the 60-day fingerprint cooldown.",
+    "required": [["proposal_id"], ["user_action"]],
+    "properties": {"proposal_id": "string", "user_action": "string", "kind": "string", "fingerprint": "string", "detector": "string", "resolved_by": "string", "note": "string"}
+  },
+  "brain_proposal_expired": {
+    "description": "Silent TTL expiry of an unanswered brain_proposal (SPEC LB1). WRITTEN ONLY by cleanup's expiry sweep via brain_proposals.expire_stale() — logged, never nagged; the count is visible in cleanup's Monday-note card-health line. No cooldown: an expired fingerprint may be re-proposed if the signal persists.",
+    "required": [["proposal_id"]],
+    "properties": {"proposal_id": "string", "kind": "string", "fingerprint": "string", "detector": "string", "opened_ts": "string"}
+  },
+  "brain_change_undone": {
+    "description": "One reversed change from a Living Brain undo batch (SPEC LB1). WRITTEN ONLY via brain_undo.undo_batch() — the narration-trail marker; the reversal itself is the change class's ADDITIVE reversing event (commitment_reopened, chat_dismissal_cleared, a status->archived person_updated/org_updated), appended by the registered reverser immediately before this marker. change_ref points at the reversed change's audit anchor (event seq or id); reverser names the REVERSERS registry key that ran. Never edits or deletes prior events.",
+    "required": [["change_ref"], ["reverser"]],
+    "properties": {"change_ref": "string", "reverser": "string", "batch_ref": "string", "undone_by": "string", "note": "string"}
+  },
   "reminder_cleared": {
     "description": "Clears a reminder. reminder_id REQUIRED. For repeating reminders the reader re-arms to the next occurrence after data.occurrence (defaults to the occurrence active at clear time) — derive-next-on-read, no scheduler. Clearing a reminder with ref NEVER closes the referenced commitment. origin MUST be 'user_explicit'.",
     "required": [["reminder_id"], ["origin"]],

@@ -13,7 +13,7 @@ flagged AND counted inside "everything's running" (self-contradiction).
 F-40 (cloud chat, 2026-07-08): the machine-local scheduler registry read
 empty from a remote session; the check trusted it and reported "none of your
 scheduled tasks are registered" + a fix that would have double-registered
-all 12 — while the substrate it COULD read carried schedule_created events
+every task — while the substrate it COULD read carried schedule_created events
 and same-morning pack_runs.
 
 The fixtures mirror the real on-disk shapes (legacy kind-only receipts,
@@ -33,10 +33,11 @@ import task_watchdog as tw  # noqa: E402
 
 FAILURES = []
 
-REGISTERED_12 = [
+# MAINT1: the five silent tasks became jobs inside `maintenance`, so a fully
+# set-up workspace registers 8 tasks (7 chats + maintenance).
+REGISTERED_8 = [
     "morning-brief", "upcoming-meetings", "inbox", "commitments", "pulse",
-    "past-meetings", "friday-wrap", "cleanup", "reconcile-sent",
-    "monthly-report", "weekly-insights", "session-sweep",
+    "past-meetings", "friday-wrap", "maintenance",
 ]
 
 
@@ -106,6 +107,8 @@ def main():
          "data": {"task_id": "cr-commitments", "fired_at": _utc_iso(h(hours=2)),
                   "outcome": "complete"}},  # F-40-obs: cr- prefixed id
         {"type": "dont_forget_run", "ts": _utc_iso(h(hours=2)), "data": {}},  # pulse legacy
+        # Maintenance JOB receipts (job-level signals) — these are NOT task
+        # receipts anymore and must not invent task history for `maintenance`.
         {"type": "cleanup_run", "ts": _utc_iso(h(days=2)), "data": {"actions_taken": []}},
         {"type": "sent_reconcile", "ts": _utc_iso(h(hours=5)),
          "data": {"sent_scanned": 15, "n_closed": 0}},
@@ -124,8 +127,8 @@ def main():
         # left only a scheduler stamp (F-39/F-43 P2c).
         {"type": "pack_run", "ts": _utc_iso(h(days=16)), "source_skill": "friday-wrap",
          "data": {"kind": "friday_wrap"}},
-        # weekly-insights + monthly-report: registered this morning, ZERO
-        # receipts (F-43 P1a — the two whose history was invented).
+        # maintenance: registered this morning, ZERO maintenance_run receipts
+        # (the F-43 P1a class — history must not be invented for it).
     ]
     # lastRunAt mirrors each receipt's time (a normal fire updates both);
     # friday-wrap's stamp is the 12:20 AM catch-up that left NO receipt.
@@ -133,33 +136,31 @@ def main():
         "morning-brief": h(hours=3), "upcoming-meetings": h(hours=4),
         "inbox": h(hours=3), "commitments": h(hours=2), "pulse": h(hours=2),
         "past-meetings": h(hours=8), "friday-wrap": h(hours=8),
-        "cleanup": h(days=2), "reconcile-sent": h(hours=5),
-        "session-sweep": h(hours=10),
     }
     records = []
-    for tid in REGISTERED_12:
+    for tid in REGISTERED_8:
         rec = {"taskId": tid, "enabled": True, "prompt": "x"}
-        if tid in stamp_deltas:  # weekly-insights/monthly-report: lastRunAt empty (disk truth)
+        if tid in stamp_deltas:  # maintenance: lastRunAt empty (disk truth)
             rec["lastRunAt"] = _utc_iso(stamp_deltas[tid])
         records.append(rec)
 
     with tempfile.TemporaryDirectory() as td:
-        ws = make_workspace(Path(td), events, REGISTERED_12, h(hours=6))
+        ws = make_workspace(Path(td), events, REGISTERED_8, h(hours=6))
         v = tw.health_verdict(ws, task_records=records)
 
         check("no vantage finding on a local check (registry visible)", v["vantage"] is None)
 
         by_task = {r["task"]: r for r in v["reports"]}
-        check("never-fired tasks are never_fired, not fabricated history",
-              by_task["weekly-insights"]["status"] == "never_fired"
-              and by_task["monthly-report"]["status"] == "never_fired",
-              repr({t: by_task[t]["status"] for t in ("weekly-insights", "monthly-report")}))
-        check("first_run_pending holds exactly the two never-fired tasks",
-              sorted(v["first_run_pending"]) == ["monthly-report", "weekly-insights"],
+        check("never-fired task is never_fired, not fabricated history "
+              "(job receipts on disk don't count as task fires)",
+              by_task["maintenance"]["status"] == "never_fired",
+              by_task["maintenance"]["status"])
+        check("first_run_pending holds exactly the never-fired task",
+              v["first_run_pending"] == ["maintenance"],
               repr(v["first_run_pending"]))
         fr_lines = [l for l in v["info_lines"] if "first run" in l]
-        check("first-run lines say 'hasn't had its first run yet' + name the next fire",
-              len(fr_lines) == 2 and all("hasn't had its first run yet" in l for l in fr_lines)
+        check("first-run line says 'hasn't had its first run yet' + names the next fire",
+              len(fr_lines) == 1 and all("hasn't had its first run yet" in l for l in fr_lines)
               and all("next scheduled run is" in l for l in fr_lines), repr(fr_lines))
 
         pm = by_task["past-meetings"]
@@ -186,21 +187,21 @@ def main():
         check("friday-wrap is a problem, past-meetings is not",
               v["problems"] == ["friday-wrap"], repr(v["problems"]))
 
-        check("the 8 genuinely-on-schedule tasks are the ONLY on-schedule claims",
+        check("the 5 genuinely-on-schedule tasks are the ONLY on-schedule claims",
               sorted(v["on_schedule"]) == sorted([
                   "morning-brief", "upcoming-meetings", "inbox", "commitments",
-                  "pulse", "cleanup", "reconcile-sent", "session-sweep"]),
+                  "pulse"]),
               repr(v["on_schedule"]))
         buckets = [v["on_schedule"], v["caught_up"], v["first_run_pending"], v["problems"]]
         all_ids = [t for b in buckets for t in b]
-        check("internal consistency: every task in exactly ONE bucket, 12 counted",
-              len(all_ids) == 12 and len(set(all_ids)) == 12, repr(buckets))
-        check("summary never claims 'All 12' (F-43 P1a's exact lie)",
-              "All 12" not in v["summary_line"] and "8 of 12" in v["summary_line"],
+        check("internal consistency: every task in exactly ONE bucket, 8 counted",
+              len(all_ids) == 8 and len(set(all_ids)) == 8, repr(buckets))
+        check("summary never claims 'All 8' (F-43 P1a's exact lie)",
+              "All 8" not in v["summary_line"] and "5 of 8" in v["summary_line"],
               v["summary_line"])
         check("summary enumerates the non-normal buckets honestly",
               "1 caught up late" in v["summary_line"]
-              and "2 are waiting on their first run" in v["summary_line"]
+              and "1 is waiting on its first run" in v["summary_line"]
               and "1 needs attention" in v["summary_line"], v["summary_line"])
         every_line = v["lines"] + v["info_lines"] + [v["summary_line"]]
         check("no fabricated cause anywhere (the 'asleep' class is banned)",
@@ -215,19 +216,19 @@ def main():
     print("== F-40 replay — empty registry from a cloud vantage")
     sched_created = [
         {"type": "schedule_created", "ts": _utc_iso(dt.timedelta(days=30)),
-         "data": {"taskId": tid}} for tid in REGISTERED_12
+         "data": {"taskId": tid}} for tid in REGISTERED_8
     ]
     fresh_runs = [
         {"type": "pack_run", "ts": _utc_iso(dt.timedelta(hours=2)),
          "source_skill": "morning-brief",
          "data": {"task_id": "morning-brief", "kind": "morning-brief",
-                  "fired_via": "scheduled", "machine": "MDAVIDOV-PC"}},
+                  "fired_via": "scheduled", "machine": "OPERATOR-PC"}},
         {"type": "sent_reconcile", "ts": _utc_iso(dt.timedelta(hours=4)),
-         "data": {"machine": "MDAVIDOV-PC"}},
+         "data": {"machine": "OPERATOR-PC"}},
     ]
     with tempfile.TemporaryDirectory() as td:
         ws = make_workspace(Path(td), sched_created + fresh_runs,
-                            REGISTERED_12, dt.timedelta(days=30))
+                            REGISTERED_8, dt.timedelta(days=30))
         v = tw.health_verdict(ws, task_records=[])
         check("empty registry + receipted substrate → vantage finding, not outage",
               v["vantage"] is not None and v["vantage"]["check"] == "registry_vantage",
@@ -244,7 +245,7 @@ def main():
               repr(v["lines"]))
         check("fresh receipts vouch that the tasks look alive, with the machine named",
               v["vantage"]["receipts_fresh"] is True
-              and v["vantage"]["machine"] == "MDAVIDOV-PC"
+              and v["vantage"]["machine"] == "OPERATOR-PC"
               and "look alive" in v["summary_line"], v["summary_line"])
 
         # Registry visible → guard stands down.
@@ -299,6 +300,117 @@ def main():
         check("a warned task never counts inside the on-schedule claim",
               "inbox" not in v["on_schedule"] and v["on_schedule"] == ["morning-brief"]
               and "attention" in v["summary_line"], v["summary_line"])
+
+    # ------------------------------------------------------------------
+    print("== HYG1 Item 4 — scheduled_task_failure surfaces in the verdict")
+    h = dt.timedelta
+    base_events = [
+        {"type": "pack_run", "ts": _utc_iso(h(hours=3)), "source_skill": "morning-brief",
+         "data": {"task_id": "morning-brief", "kind": "morning-brief",
+                  "fired_via": "scheduled", "status": "complete"}},
+        {"type": "pack_run", "ts": _utc_iso(h(hours=4)), "source_skill": "upcoming-meetings",
+         "data": {"kind": "upcoming_meetings", "surfaced": 5}},
+    ]
+    recs2 = [
+        {"taskId": "morning-brief", "enabled": True,
+         "lastRunAt": _utc_iso(h(hours=3))},
+        {"taskId": "upcoming-meetings", "enabled": True,
+         "lastRunAt": _utc_iso(h(hours=4))},
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        # Fresh failure NEWER than the task's newest receipt → a finding.
+        events = base_events + [
+            {"type": "scheduled_task_failure", "ts": _utc_iso(h(hours=1)),
+             "source_skill": "upcoming-meetings",
+             "data": {"task_id": "upcoming-meetings",
+                      "error": "entities.json malformed - could not write briefs"}},
+        ]
+        ws = make_workspace(Path(td), events,
+                            ["morning-brief", "upcoming-meetings"], h(days=30))
+        v = tw.health_verdict(ws, task_records=recs2)
+        check("fresh failure lands in problems (namespaced failure:<task>)",
+              "failure:upcoming-meetings" in v["problems"], repr(v["problems"]))
+        check("failure finding carries task + the event's own diagnostic",
+              v["task_failures"]
+              and v["task_failures"][0]["task"] == "upcoming-meetings"
+              and "entities.json malformed" in v["task_failures"][0]["detail"],
+              repr(v.get("task_failures")))
+        fail_lines = [l for l in v["lines"] if "hit an error mid-run" in l]
+        check("failure line is dated, names the task, quotes the diagnostic",
+              len(fail_lines) == 1 and "Upcoming Meetings" in fail_lines[0]
+              and "entities.json malformed" in fail_lines[0], repr(fail_lines))
+        check("no fabricated cause in the failure line (facts + quote only)",
+              "asleep" not in fail_lines[0] and "usage limit" not in fail_lines[0]
+              and "probably" not in fail_lines[0], repr(fail_lines))
+        check("the failure never moves the task out of its partition bucket",
+              "upcoming-meetings" in v["on_schedule"], repr(v["on_schedule"]))
+        # Baseline delta: the same workspace WITHOUT the failure event has
+        # one fewer attention item — the failure is what added it.
+        check("failure counts toward the attention total",
+              "attention" in v["summary_line"], v["summary_line"])
+    with tempfile.TemporaryDirectory() as td:
+        ws = make_workspace(Path(td), list(base_events),
+                            ["morning-brief", "upcoming-meetings"], h(days=30))
+        v_base = tw.health_verdict(ws, task_records=recs2)
+        check("without the failure event there is no failure problem",
+              not any(str(x).startswith("failure:") for x in v_base["problems"])
+              and v_base["task_failures"] == [], repr(v_base["problems"]))
+
+    with tempfile.TemporaryDirectory() as td:
+        # Failure OLDER than a newer successful receipt → history, not a finding.
+        events = base_events + [
+            {"type": "scheduled_task_failure", "ts": _utc_iso(h(hours=9)),
+             "source_skill": "upcoming-meetings",
+             "data": {"task_id": "upcoming-meetings",
+                      "error": "transient connector error"}},
+        ]
+        ws = make_workspace(Path(td), events,
+                            ["morning-brief", "upcoming-meetings"], h(days=30))
+        v = tw.health_verdict(ws, task_records=recs2)
+        check("failure older than the newest successful receipt is NOT a finding",
+              v["task_failures"] == [] and
+              not any("hit an error" in l for l in v["lines"]),
+              repr(v.get("task_failures")))
+        check("a historical failure adds no failure problem to the partition",
+              not any(str(x).startswith("failure:") for x in v["problems"]),
+              repr(v["problems"]))
+
+    with tempfile.TemporaryDirectory() as td:
+        # MAINT1 attribution: a dispatcher-owned sub-task failure names the job.
+        events = [
+            {"type": "maintenance_run", "ts": _utc_iso(h(hours=5)),
+             "data": {"task_id": "maintenance", "fired_via": "scheduled",
+                      "jobs_run": ["cleanup"]}},
+            {"type": "scheduled_task_failure", "ts": _utc_iso(h(hours=2)),
+             "source_skill": "cleanup",
+             "data": {"error": "views dir unwritable"}},
+        ]
+        ws = make_workspace(Path(td), events, ["maintenance"], h(days=30))
+        recs3 = [{"taskId": "maintenance", "enabled": True,
+                  "lastRunAt": _utc_iso(h(hours=5))}]
+        v = tw.health_verdict(ws, task_records=recs3)
+        check("dispatcher sub-task failure attributes to the named job",
+              any(f["task"] == "cleanup" for f in v["task_failures"]),
+              repr(v.get("task_failures")))
+
+    with tempfile.TemporaryDirectory() as td:
+        # Cloud vantage still blocks per-task claims — failures included.
+        events = [
+            {"type": "schedule_created", "ts": _utc_iso(h(days=30)),
+             "data": {"taskId": "morning-brief"}},
+            {"type": "pack_run", "ts": _utc_iso(h(hours=2)),
+             "source_skill": "morning-brief",
+             "data": {"task_id": "morning-brief", "machine": "OPERATOR-PC"}},
+            {"type": "scheduled_task_failure", "ts": _utc_iso(h(hours=1)),
+             "source_skill": "morning-brief",
+             "data": {"task_id": "morning-brief", "error": "boom"}},
+        ]
+        ws = make_workspace(Path(td), events, ["morning-brief"], h(days=30))
+        v = tw.health_verdict(ws, task_records=[])
+        check("cloud vantage still blocks per-task claims (failures included)",
+              v["vantage"] is not None and v["task_failures"] == []
+              and v["lines"] == [], repr(v.get("task_failures")))
 
     print()
     if FAILURES:

@@ -144,11 +144,16 @@ def main():
           all(r["recommendation"] == "no_action" for r in weak), f"{weak}")
 
     # ------------------------------------------------------------------
-    print("\n[2] reconcile-sent persists the pending band (and ONLY the pending band)")
+    print("\n[2] reconcile-sent persists AMBIGUOUS pending matches (FS-11)")
     # ------------------------------------------------------------------
-    # A send that overlaps the title enough for MEDIUM but not HIGH.
+    # FS-11 (M ruling 2026-07-15): an UNAMBIGUOUS moderate match now
+    # auto-closes; only MULTI-CANDIDATE AMBIGUITY (one send matching >1 open
+    # commitment at moderate grade) stays a confirm proposal. Two near-duplicate
+    # commitments → one send lands both in the pending band.
     ws = make_workspace([
-        commitment(1, "cmt_PENDBAND", "send sam the quarterly pricing recap deck",
+        commitment(1, "cmt_AMBIG_A", "send sam the quarterly pricing recap deck",
+                   person_ids=[USER, "person_sam"]),
+        commitment(2, "cmt_AMBIG_B", "send sam the quarterly pricing summary recap",
                    person_ids=[USER, "person_sam"]),
     ])
     receipt = reconcile_and_receipt(
@@ -160,23 +165,23 @@ def main():
         user_person_id=USER,
         source_skill="reconcile-sent",
     )
-    check("the match landed in the pending band (fixture sanity)",
-          receipt["n_pending"] == 1 and receipt["n_auto_closed"] == 0,
+    check("the ambiguous matches landed in the pending band (fixture sanity)",
+          receipt["n_pending"] == 2 and receipt["n_auto_closed"] == 0,
           f"{receipt}")
     proposals = load_open_review_proposals(events_path(ws))
-    check("pending proposal PERSISTED as commitment_review_proposed",
-          receipt["reviews_written"] == 1 and len(proposals) == 1
-          and proposals[0]["data"]["commitment_id"] == "cmt_PENDBAND"
-          and 0.30 <= proposals[0]["data"]["match_score"] < 0.55,
+    check("ambiguous pending proposals PERSISTED as commitment_review_proposed w/ TTL",
+          receipt["reviews_written"] == 2 and len(proposals) == 2
+          and all(0.30 <= p["data"]["match_score"] < 0.55 for p in proposals)
+          and all(p["data"].get("ttl_days") for p in proposals),
           f"reviews={receipt.get('reviews_written')} proposals={proposals}")
-    check("commitment stays OPEN (pending band never auto-closes)",
-          len(load_open_commitments(events_path(ws))) == 1)
+    check("ambiguous commitments stay OPEN (only unambiguous moderate auto-closes)",
+          len(load_open_commitments(events_path(ws))) == 2)
     check("cursor advanced normally (mechanics untouched)",
           receipt["cursor_advanced"] and receipt["cursor_after"] == "2026-07-01T09:00:00Z")
     check("sent_reconcile audit event still written (isolation untouched)",
           any(e["type"] == "sent_reconcile" for e in read_events(ws)))
 
-    # Re-run with a NEW send matching the same commitment → deduped.
+    # Re-run with a NEW send matching the same commitments → deduped.
     receipt2 = reconcile_and_receipt(
         ws,
         [{"message_id": "m2", "ts": "2026-07-01T10:00:00Z",
@@ -186,10 +191,31 @@ def main():
         user_person_id=USER,
         source_skill="reconcile-sent",
     )
-    check("open proposal deduped — no second review event for the same commitment",
+    check("open proposals deduped — no second review events for the same commitments",
           receipt2["reviews_written"] == 0
-          and len(load_open_review_proposals(events_path(ws))) == 1,
+          and len(load_open_review_proposals(events_path(ws))) == 2,
           f"{receipt2}")
+
+    # ------------------------------------------------------------------
+    print("\n[2b] FS-11: an UNAMBIGUOUS moderate match auto-closes")
+    # ------------------------------------------------------------------
+    ws_auto = make_workspace([
+        commitment(1, "cmt_UNAMBIG", "send sam the quarterly pricing recap deck",
+                   person_ids=[USER, "person_sam"]),
+    ])
+    r_auto = reconcile_and_receipt(
+        ws_auto,
+        [{"message_id": "ma", "ts": "2026-07-01T09:00:00Z",
+          "recipient_person_ids": ["person_sam"],
+          "subject": "quick note",
+          "body": "sam — attached the recap, thoughts welcome on budget timing agenda notes"}],
+        user_person_id=USER,
+        source_skill="reconcile-sent",
+    )
+    check("unambiguous moderate match auto-closes (M ruling: just close them)",
+          r_auto["n_auto_closed"] == 1 and r_auto["n_pending"] == 0
+          and load_open_commitments(events_path(ws_auto)) == [],
+          f"{r_auto}")
 
     # ------------------------------------------------------------------
     print("\n[3] one-click confirm/deny through THE closure path")
@@ -197,17 +223,20 @@ def main():
     # confirm → close_commitment with user_confirmed=True (works even on a
     # pending_review-flagged commitment — the click is the confirmation).
     p = load_open_review_proposals(events_path(ws))[0]
+    closed_cid = p["data"]["commitment_id"]
     res = close_commitment(
-        ws, p["data"]["commitment_id"],
+        ws, closed_cid,
         resolved_by=USER,
         evidence=p["data"].get("evidence") or "confirmed from review",
         source_skill="commitments", user_confirmed=True,
     )
-    check("confirm closes the commitment via close_commitment",
-          res["status"] == "closed"
-          and load_open_commitments(events_path(ws)) == [])
-    check("closing retires the proposal (no reappearance)",
-          load_open_review_proposals(events_path(ws)) == [])
+    open_after = {c["data"]["id"] for c in load_open_commitments(events_path(ws))}
+    check("confirm closes the clicked commitment via close_commitment",
+          res["status"] == "closed" and closed_cid not in open_after)
+    remaining = load_open_review_proposals(events_path(ws))
+    check("closing retires ONLY the clicked proposal (the other ambiguous one stays)",
+          all(rp["data"]["commitment_id"] != closed_cid for rp in remaining)
+          and len(remaining) == 1)
 
     # deny → commitment_review_dismissed; commitment stays open.
     ws = make_workspace([

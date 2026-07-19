@@ -1,0 +1,128 @@
+{
+  "$schema_note": "Capability manifest for the connector-agnostic layer (Layer A2). KNOWN provider rows, keyed by provider tag. Detection is DETECT-ONCE-AT-DECLARATION (H-E): at declaration the agent inspects the declared server's tool list, writes the detected row into workspace config, user confirms; per-fire detection is only the never-declared fallback. Vocabularies are authored for mail + calendar ONLY (YAGNI — chat/storage/e-sign/accounting get keys when their first consumer skill exists). Fingerprints are the DISTINCTIVE tool-name subset used to re-pair a reconnected server (new UUID) to a known provider (A1b). Capability values are the provider's KNOWN default; a per-workspace detected row (from the actual connected server's tool list) overrides — e.g. M's Microsoft 365 is read-only, so its detected calendar row has event_crud=false even though outlook_calendar CAN do CRUD in general.",
+  "$version": "connector-agnostic-v1",
+  "categories": ["email", "calendar"],
+  "providers": {
+    "gmail": {
+      "category": "email",
+      "label": "Gmail (native)",
+      "fingerprint": ["apply_sensitive_message_label", "apply_sensitive_thread_label", "search_threads", "create_draft"],
+      "whoami": false,
+      "capabilities": {
+        "draft": true,
+        "send": false,
+        "reply_threaded": false,
+        "undo_send": false,
+        "read_receipts": false,
+        "labels": true,
+        "folders": false,
+        "categories": false,
+        "threading_model": "gmail_thread_id",
+        "search_model": "gmail_operators",
+        "attachments": "read_only",
+        "splits": false,
+        "unsubscribe": false,
+        "mark_spam": false,
+        "from_addressing": false
+      },
+      "notes": "Native Gmail in a UUID env exposes NO send tool and NO whoami (H-A). Send routes through the Zapier dispatch leg; from-alias addressing is unavailable — outbound from a specific account degrades to paste (N4)."
+    },
+    "superhuman": {
+      "category": "email",
+      "label": "Superhuman",
+      "fingerprint": ["list_splits", "get_read_status_feed", "undo_send", "create_or_update_draft", "query_email_and_calendar"],
+      "whoami": true,
+      "capabilities": {
+        "draft": true,
+        "send": true,
+        "reply_threaded": true,
+        "undo_send": true,
+        "read_receipts": true,
+        "labels": true,
+        "folders": false,
+        "categories": true,
+        "threading_model": "superhuman_thread_id",
+        "search_model": "superhuman_structured",
+        "attachments": true,
+        "splits": true,
+        "unsubscribe": true,
+        "mark_spam": true,
+        "from_addressing": true
+      },
+      "notes": "Fronts calendar too (create_or_update_event, get_availability). from-alias addressing supported (verified aliases). Sync lag ~1min after send (hole #9) — reconcile-sent must tolerate."
+    },
+    "outlook": {
+      "category": "email",
+      "label": "Microsoft 365 / Outlook",
+      "fingerprint": ["outlook_email_search", "get_me", "sharepoint_search", "chat_message_search"],
+      "whoami": true,
+      "capabilities": {
+        "draft": false,
+        "send": false,
+        "reply_threaded": false,
+        "undo_send": false,
+        "read_receipts": false,
+        "labels": false,
+        "folders": true,
+        "categories": true,
+        "threading_model": "conversation_id",
+        "search_model": "graph_filter",
+        "attachments": "read_only",
+        "splits": "focused_other",
+        "unsubscribe": false,
+        "mark_spam": false,
+        "from_addressing": false
+      },
+      "notes": "M's connected M365 MCP is READ-ONLY (no draft/send/create — H-F). The Outlook WRITE path therefore ships to clients UNTESTED by construction; gate any Outlook-write claim. A write-capable Outlook connector would detect draft/send=true at declaration and override this row."
+    },
+    "zapier_gmail": {
+      "category": "email-dispatch",
+      "label": "Zapier (Gmail send leg)",
+      "is_zapier": true,
+      "fingerprint": ["gmail_send_email", "gmail_reply_to_email", "get_configuration_url"],
+      "whoami": false,
+      "capabilities": {
+        "draft": false,
+        "send": true,
+        "reply_threaded": true,
+        "from_addressing": true
+      },
+      "notes": "The gmail-only dispatch leg (EMAIL_DRAFT_PROTOCOL §3c, H-D). MUST be pinned by server-id in workspace.connectors._zapier_server_ids, never matched as native Gmail (R12/H-H): its tool names contain 'gmail' but it is Zapier. Drafts are NEVER sent through Zapier. Only fires when the declared mail backend is Gmail."
+    },
+    "google_calendar": {
+      "category": "calendar",
+      "label": "Google Calendar (native)",
+      "fingerprint": ["list_calendars", "suggest_time", "respond_to_event", "create_event"],
+      "whoami": false,
+      "capabilities": {
+        "availability": true,
+        "event_crud": true,
+        "free_busy": true,
+        "rsvp": true,
+        "calendar_addressing": true,
+        "event_id_shape": "gcal_event_id"
+      },
+      "notes": "calendarId param = per-calendar/account routing (N4 supported). Native only, never Zapier (CONTRACT Rule 8)."
+    },
+    "outlook_calendar": {
+      "category": "calendar",
+      "label": "Outlook Calendar (Graph)",
+      "fingerprint": ["outlook_find_available_time", "find_meeting_availability", "outlook_calendar_search"],
+      "whoami": true,
+      "capabilities": {
+        "availability": true,
+        "event_crud": true,
+        "free_busy": true,
+        "rsvp": true,
+        "calendar_addressing": true,
+        "event_id_shape": "graph_event_id"
+      },
+      "notes": "General Outlook Calendar row. On M's read-only M365 the detected row is availability/search only (event_crud=false) — detection overrides these defaults per connected server."
+    }
+  },
+  "baseline": {
+    "$note": "Unknown-provider fallback (C4). At declaration an unrecognized server feature-detects into this shape (can it draft? send? create events?) rather than hard-failing. Absent booleans are treated as false (fail-closed).",
+    "email": {"draft": false, "send": false, "reply_threaded": false, "from_addressing": false},
+    "calendar": {"availability": false, "event_crud": false, "free_busy": false, "rsvp": false}
+  }
+}

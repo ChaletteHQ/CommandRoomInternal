@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -33,10 +34,36 @@ from atomic_write import (  # noqa: E402
 )
 
 
+_WORKSPACES: list[Path] = []
+
+
 def _setup_workspace() -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="cr_multiwrite_test_"))
     (tmp / "_hq" / "data").mkdir(parents=True, exist_ok=True)
+    _WORKSPACES.append(tmp)
     return tmp
+
+
+def _cleanup_workspaces() -> None:
+    """Remove the temp workspaces this suite created.
+
+    Previously _setup_workspace() mkdtemp'd once per test and nothing ever
+    cleaned up, so every battery run leaked five directories into the system
+    temp dir (50 had accumulated from a handful of runs). Set
+    CR_KEEP_TEST_WORKSPACES=1 to retain them when debugging a lock failure.
+
+    Best-effort by design: these tests deliberately plant lock files and
+    simulate unlink refusals, so a leftover artifact must never turn a passing
+    suite red.
+    """
+    if os.environ.get("CR_KEEP_TEST_WORKSPACES"):
+        print(f"\n(CR_KEEP_TEST_WORKSPACES set — kept {len(_WORKSPACES)} workspaces)")
+        for ws in _WORKSPACES:
+            print(f"  {ws}")
+        return
+    for ws in _WORKSPACES:
+        shutil.rmtree(ws, ignore_errors=True)
+    _WORKSPACES.clear()
 
 
 def test_basic_multi_write() -> None:
@@ -153,13 +180,18 @@ def test_corrupt_lock_payload_reclaim() -> None:
 
 
 def main() -> int:
-    test_basic_multi_write()
-    test_dead_pid_lock_reclaim()
-    test_time_stale_lock_reclaim()
-    test_release_lock_unlink_failure_mv_aside()
-    test_corrupt_lock_payload_reclaim()
-    print("\nALL atomic_write multi_write_context tests PASSED")
-    return 0
+    try:
+        test_basic_multi_write()
+        test_dead_pid_lock_reclaim()
+        test_time_stale_lock_reclaim()
+        test_release_lock_unlink_failure_mv_aside()
+        test_corrupt_lock_payload_reclaim()
+        print("\nALL atomic_write multi_write_context tests PASSED")
+        return 0
+    finally:
+        # `finally`, not a success-only path: a failing assertion must not leak
+        # workspaces either. CR_KEEP_TEST_WORKSPACES=1 retains them for triage.
+        _cleanup_workspaces()
 
 
 if __name__ == "__main__":

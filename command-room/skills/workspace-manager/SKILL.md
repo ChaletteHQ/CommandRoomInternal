@@ -1,6 +1,6 @@
 ---
 name: workspace-manager
-description: "Master workspace orchestrator, navigator, and catch-all thinking partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' (fuzzy navigation to any project, org, or person; also 'go [org] all' / 'go [org] rollup'), 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org' (any phrasing), '[name] is now a client', 'archive [project]', 'pull up [name]' / 'status on [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', and vocative address by the workspace AI name (wake-word strips, remainder re-routes). Default handler for loose input naming a tracked entity when no specialist matches. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full trigger table, wake-word shapes, and all fences: Routing section in the body."
+description: "Master workspace orchestrator, navigator, catch-all thinking partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' (fuzzy nav; also 'go [org] all' / 'go [org] rollup'), 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org', '[name] is now a client', 'archive [project]', 'pull up [name]' / 'status on [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', account & connector management ('what accounts do I have', '[address] is my personal account', 'set my email backend to [connector]'), and vocative address by the workspace AI name (wake-word strips, remainder re-routes). Default handler for loose input naming a tracked entity when no specialist matches. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full trigger table, wake-word shapes, fences: Routing section in body."
 ---
 
 # Workspace Manager — Command Room
@@ -52,7 +52,7 @@ Closes the Bug #82 vocative-routing miss (see references/HISTORY.md).
 
 ### MUST-language enforcement gate — new-project lifecycle (v3.13.8.4+)
 
-> **When the user's input matches any new-project trigger phrase — `new project`, `new project [Name]`, `new project in command room`, `build a new project in command room`, `start a new project`, `create a new project`, `add a new project`, `set up a new project`, `I want to start/add/create a new project`, `new client`, `start a new client`, `add a new client` — OR when the user describes the act of starting a new initiative and asks to track it ("I'm starting something new with X, can you set up a project?", "I just signed Y, add them"), you MUST execute the "new project [Name]" lifecycle command (full procedure in the section below). If the project name is not inline in the trigger, the FIRST follow-up question is "What's the project name?" — never "What do you want me to do?" / "How can I help?" / any open-ended re-prompt. The routing is locked the moment the trigger fires; only the name (and downstream details) are collected from there.**
+> **When the user's input matches any new-project trigger phrase — `new project`, `new project [Name]`, `new project in command room`, `build a new project in command room`, `start a new project`, `create a new project`, `add a new project`, `set up a new project`, `I want to start/add/create a new project`, `new client`, `start a new client`, `add a new client` — OR when the user describes the act of starting a new initiative and asks to track it ("I'm starting something new with X, can you set up a project?", "I just signed Y, add them"), you MUST execute the "new project [Name]" lifecycle command (full procedure in the section below). **CARVE-OUT (SPEC PIPE1):** `new deal …` phrasings are NOT this gate — they belong to pipeline-tracker (a deal thread on an existing org, not a project scaffold); and a "signed"-shaped utterance naming an org that already has an OPEN DEAL thread is a deal-won declaration (pipeline-tracker's closure path), not a new-project request — check before scaffolding. If the project name is not inline in the trigger, the FIRST follow-up question is "What's the project name?" — never "What do you want me to do?" / "How can I help?" / any open-ended re-prompt. The routing is locked the moment the trigger fires; only the name (and downstream details) are collected from there.**
 
 Closes the Bug #82 new-project routing miss — the gate makes the trigger a one-way door; once fired, the only remaining question is the name (story in references/HISTORY.md).
 
@@ -71,6 +71,7 @@ Workspace-manager is the catch-all. When a turn doesn't cleanly fire a specialis
 1. **Explicit lifecycle command** (new project, end session, let's work, what's going on, prep call, archive, etc.) → execute the matching section below.
 2. **Specialist skill matched cleanly** → step aside, let that skill run. (workspace-manager still silently updates activity counters but doesn't take the turn.)
 3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware). The helper returns a confidence-sorted match (tiers + confidences live in `shared/ENTITY_RESOLVE_PROTOCOL.md`, never re-explained here). If a tier-1 or tier-2 match returns, load that context and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — that's the 2026-05-20 routing-miss class this step exists to prevent (see references/HISTORY.md).** Await the user's next instruction after loading.
+3a. **Deal-thread handoff (SPEC PIPE1, D11).** When the resolver's match (step 3 or 4) lands on a thread with `kind: "deal"` — "where are we with the Beacon Logistics deal", "status on the Acme pilot" — load it and hand the turn to pipeline-tracker's single-deal view (stage, days in stage, next step or the missing-next-step flag, value, recent activity) instead of the generic thread status. `go [deal name]` navigation itself stays here; the STATUS rendering for a deal is pipeline-tracker's.
 4. **Name-mention + action signal** — phrases like "prep", "follow up on", "status", "draft", "what did we decide with" paired with a name → load the name's context and route to the matching specialist (call-prep / follow-up-ritual / etc.).
 5. **Ambiguous** (no name, no clear intent — "help", "catch me up", "what now") → see **"Step 5 — Ambiguity handling (strict shape)"** below. The bug shape this prevents: emitting 4 open-ended clarifying questions instead of ONE question with concrete options.
 
@@ -104,18 +105,25 @@ workspace-manager routes, the adopting skill writes.
 ### "tune output" — the cross-skill output profile (SPEC OUT2 §5)
 
 "Output" is not a skill, so the bare-`tune-X` router rule can't resolve it — this skill owns the
-verb. It edits the ONE cross-skill document profile every `.docx` composer reads through
-`make_brief` (contract: `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The output profile"). Storage:
+verb. It edits the ONE cross-skill document profile every composer reads through the render
+chokepoints (contract: `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The output profile"). Storage:
 `_hq/data/skill_config/output_profile.json`, written ONLY via
 `skill_config_writer.save_skill_config(workspace_root, "output_profile", {...})` after
 `output_profile.validate_output_profile` passes. The knobs (defaults = today's behavior):
 **density** (tight / narrative) · **visual bias** (tiles-first / prose-first) · **page cap** per
-document kind (warn-only) · **default format** (docx — the only option for now).
+document kind (warn-only) · **default format** (docx / premium html) · **per-kind format**
+(SPEC OUT5: `format_by_kind`, e.g. board pack as premium HTML while everything else stays docx).
 
-- **"tune output"** → show the four knobs with current values pre-filled (plain English: "how dense
-  the prose runs", "whether numbers lead as stat tiles or prose leads") → validate → save → one-line
-  ack. Freeform works too ("make my documents airier" → `density: narrative`; "lead with the
-  numbers" → `visual_bias: tiles_first`).
+- **"tune output"** → show the five knobs with current values pre-filled (plain English: "how dense
+  the prose runs", "whether numbers lead as stat tiles or prose leads", "whether documents render
+  as Word files or the premium dark HTML brief") → validate → save → one-line ack. Freeform works
+  too ("make my documents airier" → `density: narrative`; "lead with the numbers" →
+  `visual_bias: tiles_first`; "make my board packs the fancy HTML ones" →
+  `format_by_kind: {board_pack: "premium_html"}`). Format facts to state when asked: premium HTML
+  applies to the launched kinds only (board pack, one-pager, value receipt, research —
+  `output_profile.PREMIUM_LAUNCH_KINDS`); every other kind stays docx regardless of profile;
+  research is ALREADY premium HTML by default and `format_by_kind: {research: "docx"}` is how it
+  pins back to Word; a per-ask "as a doc" / "as HTML" always beats the profile for that render.
 - **"show output settings"** → render the current profile in plain English, read-only; unconfigured
   = "You're on the standard document style — say 'tune output' to adjust it."
 - **"reset output to defaults"** → `wipe_skill_config(workspace_root, "output_profile")` → one-line ack.
@@ -129,7 +137,7 @@ an insight-generator proposal the user confirms. Never confuse it with a per-ski
 
 - **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Elon' → Elan Torbati" or "phonetic match (sound-alike) to canonical 'Dynarii'"). Never re-implement the match ladder inline; this skill calls the helper.
 - Match names case-insensitive, word-boundary only (don't match "Bowie" inside "bobcat") — the helper handles this.
-- On collision within the same affiliation, prefer recency (latest `last_activity` or most recent event) — use `resolve_all` and take the top result.
+- On collision within the same affiliation, prefer recency — the resolver ranks by the most recent OBSERVED event on each thread (the thread_activity derivation; HYG1 retired the deprecated `last_activity` stamp from this tiebreak — the record field is a zero-event floor only). Use `resolve_all` and take the top result.
 - On collision across affiliations, disambiguate with one question: "Which Acme — the customer deal or the advisory gig?" Use `resolve_all` to enumerate candidates.
 - The most-recently-active primary-focus org (`is_primary_focus: true`) is the default conversational context. If the prior turn established a different org, that wins over primary-focus-by-recency.
 
@@ -156,7 +164,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes
 You are the **primary writer** for:
 
 - `_hq/data/entities.json` — project records (create / update / archive). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md.)
-- `_hq/data/events.jsonl` — append events of type `status_change`, `scope_change`, `commitment`, `commitment_resolved`, `meeting`, `decision` (when captured via end-session review), `briefing`, `note`, `org_proposed` (from Reactive Org Discovery — canonical top-level type per `shared/data-schemas/events.schema.json`, NOT wrapped inside a `note` event), `workspace_setting_changed` (timezone changes), plus `interaction` / `meeting` / `note` events emitted from passive-capture during Step 2a of "what's going on", Step 3a of "new project", and Step 1a of "end session".
+- `_hq/data/events.jsonl` — append events of type `status_change`, `scope_change`, `commitment`, `commitment_resolved`, `meeting`, `decision` (when captured via end-session review), `briefing`, `note`, `org_proposed` (from Reactive Org Discovery — canonical top-level type per `shared/data-schemas/events.schema.json`, NOT wrapped inside a `note` event), `workspace_setting_changed` (timezone changes), `connector_backend_changed` / `account_classified` / `account_role_changed` / `account_scope_masked` / `account_scope_restored` (connector-agnostic-v1 — the account-map lifecycle, written via the `connector_config.py` setter + `event_gate.append_event`), plus `interaction` / `meeting` / `note` events emitted from passive-capture during Step 2a of "what's going on", Step 3a of "new project", and Step 1a of "end session".
 
   **Commitment closures from the catch-all (Stage B 2026-07 — MANDATORY):** when a loose turn closes a commitment — "mark done", "that's handled", "I sent that", "X is done", or any end-session review confirming an item completed — the write goes through `shared/scripts/commitment_state.py::close_commitment(workspace_root, <id or the user's reference>, resolved_by=<user person_id>, evidence=<what the user said>, source_skill="workspace-manager", user_confirmed=True)`. NEVER hand-build a `commitment_resolved` (or `thread_resolved`-as-commitment-closer) append here: the hand-rolled catch-all writes were the source of the 52 `source_event_seq`-keyed dead-letter closures in the 2026-07-01 audit. close_commitment normalizes legacy id spellings (bare seq, `seq_86`, `event_086`, `commitment_seq_86`), raises `CommitmentIdError` when nothing matches (ask the user which item they meant instead of writing an orphan tombstone — offer `show my list`), and is idempotent over the full resolved-id set. Resolve WHICH commitment the user means via `load_open_commitments` + title match first; pass that commitment's `data.id` (or its seq) to close_commitment — never guess an id.
 - `_hq/data/entities.json` — provisional `person_*` records from project-creation scans (`pending_review: true`, handed off to people-crm), provisional `org_*` records from Reactive Org Discovery (`pending_review: true`, cleared on CEO confirm).
@@ -583,17 +591,18 @@ print('PROSPECT_CREATED org=' + org['id'] + ' engagement=' + eng['id'] + ' from=
 "
 ```
    The `PROSPECT_CREATED` line is the proof both records landed (an `org_created` AND an `engagement_created` event, with a real `engagements[]` edge from your primary-focus org → the new prospect org). If `org_writer` raises `DuplicateOrgError`, the prospect already exists — the step-1 pre-check should have caught it; surface that instead of re-creating. If `engagement_writer` raises a duplicate, the edge already exists; surface it plainly.
-4. Offer: *"When this closes, say `[Name] is now a client` and I'll convert the prospect to a real project."* (That conversion is implemented below — it is NOT a dead-end.)
+4. Offer: *"When this closes, say `[Name] is now a client` and I'll convert the prospect to a real project."* (That conversion is implemented below — it is NOT a dead-end.) Then ONE optional line (SPEC PIPE1 — offer, never auto-open a deal thread): *"Want to track the deal itself — stage, value, next step? Say `new deal [deal name] with <prospect name>`."* — substitute `<prospect name>` with the org created in step 3: the **counterparty**, NEVER your own / the user's primary-focus org (the `focus` variable in the block above). EW2+T F-10: a live fire rendered the user's own umbrella org here; typed back verbatim, the deal would hang off the wrong org. The rendered suggestion must be safe to type back exactly as shown.
 
 ### "[Name] is now a client" — prospect → client conversion (v3.18.6+, Bug #91)
 
 The closing move of the prospect lifecycle, and the target of the `new prospect` offer above. This section is the handler (before v3.18.6 it was a dead promise — see references/HISTORY.md).
 
-Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to client`, `convert [Name] to client`, `[Name] signed`, `[Name] closed` — when `[Name]` resolves to an existing org that is NOT already a client.
+Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to client`, `convert [Name] to client` — when `[Name]` resolves to an existing org that is NOT already a client. (`[Name] signed` / `[Name] closed` moved to pipeline-tracker with SPEC PIPE1 — those are deal-outcome verbs; pipeline-tracker owns ALL of them and its `deal_state.close_deal(convert_prospect=True)` runs THIS SAME conversion atomically, so "Acme signed" closes the deal AND converts in one turn. This section keeps only the administrative verbs above.)
 
 1. **Resolve the existing org** via `entity_resolve.resolve(workspace_root, "[Name]")`.
    - Not found → *"I don't have [Name] tracked yet. Want `new client [Name]` to set them up from scratch?"* Stop.
    - Found, already `relationship_type: client` → *"[Name] is already a client — nothing to convert. Want to `go [Name]`?"* Stop.
+   - **Open-deal check (SPEC PIPE1, D6 — single closure owner).** If the org has an OPEN deal thread (`deal_state.list_open_deals(ws)` filtered to this org_id), the conversion routes through pipeline-tracker's closure path INSTEAD of step 2: run `deal_state.close_deal(ws, thread_id, 'won', convert_prospect=True, source_skill='workspace-manager')` — it closes the deal AND runs the exact conversion below atomically (no orphaned open deal left behind a converted client). Two or more open deals → ask which one won (never first-pick); "all of them" is a valid answer (close each). Skip steps 2 when this path ran; continue at step 3.
 2. **Convert through the typed writers — HARD gate (v3.18.6+, same class as Bug #83).** Do NOT hand-edit `entities.json`, do NOT write a `stage` field. `new client [Name]` is the WRONG tool here — it creates from scratch and would duplicate the org; conversion must mutate the EXISTING `org_id`. Run the EXACT block:
 
 ```bash
@@ -901,6 +910,50 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
 
 ---
 
+### Connector & account management (connector-agnostic-v1 — C1 runtime mutation verbs)
+
+Workspace-manager OWNS the `workspace.connectors` / `workspace.accounts` blocks (WORKSPACE_API ownership map). These verbs are the runtime, no-hand-edited-JSON way to set the declared backend per category and to classify accounts — mirroring "set my timezone." All writes go through the workspace-manager-owned setter `shared/scripts/connector_config.py` (never a raw entities.json edit); onboarding + update-bridge call the SAME setter as declared delegates. Full model: `shared/ACCOUNT_SCOPE.md`.
+
+**Trigger phrases:**
+- `set my email backend to [connector]` / `set my calendar backend to [connector]` / `use [connector] for email`
+- `[address] is my personal account` / `[address] is my business account` / `[address] is a second business email`
+- `mark [address] out of scope` / `stop filing [address]` / `[address] is mixed`
+- `add account [address]` / `what accounts do I have` (read-only: list `workspace.accounts` with role + dials)
+
+**Behavior (declare a backend):**
+1. Resolve the connector's MCP **server-id** from the fire-time tool registry (the declared backend is keyed by server-id, not name — the substring approach fails for Superhuman/UUID servers). If the connector is the Zapier send leg, pin it via the setter's `is_zapier=True` path (into `_zapier_server_ids`), not as a category backend (R12).
+2. Call `connector_config.set_declared_backend(workspace_root, category, server_id, provider=…, label=…)`.
+3. Append a `connector_backend_changed` event via `event_gate.append_event` (`data: {category, server_id, provider, triggered_by:"user_explicit"}`).
+4. Confirm plainly: *"Done. [Category] now runs through [label]. Skills will resolve [category] tools on that connector from here on."*
+
+**Behavior (classify an account):**
+1. Parse `[address]` + the intended ROLE. Map the phrase to a role per `ACCOUNT_SCOPE.md` §1: `personal` → role `personal` (**both dials OFF by default** — walled AND out of the brief; the user opts specific senders into `surface` later); `business` → `business-primary` (both on); `second business email` → `business-secondary` (both on); `mixed` → role `mixed` (surface on, write off — files by association only). **Do NOT pass explicit `surface=`/`write_to_business=` for a role's default posture** — the setter applies the role defaults (`_ROLE_DEFAULT_DIALS`); pass a dial explicitly ONLY when the user asks for a non-default (e.g. "personal, but show me mail from my kids' school" → `surface=True`; `mark [address] out of scope` / `stop filing [address]` → `write_to_business=False` with the role unchanged).
+2. Read the account's PRIOR role/dials (for the event + tombstone decision). Call `connector_config.set_account_classification(workspace_root, address, role=…)` (plus only the explicitly-requested dial overrides per step 1).
+3. Append the lifecycle event via `event_gate.append_event`:
+   - New classification → `account_classified` (`data: {address, role, surface, write_to_business}`).
+   - Reclassification → `account_role_changed` (`data: {address, old_role, new_role, old_dials, new_dials}`).
+   - **A business→personal flip ALSO appends `account_scope_masked`** (`data: {address, masked_account_id, reason}`) — the IN-PLACE scope mask over that account's historical rows (R5; never a physical row move). Readers honor it LIVE (`account_scope_gate.filter_masked_events`, wired into the commitment projector, people-view, dormancy; relationship-moves inherits) — masked history disappears from surfaces immediately. Honest limit (say it plainly if the user asks): only rows that CARRY account identity (account-stamped provenance or an account address) can be retroactively hidden; very old rows written before account stamping have no attribution and stay visible. A personal→business restore appends `account_scope_restored` (un-hides the history) and OFFERS a rescan (never silent).
+4. On classifying an account **business**, OFFER a scoped backfill of the silent window (E-9): *"Want me to backfill the last N days from [address]?"* — user confirms; never backfill silently.
+5. Confirm plainly, stating the two dials in English: *"Done. [address] is [role] — I'll [show it in your brief / keep it out of your brief] and [file it into your records / never file it]."*
+
+**Drift detect (R13) — the declared backend's server-id is gone or a new one appeared:**
+
+Server UUIDs rotate on reconnect (CONTRACT Rule 22), so this WILL happen on live workspaces. When any skill's seam resolution reports the declared backend NOT PRESENT (the `discover_for_category` drift reason), or a session's tool registry shows a server-id / account address never seen before:
+
+1. Run `tool_discovery.detect_backend_drift(tools, declared)` — it fingerprints the visible servers and returns the candidate replacement (same provider, new UUID) or none.
+2. **Interactive session** → ASK, never silently re-pin: *"Your [label] connection looks reconnected under a new id — same [provider] account. Keep using it for [category]?"* On yes: `connector_config.set_declared_backend(root, category, <new server_id>, provider=…, label=…)` + a `connector_backend_changed` event + a `connector_detected` event for the new server-id. On no / no candidate: leave the declared row; the category degrades per its skill's rules until the user re-declares.
+3. **Silent / scheduled session** → NEVER prompt, NEVER ingest through an unconfirmed binding: skip that connector's leg for this fire (the fire's output says which leg was skipped in plain English), append ONE `connector_detected` event (`data: {server_id, provider?, fingerprint_matched: true|false}`, deduped against an existing open flag) so the NEXT interactive session surfaces the confirm question. Fail-closed must not mean a dead scheduled brief with no explanation — the skip is stated, the rest of the fire proceeds.
+4. A brand-new ACCOUNT ADDRESS (not just a rotated server) follows fail-closed-on-new (C3): it stays `unclassified` — silent on both dials, excluded from scans — until the user classifies it (this section's verbs).
+
+**Forbidden behaviors:**
+- Do NOT write `workspace.connectors` / `workspace.accounts` with a raw entities.json edit — always the `connector_config.py` setter (single-writer discipline; onboarding/update-bridge use the same setter).
+- Do NOT physically move or delete historical `events.jsonl` rows on a business→personal flip — the scope mask is an appended event honored by readers (R5).
+- Do NOT classify or scan a newly-detected account before the user assigns a role (fail-closed-on-new, C3).
+
+**Why this exists:** multi-account is a product requirement (M, 2026-07-11); the account map is the primary privacy mechanism. The setter + these verbs are the runtime path; `command-room-onboarding` seeds the map at first run, `command-room-update-bridge` migrates live workspaces additively — all through the same setter.
+
+---
+
 ### "name my AI [name]" / "set my AI name to [name]" / "name my AI skip" (v3.13.8.2 — Bug #72)
 
 Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onboarding (2026-05-23+) captures this via Phase 0 widget Q4. Upgrade customers (v3.11.x → v3.13.8.x) need this command (Bug #72 — see references/HISTORY.md).
@@ -1074,3 +1127,11 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
 
 > Also owns the cross-skill output profile (SPEC OUT2 §5 — output is not a skill name, so the bare-tune router rule can't resolve it) — use when the CEO says 'tune output', 'tune my output', 'show output settings', 'reset output to defaults'. DOES NOT fire on 'tune [skill-name]' when the name resolves to an actual skill (that skill's own FRP1 family owns it).
+
+> Deal fences (SPEC PIPE1 — one per line):
+> DOES NOT fire on 'new deal' (pipeline-tracker — a deal thread on an existing org; the new-project MUST-gate carves it out).
+> DOES NOT fire on 'show my pipeline' / 'pipeline review' / 'show my deals' / 'what deals are closing' (pipeline-tracker).
+> DOES NOT fire on 'closed the deal with' / 'we won the' / 'we lost the' / '[Name] signed' (pipeline-tracker — deal-outcome verbs; the single closure owner. Its win path runs THIS skill's prospect→client conversion atomically).
+> This skill KEEPS the administrative conversion verbs — 'is now a client', 'promote to client', 'convert to client' — and that handler routes through pipeline-tracker's closure path when the org has an open deal.
+
+> Also owns the connector & account management verbs (connector-agnostic-v1 C1 — workspace-manager owns the `workspace.connectors` / `workspace.accounts` blocks): 'set my email backend to [connector]', 'set my calendar backend to [connector]', 'use [connector] for email', '[address] is my personal account', '[address] is my business account', '[address] is a second business email', '[address] is mixed', 'mark [address] out of scope', 'stop filing [address]', 'add account [address]', 'what accounts do I have'. Machine-matchable stems for the mechanical matcher: 'set my email backend', 'set my calendar backend', 'is my personal account', 'is my business account', 'is a second business email', 'out of scope', 'stop filing', 'add account'. Behavior in the body's "Connector & account management" section.
