@@ -38,6 +38,7 @@ Available, not added yet:
   Pulse               — say `add pulse`
   Relationship Moves  — say `add relationship moves`
   Staff Meeting       — say `add staff meeting`
+  Pipeline Digest     — say `add pipeline digest`
 
 Say `change my schedule` to adjust any of these.
 ```
@@ -139,7 +140,9 @@ Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both 
 - `morning brief` / `morning briefing` / `brief` / `the brief` / `daily brief` → `morning-brief`
 - `upcoming` / `upcoming meetings` / `meetings prep` / `meeting prep` → `upcoming-meetings`
 - `inbox` / `Inbox` / `the inbox` / `inbox triage` → `inbox`
-- `commitments` / `commits` / `commitment chase` → `commitments`
+- `waiting on` / `waiting-on` / `commitment chase` / `chase chat` → `waiting-on` (CTS1 Surface 1 — the re-scoped daily)
+- `my plate` / `my-plate` / `plate` → `my-plate` (CTS1 Surface 2)
+- `commitments` / `commits` → the CTS1 pair: ask which of the two split surfaces they mean (`waiting-on` = things people owe them, `my-plate` = their own list) unless the request obviously covers both (e.g. "pause commitments" pauses both). The retired `commitments` taskId itself is disabled — never re-enable or re-anchor it.
 - `pulse` / `dont forget` / `don't forget` → `pulse`
 - `past meetings` / `past` / `meetings processed` → `past-meetings`
 - `friday wrap` / `friday` / `weekly wrap` / `weekly recap` → `friday-wrap`
@@ -153,11 +156,13 @@ Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both 
 - `commitment triage` / `triage my commitments schedule` / `friday triage` → `commitment-triage`
 - `staff meeting` / `staff` / `weekly staff meeting` / `monday staff meeting` → `staff-meeting`
 - `deal signals` / `deal detector` / `deal scan schedule` → the `deal-signals` JOB inside `maintenance` (job-level pause/resume only)
+- `monthly scorecard` / `kpi scorecard schedule` / `scorecard` → the `monthly-scorecard` JOB inside `maintenance` (SPEC OUT7 — **OPT-IN, off by default**; turning it on writes `maintenance_jobs.monthly-scorecard = {"enabled": true}`, the propose-and-confirm registration)
 
 **MAINT1 — the maintenance task and its jobs:**
 
 - **Moving `maintenance`'s cron moves ALL its slots.** The six background jobs (sent-mail reconcile, session sweep, weekly cleanup, weekly insights, deal signals, monthly report) all run inside this one task; there is no per-job time to move. Say so in the Step 5 diff when the customer moves it — and warn once if the new time drops the pre-7 AM slot: the sent-mail reconcile runs before the morning brief on purpose, so a maintenance time after the brief means the brief reads yesterday's closures.
 - **Pausing an individual job is a JOB-LEVEL override, not a task change.** `pause cleanup` / `pause reconcile sent` etc. writes `workspace.schedule_config.maintenance_jobs.<job_id> = {"enabled": false}` via the same Step 6 atomic write (resume deletes the key or sets `enabled: true`) — the dispatcher (`maintenance_dispatcher.due_jobs`) skips a disabled job and records it in the run's `skipped_disabled`. NEVER pause the `maintenance` task itself to stop one job — that silently stops all five.
+- **The `monthly-scorecard` job is OPT-IN, the inverse default (SPEC OUT7).** The six core jobs run unless disabled; `monthly-scorecard` (in `maintenance_dispatcher.OPTIONAL_JOBS`, not `MAINTENANCE_JOBS`) is inert until the customer turns it on. "turn on the monthly scorecard" / "add the monthly scorecard" / "run a KPI scorecard every month" writes `maintenance_jobs.monthly-scorecard = {"enabled": true}` (same Step 6 atomic write) — this IS the propose-and-confirm registration; confirm the change in one line. "pause / turn off the monthly scorecard" sets `{"enabled": false}` (or deletes the key). It never auto-registers — absent that explicit enable, the dispatcher never surfaces it as due. It fires monthly on/after the 1st for the prior month.
 - **Renders:** show `maintenance` as one background task with its slots; when asked about a specific job, say which task carries it in plain English ("Your weekly cleanup runs inside the background Maintenance task, Sundays at 5:45 PM").
 
 (Workspaces upgraded from pre-v2.14.27 may still have a task registered under a legacy `cr-*` id; `enable-command-room-schedules` migrates those to the bare id on its next run. Resolve to the bare id regardless — that is what the live registration uses.)
@@ -277,7 +282,7 @@ Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 
 **User asks for an invalid cron value (e.g., `set inbox to 25am`).** Surface the parse error in plain English. Don't write. Ask again.
 
-**User wants to add a task that exists in DEFAULT_SCHEDULES but isn't registered.** That's the `add <task>` flow (Step 3) — route through the registration skill's Phase 6 add path. **User wants a task that doesn't exist in DEFAULT_SCHEDULES at all** — reject: this skill customizes any task in `DEFAULT_SCHEDULES` (currently 10) plus the job-level pause/resume inside `maintenance`; brand-new taskIds ship via plugin updates, not user customization.
+**User wants to add a task that exists in DEFAULT_SCHEDULES but isn't registered.** That's the `add <task>` flow (Step 3) — route through the registration skill's Phase 6 add path. **User wants a task that doesn't exist in DEFAULT_SCHEDULES at all** — reject: this skill customizes any task in `DEFAULT_SCHEDULES` (currently 13, `balance` included) plus the job-level pause/resume inside `maintenance`; brand-new taskIds ship via plugin updates, not user customization.
 
 **User says `everything daily` while one task is paused.** Apply the cron change but leave the paused task paused. They'd say `resume everything` separately to reactivate.
 
@@ -296,4 +301,4 @@ Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Customize when each Command Room scheduled chat fires. Reads current schedule from entities.json merged with defaults AND the registered-task set (so only tasks that actually exist in Cowork's scheduler render as scheduled — Phase 3/R1), shows it in plain English, accepts changes (move time, switch days, pause/resume, disable/enable), atomic-writes the config, and pushes the new cadence to the live tasks itself via update_scheduled_task (Phase 3/P0.1 — cron re-anchoring is THIS skill's job). Triggers: 'change my schedule', 'change schedule', 'update my schedule', 'configure schedules', 'configure my schedules', 'customize my schedules', 'set [task] to [time]', 'move [task] to [time]', 'pause [task]', 'resume [task]', 'disable [task]', 'enable [task]', 'add staff meeting', 'add relationship moves', 'add commitments', 'add pulse', 'add commitment triage' (the later-add turn-on phrases — each routes to the registration skill's Phase 6 add, this skill never builds a second registration mechanism), 'list my schedules', 'show my scheduled chats', 'when do my chats fire', 'when do my chats run'. Use when the user wants daily/weekly/cadence customization per task. DOES NOT fire on 'set up command room schedules' (that's the registration skill — change-schedule modifies the config that registration reads), 'what's my schedule' / 'show my schedule' / 'what's on my calendar' (a calendar read — morning-briefing covers today; the calendar itself covers the rest; this skill only manages Command Room's scheduled chats).
+> Customize when each Command Room scheduled chat fires. Reads current schedule from entities.json merged with defaults AND the registered-task set (so only tasks that actually exist in Cowork's scheduler render as scheduled — Phase 3/R1), shows it in plain English, accepts changes (move time, switch days, pause/resume, disable/enable), atomic-writes the config, and pushes the new cadence to the live tasks itself via update_scheduled_task (Phase 3/P0.1 — cron re-anchoring is THIS skill's job). Triggers: 'change my schedule', 'change schedule', 'update my schedule', 'configure schedules', 'configure my schedules', 'customize my schedules', 'set [task] to [time]', 'move [task] to [time]', 'pause [task]', 'resume [task]', 'disable [task]', 'enable [task]', 'add staff meeting', 'add relationship moves', 'add commitments', 'add pulse', 'add commitment triage', 'add balance', 'add pipeline digest' (the later-add turn-on phrases — each routes to the registration skill's Phase 6 add, this skill never builds a second registration mechanism), 'list my schedules', 'show my scheduled chats', 'when do my chats fire', 'when do my chats run'. Use when the user wants daily/weekly/cadence customization per task. DOES NOT fire on 'set up command room schedules' (that's the registration skill — change-schedule modifies the config that registration reads), 'what's my schedule' / 'show my schedule' / 'what's on my calendar' (a calendar read — morning-briefing covers today; the calendar itself covers the rest; this skill only manages Command Room's scheduled chats).

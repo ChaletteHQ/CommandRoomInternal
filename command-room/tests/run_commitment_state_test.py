@@ -247,6 +247,48 @@ def main():
               has_mc2_keys, wc["headline"])
 
     # ------------------------------------------------------------------
+    print("\n[5b] SUB1 D2 — top-level partition + additive keys")
+    # ------------------------------------------------------------------
+    events = [
+        {"seq": 1, "ts": "2026-06-20T10:00:00Z", "type": "commitment",
+         "source_skill": "meeting-notes", "primary_thread_id": "tP",
+         "data": {"id": "cmt_PAR", "title": "Prepare the board pack",
+                  "kind": "promise", "owner_id": USER, "status": "open"}},
+    ] + [
+        {"seq": 1 + i, "ts": "2026-06-20T10:05:00Z", "type": "commitment",
+         "source_skill": "commitment-triage", "primary_thread_id": "tP",
+         "data": {"id": f"cmt_KID{i}", "title": f"Step {i}",
+                  "kind": "promise", "owner_id": USER, "status": "open",
+                  "parent_id": "cmt_PAR", "parent_seq": 1}}
+        for i in (1, 2, 3)
+    ]
+    path = write_events(events)
+    opens = load_open_commitments(path)
+    os.unlink(path)
+    counts = count_commitments(opens, user_person_id=USER, now_iso=NOW)
+    h = counts["headline"]
+    check("a parent with 3 open sub-items counts as 1, not 4",
+          counts["total"] == 1 and h["total"] == 1, counts["total"])
+    check("invariant holds over the top-level partition",
+          h["you_owe"] + h["owed_to_you"] + h["unowned"] + h["unconfirmed"]
+          == h["total"])
+    check("additive keys present when sub-items exist",
+          h.get("subitems_open") == 3
+          and h.get("subitems_done_of_open_parents") == 0)
+    check("brief needs_attention never surfaces a child",
+          {r["commitment_id"] for r in compute_brief_state(
+              open_commitments=opens, user_person_id=USER,
+              now_iso=NOW)["needs_attention"]} == {"cmt_PAR"})
+    # zero-subitems workspace: output byte-identical to pre-SUB1 (absent keys)
+    path = write_events(events[:1])
+    opens = load_open_commitments(path)
+    os.unlink(path)
+    h0 = count_commitments(opens, user_person_id=USER, now_iso=NOW)["headline"]
+    check("no sub-items → additive keys ABSENT (vacuous safety)",
+          "subitems_open" not in h0
+          and "subitems_done_of_open_parents" not in h0)
+
+    # ------------------------------------------------------------------
     print("\n[6] brief_state.py stays a working compat shim")
     # ------------------------------------------------------------------
     check("brief_state.compute_brief_state IS commitment_state's",

@@ -735,6 +735,38 @@ def _add_exec_header(doc, exec_header: Dict[str, str], brief_kind: str = "") -> 
     _add_header_rule(doc)
 
 
+def _add_charts(doc, charts_spec: List[dict], resolved_brand: dict) -> None:
+    """SPEC OUT3 — best-effort chart images under the tile band.
+
+    Each entry is a {kind, data, title?} spec for `charts.try_chart_png` (the
+    render chokepoint: build_chart -> rasterize ladder). A shape refusal, a
+    leak finding, or a missing rasterizer on this machine returns None and the
+    chart is simply skipped — the section's table/tile representation of the
+    same numbers stands, byte-identical to pre-OUT3 (the visual_gate posture:
+    upgrade machines that can render, never degrade ones that can't). A
+    python-docx image error is swallowed like _add_logo_header's (R26). The
+    charts module is imported lazily so a partial install can never take the
+    brief writer down (the FS-15 lesson; same posture as the leak scanner)."""
+    try:
+        from charts import try_chart_png
+    except ImportError:
+        return
+    for spec in charts_spec:
+        png = try_chart_png(spec, brand=resolved_brand)
+        if not png:
+            continue
+        try:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run()
+            run.add_picture(png, width=Inches(6.0))
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(6)
+        except Exception:
+            # Never let a malformed image block the save (R26).
+            pass
+
+
 def _add_asks_block(doc, asks: List[Dict[str, str]]) -> None:
     """SPEC EXEC1 element 4 — the ASK block. Rendered as the LAST content block
     (after sections, before the footer), under the canonical heading. Zero asks
@@ -798,10 +830,11 @@ def make_brief(
           "one_pager"          → eyebrow "ONE-PAGER"
           "insights"           → eyebrow "INSIGHTS"
           "stress_test"        → eyebrow "STRESS TEST"
+          "kpi_scorecard"      → eyebrow "KPI SCORECARD"  (SPEC OUT7)
       title: top-of-page title. Should resolve all entity IDs to names
         (e.g. "Sam Sample — Q2 deck review", not "person_037 — ...").
       subtitle: one-line meta below title (e.g. "Fri, May 9 · 9:00 AM PT
-        · Category Company"). Plain text, no formatting.
+        · Summit Company"). Plain text, no formatting.
       sections: ordered list of section dicts. Each dict has:
           - "heading": str — section title
           - "body": str (optional) — paragraph-style content; blank lines
@@ -818,8 +851,18 @@ def make_brief(
           - "timeline": list[{date, label, current?}] (optional, v4.5.2 S1) —
             relationship timeline strip; >= 2 points required (the caller
             drops the section below that).
+          - "charts": list[{kind, data, title?}] (optional, SPEC OUT3) —
+            substrate-derived charts via shared/scripts/charts.py. Rendered
+            best-effort at the chokepoint (`charts.try_chart_png`): a shape
+            refusal, leak finding, or missing rasterizer on this machine
+            drops the chart silently and the section renders byte-identical
+            to pre-OUT3 — which is why `charts` NEVER satisfies the
+            section-content requirement below: every charted section must
+            also carry its table/tile/body representation of the same
+            numbers (the fallback is structural).
         A section may mix body / bullets / table / matrix / tiles / timeline.
-        Render order is: tiles → body → bullets → table → matrix → timeline.
+        Render order is: tiles → charts → body → bullets → table → matrix →
+        timeline.
       footer_text: centered footer text on every page. None (the default) uses
         the brand's `footer_line` ("Command Room" on the default brand). Pass a
         string to override. NEVER include provenance metadata
@@ -967,22 +1010,30 @@ def make_brief(
             matrix = sec.get("matrix")
             tiles = sec.get("tiles")
             timeline = sec.get("timeline")
+            charts_spec = sec.get("charts")
             if tiles and not isinstance(tiles, list):
                 raise ValueError(f"section 'tiles' must be a list: {sec!r}")
             if body and not isinstance(body, str):
                 raise ValueError(f"section 'body' must be a string: {sec!r}")
+            if charts_spec and not isinstance(charts_spec, list):
+                raise ValueError(f"section 'charts' must be a list: {sec!r}")
             # SPEC OUT2 §5 — visual_bias sets the tiles/body order within a
             # section. Default "tiles_first" is the pre-profile order
             # (tiles -> body), byte-stably; "prose_first" flips just these two
-            # (bullets/table/matrix/timeline order is unchanged).
+            # (bullets/table/matrix/timeline order is unchanged). SPEC OUT3:
+            # charts ride directly under the tile band in both orders.
             if _VISUAL_BIAS == "prose_first":
                 if body:
                     _add_body_paragraphs(doc, body)
                 if tiles:
                     _add_stat_tiles(doc, tiles)
+                if charts_spec:
+                    _add_charts(doc, charts_spec, resolved_brand)
             else:
                 if tiles:
                     _add_stat_tiles(doc, tiles)
+                if charts_spec:
+                    _add_charts(doc, charts_spec, resolved_brand)
                 if body:
                     _add_body_paragraphs(doc, body)
             if bullets:
@@ -1016,9 +1067,14 @@ def make_brief(
                 _add_timeline(doc, timeline)
             if not body and not bullets and not table and not matrix \
                     and not tiles and not timeline:
+                # SPEC OUT3: 'charts' deliberately does NOT satisfy this —
+                # charts render best-effort, so a chart-only section would be
+                # an empty frame on any machine without a rasterizer. Every
+                # charted section carries its fallback representation.
                 raise ValueError(
                     f"section needs 'body', 'bullets', 'table', 'matrix', "
-                    f"'tiles', or 'timeline': {sec!r}"
+                    f"'tiles', or 'timeline' ('charts' is best-effort and "
+                    f"never stands alone): {sec!r}"
                 )
 
         # SPEC EXEC1 element 4 — the ASK block renders last, after all sections.

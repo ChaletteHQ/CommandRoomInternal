@@ -112,6 +112,15 @@ def receipt_event(job_id: str, local_dt: dt.datetime) -> dict:
                 "source_skill": "deal-signals",
                 "data": {"task_id": "deal-signals", "kind": "deal-signals",
                          "status": "complete", "fired_via": "scheduled"}}
+    if job_id == "identity-reconcile":
+        # PID1 D7 — the reconciler's own receipt type (also the D6
+        # narration source; the due rule reads it like any job receipt).
+        return {"seq": 1, "ts": iso_at(local_dt),
+                "type": "identity_reconcile_run",
+                "source_skill": "identity-reconcile",
+                "data": {"task_id": "identity-reconcile",
+                         "kind": "identity-reconcile", "batch_id": "idr_x",
+                         "status": "complete", "fired_via": "scheduled"}}
     raise AssertionError(job_id)
 
 
@@ -138,10 +147,11 @@ def due_ids(ws, now):
 
 def main():
     print("== registry shape (D2)")
-    check("job order is the contract: reconcile -> sweep -> cleanup -> insights -> deal-signals -> monthly",
+    check("job order is the contract: reconcile -> sweep -> cleanup -> insights -> deal-signals -> identity-reconcile -> monthly",
           list(md.MAINTENANCE_JOBS) == [
               "reconcile-sent", "session-sweep", "cleanup",
-              "weekly-insights", "deal-signals", "monthly-report"],
+              "weekly-insights", "deal-signals", "identity-reconcile",
+              "monthly-report"],
           repr(list(md.MAINTENANCE_JOBS)))
     for jid, spec in md.MAINTENANCE_JOBS.items():
         check(f"{jid}: has skill/nominal_cron/description",
@@ -159,10 +169,11 @@ def main():
         print("== fresh workspace: everything due at the Monday 6:45 fire, ordering exact")
         ws = make_workspace(tmp / "fresh")
         plan = md.dispatch_plan(ws, now=at(MON, 6, 46))
-        check("all six jobs due, exact registry order",
+        check("all seven jobs due, exact registry order",
               [j["job_id"] for j in plan["due"]] == [
                   "reconcile-sent", "session-sweep", "cleanup",
-                  "weekly-insights", "deal-signals", "monthly-report"],
+                  "weekly-insights", "deal-signals", "identity-reconcile",
+                  "monthly-report"],
               repr([j["job_id"] for j in plan["due"]]))
         check("no-receipt jobs carry the never-ran reason",
               all(j["reason"] == "no run recorded yet" for j in plan["due"]))
@@ -175,6 +186,7 @@ def main():
             receipt_event("cleanup", at(SUN, 17, 50)),         # served Sunday 17:00 slot
             receipt_event("weekly-insights", at(SUN, 17, 58)), # served Sunday
             receipt_event("deal-signals", at(SUN, 17, 59)),    # served Sunday (LB1)
+            receipt_event("identity-reconcile", at(SUN, 18, 1)),  # served Sunday (PID1)
             receipt_event("monthly-report", at(dt.datetime(2026, 7, 1), 6, 50)),
         ])
         check("noon fire after a served morning: nothing due",
@@ -190,10 +202,11 @@ def main():
             receipt_event("cleanup", at(PREV_SUN, 17, 50)),
             receipt_event("weekly-insights", at(PREV_SUN, 18, 0)),
             receipt_event("deal-signals", at(PREV_SUN, 18, 5)),
+            receipt_event("identity-reconcile", at(PREV_SUN, 18, 6)),
             receipt_event("monthly-report", at(dt.datetime(2026, 7, 1), 6, 50)),
         ])
-        check("Sunday evening: exactly cleanup, insights, deal-signals — in order",
-              due_ids(ws, at(SUN, 17, 46)) == ["cleanup", "weekly-insights", "deal-signals"],
+        check("Sunday evening: exactly cleanup, insights, deal-signals, identity-reconcile — in order",
+              due_ids(ws, at(SUN, 17, 46)) == ["cleanup", "weekly-insights", "deal-signals", "identity-reconcile"],
               repr(due_ids(ws, at(SUN, 17, 46))))
 
         print("== Monday 6:45 after a missed Sunday: both still due (catch-up self-heal)")
@@ -224,6 +237,7 @@ def main():
             receipt_event("cleanup", at(PREV_SUN, 17, 50)),
             receipt_event("weekly-insights", at(PREV_SUN, 18, 0)),
             receipt_event("deal-signals", at(PREV_SUN, 18, 5)),
+            receipt_event("identity-reconcile", at(PREV_SUN, 18, 6)),
             receipt_event("monthly-report", at(dt.datetime(2026, 7, 1), 6, 50)),
         ])
         check("Saturday 6:45: only the daily sweep is due (reconcile's cron is weekday-only)",
@@ -235,6 +249,7 @@ def main():
             receipt_event("cleanup", at(PREV_SUN, 17, 50)),
             receipt_event("weekly-insights", at(PREV_SUN, 18, 0)),
             receipt_event("deal-signals", at(PREV_SUN, 18, 5)),
+            receipt_event("identity-reconcile", at(PREV_SUN, 18, 6)),
             receipt_event("monthly-report", at(dt.datetime(2026, 7, 1), 6, 50)),
         ])
         check("Saturday 12:45 after the morning sweep: nothing due (sweep once/day)",
@@ -358,10 +373,11 @@ def main():
               plan2 == {"create": [], "disable": []}, repr(plan2))
 
         print("== regressions riding this change")
-        check("later_add_task_ids: exactly the 5 chat ids (staff-meeting joined in LB1)",
+        check("later_add_task_ids: exactly the 8 chat ids (CTS1 split commitments into waiting-on + my-plate; BAL1 added balance; PIPE1 Part 2 added pipeline-digest)",
               sc.later_add_task_ids() == frozenset({
-                  "commitments", "pulse", "relationship-moves",
-                  "commitment-triage", "staff-meeting"}),
+                  "waiting-on", "my-plate", "pulse", "relationship-moves",
+                  "commitment-triage", "staff-meeting", "balance",
+                  "pipeline-digest"}),
               repr(sorted(sc.later_add_task_ids())))
         check("FIRST_INSTALL swaps the five for maintenance",
               "maintenance" in sc.FIRST_INSTALL_TASK_IDS

@@ -27,7 +27,7 @@ _MINIMAL_VALID_VIEW = {
                     "subject": "Test thread",
                     "metadata": [("Subject", "Test thread"), ("To", "sam@example.com")],
                     "body_lines": ["Test body line."],
-                    "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                    "actions": ["1 send", "1 draft", "1 snooze 3d"],
                 },
             ],
         }
@@ -131,7 +131,10 @@ def test_transport_runs_wrapper_validation() -> None:
     import chat_output_renderer as cor
     calls = []
     original = cor.validate_rendered_widget
-    cor.validate_rendered_widget = lambda html: calls.append(len(html or ""))
+    # PGUARD1: the transport now plumbs surface= through — stub accepts it.
+    cor.validate_rendered_widget = (
+        lambda html, surface=None: calls.append(len(html or ""))
+    )
     try:
         render_and_persist(data_view=view, wrapper="fragment",
                            persist_dir=tmp / "widgets2")

@@ -81,6 +81,21 @@ def test_dedupe_and_emit():
     check("active snooze excludes", "p5" not in [c["person_id"] for c in rm.compute_relationship_moves(ws4, emit=False)])
 
 
+def test_snooze_bounded():
+    # Regression (BAL1 second-eyes follow-up, 2026-07-19): dont_forget_snooze
+    # exclusion was unbounded — one Pulse snooze muted a person forever.
+    ws = _ws([_sig("p6", 4.0), {"seq": 2, "ts": _iso(30), "type": "dont_forget_snooze", "data": {"person_id": "p6"}}])
+    check("stale snooze (30d, no snooze_until) no longer excludes", "p6" in [c["person_id"] for c in rm.compute_relationship_moves(ws, emit=False)])
+
+    ws2 = _ws([_sig("p7", 4.0), {"seq": 2, "ts": _iso(30), "type": "dont_forget_snooze",
+               "data": {"person_id": "p7", "snooze_until": _iso(-30)}}])
+    check("future snooze_until still excludes", "p7" not in [c["person_id"] for c in rm.compute_relationship_moves(ws2, emit=False)])
+
+    ws3 = _ws([_sig("p8", 4.0), {"seq": 2, "ts": _iso(2), "type": "dont_forget_snooze",
+               "data": {"person_id": "p8", "snooze_until": _iso(1)}}])
+    check("expired snooze_until does not exclude (even inside window)", "p8" in [c["person_id"] for c in rm.compute_relationship_moves(ws3, emit=False)])
+
+
 def test_no_pad():
     ws = _ws([_sig("p1", 4.0), _sig("p2", 2.0)])
     top = rm.compute_relationship_moves(ws, top_n=3, emit=False)
@@ -100,6 +115,7 @@ def main():
     test_scoring_exact()
     test_thread_person_collapse()
     test_dedupe_and_emit()
+    test_snooze_bounded()
     test_no_pad()
     print()
     if _failures:

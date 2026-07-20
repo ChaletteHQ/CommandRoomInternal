@@ -65,6 +65,20 @@ each source it loads, run the **reconcile pass** before it finishes:
    `orchestrator-past-meetings.md` — the same transcript text is in hand, so the
    same safety checks apply.
 
+3b. **Entity signals about entities ALREADY on file (SPEC HIST1 Part 2).**
+   After the capture writes land, run
+   `entity_signal_detector.run_entity_signal_scan(<workspace_root>,
+   source_skill=<your skill>)` — it turns promotion/company-move/org-news
+   language about TRACKED people/orgs into confirm-tier brain proposals
+   (windowed, capped, ledger-cooldown'd; a re-run is a cheap no-op via
+   fingerprint dedup). Prose is NEVER auto. If the source's STRUCTURED
+   metadata (signature block, calendar field) carries an atomic
+   non-identity fact about a resolved entity, pass it to
+   `entity_signal_detector.apply_structured_facts` — auto-noted
+   (preference/contact/personal only, S2), batch-stamped for one `undo`,
+   narrated in the brief's CHANGED line. Identity-adjacent facts demote to
+   confirm automatically.
+
 4. **Idempotent by construction.** Because step 1 dedups on `source_ref`, the
    same transcript surfaced by ten different searches captures exactly once. A
    later scheduled `cr-past-meetings` fire that re-encounters it also no-ops via

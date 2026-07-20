@@ -13,7 +13,7 @@ template_version: 1.0.0
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-Before resolving the recipient(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates may you fall back to grep or to asking the user, and that fallback MUST be flagged. For thread / recent-context lookup, use `shared/scripts/cru_match.py::load_open_commitments` to ground the substrate-aware agenda — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract. Once resolved, the greeting and every rendered mention of the recipient use the record's `canonical_name` spelling (or its nickname field for warm registers) — never a transcript/ASR or email-display-name spelling (F-50 P2b; protocol § Display names).
+Before resolving the recipient(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates may you fall back to grep or to asking the user, and that fallback MUST be flagged. For thread / recent-context lookup, use `shared/scripts/cru_match.py::load_open_commitments` to ground the substrate-aware agenda — do NOT hand-roll an events.jsonl scan — and pass it the org-scoped rows (`load_open_commitments(events_path, events=org_events)` where `org_events` comes from `events_io.load_events_org_scoped`; PGUARD2 D2 — drafts must not see personal-lane or masked-account commitments). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract. Once resolved, the greeting and every rendered mention of the recipient use the record's `canonical_name` spelling (or its nickname field for warm registers) — never a transcript/ASR or email-display-name spelling (F-50 P2b; protocol § Display names).
 
 **For:** CEOs who send 20-50 emails a day and want a tool that produces drafts sounding exactly like them — not generic professional prose. Works on day 1 with a default voice; upgrades to calibrated voice via the Chalette customization service.
 
@@ -53,11 +53,11 @@ Before writing, read `shared/WORKSPACE_API.md`.
 - `_hq/data/events.jsonl` — event type `email_drafted` with `recipient`, `topic`, the draft-identity fields from `connector_adapters.provenance.build_email_drafted_provenance(draft_id=…, provider=…, server_id=…, address=…)` (EW2+T F-12 — dual-writes the legacy `gmail_draft_id` field name carrying the DECLARED BACKEND's native draft id, plus the structured `provenance` block; never hand-write the field name), `commitment_refs[]` (open commitments with recipient surfaced into the draft), `decision_refs[]` (decisions involving recipient that informed the draft). The substrate knows the draft exists and downstream skills (`insight-generator`, `cleanup`) can detect drafted-but-not-sent — on every backend, not just Gmail.
 - `_hq/data/events.jsonl` — event type `email_sent` written when the user clicks Send via the widget action set (or the user marks the connector draft as sent and a future fire detects it). Carries `{recipient, topic, draft_event_seq}` PLUS the send-identity fields from `connector_adapters.provenance.build_email_sent_provenance(message_id=…, thread_id=…, provider=…, server_id=…, address=…)` — the builder dual-writes the legacy per-provider id fields (reader back-compat: email_outcomes, reconcile-sent, voice-corrections all read them today) AND the structured `provenance` block (R3 account scoping + format-proof dedup). Never hand-write the id field names; the builder owns the spelling. Links back to the original `email_drafted` event. This is the v3.7.1+ closure event — pre-v3.7.1 the substrate saw drafts but never confirmation of sends, so the drafted-but-not-sent gap couldn't be measured.
 
-**Reads (v3.7.1+ substrate enrichment):**
+**Reads (v3.7.1+ substrate enrichment):** All `events.jsonl` reads below go through ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — the draft reaches a recipient, an external surface): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design, so a reclassified personal account's history never enters the draft prompt.
 - `_hq/data/entities.json` — for recipient context (org, role, relationship strength).
-- `_hq/data/events.jsonl` for prior interaction history with recipient (same as before).
-- `_hq/data/events.jsonl` `type == "commitment"` events involving recipient with `status == "open"` — these get surfaced into the draft prompt as "open commitments with this recipient" so the draft can naturally address them. Resolved seqs go into `commitment_refs[]` on the emitted `email_drafted` event.
-- `_hq/data/events.jsonl` `type == "decision"` events that name the recipient or their org in `data.context` / `data.affected_entities` — pulled into the draft prompt as "what we've decided about them" so the draft is consistent with prior positions. Seqs go into `decision_refs[]`.
+- `_hq/data/events.jsonl` for prior interaction history with recipient (same as before) — from the org-scoped load, `type == "interaction"`.
+- `_hq/data/events.jsonl` `type == "commitment"` events involving recipient with `status == "open"` — filter the org-scoped load, or pass it through the seam: `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — the injection keeps personal-tie commitments out of the draft; never call the no-arg owner form here). These get surfaced into the draft prompt as "open commitments with this recipient" so the draft can naturally address them. Resolved seqs go into `commitment_refs[]` on the emitted `email_drafted` event.
+- `_hq/data/events.jsonl` `type == "decision"` events that name the recipient or their org in `data.context` / `data.affected_entities` — from the same org-scoped load — pulled into the draft prompt as "what we've decided about them" so the draft is consistent with prior positions. Seqs go into `decision_refs[]`.
 - This skill's Voice Block (below).
 - `shared/VOICE_CALIBRATION.md` — universal protocol.
 
@@ -77,7 +77,7 @@ Takes a prompt like "draft an email to Sam about the LOI we discussed" and produ
 
 Before doing anything in this skill, internalize this hard rule:
 
-> **You MUST first render an editable widget. Then you stop and wait. The Gmail tool call fires only from apply-choices on the user's `send` / `edit then send` / `draft` click — never inline, never preemptively, never as part of generating the draft.**
+> **You MUST first render an editable widget. Then you stop and wait. The Gmail tool call fires only from apply-choices on the user's `send` / `draft` click (or a deprecated in-flight `edit then send`) — never inline, never preemptively, never as part of generating the draft.**
 
 Translation:
 - `mcp__visualize__show_widget` is the FIRST end-user-visible side effect of this skill. The user sees the editable draft before any Gmail state changes.
@@ -112,9 +112,10 @@ cfg = get_config(workspace_root, "email-writer", DEFAULTS)
 one exception to output-first. **Both postures are QUEUE-ON-CLICK (FS-11, M ruling 2026-07-15):
 the editable draft appears first and NOTHING touches the mail backend until the user clicks — a
 draft M hasn't approved must not exist in the backend.** `show_first` (default) shows the draft
-card with its actual controls — the **Send** and **Draft** one-tap buttons (t3 FB-4), the
-directly-editable body (t3 FB-10 — click into it and type; no Edit button), and the row's
-`— more —` menu for the tail (**Edit then send** for To/Cc/Subject changes) — and the click
+card with its actual controls — the **Send** / **Draft** / **Snooze (3 days)** one-tap buttons
+(t3 FB-4, FB-17 — three primaries, no dropdown on the plain card) and the
+directly-editable body (t3 FB-10 — click into it and type; no Edit button; FB-17 retired the
+`Edit then send` popup form) — and the click
 performs the write. Prose under the card names ONLY those visible controls, by those labels
 (t3 FB-11 — a fire that says "pick Send, Edit then send, or Draft" over a card that shows
 different chrome is the bug). `auto_queue` shows the same card with **Draft** as the emphasized
@@ -182,7 +183,7 @@ Disambiguate ambiguous recipients via `aliases.json`. If multiple matches ("whic
 
 Read from `entities.json`:
 - Recipient's role, org, affiliation
-- Prior interaction history from `events.jsonl` (last 5 exchanges)
+- Prior interaction history from `events.jsonl` (last 5 exchanges) — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read
 - Any `communication_style` field on their person record (formal / casual / terse)
 - Recent decisions or commitments involving them
 
@@ -278,7 +279,7 @@ Pre-v3.13.0, email-writer surfaced drafts as a text block in chat — forcing ba
 
 **Mode selection (n=1 vs n>1, v3.14.3+ — surfaced 2026-05-26 from a multi-stage outreach use case):**
 
-If Phase 1 detected a multi-draft scenario (input shape #6 — multi-stage / multi-variant / "send these emails"), produce ONE widget with N items, each carrying its own `"N send"` / `"N edit then send"` / `"N draft"` / `"N skip"` actions. This is the n>1 batched-widget surface per `shared/EMAIL_DRAFT_PROTOCOL.md` §6.5 Path A — the same surface intro-broker uses for its two-style draft pick.
+If Phase 1 detected a multi-draft scenario (input shape #6 — multi-stage / multi-variant / "send these emails"), produce ONE widget with N items, each carrying its own `"N send"` / `"N draft"` / `"N snooze 3d"` actions (FB-17 — the Send / Draft / Snooze card; `edit then send` retired, the inline body is the edit surface). This is the n>1 batched-widget surface per `shared/EMAIL_DRAFT_PROTOCOL.md` §6.5 Path A — the same surface intro-broker uses for its two-style draft pick.
 
 DO NOT render one widget per draft (forces the user through sequential confirms). DO NOT collapse multiple drafts into a single item with text like "Draft 1 / Draft 2 below" (forces the user to type which one to send). The whole point of the widget is per-draft visual choice + per-draft action — render every draft as its own item and let the user click `send` on the ones they want, `skip` on the ones they don't.
 
@@ -317,12 +318,7 @@ data_view = {
                 [f"> {line}" for line in body_paragraphs]
                 if in_reply_to_thread_id else list(body_paragraphs)
             ),
-            "actions": [
-                "1 send",
-                "1 edit then send",
-                "1 draft",
-                "1 skip",
-            ],
+            "actions": ["1 send", "1 draft", "1 snooze 3d"],
         }],
     }],
 }
@@ -356,9 +352,8 @@ data_view = {
                 ),
                 "actions": [
                     f"{i + 1} send",
-                    f"{i + 1} edit then send",
                     f"{i + 1} draft",
-                    f"{i + 1} skip",
+                    f"{i + 1} snooze 3d",
                 ],
             }
             for i, draft in enumerate(drafts)
@@ -392,16 +387,15 @@ print(transport['html'])
 
 **Action semantics (handled by apply-choices — Gmail tool calls fire HERE, not in Phase 4):**
 
-All four actions land in apply-choices. The Gmail / Zapier tool call is the FIRST place a Gmail state change happens. Email-writer's main path produced only a rendered widget; nothing exists in Gmail yet.
+All three actions land in apply-choices. The Gmail / Zapier tool call is the FIRST place a Gmail state change happens. Email-writer's main path produced only a rendered widget; nothing exists in Gmail yet.
 
-- `1 send` — apply-choices creates the connector draft AND sends it in one motion. Native path: the seam-resolved draft-create tool → the seam-resolved send tool (dispatch per `EMAIL_DRAFT_PROTOCOL.md` §0.5; a declared backend with no send capability degrades per §0.5 pt2). Zapier-threaded send path: `zapier_send.py` with `In-Reply-To` if known (gmail-only dispatch row, §3c). Logs `email_drafted` AND `email_sent` events (the draft is recorded for the substrate even though there's no human-visible draft state between create and send).
-- `1 edit then send` — apply-choices opens an inline edit input on the widget; the user types corrections, hits Apply, the input replaces the body. Then the same send flow as `1 send` fires against the edited body.
+- `1 send` — apply-choices creates the connector draft AND sends it in one motion. Native path: the seam-resolved draft-create tool → the seam-resolved send tool (dispatch per `EMAIL_DRAFT_PROTOCOL.md` §0.5; a declared backend with no send capability degrades per §0.5 pt2). Zapier-threaded send path: `zapier_send.py` with `In-Reply-To` if known (gmail-only dispatch row, §3c). Logs `email_drafted` AND `email_sent` events (the draft is recorded for the substrate even though there's no human-visible draft state between create and send). Body edits happen directly on the card before Apply (FB-10 inline body; the FB-17-retired `edit then send` still dispatches from in-flight widgets as an alias → send, its edited payload honored).
 - `1 draft` — apply-choices creates a connector draft via the seam-resolved draft-create tool. (There is NO Zapier draft path — `zapier_send.py` only sends; with no native mail connector the body stays in the widget and the ack says email isn't connected.) The draft now lives in the declared backend's Drafts for the user to find and send later. Logs `email_drafted` (no `email_sent` yet). Per v2.14.4 canonical-action consolidation, `to drafts` was renamed to `draft` — the action always opens an edit field before saving, so review-then-save is the default semantics.
-- `1 skip` — no mail-backend tool call (because no draft was ever created). Records a `chat_dismissal` event so substrate knows the draft was reviewed-and-not-sent.
+- `1 snooze 3d` — no mail-backend tool call (because no draft was ever created). Records a `chat_dismissal` event with a 3-day mute so the card resurfaces later (FB-17 — "deal with it later").
 
 **Undo-send (A6, feature-detected):** when the declared backend's capability manifest has `undo_send` (Superhuman-class — `connector_adapters.capabilities.supports(provider, "undo_send")`), the send acknowledgment adds one plain-English line: *"Sent. Say `undo` in the next minute to pull it back."* — and `undo` within the window fires the connector's undo tool and logs the reversal on the `email_sent` event (`data.undone: true`). Capability absent → the line simply doesn't render (silent skip); never promise an undo the backend can't do.
 
-In the n>1 multi-draft case, the same four verbs apply per item (`N send`, `N edit then send`, `N draft`, `N skip`). The user can mix freely — e.g., `1 send 2 skip` ships draft 1, dismisses draft 2; `1 edit then send 2 send` edits the first then sends both. Apply-choices iterates the action set and fires the matching Gmail tool once per `N send` / `N draft` action.
+In the n>1 multi-draft case, the same three verbs apply per item (`N send`, `N draft`, `N snooze 3d`). The user can mix freely — e.g., `1 send 2 snooze 3d` ships draft 1, defers draft 2; edit any draft inline (FB-10) before sending. Apply-choices iterates the action set and fires the matching Gmail tool once per `N send` / `N draft` action.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "I render the draft; the Gmail draft fires on click."

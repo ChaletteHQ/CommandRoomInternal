@@ -10,10 +10,14 @@ Covers:
   2. TTL: aged LOW-CONTEXT (name-only) proposals leave the queue after
      PERSON_LOW_CONTEXT_STALE_DAYS; rich-context and young ones stay.
   3. Sweep dry-run default: plans, writes NOTHING.
-  4. Sweep --apply: rich-context → auto_add_person (email ONLY when observed
-     in the proposal's own text, with provenance; same-name collision →
-     needs_confirm, never auto-forked); aged low-context → expire tombstone;
-     young low-context → left open. ONE audit event.
+  4. Sweep --apply under the PID1-DELEGATED classifier (D7 — plan_sweep
+     delegates to identity_reconcile.plan_reconcile; the add bar is the R1
+     corroboration doctrine, no longer "name + prose-inferred role/org"):
+     only clusters with an OBSERVED address (or ≥2 source families) add;
+     full-name single-source rows stay open as confirm; an on-file name
+     routes to the merge-propose lane (kept open by this shell); aged
+     low-context → expire tombstone; young low-context → left open. ONE
+     audit event.
   5. Undo: the whole pass reverses via brain_undo (adds archive — never
      delete; expiries reopen via person_proposal_reopened, honored by the
      confirm_flow reader).
@@ -159,11 +163,18 @@ def main() -> int:
     check("dry-run is the default posture", plan["applied"] is False)
     check("dry-run wrote nothing",
           events_path.read_text(encoding="utf-8") == before)
-    check("dry-run plans 5 adds", len(plan["add"]) == 5,
+    # PID1 D2 bar: ONLY the observed-email clusters plan as adds — Quinn
+    # Alvarez (address in her own thread) and Ines Vidal (name-matching
+    # local part among several). Rio Tanaka / Noa Lindgren are full names
+    # with a single source and no attributable address → confirm, kept open.
+    check("dry-run plans 2 adds (observed-email clusters only — D2)",
+          sorted(e["proposal"]["name"] for e in plan["add"])
+          == ["Ines Vidal", "Quinn Alvarez"],
           str([e["proposal"]["name"] for e in plan["add"]]))
     check("dry-run plans 1 expiry", len(plan["expire"]) == 1)
-    check("dry-run keeps 2 open (young mention + snoozed row)",
-          len(plan["keep_open"]) == 2,
+    check("dry-run keeps 5 open (2 confirm-tier full names + young mention "
+          "+ on-file cluster + snoozed row)",
+          len(plan["keep_open"]) == 5,
           str([e["proposal"]["name"] for e in plan["keep_open"]]))
     # Review F-2: the snoozed proposal routes to keep_open with the mute
     # named — the sweep NEVER adjudicates a row M snoozed.
@@ -171,32 +182,37 @@ def main() -> int:
     check("snoozed row held with a snooze rationale (F-2)",
           "Val Okafor" in kept and "snoozed" in kept["Val Okafor"].lower(),
           str(kept))
+    # PID1 D4a: an on-file name is the merge-propose lane, not an add and
+    # not a silent drop — this shell keeps it open with the tier named.
+    check("on-file cluster held for link/merge (D4a)",
+          "Sam Sample" in kept and "existing record" in kept["Sam Sample"],
+          str(kept.get("Sam Sample")))
 
     # ---- 4. Apply ------------------------------------------------------------
     plan = run_sweep(ws, apply=True)
     res = plan["results"]
     added = {a["name"]: a for a in res["added"]}
-    check("rich-context rows auto-added (collision + snooze held)",
-          set(added) == {"Quinn Alvarez", "Rio Tanaka", "Noa Lindgren",
-                         "Ines Vidal"}, f"got {set(added)}")
-    # Review F-3: multiple third-party addresses in quoted evidence, none
-    # matching the name → added WITHOUT an email (never mis-attributed).
-    check("multi-address quoted evidence adds with NO email (F-3)",
-          added.get("Noa Lindgren", {}).get("email") is None,
-          str(added.get("Noa Lindgren")))
+    check("observed-email clusters auto-added (single-source full names, "
+          "on-file cluster, and snooze all held — D2)",
+          set(added) == {"Quinn Alvarez", "Ines Vidal"}, f"got {set(added)}")
+    # Review F-3: a name-matching local part among several addresses keeps
+    # THAT address; Noa Lindgren's quoted-thread addresses match nothing →
+    # no attributable email → the cluster stays CONFIRM (not added at all
+    # under the PID1 bar — attribution uncertainty is the no-auto case).
     check("multi-address evidence with a name-matching local part keeps "
           "THAT address (F-3)",
           added.get("Ines Vidal", {}).get("email") == "ines.vidal@example.com",
           str(added.get("Ines Vidal")))
+    check("no attributable address → NOT auto-added (F-3 under the D2 bar)",
+          "Noa Lindgren" not in added and "Rio Tanaka" not in added)
     check("snoozed row neither added nor expired (F-2)",
           "Val Okafor" not in added
           and all(e["name"] != "Val Okafor" for e in res["expired"]))
     check("observed email captured with provenance",
           added.get("Quinn Alvarez", {}).get("email") == "quinn@example.com")
-    check("no-address row added WITHOUT an email (never guessed)",
-          added.get("Rio Tanaka", {}).get("email") is None)
-    check("same-name collision held for confirm (never auto-forked)",
-          [x["name"] for x in res["needs_confirm"]] == ["Sam Sample"])
+    check("on-file cluster never reaches auto_add_person (held upstream — "
+          "no needs_confirm churn)",
+          res["needs_confirm"] == [], str(res["needs_confirm"]))
     check("aged low-context row expired", [e["name"] for e in res["expired"]] == ["Bo"])
     check("zero errors", res["errors"] == [], str(res["errors"]))
     text = events_path.read_text(encoding="utf-8")
@@ -211,12 +227,13 @@ def main() -> int:
     # the "add person" row is suppressed as already-on-file (the every-week
     # resurfacing this fix kills). The sweep's needs_confirm proposal stays
     # open in the substrate; it simply never renders.
-    check("added rows left the queue; only the unresolved young row remains",
-          sorted(rows2) == ["person:4"], f"got {sorted(rows2)}")
+    check("added rows left the queue; the confirm-tier and young rows remain",
+          sorted(rows2) == ["person:2", "person:4", "person:8"],
+          f"got {sorted(rows2)}")
     ents = json.loads((ws / "_hq" / "data" / "entities.json").read_text(encoding="utf-8"))
     people = ents.get("entities", ents).get("people", [])
     by_name = {p["canonical_name"]: p for p in people}
-    check("person records created", "Quinn Alvarez" in by_name and "Rio Tanaka" in by_name)
+    check("person records created", "Quinn Alvarez" in by_name and "Ines Vidal" in by_name)
 
     # ---- 5. Undo -------------------------------------------------------------
     import brain_undo
@@ -226,14 +243,13 @@ def main() -> int:
     check("undo reverses the whole batch cleanly",
           res_u["status"] == "undone" and res_u["n_errors"] == 0,
           f"{res_u['status']}, {res_u['n_errors']} errors")
-    check("undo count = 4 adds + 1 expiry", res_u["n_undone"] == 5)
+    check("undo count = 2 adds + 1 expiry", res_u["n_undone"] == 3)
     ents = json.loads((ws / "_hq" / "data" / "entities.json").read_text(encoding="utf-8"))
     people = ents.get("entities", ents).get("people", [])
     by_name = {p["canonical_name"]: p for p in people}
     check("undo ARCHIVES the added people (never deletes)",
           all(by_name.get(n, {}).get("status") == "archived"
-              for n in ("Quinn Alvarez", "Rio Tanaka", "Noa Lindgren",
-                        "Ines Vidal")))
+              for n in ("Quinn Alvarez", "Ines Vidal")))
     # The expiry reopen is honored by the reader (the queue adapter still
     # hides it behind the low-context TTL — check the reader directly).
     from confirm_flow import load_open_person_proposals

@@ -1,0 +1,14 @@
+<!--
+  Infographic layout: stat_spotlight (SPEC OUT4). One hero number + 1-4 support
+  tiles (the support band is components.build_tile_band_html markup, styled by
+  the OUT5 premium shell, brand-resolved). Structure-only fragment; NO literal
+  hex. Rendered ONLY by infographic.build_infographic.
+  Slots: {{HERO_VALUE}}, {{HERO_LABEL}}, {{SUPPORT}}.
+-->
+<style>
+  .ig-spot-hero{text-align:center;padding:24px 0 8px}
+  .ig-spot-hero .v{font:600 clamp(48px,9vw,84px)/1 var(--serif);color:var(--fg);letter-spacing:-.01em;display:block}
+  .ig-spot-hero .l{font:600 10px/1.4 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin-top:10px;display:block}
+  .ig-spot-hero::after{content:"";display:block;width:64px;height:2px;margin:18px auto 4px;background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+</style>
+<section class="ig ig-spot"><div class="ig-spot-hero"><span class="v">{{HERO_VALUE}}</span><span class="l">{{HERO_LABEL}}</span></div>{{SUPPORT}}</section>

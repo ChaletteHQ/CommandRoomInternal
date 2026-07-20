@@ -47,9 +47,9 @@ Verification mode is the diagnostic version of the install ritual — explicit v
 
 # enable-command-room-schedules (M1, 2026-05-23)
 
-The schedule-setup skill. Configures **7 topic-specific persistent chats** + a one-time **historical backfill** sweep via `mcp__scheduled-tasks__create_scheduled_task`. Each chat = 1 stable taskId = 1 persistent thread in Cowork's Scheduled sidebar section, accumulating turns over time.
+The schedule-setup skill. Configures **8 topic-specific persistent chats** + a one-time **historical backfill** sweep via `mcp__scheduled-tasks__create_scheduled_task`. Each chat = 1 stable taskId = 1 persistent thread in Cowork's Scheduled sidebar section, accumulating turns over time.
 
-**On a fresh-install workspace, only 5 of the 7 fire automatically** — `morning-brief`, `past-meetings`, `inbox`, `upcoming-meetings`, `friday-wrap`. The remaining 2 (`commitments`, `pulse`) get added later via operator-driven follow-up sessions when accumulated workspace signal makes them useful.
+**On a fresh-install workspace, only 5 of the 8 fire automatically** — `morning-brief`, `past-meetings`, `inbox`, `upcoming-meetings`, `friday-wrap`. The remaining 3 (`waiting-on`, `my-plate`, `pulse`) get added later via operator-driven follow-up sessions when accumulated workspace signal makes them useful. (CTS1: `waiting-on` + `my-plate` are the split successors of the retired `commitments` chat — an existing customer with `commitments` registered gets both via the Phase 1 migration table, never a fresh-install auto-add.)
 
 ## Phase 0.5 — Substantive explainer (first-time schedule setup)
 
@@ -75,7 +75,9 @@ Read `workspace.brain_name` from the customer's entities.json if available — s
 >
 > ***The compounding effect.*** *Every meeting you process, every decision you log, every follow-up you send adds to what she knows. The longer you use Command Room, the more context exists, the sharper every scheduled task gets.*
 >
-> ***Future possibilities.*** *I'm setting up 5 scheduled tasks for you now — these cover the daily ritual. Later you can add more yourself or with [Operator]. Examples: a Monday morning prep specifically for your weekly [recurring 1:1] / first-of-the-month investor update draft / pre-call brief that runs 30 min before any meeting with [important person]. [BrainName] can also propose tasks based on patterns she notices.*
+> ***Future possibilities.*** *I'm setting up 5 scheduled tasks for you now — these cover the daily ritual. Later you can add more yourself or with [Operator]. Examples: a Monday morning prep specifically for your weekly [recurring 1:1] / first-of-the-month investor update draft / pre-call brief that runs 30 min before any meeting with [important person]. One more you can switch on any time through your schedule settings: a **monthly KPI scorecard** — a one-page how-are-we-tracking-against-targets read that lands on the 1st for the prior month, off until you ask for it. [BrainName] can also propose tasks based on patterns she notices.*
+
+**Opt-in monthly scorecard job (SPEC OUT7 — PROPOSE, never auto-register).** The `monthly-scorecard` job lives in `maintenance_dispatcher.OPTIONAL_JOBS` and is OFF by default — this skill NEVER registers it as part of the first-install set (it is not in `FIRST_INSTALL_TASK_IDS` and rides inside the already-authorized `maintenance` task, so turning it on needs no new Run Now). Offer it once, in plain English, as above; on an explicit yes, turn it on the same way change-schedule does — write `workspace.schedule_config.maintenance_jobs.monthly-scorecard = {"enabled": true}` via the atomic entities write, then confirm in one line. Absent that explicit confirmation it stays inert (the dispatcher never surfaces it as due). It renders the prior month's KPI scorecard via `shared/scripts/scorecard.py` at the first maintenance fire on/after the 1st and self-limits to monthly via its own `pack_run` receipt.
 >
 > ***Registering your 5 chats now:***
 >
@@ -224,6 +226,7 @@ For each legacy taskId found in the user's existing schedule, DISABLE it via `up
 | `cr-past-meetings` | **disable** (v2.14.27 — taskId rename) | `past-meetings` |
 | `cr-folder-bind-test` | **disable** (v2.14.27 — Cowork diagnostic test task left over from 2026-05-06 Q10/Q11 round; safe to disable, never intended to fire) | (none — diagnostic artifact) |
 | `cr-folder-bind-test-2` | **disable** (v2.14.27 — Cowork diagnostic test task left over from 2026-05-06 Q10/Q11 round; safe to disable, never intended to fire) | (none — diagnostic artifact) |
+| `commitments` | **disable + register** (CTS1 §10.3, RULED 2026-07-16 — the daily Commitments chat split into two surfaces on fresh taskIds, the v2.14.27 pattern: Cowork derives the sidebar title FROM the taskId, so re-scoping would have left the sidebar saying "Commitments" forever. Register BOTH successors: `waiting-on` inherits the 8:30 slot AND any custom cron override the customer had on `commitments` — MOVE the override (write it under `waiting-on` in `workspace.schedule_config` and REMOVE the `commitments` key: `commitments` is no longer in DEFAULT_SCHEDULES, so a leftover key trips the watchdog's orphan-override scan forever); `my-plate` takes the 8:45 default. Surface the three §10.3 costs in the install summary: the old entry stays visible as a disabled sidebar item (no delete API), old chat history stays in the old thread, and each new chat needs one first-fire Run Now.) | `waiting-on` + `my-plate` |
 | `cleanup` | disable + register (MAINT1 — now a job inside the maintenance task; driven by `SUPERSEDED_BY` in `schedule_config.py`, data not prose) | `maintenance` |
 | `reconcile-sent` | disable + register (MAINT1 — now the FIRST job at the 6:45 slot, still before the morning brief. A custom cron override on this taskId migrates onto the `maintenance` task cron — it was the one old silent task whose cadence maps 1:1) | `maintenance` |
 | `monthly-report` | disable + register (MAINT1 — now a job, due at the first fire on/after the 1st) | `maintenance` |
@@ -243,17 +246,20 @@ ORCHESTRATOR_MAP = {
     "morning-brief":     "orchestrator-morning-brief.md",  # Wraps the morning-briefing skill. Registered on first install.
     "upcoming-meetings": "orchestrator-upcoming-meetings.md",
     "inbox":             "orchestrator-inbox.md",
-    "commitments":       "orchestrator-commitments.md",
+    "waiting-on":        "orchestrator-commitments.md",  # CTS1 Surface 1 — the re-scoped daily (things people owe the user + the confirm tail). Filename kept for events.jsonl source_skill back-compat (events keep source_skill='commitments' — same pattern as pulse below). NOT first-install; successor of the retired `commitments` taskId (Phase 1 migration table).
+    "my-plate":          "orchestrator-my-plate.md",     # CTS1 Surface 2 — the owner-me act-list (Promised + Personal groups, one chat). NOT first-install; registers alongside waiting-on in the commitments migration.
     "pulse":             "orchestrator-dont-forget.md",   # display: "Pulse - Command Room"; orchestrator filename stays as `orchestrator-dont-forget.md` for events.jsonl source_skill back-compat (events written historically with source_skill='cr-dont-forget' remain valid as append-only history; new events post-v2.14.27 use source_skill='pulse')
     "past-meetings":     "orchestrator-past-meetings.md",
     "friday-wrap":       "orchestrator-friday-wrap.md",   # NEW v3.11.0. Wraps the weekly-recap skill. Registered on first install. First weekly-rhythm task.
     "relationship-moves": "orchestrator-relationship-moves.md",  # REL1 — weekly Sunday outreach pack. NOT first-install (needs accumulated substrate).
     "commitment-triage": "orchestrator-commitment-triage.md",  # Phase 2 Stage D (S4) — weekly Friday housekeeping chat. NOT first-install. (Row restored to this mirror 2026-07-14 — the JSON had it, the dict had drifted.)
     "staff-meeting":     "orchestrator-staff-meeting.md",  # LB1 R3 — weekly Monday Living Brain review. NOT first-install; propose-only later-add (never silently registered).
+    "balance":           "orchestrator-balance.md",  # BAL1 — weekly Sunday-8AM personal white-space surface (m_facing only). NOT first-install; opt-in later-add gated on a declared personal calendar (workspace.personal_calendars) — with none declared the fire refuses honestly.
+    "pipeline-digest":   "orchestrator-pipeline-digest.md",  # PIPE1 Part 2 — weekly Tuesday-8AM deal review (movement since last digest + the pipeline report + top-3 moves). NOT first-install; proposed only when >=1 open tracked deal exists (schedule_proposals); adjudication of deal suggestions stays in the Staff Meeting (FB-20).
 }
-# Ten tasks total — all user-facing chats. v2.14.27+ uses bare taskIds (no `cr-` prefix) so Cowork's sidebar title formatting renders cleanly: `inbox` → "Inbox", `commitments` → "Commitments", etc. Pre-v2.14.27 used `cr-*` prefix which displayed as "Cr inbox" / "Cr commitments" — the cr- prefix looked like a typo in the title. cr-refresh-workspace-map was REMOVED in v2.14.25. friday-wrap ADDED in v3.11.0 — first weekly-rhythm scheduled task.
+# Thirteen tasks total — all user-facing chats. v2.14.27+ uses bare taskIds (no `cr-` prefix) so Cowork's sidebar title formatting renders cleanly: `inbox` → "Inbox", `waiting-on` → "Waiting on", etc. Pre-v2.14.27 used `cr-*` prefix which displayed as "Cr inbox" / "Cr commitments" — the cr- prefix looked like a typo in the title. cr-refresh-workspace-map was REMOVED in v2.14.25. friday-wrap ADDED in v3.11.0 — first weekly-rhythm scheduled task. CTS1: `commitments` RETIRED (disable per the Phase 1 migration table) and split into `waiting-on` + `my-plate`.
 #
-# First-install gating: on a FRESH workspace (workspace_config.json missing or empty registered_taskIds), only the subset in `shared/scripts/schedule_config.py FIRST_INSTALL_TASK_IDS` registers ({morning-brief, upcoming-meetings, past-meetings, inbox, friday-wrap} as of M1 2026-05-23; inbox added in M1 — pre-M1 was 4 tasks). The 2 remaining entries above (commitments, pulse) stay in the map for re-runs / management flows but are NOT auto-registered day 1. See Phase 3 first-install branching. (The silent background work — the `maintenance` task, MAINT1 — is ALSO in FIRST_INSTALL_TASK_IDS and registers on first install, but via **Step 1.D below** as one loop over the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`, because it is not a chat-orchestrator and is intentionally absent from this ORCHESTRATOR_MAP.)
+# First-install gating: on a FRESH workspace (workspace_config.json missing or empty registered_taskIds), only the subset in `shared/scripts/schedule_config.py FIRST_INSTALL_TASK_IDS` registers ({morning-brief, upcoming-meetings, past-meetings, inbox, friday-wrap} as of M1 2026-05-23; inbox added in M1 — pre-M1 was 4 tasks). The remaining later-add entries above (waiting-on, my-plate, pulse) stay in the map for re-runs / management flows but are NOT auto-registered day 1. See Phase 3 first-install branching. (The silent background work — the `maintenance` task, MAINT1 — is ALSO in FIRST_INSTALL_TASK_IDS and registers on first install, but via **Step 1.D below** as one loop over the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`, because it is not a chat-orchestrator and is intentionally absent from this ORCHESTRATOR_MAP.)
 ```
 
 **Critical mismatch warnings:**
@@ -313,7 +319,8 @@ ORCHESTRATOR_MAP = {
     'morning-brief': 'orchestrator-morning-brief.md',
     'upcoming-meetings': 'orchestrator-upcoming-meetings.md',
     'inbox': 'orchestrator-inbox.md',
-    'commitments': 'orchestrator-commitments.md',
+    'waiting-on': 'orchestrator-commitments.md',  # CTS1 — filename kept for source_skill back-compat
+    'my-plate': 'orchestrator-my-plate.md',       # CTS1
     'pulse': 'orchestrator-dont-forget.md',
     'past-meetings': 'orchestrator-past-meetings.md',
     'friday-wrap': 'orchestrator-friday-wrap.md',  # NEW v3.11.0 — weekly recap
@@ -371,7 +378,7 @@ The composed bootloader for each task is what gets passed as the `prompt` parame
 
 The silent background tasks are NOT chat-orchestrators (no widget, no `orchestrator-*.md`) — they are skill-invoking prompts registered separately from the chats. As of Phase 3 (2026-07) they are **data-driven from the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`** — one loop registers all of them, and a silent task added to that registry in a future release registers here with zero edits to this file. (Pre-registry, each task had its own prose block, and each block was a place to forget one — Bug #82 was exactly that miss; see references/HISTORY.md § Bug #82 silent-task registration miss.)
 
-As of MAINT1 (2026-07) the registry holds exactly one task: `maintenance` (`45 6,12,17 * * *` daily). It carries the six silent JOBS — reconcile-sent (first at 6:45, BEFORE the 7:00 morning brief, Bug #98-v3's load-bearing ordering), session-sweep, cleanup, weekly-insights, deal-signals (LB1 — Sunday, after insights), monthly-report — dispatched per fire by `shared/scripts/maintenance_dispatcher.py` (`due_jobs()` decides in code from receipts; the prompt never judges due-ness). One taskId means ONE Run Now grant ever: a future silent job lands inside the already-authorized task instead of creating a new fleet-wide permission gap per release (`task_watchdog`'s `never_authorized` class).
+As of MAINT1 (2026-07) the registry holds exactly one task: `maintenance` (`45 6,12,17 * * *` daily). It carries the seven silent JOBS — reconcile-sent (first at 6:45, BEFORE the 7:00 morning brief, Bug #98-v3's load-bearing ordering), session-sweep, cleanup, weekly-insights, deal-signals (LB1 — Sunday, after insights), identity-reconcile (PID1 — Sunday, after deal-signals), monthly-report — dispatched per fire by `shared/scripts/maintenance_dispatcher.py` (`due_jobs()` decides in code from receipts; the prompt never judges due-ness). One taskId means ONE Run Now grant ever: a future silent job lands inside the already-authorized task instead of creating a new fleet-wide permission gap per release (`task_watchdog`'s `never_authorized` class).
 
 **Supersede step (MAINT1, D5 — data-driven):** after registering each registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py`; every listed taskId still registered+enabled is disabled via `update_scheduled_task(enabled: false)`. Idempotent, never deletes (no delete API exists — disable is the only removal). This is the same disable-don't-delete pattern as the Phase 1 legacy migration table; the map is data so the bridge's Phase 4.7 loop applies the identical migration with zero prose duplication.
 
@@ -442,7 +449,7 @@ Returned shape: `{taskId: {cron, label, enabled}, ...}` for every default task. 
 
 ## Phase 3 — Register or refresh the 7 orchestrators (6 daily widgets + 1 weekly recap)
 
-**Later-add fence (MAINT1 / D7 — BINDING, before anything registers):** the registration set is NEVER expanded by trigger phrasing; "set up ALL command room scheduled tasks" registers the same first-install set, and every task in `later_add_task_ids()` is PROPOSED (one line each, register only on explicit per-task yes). The later-add chats (`commitments`, `pulse`, `relationship-moves`, `commitment-triage`, `staff-meeting`) are deliberately not first-install because they need accumulated workspace signal to fire well — an "all"-shaped request is enthusiasm, not consent to register tasks that will fire badly on day 1 (the observed 2026-07 field failure: a fresh client said "set up all command room scheduled tasks" and got all four later-add chats registered day 1, against the substrate gating).
+**Later-add fence (MAINT1 / D7 — BINDING, before anything registers):** the registration set is NEVER expanded by trigger phrasing; "set up ALL command room scheduled tasks" registers the same first-install set, and every task in `later_add_task_ids()` is PROPOSED (one line each, register only on explicit per-task yes). The later-add chats (`commitments`, `pulse`, `relationship-moves`, `commitment-triage`, `staff-meeting`, `balance`, `pipeline-digest`) are deliberately not first-install because they need accumulated workspace signal to fire well — an "all"-shaped request is enthusiasm, not consent to register tasks that will fire badly on day 1 (the observed 2026-07 field failure: a fresh client said "set up all command room scheduled tasks" and got all four later-add chats registered day 1, against the substrate gating). **`balance` carries one EXTRA proposal gate (BAL1):** propose it ONLY when `entities.json` `workspace.personal_calendars` is declared and non-empty — it is opt-in AND calendar-gated; with no personal calendar its proposal line is replaced by nothing (the feature turns on later via "connect a personal calendar to turn on Balance" → `add balance`). **`pipeline-digest` carries the same shape of EXTRA gate (PIPE1 Part 2):** propose it ONLY when the workspace has ≥1 OPEN tracked deal (`deal_state.list_open_deals` non-empty — the `schedule_proposals` qualifier enforces it in code); a digest over an empty pipeline is noise, and the pipeline-tracker skill's own `digest.enabled` preference never registers anything by itself.
 
 **First-install gate (M1 / 2026-05-23+):** before iterating ORCHESTRATOR_MAP, decide which subset of taskIds gets registered:
 
@@ -451,9 +458,10 @@ from schedule_config import FIRST_INSTALL_TASK_IDS
 
 if FIRST_INSTALL:
     # Fresh workspace per Phase 0.C detection. Register ONLY the 5 M1 first-install tasks.
-    # The 2 remaining (commitments / pulse) are added later via operator-driven follow-up
-    # sessions — pulse benefits from accumulated workspace signal; commitments lands once
-    # the customer has been logging meetings for a couple of weeks.
+    # The remaining later-adds (waiting-on / my-plate / pulse) arrive via operator-driven
+    # follow-up sessions — pulse benefits from accumulated workspace signal; the two CTS1
+    # commitment surfaces land once the customer has been logging meetings for a couple
+    # of weeks (same posture the retired `commitments` chat had).
     tasks_to_register = {
         tid: fname
         for tid, fname in ORCHESTRATOR_MAP.items()
@@ -461,7 +469,8 @@ if FIRST_INSTALL:
     }
 else:
     # Existing workspace. Re-run / refresh — preserve whatever the customer already has
-    # registered (do NOT auto-disable commitments/pulse if they're already running)
+    # registered (do NOT auto-disable waiting-on/my-plate/pulse if they're already
+    # running; a still-registered `commitments` migrates per the Phase 1 table)
     # AND make sure the M1 first-install set lands so pre-M1 customers get inbox added
     # on their next re-run. The union behavior is intentional: we add new defaults but
     # never silently remove what the customer has.
@@ -475,7 +484,7 @@ else:
 The migration semantics:
 - Fresh install (M1) → 5 tasks total (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`).
 - Existing pre-M1 customer who re-runs the skill → gets their existing tasks refreshed PLUS `inbox` added (because it's now in the M1 first-install set). They never lose tasks they had.
-- Customer says `add commitments` / `add pulse` in Phase 6 management flow → those taskIds get registered individually.
+- Customer says `add waiting on` / `add my plate` / `add pulse` in Phase 6 management flow → those taskIds get registered individually (`add commitments` maps to registering BOTH `waiting-on` and `my-plate` — the split successors).
 
 Per Phase 1's `ORCHESTRATOR_MAP`, each taskId in `tasks_to_register` goes through one of three paths based on detection:
 
@@ -526,13 +535,19 @@ If `spec["enabled"]` is `False`, skip registration for this task entirely (or up
 - `notifyOnCompletion: true`
 - `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-inbox.md`.
 
-### Schedule 3 — Commitments
+### Schedule 3 — Waiting On + My Plate (CTS1 — the split successors of "Commitments")
 
-- `taskId: "commitments"` (v2.14.27+ — bare taskId; prior cr-commitments → migration disabled)
-- `description`: **`"Commitments - Command Room"`** (v2.14.25+ canonical display name)
-- `cronExpression`: from config (default `"30 8 * * 1-5"`)
+- `taskId: "waiting-on"` (CTS1 §10.3, fresh taskId per the v2.14.27 pattern; prior `commitments` → migration disabled per the Phase 1 table)
+- `description`: **`"Waiting On - Command Room"`** (v2.14.25+ canonical display name format)
+- `cronExpression`: from config (default `"30 8 * * 1-5"` — inherits the old commitments slot; a customer's custom cron override on `commitments` carries over to this task at migration)
 - `notifyOnCompletion: true`
-- `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-commitments.md`.
+- `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-commitments.md` (filename kept for events.jsonl source_skill back-compat — events keep `source_skill='commitments'`, same pattern as pulse).
+
+- `taskId: "my-plate"` (CTS1 §10.3 — the second surface; registers alongside waiting-on)
+- `description`: **`"My Plate - Command Room"`**
+- `cronExpression`: from config (default `"45 8 * * 1-5"` — 15 minutes after waiting-on so it reads the just-reconciled substrate)
+- `notifyOnCompletion: true`
+- `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-my-plate.md`.
 
 ### Schedule 4 — Pulse
 
@@ -597,8 +612,9 @@ REQUIRED_MARKERS = [
 
 failures = []
 # Iterate over what we INTENDED to register this run (Phase 3's tasks_to_register subset),
-# not the full ORCHESTRATOR_MAP. On first-install runs the 3 deferred tasks
-# (inbox/commitments/pulse) are intentionally NOT registered — they're not failures.
+# not the full ORCHESTRATOR_MAP. On first-install runs the deferred tasks
+# (waiting-on/my-plate/pulse and the other later-adds) are intentionally NOT
+# registered — they're not failures.
 for task_id, fname in tasks_to_register.items():
     if task_id not in registered_by_id:
         failures.append(f"{task_id}: not registered")
@@ -654,7 +670,8 @@ for task_id, fname in tasks_to_register.items():
 - `morning-brief` → `"Morning Brief - Command Room"`
 - `upcoming-meetings` → `"Upcoming Meetings - Command Room"`
 - `inbox` → `"Inbox - Command Room"`
-- `commitments` → `"Commitments - Command Room"`
+- `waiting-on` → `"Waiting On - Command Room"` (CTS1; the retired `commitments` task keeps whatever description it had — it's disabled, never renamed)
+- `my-plate` → `"My Plate - Command Room"` (CTS1)
 - `pulse` → `"Pulse - Command Room"`
 - `past-meetings` → `"Past Meetings - Command Room"`
 - `friday-wrap` → `"Friday Wrap - Command Room"` (NEW v3.11.0)
@@ -862,12 +879,13 @@ If the user fires this skill with `customize my command room schedules` / `chang
 
 ## Reference files
 
-The 7 chat-emitting orchestrator prompts live in `references/` (workspace-map refresh was retired in v2.14.25):
+The chat-emitting orchestrator prompts live in `references/` (workspace-map refresh was retired in v2.14.25):
 
 - `orchestrator-morning-brief.md` (taskId `morning-brief`; display "Morning Brief"; wraps the `morning-briefing` skill)
 - `orchestrator-upcoming-meetings.md` (taskId `upcoming-meetings`)
 - `orchestrator-inbox.md` (taskId `inbox`)
-- `orchestrator-commitments.md` (taskId `commitments`)
+- `orchestrator-commitments.md` (taskId `waiting-on`; display "Waiting On" — CTS1: filename kept for backward compat with events.jsonl `source_skill='commitments'` history, same pattern as pulse below)
+- `orchestrator-my-plate.md` (taskId `my-plate`; display "My Plate" — CTS1 Surface 2)
 - `orchestrator-dont-forget.md` (taskId `pulse`; display name "Pulse" — orchestrator filename kept for backward compat with events.jsonl `source_skill='cr-dont-forget'` history)
 - `orchestrator-past-meetings.md` (taskId `past-meetings`)
 - `orchestrator-friday-wrap.md` (taskId `friday-wrap`; display "Friday Wrap"; NEW v3.11.0 — wraps the `weekly-recap` skill; first weekly-rhythm scheduled task)

@@ -134,7 +134,7 @@ User can override:
 ### Step 2 — Read the substrate
 
 Read from:
-1. `_hq/data/events.jsonl` — full event stream within the window
+1. `_hq/data/events.jsonl` — full event stream within the window. **Read via the org-scoped reader, never a raw load** (PGUARD1): `from events_io import load_events_org_scoped; events, skipped = load_events_org_scoped(workspace_root)` — it applies the account-scope mask and drops personal-lane rows by design, so a reclassified personal account or a personal reminder can never leak into the report's counts.
 2. `_hq/data/entities.json` — current counts (people, orgs, projects)
 3. `_hq/BRAND_VOICE.md` — sample-size metadata for voice claim
 4. `_hq/views/DECISION_LOG.md` — decision count (regenerated view; the canonical decisions are `decision` events in events.jsonl)
@@ -162,7 +162,7 @@ The synthesis lead is the difference between "here are some numbers" and "here's
 
 **Section 1: What would have slipped**
 
-Pull from events.jsonl within the window:
+Pull from the Step-2 org-scoped event list within the window (same `load_events_org_scoped` read — never re-read raw):
 - Commitments captured outside an existing tracker context (i.e., extracted from a meeting or email, not user-created). Count `type: commitment` events with `source_skill ∈ {meeting-notes, inbox-triage, follow-up-ritual, scan-for-commitments}`.
 - Cold relationships flagged. Count `type: pattern_break_detected` events with `source_skill ∈ {dormant-customer-scan, insight-generator, pulse}` (the canonical dormancy-flag event type per events.schema.json — pre-v3.13.6 this spec called for `dormant_flag` which isn't in the enum and would have silently returned 0). **Back-compat (client migration):** normalize each event's `source_skill` through `source_skill_compat.normalize_source_skill` before the set check so workspaces whose Pulse history predates the v2.14.27 rename (`source_skill='cr-dont-forget'`) still count — it normalizes to `pulse`. events.jsonl is append-only; never rewrite it.
 - Decisions logged from real interactions. Count `type: decision` events with `source_skill: meeting-notes` or `decision-log`.
@@ -280,8 +280,9 @@ Next [period]'s projection
 
 - **Stat-tile band at the top** (first section, `tiles` key): the report's headline counts — commitments captured · decisions logged · meetings processed · briefings delivered · ~hours absorbed. 1-5 tiles, every value one of the Step-3 counts (substrate-derived), never estimated beyond what Step 3 already computes. **A tile with a zero/unknown value is DROPPED, never rendered empty** — brief_writer's renderer refuses empty tiles; when nothing is countable, skip the band.
 - **"Things that get more valuable" renders as a two-column table** (`table` key: asset | current size), replacing the four hanging-indent lines. No rows with unknown counts — drop the row, and drop the table if no rows survive.
+- **Trend line under the tile band (SPEC OUT3).** When the workspace has at least 2 full calendar months of history, compute the trailing window (the report month plus up to 2 prior full months) through the SAME rubric the counts already use — `value_receipt.compute_metrics(events, <window_start>, <window_end>)` — and attach `charts: [value_receipt.build_trend_chart(computed["per_month"])]` to the tile-band section. The helper returns the month-over-month hours line with every point verbatim from `per_month` (one computation, one owner), or `None` below 2 months / all-zero — omit the key then. Renders best-effort via `charts.try_chart_png` inside `make_brief`: no rasterizer on this machine = the section renders exactly as before. Selection rules: `shared/CHART_SELECTION.md`.
 
-Everything else stays as the template renders it. No decorative charts, no fabricated numbers.
+Everything else stays as the template renders it. No decorative charts ever — the trend line above is substrate-derived through the rubric, which is the only kind of chart this report carries. No fabricated numbers.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "[N] cleanups · People layer: [N] interactions · every draft renders in your voice"

@@ -150,10 +150,16 @@ row for it here.
 - **Un-tuned high-use** (coach / insight-generator, monthly): a skill with >N fires whose
   only config event has `origin: first_fire_defaults` gets ONE offer EVER — *"You've used
   inbox-triage 30 times on factory settings — want the 60-second tune?"*
-- **Override-drift** (cleanup, weekly): config > 6 months old AND ≥ 5 contradicting signals
-  (corrections rows changing the configured sign-off; apply-choices repeatedly overriding a
-  configured default) → emit a `note` event; the next coach session re-offers THAT KNOB only.
-  **Cleanup is READ-ONLY on prefs — it never writes config, only the re-offer note.**
+- **Override-drift** (cleanup, weekly — MECHANIZED in LB2 via
+  `shared/scripts/config_drift_detector.py`, called from cleanup Phase 3k): config > 6 months
+  old AND ≥ 5 tagged contradicting signals (corrections rows fighting the configured sign-off;
+  `data.config_override` events from per-fire overrides of a configured default) → ONE
+  `brain_proposal` row (`kind: config_drift`, tier confirm, **staff meeting only** — a config
+  nudge is never urgent). Confirm → the re-offer `note` event the next coach session consumes
+  to re-offer THAT KNOB only; dismiss → the standard 60-day ledger cooldown per knob (the
+  mechanical upgrade of the old once-ever prose rule); snooze 7d.
+  **Cleanup is READ-ONLY on prefs — it never writes config, only the proposal, and on the
+  user's confirm the re-offer note. The tune flow remains the only config writer.**
 - **Reset** → wipe → next fire is a first-fire again.
 - **Multi-workspace:** prefs are per-workspace, full stop (a holding-co operator legitimately
   wants different inbox aggressiveness per entity).

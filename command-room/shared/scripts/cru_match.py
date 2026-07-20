@@ -735,10 +735,27 @@ def _events_files_sig(path: Path) -> tuple:
 def load_open_commitments(
     events_jsonl_path: str | Path,
     since_ts=None,
+    *,
+    events: Optional[list] = None,
 ) -> list[dict]:
     """Read events.jsonl and return all open commitments (status open or
     overdue) that have NOT been closed by a subsequent `commitment_resolved`
     or `thread_resolved` event.
+
+    PGUARD2 D2 — `events` injection: when the caller supplies `events`
+    (a list of event dicts), the projection is built from THOSE rows and no
+    file load happens (`events_jsonl_path` / `since_ts` are ignored for
+    loading; the path is still used only as documentation of intent). This is
+    the seam the EXTERNAL COMPOSERS use: they pass
+    `events_io.load_events_org_scoped(workspace_root)[0]` so personal-lane
+    rows (a `tie: "personal"` commitment, reminder-lane rows) and
+    masked-account rows never enter a draft, agenda, memo, or follow-up pack.
+    OWNER surfaces (show-my-list, the brief, close/chase flows) keep the
+    no-arg form — they legitimately project everything. The default path is
+    byte-identical to pre-PGUARD2 behavior. Supplied-events calls are NOT
+    memoized (no file signature to key on) and apply the same R5 mask pass
+    as the loaded path (idempotent on already-org-scoped rows — mask events
+    survive org scoping, so the mask set is still computable).
 
     v4.5.2 R1 — memoized per file state: repeated calls within one fire reuse
     the projection (the returned LIST is a fresh copy each call; the event
@@ -821,31 +838,57 @@ def load_open_commitments(
     original through the standard closer chain but are NOT merges — the C4
     survivor-provenance fold is skipped for them; split children carry their
     own `data.source_event_seq` / `data.split_from` provenance at write time.
+
+    SUB1 (2026-07) — the sub-item fold, same append-only doctrine. A child
+    commitment (data.parent_id, written only by commitment_state.add_subitems)
+    is an ordinary open commitment in this projection; the fold adds stamps
+    on the in-memory copies only:
+      * CHILD stamps: `parent_id` re-pointed through the C4 merge chain (a
+        superseded parent's children belong to the SURVIVOR read-side — no
+        history rewrite), `parent_title` (the parent's EFFECTIVE title, for
+        "part of: […]" rendering), and `parent_closed: True` for orphans
+        (live child of a closed parent — the cascade crash window; they
+        render top-level with a "was part of" note and count in the total).
+      * PARENT stamps (only when it has children): `subitem_ids` (append
+        order), `n_subitems_open`, `n_subitems_done`,
+        `all_subitems_resolved: True` when the LAST open child closed (the
+        PROPOSE-closure signal — mirror of MC1's
+        all_counterparties_received; never a closer), and
+        `next_subitem_due` (min open-child EFFECTIVE due, annotation +
+        ranking signal ONLY — never folded into the parent's own data.due;
+        a deferred parent stays deferred, D-7).
     """
     path = Path(events_jsonl_path)
-    if not path.exists():
+    injected = events is not None
+    if not injected and not path.exists():
         return []
 
-    # Cache key carries since_ts — a windowed projection and the full one
-    # are different results and must never serve each other's cache entries.
-    cache_key = (str(path.resolve()), since_ts)
-    sig = _events_files_sig(path)
-    cached = _OPEN_COMMITMENTS_CACHE.get(cache_key)
-    if cached is not None and cached[0] == sig:
-        return list(cached[1])
+    cache_key = None
+    if not injected:
+        # Cache key carries since_ts — a windowed projection and the full one
+        # are different results and must never serve each other's cache
+        # entries. Supplied-events calls (PGUARD2 D2) never touch the cache:
+        # there is no file signature to validate a supplied list against.
+        cache_key = (str(path.resolve()), since_ts)
+        sig = _events_files_sig(path)
+        cached = _OPEN_COMMITMENTS_CACHE.get(cache_key)
+        if cached is not None and cached[0] == sig:
+            return list(cached[1])
 
-    events, skipped = load_events_defensively(path, since_ts=since_ts)
-    if skipped:
-        # Surface a warning so consumers see a non-silent skipped count
-        # in stderr / log streams. Per the v3.13.8 contract, callers that
-        # render to user MUST display skipped to the user explicitly;
-        # this log line is the floor, not the ceiling.
-        import sys as _sys
-        _sys.stderr.write(
-            f"[cru_match] load_open_commitments skipped {len(skipped)} "
-            f"malformed events.jsonl lines in {path.name}: "
-            f"{[s['line'] for s in skipped]}\n"
-        )
+        events, skipped = load_events_defensively(path, since_ts=since_ts)
+        if skipped:
+            # Surface a warning so consumers see a non-silent skipped count
+            # in stderr / log streams. Per the v3.13.8 contract, callers that
+            # render to user MUST display skipped to the user explicitly;
+            # this log line is the floor, not the ceiling.
+            import sys as _sys
+            _sys.stderr.write(
+                f"[cru_match] load_open_commitments skipped {len(skipped)} "
+                f"malformed events.jsonl lines in {path.name}: "
+                f"{[s['line'] for s in skipped]}\n"
+            )
+    else:
+        events = [ev for ev in events if isinstance(ev, dict)]
     # R5 reader-honor (connector-agnostic-v1): the commitment projector drops
     # rows whose account identity matches a LIVE account_scope_masked (un-
     # masked by account_scope_restored). Read-side only; rows never move.
@@ -911,6 +954,13 @@ def load_open_commitments(
     received_names_by_id: dict[str, set] = {}
     received_ids_by_seq: dict[int, set] = {}
     received_names_by_seq: dict[int, set] = {}
+    # SUB1 fold state: every commitment event by canonical id (parents may be
+    # closed — orphan children still need the parent's title), the superseded
+    # → survivor re-point map (C4 merges transfer children read-side), and
+    # the raw child links (child cid, child seq, on-disk parent_id).
+    commitment_by_id: dict[str, dict] = {}
+    superseded_onto: dict[str, str] = {}
+    child_records: list[tuple] = []
 
     def _as_seq(value):
         if isinstance(value, bool):
@@ -973,6 +1023,10 @@ def load_open_commitments(
                             entry["refs"].append(r)
                     if cid and str(cid) not in entry["from"]:
                         entry["from"].append(str(cid))
+                    # SUB1 D3b: the merged-away item's children re-point to
+                    # the survivor read-side (never rewritten on disk).
+                    if cid:
+                        superseded_onto[str(cid)] = str(survivor)
         elif et == "commitment_reopened":
             # Stage D (S4 undo): reopen the referenced commitment. Same target
             # chain shape as closures; append order decides the final state.
@@ -1079,25 +1133,59 @@ def load_open_commitments(
                     "idx": idx,
                 }
         elif et == "commitment":
+            cid_ev = _commitment_id(ev)
+            commitment_by_id[cid_ev] = ev
             status = _commitment_field(ev, "status") or "open"
             if status in ("open", "overdue"):
                 open_evs.append(ev)
+                pid = d.get("parent_id")
+                if isinstance(pid, str) and pid.strip():
+                    child_records.append((cid_ev, ev.get("seq"), pid.strip()))
+
+    def _closed_here(cid: str, seq) -> bool:
+        """Closed iff the LATEST closure (id chain or F3 seq alias) comes
+        after the LATEST reopen (Stage D undo). Never closed → -1."""
+        seq_ok = isinstance(seq, int) and not isinstance(seq, bool)
+        last_close = max(
+            closed_ids_at.get(cid, -1),
+            closed_seqs_at.get(seq, -1) if seq_ok else -1,
+        )
+        last_reopen = max(
+            reopened_ids_at.get(cid, -1),
+            reopened_seqs_at.get(seq, -1) if seq_ok else -1,
+        )
+        return last_close > last_reopen
+
+    # SUB1 fold prep — effective parent per child (merge re-point, cycle-safe)
+    # and the per-parent child roster in append order.
+    def _eff_parent(pid: str) -> str:
+        seen: set = set()
+        while pid in superseded_onto and pid not in seen:
+            seen.add(pid)
+            pid = superseded_onto[pid]
+        return pid
+
+    child_parent_eff: dict[str, str] = {}
+    children_by_parent: dict[str, list] = {}
+    for ccid, cseq, rawpid in child_records:
+        eff = _eff_parent(rawpid)
+        child_parent_eff[ccid] = eff
+        children_by_parent.setdefault(eff, []).append((ccid, cseq))
+
+    def _parse_date_head(value):
+        if not value or not isinstance(value, str):
+            return None
+        try:
+            import datetime as _dtm
+            return _dtm.date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
 
     out: list[dict] = []
     for c in open_evs:
         cid = _commitment_id(c)
         seq = c.get("seq") if isinstance(c.get("seq"), int) else None
-        # Closed iff the LATEST closure (id chain or F3 seq alias) comes after
-        # the LATEST reopen (Stage D undo). Never closed → last_close = -1.
-        last_close = max(
-            closed_ids_at.get(cid, -1),
-            closed_seqs_at.get(seq, -1) if seq is not None else -1,
-        )
-        last_reopen = max(
-            reopened_ids_at.get(cid, -1),
-            reopened_seqs_at.get(seq, -1) if seq is not None else -1,
-        )
-        if last_close > last_reopen:
+        if _closed_here(cid, seq):
             continue
         patch: dict = {}
         upd = due_updates.get(cid)
@@ -1203,6 +1291,63 @@ def load_open_commitments(
             patch["received_from"] = sorted(rec_ids)
         if rec_names:
             patch["received_from_names"] = sorted(rec_names)
+        # SUB1 child stamps: effective parent (merge re-pointed), the parent's
+        # effective title for "part of: […]" rendering, and the orphan flag
+        # when the parent is closed/missing (crash-window children render
+        # top-level with a "was part of" note — never vanish, D2).
+        eff_parent = child_parent_eff.get(cid)
+        if eff_parent:
+            patch["parent_id"] = eff_parent
+            parent_ev = commitment_by_id.get(eff_parent)
+            if parent_ev is not None:
+                p_wu = wording_updates.get(eff_parent) or {}
+                patch["parent_title"] = (
+                    p_wu.get("title")
+                    or _commitment_field(parent_ev, "title") or ""
+                )
+                p_status = _commitment_field(parent_ev, "status") or "open"
+                p_seq = (parent_ev.get("seq")
+                         if isinstance(parent_ev.get("seq"), int) else None)
+                if (p_status not in ("open", "overdue")
+                        or _closed_here(eff_parent, p_seq)):
+                    patch["parent_closed"] = True
+            else:
+                patch["parent_closed"] = True
+        # SUB1 parent stamps: child roster + progress + the PROPOSE-closure
+        # signal + the annotation-only next due (D-7: never folded into the
+        # parent's own data.due — a deferred parent stays deferred).
+        kids = children_by_parent.get(cid)
+        if kids:
+            open_kids = [
+                (kcid, kseq) for kcid, kseq in kids
+                if not _closed_here(
+                    kcid, kseq if isinstance(kseq, int)
+                    and not isinstance(kseq, bool) else None)
+            ]
+            patch["subitem_ids"] = [kcid for kcid, _s in kids]
+            patch["n_subitems_open"] = len(open_kids)
+            patch["n_subitems_done"] = len(kids) - len(open_kids)
+            if not open_kids:
+                # All sub-items done — PROPOSE "close it?"; never auto-close
+                # (the parent may carry residual work the children never
+                # listed — standing doctrine, mirror of MC1).
+                patch["all_subitems_resolved"] = True
+            else:
+                best_raw = None
+                best_date = None
+                for kcid, _s in open_kids:
+                    k_upd = due_updates.get(kcid)
+                    if k_upd:
+                        raw_due = k_upd["due"]
+                    else:
+                        k_ev = commitment_by_id.get(kcid) or {}
+                        raw_due = _commitment_field(k_ev, "due")
+                    kd = _parse_date_head(raw_due)
+                    if kd is not None and (best_date is None or kd < best_date):
+                        best_date = kd
+                        best_raw = raw_due
+                if best_raw is not None:
+                    patch["next_subitem_due"] = best_raw
         if patch:
             c = {**c, "data": {**(c.get("data") or {}), **patch}}
         if rec_ids or rec_names:
@@ -1213,7 +1358,8 @@ def load_open_commitments(
             if _all_rcv(c):
                 c["data"]["all_counterparties_received"] = True
         out.append(c)
-    _OPEN_COMMITMENTS_CACHE[cache_key] = (sig, out)
+    if cache_key is not None:
+        _OPEN_COMMITMENTS_CACHE[cache_key] = (sig, out)
     return list(out)
 
 
@@ -1232,6 +1378,40 @@ def _commitment_kind(ev: dict) -> str:
     return kind if isinstance(kind, str) and kind else "promise"
 
 
+def partition_subitems(open_commitments: list[dict]) -> tuple[list[dict], list[dict]]:
+    """SUB1 D2 — partition an open set into (top_level, sub_items).
+
+    An item is a SUB-ITEM iff its `data.parent_id` (the loader has already
+    re-pointed merged-away parents to their survivor) names ANOTHER item in
+    the SAME supplied set — a live parent link. An ORPHAN child (live child
+    whose parent is closed — reachable only through the cascade crash window,
+    D3) has no live link, so it partitions TOP-LEVEL: it is real open work
+    and must never vanish from the total. Every counting/chase/brief surface
+    partitions through THIS function; none re-derives the rule."""
+    ids = {_commitment_id(c) for c in (open_commitments or [])}
+    top: list[dict] = []
+    subs: list[dict] = []
+    for c in open_commitments or []:
+        pid = (c.get("data") or {}).get("parent_id")
+        if (isinstance(pid, str) and pid and pid != _commitment_id(c)
+                and pid in ids):
+            subs.append(c)
+        else:
+            top.append(c)
+    return top, subs
+
+
+def parent_blocks_auto_resolve(ev: dict) -> bool:
+    """SUB1 D3 — THE shared programmatic-closer predicate: True when a
+    (projected) commitment has open sub-items, so an automatic closure must
+    DOWNGRADE to a propose (`pending_review` recommendation) instead of
+    auto-resolving. Programmatic closers never cascade — closing a parent
+    whose steps are still open needs the user's one-line confirm. Reads the
+    loader's `n_subitems_open` stamp (0/absent → False)."""
+    n = (ev.get("data") or {}).get("n_subitems_open")
+    return isinstance(n, int) and not isinstance(n, bool) and n > 0
+
+
 def cru_eligible(open_commitments: list[dict]) -> list[dict]:
     """Stage D policy: TASK-kind commitments NEVER enter CRU matching. The
     matchers only make sense with a counterparty — a self-owed task can't be
@@ -1239,8 +1419,16 @@ def cru_eligible(open_commitments: list[dict]) -> list[dict]:
     or a calendar invite; scoring them produces false auto-closes and chase
     noise. Every match_* path filters through this ONE function; a surface
     that hands the matchers a raw event list still gets the filter because
-    the filter lives here, not at the call sites."""
-    return [c for c in (open_commitments or []) if _commitment_kind(c) != "task"]
+    the filter lives here, not at the call sites.
+
+    SUB1 D5 — live SUB-ITEMS never enter CRU either (same mechanism): the
+    parent is the commitment of record; the counterparty cares about the
+    deliverable, not the user's step list. This also blocks the Path-1
+    failure mode where an outbound send about the deliverable auto-closes
+    one STEP on title overlap. Orphan children partition top-level and stay
+    eligible — they are real open work."""
+    top_level, _subs = partition_subitems(open_commitments or [])
+    return [c for c in top_level if _commitment_kind(c) != "task"]
 
 
 # -----------------------------------------------------------------------------
@@ -1364,6 +1552,12 @@ def match_send_to_commitments(
                 if recipient_name_tokens & set(_tokenize(nm))
             ]
             rec = "partial_received"
+        # SUB1 D3: a parent with OPEN sub-items is never auto-closed by a
+        # matcher — programmatic closers propose, the user confirms (the
+        # cascade needs their one-line confirm; parent_blocks_auto_resolve
+        # is THE shared predicate).
+        if rec == "auto_resolve" and parent_blocks_auto_resolve(ev):
+            rec = "pending_review"
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -1463,6 +1657,9 @@ def match_transcript_to_commitments(
         from commitment_parties import has_multiple_counterparties as _multi_cp
         if recommendation == "auto_resolve" and _multi_cp(ev):
             recommendation = "partial_received"
+        # SUB1 D3: never auto-close a parent with open sub-items — propose.
+        if recommendation == "auto_resolve" and parent_blocks_auto_resolve(ev):
+            recommendation = "pending_review"
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -1581,6 +1778,9 @@ def match_inbound_to_commitments(
             if sender_person_id in _cp_ids(ev):
                 matched_cp_ids = [sender_person_id]
             recommendation = "partial_received"
+        # SUB1 D3: never auto-close a parent with open sub-items — propose.
+        if recommendation == "auto_resolve" and parent_blocks_auto_resolve(ev):
+            recommendation = "pending_review"
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -1766,6 +1966,9 @@ def match_calendar_to_commitments(
         if recommendation == "auto_resolve" and _multi_cp(ev):
             matched_cp_ids = list(best.get("matched_cp") or [])
             recommendation = "partial_received"
+        # SUB1 D3: never auto-close a parent with open sub-items — propose.
+        if recommendation == "auto_resolve" and parent_blocks_auto_resolve(ev):
+            recommendation = "pending_review"
 
         evidence = (
             f"Calendar event "
@@ -2007,6 +2210,9 @@ __all__ = [
     "detect_scheduling_intent",
     "load_open_commitments",
     "load_open_review_proposals",
+    "partition_subitems",
+    "parent_blocks_auto_resolve",
+    "cru_eligible",
     "match_send_to_commitments",
     "match_transcript_to_commitments",
     "match_inbound_to_commitments",

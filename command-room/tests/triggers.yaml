@@ -619,6 +619,37 @@
   expected: dormant-customer-scan
 
 # =========================================================
+# BALANCE (SPEC BAL1) — the personal white-space surface.
+# Must NOT collide with relationship-moves (WORK outreach),
+# dormant-customer-scan (detection), show-my-reminders (pins),
+# or calendar-writer (work scheduling).
+# =========================================================
+- phrase: "balance check"
+  expected: balance
+- phrase: "how's my white space"
+  expected: balance
+- phrase: "how is my white space"
+  expected: balance
+  notes: "contains the owned 'my white space' stem; bare white space is deliberately unowned"
+- phrase: "am I making time for family"
+  expected: balance
+- phrase: "plan a date night"
+  expected: balance
+- phrase: "tune balance"
+  expected: balance
+# BAL1 hijack guards — bare 'white space' / 'date night' stay unowned
+# (the bare-'deal' rule): a match here is a hijack regression.
+- phrase: "add more white space to the slide layout"
+  expected: none
+  notes: "design/layout white space — only the my-white-space stem routes to balance"
+- phrase: "she mentioned a good date night spot downtown"
+  expected: none
+  notes: "date-night mention inside an unrelated remark — only 'plan a date night' routes"
+- phrase: "walk me through the balance sheet"
+  expected: none
+  notes: "financial 'balance' phrasing stays unowned — only the 'balance check' / 'tune balance' stems route to balance (second-eyes pin)"
+
+# =========================================================
 # FIRST-RUN PERSONALIZATION — tune / show settings / reset (SPEC FRP1 S5)
 # Each adopting skill owns its own skill-name-specific trigger family.
 # The phrases are fully skill-qualified (e.g. "tune email-writer") so the
@@ -1056,6 +1087,20 @@
   expected: workspace-manager
   notes: "org + engagement only; the deal thread is a separate, offered step"
 
+# PIPE1 Part 2 — the pipeline digest (later-add scheduled chat)
+- phrase: "pipeline digest"
+  expected: pipeline-tracker
+  notes: "the bare 'pipeline' stem owns the noun ask (preference + proposal surface); registration itself is change-schedule's add path"
+- phrase: "send me the weekly pipeline digest"
+  expected: pipeline-tracker
+  notes: "freeform tune phrasing — sets digest.enabled + surfaces the registration proposal"
+- phrase: "add pipeline digest"
+  expected: change-schedule
+  notes: "PIPE1 Part 2 registration path — flows through change-schedule -> registration Phase 6, like every later-add task; pipeline-tracker fences it despite its bare 'pipeline' stem"
+- phrase: "chart my pipeline"
+  expected: chart-on-demand
+  notes: "tripwire that pipeline-tracker's VERB-LEVEL chart fence (OUT3B, second-eyes 2026-07-19) still holds with the Part 2 digest vocabulary in the corpus"
+
 # D11 hijack guards — deliberately unowned deal-adjacent utterances
 - phrase: "deal with it"
   expected: none
@@ -1094,3 +1139,88 @@
 - phrase: "prep me for the staff meeting"
   expected: call-prep
   notes: "an upcoming real-world staff meeting on the calendar is call-prep's job"
+
+# =========================================================
+# SPEC HIST1 — entity history, person facts & org money.
+# people-crm fact verbs are description-routed; org money/fact
+# rides the workspace-manager loose-input catch-all (D8 ruled
+# DEFER — the bare org trigger ships only after a description
+# trim; stems live in the Routing corpus, description frozen).
+# =========================================================
+- phrase: "remember Sam prefers Signal"
+  expected: people-crm
+  notes: "explicit person fact — people_writer.record_person_fact, user is the authority, no proposal"
+- phrase: "note that Sam prefers Signal"
+  expected: people-crm
+  notes: "note-that person-fact form — same writer; ENTITY_RESOLVE gates the name"
+- phrase: "Acme Co is a $120k account"
+  expected: workspace-manager
+  notes: "org money statement — catch-all handler -> org_writer.set_org_money(confirmed=True); never estimated"
+- phrase: "Acme Co is a $120k/yr account"
+  expected: workspace-manager
+  notes: "the /yr phrasing of the same statement"
+- phrase: "go Acme Co rollup"
+  expected: workspace-manager
+  notes: "go [org] rollup — renders the net-new org history view (SPEC HIST1 D7)"
+
+# HIST1 hijack guards — risky bare tokens (remember / note / account)
+# stay unowned; a match here is a hijack regression.
+- phrase: "remember to buy milk"
+  expected: none
+  notes: "bare 'remember' with no tracked name — unowned small talk, not a fact write"
+- phrase: "take a note"
+  expected: none
+  notes: "bare 'note' — unowned; only the note-that fact form routes"
+- phrase: "close my account"
+  expected: none
+  notes: "bare 'account' — unowned; only the org-money statement shape routes"
+
+# =========================================================
+# SPEC OUT3B — chart-on-demand family + fences
+# =========================================================
+- phrase: "chart revenue by client"
+  expected: chart-on-demand
+  notes: "S3 pipeline_by_org — the headline positive; revenue in play, not booked"
+- phrase: "graph the pipeline"
+  expected: chart-on-demand
+  notes: "S2 pipeline_mix (stage-mix donut)"
+- phrase: "show me a trend of hours absorbed"
+  expected: chart-on-demand
+  notes: "S1 value_trend — the 'show me a trend' + 'trend of' stems"
+- phrase: "chart drafts per month"
+  expected: chart-on-demand
+  notes: "S1 value_trend via a different ask shape"
+- phrase: "graph my hours absorbed"
+  expected: chart-on-demand
+  notes: "'graph my' stem (avoids pipeline-tracker's bare 'pipeline'/'revenue in play')"
+- phrase: "plot the value trend"
+  expected: chart-on-demand
+  notes: "'plot' single-word stem"
+
+# OUT3B reverse fence — chart-on-demand yields the graph/chart-verb pipeline
+# phrasing that pipeline-tracker's bare 'pipeline' stem would otherwise grab
+# (see the added pipeline-tracker negative fence — VERB-LEVEL per second-eyes
+# 2026-07-19: the exact-phrase fence left 'chart revenue in play' /
+# 'visualize the pipeline' colliding 2-ways). 'graph the pipeline' is the
+# spec §4a mandated positive.
+- phrase: "chart revenue in play"
+  expected: chart-on-demand
+  notes: "S3 body-corpus positive that ALSO contains pipeline-tracker's 'revenue in play' stem — the verb-level fence is what keeps this single-owner (second-eyes 2026-07-19)"
+- phrase: "visualize the pipeline"
+  expected: chart-on-demand
+  notes: "chart verb + bare 'pipeline' — the collision class the verb-level fence closes (second-eyes 2026-07-19)"
+# NOTE: 'trends in commercial real estate' -> research is NOT pinned as
+# `expected: research`: the heuristic matcher only owns research semantically
+# (mechanically [] — no literal stem), so that pin would false-fail. Pinned as
+# expected:none instead (second-eyes 2026-07-19) — asserts mechanically that
+# NO skill (chart-on-demand included) ever hijacks it; live, research owns it
+# semantically. See BUILD_REPORT deviations (D-3).
+- phrase: "trends in commercial real estate"
+  expected: none
+  notes: "industry research — research owns it semantically (no literal stem, so mechanically unowned); tripwire that chart-on-demand's 'trends in' fence holds"
+
+# OUT3B expected:none — the one empirically-recorded collision phrase in this
+# workspace. Finance vocabulary owned by nobody; must match nothing.
+- phrase: "chart of accounts for the restaurant group"
+  expected: none
+  notes: "finance term, not a chart ask — bare 'chart' is deliberately not a positive trigger"

@@ -251,7 +251,9 @@ check(swept["n_expired"] == 1 and swept["expired"] == ["bp_stale0000001"],
 check(len(_events(ws, "brain_proposal_expired")) == 1, "expiry event written")
 check(bp.expire_stale(ws)["n_expired"] == 0, "sweep is idempotent")
 health = bp.card_health_counts(ws)
-check(health == {"open": 1, "expired_in_window": 1},
+# LB2: `resting_auto` counts open auto-tier rows (the lifecycle-contract
+# violation detector's health mirror) — 0 on any healthy workspace.
+check(health == {"open": 1, "expired_in_window": 1, "resting_auto": 0},
       "card health counts open + recent expiries")
 # expiry is NOT a cooldown — the fingerprint may re-propose
 r5 = bp.propose(ws, kind="deal_update", fingerprint="deal:old:stage",
@@ -466,8 +468,14 @@ card = bp.select_confirm_card(ws, "morning-brief")
 tiers = [i.get("tier") for i in card["items"]]
 check("auto" not in tiers and len(card["items"]) == 1,
       f"F5: auto tier excluded from the card: {tiers}")
-check(any(i.get("tier") == "auto" for i in bp.load_open_proposals(ws)),
-      "F5: auto proposal still visible to the projector (feed reads it)")
+# LB2 parity flip: the projector DEFAULT now excludes autos too (the FB-20
+# mandate — no adjudication surface may render or count one); diagnostics
+# reach them via the explicit include_auto=True escape.
+check(all(i.get("tier") != "auto" for i in bp.load_open_proposals(ws)),
+      "LB2: auto proposal excluded from the projector default")
+check(any(i.get("tier") == "auto"
+          for i in bp.load_open_proposals(ws, include_auto=True)),
+      "LB2: include_auto=True still reaches the auto row (diagnostic escape)")
 
 # --- FS-19: already-a-contact suppression (confident matches only) ---------
 # The person queue's missing symmetry with the org adapter. An "add person"

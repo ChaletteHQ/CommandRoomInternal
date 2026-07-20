@@ -93,7 +93,7 @@ Strip or rewrite these phrases before returning any output. These are LLM tells 
 ### Structural tells
 - Tri-colon constructions ("First...: Second...: Third...:") where prose fits.
 - Bulleted lists inserted into email/Slack output where the CEO would have used prose.
-- Em-dash pile-ups — more than 2 em-dashes in a single paragraph is a tell — so break those up.
+- **No dashes as punctuation in body prose** (FB-16 — a product-level ban, default-on for every client): no em dash, no en dash, no spaced hyphen. Use a comma, a colon, or rewrite. Hyphenated compounds ("follow-up", "check-in") stay legal, and the standalone "— Name" sign-off is exempt. A client whose calibrated voice keeps dashes overrides via `ban_dashes=False` or a Voice Block `allow_phrases` entry. This REPLACES the old warn-only "more than 2 em-dashes per paragraph" rule, which scored a single "we shipped — fast" as `pass` and let it slip a quick-drafted email body through the gate. Now a FAIL, one finding per occurrence.
 - Over-hedging ("I think it might be possible that perhaps...") — commit or cut.
 
 ### Closers to never use
@@ -103,7 +103,7 @@ Strip or rewrite these phrases before returning any output. These are LLM tells 
 
 ### Subject lines (v4.6.1 S3 — the gate covers subjects, not just bodies)
 
-- **No dashes as punctuation in email subject lines** — no em dash, no en dash, no spaced hyphen. Use a comma, a colon, or rewrite ("Q2 deck — status" → "Q2 deck: status"). Hyphenated compounds ("follow-up", "check-in") stay legal. This is the BRAND_VOICE hard rule applied to the one surface the body gate never saw: F-47 P2d and F-53 shipped em-dash subjects twice in one dogfood day. Subjects have NO pile-up allowance — one dash fails.
+- **No dashes as punctuation in email subject lines** — no em dash, no en dash, no spaced hyphen. Use a comma, a colon, or rewrite ("Q2 deck — status" → "Q2 deck: status"). Hyphenated compounds ("follow-up", "check-in") stay legal. F-47 P2d and F-53 shipped em-dash subjects twice in one dogfood day. Subjects have NO pile-up allowance — one dash fails. As of FB-16 the body gate enforces the same ban on body prose, so this is the BRAND_VOICE hard rule on every generated surface, not just the subject line the body gate did not scan.
 - The banned phrases and vocabulary words above apply to subjects too — a subject that leads with "Circling back" or "leverage" is still the voice.
 - Enforced by `voice_tell_detector.scan_subject` (`--context subject` on the CLI). Every surface that mints a subject — email-writer Phase 3.5, the commitments-chat chase drafts, follow-up-ritual — runs it before showing the draft.
 

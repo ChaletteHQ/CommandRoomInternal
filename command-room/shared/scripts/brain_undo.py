@@ -122,26 +122,77 @@ def _reverse_person_org_creation(workspace_root, change, *, undone_by, source_sk
     raise BrainUndoError("person_org_creation reversal needs person_id or org_id")
 
 
+def _reverse_entity_fact_structured(workspace_root, change, *, undone_by,
+                                    source_skill):
+    # HIST1 Part 2 (D3/S1) — facts are append-only with NO status to flip:
+    # "archive the event" is undefined here. The reverser APPENDS the
+    # declared entity_fact_retracted event {target_id, retracts_seq};
+    # render_person_history / render_org_history suppress a fact whose seq
+    # a later retraction references (shipped in Part 1, suppression in
+    # EVERY block). The fact event itself stays in history — provenance is
+    # never edited or deleted.
+    from event_gate import append_event
+
+    target_id = change.get("person_id") or change.get("org_id")
+    if not target_id:
+        raise BrainUndoError(
+            "entity_fact_structured reversal needs person_id or org_id on "
+            "the fact event's data (the writers stamp it — a batch row "
+            "without one is malformed)")
+    ref = str(change.get("change_ref") or "")
+    try:
+        retracts_seq = int(ref.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise BrainUndoError(
+            f"entity_fact_structured reversal needs a seq-bearing "
+            f"change_ref, got {ref!r}")
+    append_event(_events_path(workspace_root), [{
+        "type": "entity_fact_retracted",
+        "source_skill": source_skill,
+        "data": {
+            "target_id": target_id,
+            "retracts_seq": retracts_seq,
+            "reason": change.get("reason") or "brain undo — batch reversal",
+            # Facts are always sourced (D2/S4) — the retraction inherits
+            # the discipline; synthesized ref, never null.
+            "source_ref": f"undo:{source_skill}:{ref}",
+        },
+    }], holder="brain_undo")
+    return {"status": "retracted", "target_id": target_id,
+            "retracts_seq": retracts_seq}
+
+
 def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
                                        source_skill):
     # T2.2 (backlog sweep) — reverse an expire/skip tombstone on a person
     # proposal: append the additive person_proposal_reopened marker; the
     # confirm_flow reader honors the LAST writer, so the proposal re-surfaces.
+    # PID1 D8: a tombstone on a SEQ-LESS proposal carries proposal_fingerprint
+    # instead — the reopen marker carries the same key (the reader folds both).
     from event_gate import append_event
 
     seq = change.get("proposal_seq")
-    if seq is None:
-        raise BrainUndoError("person_proposal_tombstone reversal needs proposal_seq")
+    fingerprint = change.get("proposal_fingerprint")
+    if seq is None and not fingerprint:
+        raise BrainUndoError(
+            "person_proposal_tombstone reversal needs proposal_seq (or, for "
+            "a seq-less proposal, proposal_fingerprint — D8)")
+    data = {
+        "reopened_by": undone_by,
+        "reason": change.get("reason") or "brain undo — batch reversal",
+    }
+    if seq is not None:
+        data["proposal_seq"] = int(seq)
+    else:
+        data["proposal_fingerprint"] = str(fingerprint)
     append_event(_events_path(workspace_root), [{
         "type": "person_proposal_reopened",
         "source_skill": source_skill,
-        "data": {
-            "proposal_seq": int(seq),
-            "reopened_by": undone_by,
-            "reason": change.get("reason") or "brain undo — batch reversal",
-        },
+        "data": data,
     }], holder="brain_undo")
-    return {"status": "reopened", "proposal_seq": int(seq)}
+    if seq is not None:
+        return {"status": "reopened", "proposal_seq": int(seq)}
+    return {"status": "reopened", "proposal_fingerprint": str(fingerprint)}
 
 
 # change_class -> {reverse, reverses_via, description}. `reverses_via` names
@@ -169,6 +220,17 @@ REVERSERS: dict[str, dict] = {
         "reverses_via": "person_updated/org_updated (status → archived)",
         "description": "archive an auto-created contact/org (never delete; "
                        "history and provenance stay on file)",
+    },
+    # HIST1 Part 2 (D3/S1/S2): the structured-fact auto tier is legal ONLY
+    # because this reverser exists (landed in the SAME commit as the
+    # AUTO_ALLOWED entry, per the spec's step-10 mandate). Retraction is
+    # additive — the renderers do the forgetting.
+    "entity_fact_structured": {
+        "reverse": _reverse_entity_fact_structured,
+        "reverses_via": "entity_fact_retracted",
+        "description": "retract an auto-noted structured fact (append the "
+                       "retraction event; the history renderers suppress "
+                       "the fact — the event itself is never edited)",
     },
     # T2.2 (FS-11b-extended backlog sweep): the sweep's expire tombstones are
     # undoable — the reverser appends person_proposal_reopened (additive; the
@@ -242,7 +304,7 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
             "change_ref": f"seq:{ev.get('seq')}",
         }
         for key in ("commitment_id", "dismissal_seq", "person_id", "org_id",
-                    "proposal_seq"):
+                    "proposal_seq", "proposal_fingerprint"):
             if data.get(key) is not None:
                 change[key] = data[key]
         out.append(change)

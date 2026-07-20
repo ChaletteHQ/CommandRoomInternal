@@ -143,7 +143,7 @@ Build the data view with the canonical builder — do NOT hand-assemble sections
 
 ## Deferred / already-shipped adjacent surfaces (context, not Step 5)
 
-The Tue/Thu `waiting-on chase` shipped Phase 4 (2026-07-02) as the Commitments orchestrator's Phase 3.8 — its gates (the kinds split + counterparty receipts) merged, and it rides the existing commitments task, so nothing new registered. Two opt-in surfaces remain gated until this watchdog has been live long enough to verify fires: the day-1/week-1 lifecycle one-shots (cut in v4.1.0 because nothing could verify they fired) and an optional "system health" sidebar card. Each ships as its own later addition through the normal add paths — this skill only diagnoses.
+The Tue/Thu quiet-chased-tail sweep shipped Phase 4 (2026-07-02) as the daily commitment orchestrator's Phase 3.8 (originally titled "WAITING ON"; renamed **"NUDGED — NO REPLY"** by CTS1 §4.1 when the whole chat took the Waiting On name) — its gates (the kinds split + counterparty receipts) merged, and it rides the daily chat's own task (`waiting-on` post-CTS1; `commitments` pre-split), so nothing new registered. Two opt-in surfaces remain gated until this watchdog has been live long enough to verify fires: the day-1/week-1 lifecycle one-shots (cut in v4.1.0 because nothing could verify they fired) and an optional "system health" sidebar card. Each ships as its own later addition through the normal add paths — this skill only diagnoses.
 
 ## Gotchas
 

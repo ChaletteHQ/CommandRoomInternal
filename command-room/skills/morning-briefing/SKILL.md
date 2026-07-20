@@ -373,6 +373,11 @@ state = compute_and_log_brief_state(
 #     movement map automatically). The deprecated TOP-LEVEL counts["stuck"]
 #     key is still overdue-by-due-date and still never renders (R1b).
 #   state["needs_attention"] → the "ball is on you" items under Needs Attention
+#     (SUB1: top-level items only — a sub-item never gets its own brief line;
+#     when a row carries n_subitems_open/n_subitems_done, render the progress
+#     inline — "2 of 3 sub-items done · next: [step]" — from those keys plus
+#     next_subitem_due; a row carrying all_subitems_resolved renders "all
+#     sub-items done — close it?" as a PROPOSE, never an auto-close)
 #   state["meeting_linked"] → open items relevant to TODAY's meetings, matched
 #     by counterparty or name-mention (v4.5.2 C1 / F-44). Render under the
 #     matched calendar event (Step 4 "you two have open business" sub-lines).
@@ -380,7 +385,10 @@ state = compute_and_log_brief_state(
 #     never suppress one because it is undated, task-kind, or on a recently
 #     active thread. Items flagged pending_review render as needing a
 #     confirm ("captured from a chat — confirm it's yours"), never as
-#     settled fact and never with an auto-chase affordance.
+#     settled fact and never with an auto-chase affordance. SUB1: these
+#     rows DO include sub-items (F-44 — a step relevant to today's meeting
+#     surfaces on the day of the meeting); a row carrying parent_id/
+#     parent_title renders with "part of: [parent title]".
 #   state["dropped"] → diagnostic only; never shown to the user (Rule 4/9)
 #   state["reconcile_stale"] → Bug #98-v2 floor. If True (cursor absent or >1 day
 #     old), reconciliation is behind: render EVERY needs_attention item softened
@@ -434,17 +442,19 @@ Render rules (M's four settled choices, 2026-07-08):
 
 ### Step 3g: Confirm-section pointer count (v4.6.1 W4b — one number, read-only)
 
-The daily Commitments chat opens with the "Needs a quick confirm" section (W4b; the selector covers every unadjudicated amber capture younger than the 7-day escalation pin). The brief carries ONE pointer line when that section will be non-empty — never the rows themselves (the Commitments chat is the triage point; the brief just points). Compute the count with the same selectors that chat uses, over the open set Step 3 already loaded:
+The daily Waiting On chat (CTS1 — the re-scoped Commitments chat) opens with the "Needs a quick confirm" section (W4b; the selector covers every unadjudicated amber capture younger than the 7-day escalation pin). The brief carries ONE pointer line when that section will be non-empty — never the rows themselves (the Waiting On chat is the triage point; the brief just points). Compute the count with the same selectors that chat uses, over the open set Step 3 already loaded:
 
 ```python
 from confirm_flow import (select_confirm_items, select_promotion_proposals,
                           load_open_person_proposals, confirm_pointer_line)
+from identity_reconcile import count_person_rows
 from mute_ledger import active_dismissal_target_ids
 
 dismissed = active_dismissal_target_ids(<all events>, "<now ISO>")
+person_rows = load_open_person_proposals(events_path, dismissed_target_ids=dismissed, suppress_on_file=True)  # FS-19: don't count already-on-file people
 n_confirm = (len(select_confirm_items(opens, "<now ISO>", dismissed_ids=dismissed))
              + len(select_promotion_proposals(opens, dismissed_ids=dismissed))
-             + len(load_open_person_proposals(events_path, dismissed_target_ids=dismissed, suppress_on_file=True)))  # FS-19: don't count already-on-file people
+             + count_person_rows(person_rows, now_iso="<now ISO>"))  # PID1: count CLUSTERS (one person = one row — the same projection the queue renders), never raw proposal events
 pointer = confirm_pointer_line(n_confirm)   # None when the section is empty
 ```
 
@@ -468,7 +478,7 @@ count = len(queue)                              # pack["queue_pointer"]["count"]
 
 - **`money_lines` — THE ONE EXCEPTION.** Money-class proposals (deal signals) are the single class the brief still names outright, as digest PROSE, one sentence each: *"Command Room thinks Northwind is a live deal — say `staff meeting` to confirm."* Money may never go silent — a deal signal sitting unmentioned for a day is the one silence with a price tag. These sentences are **propose-only and carry no verbs**: never attach buttons, never invent a "confirm?" affordance, never act on one from a brief turn. The confirm is a chat phrase at the staff meeting. Place them with NEEDS ATTENTION in the digest body. Empty → nothing renders; **never** pad an all-clear ("no new deals today" — never).
 - **`queue_pointer.line` — the handoff.** ONE line, verbatim, as the digest's last content line before SUGGESTED FIRST MOVE: *"7 things need your eyes — say `staff meeting`."* That is the brief's entire adjudication affordance. The count comes from the same projector the staff meeting renders (same surface, same held/mute filters), so it can never over-promise — **never recount it, never adjust it, never round it, never soften it into "a few things."** Nothing queued → the driver returns an empty line and nothing renders (drop-empty; never "0 things need your eyes", never an all-clear pad).
-- The Step 3g confirm-pointer stays as-is — it counts the Commitments chat's OWN confirm section; this is the cross-detector queue. An item can legitimately appear in both; that is not a bug.
+- The Step 3g confirm-pointer stays as-is — it counts the Waiting On chat's OWN confirm section; this is the cross-detector queue. An item can legitimately appear in both; that is not a bug.
 - **First-run gate (FRP1) — RETIRED with the card.** `skill_config/system-health.json` key `daily_confirm_card` no longer gates this surface: there is no card to gate, and the two blocks above are substrate truth the brief always owes. The key is still read by the surfaces that do render the card. (An `"off"` value never suppressed the queue anyway — it reached the user through the Staff Meeting and `what's waiting on me`, which is now the only path by design.)
 
 ## Step 4: Build the Digest
@@ -537,6 +547,15 @@ state["counts"]["headline"] — the one bucket export (v4.5.2 R4). ONE line,
 ONE template — the pre-R4 "they owe · stuck" form is retired.]
 Commitments: [Y] you owe (+[delta] since [last_brief_date], [closed_yesterday] closed) · [Z] owed to you · [U] unowned · [C] unconfirmed · [O] overdue · [S] stuck
 [Omit a zero bucket from the line (never pad); omit the whole line when headline["total"] is 0.]
+
+[Dated-Personal echo (CTS1 §4.2, RULED 2026-07-16) — ONE line under the
+commitments line, rendered ONLY when at least one owner-me effective-kind-task
+item is DUE TODAY (surface_split.partition_surfaces(opens, user_id)["personal"]
+filtered to effective due == today):]
+[N] personal item[s] due today — they're on your My Plate chat.
+[DATED items only — never echo the undated Personal tail here (the 30+ day
+stale tail rides Friday triage's "still on your plate?" sweep, and the full
+list is the My Plate chat's job). Zero dated-today → omit the line entirely.]
 [The overdue number is exactly what it says — items past their due date; never
 attach a movement definition to it (R1b).]
 [The stuck number is headline["stuck"] — the REAL movement metric (v4.6.0 MC2:
@@ -556,7 +575,7 @@ non-empty (pointer is not None) — omit entirely otherwise. ONE line, never
 the items themselves, never a count folded into the commitments line above,
 and placed clear of the reminders sections (different lane — reminders are
 the user's own pins; this points at captures awaiting a confirm). v4.6.1 W4b.]
-[N] new items need a 10-second confirm — they're in your Commitments chat.
+[N] new items need a 10-second confirm — they're in your Waiting On chat. [Pre-CTS1 workspaces still on the `commitments` task: say "Commitments chat" until the split registers.]
 
 [Top 3 moves before noon — the answer to "what should I do." This is the most important section. Surface it right after commitments so it's seen in the first 15 seconds.]
 Top 3 moves today
@@ -622,7 +641,7 @@ Command Room
   • [Thread D] — Next: [action] | ⚠️ quiet [X] days
 
 [For nested holdings — render holding as header, operating children indented:]
-Category Company [holding]
+Summit Company [holding]
   └── Acme Restaurant
       • [Thread E] — Next: [action]
   └── Acme Bakery

@@ -82,6 +82,7 @@ print(json.dumps({'feed': feed, 'n_open': len(queue), 'queue': queue}, default=s
 ```
 
 - **"What I did on my own"** — the feed's lines, rendered verbatim (each is already plain English with its undo affordance where one applies). Cap 3 lines; drop-empty.
+- **Unnamed-speaker count line (PID1 §0-4 — ONE prose line, this surface only).** Compute `n = identity_reconcile.count_open_annotations(ws)` (a separate read-only call — do not fold it into the queue load above). When `n > 0`, render ONE line after the feed lines: *"N unnamed speakers pending identification — resolving against calendars."* When `n == 0`, render nothing (drop-empty). This is the annotations' ONLY render anywhere — never a queue row, never a verb, never mentioned in the brief.
 - **"What's waiting on you"** — the COMPLETE ranked queue (`surface="staff-meeting"` sees the full set — no daily-dedup filter, no cap). Zero items → the section says so honestly and the widget renders only the moves section (or the `all_clear_summary` data view when that's empty too).
 
   **⛔ THIS CARD IS NOW THE ONLY DOOR (FB-19 / FB-20 — M's ruling 2026-07-16).** The morning brief went read-only: it names deal signals in prose and points here, and nothing else in the system asks the user to confirm anything. Every item's ONLY path to adjudication runs through this card, which raises the bar for what may occupy a row:
@@ -98,7 +99,7 @@ Render the top-3 moves INSIDE this surface as a section, exactly as `skills/rela
 2. Call `relationship_moves.compute_relationship_moves(WORKSPACE, top_n=3, thread_totals={})` — the default `emit=True` appends the `relationship_move_suggested` events, which is exactly what keeps this section and any still-registered standalone Relationship Moves chat from double-suggesting the same person inside 7 days (the machinery's own exclusion window — reuse gives the dedupe for free; existing registrations stay untouched, R4).
 3. Apply the surface-preference filter (`surface_preferences.is_suppressed`, item_class `relationship_move`) before drafting.
 4. Draft each opener via the **email-writer chain** exactly as the relationship-moves skill specifies (voice corpus → Voice Block fallback) — the opener chain already delegates correctly; do not restate or fork its rules here.
-5. Section rows are email-shaped items with the standard verbs (`send` / `edit then send` / `to drafts` / `skip`) — send lifecycle through apply-choices → email-writer, never reinvented.
+5. Section rows are email-shaped items with the standard verbs (`send` / `draft` / `snooze 3d`) — send lifecycle through apply-choices → email-writer, never reinvented.
 
 Fewer than 3 → render fewer; zero (including everything deduped by a Sunday Relationship Moves fire) → drop the section. Never pad.
 

@@ -178,4 +178,119 @@ res4 = dsd.run_deal_signal_job(ws3, fired_via="scheduled")
 check(res4["n_candidates"] == 0 and res4["n_proposed"] == 0,
       "quiet workspace proposes nothing")
 
+# --- D9.1 deal genesis: sales-typed meeting, zero marker text -----------------
+# Live-shape mirror (real-data fixture gotcha): the meeting event carries NO
+# org reference at all — primary_thread_id resolves to the CEO's OWN product
+# thread and person_ids holds only the CEO; the prospect org appears only in
+# the title. This is byte-for-byte the live gap shape D9.1 exists to close.
+ws4 = _ws()
+_raw_append(ws4, [
+    {"type": "meeting", "source_skill": "past-meetings",
+     "primary_thread_id": "project_900", "person_ids": ["person_001"],
+     "data": {"title": "Acme Co — platform follow-up (Jordan Reyes)",
+              "source_ref": "granola:g1", "duration_min": 60,
+              "attendees_external": ["Jordan Reyes"],
+              "meeting_type": "sales"}},
+])
+g = [c for c in dsd.detect_deal_signals(ws4) if c["kind"] == "deal_creation"]
+check(len(g) == 1 and g[0]["org_id"] == "org_acme",
+      "D9.1 genesis: unreferenced sales-typed meeting reaches the org via the "
+      "bounded name lane (the live gap shape)")
+check("sales-typed meeting" in g[0]["evidence"],
+      "genesis evidence names the sales-typed meeting, not phantom language")
+check("say `new deal" in g[0]["nudge_line"],
+      "genesis nudge_line teaches the live `new deal` trigger")
+
+# structural lane: org_ids stamped on the meeting event (the step-8 fix) —
+# genesis fires with no name match needed and no marker text.
+ws5 = _ws()
+_raw_append(ws5, [
+    {"type": "meeting", "source_skill": "past-meetings",
+     "org_ids": ["org_acme"], "person_ids": ["person_001"],
+     "data": {"title": "intro sync", "source_ref": "granola:g2",
+              "meeting_type": "sales"}},
+])
+g5 = [c for c in dsd.detect_deal_signals(ws5) if c["kind"] == "deal_creation"]
+check(len(g5) == 1 and g5[0]["org_id"] == "org_acme",
+      "D9.1 genesis: org_ids-stamped sales meeting proposes creation structurally")
+
+# a NON-sales meeting with no pursuit language proposes nothing — the intro
+# call that should NOT manufacture a pipeline entry (spec's rejected case).
+ws6 = _ws()
+_raw_append(ws6, [
+    {"type": "meeting", "source_skill": "past-meetings",
+     "org_ids": ["org_acme"],
+     "data": {"title": "Acme Co intro chat", "source_ref": "granola:g3",
+              "meeting_type": "internal_1_1"}},
+    {"type": "meeting", "source_skill": "past-meetings",
+     "org_ids": ["org_acme"],
+     "data": {"title": "Acme Co coffee catch-up", "source_ref": "granola:g4"}},
+])
+check(dsd.detect_deal_signals(ws6) == [],
+      "non-sales / untyped meetings with no pursuit language propose nothing")
+
+# an org with an OPEN deal never gets a genesis proposal from a sales meeting
+# (no duplicate — spec acceptance #12).
+ws7 = _ws()
+_raw_append(ws7, [
+    {"type": "meeting", "source_skill": "past-meetings",
+     "org_ids": ["org_north"],
+     "data": {"title": "Northwind working session", "source_ref": "granola:g5",
+              "meeting_type": "sales"}},
+])
+check(not any(c["kind"] == "deal_creation"
+              for c in dsd.detect_deal_signals(ws7)),
+      "sales meeting on an org with an open deal proposes no genesis duplicate")
+
+# confirm-path closes the loop: create_deal (what apply-choices dispatches on
+# confirm) → exactly one deal exists → re-detection proposes no genesis.
+import deal_state  # noqa: E402
+t = deal_state.create_deal(ws4, name="Acme platform", org_id="org_acme",
+                           source_skill="apply-choices")
+ent4 = json.loads((ws4 / "_hq" / "data" / "entities.json").read_text(encoding="utf-8"))
+
+
+def _torg(th):
+    return (th.get("org") or th.get("org_id") or th.get("affiliation_id")
+            or (th.get("affiliation_ids") or [None])[0])
+
+
+n_open_acme = sum(1 for th in ent4["threads"]
+                  if th.get("kind") == "deal" and _torg(th) == "org_acme"
+                  and th.get("status") not in ("resolved", "archived"))
+check(n_open_acme == 1, "confirming creates exactly ONE deal")
+check(not any(c["kind"] == "deal_creation"
+              for c in dsd.detect_deal_signals(ws4)),
+      "post-confirm re-detection proposes no second genesis (coverage holds)")
+
+# org_ids scoping (the meeting-time hook): only the passed orgs' candidates
+# come back; the surface never hand-filters (Bug #92b stays in code).
+ws8 = _ws()
+_raw_append(ws8, [
+    {"type": "meeting", "source_skill": "past-meetings",
+     "org_ids": ["org_acme"],
+     "data": {"title": "scoping", "source_ref": "granola:g6",
+              "meeting_type": "sales"}},
+    {"type": "interaction", "source_skill": "session-sweep",
+     "org_ids": ["org_north"],
+     "data": {"summary": "Northwind verbally agreed to move ahead"}},
+])
+scoped = dsd.detect_deal_signals(ws8, org_ids=["org_acme"])
+check([c["org_id"] for c in scoped] == ["org_acme"],
+      "org_ids scoping returns only the meeting's own orgs")
+check(len(dsd.detect_deal_signals(ws8)) == 2,
+      "unscoped detection still sees both orgs' signals")
+
+# propose_candidates (the scoped hook's emitter): proposes through the brain
+# rails but writes NO deal-signals pack_run receipt — that receipt belongs to
+# the scheduled job alone.
+counts = dsd.propose_candidates(ws8, scoped)
+check(counts["n_proposed"] == 1,
+      "propose_candidates emits the scoped proposal")
+check(len([e for e in _events(ws8, "pack_run")
+           if e.get("data", {}).get("task_id") == "deal-signals"]) == 0,
+      "the meeting-time hook writes no deal-signals job receipt")
+check(len(_events(ws8, "brain_proposal")) == 1,
+      "scoped propose goes through the Living Brain gate")
+
 print(f"OK — {PASS} checks passed")

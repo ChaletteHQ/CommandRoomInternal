@@ -1,0 +1,12 @@
+<!--
+  Infographic layout: timeline_spread (SPEC OUT4). Dated events. Structure-only
+  fragment; renders through the shared components.build_timeline_html strip
+  (the .cr-timeline markup the OUT5 premium shell already styles, brand-
+  resolved). NO literal hex. Rendered ONLY by infographic.build_infographic.
+  Slots: {{TIMELINE}}.
+-->
+<style>
+  .ig-timeline-spread{margin-top:16px}
+  .ig-timeline-spread .cr-timeline li{padding:9px 0}
+</style>
+<section class="ig ig-timeline-spread">{{TIMELINE}}</section>

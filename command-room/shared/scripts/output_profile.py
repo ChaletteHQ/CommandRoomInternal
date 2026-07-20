@@ -48,6 +48,14 @@ THE KNOBS (defaults first — the default IS today's behavior)
                  unlaunched kinds resolve to docx silently (the existing
                  posture); a trigger-level ask ("as a doc" / "as HTML") beats
                  the profile for that render — see resolve_format_for_kind.
+  visual_first   [] (default) | [<brief_kind>, ...] (SPEC OUT4). The kinds a
+                 caller may additionally render as a template-constrained
+                 INFOGRAPHIC (shared/scripts/infographic.py) when a layout fits
+                 its content. OFF by default — a kind not listed here renders
+                 exactly as before. Today only value-receipt's quarterly
+                 roll-up consults it (`stat_spotlight`); the layout set is
+                 closed, the render is substrate-derived, and an unlisted /
+                 unknown kind is simply inert (the existing typo-safe posture).
 
 Unknown keys and invalid values are IGNORED at resolution (a typo can never
 silently reshape a document — it just keeps the default), and surfaced by
@@ -71,6 +79,7 @@ DEFAULT_OUTPUT_PROFILE = {
     "page_cap": {},
     "default_format": "docx",
     "format_by_kind": {},
+    "visual_first": [],
 }
 
 _DENSITY_VALUES = frozenset({"tight", "narrative"})
@@ -88,6 +97,7 @@ PREMIUM_LAUNCH_KINDS = frozenset({
     "one_pager",
     "value_receipt",
     "research",
+    "chart_on_demand",  # SPEC OUT3B — premium single-chart page (D2 ruling)
 })
 
 # Per-kind BASE format, consulted below format_by_kind but above
@@ -97,6 +107,11 @@ PREMIUM_LAUNCH_KINDS = frozenset({
 # format_by_kind entry still wins (that is how a client pins research to docx).
 _KIND_BASE_FORMAT = {
     "research": "premium_html",
+    # SPEC OUT3B (D2) — a chart is a premium-HTML page by default (the SVG
+    # embeds inline; there is no docx chart surface without the rasterizer
+    # ladder). A docx-profile workspace still gets the docx twin free via the
+    # kind registry — a format_by_kind["chart_on_demand"]="docx" pin wins here.
+    "chart_on_demand": "premium_html",
 }
 
 
@@ -169,6 +184,18 @@ def get_output_profile(
             if isinstance(k, str) and k.strip() and v in _FORMAT_VALUES
         }
 
+    # SPEC OUT4 — the infographic opt-in list. Keep only non-empty kind
+    # strings, deduped in first-seen order (a typo'd entry is simply inert).
+    vf = saved.get("visual_first")
+    if isinstance(vf, list):
+        seen: set = set()
+        kinds = []
+        for k in vf:
+            if isinstance(k, str) and k.strip() and k not in seen:
+                seen.add(k)
+                kinds.append(k)
+        out["visual_first"] = kinds
+
     return out
 
 
@@ -210,6 +237,17 @@ def resolve_format_for_kind(
     if brief_kind in _KIND_BASE_FORMAT:
         return _KIND_BASE_FORMAT[brief_kind]
     return profile["default_format"]
+
+
+def renders_infographic_first(
+    brief_kind: str,
+    workspace_root: Union[str, "os.PathLike", None] = None,
+) -> bool:
+    """Whether `brief_kind` is opted into the SPEC OUT4 infographic output mode
+    (its `visual_first` profile entry). False for an unconfigured workspace —
+    byte-identical to pre-OUT4 (a caller only reaches for infographic.py when
+    this returns True AND a layout fits its content). Never raises."""
+    return brief_kind in get_output_profile(workspace_root).get("visual_first", [])
 
 
 def validate_output_profile(obj: object) -> list:
@@ -259,6 +297,18 @@ def validate_output_profile(obj: object) -> list:
                         f"format_by_kind.{k} must be one of {sorted(_FORMAT_VALUES)}, "
                         f"got {v!r}"
                     )
+    if "visual_first" in obj:
+        vf = obj["visual_first"]
+        if not isinstance(vf, list):
+            problems.append(
+                "visual_first must be a list of brief-kind strings (SPEC OUT4)"
+            )
+        else:
+            for k in vf:
+                if not isinstance(k, str) or not k.strip():
+                    problems.append(
+                        f"visual_first entry {k!r} must be a non-empty brief-kind string"
+                    )
     if "page_cap" in obj:
         caps = obj["page_cap"]
         if not isinstance(caps, dict):
@@ -279,5 +329,6 @@ __all__ = [
     "PREMIUM_LAUNCH_KINDS",
     "get_output_profile",
     "resolve_format_for_kind",
+    "renders_infographic_first",
     "validate_output_profile",
 ]

@@ -33,11 +33,12 @@ import task_watchdog as tw  # noqa: E402
 
 FAILURES = []
 
-# MAINT1: the five silent tasks became jobs inside `maintenance`, so a fully
-# set-up workspace registers 8 tasks (7 chats + maintenance).
+# MAINT1: the five silent tasks became jobs inside `maintenance`; CTS1 split
+# `commitments` into waiting-on + my-plate, so a fully set-up workspace
+# registers 9 tasks (8 chats + maintenance).
 REGISTERED_8 = [
-    "morning-brief", "upcoming-meetings", "inbox", "commitments", "pulse",
-    "past-meetings", "friday-wrap", "maintenance",
+    "morning-brief", "upcoming-meetings", "inbox", "waiting-on", "my-plate",
+    "pulse", "past-meetings", "friday-wrap", "maintenance",
 ]
 
 
@@ -104,8 +105,17 @@ def main():
         {"type": "pack_run", "ts": _utc_iso(h(hours=3)),
          "data": {"kind": "inbox"}},  # F-43's kind-only inbox receipt
         {"type": "pack_run", "ts": _utc_iso(h(hours=2)),
+         "data": {"task_id": "waiting-on", "fired_at": _utc_iso(h(hours=2)),
+                  "outcome": "complete"}},  # CTS1 successor of the cr-commitments slot
+        {"type": "pack_run", "ts": _utc_iso(h(hours=2)),
+         "data": {"task_id": "my-plate", "outcome": "complete"}},
+        # F-40-obs coverage retained: a legacy cr- prefixed receipt for the
+        # RETIRED `commitments` task still parses (normalizes to `commitments`)
+        # and quietly attaches to no registered task — never a crash, never a
+        # fabricated claim.
+        {"type": "pack_run", "ts": _utc_iso(h(hours=2)),
          "data": {"task_id": "cr-commitments", "fired_at": _utc_iso(h(hours=2)),
-                  "outcome": "complete"}},  # F-40-obs: cr- prefixed id
+                  "outcome": "complete"}},
         {"type": "dont_forget_run", "ts": _utc_iso(h(hours=2)), "data": {}},  # pulse legacy
         # Maintenance JOB receipts (job-level signals) — these are NOT task
         # receipts anymore and must not invent task history for `maintenance`.
@@ -134,7 +144,8 @@ def main():
     # friday-wrap's stamp is the 12:20 AM catch-up that left NO receipt.
     stamp_deltas = {
         "morning-brief": h(hours=3), "upcoming-meetings": h(hours=4),
-        "inbox": h(hours=3), "commitments": h(hours=2), "pulse": h(hours=2),
+        "inbox": h(hours=3), "waiting-on": h(hours=2), "my-plate": h(hours=2),
+        "pulse": h(hours=2),
         "past-meetings": h(hours=8), "friday-wrap": h(hours=8),
     }
     records = []
@@ -187,17 +198,17 @@ def main():
         check("friday-wrap is a problem, past-meetings is not",
               v["problems"] == ["friday-wrap"], repr(v["problems"]))
 
-        check("the 5 genuinely-on-schedule tasks are the ONLY on-schedule claims",
+        check("the 6 genuinely-on-schedule tasks are the ONLY on-schedule claims",
               sorted(v["on_schedule"]) == sorted([
-                  "morning-brief", "upcoming-meetings", "inbox", "commitments",
-                  "pulse"]),
+                  "morning-brief", "upcoming-meetings", "inbox", "waiting-on",
+                  "my-plate", "pulse"]),
               repr(v["on_schedule"]))
         buckets = [v["on_schedule"], v["caught_up"], v["first_run_pending"], v["problems"]]
         all_ids = [t for b in buckets for t in b]
-        check("internal consistency: every task in exactly ONE bucket, 8 counted",
-              len(all_ids) == 8 and len(set(all_ids)) == 8, repr(buckets))
-        check("summary never claims 'All 8' (F-43 P1a's exact lie)",
-              "All 8" not in v["summary_line"] and "5 of 8" in v["summary_line"],
+        check("internal consistency: every task in exactly ONE bucket, 9 counted",
+              len(all_ids) == 9 and len(set(all_ids)) == 9, repr(buckets))
+        check("summary never claims 'All 9' (F-43 P1a's exact lie)",
+              "All 9" not in v["summary_line"] and "6 of 9" in v["summary_line"],
               v["summary_line"])
         check("summary enumerates the non-normal buckets honestly",
               "1 caught up late" in v["summary_line"]

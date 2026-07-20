@@ -69,7 +69,7 @@ def make_workspace(tmp: Path, pulse_cron: str) -> Path:
     entities = {"workspace": {
         "user_timezone": "America/Los_Angeles",
         "schedule_config": {
-            "commitments": {"cron": "30 8 * * 1-5", "label": "8:30 AM weekdays", "enabled": True},
+            "waiting-on": {"cron": "30 8 * * 1-5", "label": "8:30 AM weekdays", "enabled": True},  # CTS1: the migrated commitments cron carries to waiting-on
             "past-meetings": {"cron": "0 17 * * 1-5", "label": "5 PM weekdays", "enabled": True},
             "pulse": {"cron": pulse_cron, "label": "pulse", "enabled": True},
         },
@@ -165,8 +165,8 @@ def main():
               got and got[-1]["late_tier"] == "note" and got[-1]["fired_via"] == "catchup",
               repr(got))
 
-        print("== 08:48 — commitments scheduled fire, on time (real morning shape)")
-        r = lf.check_lateness(ws, "commitments", fired_via="scheduled",
+        print("== 08:48 — waiting-on scheduled fire, on time (real morning shape; CTS1 successor of commitments)")
+        r = lf.check_lateness(ws, "waiting-on", fired_via="scheduled",
                               now=dt.datetime.combine(WED, dt.time(8, 48)))
         check("18 min -> tier none, receipt_fired_via scheduled",
               r["tier"] == "none" and r["receipt_fired_via"] == "scheduled", repr(r))
@@ -195,17 +195,18 @@ def main():
         check("baseline before the three triggers: still exactly one late_fire",
               baseline == 1, repr(baseline))
 
-        print("== 14:26 — F-47 trigger 1: manual commitments re-run (dogfood: false 356-min late_fire)")
-        r = lf.check_lateness(ws, "commitments", fired_via="manual",
+        print("== 14:26 — F-47 trigger 1: manual waiting-on re-run (dogfood: false 356-min late_fire)")
+        r = lf.check_lateness(ws, "waiting-on", fired_via="manual",
                               now=dt.datetime.combine(WED, dt.time(14, 26)))
         check("manual fire -> tier manual, zero lateness, no banner",
               r["tier"] == "manual" and r["lateness_minutes"] == 0
               and r["banner"] is None and r["suppressed"] == "manual_fire", repr(r))
         check("manual fire -> receipt_fired_via manual", r["receipt_fired_via"] == "manual")
-        r2 = lf.check_lateness(ws, "commitments", fired_via="scheduled",
+        r2 = lf.check_lateness(ws, "waiting-on", fired_via="scheduled",
                                now=dt.datetime.combine(WED, dt.time(14, 26)))
         check("worst case (misdetected as scheduled): served-slot ledger suppresses "
-              "(8:30 slot served by the 8:48 cr-commitments receipt — legacy shape parsed)",
+              "(8:30 slot served by the 8:48 cr-commitments receipt — legacy shape "
+              "parsed AND bridged across the CTS1 rename via TASK_PREDECESSORS)",
               r2["tier"] == "none" and r2["suppressed"] == "slot_already_served", repr(r2))
         check("no late_fire written by trigger 1", len(late_fire_events(ws)) == baseline)
 

@@ -34,9 +34,26 @@ Allowed with annotation (each site consciously judged safe):
 
 A pragma with an empty reason fails — the reason is the point.
 
-Known limits (documented, not enforced): near-past dates inside recency
-windows (a "modified within 30d" fixture goes stale as time passes) are not
-detectable without dataflow analysis — pin the clock in those suites;
+Window-aging extension (FB bundle, 2026-07-19 — the builder-flagged blind
+spot, M ruled yes): a PAST date that ages OUT of a TTL/freshness window is the
+mirror image of a future bomb. The FS-11 case — `{"ts": "2026-07-14",
+"ttl_days": 14}` compared against the REAL clock — read "fresh" until
+today - ts exceeded the ttl, then silently flipped (would have gone RED on
+2026-07-29 for reasons unrelated to the code). classify() cannot see this: a
+near-past date is neither today-or-future nor a sentinel. So the guard now
+catches the DETECTABLE subclass — a past date literal GOVERNED by a TTL/expiry
+key in the same record, while the date is still INSIDE that window
+(0 <= age <= ttl). The `age <= ttl` gate is the precision guarantee: a pair
+already past its window would have flipped the suite red already, so on a green
+tree such a pair proves the date is not actually TTL-governed (e.g. a
+`window_days` payload describing a recap's coverage) and is left alone. Fix a
+real hit the same way the FS-11 fixture was fixed — compute the date relative
+to today (an `_ago(N)` helper) — or annotate the line with a pragma.
+
+Known limits (documented, not enforced): near-past dates inside a recency
+window with NO adjacent TTL literal (a "modified within 30d" fixture whose
+threshold lives in code, not the fixture) remain undetectable without dataflow
+analysis — pin the clock in those suites;
 datetime(2026, 9, 1)-style constructor literals are not scanned (in this
 tree they are the injected clocks themselves, e.g. now=dt.datetime(...));
 a date split across adjacent implicitly-concatenated literals or around an
@@ -87,6 +104,49 @@ def classify(date_str: str, today: datetime.date) -> str:
     if d.year - today.year >= SENTINEL_YEARS:
         return "sentinel"
     return "bomb"
+
+
+# Window-aging (FB bundle 2026-07-19). A TTL/expiry key whose value is the
+# window, in days, a nearby date literal is measured against. `window_days` is
+# deliberately EXCLUDED — in this tree it is descriptive payload (a recap's
+# coverage span), not a freshness threshold a fixture date is compared to.
+TTL_KEY_RE = re.compile(
+    r"\b(?:ttl_days|ttl|expires_in_days|expires_in|stale_after_days"
+    r"|max_age_days|freshness_days|within_days)\b[\"'\s:=]+(\d+)"
+)
+# A date and its governing ttl may straddle a wrapped record
+# ({"ts": "...",\n "ttl_days": N}) — look one line up, two down.
+TTL_LOOKAHEAD = 2
+
+
+def governing_ttl(lines: list[str], idx: int) -> "int | None":
+    """The TTL window (days) governing a date on 0-based line `idx`, if a TTL
+    key sits in the same record (line above, this line, or the next two)."""
+    lo = max(0, idx - 1)
+    hi = min(len(lines), idx + 1 + TTL_LOOKAHEAD)
+    for j in range(lo, hi):
+        m = TTL_KEY_RE.search(lines[j])
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def aging_out(date_str: str, ttl: "int | None", today: datetime.date) -> bool:
+    """True if `date_str` is a past date STILL INSIDE a governing TTL window —
+    a live window-aging bomb that flips once its age exceeds the ttl. False for
+    a date with no governing ttl, a today-or-future date (classify()'s 'bomb'
+    path owns those), or a pair already past its window (age > ttl: it would
+    have flipped the suite red already, so a green tree proves it isn't really
+    TTL-governed)."""
+    if ttl is None:
+        return False
+    try:
+        d = datetime.date.fromisoformat(date_str)
+    except ValueError:
+        return False
+    if d >= today:
+        return False
+    return 0 <= (today - d).days <= ttl
 
 
 def scan_python(source: str) -> tuple[list[tuple[int, str]], dict[int, str]]:
@@ -148,6 +208,25 @@ def main() -> int:
           classify(today.replace(year=today.year + SENTINEL_YEARS - 1).isoformat(), today)
           == "bomb")
     check("garbage month is invalid", classify("2026-13-40", today) == "invalid")
+
+    # -- window-aging self-checks (FB bundle): the FS-11 bomb class + its gates
+    check("governing_ttl reads a same-line ttl_days",
+          governing_ttl(['{"ts": "x", "ttl_days": 14}'], 0) == 14)
+    check("governing_ttl reads a ttl on the next line (wrapped record)",
+          governing_ttl(['{"ts": "x",', '"ttl_days": 21}'], 0) == 21)
+    check("governing_ttl ignores window_days (descriptive payload, not a TTL)",
+          governing_ttl(['{"ts": "x", "window_days": 7}'], 0) is None)
+    check("aging: past date inside its ttl window is a bomb",
+          aging_out((today - 2 * day).isoformat(), 14, today) is True)
+    check("aging: past date already past its ttl is NOT flagged (would be red already)",
+          aging_out((today - 40 * day).isoformat(), 14, today) is False)
+    check("aging: past date with no governing ttl is NOT flagged",
+          aging_out((today - 2 * day).isoformat(), None, today) is False)
+    check("aging: today-or-future is classify()'s job, not aging's",
+          aging_out((today + 3 * day).isoformat(), 14, today) is False)
+    check("aging: on the ttl boundary (age == ttl) is still a live bomb",
+          aging_out((today - 14 * day).isoformat(), 14, today) is True)
+
     synth = (
         'x = "%s"  # %s: pinned clock\n'
         'y = "%s"\n'
@@ -179,44 +258,72 @@ def main() -> int:
     for py in sorted(TESTS.rglob("*.py")):
         rel = py.relative_to(ROOT).as_posix()
         try:
-            dates, pragmas = scan_python(py.read_text(encoding="utf-8"))
+            src = py.read_text(encoding="utf-8")
+            dates, pragmas = scan_python(src)
         except (tokenize.TokenError, SyntaxError) as e:
             violations.append(f"{rel}: untokenizable — {e}")
             continue
+        lines = src.splitlines()
         for line, ds in dates:
-            if classify(ds, today) != "bomb":
+            future_bomb = classify(ds, today) == "bomb"
+            ttl = None if future_bomb else governing_ttl(lines, line - 1)
+            aging = aging_out(ds, ttl, today)
+            if not (future_bomb or aging):
                 continue
             if line in pragmas:
                 if not pragmas[line]:
+                    kind = "future literal" if future_bomb else "aging date"
                     violations.append(
                         f"{rel}:{line}: {PRAGMA} pragma with an empty reason — "
-                        "state why this future literal cannot flip"
+                        f"state why this {kind} cannot flip"
                     )
                 continue
             key = (py.relative_to(TESTS).as_posix(), ds)
             if key in ALLOWLIST:
                 continue
-            violations.append(
-                f"{rel}:{line}: hardcoded today-or-future date “{ds}” — compute it "
-                f"relative to today, or annotate the line with  # {PRAGMA}: <why "
-                "it cannot flip>  (MC3 time-bomb class, commit 2a12674)"
-            )
+            if future_bomb:
+                violations.append(
+                    f"{rel}:{line}: hardcoded today-or-future date “{ds}” — compute "
+                    f"it relative to today, or annotate the line with  # {PRAGMA}: "
+                    "<why it cannot flip>  (MC3 time-bomb class, commit 2a12674)"
+                )
+            else:
+                violations.append(
+                    f"{rel}:{line}: past date “{ds}” is still inside its governing "
+                    f"{ttl}-day TTL window and ages OUT of it — the FS-11 "
+                    f"window-aging bomb class. Compute it relative to today "
+                    f"(an _ago(N) helper), or annotate the line with  # {PRAGMA}: "
+                    "<why it cannot age out>"
+                )
 
     # -- sweep JSON/JSONL fixtures (no pragma channel — ALLOWLIST only)
     for jf in sorted(list(TESTS.rglob("*.json")) + list(TESTS.rglob("*.jsonl"))):
         rel = jf.relative_to(ROOT).as_posix()
         text = jf.read_text(encoding="utf-8", errors="replace")
-        for i, seg in enumerate(text.split("\n"), start=1):
+        jlines = text.split("\n")
+        for i, seg in enumerate(jlines, start=1):
             for m in DATE_RE.finditer(seg):
-                if classify(m.group(0), today) != "bomb":
+                ds = m.group(0)
+                future_bomb = classify(ds, today) == "bomb"
+                aging = (not future_bomb
+                         and aging_out(ds, governing_ttl(jlines, i - 1), today))
+                if not (future_bomb or aging):
                     continue
-                if (jf.relative_to(TESTS).as_posix(), m.group(0)) in ALLOWLIST:
+                if (jf.relative_to(TESTS).as_posix(), ds) in ALLOWLIST:
                     continue
-                violations.append(
-                    f"{rel}:{i}: hardcoded today-or-future date “{m.group(0)}” in a "
-                    "JSON fixture — regenerate relative to today or add an "
-                    "ALLOWLIST entry with a reason"
-                )
+                if future_bomb:
+                    violations.append(
+                        f"{rel}:{i}: hardcoded today-or-future date “{ds}” in a "
+                        "JSON fixture — regenerate relative to today or add an "
+                        "ALLOWLIST entry with a reason"
+                    )
+                else:
+                    violations.append(
+                        f"{rel}:{i}: past date “{ds}” in a JSON fixture is still "
+                        f"inside its governing {governing_ttl(jlines, i - 1)}-day "
+                        "TTL window and ages OUT of it (FS-11 class) — regenerate "
+                        "relative to today or add an ALLOWLIST entry with a reason"
+                    )
 
     # -- ALLOWLIST hygiene: entries must point at real files with real reasons
     for (relpath, ds), reason in ALLOWLIST.items():

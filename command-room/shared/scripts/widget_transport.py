@@ -230,7 +230,11 @@ def render_and_persist(
     # EW2+T (F-15): the transport IS the one-call canonical path — the wrapper
     # contract check runs here so no caller can ship a widget whose input
     # buttons lost their wrappers. Passes trivially on button-less HTML.
-    validate_rendered_widget(html)
+    # PGUARD1 D2: the data view's `surface` tag is plumbed through so a widget
+    # DECLARED for an org/board/client audience gets the blocking
+    # personal-content scan; owner surfaces (commitments, staff-meeting, the
+    # brief) are untouched — an absent/unknown tag never escalates to org.
+    validate_rendered_widget(html, surface=data_view.get("surface"))
 
     # T2.1 (review F-5): a floor-size page can still exceed the budget on
     # monster rows. Flag it so skill text can pre-warn (deliver substance as

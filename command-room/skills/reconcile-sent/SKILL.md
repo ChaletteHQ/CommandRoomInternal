@@ -1,6 +1,6 @@
 ---
 name: reconcile-sent
-description: "Silent scheduled maintenance task (3x weekdays) with four write jobs: close commitments the CEO completed by emailing outside the product's draft path; open a commitment when a sent reply carries an untracked promise; watch earlier sends for outcomes (replied / no reply / bounced); persist mid-confidence matches for one-click confirm in the next Commitments chat. Runs as the first job inside the maintenance background task (MAINT1) — no widget, no chat surface. Manual fire: 'reconcile my sent mail'. Honors pending-review flags (never auto-resolves); reconciliation only, whatever task carries it. Does NOT fire on 'follow up' phrasings (follow-up-ritual / email-writer) or 'scan for commitments' (scan-for-commitments — historic bulk extraction). Matching paths and cursor mechanics: Routing section in the body."
+description: "Silent scheduled maintenance task (3x weekdays) with four write jobs: close commitments the CEO completed by emailing outside the product's draft path; open a commitment when a sent reply carries an untracked promise; watch earlier sends for outcomes (replied / no reply / bounced); persist mid-confidence matches for one-click confirm in the next Waiting On chat. Runs as the first job inside the maintenance background task (MAINT1) — no widget, no chat surface. Manual fire: 'reconcile my sent mail'. Honors pending-review flags (never auto-resolves); reconciliation only, whatever task carries it. Does NOT fire on 'follow up' phrasings (follow-up-ritual / email-writer) or 'scan for commitments' (scan-for-commitments — historic bulk extraction). Matching paths and cursor mechanics: Routing section in the body."
 ---
 
 # Reconcile Sent — silent commitment reconciliation
@@ -149,7 +149,7 @@ reconcile_sent_against_snapshots("<abs workspace root>", sent_messages)   # reus
    - `receipt["opened"]` non-empty → *"Started tracking N promise[s] from your sent mail — [titles]. Say `not mine [n]` to drop any."* (Plain language only — never "captured a commissive" or any event name.)
    - `receipt["pending"]` non-empty → *"Did you already handle these? [title] — `mark done [n]`."*
    - `receipt["partial_propose_closure"]` non-empty → *"Everyone on [title] has received theirs — close it when ready."* (Partial receipts themselves stay silent; only a COMPLETED roster earns a line.)
-   - Nothing closed, nothing opened → no output. Silence is correct; the audit event is the proof it ran. (Restatement merges, set-asides, and per-person receipts are silent by design — they surface through the Commitments chat's outstanding rows, not here.)
+   - Nothing closed, nothing opened → no output. Silence is correct; the audit event is the proof it ran. (Restatement merges, set-asides, and per-person receipts are silent by design — they surface through the Waiting On chat's outstanding rows, not here.)
 
 ## Self-heal
 The FIRST fire on a workspace fetches a **30-day window regardless of the cursor**

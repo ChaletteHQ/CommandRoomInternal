@@ -501,6 +501,44 @@ def run_checks(root: Path) -> list[Finding]:
                 f"thread '{t.get('id')}' Live State block (source_seq={block_seq}) is older than "
                 f"its newest event (seq={newest}) — the render trigger didn't fire", str(t.get("id"))))
 
+    # C18 — entity-history view staleness (SPEC HIST1 D7; mirrors C16). A
+    # person/org history view under _hq/views/people|orgs older than the
+    # newest event tagging that entity means the go-render / cleanup 3.5d3
+    # refresh didn't fire. Read-only; only EXISTING views are checked (views
+    # are created on `go`, so an entity with no view is not a finding).
+    try:
+        import render_person_history as _rph18
+        import render_org_history as _roh18
+        _seq_re18 = _re16.compile(r"<!--\s*source_seq=(\d+)\s*-->")
+        for kind, views_dir, gather in (
+            ("person", root / "_hq" / "views" / "people",
+             lambda eid: _rph18._gather(root, eid)),
+            ("org", root / "_hq" / "views" / "orgs",
+             lambda eid: _roh18._gather(root, eid,
+                                        _roh18._collections(_roh18._load_entities_doc(root)))),
+        ):
+            if not views_dir.is_dir():
+                continue
+            for f in sorted(views_dir.glob("*.md")):
+                try:
+                    m18 = _seq_re18.search(f.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+                if not m18:
+                    continue
+                block_seq18 = int(m18.group(1))
+                try:
+                    _evs, _skipped, newest18 = gather(f.stem)
+                except Exception:
+                    continue
+                if newest18 > block_seq18:
+                    findings.append(Finding("C18.entity_history_stale", WARN,
+                        f"{kind} history view '{f.name}' (source_seq={block_seq18}) is older than "
+                        f"the newest event tagging that entity (seq={newest18}) — the go-render / "
+                        f"cleanup refresh didn't fire", f.stem))
+    except Exception:
+        pass  # the drift check is advisory — a missing module never bricks the audit
+
     return findings
 
 

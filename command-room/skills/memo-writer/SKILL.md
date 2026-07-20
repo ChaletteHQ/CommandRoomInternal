@@ -21,7 +21,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode).
 - **NEVER answer a deliverable request with a chat-only draft.** A memo request produces the rendered file through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then flag it plainly: "the quality and voice checks only run on the file version."
 - **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A memo fire that yields a document with NO `gate_ran` event for that turn is a flagged bypass. Pass `workspace_root` to `make_brief` so the event lands in substrate.
-- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
+- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied · chart unreadable / overplotted), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 If anything below seems to contradict this gate, THIS GATE WINS.
 
@@ -43,9 +43,9 @@ Before writing, read `shared/WORKSPACE_API.md`.
 - `_hq/data/events.jsonl` — event type `memo_drafted` with `{topic, audience, memo_type, primary_thread_id, artifact_path, source_decision_ids[]}` where `memo_type ∈ {decision_doc, scope_doc, strategy_memo, position_paper, board_update, investor_update, ceo_letter}` (parsed from the trigger phrase).
 - **(v3.7.1+) Auto-fires `decision-log` when `memo_type == "decision_doc"` OR the trigger phrase is "decision doc".** The chained `decision-log` invocation writes the canonical `decision` event with the memo `.docx` path as the rationale link. Pre-v3.7.1 the user had to remember to log the decision separately after writing the memo, which they often forgot — the substrate ended up with memos describing decisions that were never logged. Auto-fire closes that gap.
 
-**Reads (v3.7.1+ substrate enrichment):**
-- `_hq/data/entities.json`, `events.jsonl` (as before).
-- `_hq/data/events.jsonl` prior `decision` events on the topic — the memo prompt surfaces "decisions you've already taken on this" so the new memo doesn't re-litigate settled ground. Source seqs go into `source_decision_ids[]`.
+**Reads (v3.7.1+ substrate enrichment):** All `events.jsonl` reads go through ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — the memo's audience includes external readers): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design.
+- `_hq/data/entities.json`, `events.jsonl` (as before — events via the org-scoped load above).
+- `_hq/data/events.jsonl` prior `decision` events on the topic (from the org-scoped load) — the memo prompt surfaces "decisions you've already taken on this" so the new memo doesn't re-litigate settled ground. Source seqs go into `source_decision_ids[]`.
 - Relevant `[Project]/PROJECT_CONTEXT.md` and `PROJECT_BRAIN.md` for project-specific facts.
 - This skill's Voice Block.
 - `shared/VOICE_CALIBRATION.md`.
@@ -138,7 +138,7 @@ If type is unclear, ask ONE question: "Is this a decision doc, a scope doc, a st
 
 - `PROJECT_CONTEXT.md` of the relevant project
 - `PROJECT_BRAIN.md` — facts, people, decisions history
-- Last 5 events in the project from `events.jsonl`
+- Last 5 events in the project from `events.jsonl` — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read
 - Any referenced prior memos
 
 ### Phase 3 — Voice-calibrated draft (two-step)

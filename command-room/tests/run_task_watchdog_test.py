@@ -128,6 +128,12 @@ def main():
              "data": {"task_id": "reconcile-sent", "kind": "reconcile-sent",
                       "status": "complete", "fired_via": "scheduled",
                       "sent_scanned_count": 2, "n_closed": 0}},
+            # PID1 — the identity reconciler job's own receipt (same Sunday
+            # cadence as cleanup; same fixture age keeps it fresh).
+            {"type": "identity_reconcile_run", "ts": _utc_iso(dt.timedelta(days=2)),
+             "data": {"task_id": "identity-reconcile", "kind": "identity-reconcile",
+                      "batch_id": "idr_fixture", "status": "complete",
+                      "fired_via": "scheduled"}},
         ]
         ws = make_workspace(tmp, events, registered)
         # weekly-insights job receipt = view mtimes (pre-v4.5.2 fallback)
@@ -157,13 +163,16 @@ def main():
 
         print("== per-JOB freshness (MAINT1 D8)")
         jobs = {f["job"]: f for f in tw.check_maintenance_jobs(ws)}
-        check("all six jobs have a job-level check (deal-signals joined in LB1)",
-              sorted(jobs) == ["cleanup", "deal-signals", "monthly-report",
-                               "reconcile-sent", "session-sweep",
-                               "weekly-insights"], repr(sorted(jobs)))
+        check("all seven jobs have a job-level check (deal-signals joined in "
+              "LB1; identity-reconcile in PID1)",
+              sorted(jobs) == ["cleanup", "deal-signals", "identity-reconcile",
+                               "monthly-report", "reconcile-sent",
+                               "session-sweep", "weekly-insights"],
+              repr(sorted(jobs)))
         check("fresh job receipts are ok (reconcile 5h / sweep 6h / cleanup 2d / monthly 10d)",
               all(jobs[j]["status"] == "ok" for j in
-                  ("reconcile-sent", "session-sweep", "cleanup", "monthly-report")),
+                  ("reconcile-sent", "session-sweep", "cleanup",
+                   "monthly-report", "identity-reconcile")),
               repr({j: f["status"] for j, f in jobs.items()}))
         check("weekly-insights job uses the view-mtime fallback receipt",
               jobs["weekly-insights"]["status"] == "ok", repr(jobs["weekly-insights"]))

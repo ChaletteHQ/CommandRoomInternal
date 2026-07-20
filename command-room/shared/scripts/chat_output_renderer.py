@@ -460,29 +460,35 @@ class DataShapeError(ValueError):
 
     Specific shape rules enforced (all blocking — no silent recovery):
 
-    - **Email-shaped item rule (v2.14.4+ consolidated form):** if `metadata`
+    - **Email-shaped item rule (FB-17 form, 2026-07-19):** if `metadata`
       contains `To` AND `Subject` keys with non-empty values, the item is
-      "email-shaped" and MUST include `send`, `edit then send`, `draft`, and
-      `skip` in its `actions` array. (Pre-v2.14.4 the set was
-      `send / edit then send / to drafts / edit then draft / skip`;
-      `to drafts` + `edit then draft` were consolidated into the single
-      `draft` verb that always opens edit-then-save. The legacy verbs are
-      rejected.) Items that have email metadata but DON'T offer the
-      send/edit/draft set leave users with widget buttons that don't match
-      the visible draft — Drew's "this one doesn't have a resolve button"
-      issue was the same class.
+      "email-shaped" and MUST include `send`, `draft`, and `snooze 3d` in its
+      `actions` array — the Send / Draft / Snooze card. (FB-17 retired
+      `edit then send`: the FB-10 inline contenteditable body replaces the
+      To/Cc/Subject/Body popup editor, so the card no longer offers it. The
+      wire id stays a DEPRECATED_ALIAS → `send` so an in-flight widget still
+      dispatches, but no new card emits it. Pre-FB-17 the required set was
+      `send / edit then send / draft`; pre-v2.14.4 it was
+      `send / edit then send / to drafts / edit then draft / skip`. All legacy
+      verbs are accepted as deprecated aliases, none is emitted anew.) A plain
+      email card is EXACTLY Send / Draft / Snooze with no dropdown; Waiting On
+      chase rows are also email-shaped but add domain verbs (mark received,
+      follow-up call, add to my list) in the tail. Items that have email
+      metadata but DON'T offer the required set leave users with widget buttons
+      that don't match the visible draft — Drew's "this one doesn't have a
+      resolve button" issue was the same class.
 
       **v3.13.4+ calendar carve-out:** items that ALSO carry calendar keys
       (`Time` / `Duration` / `Location` / `Date`) are calendar-shaped, not
       email-shaped, and the rule above does NOT apply. Calendar invites use
-      `send / edit then send / skip` (no `draft`).
+      `send / skip` (FB-17 retired `edit then send` there too — inline editing;
+      no `draft`, Google Calendar's draft semantics don't map).
 
-    - **Edit-then-send needs metadata rule:** if an item's `actions` includes
-      `edit then send` (or the v2.14.4+ consolidated `draft`), the item MUST
-      have at least one populated metadata field (`To`, `Cc`, `Subject`) AND
-      non-empty
-      `body_lines`. Otherwise the multi-field input opens with all blank
-      fields = looks broken to the user.
+    - **Draft needs metadata rule:** if an item's `actions` includes `draft`
+      (or the deprecated `edit then send` on an in-flight widget), the item
+      MUST have at least one populated metadata field (`To`, `Cc`, `Subject`)
+      AND non-empty `body_lines`. Otherwise the edit surface opens with all
+      blank fields = looks broken to the user.
 
     - **Action-set consistency rule:** every item's actions must be either
       ALL canonical-with-no-input OR canonical-with-bracket-input — no mixing
@@ -603,17 +609,18 @@ class WrapperContractError(ValueError):
 
 EMAIL_REQUIRED_ACTIONS = frozenset({
     "send",
-    "edit then send",
     "draft",   # v2.14.4+ — consolidates former `to drafts` + `edit then draft`
-    # v2.14.31+ — `"skip"` REMOVED. v2.14.28 dropped Skip from cr-commitments YOU OWE
-    # direction (functionally equivalent to no-action in the daily-fire model — Skip's
-    # 24h chat_dismissal is indistinguishable from "didn't click anything; resurface
-    # tomorrow" from the customer's perspective). The validator wasn't updated at the
-    # same time, which left a coupling bug: orchestrator emits no Skip → validator
-    # raises DataShapeError → widget aborts entirely. v2.14.31 unbundles: Skip remains
-    # in CANONICAL_ACTIONS so surfaces that DO want explicit-dismiss semantics (Pulse,
-    # Inbox triage, Past Meetings sub-items) can include it; just not REQUIRED on every
-    # email-shaped item.
+    "snooze 3d",  # FB-17 (M, 2026-07-19) — the email card's third primary
+                  # button (Send / Draft / Snooze). `edit then send` RETIRED
+                  # from the required set: the FB-10 inline body replaces the
+                  # popup editor; the wire id stays a DEPRECATED_ALIAS so
+                  # in-flight widgets still dispatch, but no new email card
+                  # emits or renders it.
+    # v2.14.31+ — `"skip"` was REMOVED from the required set (the v2.14.28
+    # coupling bug: requiring a verb an orchestrator doesn't emit aborts the
+    # widget). FB-17 keeps that lesson — `snooze 3d` is required because the
+    # email card and Waiting On rows both carry it; skip / escalate to memo are
+    # NOT required (a plain email card is exactly Send / Draft / Snooze).
 })
 
 # Items with `edit then send` or `edit then draft` need populated content
@@ -685,15 +692,15 @@ def _validate_data_shape(data: dict) -> None:
                 s = _strip_n_prefix_for_validation(a, item.get("n", ""))
                 stripped_actions.add(s)
 
-            # Rule 1: email-shaped items must offer the canonical send/edit set
+            # Rule 1: email-shaped items must offer the required email set
             if _is_email_shaped(item):
                 missing = EMAIL_REQUIRED_ACTIONS - stripped_actions
                 if missing:
                     issues.append(
                         f"item {n!r} is email-shaped (has To+Subject metadata) but "
                         f"missing required actions: {sorted(missing)}. Email items "
-                        f"MUST offer the full send/edit/draft set so the widget's "
-                        f"Edit-then-send affordance lines up with the visible draft."
+                        f"MUST offer the full Send / Draft / Snooze set (FB-17) so "
+                        f"the card's buttons line up with the visible draft."
                     )
 
             # Rule 2: edit-then-send/draft requires populated metadata + body
@@ -1006,10 +1013,12 @@ def _validate_canonical_actions(data):
         )
 
 
-def validate_chat_output(text_or_html, *, paths_text=None, workspace=None, plugin_root=None):
+def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
+                         plugin_root=None, surface=None):
     """Blocking leak-scanner gate per shared/CONTRACT.md Rule 4 + Rule 25.
 
-    Runs two scanners over the input:
+    Runs two scanners over the input (three when `surface` declares an org
+    audience):
       1. `scan_for_id_leaks` — catches forbidden patterns from `_LEAK_PATTERNS`
          (internal IDs, event types, schema fields, phase labels, etc.).
       2. `_scan_for_path_leaks` — catches absolute filesystem paths that do
@@ -1017,6 +1026,12 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None, plugi
          root, or the Cowork session mount. Closes the v3.5.3 class of bug
          (author's local Drive path leaking into chat output for users whose
          workspace lives somewhere else).
+      3. SPEC PGUARD1 D2 — when `surface` is an org/board/client/external tag
+         (personal_leak.is_org_surface), `scan_for_personal_leak` runs and
+         its findings BLOCK. On `surface=None` or any owner surface the
+         personal scan does not run — personal content is legitimate on
+         m_facing output, and an undeclared surface must never be treated as
+         org (PGUARD1 risk rule).
 
     Raises `LeakDetectedError` with a plain-English summary listing every leak
     found, plus the matched substring so the orchestrator (or apply-choices
@@ -1051,7 +1066,26 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None, plugi
         workspace=workspace,
         plugin_root=plugin_root,
     )
-    all_leaks = leaks + path_leaks
+    # PGUARD1 D2 — personal-content scan, surface-gated BLOCKING. Only fires
+    # when the caller DECLARES an org/board/client/external surface; never on
+    # m_facing / undeclared. Import tolerance mirrors turn_backstop (a partial
+    # plugin update must not brick every chat render), but the skip is loud.
+    personal_leaks = []
+    if surface is not None:
+        try:
+            from personal_leak import is_org_surface, scan_for_personal_leak
+            if is_org_surface(surface):
+                personal_leaks = [
+                    (f"personal-content leak ({f['name']})", f["match"])
+                    for f in scan_for_personal_leak(text_or_html)
+                ]
+        except ImportError:
+            import sys as _sys
+            _sys.stderr.write(
+                "[chat_output_renderer] WARN: personal_leak module missing — "
+                "the org-surface personal-content scan did NOT run.\n"
+            )
+    all_leaks = leaks + path_leaks + personal_leaks
     if all_leaks:
         unique = {}
         for kind, sample in all_leaks:
@@ -1065,6 +1099,13 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None, plugi
             "Fix: strip these strings from the data view (chat_output_renderer "
             "input) or the post-widget commentary. Never add to the allow-list."
         )
+        if personal_leaks:
+            msg_parts.append(
+                "Personal fix (PGUARD1): a personal-lane row reached an "
+                "org/board/client surface. Remove it from the data view — "
+                "personal reminders and personal-tie items render ONLY on "
+                "owner-facing surfaces. Never re-tag the surface to bypass."
+            )
         if path_leaks:
             msg_parts.append(
                 "Path fix (Rule 25): emit absolute paths using the runtime-resolved "
@@ -2097,9 +2138,12 @@ _WIRE_ID_RE = _re_mod.compile(
 # Post-render structural validator (v2.14.34+)
 # ============================================================================
 
-def validate_rendered_widget(html: str) -> None:
+def validate_rendered_widget(html: str, *, surface=None) -> None:
     """Post-render structural assertion: every action button that needs an
     input wrapper has its matching wrapper element in the rendered HTML.
+    When `surface` declares an org/board/client/external audience, the
+    PGUARD1 personal-content scan also runs BLOCKING (see the tail of this
+    function); m_facing / undeclared surfaces never get that scan.
 
     Catches the failure mode where the orchestrator-firing agent
     post-processes the renderer's output between
@@ -2307,6 +2351,34 @@ def validate_rendered_widget(html: str) -> None:
             "visible row number; row titles come from the record's display "
             "name, never its id."
         )
+
+    # SPEC PGUARD1 D2 — personal-content scan, surface-gated BLOCKING. Only
+    # when the caller declares an org surface; owner widgets (the brief,
+    # commitments, staff meeting) legitimately carry personal rows and never
+    # pass an org tag. Import tolerance mirrors validate_chat_output.
+    if surface is not None:
+        try:
+            from personal_leak import is_org_surface, scan_for_personal_leak
+        except ImportError:
+            import sys as _sys
+            _sys.stderr.write(
+                "[chat_output_renderer] WARN: personal_leak module missing — "
+                "the org-surface personal-content widget scan did NOT run.\n"
+            )
+            return
+        if is_org_surface(surface):
+            findings = scan_for_personal_leak(html)
+            if findings:
+                lines = "\n  - ".join(
+                    f"[{f['name']}] {f['match']!r}" for f in findings[:10]
+                )
+                raise LeakDetectedError(
+                    f"Personal-lane content in a widget declared for the "
+                    f"{surface!r} surface — refusing to post:\n  - {lines}\n"
+                    "Fix at the data-view layer: personal reminders and "
+                    "personal-tie rows render only on owner-facing surfaces. "
+                    "Never re-tag the surface to bypass."
+                )
 
 
 # ============================================================================
@@ -2830,19 +2902,27 @@ def _merge_later_verbs(actions: list) -> list:
 # t3 FB-4 (M ruling): per-surface primary verbs render as visible one-tap
 # buttons; the tail stays in the dropdown. Row-shape driven (not
 # source_skill driven) so mixed surfaces route correctly: an email-shaped
-# row inside the commitments chat still gets Send + Draft.
-_PRIMARY_EMAIL_VERBS = ("send", "draft")
+# row inside the commitments chat still gets its primaries.
+#
+# FB-17 (M, 2026-07-19): the email card's primaries are Send / Draft / Snooze.
+# A PLAIN email-draft card carries exactly those three, so its tail is empty —
+# "no dropdown", per the ruling. A Waiting On chase row is also email-shaped
+# but carries domain verbs (mark received, follow-up call, add to my list) that
+# cannot collapse into three buttons; those stay in the tail — the ruling is
+# about the plain draft card, not the chase surface.
+_EMAIL_SHAPE_MARKERS = ("send", "draft")   # detects an email-shaped row
+_PRIMARY_EMAIL_VERBS = ("send", "draft", "snooze 3d")
 _PRIMARY_COMMITMENT_VERBS = ("resolved", "mark done")
 
 
 def _split_primary_verbs(actions: list) -> tuple[list, list]:
     """Split a row's action list into (primary, tail). Email-shaped rows
-    (send/draft present) promote Send + Draft; commitment-shaped rows
+    (send/draft present) promote Send / Draft / Snooze; commitment-shaped rows
     promote the Done verb. Everything else — and rows matching neither
     shape — stays in the dropdown. Wire ids untouched; this is display
     layout only."""
     low = {str(a).lower() for a in actions}
-    if low & set(_PRIMARY_EMAIL_VERBS):
+    if low & set(_EMAIL_SHAPE_MARKERS):
         primary_ids = _PRIMARY_EMAIL_VERBS
     elif low & set(_PRIMARY_COMMITMENT_VERBS):
         primary_ids = _PRIMARY_COMMITMENT_VERBS
@@ -2857,9 +2937,10 @@ def _render_primary_button(action: str, item_n) -> str:
     """One-tap primary verb button (t3 FB-4). Same selection model as the
     dropdown — tap arms the row, Apply batches — and the same wire
     attributes the legacy cr-action contract carries. Primary buttons are
-    always input-type "none": Send/Done need nothing typed, and Draft's
+    always input-type "none": Send/Done/Snooze need nothing typed, and Draft's
     edit surface is the FB-10 inline-editable body, not a popup editor
-    (the dropdown's `edit then send` keeps the full To/Cc/Subject form)."""
+    (FB-17 retired the `edit then send` popup form — inline editing replaces
+    it, so the card is Send / Draft / Snooze with no dropdown)."""
     safe_action = _html_mod.escape(action, quote=True)
     safe_n = _html_mod.escape(str(item_n), quote=True)
     label = _html_mod.escape(_action_display_label(action))

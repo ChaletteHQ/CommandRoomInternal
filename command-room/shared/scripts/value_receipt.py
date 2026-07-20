@@ -47,11 +47,14 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from cru_match import (  # noqa: E402
-    load_events_defensively,
     _commitment_field,
     _commitment_id,
     _now_iso,
 )
+# SPEC PGUARD1 D1 — the receipt is a CLIENT-FACING artifact: its events read
+# goes through the org-scoped reader (defensive load + account mask +
+# personal-lane drop), never a raw load.
+from events_io import load_events_org_scoped  # noqa: E402
 from event_time import event_dt, event_time  # noqa: E402
 
 try:
@@ -486,6 +489,105 @@ def build_receipt_tiles(metrics: dict, hours_estimate: float) -> list:
     return tiles
 
 
+def build_trend_chart(per_month: list, *, metric: str = "hours_estimate",
+                      label: str = "Hours returned",
+                      title: str = "Month over month",
+                      unit: str = "h") -> Optional[dict]:
+    """SPEC OUT3 — the month-over-month trend as a `charts` entry for
+    make_brief / make_premium_brief, or None when there is no trend to show.
+
+    Points come VERBATIM from `per_month` rows (compute_metrics' output — the
+    same rows the quarterly table renders; one computation, two renders,
+    never re-derived in prose). Returns None below 2 months or when every
+    value is zero — the caller simply omits the chart and the table/tile
+    representation stands (refusal over empty frames). Forwardability lock
+    unchanged: month labels + numbers only, no names.
+
+    Used by value-receipt's quarterly roll-up AND operator-report's trend
+    context (operator-report calls compute_metrics over its trailing window
+    and passes the per_month rows here — the shared conservative rubric stays
+    the single source of the numbers)."""
+    rows = [r for r in (per_month or []) if isinstance(r, dict)]
+    if len(rows) < 2:
+        return None
+    points = []
+    for r in rows:
+        v = r.get(metric)
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return None  # never chart a gap as zero
+        points.append({"x": str(r.get("label") or r.get("month") or ""), "y": float(v)})
+    if all(p["y"] == 0 for p in points):
+        return None
+    return {
+        "kind": "line",
+        "title": title,
+        "data": {"series": [{"label": label, "points": points}], "unit": unit},
+    }
+
+
+def build_value_receipt_infographic(
+    receipt: dict,
+    *,
+    label: Optional[str] = None,
+    brand: Optional[dict] = None,
+    workspace_root=None,
+    org_id: Optional[str] = None,
+) -> Optional[str]:
+    """SPEC OUT4 §3c — render a quarterly value receipt as a `stat_spotlight`
+    infographic (a self-contained premium-HTML one-pager), or None when it does
+    not fit.
+
+    This is an OUTPUT MODE, not a new number: the hero figure and every support
+    tile come VERBATIM from `build_receipt_tiles` (which reads the code-computed
+    receipt) — nothing is re-derived here (F-60 / the value_receipt.py contract).
+    The hero is the conservative hours-returned figure (the receipt's headline
+    ROI number); the remaining tiles are the support band. Forwardability lock
+    unchanged: counts + hours + the window label only, zero names — the same
+    reason the .docx receipt passes `docx_leak_scanner` (and build_infographic
+    re-runs that leak scan over the rendered page).
+
+    The caller renders this ONLY when the profile opts value-receipt into the
+    infographic mode — `output_profile.renders_infographic_first("value_receipt",
+    workspace_root)` — AND the roll-up is quarterly (the justify-the-spend
+    variant). Returns None (honest no-fit) when: the roll-up is not quarterly,
+    there is no hours figure to headline, or fewer than one support tile remains
+    — the caller then keeps the .docx / premium-HTML receipt.
+
+    Args mirror the render helpers: an explicit `brand` dict wins, else
+    workspace/org resolution, else byte-stable defaults.
+    """
+    if not isinstance(receipt, dict) or receipt.get("rollup") != "quarter":
+        return None
+    metrics = receipt.get("metrics") or {}
+    hours_estimate = receipt.get("hours_estimate") or 0
+    tiles = build_receipt_tiles(metrics, hours_estimate)
+
+    hero = next((t for t in tiles if str(t.get("label", "")).lower().startswith("hours")), None)
+    if hero is None:
+        return None  # no headline ROI number — a spotlight has no hero
+    support = [t for t in tiles if t is not hero]
+    if not support:
+        return None  # a hero with no support is a stat line, not an infographic
+
+    try:
+        from infographic import build_infographic
+    except ImportError:  # pragma: no cover — partial-install posture
+        return None
+
+    win = label or receipt.get("window") or ""
+    return build_infographic(
+        "stat_spotlight",
+        {"hero": {"value": hero["value"], "label": hero["label"]},
+         "support": support[:4]},
+        title="Value Receipt",
+        subtitle=win,
+        eyebrow="VALUE RECEIPT",
+        brand=brand,
+        workspace_root=str(workspace_root) if workspace_root is not None else None,
+        org_id=org_id,
+    )
+
+
 def _build_sections(metrics: dict, hours_estimate: float, per_month: list, rollup: str) -> list:
     """A ready-to-pass make_brief sections list. Code builds every number into
     the strings, so the skill renders — it never recomputes in prose."""
@@ -512,10 +614,16 @@ def _build_sections(metrics: dict, hours_estimate: float, per_month: list, rollu
                 str(r["decisions_logged"]),
                 f"~{r['hours_estimate']:g}",
             ])
-        sections.append({
+        section = {
             "heading": "Month by month",
             "table": {"rows": rows, "headers": headers},
-        })
+        }
+        # SPEC OUT3 — the MoM hours trend rides above the table (same numbers,
+        # rendered best-effort; a refused/None chart leaves the table alone).
+        trend = build_trend_chart(per_month)
+        if trend:
+            section["charts"] = [trend]
+        sections.append(section)
     return sections
 
 
@@ -638,7 +746,7 @@ def compute_value_receipt(
       }
     """
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    events, skipped = load_events_defensively(events_path)
+    events, skipped = load_events_org_scoped(workspace_root)
 
     computed = compute_metrics(events, window_start, window_end)
     metrics = computed["metrics"]
@@ -730,7 +838,7 @@ def validate_receipt_ran(workspace_root, *, window=None) -> dict:
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     if not events_path.exists():
         return {"ok": False, "ran": False, "reason": "no activity log yet"}
-    events, _skipped = load_events_defensively(events_path)
+    events, _skipped = load_events_org_scoped(workspace_root)
     latest = None
     for ev in events:
         if ev.get("type") == "value_receipt_generated":

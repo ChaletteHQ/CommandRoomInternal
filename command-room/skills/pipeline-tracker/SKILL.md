@@ -116,7 +116,10 @@ health = deal_health.compute_deal_health(
     today=today, stage_thresholds=<preset map>, zombie_days=deal_health.zombie_threshold_days(closed))
 ranked = pipeline_math.rank_deals(health)
 tiles = pipeline_math.pipeline_tiles(opens, health, events, today)
-print(json.dumps({'ranked': ranked, 'tiles': tiles, 'n_skipped': len(skipped)}, default=str))
+with open(ws + '/_hq/data/entities.json', encoding='utf-8') as f:
+    gap = pipeline_math.prospects_not_in_pipeline(json.load(f))
+print(json.dumps({'ranked': ranked, 'tiles': tiles, 'n_skipped': len(skipped),
+                  'gap': gap}, default=str))
 "
 ```
 
@@ -125,8 +128,9 @@ Render as the OUT2 ranked report (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The 
 1. **Tile band** — exactly `pipeline_math.pipeline_tiles` output, drop-empty (F-60): Open pipeline $ · Closing this month (n · $) · Stalled (n) · Won rate 90d (only at ≥4 terminal events — never a misleading 100%) · Weighted $ (only when ≥1 deal carries a forecast category). Values come from the SAME computation as the rows — never a second pass, never a prose re-count.
 2. **Scored rows, in `rank_deals` order exactly:** `rank · deal (org) · $tag · stage, Nd in stage · next step or ⚠ no next step · why-now · action`. The $tag comes from `quantify.money_time_tag` (deal value leads the trace); absent value = no tag, never an estimate. Why-now cites the flag evidence ("quiet 12d in negotiating — their usual reply gap is 3d"). A deal with zero open commitments renders `⚠ no next step` and ranks up — the single strongest predictor of a deal dying.
 3. **Untracked rows** (pre-existing deal threads with no stage tracking) render at the bottom with one-tap `track deal` adoption — never a rot alarm, never a crash.
+3b. **Reconciliation line (Part 2, D9.1)** — when `gap` is non-empty, ONE line under the rows: *"N prospect orgs aren't in the pipeline yet — [names, comma-joined, cap 5 + 'and K more']. The Sunday scan proposes them when they show deal signal, or say `new deal [name] with [org]` now."* The count and names come verbatim from `pipeline_math.prospects_not_in_pipeline` (the SAME coverage predicate the detector and the confirm handler use — never re-derive membership in prose). Zero gap → no line, no "all reconciled" filler. This line is visibility for the two-"prospect"-systems seam (org tag vs deal object), not a nag: it renders on the report only, never chases.
 4. **Widget:** `widget_mode: "all_batch_widget"` via `render_chat_output_widget`, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport), `source_skill: "cr-pipeline"` (the renderer stamps `src`). Per-item actions (all in `CANONICAL_ACTIONS` via the verb taxonomy): `move to [stage]` · `set next step [text]` · `mark won` · `mark lost [reason]` (reason REQUIRED — F-17 hold-with-reason) · `draft re-engagement` · `snooze 14d` · `skip`. Untracked rows carry `track deal` + `skip` only. Dispatch lives in apply-choices' `cr-pipeline` source entry.
-5. **Docx on request** ("pipeline report as a doc") via `brief_writer.make_brief(brief_kind="ranked_report", ...)` — CONTRACT Rule 27: never a .md deliverable. Then the OUT2 §3 visual pass (`visual_gate.render_preview` → 6-item checklist → fix at most once → `log_visual_gate`). Surface the file as an H2 heading link LAST in the turn via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` — never a plain-text path, never a hand-built URL (CONTRACT Rule 3).
+5. **Docx on request** ("pipeline report as a doc") via `brief_writer.make_brief(brief_kind="ranked_report", ...)` — CONTRACT Rule 27: never a .md deliverable. The tile-band section additionally carries the **stage-mix donut** (SPEC OUT3): attach `charts: [{"kind": "donut", "data": {"slices": pipeline_math.stage_mix(opens)}, "title": "Pipeline by stage"}]` — slices come verbatim from `stage_mix` (counts per stage, zero stages dropped, reader-facing labels), NEVER hand-counted. Skip the key when `stage_mix` returns fewer than 2 slices. It renders best-effort inside `make_brief` (`charts.try_chart_png`): a refused shape or no rasterizer on this machine = the report renders exactly as before (selection rules: `shared/CHART_SELECTION.md`). Then the OUT2 §3 visual pass (`visual_gate.render_preview` → 7-item checklist → fix at most once → `log_visual_gate`). Surface the file as an H2 heading link LAST in the turn via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` — never a plain-text path, never a hand-built URL (CONTRACT Rule 3).
 6. **Receipt** (Writer Contract above) + the skipped-lines banner when `n_skipped > 0`.
 
 Zero open deals: *"No open deals tracked yet. Say 'new deal [name] with [org]' to start one."* — no tile band, no empty frames.
@@ -171,9 +175,13 @@ ALL closes go through `deal_state.close_deal` — the single closure path. Idemp
 
 A standard commitment capture with `primary_thread_id` = the deal thread and an EXPLICIT `data.kind` (Gate 21 — never rely on the gate's default): `promise` when the step involves a counterparty ("send the revised proposal to Acme by Fri" — enters chase), `task` when it's purely the user's own move with nobody owed. Owner = the user unless they name someone. Dated next steps get chased by the existing commitment machinery — nothing new; closure only via `commitment_state.close_commitment`. This clears the `⚠ no next step` flag on the next render.
 
-### Detector-observed signals (Part 2 — not in this release)
+### Detector-observed signals (Part 2 — LIVE, propose-and-confirm only)
 
-The deal-signal detector (meeting/email language → proposed stage/value updates) ships in Part 2 as propose-and-confirm via `deal_update_proposed`. Until then, NOTHING infers a deal change: only what the user says moves a deal.
+The deal-signal detector (`shared/scripts/deal_signal_detector.py`) is the observed lane: stage markers, won language, money amounts on open deals, and — D9.1 — deal GENESIS (a sales-typed meeting or pursuit language on a prospect/client org with no deal coverage proposes `deal_created(lead)`). It runs Sundays as the `deal-signals` maintenance job and, scoped to the meeting's own orgs, as a meeting-notes / follow-up-ritual post-step. Every signal flows through `brain_proposals.propose(tier="confirm")` → the Staff Meeting / brain confirm card → apply-choices → `deal_state`. NOTHING observed ever auto-writes a deal field — only a user confirm (or an explicit user utterance above) moves a deal. This skill never runs the detector inline during a report fire; the report reads what's already tracked plus the reconciliation line.
+
+### The weekly digest (`pipeline-digest` — optional scheduled chat, Part 2)
+
+Tuesday 8 AM by default, registered ONLY through the schedule machinery (change-schedule `add pipeline digest` / registration Phase 6 / the schedule-proposals nudge — gated on ≥1 open deal), never from here and never silently. The fire itself is `references/orchestrator-pipeline-digest.md` in enable-command-room-schedules: since-last-digest movement (opened / moved / closed / newly stalled, derived from `deal_*` events after the last digest receipt), the SAME tile band and ranked rows as the on-demand report (one computation path — this section, run verbatim), the top-3 moves, and — when deal-kind proposals are pending — ONE pending-count line pointing at `staff meeting` (FB-20: the Staff Meeting is the sole adjudication door; the digest never renders confirm rows). "send me the weekly digest" here sets `digest.enabled` + surfaces the registration proposal; "stop the digest" sets it false and offers the change-schedule pause.
 
 ## Executive Output Standard (EXEC1)
 
@@ -197,7 +205,7 @@ Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. The chat lead is the quantified 
 
 - Doesn't create orgs — `new prospect` / `new org` (workspace-manager) own that; a deal needs an existing org.
 - Doesn't convert prospects on its own judgment — conversion happens only on the user's explicit win declaration (D6) or workspace-manager's administrative verbs. Observed signals never auto-flip anything.
-- Doesn't chase next steps itself — commitments do (the daily Commitments chat, chase drafts, snooze machinery all come free).
+- Doesn't chase next steps itself — commitments do (the daily Waiting On chat, chase drafts, snooze machinery all come free).
 - Doesn't draft the follow-up email — `draft re-engagement` hands to email-writer (lazy, draft-never-send).
 - Doesn't read QuickBooks — no QBO dependency anywhere; deal values are user-stated.
 - Doesn't auto-register the weekly digest — the digest is proposed through the schedule setup's optional set, never silently registered.
@@ -215,6 +223,8 @@ The complete trigger family and fences for this skill. The routing metadata is b
 > DOES NOT fire on 'stalled projects' (stalled-projects — non-deal threads; it excludes deal threads by fence).
 > DOES NOT fire on 'who owes me money' (deliberately unowned — AR is not pipeline; AR proper stays gated on an accounting connector).
 > DOES NOT fire on 'brief me on the' (catch-all topic brief).
+> DOES NOT fire on 'add pipeline digest' (change-schedule — the later-add registration path, same as 'add staff meeting'; this skill only records the digest PREFERENCE and surfaces the proposal).
+> DOES NOT fire on a chart-verb ask — 'chart', 'graph', 'plot', 'visualize', 'visualise', 'trend' anywhere in the phrase (chart-on-demand — the chart verb makes it a chart ask, drawn via charts.py; the bare pipeline status stems here own the report ask, SPEC OUT3B §4; verb-level rather than exact-phrase per second-eyes 2026-07-19 — exact phrases left chart-revenue-in-play / visualize-the-pipeline colliding 2-ways, and quoting those phrase mentions here would leak them past the 400-char negative window as stray positives).
 > Never claims these bare tokens (deliberately NOT quoted triggers here; each stays with its owner or unowned): deal (singular), lost, move, update, kill, proposal, where are we with.
 
 > Loose-status handoff: *where are we with the [name] deal* stays workspace-manager's catch-all; its ladder hands the turn here when ENTITY_RESOLVE lands on a deal thread. `go [deal name]` navigation stays workspace-manager's.

@@ -8,24 +8,31 @@ with real context worth keeping. M's FS-11b ruling extended: auto-confirm far
 more people (with observed emails), and sweep the aged low-context rest —
 one narrated, undoable pass instead of 68 dropdown clicks.
 
-WHAT IT DOES (per open person-family proposal, oldest first):
+WHAT IT DOES (per open person-family proposal, oldest first). SPEC PID1
+replaced this module's classifier: `plan_sweep` now DELEGATES to
+`identity_reconcile.plan_reconcile` (one rule table, two entry shells) —
+the add bar is the R1 corroboration doctrine, no longer "name +
+prose-inferred role/org":
 
-  RICH-CONTEXT (a name plus an inferred role and/or org)
+  AUTO-TIER CLUSTER (full name AND observed email / ≥2 independent source
+  families AND zero same-name collision AND not already on file)
       → `people_writer.auto_add_person` — the same-name dedup gate runs
         BEFORE every add (a token match → needs_confirm, left open and
         reported, never auto-forked); an email is captured ONLY when an
-        address literally appears in the proposal's own evidence/source_ref
+        address literally appears in the cluster's own evidence/source_ref
         text (an OBSERVED source, carried with provenance) — a pattern-guessed
         or constructed address is NEVER written (F-08 extends to capture).
-        Then the person_added tombstone retires the proposal.
+        Then a person_added tombstone retires EVERY member proposal.
 
-  LOW-CONTEXT + AGED (name-only mention, older than
+  LOW-CONTEXT + AGED (name-only single mention, older than
   brain_proposals.PERSON_LOW_CONTEXT_STALE_DAYS)
       → expire: the not_relevant tombstone with an expiry note. Nothing else
         written.
 
-  EVERYTHING ELSE (low-context but young; rich-context with a same-name
-  collision) → LEFT OPEN, reported.
+  EVERYTHING ELSE (confirm clusters; on-file merge-propose clusters;
+  no-name rows; update-type rows) → LEFT OPEN, reported with the tier
+  named. The full link/annotation machinery is identity_reconcile's own
+  entry point (`run_identity_reconcile` / `--backfill`).
 
 UNDO — every write is reversible through the registered brain_undo reversers
 (archive-never-delete): person adds reverse via person_org_creation_
@@ -108,64 +115,63 @@ def _age_days(ts: str, now_iso: str) -> int | None:
 def plan_sweep(workspace_root, *, now_iso: str | None = None) -> dict:
     """Pure planning pass (no writes): classify every open person proposal.
     Returns {add: [...], expire: [...], keep_open: [...]} where each entry
-    carries the proposal row + the decision rationale."""
-    from brain_proposals import (PERSON_LOW_CONTEXT_STALE_DAYS,
-                                 person_proposal_is_low_context)
-    from confirm_flow import load_open_person_proposals
+    carries the proposal row + the decision rationale.
+
+    SPEC PID1 D7 — classification DELEGATES to `identity_reconcile.
+    plan_reconcile` (one rule table, two entry shells; a forked classifier
+    is the FS-19 pre-history all over again). The bar therefore changed
+    from the old "name + prose-inferred role/org" to the R1 corroboration
+    doctrine: only AUTO-tier clusters (full name AND observed email / ≥2
+    source families AND zero collision AND not on file) plan as adds.
+    Confirm clusters, on-file (merge-propose) clusters, no-name rows, and
+    update-type rows all route to keep_open with the tier named — the full
+    link/annotation machinery is `identity_reconcile`'s own entry point
+    (`run_identity_reconcile` / `--backfill`); this shell keeps its
+    original narrow add+expire shape for back-compat."""
+    from identity_reconcile import plan_reconcile
 
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
+    rp = plan_reconcile(ws, now_iso=now_iso)
 
-    # Review F-2 — honor the ACTIVE dismissal set exactly as the queue
-    # adapter does: a proposal M snoozed ("snooze proposal 7d") must not be
-    # auto-added or expired mid-snooze. Snoozed rows route to keep_open with
-    # a visible rationale (better than silently skipping them from the plan).
-    snoozed_seqs: set = set()
-    try:
-        import event_refs
-        from mute_ledger import active_dismissal_target_ids
-
-        events = event_refs.load_events(_events_path(ws)) \
-            if _events_path(ws).exists() else []
-        dismissed = active_dismissal_target_ids(events, now_iso)
-        for tid in dismissed:
-            t = str(tid)
-            if t.startswith("person:"):
-                t = t.split(":", 1)[1]
-            if t.isdigit():
-                snoozed_seqs.add(int(t))
-    except Exception:
-        snoozed_seqs = set()
+    def _rep_row(cluster: dict) -> dict:
+        # Oldest add row, carrying the cluster's BEST name spelling — the
+        # row auto_add_person / narration reads.
+        rows = sorted(cluster["add_rows"],
+                      key=lambda r: r.get("captured_ts") or "") \
+            if cluster.get("add_rows") else list(cluster.get("rows") or [])
+        rep = dict(rows[0]) if rows else {}
+        rep["name"] = cluster.get("name")
+        return rep
 
     add: list[dict] = []
     expire: list[dict] = []
     keep: list[dict] = []
-    for p in load_open_person_proposals(_events_path(ws)):
-        name = (p.get("name") or "").strip()
-        age = _age_days(p.get("captured_ts") or "", now_iso)
-        low = person_proposal_is_low_context(p)
-        if p.get("seq") in snoozed_seqs:
-            keep.append({"proposal": p,
-                         "why": "snoozed by M — the mute is honored; the "
-                                "sweep never adjudicates a snoozed row"})
-            continue
-        if name and not low:
-            email = _observed_email(p)
-            add.append({"proposal": p, "email": email,
-                        "why": "rich context — name + "
-                               + ("role" if p.get("inferred_role") else "")
-                               + ("+" if p.get("inferred_role") and p.get("inferred_org") else "")
-                               + ("org" if p.get("inferred_org") else "")
-                               + (f", observed address {email}" if email else ", no address in the source")})
-        elif low and age is not None and age > PERSON_LOW_CONTEXT_STALE_DAYS:
-            expire.append({"proposal": p,
-                           "why": f"name-only mention, {age} days old "
-                                  f"(window {PERSON_LOW_CONTEXT_STALE_DAYS}d)"})
-        else:
-            keep.append({"proposal": p,
-                         "why": ("no name captured" if not name else
-                                 f"name-only but only {age} days old — "
-                                 "left for the TTL window")})
+    for entry in rp["auto"]:
+        add.append({"proposal": _rep_row(entry["cluster"]),
+                    "cluster": entry["cluster"],
+                    "email": entry["email"],
+                    "why": entry["why"]})
+    for entry in rp["expire"]:
+        expire.append({"proposal": entry["proposal"], "why": entry["why"]})
+    for entry in rp["confirm"]:
+        keep.append({"proposal": _rep_row(entry["cluster"]),
+                     "why": entry["why"]})
+    for entry in rp["merge_propose"]:
+        keep.append({"proposal": _rep_row(entry["cluster"]),
+                     "why": entry["why"]})
+    for entry in rp["annotations"]:
+        keep.append({"proposal": entry["proposal"],
+                     "why": "no name captured — the identity reconciler "
+                            "converts these to annotations (D5)"})
+    for entry in rp["keep_open"]:
+        row = entry.get("proposal") or (_rep_row(entry["cluster"])
+                                        if entry.get("cluster") else {})
+        keep.append({"proposal": row, "why": entry["why"]})
+    for row in rp.get("updates") or []:
+        keep.append({"proposal": row,
+                     "why": "update to an existing record — adjudicated in "
+                            "the queue, never batch-applied"})
     return {"add": add, "expire": expire, "keep_open": keep,
             "now_iso": now_iso}
 
@@ -214,33 +220,52 @@ def run_sweep(workspace_root, *, apply: bool = False,
                                              "name": p.get("name")})
             continue
         record = res["record"]
-        # Tombstone the proposal + stamp the undo batch markers.
-        tomb = build_person_proposal_resolved_event(
-            p["seq"], resolution="person_added",
-            source_skill="person-backlog-sweep",
-            person_id=record["id"],
-            note=f"backlog sweep {batch_id}")
-        tomb.setdefault("data", {})
-        tomb["data"]["brain_batch_id"] = batch_id
-        tomb["data"]["brain_change_class"] = "person_org_creation_structured_fact"
-        tomb["data"]["person_id"] = record["id"]
-        append_event(events_path, [tomb], holder="person-backlog-sweep")
+        # Tombstone EVERY member proposal in the identity cluster (PID1 D3:
+        # the duplicate mentions are the corroboration evidence — the
+        # cluster consumes them, they all close on the one add) + stamp the
+        # undo batch markers. Seq-less members tombstone via the D8
+        # fingerprint.
+        members = (entry.get("cluster") or {}).get("rows") or [p]
+        tombs = []
+        for m in members:
+            seq = m.get("seq")
+            kwargs = {}
+            if not isinstance(seq, int) or isinstance(seq, bool):
+                seq = None
+                kwargs["proposal_fingerprint"] = m.get("fingerprint")
+            tomb = build_person_proposal_resolved_event(
+                seq, resolution="person_added",
+                source_skill="person-backlog-sweep",
+                person_id=record["id"],
+                note=f"backlog sweep {batch_id}", **kwargs)
+            tomb.setdefault("data", {})
+            tomb["data"]["brain_batch_id"] = batch_id
+            tomb["data"]["brain_change_class"] = "person_org_creation_structured_fact"
+            tomb["data"]["person_id"] = record["id"]
+            tombs.append(tomb)
+        append_event(events_path, tombs, holder="person-backlog-sweep")
         results["added"].append({"seq": p.get("seq"), "name": p.get("name"),
                                  "person_id": record["id"],
                                  "email": entry["email"],
+                                 "n_proposals": len(members),
                                  "email_dropped_no_provenance":
                                      res.get("email_dropped_no_provenance")})
     for entry in plan["expire"]:
         p = entry["proposal"]
         try:
+            seq = p.get("seq")
+            kwargs = {}
+            if not isinstance(seq, int) or isinstance(seq, bool):
+                seq = None  # D8 — seq-less rows tombstone by fingerprint
+                kwargs["proposal_fingerprint"] = p.get("fingerprint")
             tomb = build_person_proposal_resolved_event(
-                p["seq"], resolution="not_relevant",
+                seq, resolution="not_relevant",
                 source_skill="person-backlog-sweep",
-                note=f"expired by backlog sweep {batch_id} — {entry['why']}")
+                note=f"expired by backlog sweep {batch_id} — {entry['why']}",
+                **kwargs)
             tomb.setdefault("data", {})
             tomb["data"]["brain_batch_id"] = batch_id
             tomb["data"]["brain_change_class"] = "person_proposal_tombstone"
-            tomb["data"]["proposal_seq"] = p["seq"]
             append_event(events_path, [tomb], holder="person-backlog-sweep")
             results["expired"].append({"seq": p.get("seq"),
                                        "name": p.get("name")})

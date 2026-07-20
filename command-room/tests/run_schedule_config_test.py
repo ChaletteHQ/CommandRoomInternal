@@ -178,8 +178,8 @@ def test_load_uses_overrides():
                config["inbox"]["cron"] == "0 8 * * 1-5",
                f"got {config['inbox']['cron']}")
         _check("non-overridden tasks keep defaults",
-               config["commitments"]["cron"]
-               == DEFAULT_SCHEDULES["commitments"]["cron"])
+               config["waiting-on"]["cron"]
+               == DEFAULT_SCHEDULES["waiting-on"]["cron"])  # CTS1: commitments → waiting-on
 
 
 def test_load_handles_disabled_flag():

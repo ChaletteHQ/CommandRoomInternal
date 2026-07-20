@@ -179,7 +179,7 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
 
    **Section names are owned by `prep_pipeline.assemble_prep_sections` + `skills/call-prep/SKILL.md` "What You Get".** If you add or rename a section, update the pipeline, the SKILL.md, AND this file in the same commit.
 
-   **Visual pass (SPEC OUT2 §3, after the save — per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass"):** call `shared/scripts/visual_gate.py` `render_preview(BRIEF_PATH)`. If it returns page images, LOOK at them against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(ws, BRIEF_PATH, rendered, findings, fixed)`. If it returns `None` (scheduled-task sandboxes usually have no renderer — expected), log `rendered: false` with a `skipped_reason` and proceed exactly as before. Warn-only forever: a finding never blocks the brief, the pass never loops, and the temp-dir PNGs are never written to the workspace.
+   **Visual pass (SPEC OUT2 §3, after the save — per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass"):** call `shared/scripts/visual_gate.py` `render_preview(BRIEF_PATH)`. If it returns page images, LOOK at them against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied · chart unreadable / overplotted), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(ws, BRIEF_PATH, rendered, findings, fixed)`. If it returns `None` (scheduled-task sandboxes usually have no renderer — expected), log `rendered: false` with a `skipped_reason` and proceed exactly as before. Warn-only forever: a finding never blocks the brief, the pass never loops, and the temp-dir PNGs are never written to the workspace.
 
    Verify with:
 
@@ -333,7 +333,7 @@ for brief in briefs:
     "icon": None,
     "name": "Sam Sample",                           # resolved attendee name
     "subject": "Q2 deck review",
-    "context_tag": f"{time_short} · {project_or_routing_note}",   # "9:00 AM · Category Company" or "9:00 AM · no project yet"
+    "context_tag": f"{time_short} · {project_or_routing_note}",   # "9:00 AM · Summit Company" or "9:00 AM · no project yet"
     # time_short MUST always include AM or PM, on every row, every fire — never
     # drop the suffix even when the day's meetings are all AM or all PM. Sam
     # Apr 29: "I don't know why it's doing am and pm" — the per-row toggle felt
@@ -383,7 +383,7 @@ Personal calls (no business-domain attendee) and solo blocks routing to no proje
 
 **Pre-build resolution rules:**
 - Resolve every entity ID to canonical name (no `org_010`, `project_NNN`)
-- Routing language: when a meeting routes to a known project, use the project name (`Category Company`). When it doesn't, use plain English: `(no project yet — say new project to track)`. Never `(unrouted)` / `(_unrouted/)` / `(no active project)`.
+- Routing language: when a meeting routes to a known project, use the project name (`Summit Company`). When it doesn't, use plain English: `(no project yet — say new project to track)`. Never `(unrouted)` / `(_unrouted/)` / `(no active project)`.
 - Slugs: **brief-file slugs come ONLY from `prep_pipeline.prep_slug(meeting_id, title)`** (v4.5.2 S1 — identity is the meeting id, the title prefix is readability; F-29b). The short attendee-first-name form (`sam`, `bo`) survives ONLY as the widget action-pill token (`data-n`), never as a filename.
 
 ## Brief link mechanism (v2.10.8+ — `present_files`-based)
@@ -458,7 +458,7 @@ Parse:
 - `snooze SLUG 3d` (v2.14.38+) → write `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Meeting card won't re-surface until the date passes. Plain-English ack only if mentioned: `"Snoozed #N for 3 days."`
 - `add to my list SLUG` (v2.14.38+) → write `commitment_to_discuss` event grouped by the meeting's primary attendee. Surfaces in `show my list`.
 - `skip SLUG` (deprecated v2.14.38+ — back-compat alias for in-flight pre-v2.14.38 widgets) → translate to `snooze 3d` semantics + same dismissal write.
-- `push SLUG to [when]` → parse the user's natural-language input (`monday at 2`, `tomorrow afternoon`, `2026-05-12`) into a target date/time. If parseable, draft reschedule email via email-writer per EMAIL_DRAFT_PROTOCOL. The draft surfaces inside the apply-choices consolidated response widget (v2.12.4+ — the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) per the same widget contract as the source orchestrator). If unparseable, surface item-level error in the consolidated ack ("couldn't parse '<input>' as a date — re-fire and try a clearer time").
+- `push SLUG to [when]` → parse the user's natural-language input (`monday at 2`, `tomorrow afternoon`, `2026-05-12`) into a target date/time. If parseable, draft reschedule email via email-writer per EMAIL_DRAFT_PROTOCOL. The draft surfaces inside the apply-choices consolidated response widget (v2.12.4+ — the standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) per the same widget contract as the source orchestrator). If unparseable, surface item-level error in the consolidated ack ("couldn't parse '<input>' as a date — re-fire and try a clearer time").
 - `tell me about [name]` → fire the people-crm "tell me about" cross-reference flow.
 
 For unrecognized → respond once in plain English: "Reply with `open SLUG`, `tweak SLUG [change]`, `regenerate SLUG`, `skip SLUG`, or `push SLUG to [date]`. Or `tell me about [name]` for a deep cross-reference."

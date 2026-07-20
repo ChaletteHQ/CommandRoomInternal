@@ -7,7 +7,7 @@
     "properties": {"title": "string", "id": "string", "kind": "string", "due": "string", "due_date": "string", "no_due": "boolean", "status": "string", "state": "string", "owner_id": "string", "owner_person_id": "string", "owner": "string", "counterparty_id": "string", "counterparty_name": "string", "source_ref": "string", "pending_review": "boolean", "review_reason": "string", "suspected_duplicate_of": "string", "suspected_duplicate_score": "number"}
   },
   "visual_gate": {
-    "description": "Render-then-critique audit (SPEC OUT2 §3): one event per STANDARD_KINDS .docx the visual pass examined (or tried to). data.doc = the deliverable path; rendered = whether the preview ladder (Word COM → soffice → None) produced PNGs; findings = the 6-item-checklist hits the skill saw on the rendered pages (empty when clean OR when skipped); fixed = whether the at-most-once fix-and-resave ran. skipped_reason present when rendered=false explains the skip (e.g. 'no renderer on this machine' — Cowork sandboxes may lack both renderers; the skipped path must be detectable, not invisible). WARN-ONLY FOREVER at the code layer — the gate is judgment, not schema. Written ONLY via visual_gate.log_visual_gate; mined by usage-report / insight-generator to prove the gate fires.",
+    "description": "Render-then-critique audit (SPEC OUT2 §3): one event per STANDARD_KINDS .docx the visual pass examined (or tried to). data.doc = the deliverable path; rendered = whether the preview ladder (Word COM → soffice → None) produced PNGs; findings = the 7-item-checklist hits the skill saw on the rendered pages (empty when clean OR when skipped); fixed = whether the at-most-once fix-and-resave ran. skipped_reason present when rendered=false explains the skip (e.g. 'no renderer on this machine' — Cowork sandboxes may lack both renderers; the skipped path must be detectable, not invisible). WARN-ONLY FOREVER at the code layer — the gate is judgment, not schema. Written ONLY via visual_gate.log_visual_gate; mined by usage-report / insight-generator to prove the gate fires.",
     "required": [["doc"], ["rendered"]],
     "properties": {"doc": "string", "rendered": "boolean", "findings": "array", "fixed": "boolean", "skipped_reason": "string", "brief_kind": "string"}
   },
@@ -27,9 +27,9 @@
     "properties": {"commitment_id": "string", "target_id": "string", "commitment_seq": "number", "new_due": "string", "due": "string", "due_date": "string", "new_title": "string", "new_summary": "string", "change_summary": "string", "evidence": "string", "reason": "string", "edited_by": "string", "new_owner_id": "string", "new_owner_name": "string", "owner_confirmed": "boolean", "review_flags_cleared": "boolean", "pending_review": "boolean", "confirmed_by": "string", "cleared_by": "string", "note": "string"}
   },
   "person_proposal_resolved": {
-    "description": "Adjudicates a person_proposal / person_update_proposal (v4.6.1 W4b — the proposal tombstone; the F-46 P2b stranding fix). WRITTEN ONLY via confirm_flow.build_person_proposal_resolved_event + event_gate.append_event, from the confirm section's Add person (resolution person_added, after people_writer.create_person), Same as [existing] (resolution same_as, after people_writer.add_person_alias), or Not relevant (resolution not_relevant, nothing else written — permanent, not a timed mute). data.proposal_seq references the proposal event's seq; confirm_flow.load_open_person_proposals stops re-surfacing any proposal a tombstone references.",
-    "required": [["proposal_seq"], ["resolution"]],
-    "properties": {"proposal_seq": "number", "resolution": "string", "person_id": "string", "alias": "string", "note": "string"}
+    "description": "Adjudicates a person_proposal / person_update_proposal (v4.6.1 W4b — the proposal tombstone; the F-46 P2b stranding fix). WRITTEN ONLY via confirm_flow.build_person_proposal_resolved_event + event_gate.append_event, from the confirm section's Add person (resolution person_added, after people_writer.create_person), Same as [existing] (resolution same_as, after people_writer.add_person_alias), or Not relevant (resolution not_relevant, nothing else written — permanent, not a timed mute). data.proposal_seq references the proposal event's seq; confirm_flow.load_open_person_proposals stops re-surfacing any proposal a tombstone references. PID1 D8: a SEQ-LESS proposal (freelance-written seq:null) is referenced by data.proposal_fingerprint (confirm_flow.compute_proposal_fingerprint) instead — the alias group below absorbs that shape; int-seq stays preferred.",
+    "required": [["proposal_seq", "proposal_fingerprint"], ["resolution"]],
+    "properties": {"proposal_seq": "number", "proposal_fingerprint": "string", "resolution": "string", "person_id": "string", "alias": "string", "note": "string"}
   },
   "commitment_reassigned": {
     "description": "Routes a commitment to a different owner or counterparty (v4.6.0 S4 — 'not mine' used to DISCARD; reassign ROUTES). WRITTEN ONLY via commitment_state.reassign_commitment() (id normalization, loud no-match, refuses closed items). At least one of new_owner_id / new_counterparty_id is required. data.confirmed marks an explicit user action (the W4b Theirs->[name] confirm verb, or the user naming the person in chat); the projector folds the latest reassignment into the projected item's owner_id/counterparty_id and — when confirmed is NOT true — stamps pending_review so the item sits in the unconfirmed bucket and never enters chase until confirmed (the W4b no-auto-email-on-a-guessed-owner guardrail).",
@@ -62,9 +62,9 @@
     "properties": {"decision": "string", "summary": "string", "title": "string", "rationale": "string", "context": "string"}
   },
   "meeting": {
-    "description": "A meeting record. Has a title or summary.",
+    "description": "A meeting record. Has a title or summary. meeting_type (optional) is the writer's classification of the meeting — sales | internal_1_1 | external | board | ... — stamped by past-meetings; the deal-signal detector's D9.1 genesis lane keys on meeting_type='sales' (defensive read: an untyped meeting contributes no genesis signal).",
     "required": [["title", "summary"]],
-    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "primary_thread_id": "string"}
+    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "primary_thread_id": "string", "meeting_type": "string"}
   },
   "meeting_processed": {
     "description": "A processed meeting. References the meeting and carries a summary/title.",
@@ -149,7 +149,7 @@
   "brain_proposal": {
     "description": "A unified Living Brain proposal (SPEC LB1): one uncertain observation a detector wants confirmed (tier confirm) or narrated (tier auto — legal only for AUTO_ALLOWED change classes with a registered reverser; propose() raises otherwise). WRITTEN ONLY via brain_proposals.propose(), which consults proposal_ledger.active_cooldowns (declined-within-60d fingerprints suppressed at source) and dedups on fingerprint against open proposals. action_tuples must map to registered verb_taxonomy action ids (no-consumer proposals rejected at source, D10). Deal-kind proposals additionally write the reserved PIPE1 deal_update_proposed alongside.",
     "required": [["proposal_id"], ["kind"], ["fingerprint"], ["tier"], ["detector"]],
-    "properties": {"proposal_id": "string", "kind": "string", "fingerprint": "string", "tier": "string", "evidence": "string", "action_tuples": "array", "ttl_days": "number", "detector": "string", "thread_id": "string", "org_id": "string", "person_id": "string", "render_line": "string"}
+    "properties": {"proposal_id": "string", "kind": "string", "fingerprint": "string", "tier": "string", "evidence": "string", "action_tuples": "array", "ttl_days": "number", "detector": "string", "thread_id": "string", "org_id": "string", "person_id": "string", "render_line": "string", "surface_hint": "string"}
   },
   "brain_proposal_resolved": {
     "description": "Adjudicates a brain_proposal (SPEC LB1 — the tombstone). WRITTEN ONLY via brain_proposals.resolve_proposal() from apply-choices cr-brain dispatch: user_action in applied|edited|declined|skipped (same vocabulary as proposal_feedback.jsonl — resolve_proposal also appends the ledger row so cooldown math is shared). The projector stops surfacing any proposal_id a tombstone references. declined starts the 60-day fingerprint cooldown.",
@@ -170,5 +170,45 @@
     "description": "Clears a reminder. reminder_id REQUIRED. For repeating reminders the reader re-arms to the next occurrence after data.occurrence (defaults to the occurrence active at clear time) — derive-next-on-read, no scheduler. Clearing a reminder with ref NEVER closes the referenced commitment. origin MUST be 'user_explicit'.",
     "required": [["reminder_id"], ["origin"]],
     "properties": {"reminder_id": "string", "occurrence": "string", "note": "string", "origin": "string"}
+  },
+  "person_role_changed": {
+    "description": "Lineage: a person's role/title changed (SPEC HIST1 D2). WRITTEN ONLY by people_writer.update_person at the before/after diff site — auto-emitted alongside person_updated when `role` changed with BOTH sides non-empty (a backfill filling an empty role emits nothing; migration sets pass suppress_lineage=True). The head field still updates; this event preserves the prior title as history. source_ref is REQUIRED and never null — when no connector ref is in hand the writer synthesizes 'update:<source_skill>:<seq of the person_updated event>' (D10 change-feed contract). summary is the human-readable change line the future change feed renders.",
+    "required": [["person_id"], ["to_role"], ["source_ref"]],
+    "properties": {"person_id": "string", "canonical_name": "string", "to_role": "string", "from_role": "string", "org_id": "string", "effective_date": "string", "source_ref": "string", "summary": "string"}
+  },
+  "person_org_changed": {
+    "description": "Lineage: a person moved companies — primary_org_id changed (SPEC HIST1 D2). WRITTEN ONLY by people_writer.update_person at the before/after diff site — auto-emitted alongside person_updated when `primary_org_id` changed with BOTH sides non-null (backfill attachment from null emits nothing; migration sets pass suppress_lineage=True). Top-level org_ids[] carries both endpoints so org-history renderers see the joined/left move. source_ref REQUIRED, synthesized from the triggering update when no connector ref is present (D10).",
+    "required": [["person_id"], ["to_org_id"], ["source_ref"]],
+    "properties": {"person_id": "string", "canonical_name": "string", "to_org_id": "string", "from_org_id": "string", "from_role": "string", "to_role": "string", "source_ref": "string", "summary": "string"}
+  },
+  "person_fact_observed": {
+    "description": "One atomic, sourced fact about a person (SPEC HIST1 D3) — additive; NEVER mutates the person record (facts are events, D1). WRITTEN ONLY by people_writer.record_person_fact: an explicit user statement ('remember Sam prefers Signal' — confidence high, no proposal), a confirmed brain_proposal, or (Part 2) the entity_fact_structured auto tier — batch-stamped (brain_batch_id + brain_change_class) for undo, category limited to preference|contact|personal (S2). category in preference|contact|personal|role|company_news|other. source_ref REQUIRED (facts are always sourced). Renderers suppress a fact whose seq a later entity_fact_retracted references.",
+    "required": [["person_id"], ["fact"], ["source_ref"]],
+    "properties": {"person_id": "string", "canonical_name": "string", "fact": "string", "category": "string", "confidence": "string", "source_ref": "string", "summary": "string"}
+  },
+  "org_fact_observed": {
+    "description": "One atomic, sourced fact about an org (SPEC HIST1 D3) — additive; never mutates the org record. WRITTEN ONLY by org_writer.record_org_fact (explicit user statement, confirmed proposal, or the Part 2 entity_fact_structured auto tier — batch-stamped, S2 category limits). Top-level org_ids[] carries the org so org-activity/history derivations see it. category in preference|contact|personal|role|company_news|other. source_ref REQUIRED. Renderers suppress a fact whose seq a later entity_fact_retracted references.",
+    "required": [["org_id"], ["fact"], ["source_ref"]],
+    "properties": {"org_id": "string", "canonical_name": "string", "fact": "string", "category": "string", "confidence": "string", "source_ref": "string", "summary": "string"}
+  },
+  "unidentified_attendee_observed": {
+    "description": "An UNNAMED meeting speaker/attendee (SPEC PID1 D5) — the annotation that replaces the malformed no-name person 'proposals'. WRITTEN ONLY via meeting_capture.build_unidentified_attendee_event (build_person_proposal_event raises on empty names by design — this is the sanctioned path, never a workaround). FULLY SILENT per the §0-4 ruling: never a queue row; the only render is ONE count line in the weekly staff meeting (identity_reconcile.count_open_annotations). attendee_hint is the source's own speaker label ('speaker 2'); attendee_email only when the source metadata literally carries it (F-08 extends to capture — never guessed). Resolved when a later identity_reconcile_run receipt lists this event's seq in data.annotations_resolved (identity_reconcile.load_open_annotations folds those).",
+    "required": [["meeting_source_ref"], ["attendee_hint"]],
+    "properties": {"meeting_source_ref": "string", "attendee_hint": "string", "attendee_email": "string", "evidence": "string"}
+  },
+  "identity_reconcile_run": {
+    "description": "ONE receipt per identity-reconcile pass (SPEC PID1 D7 — the Sunday maintenance job AND the M-fired one-time backfill, same code at two cap sets). WRITTEN ONLY via receipts.log_receipt from identity_reconcile.run_identity_reconcile(apply=True). Triple duty: the dispatcher's due-ness signal, the D6 CHANGED-narration source (change_feed reads n_auto_added / n_linked — counts of what was ACTUALLY written, never the plan), and the annotation-resolution fold (annotations_resolved lists unidentified_attendee_observed seqs now resolved). caps + spilled record the §0-3 cap posture — overflow is narrated, never silently dropped.",
+    "required": [["batch_id"]],
+    "properties": {"batch_id": "string", "n_auto_added": "number", "n_linked": "number", "n_merge_proposed": "number", "n_clustered": "number", "n_annotations": "number", "n_annotations_resolved": "number", "n_expired": "number", "n_kept_open": "number", "n_errors": "number", "caps": "object", "spilled": "object", "people_added": "array", "annotations_resolved": "array"}
+  },
+  "entity_fact_retracted": {
+    "description": "Retracts a previously observed fact (SPEC HIST1 D3/S1). WRITTEN ONLY by the brain_undo entity_fact_structured reverser (Part 2 — landed with the AUTO_ALLOWED entry in one commit). Facts are append-only with no status to flip, so undo APPENDS this event; render_person_history / render_org_history suppress the fact whose seq retracts_seq references. target_id is the person_id or org_id the fact was about. source_ref is synthesized (undo:<skill>:<change_ref>) — never null.",
+    "required": [["target_id"], ["retracts_seq"], ["source_ref"]],
+    "properties": {"target_id": "string", "retracts_seq": "number", "reason": "string", "source_ref": "string"}
+  },
+  "chart_render": {
+    "description": "One on-demand chart answer (SPEC OUT3B). WRITTEN ONLY by the chart-on-demand skill, once per ask. data.catalog_id = the closed-catalog series that answered (value_trend / pipeline_mix / pipeline_by_org); kind = the charts.py kind drawn. refused=true when the ask had no substrate answer (data.reason names why + which catalog entry was closest, per D4) — the refusal is text, not a page, so artifact is absent. On a rendered chart refused=false and artifact = the saved page path. org_id present only when the series was entity-scoped through the ENTITY_RESOLVE ladder. Mined to learn what the (empty at ship) chart-ask corpus actually wants charted.",
+    "required": [["catalog_id"], ["kind"], ["refused"]],
+    "properties": {"catalog_id": "string", "kind": "string", "refused": "boolean", "org_id": "string", "artifact": "string", "reason": "string"}
   }
 }

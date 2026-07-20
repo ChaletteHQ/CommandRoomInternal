@@ -159,10 +159,7 @@ def test_renderer_accepts_inbox_email_with_not_relevant():
                 "subject": "Re: Q2 deck",
                 "metadata": [("To", "sam@example.com"), ("Subject", "Re: Q2 deck")],
                 "body_lines": ["Following up — sending Friday."],
-                "actions": [
-                    "1 send", "1 edit then send", "1 draft",
-                    "1 escalate to memo", "1 snooze 3d", "1 not relevant",
-                ],
+                "actions": ["1 send", "1 draft", "1 escalate to memo", "1 snooze 3d", "1 not relevant"],
             }],
         }],
     }

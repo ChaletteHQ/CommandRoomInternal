@@ -246,6 +246,69 @@ def main():
           f"statuses={statuses} opens={len(opens)}")
 
     # ------------------------------------------------------------------
+    print("\n[6b] SUB1 D3 — OpenSubitemsError + cascade + reopen semantics")
+    # ------------------------------------------------------------------
+    from commitment_state import OpenSubitemsError, reopen_commitment
+
+    def family(pending_child=False):
+        kid_data = {"parent_id": "cmt_FAM", "parent_seq": 1}
+        if pending_child:
+            kid_data["pending_review"] = True
+        return make_workspace([
+            commitment(1, "cmt_FAM", "Parent deliverable"),
+            commitment(2, "cmt_K1", "Step one", **kid_data),
+            commitment(3, "cmt_K2", "Step two", parent_id="cmt_FAM",
+                       parent_seq=1),
+        ])
+
+    ws = family()
+    try:
+        close_commitment(ws, "cmt_FAM", resolved_by=USER, evidence="done",
+                         source_skill="test", user_confirmed=True)
+        check("parent with open children raises OpenSubitemsError", False)
+    except OpenSubitemsError:
+        check("parent with open children raises OpenSubitemsError", True)
+    res = close_commitment(ws, "cmt_FAM", resolved_by=USER, evidence="done",
+                           source_skill="test", user_confirmed=True,
+                           close_subitems=True)
+    closers = [e["data"]["commitment_id"] for e in read_events(ws)
+               if e.get("type") == "commitment_resolved"]
+    check("cascade ordering: children first, parent last, in one call",
+          closers == ["cmt_K1", "cmt_K2", "cmt_FAM"]
+          and res.get("closed_subitems") == ["cmt_K1", "cmt_K2"], closers)
+    # reopen semantics: parent-only; children have their own tombstones
+    reopen_commitment(ws, "cmt_FAM", reopened_by=USER, reason="undo",
+                      source_skill="test")
+    opens = load_open_commitments(Path(ws) / "_hq" / "data" / "events.jsonl")
+    check("reopen(parent) reopens the PARENT only",
+          len(opens) == 1)
+    # pending_review child blocks an unconfirmed cascade, atomically
+    ws = family(pending_child=True)
+    n_before = len(read_events(ws))
+    try:
+        close_commitment(ws, "cmt_FAM", resolved_by="sent_reconcile",
+                         evidence="auto", source_skill="reconcile-sent",
+                         close_subitems=True)
+        check("pending_review child blocks the unconfirmed cascade", False)
+    except PendingReviewError as e:
+        check("pending_review child blocks the unconfirmed cascade",
+              "cmt_K1" in str(e))
+    check("blocked cascade wrote nothing",
+          len(read_events(ws)) == n_before)
+    # the batch closer records OpenSubitemsError as an error, never aborts
+    ws = family()
+    results = close_commitments(ws, [
+        {"commitment_id": "cmt_FAM", "resolved_by": "sent_reconcile",
+         "evidence": "sent"},
+        {"commitment_id": "cmt_K2", "resolved_by": "sent_reconcile",
+         "evidence": "sent"},
+    ], source_skill="reconcile-sent")
+    check("batch: parent-with-children errors (never cascades), sibling closes",
+          [r["status"] for r in results] == ["error", "closed"]
+          and results[0]["error"] == "OpenSubitemsError",
+          [r["status"] for r in results])
+
+    # ------------------------------------------------------------------
     print("\n[7] normalize_commitment_id — pure normalizer contract")
     # ------------------------------------------------------------------
     ws = make_workspace([commitment(86, "cmt_TARGET", "Send the recap")])

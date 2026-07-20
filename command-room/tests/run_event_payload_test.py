@@ -51,6 +51,8 @@ VALID = [
     {"type": "deal_lost", "data": {"thread_id": "project_017", "org_id": "org_acme", "loss_reason": "price", "loss_note": "budget cut"}},
     {"type": "deal_update_proposed", "data": {"thread_id": "project_017", "proposal_kind": "stage", "proposed_stage": "proposal_sent", "evidence": "sent the proposal over"}},  # Part 2, registered up front
     {"type": "deal_update_dismissed", "data": {"thread_id": "project_017", "fingerprint": "abc123"}},  # Part 2, registered up front
+    {"type": "chart_render", "data": {"catalog_id": "pipeline_by_org", "kind": "bar", "org_id": "org_acme", "artifact": "_hq/deliverables/Chart_2026-07-19.html", "refused": False}},  # OUT3B rendered  # DATE_GUARD_OK: deliverable filename in a payload-shape fixture; never compared to any clock
+    {"type": "chart_render", "data": {"catalog_id": "value_trend", "kind": "line", "refused": True, "reason": "only 1 month of data — a trend needs 2+ points"}},  # OUT3B refusal (D4)
     {"type": "some_unconstrained_type", "data": {"anything": True}},  # no schema -> pass
 ]
 
@@ -79,7 +81,7 @@ def test_type_mismatch_flagged():
     check("wrong-typed property flagged", any("draft_event_seq" in x for x in v))
 
 
-def test_coverage_is_34_types():
+def test_coverage_of_load_bearing_types():
     types = set(epc.covered_types())
     # 10 original load-bearing types + the Phase 2 Stage D commitment-family
     # additions (commitment_reclassified / commitment_reopened) + the v4.5.2
@@ -96,7 +98,15 @@ def test_coverage_is_34_types():
     # front) + the LB1 Living Brain lane (brain_proposal /
     # brain_proposal_resolved / brain_proposal_expired / brain_change_undone,
     # written only by brain_proposals.py / brain_undo.py / the cleanup expiry
-    # sweep) - each registered per EVENT_TYPES.md with named consumers.
+    # sweep) + the HIST1 entity-history lane (person_role_changed /
+    # person_org_changed auto-emitted by people_writer.update_person,
+    # person_fact_observed / org_fact_observed via the record_*_fact writers,
+    # entity_fact_retracted registered up front — its Part 2 brain_undo
+    # reverser is the writer) + the PID1 people-identity lane
+    # (unidentified_attendee_observed via meeting_capture.
+    # build_unidentified_attendee_event; identity_reconcile_run — the
+    # reconciler's per-pass receipt, written only via receipts.log_receipt)
+    # - each registered per EVENT_TYPES.md with named consumers.
     expected = {"commitment", "commitment_resolved", "decision", "meeting", "meeting_processed",
                 "interaction", "email_drafted", "email_sent", "pack_run", "pattern_break_detected",
                 "commitment_reclassified", "commitment_reopened", "prep_brief",
@@ -107,8 +117,15 @@ def test_coverage_is_34_types():
                 "deal_won", "deal_lost", "deal_update_proposed",
                 "deal_update_dismissed",
                 "brain_proposal", "brain_proposal_resolved",
-                "brain_proposal_expired", "brain_change_undone"}
-    check("exactly the 34 load-bearing types are covered", types == expected)
+                "brain_proposal_expired", "brain_change_undone",
+                "person_role_changed", "person_org_changed",
+                "person_fact_observed", "org_fact_observed",
+                "entity_fact_retracted",
+                "unidentified_attendee_observed", "identity_reconcile_run",
+                # SPEC OUT3B (2026-07-19) — the on-demand chart lane, written
+                # only by the chart-on-demand skill (catalog_id / kind / refused).
+                "chart_render"}
+    check("exactly the 42 load-bearing types are covered", types == expected)
 
 
 def test_warn_only_hook_never_blocks():
@@ -130,7 +147,7 @@ def main():
     test_valid_payloads_pass()
     test_missing_required_fails_with_named_key()
     test_type_mismatch_flagged()
-    test_coverage_is_34_types()
+    test_coverage_of_load_bearing_types()
     test_warn_only_hook_never_blocks()
     print()
     if _failures:

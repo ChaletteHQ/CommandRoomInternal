@@ -24,11 +24,11 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **Append through the locked writer (SPEC GATE1 / A1).** Both events.jsonl appends above MUST go through `atomic_append_jsonl` (NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`) — the helper reserves the seq and writes inside the cross-process writer lock so a concurrent append can't lose an event or duplicate a seq. Omit `seq`/`ts` (auto-stamped); pass `holder="intro-broker"`. See `shared/WORKSPACE_API.md` → Append Protocol §3.
 
-**Reads from:**
+**Reads from:** All `events.jsonl` reads below come from ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — the intro email reaches two external people): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design, so masked-account intros and interactions never enter the depth read or the voice corpus.
 - `_hq/data/entities.json` — both people's full records: org, role, relationship strength tier, prior interactions, decision context where they appear.
-- `_hq/data/events.jsonl` — `type == "interaction"` events with each person to compute relationship depth and recent context.
-- `_hq/data/events.jsonl` — `type == "intro_made"` events you've sent before, used as voice samples for the draft style. The user's past intros are the canonical training corpus for "how you actually write intros" — better than the generic Voice Block.
-- `_hq/data/events.jsonl` — `type == "decision"` events that mention either person or their org in `data.context` — surfaces "your stated positions" about either side that should inform the framing.
+- `_hq/data/events.jsonl` — `type == "interaction"` events with each person (from the org-scoped load) to compute relationship depth and recent context.
+- `_hq/data/events.jsonl` — `type == "intro_made"` events you've sent before (from the org-scoped load), used as voice samples for the draft style. The user's past intros are the canonical training corpus for "how you actually write intros" — better than the generic Voice Block.
+- `_hq/data/events.jsonl` — `type == "decision"` events that mention either person or their org in `data.context` (from the org-scoped load) — surfaces "your stated positions" about either side that should inform the framing.
 
 **Conflict boundary:** sole writer of `intro_made` and `intro_followup_check` events. People-crm owns entities.json person records; this skill writes ONLY to the `connections[]` sub-array (namespaced) and `last_touched_at` field — no collision per the people-crm convention.
 
@@ -81,7 +81,7 @@ Compose a 1-2 sentence "why this intro makes sense" framing. This is the differe
 
 ### Phase 3 — Voice-calibrate from past intros
 
-Read `_hq/data/events.jsonl` for prior `intro_made` events you've sent (up to last 20). For each, read the linked `email_drafted` event's content. These become the voice corpus — your actual intro style, not a generic template.
+Read `_hq/data/events.jsonl` for prior `intro_made` events you've sent (up to last 20) — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read; a masked account's intros stay out of the corpus. For each, read the linked `email_drafted` event's content (resolve the link within the same org-scoped rows). These become the voice corpus — your actual intro style, not a generic template. With few unmasked prior intros the corpus is thin — degrade to the generic Voice Block, exactly as a young workspace does.
 
 Extract patterns: opener style, length, signoff, "vouching" language, whether you typically do double-opt-in vs direct-forward.
 
@@ -134,7 +134,7 @@ data_view = {
                 ],
                 "context_tag": "Asks the first side for permission before looping the other in",
                 "body_lines": [f"> {line}" for line in draft_1_body.split(chr(10))],
-                "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                "actions": ["1 send", "1 draft", "1 snooze 3d"],
             },
             {
                 "n": 2,
@@ -146,7 +146,7 @@ data_view = {
                 ],
                 "context_tag": "Faster — connects both sides in one note",
                 "body_lines": [f"> {line}" for line in draft_2_body.split(chr(10))],
-                "actions": ["2 send", "2 edit then send", "2 draft", "2 skip"],
+                "actions": ["2 send", "2 draft", "2 snooze 3d"],
             },
         ],
     }],

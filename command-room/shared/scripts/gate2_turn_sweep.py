@@ -181,7 +181,8 @@ def main() -> int:
 
         lines = []
 
-        # 1. File sweep — every .docx this turn produced (incl. hand-rolled).
+        # 1. File sweep — every deliverable this turn produced (.docx, .md, and
+        #    .html/.htm; incl. hand-rolled). One walker, all three formats.
         since = time.time() - _TURN_WINDOW_SECONDS
         result = sweep_workspace(ws, since_ts=since, emit=True, source="turn_hook")
         file_summary = summarize_for_user(result)

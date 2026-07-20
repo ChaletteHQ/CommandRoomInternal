@@ -100,7 +100,9 @@ CANONICAL_TASK_IDS = frozenset({
     "morning-brief",
     "upcoming-meetings",
     "inbox",
-    "commitments",
+    "commitments",   # CTS1 — retired taskId; kept forever so pre-split receipts stay readable (append-only history)
+    "waiting-on",    # CTS1 Surface 1 — the re-scoped daily chat (successor of `commitments`; new receipts land here)
+    "my-plate",      # CTS1 Surface 2 — the owner-me act-list chat
     "pulse",
     "past-meetings",
     "friday-wrap",
@@ -113,9 +115,14 @@ CANONICAL_TASK_IDS = frozenset({
     "commitment-triage",
     "dormant-scan",
     "stalled-projects",
+    "pipeline-tracker",  # RCPT1 — the deal-pipeline report's SKILL.md-mandated scan receipt (on-demand, like stalled-projects)
     "maintenance",   # MAINT1 — the single silent dispatcher task (the five silent ids above live on as its JOBS and keep their receipt vocabularies forever)
     "staff-meeting",  # LB1 R3 — the weekly Staff Meeting chat (opt-in later-add)
+    "balance",        # BAL1 — the Sunday personal white-space chat (opt-in later-add, m_facing only; receipt carries counts, never personal content)
+    "pipeline-digest",  # PIPE1 Part 2 — the Tuesday deal-review chat (opt-in later-add, gated >=1 open deal); its receipt keys the next digest's since-window
     "deal-signals",   # LB1 D7 — the deal-signal detector job inside `maintenance`
+    "identity-reconcile",  # PID1 D7 — the Sunday identity reconciler job inside `maintenance` (also the M-fired one-time backfill)
+    "monthly-scorecard",  # SPEC OUT7 — the OPT-IN monthly KPI scorecard job inside `maintenance` (never auto-fires; its pack_run receipt self-limits it to monthly once opted in)
 })
 
 # Renames where the canonical form is NOT just a cr-strip + underscore fix.
@@ -131,6 +138,18 @@ _TASK_ALIASES = {
     "dormant-customer-scan": "dormant-scan",
     "sent-reconcile": "reconcile-sent",
     "session-sweep-run": "session-sweep",
+}
+
+# CTS1 — split-task predecessors: receipts of a RETIRED task also vouch for
+# its successors' served slots (late_fire reads this). The morning after the
+# commitments → waiting-on + my-plate split, the 8:30 slot WAS served — by a
+# receipt written under the old id; without this bridge the first post-split
+# fire would fabricate lateness for a slot that ran. Successor ids stay their
+# own canonical ids (new receipts land under them); this map is read-side
+# only and never rewrites history.
+TASK_PREDECESSORS: dict[str, tuple] = {
+    "waiting-on": ("commitments",),
+    "my-plate": ("commitments",),
 }
 
 # The one lateness field name written from v4.5.2 on. Legacy spellings are
@@ -162,6 +181,12 @@ RECEIPT_TYPES: dict[str, dict] = {
     "upcoming-meetings":  {"types": frozenset({"pack_run"})},
     "inbox":              {"types": frozenset({"pack_run"})},
     "commitments":        {"types": frozenset({"pack_run"})},
+    # CTS1 — the two split surfaces. `commitments` keeps its row above so
+    # pre-split receipts read forever; the waiting-on window computation
+    # takes max(last_receipt_times(ws, ["waiting-on", "commitments"])) so
+    # the first post-split fire doesn't re-scan a week of mail.
+    "waiting-on":         {"types": frozenset({"pack_run"})},
+    "my-plate":           {"types": frozenset({"pack_run"})},
     # Pulse fires have left three shapes on disk: pack_run, pulse_run, and
     # dont_forget_run (F-49's exact miss). All three are pulse receipts.
     "pulse":              {"types": frozenset({"pack_run", "pulse_run", "dont_forget_run"})},
@@ -183,6 +208,11 @@ RECEIPT_TYPES: dict[str, dict] = {
     # for the project-side scan: what was surfaced, so the next scan can
     # dedup its own nags and value receipts can count the work).
     "stalled-projects":   {"types": frozenset({"pack_run"})},
+    # RCPT1 — pipeline-tracker's report-fire receipt. Its SKILL.md has
+    # mandated this log_receipt since PIPE1 Part 1, but the id was never
+    # registered here, so every mandated call raised ValueError at runtime
+    # (stalled-projects got registered in v4.5.2 C3; pipeline didn't).
+    "pipeline-tracker":   {"types": frozenset({"pack_run"})},
     # MAINT1 — the dispatcher task's own per-fire audit event. The five job
     # ids above (cleanup / reconcile-sent / monthly-report / weekly-insights /
     # session-sweep) keep their own receipt types: those are the JOB success
@@ -192,9 +222,28 @@ RECEIPT_TYPES: dict[str, dict] = {
     # LB1 R3 — the Staff Meeting chat's per-fire receipt (scheduled or the
     # on-demand `staff meeting` fire, fired_via distinguishes).
     "staff-meeting":      {"types": frozenset({"pack_run"})},
+    # BAL1 — the Sunday Balance chat's per-fire receipt (scheduled or the
+    # on-demand `balance check` fire). The receipt is the standard pack_run
+    # shape and carries NO personal content — surfaced count only.
+    "balance":            {"types": frozenset({"pack_run"})},
+    # PIPE1 Part 2 — the Tuesday Pipeline Digest chat's per-fire receipt
+    # (standard pack_run; ALSO the marker the next digest's since-last-digest
+    # window keys on, so it writes even on a degrade fire with surfaced=0).
+    "pipeline-digest":    {"types": frozenset({"pack_run"})},
     # LB1 D7 — the deal-signal detector's job receipt (the dispatcher's
     # due-ness rule reads it; written by deal_signal_detector.run_deal_signal_job).
     "deal-signals":       {"types": frozenset({"pack_run"})},
+    # PID1 D7 — the identity reconciler's per-run receipt: ALSO the D6
+    # CHANGED-narration source (change_feed reads n_auto_added / n_linked)
+    # and the honesty artifact (counts from what was WRITTEN, never the
+    # plan). The dispatcher's due-ness rule reads it, so an M-fired backfill
+    # also serves that week's Sunday slot.
+    "identity-reconcile": {"types": frozenset({"identity_reconcile_run"})},
+    # SPEC OUT7 — the opt-in monthly KPI scorecard job's receipt. pack_run, the
+    # standard scheduled-pack shape (like deal-signals / staff-meeting): the
+    # dispatcher's due-ness rule reads it so a fired scorecard self-limits to
+    # monthly. Only ever written when the workspace opted the job in.
+    "monthly-scorecard":  {"types": frozenset({"pack_run"})},
 }
 
 # Types that identify their task by TYPE alone (exactly one writer each).
@@ -208,6 +257,7 @@ _TYPE_IMPLIES_TASK = {
     "pulse_run": "pulse",
     "dont_forget_run": "pulse",
     "maintenance_run": "maintenance",
+    "identity_reconcile_run": "identity-reconcile",
 }
 
 ALL_RECEIPT_TYPES = frozenset().union(*(spec["types"] for spec in RECEIPT_TYPES.values()))

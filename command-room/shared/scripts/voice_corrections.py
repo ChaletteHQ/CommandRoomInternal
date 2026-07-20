@@ -382,9 +382,61 @@ def _override_path(workspace_root, skill: str) -> Path:
     return _voice_dir(workspace_root) / f"voice-block-{skill}.md"
 
 
+# Machine-readable reads of the calibrated block (B2 gate wiring). The block
+# follows VOICE_CALIBRATION.md's template; both parsers are tolerant of a
+# missing section (→ the safe default: nothing allowed, dashes banned).
+
+# The Taboos section's carve-out bullet ("OK despite being on universal
+# list: ...") — the ONE sanctioned source of allow_phrases for the voice-tell
+# gate. Phrases here are demonstrably the client's own voice.
+_TABOOS_ALLOW_RE = re.compile(
+    r"^\s*[-*]?\s*OK despite being on universal list:\s*(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_QUOTED_PHRASE_RE = re.compile(r'["“]([^"”]+)["”]')
+# Punctuation section's em-dash frequency line at its strongest value.
+_EM_DASH_FREQUENT_RE = re.compile(
+    r"^\s*[-*]?\s*Em-dashes:\s*frequent\b", re.IGNORECASE | re.MULTILINE
+)
+# Whole-word only: a carve-out phrase that merely CONTAINS "dash" (e.g.
+# "dashboard") is not evidence the client's voice keeps dash punctuation.
+_DASH_MENTION_RE = re.compile(r"\bdash(es)?\b|—|–", re.IGNORECASE)
+
+
+def parse_taboos_allow(markdown: str) -> List[str]:
+    """Parse the Taboos carve-out bullet into a phrase list for the voice-tell
+    gate's `allow_phrases`. Quoted phrases win when present (commas inside a
+    quoted phrase survive); otherwise the remainder is comma/semicolon-split
+    with parenthetical justifications dropped. The uncalibrated template
+    placeholder (`[list with justification]`) and none-ish values parse to []."""
+    m = _TABOOS_ALLOW_RE.search(markdown or "")
+    if not m:
+        return []
+    raw = m.group(1).strip()
+    if not raw or raw.startswith("[") or raw.rstrip(".").lower() in {"none", "n/a", "-", "—"}:
+        return []
+    quoted = [q.strip() for q in _QUOTED_PHRASE_RE.findall(raw) if q.strip()]
+    if quoted:
+        return quoted
+    raw = re.sub(r"\([^)]*\)", "", raw)
+    return [p.strip(" .;") for p in re.split(r"[,;]", raw) if p.strip(" .;")]
+
+
+def parse_ban_dashes(markdown: str, taboos_allow: Optional[List[str]] = None) -> bool:
+    """FB-16 per-client read: dashes-as-punctuation stay BANNED (True) unless
+    the calibrated block is explicit that this client's voice keeps them —
+    Punctuation says `Em-dashes: frequent`, or a Taboos carve-out entry names
+    dashes. `rare` / `occasional` is not evidence; the product ban stays on."""
+    if _EM_DASH_FREQUENT_RE.search(markdown or ""):
+        return False
+    allow = parse_taboos_allow(markdown) if taboos_allow is None else taboos_allow
+    return not any(_DASH_MENTION_RE.search(p) for p in allow)
+
+
 def load_voice_block_override(workspace_root, skill: str) -> Optional[dict]:
-    """Return `{markdown, last_refreshed, calibration_level, sample_count}` for the
-    workspace override, or None if absent."""
+    """Return `{markdown, last_refreshed, calibration_level, sample_count,
+    taboos_allow, ban_dashes}` for the workspace override, or None if absent.
+    `taboos_allow` / `ban_dashes` are the parsed gate-wiring reads above."""
     path = _override_path(workspace_root, skill)
     if not path.exists():
         return None
@@ -392,11 +444,14 @@ def load_voice_block_override(workspace_root, skill: str) -> Optional[dict]:
     def _hdr(label):
         m = re.search(rf"^{re.escape(label)}:\s*(.+)$", text, re.MULTILINE)
         return m.group(1).strip() if m else None
+    taboos_allow = parse_taboos_allow(text)
     return {
         "markdown": text,
         "last_refreshed": _hdr("Last refreshed"),
         "calibration_level": _hdr("Calibration level"),
         "sample_count": _hdr("Sample count"),
+        "taboos_allow": taboos_allow,
+        "ban_dashes": parse_ban_dashes(text, taboos_allow),
     }
 
 
@@ -426,5 +481,5 @@ __all__ = [
     "diff_and_classify", "append_correction", "snapshot_draft",
     "reconcile_sent_against_snapshots", "load_corrections", "unreviewed_counts",
     "group_correction_patterns", "load_voice_block_override",
-    "write_voice_block_override",
+    "write_voice_block_override", "parse_taboos_allow", "parse_ban_dashes",
 ]

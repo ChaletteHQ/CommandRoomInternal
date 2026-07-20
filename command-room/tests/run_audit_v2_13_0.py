@@ -17,7 +17,9 @@ from chat_output_renderer import render_chat_output_widget, scan_for_id_leaks
 CANONICAL_ACTIONS = {
     # Email-shaped (Inbox, Commitments YOU OWE / OWED TO YOU)
     # v2.14.4+ — `to drafts` and `edit then draft` consolidated into `draft`
-    "send", "edit then send", "draft", "escalate to memo", "skip",
+    # FB-17 — the email card is Send / Draft / Snooze (3 days); `edit then send`
+    # retired (kept here as a still-dispatchable deprecated alias).
+    "send", "edit then send", "draft", "snooze 3d", "escalate to memo", "skip",
     # Inbox calendar_invite
     "accept", "propose [time]", "decline", "decline [reason]",
     # Commitments YOU OWE
@@ -124,10 +126,9 @@ INBOX = {
          "original_thread": {"author": "Sam <d@x.com>", "date": "Apr 28",
                               "subject": "Q2", "body": "Original.",
                               "url": "https://mail.google.com/mail/u/0/#all/abc"},
-         "actions": ["1 send", "1 edit then send", "1 draft",
-                     "1 escalate to memo", "1 skip"]},
+         "actions": ["1 send", "1 draft", "1 snooze 3d"]},
         {"n": 2, "icon": "calendar", "name": "Bo",
-         "context_tag": "9am - Category Company",
+         "context_tag": "9am - Summit Company",
          "actions": ["2 accept", "2 propose [time]", "2 decline [reason]", "2 skip"]},
     ]}],
 }
@@ -140,19 +141,17 @@ COMMITMENTS = {
             {"n": 1, "name": "Sam", "subject": "Q2 deck",
              "metadata": [("To", "d@x.com"), ("Subject", "Q2 deck status")],
              "body_lines": ["Hey,", "Sending Friday."],
-             "actions": ["1 prep deep work", "1 send", "1 edit then send", "1 draft", "1 push to [date]", "1 resolved", "1 skip"]},
+             "actions": ["1 prep deep work", "1 send", "1 draft", "1 push to [date]", "1 resolved", "1 snooze 3d"]},
         ]},
         {"title": "OWED TO YOU", "count": 2, "items": [
             {"n": 6, "name": "Bo", "subject": "Mapping doc",
              "metadata": [("To", "bo@example.com"), ("Subject", "NetSuite mapping - timing")],
              "body_lines": ["Hey Bo,", "Touching base on the mapping doc."],
-             "actions": ["6 send", "6 edit then send", "6 draft",
-                         "6 follow-up call", "6 mark received", "6 escalate to memo", "6 skip"]},
+             "actions": ["6 send", "6 draft", "6 follow-up call", "6 mark received", "6 escalate to memo", "6 snooze 3d"]},
             {"n": 7, "name": "Adan (grouped)",
              "metadata": [("To", "adan@example.com"), ("Subject", "Circling back on a few things")],
              "body_lines": ["Adan,", "Following up on items from the Apr 8 call."],
-             "actions": ["7 send", "7 edit then send", "7 draft",
-                         "7 mark received all", "7 skip"],
+             "actions": ["7 send", "7 draft", "7 mark received all", "7 snooze 3d"],
              "sub_items": [
                 {"id": "7a", "summary": "Recap", "actions": ["7a mark received", "7a skip"]},
                 {"id": "7b", "summary": "Licenses", "actions": ["7b mark received", "7b skip"]},
@@ -213,10 +212,10 @@ PAST_MEETINGS = {
          "actions": [],
          "sub_items": [
             {"id": "1a", "summary": "Rio Sample - new person",
-             "actions": ["1a add as person to Category Company", "1a add context [text]",
+             "actions": ["1a add as person to Summit Company", "1a add context [text]",
                          "1a add to my list", "1a skip"]},
             {"id": "1b", "summary": "Rio Lange - new person",
-             "actions": ["1b add as person to Category Company", "1b add context [text]",
+             "actions": ["1b add as person to Summit Company", "1b add context [text]",
                          "1b add to my list", "1b skip"]},
             {"id": "1c", "summary": "Vague timing",
              "actions": ["1c set date [when]", "1c add to my list", "1c skip"]},
@@ -238,7 +237,7 @@ UPCOMING_MEETINGS = {
     "header": "Wed Apr 30 - 2 external",
     "sections": [{"title": None, "count": None, "items": [
         {"n": 1, "name": "Sam", "subject": "Q2 deck review",
-         "context_tag": "9:00 AM - Category Company",
+         "context_tag": "9:00 AM - Summit Company",
          "body_lines": ["Lead with: revised numbers"],
          "artifact_link": {"label": "Open brief",
                             "url": "computer:///c%3A/_hq/meetings/abc.docx"},

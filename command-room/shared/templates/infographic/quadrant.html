@@ -1,0 +1,22 @@
+<!--
+  Infographic layout: quadrant (SPEC OUT4). 2-axis placement. Structure-only
+  fragment; colors/fonts are CSS variables from the OUT5 premium shell (brand-
+  resolved). NO literal hex. Item positions arrive as inline left/top percent
+  from the composer (x,y in [0,1]; y is up). Rendered ONLY by
+  infographic.build_infographic.
+  Slots: {{XLOW}}, {{XHIGH}}, {{YLOW}}, {{YHIGH}}, {{ITEMS}}.
+-->
+<style>
+  .ig-quad-wrap{padding:6px 18px 26px}
+  .ig-quad{position:relative;margin:22px auto 0;width:100%;max-width:440px;aspect-ratio:1/1;border:1px solid var(--line);background:rgba(244,240,232,.015)}
+  .ig-quad::before,.ig-quad::after{content:"";position:absolute;background:var(--line-soft)}
+  .ig-quad::before{left:50%;top:0;bottom:0;width:1px}
+  .ig-quad::after{top:50%;left:0;right:0;height:1px}
+  .ig-quad .item{position:absolute;transform:translate(-50%,-50%);font:600 11px/1.2 var(--sans);color:var(--bg);background:var(--accent);padding:5px 10px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 8px -3px rgba(0,0,0,.6)}
+  .ig-quad .ax{position:absolute;font:600 8.5px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3)}
+  .ig-quad .ax-xl{left:4px;bottom:-20px}
+  .ig-quad .ax-xh{right:4px;bottom:-20px}
+  .ig-quad .ax-yl{left:-12px;bottom:4px;writing-mode:vertical-rl;transform:rotate(180deg)}
+  .ig-quad .ax-yh{left:-12px;top:4px;writing-mode:vertical-rl;transform:rotate(180deg)}
+</style>
+<section class="ig ig-quad-wrap"><div class="ig-quad">{{ITEMS}}<span class="ax ax-xl">{{XLOW}}</span><span class="ax ax-xh">{{XHIGH}}</span><span class="ax ax-yl">{{YLOW}}</span><span class="ax ax-yh">{{YHIGH}}</span></div></section>

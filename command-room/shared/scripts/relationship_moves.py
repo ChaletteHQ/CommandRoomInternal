@@ -87,6 +87,22 @@ def _load_overdue(workspace_root, now_dt) -> Dict[str, float]:
     return out
 
 
+def _personal_tie_ids(workspace_root) -> set:
+    """person_ids carrying `tie: "personal"` (SPEC BAL1 D1.1(2) backstop).
+    Defensive: an unreadable entities.json excludes nobody (the source gate
+    still holds) rather than crashing the surface."""
+    try:
+        import json
+        p = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return {
+            rec.get("id") for rec in (data.get("people") or [])
+            if isinstance(rec, dict) and rec.get("tie") == "personal" and rec.get("id")
+        }
+    except Exception:
+        return set()
+
+
 def _recently_excluded(workspace_root, within_days: int = 7) -> set:
     """Persons to exclude: emailed / suggested in the window, or actively
     snoozed / dismissed."""
@@ -123,7 +139,18 @@ def _recently_excluded(workspace_root, within_days: int = 7) -> set:
             if floor is None or (dt is not None and dt >= floor):
                 excluded |= ids
         elif et == "dont_forget_snooze":
-            excluded |= ids
+            # Bounded, never forever (BAL1 second-eyes follow-up, 2026-07-19;
+            # mirrors balance._excluded_ties): honor data.snooze_until when
+            # present; otherwise the within_days floor. Unbounded exclusion
+            # let one Pulse snooze mute a person from the weekly outreach
+            # pack permanently.
+            su = _parse_ts(str(d.get("snooze_until"))) if d.get("snooze_until") else None
+            if su is not None:
+                if now is None or su >= now:
+                    excluded |= ids
+            else:
+                if floor is None or (dt is not None and dt >= floor):
+                    excluded |= ids
         elif et == "chat_dismissal":
             if (
                 live_dismissal_seqs is None
@@ -146,7 +173,13 @@ def compute_relationship_moves(
 
     R5 scope masks are honored TRANSITIVELY: both inputs are mask-filtered at
     their source (dormancy.load_dormancy_signals and cru_match.
-    load_open_commitments) — a masked account's history never seeds a move."""
+    load_open_commitments) — a masked account's history never seeds a move.
+
+    BAL1 D1.1(2) — consumer backstop: `tie: "personal"` people NEVER appear
+    here, whatever emitted their signal. The source gate (Pulse Phase 3 skips
+    personal ties before any emit) is the primary defense; this drop at the
+    load/score boundary guards signals that slipped in via another emitter or
+    pre-exist in the log. Personal ties belong to the Balance surface only."""
     try:
         import dormancy
         signals = dormancy.load_dormancy_signals(workspace_root)
@@ -156,8 +189,12 @@ def compute_relationship_moves(
     commits = commitment_overdue if commitment_overdue is not None else _load_overdue(workspace_root, now_dt)
     ranked = score_candidates(signals, thread_totals or {}, commits, now=now)
 
+    personal_ids = _personal_tie_ids(workspace_root)
     excluded = _recently_excluded(workspace_root)
-    ranked = [c for c in ranked if c["person_id"] not in excluded and c["score"] > 0]
+    ranked = [c for c in ranked
+              if c["person_id"] not in excluded
+              and c["person_id"] not in personal_ids
+              and c["score"] > 0]
     top = ranked[:top_n]
 
     if emit and top:

@@ -165,14 +165,13 @@ interaction_tier3_months: 18     # default: 12
 
 ## Rule 8: Master Tracker Hygiene
 
-**Problem:** Completed Quick Tasks and Recently Archived sections grow indefinitely.
+**Problem:** the Recently Archived section grows indefinitely. (CTS1 2026-07: the "Quick Tasks" / "Completed Quick Tasks" markdown lane is RETIRED — quick tasks are `kind: task` commitment events now, closed through `close_commitment` like everything else. If a legacy "Quick Tasks" section with live rows is found, run the one-time migration in workspace-manager's "quick task:" handler — convert live rows to events, file "Completed Quick Tasks" rows under `## Archived (history)`, remove the sections. Never re-scaffold them.)
 
 **Thresholds:**
-- Completed Quick Tasks older than 60 days → move to the tracker's `## Archived (history)` section
 - Recently Archived entries older than 90 days → move to the tracker's `## Archived (history)` section (the archived project folder still exists)
 
 **Action (on "end session"):**
-1. Check both sections. Move entries past threshold into a `## Archived (history)` section at the bottom of MASTER_TRACKER.md (create it if missing) — never delete a row; the tracker keeps its own history in place.
+1. Check the section. Move entries past threshold into a `## Archived (history)` section at the bottom of MASTER_TRACKER.md (create it if missing) — never delete a row; the tracker keeps its own history in place.
 2. Log once in session summary if anything was cleaned: "Filed [X] old entries into the tracker's archive section."
 
 ---

@@ -1,0 +1,15 @@
+<!--
+  Infographic layout: sequence (SPEC OUT4). Ordered steps. Structure-only
+  fragment; colors/fonts are CSS variables from the OUT5 premium shell (brand-
+  resolved). NO literal hex. Rendered ONLY by infographic.build_infographic.
+  Slots: {{STEPS}}.
+-->
+<style>
+  .ig-seq{list-style:none;padding:0;margin:18px 0 0;counter-reset:st}
+  .ig-seq-step{position:relative;padding:0 0 20px 42px;border-left:1px solid var(--line);margin-left:14px}
+  .ig-seq-step:last-child{border-left-color:transparent;padding-bottom:2px}
+  .ig-seq-step::before{counter-increment:st;content:counter(st);position:absolute;left:-14px;top:-3px;width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--bg);font:600 13px/28px var(--mono);text-align:center}
+  .ig-seq-step .stitle{font:600 14px/1.35 var(--serif);color:var(--fg)}
+  .ig-seq-step .sdetail{font:400 12px/1.55 var(--sans);color:var(--fg-2);margin-top:3px}
+</style>
+<section class="ig ig-seq-wrap"><ol class="ig-seq">{{STEPS}}</ol></section>

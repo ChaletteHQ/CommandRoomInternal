@@ -54,7 +54,7 @@ def _sample_call_prep(path):
         path,
         brief_kind="call_prep",
         title="Sam Sample — Q2 deck review",
-        subtitle="Friday, May 9, 2026 · 9:00 AM PT · Category Company",
+        subtitle="Friday, May 9, 2026 · 9:00 AM PT · Summit Company",
         # OUT2 §4 flip: call_prep is a STANDARD_KIND — exec_header required.
         exec_header={"verdict": "Walk out with the Q2 deck approved."},
         sections=[

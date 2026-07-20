@@ -1,6 +1,6 @@
 ---
 name: people-crm
-description: "Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]', 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Builds and reads per-person records from email, meetings, and notes; proposes new person records when unknowns recur. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export). Record shape and resolution rules: Routing section in the body."
+description: "Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]', 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Owns person facts: 'remember [fact] about [name]' ('remember Sam prefers Signal'), 'note that [name] [fact]' — appends a sourced fact to their history. Builds and reads per-person records from email, meetings, and notes. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export). Record shape and resolution rules: Routing section in the body."
 ---
 
 ## Skill Boundary (v2.1)
@@ -13,7 +13,7 @@ description: "Never walk into a meeting or dinner wondering who-is-this-again. T
 ## Writer Contract
 
 - **Primary writer for:** person records in `_hq/data/entities.json` (canonical ownership).
-- **Canonical schema:** `shared/data-schemas/entities.schema.json` `$defs.person`. Required: `id` (`person_NNN`), `canonical_name`, `first_seen` (ISO date). Optional: `aliases[]`, `role`, `primary_org_id`, `affiliation_ids[]`, `email` (singular), `project_ids[]`, `last_interaction`, `notes`, `communication_style`, `reports_to_id`, `status`. **No other keys.**
+- **Canonical schema:** `shared/data-schemas/entities.schema.json` `$defs.person`. Required: `id` (`person_NNN`), `canonical_name`, `first_seen` (ISO date). Optional: `aliases[]`, `role`, `primary_org_id`, `affiliation_ids[]`, `email` (singular), `project_ids[]`, `last_interaction`, `notes`, `communication_style`, `reports_to_id`, `status`, `tie` (`work`/`personal` — SPEC BAL1; absent = work), `cadence_days` (BAL1 personal re-surface interval, read only by the Balance surface). **No other keys.**
 - **Forbidden hand-rolled keys** (observed in wild, blocked by validator): `display_name` (use `canonical_name`), `name` (use `canonical_name`), `normalized_name` (remove), `emails` plural (use `email`), `current_org_id` (use `primary_org_id`), `org_ids` (use `affiliation_ids`), `first_seen_at` (use `first_seen`, date only), `last_seen` (use `last_interaction`), `last_interaction_at` (use `last_interaction`), `first_seen_source` / `confidence` / `inferred_from` (record in `events.jsonl`, not on the entity), `role_at_primary_org` (use `role`), `thread_associations` (use `project_ids`), `pending_review` / `enriched_at` / `enriched_from` / `low_signal` (gate via `events.jsonl`).
 - **Writer helper (v3.2+ MANDATORY):** ALL person creates / updates / merges / repairs go through `shared/scripts/people_writer.py`. Never hand-roll JSON for a person record. The helper validates against the schema, dedups against existing records, atomic-writes via `atomic_write_json`, and logs `person_created` / `person_updated` / `person_merged` / `person_repaired` events. Direct edits to `entities.json["people"]` are FORBIDDEN — they recur the v3.0/v3.1 bug class where the agent invented different shapes on different fires (`person_063` Rio Sample, `person_064` Dustin Sample duplicate of `person_004`).
 - **Dedup before create:** `find_existing_person(workspace_root, name=..., email=..., aliases=...)` is REQUIRED before `create_person`. Match order: email exact (case-insensitive) → alias case-insensitive → `canonical_name` whitespace-normalized. Existing record found → call `update_person(existing_id, ...)` instead, never create a parallel record.
@@ -68,7 +68,7 @@ else:
             primary_org_id="org_005",
             role="Project Manager",
             aliases=["Rio N"],
-            notes="Project manager at Category Company.",
+            notes="Project manager at Summit Company.",
             first_seen="2026-04-30",
             source_skill="people-crm",
         )
@@ -238,6 +238,33 @@ res = auto_add_person(ws, canonical_name="Quinn Sample", email="quinn@example.co
 # res["status"] == "added"  → narrate "Added Quinn Sample — say `undo` to remove."
 # res["status"] == "needs_confirm" → surface res["matches"], ask before creating.
 ```
+
+### Person facts — `remember [fact] about [name]` / `note that [name] [fact]` (SPEC HIST1 D8)
+
+An explicit user statement of one atomic fact about a person ("remember Sam prefers Signal", "note that Sam Sample prefers morning meetings"). The user is the authority — no proposal, no confirm card. Facts are ADDITIVE, SOURCED events; they never touch the person record (no notes-blob append, no new record field — the history renderer compiles them on read).
+
+1. **ENTITY_RESOLVE first — every name-bearing form.** `entity_resolve.resolve_all(workspace_root, <name>)` per Gate 1 above. A lone-first-name hit that is Tier-3 ambiguous gets the disambiguation widget, never a first-pick (Bug #19); `record_person_fact` is never called on an unresolved id. A name that resolves to a tracked ORG is workspace-manager's org-fact handler — hand it over.
+2. **Write through the ONE fact writer** (Rule 22 discovery preamble required, then):
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+python3 -c "
+import sys; sys.path.insert(0, 'shared/scripts')
+from people_writer import record_person_fact
+record_person_fact('<workspace_root>', '<person_id>', 'Prefers Signal over email', 'chat:user-statement', category='preference', source_skill='people-crm')
+print('OK')
+"
+```
+
+`category` is optional — one of preference / contact / personal / role / company_news / other when it's clear; omit when it isn't. `source_ref` names where the fact came from (`chat:user-statement` for a direct statement; a message/meeting ref when the user is reacting to one). 3. **Ack in one line** ("Noted — Sam Sample prefers Signal. It'll show in his history and call prep."). The fact appears in the person's history view (`go [person]`) and in call-prep's relationship context on the next render.
+
+**Fences:** a role/company CHANGE ("Sam is now CRO at Acme Co") is an `update_person` field change (proposal-gated per the Writer Contract) — the lineage trail is emitted automatically by the writer; do NOT also record it as a fact. Prose-INFERRED facts (a transcript "sounds like…") are never written directly — they ride the confirm rail as proposals (`entity_signal_detector.run_entity_signal_scan` writes them; never hand-write one).
+
+**Structured auto-noting (HIST1 Part 2 — the ONE nuance to "enrichment doesn't auto-save"):** when the cross-source enrichment scan surfaces an atomic NON-identity fact from a STRUCTURED connector field (a signature block's "Prefers Signal" line, a calendar location field — never model inference over prose), it may be auto-noted as an additive fact EVENT via `entity_signal_detector.apply_structured_facts` — the person RECORD still never auto-updates, `role`/`company_news` facts still demote to confirm (S2), every auto batch is one-`undo` reversible, and the morning brief's CHANGED line narrates the count. Surface the returned `undo_line` in chat when anything was noted. Everything else in the "Fresh from your tools:" section stays exactly as documented below: shown, not saved, until the user decides.
+
+### Personal ties — "[name] is my wife/husband/partner/mom/dad/kid" (SPEC BAL1 D1)
+
+A family/personal relationship statement is a FIELD change, not a fact: ENTITY_RESOLVE the name, then `update_person(workspace_root, <person_id>, source_skill='people-crm', tie='personal', role=<the stated relationship, e.g. 'Wife'>)`. The `tie: "personal"` marker moves the person into the Balance surface's lane and OUT of every work surface: Pulse Phase 3 skips them, relationship-moves drops them, the dormancy emitters skip them. Never infer the tie from a transcript — only an explicit user statement sets it (an inferred family relationship rides the confirm rail like any proposal). The reverse ("actually [name] is a client contact") sets `tie='work'`. A cadence statement — "set date-night cadence to 2 weeks", "remind me to call Mom every 3 weeks" said as a cadence (not a reminder) — sets `cadence_days` (days) on the same record via `update_person`; `cadence_days` is read ONLY by the Balance surface and never touches work dormancy math (it is NOT `cadence_override_days`).
 
 ## Person Profile Format
 
@@ -501,3 +528,5 @@ When ANY skill (workspace-manager during "new project," meeting-notes when a new
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Never walk into a meeting or dinner wondering who-is-this-again. Owns the CEO's relationship layer — auto-builds person records from every meeting, email, and Slack thread, and answers relationship queries instantly. Use when the CEO says 'who is', 'who is Aria', 'who is again', 'who do I know at', 'who do I know', 'add [name] to my contacts', 'to my contacts', 'refresh aliases', 'rebuild my aliases', 'what did Bowie and I last discuss', 'last discuss', 'what did we last discuss', 'prep me for dinner', 'prep me for dinner with', 'tell me about' — a PERSON ('tell me about Mira', 'tell me about Mira from the board'), resolved against your contacts. Writes to the person records in entities.json (canonical ownership) and regenerates _hq/views/PEOPLE.md. DOES NOT fire on 'prep me for my 2pm' (that's call-prep, which reads people-crm records) or 'team status / my direct reports' (that's team-intelligence, which extends people-crm for direct reports). DOES NOT fire on 'tell me about [a project or org you track]' (workspace-manager — 'go [name]' context load) or 'tell me about [an unknown company]' (research).
+
+> Person-fact verbs (SPEC HIST1 D8): 'remember [fact] about [name]', 'note that [name] [fact]' — an explicit user statement appends a sourced person_fact_observed via people_writer.record_person_fact; ENTITY_RESOLVE gates every name-bearing form (lone first names disambiguate, never first-pick). Machine-matchable stems for the mechanical matcher: 'remember Sam prefers Signal', 'note that'. A name that resolves to a tracked ORG hands over to workspace-manager's org money & facts handler ('[Org] is a $[N] account' and org facts live there).

@@ -129,6 +129,30 @@ RULES_BY_KIND: Dict[str, dict] = {
         "table_no_blank_cells": True,
         "allowed_placeholders": [r"\[add asks here\]"],
     },
+    # SPEC OUT7 — KPI scorecard / QBR pre-read. The KPI tables (the "KPIs vs
+    # Targets" section and the "Scorecard" detail table) carry no blank cells —
+    # scorecard.build_kpi_section renders an em dash for an absent-but-legitimate
+    # cell, never empty (same posture as board_pack). Sync rule: the Needs-
+    # attention cap mirrors scorecard.NEEDS_ATTENTION_CAP (3); change one, change
+    # the other. The "(...)" nothing-forms scorecard.py emits for an empty block
+    # are parenthetical honest-gaps, not placeholders — GENERIC_RULES's
+    # placeholder patterns don't match them.
+    "kpi_scorecard": {
+        "section_rules": {
+            "Needs attention": {"bullet_range": (1, 3)},
+        },
+        "table_no_blank_cells": True,
+    },
+    # SPEC OUT3B — the on-demand single-chart page. The table twin (the same
+    # numbers the chart draws, the precision companion and the refusal
+    # fallback) carries no blank cells: value_by_org / build_trend_chart /
+    # stage_mix emit only observed, priced rows — a gap is never a blank cell,
+    # it is an absent row. No section-count or word floor: a one-chart answer
+    # is deliberately one section; padding it would violate the "title is the
+    # message" rule.
+    "chart_on_demand": {
+        "table_no_blank_cells": True,
+    },
 }
 
 

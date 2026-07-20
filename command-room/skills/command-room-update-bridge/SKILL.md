@@ -264,6 +264,14 @@ WORKSPACE_MIGRATIONS = [
     type: "calibration_question",                              // PROPOSE-AND-CONFIRM. NEVER silent_append: a schedule is the customer's, not ours
     blocking: false,
     apply_once: true                                           // one ask, ever — answered or declined, it never asks twice
+  },
+  {
+    id: "rm_supersede_v1",                                     // LB2 §3d (LB1 R4's deferred remainder — fold a standalone relationship-moves chat into the staff meeting)
+    target_file: "[WORKSPACE_ROOT]/_hq/data/entities.json",    // workspace.schedule_config (staff-meeting register + relationship-moves removal)
+    marker: null,                                              // live schedule config — the adjudication gate is the ONLY gate (same rule as staff_meeting_cadence_mwf_v1)
+    type: "calibration_question",                              // PROPOSE-AND-CONFIRM. NEVER a silent rewrite: their registered chat is theirs
+    blocking: false,
+    apply_once: true                                           // one ask, ever — answered or declined, it never asks twice
   }
 ]
 ```
@@ -304,7 +312,7 @@ python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from release_remedi
 # prints True  -> from_version is below the threshold -> the only_if gate PASSES (migration applies)
 ```
 - For `apply_once: true` migrations with a non-null `marker` (`claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, `claude_md_research_rule_v1`, `draft_posture_queue_on_click_v1`): the marker check alone is NOT sufficient. The migration is pending ONLY when the marker string is absent from the target file AND the adjudication gate above reports the id `unadjudicated` — i.e. events.jsonl has NO `workspace_migration_applied` event AND NO suppressing `workspace_migration_skipped` event for this `migration_id`. A prior applied event with the marker now absent means the customer deliberately deleted the appended text — respect that; the bridge never re-adds. A prior skipped event means the operator declined the append — equally durable; never re-propose (the FB-5 live bug: `draft_posture_queue_on_click_v1` was skipped, but this gate only enumerated the applied event, so the skip was invisible and the migration re-proposed on every run). (Contrast with the `stale_marker_pending` migrations above, which deliberately re-surface until fixed.)
-- For `apply_once: true` migrations with `marker: null` (`staff_meeting_cadence_mwf_v1`): there is no text to grep for — the target is live config the customer may legitimately have set to ANY value, so a "does it look applied?" check cannot distinguish "already on Mon/Wed/Fri because we asked" from "on Mon/Wed/Fri because they chose it themselves" from "we asked and they said no." **The adjudication gate is the ONLY gate:** pending iff `migration_adjudication` reports the id `unadjudicated`. Never infer pending-ness from the config's current value — that is precisely how a declined proposal gets re-asked forever (the FB-5 class, and worse here, because re-asking about someone's calendar reads as nagging).
+- For `apply_once: true` migrations with `marker: null` (`staff_meeting_cadence_mwf_v1`, `rm_supersede_v1`): there is no text to grep for — the target is live config the customer may legitimately have set to ANY value, so a "does it look applied?" check cannot distinguish "already on Mon/Wed/Fri because we asked" from "on Mon/Wed/Fri because they chose it themselves" from "we asked and they said no." **The adjudication gate is the ONLY gate:** pending iff `migration_adjudication` reports the id `unadjudicated`. Never infer pending-ness from the config's current value — that is precisely how a declined proposal gets re-asked forever (the FB-5 class, and worse here, because re-asking about someone's calendar reads as nagging).
 - If marker check indicates "pending" AND any `only_if` gate passes, add to `pending_workspace_migrations`.
 
 Future migrations append to this list. The skill is forward-compatible: each migration carries its own metadata so new versions don't require touching detection logic.
@@ -541,7 +549,7 @@ Narrate completion in one line:
 
 **Trigger gate:** only fires if `from_version < 2.14.12` AND user has zero `commitment` events in events.jsonl AND ≥10 events with `type` in `{"meeting", "interaction", "meeting_processed", "note"}`. Skip silently otherwise.
 
-**Why this migration exists:** the canonical `commitment` event schema landed in v2.7.15 (`shared/COMMITMENT_SCHEMA.md`). Users who onboarded before that version have meeting transcripts and email threads ingested but no commitment events extracted from them — meeting-notes' commitment extraction logic only ran on NEW meetings, never retroactively over historic data. Without commitment events, the CRU layer (v2.14.6+) has nothing to auto-resolve against, the Commitments chat surfaces are empty, and Pulse can't surface "things owed to you."
+**Why this migration exists:** the canonical `commitment` event schema landed in v2.7.15 (`shared/COMMITMENT_SCHEMA.md`). Users who onboarded before that version have meeting transcripts and email threads ingested but no commitment events extracted from them — meeting-notes' commitment extraction logic only ran on NEW meetings, never retroactively over historic data. Without commitment events, the CRU layer (v2.14.6+) has nothing to auto-resolve against, the daily commitment chats (Waiting On / My Plate — CTS1; pre-split: the Commitments chat) are empty, and Pulse can't surface "things owed to you."
 
 **Calibration question (verbatim):**
 
@@ -554,7 +562,7 @@ Narrate completion in one line:
 
 **Narrate completion in one line:**
 
-> *"✓ Catch-up commitment scan complete — pulled [N] commitments from your historic meetings and emails. They'll show up in your next Commitments chat."*
+> *"✓ Catch-up commitment scan complete — pulled [N] commitments from your historic meetings and emails. They'll show up in your next Waiting On and My Plate chats."* (Pre-CTS1 workspace still on the `commitments` task: say "Commitments chat" until the split registers.)
 
 (Or, for declined): *"Skipped. You can run it later by saying `scan for commitments`."*
 
@@ -803,6 +811,40 @@ Narrate completion in one line:
 
 (Or, for declined): *"Kept it Mondays. Say `change my schedule` any time."*
 
+### Migration: `rm_supersede_v1` (SPEC LB2 §3d — fold a standalone Relationship Moves chat into the Staff Meeting, PROPOSED never imposed)
+
+**Why.** LB1 R4 retired the standalone relationship-moves chat from NEW installs — the Staff Meeting absorbed the moves as its "This week's moves" section — but left EXISTING registrations untouched, and R4's own suppression rule means those workspaces are never offered the staff meeting: a permanent fork where the moves never reach the one adjudication surface. This migration closes it, the `staff_meeting_cadence_mwf_v1` way: one question, their answer is final.
+
+**Gate (the ONLY gate — no marker; the `marker: null` rule above):** pending iff `migration_adjudication` reports `rm_supersede_v1` `unadjudicated`. Pre-check before proposing — run the pure planner against the LIVE registered task records from the scheduler MCP:
+
+```bash
+python3 -c "import sys, json; sys.path.insert(0,'shared/scripts'); from schedule_config import rm_supersede_plan; print(json.dumps(rm_supersede_plan(<registered task records JSON>)))"
+```
+
+A `null` plan (no standalone relationship-moves registration) → skip SILENTLY with no event — nothing to propose, and writing a skip would durably suppress a question the customer never got asked (the cadence migration's rule, binding here too).
+
+**The ask (one question, plain English):**
+
+> *"One thing worth folding together: your Relationship Moves chat and the Staff Meeting cover the same ground now — the weekly moves are a section of the meeting. Want me to fold them into one? Same moves, one surface, one less chat to keep up with. Your call — keeping them separate is a perfectly good answer."*
+
+- **"Yes"** → apply (below), log `workspace_migration_applied` with `migration_id: "rm_supersede_v1"`.
+- **"No"** / *"keep them separate"* → change NOTHING — relationship-moves runs on untouched, forever. Log `workspace_migration_skipped` with `reason: "user_declined_rm_supersede"` (free-form reason → suppresses forever; `redo workspace migrations` is the opt-back-in).
+- **A different arrangement** (*"move the meeting to Sundays instead"*) → log `workspace_migration_applied` (the fold question is settled only if they also said yes to folding; otherwise skip) and route them: *"Say `change my schedule` and I'll set it up exactly that way."*
+
+**Applying (the "yes" path only, per the planner's plan):**
+
+1. If `staff_meeting_registered` is false → register the staff meeting via the EXISTING add path (change-schedule / registration Phase 6 add — this bridge registers nothing directly). Cron: the plan's `carry_cron` when non-null (the customer had customized the RM chat's time — carry their choice), else the staff-meeting default from `load_schedule_config()`. Convert workspace time via `schedule_config.workspace_time_to_machine` exactly as the cadence migration does.
+2. Remove the relationship-moves registration (`update_scheduled_task(enabled: false)` or delete per the scheduler MCP's canonical removal path).
+3. Receipt BOTH steps in the confirmation line; the RM skill itself, its orchestrator, and Pulse are untouched — only the registration moves.
+
+**⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK** (v4.5.2 R2 / F-51 — binding here exactly as in the cadence migration): no catch-up staff meeting, no lateness math, no "you missed one" narration.
+
+Narrate completion in one line:
+
+> *"✓ Folded in — your weekly moves now run inside the Staff Meeting ([its schedule]). The separate Relationship Moves chat is retired."*
+
+(Or, for declined): *"Kept them separate. Say `change my schedule` any time."*
+
 ### Future migrations
 
 Each new migration in `WORKSPACE_MIGRATIONS` follows the same shape: detect → calibration question (if needed) → surgical edit OR skill invocation → log event. The pattern is intentionally repeatable so future versions can add migrations without touching this skill's structure.
@@ -825,7 +867,7 @@ Determine intent from the trigger phrase that fired this skill:
 
 ### Full-update intent (Phase 4.7 runs)
 
-Check whether Cowork scheduled tasks for Command Room are configured (i.e., look for `schedule_created` events in events.jsonl matching current taskIds: `morning-brief`, `upcoming-meetings`, `inbox`, `commitments`, `pulse`, `past-meetings`, `friday-wrap`). If NOT, invoke `enable-command-room-schedules` silently. The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the M1 first-install set of 5 tasks (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`); on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
+Check whether Cowork scheduled tasks for Command Room are configured (i.e., look for `schedule_created` events in events.jsonl matching current taskIds: `morning-brief`, `upcoming-meetings`, `inbox`, `waiting-on`, `my-plate`, `pulse`, `past-meetings`, `friday-wrap`). If NOT, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table performs the disable-and-register (`commitments` → `waiting-on` + `my-plate`). Until that runs, the still-registered `commitments` task fires the re-scoped Waiting On orchestrator and the owner-me direction has no daily chat — the split must land at the first post-update opportunity, not "eventually". The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the M1 first-install set of 5 tasks (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`); on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
 
 **Render the chat names from what actually registers** (display names from the registration set via `task_display_name()`), never a hardcoded list. Shape (names illustrative only):
 
@@ -855,7 +897,13 @@ No question (CONTRACT.md Rule 28 — default-task registration isn't a customer 
 
 > *"New in this update: a weekly Staff Meeting — everything your workspace changed on its own, everything waiting on your eyes, and this week's relationship moves, reviewable in one sitting. Say `add staff meeting` and it runs [config label time]."*
 
-Then log the suppression record via `schedule_proposals.log_proposal(ws, "staff-meeting")`. **This deliberately breaks from the Friday-Wrap silent-add shape:** the Staff Meeting is opt-in by M ruling (2026-07-14) — an accept ("add staff meeting", or any yes-shaped reply to this line) routes through change-schedule / registration Phase 6 `add`; silence registers nothing and the proposal stays quiet for 6 weeks. Do NOT propose the standalone `relationship-moves` chat anywhere in this flow anymore (R4 — the Staff Meeting absorbs it as its "This week's moves" section); workspaces with relationship-moves ALREADY registered keep it untouched — no disable, no supersede, no mention (their migration is a later bridge wave, not this one).
+Then log the suppression record via `schedule_proposals.log_proposal(ws, "staff-meeting")`. **This deliberately breaks from the Friday-Wrap silent-add shape:** the Staff Meeting is opt-in by M ruling (2026-07-14) — an accept ("add staff meeting", or any yes-shaped reply to this line) routes through change-schedule / registration Phase 6 `add`; silence registers nothing and the proposal stays quiet for 6 weeks. Do NOT propose the standalone `relationship-moves` chat anywhere in this flow anymore (R4 — the Staff Meeting absorbs it as its "This week's moves" section); workspaces with relationship-moves ALREADY registered are handled by the `rm_supersede_v1` calibration migration (LB2 §3d — propose-and-confirm, never silent), NOT by this later-add block.
+
+**Balance later-add PROPOSAL (SPEC BAL1 — same propose-never-register shape as the Staff Meeting block above, with one EXTRA gate):** run the same FS-16 registered-set readback and quote its verdict; the proposal fires ONLY when `balance` is quoted-ABSENT, the workspace is past M1 install, no `schedule_add_proposed` event for `balance` exists within the last 6 weeks, **AND `entities.json` `workspace.personal_calendars` is declared and non-empty** — Balance is gated on a connected personal calendar (skills/balance/SKILL.md Step 0; proposing it to a workspace that can't run it is noise). With no personal calendar declared, surface NOTHING here — the feature is discoverable via the release notes and turns on when the user connects a calendar. On a passing gate, surface exactly ONE proposal line:
+
+> *"New in this update: Balance — a Sunday-morning check that watches your personal side (family time, the people who matter outside work) and flags when it's gone quiet, with a real open evening attached. It's private to you — nothing from it ever appears in reports or client-facing output. Say `add balance` and it runs [config label time]."*
+
+Then log the suppression record via `schedule_proposals.log_proposal(ws, "balance")`. An accept ("add balance" or any yes-shaped reply) routes through change-schedule / registration Phase 6 `add`; silence registers nothing.
 
 **Unconditional prompt refresh (Phase 3 / W4):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1 hash-compare against every registered prompt — never skip it because "the tasks look registered." Bootloaders are stamped with the plugin version at registration (Phase 1.B `<PLUGIN_VERSION>` substitution), so after any plugin upgrade the composed bootloader's hash differs from the registered one and the refresh lands automatically; the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) is the detector for prompts this refresh hasn't reached yet. This replaces hoping Rule 16 was obeyed.
 
@@ -1035,7 +1083,7 @@ Since v3.4.1 → v3.4.5, here's what's worth knowing:
    open commitment events that should have been surfacing in your daily Commitments
    fire but weren't (breakdown by shape: {'flat-new': 6, 'legacy': 19,
    'owner_person_id-variant': 7, 'other': 15}). Re-fire your Commitments task now to
-   see them, by opening the Commitments chat in Cowork and saying `re-run`. Or wait
+   see them, by opening the Waiting On chat in Cowork (pre-CTS1: the Commitments chat) and saying `re-run`. Or wait
    for tomorrow's scheduled 8:30 AM fire — same outcome, just a delay.
 
 3. v3.4.5 — Release-manifest system — update command room now plays per-version remediations.

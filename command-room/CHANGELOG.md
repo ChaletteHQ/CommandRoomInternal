@@ -1,5 +1,34 @@
 # Command Room — Changelog
 
+## v5.0.0 — 2026-07-20 — The commitments-split release: Waiting On / My Plate, people identity, the privacy spine, entity history, and a full sweep of new output surfaces
+
+Everything staged since the v4.9.0 client promote (2026-07-18) — 83 commits, 229 files (+23,261/−1,193) across ~45 skill dirs — reviewed branch-by-branch (second-eyes on every merge) and BIG-TEST VERIFIED live on M's workspace across the full runbook (2026-07-19/20; Phase F ruling GO, 33 findings, zero blockers). Major bump: the CTS1 commitments split is a surface clients cross once, via a per-workspace migration. Release commit cut on main. Battery 261/0 at the release tip; triggers 393/393; firewall 78/0; all structural guards green.
+
+### New capability
+- **CTS1 — commitments split into Waiting On / My Plate** — the single commitments surface becomes two lanes with a per-workspace migration; owner-me rows route to My Plate, awaiting-others rows to Waiting On.
+- **PID1 — people identity** — reconcile pass + tiered auto-add; contacts are resolved and de-duplicated at a single identity chokepoint.
+- **PGUARD1 person-side privacy + PGUARD2 composer-read coverage** — the privacy spine: person-side leak closure plus composer-read coverage over the same guard.
+- **HIST1 — entity history (Parts 1 + 2)** — per-entity history timeline plus the auto-fact tier (CHANGED-line surfacing, undo round-trip).
+- **PIPE1 Part 2 — deal genesis** — deals originate in the pipeline lane from meeting/entity signals.
+- **BAL1 — Balance Guardian** — Sunday balance loop, opt-in balance task, balance widget.
+- **SUB1 — sub-items** — commitments/tasks carry nested sub-items.
+- **New output surfaces** — OUT3 charts (Phase A) + OUT3B chart-on-demand, OUT4 infographic, OUT7 scorecard, RCPT1 receipt fix.
+
+### Behavior changes
+- **CTS1 migration** — owner-me rows stay chatless until the schedule migration runs; the split is propose-and-confirm per workspace.
+- **FU-2 — Category retirement** — the Category tag-lane is retired; existing data folds into the standard lanes.
+- **FU1 — HTML content sweep** + **PR#38 — voice-gate override fix** + relationship-moves snooze bound + LB2 Living Brain remainder + FU pre-test pins.
+
+### Fixes
+- **FB fix bundle** — 7 items incl FB-15/16/17.
+
+### Customer migration impact
+On update, each client runs `set up command room schedules`; the CTS1 commitments split is **propose-and-confirm per client**. CTS1 migration promptness matters — owner-me rows stay chatless until the schedule migration runs. Two known gaps ride the next bundle: the bridge/setup does **not** auto-offer the M/W/F staff-meeting move or the balance opt-in task (manual `change schedule` works, verified).
+
+### What's NOT in this ship
+- The three reviewed-unmerged branches (fb-plumbing / SYNC1 / WG1-A) — released as a separate train after this promote lands.
+- **SYNC1 stale-mount hardening** — the stale-mount platform class is documented in the big-test record; SYNC1 is reviewed and lands in the next release.
+
 ## v4.9.0 — 2026-07-18 — The consolidation release (v4.7→v4.9 scale): connector-agnostic core, widget transport + density, hardening train, read-only brief + staff-meeting cadence, premium HTML
 
 Everything staged since the v4.6.3 client promote (2026-07-10) — 138 commits — reviewed branch-by-branch (second-eyes on every merge), live-verified in Cowork (2026-07-16 narrowed re-check 8/8; 2026-07-18 verification fires passed post-merge), and shipped as one large minor bump from 4.8.1. Release commit cut on main `86acea8`. Battery 238/0 at the release tip; all five structural guards green; triggers 362/362.
@@ -2251,7 +2280,7 @@ Two coordinated polish changes on top of v3.12.0.
 
 ### Example sanitization
 
-The privacy guard (`tests/run_no_real_customer_names_test.py`) was expanded with six new name patterns surfaced by a broader sanitization sweep beyond the canonical placeholder allowlist. Fourteen example flows across seven skills were updated to use only canonical placeholders from `references/PRIVACY_POLICY.md` (Sam / Bo / Rio / Skyler / Mira / Aria / Bowie / Lyra / Quinn / Dustin / Adan Sample, with org names Acme Co / Northstar Partners / Category Company / @example.com domains).
+The privacy guard (`tests/run_no_real_customer_names_test.py`) was expanded with six new name patterns surfaced by a broader sanitization sweep beyond the canonical placeholder allowlist. Fourteen example flows across seven skills were updated to use only canonical placeholders from `references/PRIVACY_POLICY.md` (Sam / Bo / Rio / Skyler / Mira / Aria / Bowie / Lyra / Quinn / Dustin / Adan Sample, with org names Acme Co / Northstar Partners / Summit Company / @example.com domains).
 
 The six new guard patterns are listed in `FORBIDDEN_NAME_PATTERNS` in the test file itself — that's the canonical list. They cover a maintainer surname, a beta-customer surname, a company name fragment, an org name, another beta-customer surname, and a first name that doesn't sanitize cleanly to the approved placeholder set.
 
@@ -3237,7 +3266,7 @@ This release does what v3.5.2 attempted and adds the missing release-blocker tes
 - `acme.example.com` → `acme.example.com`
 - `Northstar Partners` → `Northstar Partners`
 - `venturesample.example.com` → `northstar.example.com`
-- `acmeco.com` / `acmeco.example.com` → `category.example.com` (matches the existing `Category Company` org placeholder already used in `Sam Sample` pairings)
+- `acmeco.com` / `acmeco.example.com` → `category.example.com` (matches the existing `Summit Company` org placeholder already used in `Sam Sample` pairings)
 
 Files touched: `shared/CHAT_ACTION_WIDGET.md`, `shared/CONTRACT.md`, `shared/scripts/chat_output_renderer.py`, `shared/scripts/people_writer.py`, `references/ORG_AND_THREAD_MODEL.md`, `references/PROJECT_MAPPING_RULES.md`, `skills/apply-choices/SKILL.md`, `skills/meeting-notes/SKILL.md`, `skills/people-crm/SKILL.md`, `skills/transcript-search/SKILL.md`, `skills/enable-command-room-schedules/references/SHARED_CHAT_OUTPUT_PROTOCOL.md`, `skills/enable-command-room-schedules/references/orchestrator-dont-forget.md`, `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md`, `skills/enable-command-room-schedules/references/orchestrator-upcoming-meetings.md`, `tests/run_audit_v2_13_0.py`, `tests/run_chat_output_test.py`, `tests/run_orchestrator_registration_test.py`, `tests/run_people_writer_test.py`, `tests/run_v2_14_38_actions_test.py`.
 
@@ -3255,7 +3284,7 @@ The test caught one additional leak that the audit's exact-pattern grep had miss
 
 - **CHANGELOG.md is exempt.** It's an audit trail of past incidents and names the very leaks each release closed. Rewriting it would revisionist-falsify the project history; both Rule 25's `run_no_hardcoded_drive_test.py` and the new Rule 26 test exempt it explicitly.
 - **`Northstar Partners` was added to the sweep beyond the audit's strictly-named list.** Per M's confirmation: privacy policy covers partners, not just beta customers; sanitizing only the `venturesample.example.com` domain while leaving 11 `Northstar Partners` string leaks would be incoherent. The new test pattern enforces this going forward.
-- **`Category Company` was kept** as the canonical fictional placeholder for the "operator's main client" pairing with `Sam Sample`. It's borderline-fictional-sounding and the v3.5.2 sweep treated it as a placeholder; Rule 26 codifies that choice. The real-domain pair `acmeco.com` / `acmeco.example.com` is what was leaking and is now replaced with `category.example.com`.
+- **`Summit Company` was kept** as the canonical fictional placeholder for the "operator's main client" pairing with `Sam Sample`. It's borderline-fictional-sounding and the v3.5.2 sweep treated it as a placeholder; Rule 26 codifies that choice. The real-domain pair `acmeco.com` / `acmeco.example.com` is what was leaking and is now replaced with `category.example.com`.
 
 ### Tests
 
@@ -3917,7 +3946,7 @@ Two targeted fixes bundled in one ship.
 
 ### Fix 1 — Speaker-attribution ambiguity guard (Rio Lange / Rio Sample misattribution)
 
-**Bug class:** Granola tags each transcript segment with a speaker name. When two attendees on a call share a first name (Sam's Category Company has BOTH Rio Lange and Rio Sample as PMs), Granola's first-name tag is ambiguous — pre-v3.2.3 the alias resolver silently picked one (usually the alphabetically-first match in `aliases.json`), attributing commitments / decisions to the wrong person. Memorialized: Sam flagged the misattribution repeatedly through April 2026; no signal was surfaced to the user that the attribution was uncertain.
+**Bug class:** Granola tags each transcript segment with a speaker name. When two attendees on a call share a first name (Sam's Summit Company has BOTH Rio Lange and Rio Sample as PMs), Granola's first-name tag is ambiguous — pre-v3.2.3 the alias resolver silently picked one (usually the alphabetically-first match in `aliases.json`), attributing commitments / decisions to the wrong person. Memorialized: Sam flagged the misattribution repeatedly through April 2026; no signal was surfaced to the user that the attribution was uncertain.
 
 **Fix:** new Phase 4.5d in `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md`. For each `commitment` / `decision` / `action_item` proposed in a fire that has a speaker attribution:
 

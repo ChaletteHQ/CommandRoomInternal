@@ -295,6 +295,24 @@ def score_suspected_duplicate(
     if sseq is not None and open_ev.get("seq") == sseq:
         return None
 
+    # 0b. Sub-item guards (SUB1 D6), mirroring the split guard:
+    #   (a) never flag a child against its own PARENT — the parent is still
+    #       open at child-append time and title overlap with the deliverable
+    #       it decomposes is EXPECTED, not a duplicate signal;
+    #   (b) never flag two children of the SAME parent against each other —
+    #       later-added siblings would otherwise collide with open ones
+    #       (in-batch siblings are already exempt by construction).
+    #   Children vs UNRELATED opens still compare normally.
+    new_pid = new_data.get("parent_id")
+    if new_pid and str(new_pid) == _commitment_id(open_ev):
+        return None
+    pseq = new_data.get("parent_seq")
+    if pseq is not None and open_ev.get("seq") == pseq:
+        return None
+    open_pid = d_open.get("parent_id")
+    if new_pid and open_pid and str(new_pid) == str(open_pid):
+        return None
+
     # 1. Window — the open item must be a recent capture.
     if now_dt is not None:
         captured = _parse_dt(event_time(open_ev))

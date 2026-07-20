@@ -150,8 +150,11 @@ def _render(out: str, ws=None, kind: str = "memo", **kw) -> str:
 
 print("=== resolve_format_for_kind (SPEC OUT5 §3c) ===")
 ws = _ws()  # unconfigured
-check("launch set is exactly the §3c four",
-      PREMIUM_LAUNCH_KINDS == {"board_pack", "one_pager", "value_receipt", "research"})
+check("launch set is the §3c four + OUT3B chart_on_demand",
+      PREMIUM_LAUNCH_KINDS == {"board_pack", "one_pager", "value_receipt",
+                              "research", "chart_on_demand"})
+check("unconfigured: chart_on_demand -> premium_html (OUT3B base, D2)",
+      resolve_format_for_kind("chart_on_demand", ws) == "premium_html")
 check("unconfigured: board_pack -> docx (golden)",
       resolve_format_for_kind("board_pack", ws) == "docx")
 check("unconfigured: one_pager -> docx (golden)",

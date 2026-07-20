@@ -253,7 +253,7 @@ Aggregate view across all tracked people.
 ```
 
 4. Flag anyone past staleness threshold (no interaction in X days)
-   - **REL1 — emit the normalized dormancy signal.** For each member flagged past the staleness threshold, call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<person_id>, entity_type='person', gap_days=<days since interaction>, baseline_days=None, source_skill='team-intelligence')` (absolute 14-day tier). The team-overview flag is unchanged.
+   - **REL1 — emit the normalized dormancy signal.** For each member flagged past the staleness threshold, call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<person_id>, entity_type='person', gap_days=<days since interaction>, baseline_days=None, source_skill='team-intelligence')` (absolute 14-day tier). The team-overview flag is unchanged. **BAL1 D1.1(3) — personal-tie skip at this emit gate:** never call `emit_dormancy_signal` for a person whose record carries `tie: "personal"` — personal ties belong to the Balance surface only, and a personal signal in the substrate flows straight into the work-outreach pack. Absent `tie` = work (back-compat); only the explicit `personal` value skips.
 5. Flag anyone with overdue commitments
 6. End with: "Want to prep for any upcoming 1:1s?"
 

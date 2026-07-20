@@ -158,6 +158,39 @@ def test_collect_does_not_raise() -> None:
     print("PASS test_collect_does_not_raise")
 
 
+def test_table_cells_exempt_from_voice_dash_ban() -> None:
+    """FB-16 second-eyes fix (2026-07-19): the dash-as-punctuation FAIL applies
+    to body PROSE only. A .docx table cell with an en-dash range must NOT set
+    has_violation via the voice scan — _docx_paragraph_text strips <w:tbl>
+    regions before the voice pass. The SAME dash in a body paragraph fails.
+    The LEAK scan still sees table text (full-document _normalize_for_scan)."""
+    from docx_leak_scanner import scan_docx_for_violations
+
+    cell_p = "<w:p><w:r><w:t>Q2 – Q3 revenue: 10 — 20</w:t></w:r></w:p>"
+    table = ("<w:tbl><w:tr><w:tc>" + cell_p + "</w:tc></w:tr></w:tbl>"
+             "<w:p><w:r><w:t>A clean body sentence.</w:t></w:r></w:p>")
+    docx = _build_synthetic_docx(table)
+    result = scan_docx_for_violations(docx)
+    assert not result["has_violation"], result
+    assert not any(f["rule"] == "dash_as_punctuation"
+                   for f in result["voice"]["findings"]), result["voice"]
+
+    body = "<w:p><w:r><w:t>We shipped — fast.</w:t></w:r></w:p>"
+    docx2 = _build_synthetic_docx(body)
+    result2 = scan_docx_for_violations(docx2)
+    assert result2["has_violation"], result2
+    assert any(f["rule"] == "dash_as_punctuation"
+               for f in result2["voice"]["findings"]), result2["voice"]
+
+    # leak scan still covers table text: plant a leak token inside a cell
+    leak_cell = ("<w:tbl><w:tr><w:tc><w:p><w:r><w:t>project_007 hides here"
+                 "</w:t></w:r></w:p></w:tc></w:tr></w:tbl>")
+    docx3 = _build_synthetic_docx(leak_cell)
+    findings = collect_docx_leaks(docx3)
+    assert any(f["match"] == "project_007" for f in findings), findings
+    print("PASS test_table_cells_exempt_from_voice_dash_ban")
+
+
 def main() -> int:
     test_clean_doc_returns_empty()
     test_project_id_leak_detected()
@@ -167,6 +200,7 @@ def main() -> int:
     test_phase_n_voice_leak_detected()
     test_marketing_word_leak_detected()
     test_collect_does_not_raise()
+    test_table_cells_exempt_from_voice_dash_ban()
     print("\nALL docx_leak_scanner tests PASSED")
     return 0
 

@@ -5,7 +5,7 @@ description: "Schedule meetings — find mutual availability, draft the invite w
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-Before resolving the meeting attendee(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the substrate-aware agenda (open commitments with each attendee), call `shared/scripts/cru_match.py::load_open_commitments` and filter by attendee — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
+Before resolving the meeting attendee(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the substrate-aware agenda (open commitments with each attendee), call `shared/scripts/cru_match.py::load_open_commitments` and filter by attendee — do NOT hand-roll an events.jsonl scan — passing the org-scoped rows: `load_open_commitments(events_path, events=org_events)` with `org_events` from `events_io.load_events_org_scoped` (PGUARD2 D2 — the agenda lands in the invite body attendees read). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
 ## Skill Boundary (v2.1)
 
@@ -25,13 +25,13 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - Calendar MCP — creates the actual calendar event. Returns `calendar_event_id` captured in the meeting_scheduled event.
 - Gmail MCP (when invite needs an email) — invite goes out via Calendar's native invite mechanism, not a separate email-writer call.
 
-**Reads from:**
+**Reads from:** All `events.jsonl` reads come from ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 D-B — the substrate-aware agenda is written into the invite body, which the attendees read: an external surface): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design, so masked-account history can never be quoted into an invite.
 - Calendar MCP — for availability across attendees (your calendar + each attendee's if Calendar MCP exposes free-busy).
 - `_hq/data/entities.json` — attendee email lookup, relationship history, role, org. If the trigger names a person ambiguously ("Bo"), resolves via `aliases.json`.
 - `_hq/data/entities.json` — project context if the meeting topic references a project.
-- `_hq/data/events.jsonl` — `type == "commitment"` events with `status == "open"` involving attendees (so the agenda can surface what's owed in either direction).
-- `_hq/data/events.jsonl` — `type == "meeting"` events with the same attendees (to detect usual cadence and propose a time that matches their 1:1 rhythm if applicable).
-- `_hq/data/events.jsonl` — `type == "interaction"` events with attendees to seed the agenda's "since last touch" context.
+- `_hq/data/events.jsonl` — `type == "commitment"` events with `status == "open"` involving attendees — via the seam, `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here) — so the agenda can surface what's owed in either direction.
+- `_hq/data/events.jsonl` — `type == "meeting"` events with the same attendees (from the org-scoped load) to detect usual cadence and propose a time that matches their 1:1 rhythm if applicable.
+- `_hq/data/events.jsonl` — `type == "interaction"` events with attendees (from the org-scoped load) to seed the agenda's "since last touch" context.
 
 **Conflict boundary:** sole writer of `meeting_scheduled` events. Does NOT write to entities.json people records (that's people-crm's domain).
 
@@ -138,11 +138,7 @@ data_view = {
                 "Agenda:",
                 *(f"> {line}" for line in agenda_lines),
             ],
-            "actions": [
-                "1 send",                # creates the calendar event AS-IS
-                "1 edit then send",      # opens the multi-field input; user edits; then create
-                "1 skip",                # abort — no event created
-            ],
+            "actions": ["1 send", "1 skip"],
         }],
     }],
 }
@@ -154,14 +150,14 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 # STOP. Wait for the user's apply-choices reply.
 ```
 
-The widget's `edit then send` action exposes the multi-field input (To / Subject / Body / Time / Duration / Location). The user can swap the time, drop attendees, edit the agenda, change the title — all in place. The Calendar MCP write doesn't fire until the user confirms via Apply.
+The card is `send` / `skip` (FB-17 — `edit then send` retired; the popup multi-field editor is gone). The agenda body is directly editable on the card (FB-10). To change the time, attendees, or title before creating, the user says the correction in chat and the card re-renders — never a popup form. The Calendar MCP write doesn't fire until the user confirms via Apply.
 
 ### Phase 6 — Create event + write to substrate (ONLY on `1 send` from Apply)
 
-This phase fires ONLY when apply-choices dispatches an `{n: 1, action: "send", ...}` or `{n: 1, action: "edit then send", input: {...}}` from the user's Apply click. Never auto-fire from Phase 5.
+This phase fires ONLY when apply-choices dispatches an `{n: 1, action: "send", ...}` from the user's Apply click (or, from an in-flight pre-FB-17 widget, the deprecated `{action: "edit then send", input: {...}}` alias). Never auto-fire from Phase 5.
 
 On dispatch:
-1. If the action carries an `input` object (from `edit then send`): override the corresponding fields (To/Subject/Body/Time/Duration/Location) before creating.
+1. If the action carries an `input` object (a deprecated in-flight `edit then send` payload): override the corresponding fields (To/Subject/Body/Time/Duration/Location) before creating.
 2. Discover the create tool via `shared/scripts/tool_discovery.py::discover_calendar_tool(tools, operation="create_event")` — works across Google Calendar AND Outlook (never hard-code a platform tool id; per CONTRACT Rule 8 calendar never goes through Zapier). Call the discovered tool with the (possibly edited) fields. Returns `calendar_event_id`.
 3. Append `meeting_scheduled` event with `{attendee_person_ids[], primary_thread_id, scheduled_at_ts, duration_minutes, calendar_event_id, agenda_summary, surfaced_commitment_seqs[]}` per atomic_write rules.
 4. **CRU real-time leg — auto-resolve the scheduling commitment this event fulfills (v3.14.7+).** Creating the event IS the fulfillment of any "set up the call with X / lock time with X / propose times to X" commitment the user owed. Run `shared/scripts/cru_match.py::match_calendar_to_commitments` with the just-created event so the commitment closes immediately, instead of waiting for the daily Commitments Phase 2.7 backstop:
@@ -174,6 +170,11 @@ On dispatch:
    from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
    from atomic_write import atomic_append_jsonl
 
+   # OWNER-side auto-close matching: the no-arg (raw) form is CORRECT here —
+   # closing a commitment is substrate hygiene, not attendee-facing output, and
+   # a personal-lane commitment must stay closeable by its calendar event
+   # (PGUARD2 D2: only the AGENDA composition reads use the org-scoped
+   # events= injection form from the Reads section).
    opens = load_open_commitments("<events.jsonl>")
    results = match_calendar_to_commitments(
        open_commitments=opens,

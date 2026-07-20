@@ -302,6 +302,57 @@ def build_person_proposal_event(
     }
 
 
+def build_unidentified_attendee_event(
+    meeting_source_ref: str,
+    *,
+    attendee_hint: str,
+    attendee_email: Optional[str] = None,
+    primary_thread_id: Optional[str] = None,
+    source_skill: str = "meeting-notes",
+    evidence: str = "",
+) -> dict:
+    """An UNNAMED meeting speaker/attendee → ONE `unidentified_attendee_
+    observed` annotation event (SPEC PID1 D5) — NEVER a person proposal.
+
+    `build_person_proposal_event` raises on an empty name by design; the
+    live no-name "proposals" came from skill texts working around that
+    raise. This builder is the sanctioned path instead: named humans get
+    person proposals, unnamed speakers get annotations. Annotations are
+    FULLY SILENT (§0-4 ruling) — never a queue row; the only render is one
+    count line in the weekly staff meeting. The Sunday `identity-reconcile`
+    job joins them against calendar-invitee/participant metadata and later
+    mail on the same address, promoting into the identity tiers only when a
+    name appears (resolution is recorded in the job receipt's
+    `annotations_resolved`, read by `identity_reconcile.
+    load_open_annotations`).
+
+    `attendee_hint` is the source's own label ("speaker 2", "att-7").
+    `attendee_email` ONLY when the source metadata literally carries the
+    address (Granola participant metadata, calendar invitee) — never
+    guessed (F-08 extends to capture).
+    """
+    if not meeting_source_ref or not str(meeting_source_ref).strip():
+        raise ValueError("unidentified_attendee_observed needs a "
+                         "meeting_source_ref")
+    if not attendee_hint or not str(attendee_hint).strip():
+        raise ValueError("unidentified_attendee_observed needs an "
+                         "attendee_hint (the source's own speaker label)")
+    data: dict = {
+        "meeting_source_ref": str(meeting_source_ref).strip(),
+        "attendee_hint": str(attendee_hint).strip(),
+        "attendee_email": (str(attendee_email).strip()
+                           if attendee_email else None),
+    }
+    if evidence:
+        data["evidence"] = evidence
+    return {
+        "type": "unidentified_attendee_observed",
+        "source_skill": source_skill,
+        "primary_thread_id": primary_thread_id,
+        "data": data,
+    }
+
+
 def build_meeting_processed_event(
     meeting_id: str,
     *,
@@ -414,6 +465,7 @@ __all__ = [
     "MEETING_WRITE_TYPES",
     "build_decision_event",
     "build_person_proposal_event",
+    "build_unidentified_attendee_event",
     "build_meeting_processed_event",
     "count_meeting_writes",
     "already_processed",

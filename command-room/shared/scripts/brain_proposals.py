@@ -13,9 +13,23 @@ DOCTRINE (D1–D3, D10 + M rulings R1/R2)
   - **Events + projectors, not a new store.** Proposals are `brain_proposal`
     events through `event_gate.append_event`; the projector folds
     resolution/expiry tombstones. No proposals.json.
-  - **Legacy families are adapter-read, never migrated here** (migration is
-    LB2). The 8 shipped flows keep working untouched; this projector reads
-    them into the same queue so the card shows ONE list from day one.
+  - **Adapters are permanent fossil readers.** LB2 (2026-07) migrated the
+    org / project / dormancy / schedule_add WRITERS onto `propose()`; the
+    person and commitment_review families still write their legacy types
+    (deferred to LB3 — person machinery is PID1-fresh, commitment_review is
+    wired into the commitment_state single-closer). The adapters are never
+    deleted: historical events are append-only and live on every client
+    substrate forever, so pre-migration rows keep rendering here until they
+    resolve or expire naturally. No backfill, no event rewriting, ever.
+  - **AUTO LIFECYCLE CONTRACT (LB2, the FB-20 mandate):** a detector that
+    calls `propose(tier="auto")` MUST, in the same run, apply the change
+    through its class's single writer and `resolve_proposal(..., "applied")`
+    — an auto proposal never rests open. Auto items are applied-then-
+    narrated (the change feed's job), never adjudicated: the projector
+    excludes them by default (`include_auto=False`) so no adjudication
+    surface can render or count one. `resting_auto_proposals()` is the
+    violation detector; a non-empty return is a detector bug, not user
+    input.
   - **Policy tiers are code (D2).** `tier="auto"` is legal ONLY for change
     classes in `AUTO_ALLOWED` with a reverser registered in
     `brain_undo.REVERSERS`; `propose()` raises otherwise. Identity- and
@@ -25,8 +39,9 @@ DOCTRINE (D1–D3, D10 + M rulings R1/R2)
     collision via `people_writer.list_same_name_people` /
     `org_writer.find_existing_org`, past the noise gate) is `auto`,
     additive-only, archive-reversible, narrated. Prose-inferred identities
-    stay `confirm`; merges stay `confirm` permanently. (The R1 detector is
-    LB2 — the policy row lands now so LB2 needs no policy change.)
+    stay `confirm`; merges stay `confirm` permanently. (The R1 detector
+    SHIPPED in PID1 — `identity_reconcile.py` is it; auto clusters apply via
+    `people_writer.auto_add_person`, never through this queue.)
   - **Anti-fatigue is contract (D10):** `DAILY_CONFIRM_CAP = 5`; max
     `MAX_SLOTS_PER_DETECTOR = 2` per render; TTL default 14d, silent expiry;
     declined ⇒ 60d fingerprint cooldown via the SHARED `proposal_ledger`
@@ -68,24 +83,78 @@ ORG_PROJECT_STALE_DAYS = 30  # review F2 — org/project adapter window
 PERSON_LOW_CONTEXT_STALE_DAYS = 30
 MAX_SLOTS_PER_DETECTOR = 2
 
+# LB2 §3a — families whose WRITERS migrated onto propose(). Their proposals
+# carry the family's ADAPTER fingerprint convention (the natural key), so
+# cross-rail dedup is a fingerprint match against the full projection:
+#   org          org:<normalized name>        (was org_proposal events)
+#   project      project:<normalized name>    (was project_proposal events)
+#   dormancy     dont_forget:<target id>      (was dont_forget_dormant_proposal)
+#   schedule_add schedule:<task id>           (schedule_proposals.log_proposal)
+# An open PRE-migration row of the same family is adapter-read, not bp — so
+# propose() for these kinds also checks the adapter-read side of the
+# projection before emitting (the cross-rail dedup trap: without it a
+# migrated writer re-proposes something already open as a legacy row and the
+# queue shows both). person / commitment_review are NOT here (LB3).
+MIGRATED_KINDS: dict[str, str] = {
+    "org": "org:",
+    "project": "project:",
+    "dormancy": "dont_forget:",
+    "schedule_add": "schedule:",
+    # config_drift is bp-native (no legacy rail) but listed for the
+    # fingerprint-convention check: config_drift:<skill>:<knob>.
+    "config_drift": "config_drift:",
+}
+
 # Change classes legal on the auto tier (D2 — a class table, not a
 # confidence score; each also requires brain_undo.has_reverser()).
 AUTO_ALLOWED: dict[str, str] = {
     "commitment_close": "HIGH sent-mail evidence — the shipped reconcile-sent "
                         "precedent",
     # R1 (M ruling 2026-07-14): structured-connector-fact identity creation
-    # only — additive, archive-reversible, narrated. Detector is LB2.
+    # only — additive, archive-reversible, narrated. Detector shipped in
+    # PID1 (identity_reconcile.py; applies via auto_add_person).
     "person_org_creation_structured_fact": "identity from a structured "
         "connector fact (full name + address from mail/calendar), zero "
         "same-name/email collision, past the noise gate — additive only",
+    # HIST1 Part 2 (D3/S1/S2): one atomic NON-identity fact from a STRUCTURED
+    # connector source — an additive *_fact_observed event, reversed by
+    # appending entity_fact_retracted (facts are append-only; nothing to
+    # flip). Category limited to AUTO_FACT_CATEGORIES; role/company_news
+    # stay confirm even from a structured source. Applied via
+    # entity_signal_detector.apply_structured_facts (the PID1
+    # applied-then-narrated posture — never an open auto proposal, so the
+    # FB-20 auto-tier parity gap stays dormant until LB2's gate lands).
+    "entity_fact_structured": "one atomic non-identity fact (preference/"
+        "contact/personal) from a structured connector source — additive "
+        "event, retraction-reversible",
 }
 
+# The ONLY categories legal on the entity_fact_structured auto class
+# (SPEC HIST1 S2) — mirrors people_writer/org_writer.AUTO_FACT_CATEGORIES
+# (writer-level enforcement is code-deep there; this copy guards any future
+# propose-path caller). The auto-tier test pins the three copies equal.
+AUTO_FACT_CATEGORIES = frozenset({"preference", "contact", "personal"})
+
 # Ranking shapes (D3): money > identity > hygiene, then age.
-_MONEY_KINDS = frozenset({"deal_update", "deal_creation"})
+# org_money (HIST1 Part 2 step 12 — an observed account/contract value on a
+# client org; confirm-only forever per D4/Bug #92) ranks money with the
+# deal kinds: a value signal that goes silent has the same price tag.
+_MONEY_KINDS = frozenset({"deal_update", "deal_creation", "org_money"})
 _IDENTITY_KINDS = frozenset({
     "person", "person_update", "org", "project",
     "person_org_creation_structured_fact",
+    # PID1 D4 — the reconciler's merge-propose rows: person_link (an open
+    # proposal that is already on file — link it?) and person_merge (two
+    # EXISTING records that look like one person). Both confirm-only;
+    # person_merge is NEVER in AUTO_ALLOWED (merge_person_into has no
+    # reverser — a record merge cannot be undone).
+    "person_link", "person_merge",
 })
+# HIST1 Part 2 N3: `entity_fact_structured` and the confirm-tier
+# `entity_fact` kind deliberately rank HYGIENE via kind_shape's fall-through
+# (below money/identity) — a fact observation is additive context, never a
+# record mutation. `person_update` (role/company-move proposals) is already
+# in _IDENTITY_KINDS above. Pinned by the auto-tier test.
 _SHAPE_RANK = {"money": 0, "identity": 1, "hygiene": 2}
 
 # Daily surfaces the R2 cross-surface dedup applies to. staff-meeting and
@@ -118,12 +187,26 @@ def _events_path(workspace_root) -> Path:
 
 
 def _load_events(workspace_root) -> list[dict]:
-    import event_refs
+    # SPEC PGUARD1 D1 — the staff-meeting load seam reads ORG-SCOPED: the
+    # account mask (filter_masked_events) + personal-lane drop apply by
+    # design, so a masked account's history can never drive a proposal card.
+    # Shard-transparent + defensive like the prior event_refs-based read.
+    # Every consumer in this module (projector, resolve, expiry, health
+    # counts) flows through this one seam — keep edits here minimal and
+    # localized (PID1 builds against this file in parallel).
+    try:
+        from events_io import load_events_org_scoped
+    except ImportError:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+        from events_io import load_events_org_scoped
 
     path = _events_path(workspace_root)
     if not path.exists():
         return []
-    return event_refs.load_events(path)
+    events, _skipped = load_events_org_scoped(workspace_root)
+    return events
 
 
 def kind_shape(kind: str) -> str:
@@ -204,6 +287,15 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
             # Staff Meeting builds "Name — badge · evidence · consequence".
             "title": data.get("title") or data.get("org_name") or "",
             "proposal_kind": data.get("proposal_kind") or "",
+            # LB2 — optional surface routing: a row whose writer named a
+            # surface renders ONLY there (config_drift → staff meeting; a
+            # config nudge is never urgent). Empty = every surface.
+            "surface_hint": data.get("surface_hint") or "",
+            # PID1 — merge-propose row payloads (D4): the target ids the
+            # apply-choices handlers dispatch on, embedded VERBATIM (F2).
+            **{k: data[k] for k in ("cluster_seqs", "cluster_fingerprints",
+                                    "keep_id", "duplicate_id", "alias_name",
+                                    "matched_name") if data.get(k)},
         })
     return out
 
@@ -248,8 +340,25 @@ def propose(
                 f"change class {change_class!r} has no registered reverser "
                 "in brain_undo.REVERSERS — auto-apply without a reverser is "
                 "illegal (D2/D5)")
+        if change_class == "entity_fact_structured":
+            # HIST1 S2 guard for any future propose-path caller (the
+            # shipped applier, entity_signal_detector.apply_structured_facts,
+            # applies directly and never proposes auto — FB-20 parity).
+            cat = (extra or {}).get("category")
+            if cat not in AUTO_FACT_CATEGORIES:
+                raise BrainProposalError(
+                    f"category {cat!r} is not auto-eligible — "
+                    "entity_fact_structured is limited to "
+                    f"{sorted(AUTO_FACT_CATEGORIES)} (S2); role/"
+                    "company_news facts stay confirm")
     if not fingerprint or not detector:
         raise BrainProposalError("fingerprint and detector are required")
+    if kind in MIGRATED_KINDS and not fingerprint.startswith(MIGRATED_KINDS[kind]):
+        raise BrainProposalError(
+            f"kind {kind!r} is a migrated family — its fingerprint must carry "
+            f"the family natural-key convention {MIGRATED_KINDS[kind]!r} "
+            f"(got {fingerprint!r}); cross-rail dedup against pre-migration "
+            "adapter rows keys on it (LB2 §3a)")
     _validate_action_tuples(action_tuples)
 
     from proposal_ledger import active_cooldowns
@@ -263,6 +372,25 @@ def propose(
     open_fps = {p["fingerprint"] for p in _open_brain_proposals(events, now=now)}
     if fingerprint in open_fps:
         return {"status": "duplicate_open", "fingerprint": fingerprint}
+    # LB2 cross-rail dedup: for migrated kinds, an open PRE-migration row of
+    # the same family (adapter-read, same natural-key fingerprint) also
+    # suppresses — the queue must never show a legacy row and a bp row for
+    # the same thing. Full projection incl. autos; defensive (a broken
+    # adapter never blocks a propose — the bp-side fingerprint check above
+    # already ran).
+    if kind in MIGRATED_KINDS:
+        try:
+            legacy_fps = {
+                p.get("fingerprint")
+                for p in load_open_proposals(
+                    workspace_root, now_iso=now_iso, include_auto=True)
+                if p.get("source_family") != "brain"
+            }
+            if fingerprint in legacy_fps:
+                return {"status": "duplicate_open_legacy",
+                        "fingerprint": fingerprint}
+        except Exception:
+            pass
 
     proposal_id = "bp_" + hashlib.sha256(
         f"{fingerprint}|{now_iso}".encode("utf-8")).hexdigest()[:12]
@@ -320,7 +448,12 @@ def propose(
 
 
 # ---------------------------------------------------------------------------
-# Legacy-family adapters (read-only; migration is LB2)
+# Legacy-family adapters — PERMANENT FOSSIL READERS (fossil-readers posture).
+# LB2 migrated the org/project/dormancy/schedule_add writers onto propose();
+# these adapters keep rendering PRE-migration rows (append-only history lives
+# on every client substrate forever) until they resolve or expire naturally.
+# person + commitment_review are still legacy-WRITTEN (LB3) — their adapters
+# are the live read path, not fossils. Never delete an adapter.
 # ---------------------------------------------------------------------------
 
 # FB-19 — the hygiene review row's registered wire verbs. These are the
@@ -517,49 +650,167 @@ def _person_render_line(p: dict) -> str:
     return f"{badge} · {evid} · no contact record yet"
 
 
-def _person_row_title(p: dict) -> str:
+def _person_row_title(p: dict, person_names: Optional[dict] = None) -> str:
     """FB-8 — the row NAME is load-bearing ("{name — badge · evidence ·
     consequence}"). The as-heard name when the proposal carried one (the
-    confirm_flow reader coalesces the legacy field spellings); when NO name
-    field exists at all (e.g. a person_update_proposal carrying only a
-    person_id + delta), a short source snippet — NEVER a bare placeholder,
-    a nameless identity row is undecidable (the 2026-07-16 live fire)."""
+    confirm_flow reader coalesces the legacy field spellings). PID1 title
+    fix: an update-type row carrying a `person_id` titles as the RECORD's
+    canonical name + " — update" (`person_names` is the adapter's id→name
+    map) — the live defect was 4 update rows rendering raw `granola:<uuid>`
+    strings. Fallback is a short evidence/review_reason snippet ONLY; a raw
+    source_ref is never a title. A nameless ADD row no longer reaches this
+    function at all (the adapter drops it — annotation tier, D5)."""
+    pid = p.get("person_id")
+    if pid and person_names and person_names.get(pid):
+        return f"{person_names[pid]} — update"
     name = (p.get("name") or "").strip()
     if name:
+        if p.get("type") == "person_update_proposal":
+            return f"{name} — update"
         return name
-    for key in ("evidence", "review_reason", "source_ref"):
+    for key in ("evidence", "review_reason"):
         txt = str(p.get(key) or "").strip()
         if txt:
             return txt if len(txt) <= 60 else txt[:57].rstrip() + "…"
     return ""
 
 
+def _cluster_render_line(cluster: dict) -> str:
+    """D3 — the identity-clustered row's evidence line: the FS-17 enriched
+    shape for a single mention, prefixed "seen N× — " with the newest
+    source phrases when the cluster merged multiple proposals. Provenance-
+    honest exactly like `_person_render_line`: nouns/dates come from each
+    proposal's own captured text, dropped when absent."""
+    rows = cluster.get("rows") or []
+    best = dict(rows[0]) if rows else {}
+    best["name"] = cluster.get("name")
+    best["inferred_role"] = cluster.get("inferred_role")
+    best["inferred_org"] = cluster.get("inferred_org")
+    if len(rows) <= 1:
+        return _person_render_line(best)
+    base = _person_render_line(best)
+    # base = "{badge} · surfaced in {noun}[ on {date}] · no contact record
+    # yet" — swap the middle segment for the multi-mention phrase.
+    parts = base.split(" · ")
+    seen = []
+    for r in rows[:3]:  # newest-first, capped (T2.2 density)
+        src = _person_render_line({**r, "name": cluster.get("name")})
+        mid = src.split(" · ")[1] if src.count(" · ") >= 2 else ""
+        mid = mid.replace("surfaced in ", "")
+        if mid and mid not in seen:
+            seen.append(mid)
+    middle = f"seen {len(rows)}× — " + ", ".join(seen) if seen \
+        else f"seen {len(rows)}×"
+    if len(parts) >= 3:
+        return " · ".join([parts[0], middle, parts[-1]])
+    return f"{middle} · no contact record yet"
+
+
+_PERSON_ROW_ACTIONS = [
+    # Registered verbs (D10 discipline extends to adapters): `add person`
+    # and `proposal not relevant` dispatch per the W4b confirm-flow
+    # handlers — on a CLUSTER row they fan out across data.cluster_seqs
+    # (PID1 D3: one click adjudicates every underlying proposal); `snooze
+    # proposal 7d` is the shared snooze. `same as [existing]` stays
+    # available through chat / the commitments confirm section — three
+    # verbs keep the row dropdown lean (T2.2 density).
+    {"action": "add person"},
+    {"action": "proposal not relevant"},
+    {"action": "snooze proposal 7d"},
+]
+
+
+def _person_id_names(workspace_root) -> dict:
+    """person_id -> canonical_name, for the PID1 update-row title fix.
+    Defensive: an unreadable entities.json means no map (snippet fallback)."""
+    try:
+        ent_path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(ent_path.read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        out = {}
+        for p in ent.get("people") or []:
+            if p.get("id") and p.get("canonical_name"):
+                out[p["id"]] = p["canonical_name"]
+        return out
+    except Exception:
+        return {}
+
+
 def _adapt_person_proposals(workspace_root, events: list[dict],
                             *, now: Optional[datetime] = None) -> list[dict]:
-    """FS-17 enrichment: person rows carry the NAME as the row title, a
-    dated source-ref evidence line, and REGISTERED action tuples (`add
-    person` / `proposal not relevant` / `snooze proposal 7d` — the W4b
-    person family's own verbs; never invented). Low-context single mentions
-    age out after PERSON_LOW_CONTEXT_STALE_DAYS (the sweep tombstones the
-    accumulated backlog; this window keeps the queue clean between runs)."""
+    """FS-17 enrichment + PID1 D3 identity clustering: ONE row per person.
+
+    Add-type proposals group by normalized name (`identity_reconcile.
+    person_queue_view` — the SAME projection the morning-brief pointer
+    counts, so the two can never disagree); the row carries the cluster's
+    best name as title, merged newest-first evidence, and
+    `data.cluster_seqs` so apply-choices fans one click across every
+    underlying proposal. Nameless add rows NEVER render (annotation tier,
+    D5 — an undecidable row); update-type rows for an on-file person render
+    separately (existence is their premise) with the record's canonical
+    name as title (never a raw source_ref). Low-context single mentions
+    still age out after PERSON_LOW_CONTEXT_STALE_DAYS. Auto-eligible
+    clusters render as ordinary confirm rows until the Sunday reconciler
+    applies them — never render-and-also-auto-apply.
+
+    MERGE-WATCH (PGUARD1): this function's edits are adapter/clustering
+    only — the events-LOAD seam (`load_open_person_proposals(_events_path(
+    ...))`) is untouched by design."""
     from confirm_flow import load_open_person_proposals
+    from identity_reconcile import person_queue_view
     from mute_ledger import active_dismissal_target_ids
 
     dismissed = active_dismissal_target_ids(events, _now_iso())
-    out = []
     # FS-19 — already a contact? `suppress_on_file=True` drops an "add person"
     # row whose name confidently resolves to an existing record (the org
     # adapter's find_existing_org symmetry), at the SHARED loader so the brief
     # and commitments chat filter identically. Filter-only, like the org path
-    # — existence recomputes each render, no tombstone.
-    for p in load_open_person_proposals(_events_path(workspace_root),
-                                        dismissed_target_ids=dismissed,
-                                        suppress_on_file=True):
-        if now is not None and person_proposal_is_low_context(p):
-            opened = _parse_ts(p.get("captured_ts"))
-            if opened is not None and \
-                    (now - opened).days > PERSON_LOW_CONTEXT_STALE_DAYS:
-                continue  # aged name-only mention — never surfaces (FS-17)
+    # — existence recomputes each render, no tombstone (the reconciler's
+    # merge-propose lane is what RESOLVES these; the filter stays render-side
+    # truth per the proposal-adapter existence gotcha).
+    rows = load_open_person_proposals(_events_path(workspace_root),
+                                      dismissed_target_ids=dismissed,
+                                      suppress_on_file=True)
+    now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else None
+    view = person_queue_view(rows, now_iso=now_iso)
+
+    out = []
+    for cluster in view["clusters"]:
+        newest = cluster["rows"][0] if cluster["rows"] else {}
+        out.append({
+            "id": cluster["row_id"],
+            "source_family": "person",
+            "kind": "person",
+            "shape": "identity",
+            "tier": "confirm",
+            "fingerprint": cluster["row_id"],
+            "evidence": newest.get("evidence") or newest.get("review_reason")
+                        or "",
+            "action_tuples": list(_PERSON_ROW_ACTIONS),
+            "render_line": _cluster_render_line(cluster),
+            "opened_at": min((r.get("captured_ts") or "")
+                             for r in cluster["rows"]) if cluster["rows"]
+                         else "",
+            "expires_at": "",
+            "detector": "confirm-flow",
+            "seq": cluster["seqs"][0] if cluster["seqs"] else None,
+            "name": cluster["name"],
+            # FS-17 / FB-8 — the row TITLE is the person's best as-heard
+            # spelling (build_card_view renders `title`).
+            "title": cluster["name"],
+            "person_id": None,
+            "inferred_role": cluster.get("inferred_role"),
+            "inferred_org": cluster.get("inferred_org"),
+            # PID1 D3 — every underlying proposal id VERBATIM so one click
+            # adjudicates the whole cluster (fingerprints carry the D8
+            # seq-less rows).
+            "cluster_seqs": list(cluster["seqs"]),
+            "cluster_fingerprints": list(cluster["fingerprints"]),
+        })
+
+    person_names = _person_id_names(workspace_root) if view["updates"] else {}
+    for p in view["updates"]:
         out.append({
             "id": f"person:{p.get('seq')}",
             "source_family": "person",
@@ -568,28 +819,14 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "tier": "confirm",
             "fingerprint": f"person:{p.get('seq')}",
             "evidence": p.get("evidence") or p.get("review_reason") or "",
-            # Registered verbs (D10 discipline extends to adapters): `add
-            # person` and `proposal not relevant` dispatch per the W4b
-            # confirm-flow handlers; `snooze proposal 7d` is the shared
-            # snooze. `same as [existing]` stays available through chat /
-            # the commitments confirm section — three verbs keep the row
-            # dropdown lean (T2.2 density).
-            "action_tuples": [
-                {"action": "add person"},
-                {"action": "proposal not relevant"},
-                {"action": "snooze proposal 7d"},
-            ],
+            "action_tuples": list(_PERSON_ROW_ACTIONS),
             "render_line": _person_render_line(p),
             "opened_at": p.get("captured_ts") or "",
             "expires_at": "",
             "detector": "confirm-flow",
             "seq": p.get("seq"),
             "name": p.get("name"),
-            # FS-17 / FB-8 — the row TITLE is the person's as-heard name when
-            # the source carried one (any legacy spelling — the reader
-            # coalesces), else a source snippet (build_card_view renders
-            # `title`; a nameless identity row is the FB-8 live bug).
-            "title": _person_row_title(p),
+            "title": _person_row_title(p, person_names),
             "person_id": p.get("person_id"),
             "inferred_role": p.get("inferred_role"),
             "inferred_org": p.get("inferred_org"),
@@ -812,12 +1049,20 @@ def load_open_proposals(
     now_iso: Optional[str] = None,
     registered_task_ids=None,
     include_legacy: bool = True,
+    include_auto: bool = False,
 ) -> List[dict]:
     """THE projector (D1): one normalized open-proposal queue — generic
     brain_proposal events (minus tombstones/TTL) PLUS adapter reads over the
     legacy families. Each item: {id, source_family, kind, shape, tier,
     fingerprint, evidence, action_tuples, render_line, opened_at,
     expires_at, detector, seq, ...family extras}.
+
+    **The queue contains CONFIRM-tier items only by default** (LB2 parity
+    fix, the FB-20 mandate): auto-tier proposals are applied-then-narrated,
+    never adjudicated — they are not "things that need your eyes", so no
+    surface may render or count one. `include_auto=True` is the explicit
+    escape for diagnostic consumers (the parity test, resting-auto checks)
+    — never for an adjudication surface.
 
     `surface` drives the R2 cross-surface dedup: on a DAILY_DEDUP_SURFACES
     surface, items already shown TODAY on a DIFFERENT surface are dropped.
@@ -845,6 +1090,13 @@ def load_open_proposals(
             items = [i for i in items if i["id"] not in dismissed]
     except Exception:
         pass
+    # LB2 parity default — auto-tier items leave the projection HERE, so
+    # every consumer (staff meeting, brief pointer, system-health counts,
+    # schedule readiness) inherits the filter in one move, future call
+    # sites included. Adapters only emit confirm-tier rows, so this bites
+    # bp rows alone.
+    if not include_auto:
+        items = [i for i in items if i.get("tier") != "auto"]
     if surface in DAILY_DEDUP_SURFACES:
         day = now_iso[:10]
         shown = _load_shown(workspace_root)
@@ -868,6 +1120,10 @@ _MONEY_PROSE = {
                      "`staff meeting` to confirm.",
     "deal_update": "Command Room thinks the {name} deal moved — say "
                    "`staff meeting` to confirm.",
+    # HIST1 Part 2 (step 12) — the org account-value lane rides the same
+    # carve-out: propose-only prose, adjudication at the staff meeting.
+    "org_money": "Command Room spotted an account value for {name} — say "
+                 "`staff meeting` to confirm.",
 }
 
 
@@ -929,8 +1185,16 @@ def select_confirm_card(
         registered_task_ids=registered_task_ids)
     # Review F5: auto-tier proposals never enter the confirm card — an
     # auto change is applied-then-narrated (the change feed's job), not
-    # queued for consent. Latent until an auto detector ships (LB2).
+    # queued for consent. Redundant since LB2 flipped the projector default
+    # (include_auto=False) — kept as defense-in-depth.
     open_items = [i for i in open_items if i.get("tier") != "auto"]
+    # LB2 — surface routing: a row whose writer named a surface renders only
+    # there (config_drift → staff meeting). The daily card drops hinted rows
+    # for other surfaces; load_open_proposals callers (the staff meeting)
+    # see the full set, hint included.
+    open_items = [i for i in open_items
+                  if not i.get("surface_hint")
+                  or i["surface_hint"] == surface]
     ranked = rank_proposals(open_items)
     picked: list[dict] = []
     per_detector: dict[str, int] = {}
@@ -990,9 +1254,13 @@ def _row_name(item: dict) -> str:
 
 def _row_target_ids(item: dict) -> dict:
     """The F2 identity rule for card rows: embed every underlying target id
-    VERBATIM alongside the proposal id so apply-choices dispatches exactly."""
+    VERBATIM alongside the proposal id so apply-choices dispatches exactly.
+    PID1: cluster rows also embed cluster_seqs / cluster_fingerprints (one
+    click adjudicates the whole cluster) and person_link/person_merge rows
+    embed their record ids."""
     data = {"id": item["id"]}
-    for k in ("thread_id", "org_id", "person_id"):
+    for k in ("thread_id", "org_id", "person_id", "cluster_seqs",
+              "cluster_fingerprints", "keep_id", "duplicate_id"):
         if item.get(k):
             data[k] = item[k]
     return data
@@ -1116,9 +1384,10 @@ def resolve_proposal(
             f"got {user_action!r}")
     if not proposal_id.startswith("bp_"):
         raise BrainProposalError(
-            f"{proposal_id!r} is not a brain-family proposal id — legacy "
-            "items resolve through their own shipped flows (adapters are "
-            "read-only; migration is LB2)")
+            f"{proposal_id!r} is not a brain-family proposal id — pre-"
+            "migration legacy items resolve through their own shipped flows "
+            "(the adapters are permanent fossil readers; new writes for the "
+            "migrated families arrive as bp_ rows and resolve here)")
     events = _load_events(workspace_root)
     match = None
     for item in _open_brain_proposals(events, now=None):
@@ -1206,6 +1475,24 @@ def expire_stale(
     return {"n_expired": len(stale), "expired": [i["id"] for i in stale]}
 
 
+def resting_auto_proposals(
+    workspace_root,
+    *,
+    now_iso: Optional[str] = None,
+) -> List[dict]:
+    """AUTO LIFECYCLE CONTRACT violation detector (LB2 §3c, the FB-20
+    mandate): open auto-tier bp rows. By contract this list is ALWAYS empty —
+    a detector that proposes auto must apply + `resolve_proposal(...,
+    "applied")` in the same run, so an open auto proposal is a detector bug
+    (it would be invisible on every adjudication surface yet still expire
+    into the rot ledger — the latent honesty gap §2d names). Diagnostic
+    consumer: passes include_auto=True explicitly."""
+    now_iso = now_iso or _now_iso()
+    events = _load_events(workspace_root)
+    return [i for i in _open_brain_proposals(events, now=_parse_ts(now_iso))
+            if i.get("tier") == "auto"]
+
+
 def card_health_counts(
     workspace_root,
     *,
@@ -1213,11 +1500,16 @@ def card_health_counts(
     window_days: int = 30,
 ) -> dict:
     """Cleanup Monday-note card health (D10): open count + how many expired
-    unseen in the window — rot made visible."""
+    unseen in the window — rot made visible. `resting_auto` (LB2) counts
+    open auto-tier rows — contract violations (see resting_auto_proposals);
+    always 0 on a healthy workspace. `open` counts CONFIRM-tier items only
+    (what actually waits on the user — parity with every surface)."""
     now_iso = now_iso or _now_iso()
     now = _parse_ts(now_iso)
     events = _load_events(workspace_root)
-    n_open = len(_open_brain_proposals(events, now=now))
+    open_items = _open_brain_proposals(events, now=now)
+    n_resting_auto = sum(1 for i in open_items if i.get("tier") == "auto")
+    n_open = len(open_items) - n_resting_auto
     n_expired = 0
     for ev in events:
         if ev.get("type") != "brain_proposal_expired":
@@ -1226,7 +1518,8 @@ def card_health_counts(
         if dt is not None and now is not None \
                 and (now - dt).days <= window_days:
             n_expired += 1
-    return {"open": n_open, "expired_in_window": n_expired}
+    return {"open": n_open, "expired_in_window": n_expired,
+            "resting_auto": n_resting_auto}
 
 
 __all__ = [
@@ -1241,8 +1534,10 @@ __all__ = [
     "person_proposal_is_low_context",
     "person_proposal_already_on_file",
     "PERSON_LOW_CONTEXT_STALE_DAYS",
+    "MIGRATED_KINDS",
     "propose",
     "load_open_proposals",
+    "resting_auto_proposals",
     "rank_proposals",
     "select_confirm_card",
     "build_card_view",

@@ -38,9 +38,11 @@ def check(name, cond, detail=""):
 # task, so a HEALTHY post-migration workspace registers the 7 chats +
 # maintenance (a fixture missing maintenance would be a genuine first-install
 # ghost, which is what the parity check below asserts against).
+# CTS1: a HEALTHY post-split workspace registers waiting-on + my-plate
+# (the retired `commitments` id is disabled, not registered).
 REGISTERED = {
-    "morning-brief", "upcoming-meetings", "inbox", "commitments", "pulse",
-    "past-meetings", "friday-wrap", "maintenance",
+    "morning-brief", "upcoming-meetings", "inbox", "waiting-on", "my-plate",
+    "pulse", "past-meetings", "friday-wrap", "maintenance",
 }
 
 
@@ -66,8 +68,9 @@ def main():
     later = sc.later_add_task_ids()
     check("later-add = defaults minus first-install",
           later == frozenset(sc.DEFAULT_SCHEDULES) - sc.FIRST_INSTALL_TASK_IDS)
-    check("relationship-moves / commitments / pulse are later-add",
-          {"relationship-moves", "commitments", "pulse"} <= later, repr(sorted(later)))
+    check("relationship-moves / waiting-on / my-plate / pulse are later-add",
+          {"relationship-moves", "waiting-on", "my-plate", "pulse"} <= later,
+          repr(sorted(later)))  # CTS1: commitments split into waiting-on + my-plate
 
     with tempfile.TemporaryDirectory() as td:
         ws = make_workspace(Path(td))
@@ -93,8 +96,8 @@ def main():
         before = entities.read_text(encoding="utf-8")
         parity = tw.check_schedule_parity(ws, REGISTERED)
         check("later-add ghost classified as expected (silent class for R3)",
-              sorted(parity["ghost_later_add"]) == ["commitment-triage", "relationship-moves", "staff-meeting"],
-              repr(parity))  # commitment-triage joined the later-add set in Phase 2 Stage D
+              sorted(parity["ghost_later_add"]) == ["balance", "commitment-triage", "pipeline-digest", "relationship-moves", "staff-meeting"],
+              repr(parity))  # commitment-triage joined in Phase 2 Stage D; balance in BAL1; pipeline-digest in PIPE1 Part 2
         check("no first-install ghosts on the healthy fixture",
               parity["ghost_first_install"] == [], repr(parity))
         check("legacy cr-* orphan override flagged",
@@ -110,8 +113,8 @@ def main():
         # falls back to workspace_config.json registered_taskIds
         parity3 = tw.check_schedule_parity(ws)
         check("defaults to workspace_config registered_taskIds",
-              sorted(parity3["ghost_later_add"]) == ["commitment-triage", "relationship-moves", "staff-meeting"],
-              repr(parity3))  # commitment-triage joined the later-add set in Phase 2 Stage D
+              sorted(parity3["ghost_later_add"]) == ["balance", "commitment-triage", "pipeline-digest", "relationship-moves", "staff-meeting"],
+              repr(parity3))  # commitment-triage joined in Phase 2 Stage D; balance in BAL1; pipeline-digest in PIPE1 Part 2
 
         print("== schedule_parity_checked is a registered event type")
         from event_types import load_event_types

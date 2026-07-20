@@ -593,7 +593,7 @@ def test_validate_rendered_widget_clean_passes():
             {"n": 1, "name": "D", "subject": "x",
              "metadata": [("To", "d@example.com"), ("Subject", "x")],
              "body_lines": ["a", "b"],
-             "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"]},
+             "actions": ["1 send", "1 draft", "1 snooze 3d"]},
         ]}],
         "widget_mode": "all_batch_widget",
     }
@@ -614,13 +614,17 @@ def test_validate_rendered_widget_catches_dropped_wrapper():
     import re
 
     print("test_validate_rendered_widget_catches_dropped_wrapper")
+    # FB-17 retired `edit then send` (the email card's popup-editor input verb;
+    # FB-10 inline editing replaced it), so the plain email card carries no
+    # input-bearing action to drop. The wrapper-drop structural defense is
+    # generic, so this exercises it with a commitment row's `push to [date]`
+    # (a still-live REQUIRED-input verb whose dropdown option renders the
+    # cr-item-inputs wrapper).
     data = {
         "header": "Commitments",
         "sections": [{"title": None, "items": [
-            {"n": 1, "name": "D", "subject": "x",
-             "metadata": [("To", "d@example.com"), ("Subject", "x")],
-             "body_lines": ["a", "b"],
-             "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"]},
+            {"n": 1, "name": "D", "context_tag": "due today",
+             "actions": ["1 resolved", "1 push to [date]", "1 drop"]},
         ]}],
         "widget_mode": "all_batch_widget",
     }
@@ -638,8 +642,8 @@ def test_validate_rendered_widget_catches_dropped_wrapper():
     except WrapperContractError as e:
         raised = True
         msg = str(e)
-        _check("error message names the missing action", "edit then send" in msg)
-        _check("error message names the input type", "multi-field-email" in msg)
+        _check("error message names the missing action", "push to [date]" in msg)
+        _check("error message names the input type", "when-text" in msg)
         _check(
             "error message guides agent to the fix",
             "byte-for-byte" in msg.lower() or "without modification" in msg.lower(),
@@ -781,7 +785,7 @@ def test_render_self_validates_wrapper_invariant():
             {"n": 1, "name": "Email", "subject": "draft",
              "metadata": [("To", "x@y.com"), ("Subject", "foo")],
              "body_lines": ["body"],
-             "actions": ["1 send", "1 edit then send", "1 draft", "1 push to [date]", "1 skip"]},
+             "actions": ["1 send", "1 draft", "1 push to [date]", "1 snooze 3d"]},
             {"n": 2, "name": "DeepWork", "subject": "task",
              "metadata": [], "body_lines": ["something"],
              "actions": ["2 prep deep work", "2 mark done", "2 skip"]},
@@ -1393,7 +1397,7 @@ def _t3_cluster_view() -> dict:
                             "> Following up on the Q2 deck — any blockers?",
                             "> Matthew",
                         ],
-                        "actions": ["send", "edit then send", "draft", "skip"],
+                        "actions": ["send", "draft", "snooze 3d"],
                     },
                 ],
             },
@@ -1415,8 +1419,12 @@ def test_later_merge_drops_snooze_from_dropdown():
     _check("row with push-to hides the snooze option", "Snooze" not in row1)
     _check("merged option keeps the frozen wire id",
            'value="push to [date]"' in row1)
-    row2 = html.split('cr-action-select" data-n="cmt_fx_b"')[1].split("</select>")[0]
-    _check("row without push-to keeps its snooze option", "Snooze (1 day)" in row2)
+    # FB-17: the plain email card has no dropdown — Send / Draft / Snooze are
+    # all primary buttons, so its snooze is the "Snooze (3 days)" primary button,
+    # not a dropdown snooze option (the row carries no cr-action-select at all).
+    _check("email card exposes snooze as a primary button, no dropdown",
+           'data-n="cmt_fx_b" data-action="snooze 3d"' in html
+           and 'cr-action-select" data-n="cmt_fx_b"' not in html)
 
 
 def test_primary_verbs_render_as_buttons():

@@ -474,7 +474,7 @@ If thread content can't be retrieved (rate limit, permission error, etc.), omit 
 
 
 
-- **email_reply** (v2.14.38+ — replaced `skip` with `snooze 3d` + `not relevant` per M's standardization across all deferral clusters; `add to my list` intentionally NOT on inbox per M 2026-05-07): `{n, icon: "✉", name: "<resolved name>", subject, context_tag, metadata: [("Subject", real_subject), ("To", recipient_email)], body_lines: [...], actions: ["N send", "N edit then send", "N draft", "N escalate to memo", "N snooze 3d", "N not relevant"]}`
+- **email_reply** (v2.14.38+ — replaced `skip` with `snooze 3d` + `not relevant` per M's standardization across all deferral clusters; `add to my list` intentionally NOT on inbox per M 2026-05-07): `{n, icon: "✉", name: "<resolved name>", subject, context_tag, metadata: [("Subject", real_subject), ("To", recipient_email)], body_lines: [...], actions: ["N send", "N draft", "N escalate to memo", "N snooze 3d", "N not relevant"]}`
 - **calendar_invite** (v2.14.38+ — calendar invites get a tighter cluster: `snooze 3d` + `add to my list` don't fit the "decide now or push" mental model. Just accept / propose / decline plus `not relevant` for "this shouldn't have been routed to me / wrong invite" per M 2026-05-07): `{n, icon: "📅", name, subject, context_tag: "<day time, conflict info>", actions: ["N accept", "N propose [time]", "N decline [reason]", "N not relevant"]}` (no metadata or body)
 - **contract**: retired in v2.12.2 — contracts show up as `email_reply` like any other thread. No separate item shape.
 
@@ -508,15 +508,14 @@ Drafts are TEXT only in this chat turn — they have NOT been written to Gmail/O
 
 Per M's Apr 30 ask: standalone `edit` always required a follow-up disposition pick (send vs draft), which forced two rounds. v2.12.2 collapses into combined actions where editing AND deciding what to do happen in one click. v2.14.4+ then consolidated `to drafts` + `edit then draft` into the single `draft` verb (always opens the multi-field edit before saving to Drafts).
 
-Action set (v2.14.38+):
-- `N send` (no input) — compose+send the current draft as-is.
-- `N edit then send` (textarea pre-populated with body) — user edits the draft body in the widget textarea, hits Apply, the edited body sends.
+Action set (FB-17, 2026-07-19 — `edit then send` retired; the FB-10 inline-editable body is the edit surface):
+- `N send` (no input) — compose+send the current draft as-is (edits happen directly on the card body before Apply).
 - `N draft` (textarea pre-populated with body, v2.14.4+ consolidated) — user reviews/edits, edited body saves to Gmail Drafts.
 - `N escalate to memo` (no input) — promote to memo-writer.
-- `N snooze 3d` (no input, v2.14.38+) — fixed 3-day snooze. Item won't re-surface in inbox until 3 days from now.
+- `N snooze 3d` (no input, v2.14.38+; a primary button since FB-17) — fixed 3-day snooze. Item won't re-surface in inbox until 3 days from now.
 - `N not relevant` (no input, v2.14.38+) — 60-day cooldown dismissal. The duration is internal mechanics — never shown to the user. Stronger than the deprecated 24h `skip`; meant for "this shouldn't have surfaced as a priority reply" rather than "I'll deal with it tomorrow."
 
-Display labels (Title Case): `Send`, `Edit then send`, `Draft`, `Escalate to memo`, `Snooze (3 days)`, `Not relevant`.
+Display labels (Title Case): `Send`, `Draft`, `Escalate to memo`, `Snooze (3 days)`, `Not relevant`. (`Edit then send` is a LEGACY_DISPLAY_LABEL — never render it on a new widget.)
 
 Handlers:
 
@@ -528,14 +527,14 @@ Handlers:
   - **Only surface a Zapier-not-detected note if Zapier was EXPECTED but the discovery returned NONE AND a send actually FAILED to thread.** Then it's actionable: `(Zapier send tool not detected — sending via native Gmail. Check that your Zap is named exactly 'Command Room — Send Threaded Email' in Cowork → Settings → Connectors → Zapier.)` — surfaced ONCE per session, not per send.
 
   Write `outreach_sent` event with `via: "zapier" | "gmail_mcp_threaded" | "gmail_mcp_standalone"` indicating the path used. The `via` field is internal audit only — never exposed in chat.
-- `N edit then send` (with `input` field, v2.12.2+) → replace `body_lines` with the user's edited input verbatim. Then dispatch to the `N send` handler with the new body. Single round.
+- `N edit then send` *(retired FB-17 — deprecated alias, accepted ONLY from in-flight widgets, never emitted anew)* (with `input` field, v2.12.2+) → replace `body_lines` with the user's edited input verbatim. Then dispatch to the `N send` handler with the new body. Single round.
 - `N draft` (with `input` field — multi-field edit on the widget, v2.14.4+ consolidated form) → replace `body_lines` (and any edited To/Cc/Subject) with the user's edited input, then lazy-create the Gmail/Outlook draft. Try to apply `cr-staged-<today>` label; if scope error, continue without (per §3b). Surface plain-English note once per session if labels are blocked. Write `draft_created` event. Confirm `N saved to Drafts.`
   - **Pre-v2.14.4 note:** the legacy verbs `N to drafts` + `N edit then draft` were two separate handlers (one straight-save, one edit-then-save). v2.14.4 consolidated to a single `draft` that ALWAYS opens the edit field — review-then-save is the only semantic. The renderer rejects the legacy verbs.
 - `N escalate to memo` → fire memo-writer through the standard chat invocation. The memo-writer produces a .docx via the docx skill and surfaces the link the standard Cowork way. Do NOT emit `file://` links yourself. Then surface in plain English: "Want to send this as the email body, attach it to the reply, or send it standalone?"
 - `N snooze 3d` (v2.14.38+) → write `chat_dismissal` event with 3-day TTL (`data.snooze_until: <today + 3d>`). Item won't re-surface in inbox until the date passes. Plain-English ack: `"Snoozed #N for 3 days."` only if mentioned in the consolidated ack.
 - `N not relevant` (v2.14.38+) → write `chat_dismissal` event with 60-day TTL AND `data.reason: "not_relevant"`. The 60-day window is internal mechanics — NEVER surface the duration in chat. Plain-English ack: `"Marked #N as not relevant."` only if mentioned. Used for "this shouldn't have been priority-routed" rather than "deal with later."
 
-**Zapier scope (v2.12.3+ — clarified per M's Apr 30):** Zapier is **only** used by `send` and `draft` paths (and their `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) variants). All other actions (`escalate to memo`, `accept` / `propose [time]` / `decline [reason]` for calendar invites, `skip`) don't touch Zapier. If Zapier isn't configured, only the send + drafts paths feel the difference: they fall back to the seam-resolved native draft-create (with the provider's threading field per `connector_adapters.mail.threading_field`) + native send where the backend supports it (less robust threading; some thread splits possible) but still succeed. Every other action is Zapier-independent.
+**Zapier scope (v2.12.3+ — clarified per M's Apr 30):** Zapier is **only** used by `send` and `draft` paths (including a deprecated in-flight `edit then send` alias resolving to `send`). All other actions (`escalate to memo`, `accept` / `propose [time]` / `decline [reason]` for calendar invites, `skip`) don't touch Zapier. If Zapier isn't configured, only the send + drafts paths feel the difference: they fall back to the seam-resolved native draft-create (with the provider's threading field per `connector_adapters.mail.threading_field`) + native send where the backend supports it (less robust threading; some thread splits possible) but still succeed. Every other action is Zapier-independent.
 
 (Removed in v2.12.2: standalone `N edit` action — combined `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) replace it. Removed in v2.12.0: `N edit [change]` directive — direct text edit replaces directives.)
 
@@ -557,7 +556,7 @@ Handlers:
 
 (Removed in v2.12.2: `contract` action category. v2.14.38: `skip` removed in favor of `not relevant` for stronger semantics; the daily fire's no-action behavior provides the same "ask me again tomorrow" effect that `skip` used to.)
 
-For unrecognized → respond in plain English: "Reply with the item number + action — `N send`, `N draft`, `N edit then send`, `N snooze 3d`, `N not relevant`, `N accept` (calendar), `N propose [time]` (calendar). Or `send all` / `show more`."
+For unrecognized → respond in plain English: "Reply with the item number + action — `N send`, `N draft`, `N snooze 3d`, `N not relevant`, `N accept` (calendar), `N propose [time]` (calendar). Or `send all` / `show more`."
 
 # What this orchestrator does NOT do
 

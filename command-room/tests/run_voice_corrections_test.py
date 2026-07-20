@@ -140,6 +140,44 @@ def test_override_roundtrip():
     check("Last refreshed header present", bool(ov and ov["last_refreshed"]))
     check("sample count header present", ov and ov["sample_count"] == "5")
     check("absent override -> None", vc.load_voice_block_override(ws, "memo-writer") is None)
+    check("no Taboos section -> empty taboos_allow", ov and ov["taboos_allow"] == [])
+    check("no dash evidence -> ban_dashes True", ov and ov["ban_dashes"] is True)
+
+
+def test_taboos_and_dash_parsing():
+    # Quoted phrases win — commas inside a quoted phrase survive, justification
+    # asides outside the quotes are dropped.
+    md = ('### Taboos (per-skill overrides to universal list)\n'
+          '- Never: leverage\n'
+          '- OK despite being on universal list: "Best regards" (signs this way), '
+          '"Let me know if, and only if" (verbatim habit)\n')
+    check("quoted taboos parse", vc.parse_taboos_allow(md) ==
+          ["Best regards", "Let me know if, and only if"])
+
+    # Unquoted comma list with a parenthetical justification.
+    md2 = "- OK despite being on universal list: Best regards (his sign-off), circling back\n"
+    check("unquoted taboos parse", vc.parse_taboos_allow(md2) ==
+          ["Best regards", "circling back"])
+
+    # Template placeholder + none-ish values parse to empty.
+    check("template placeholder -> []",
+          vc.parse_taboos_allow("- OK despite being on universal list: [list with justification]") == [])
+    check("'None.' -> []",
+          vc.parse_taboos_allow("- OK despite being on universal list: None.") == [])
+    check("absent bullet -> []", vc.parse_taboos_allow("### Punctuation\n- Em-dashes: rare") == [])
+
+    # FB-16 dash override: only explicit evidence relaxes the product ban.
+    check("Em-dashes: frequent -> ban off",
+          vc.parse_ban_dashes("### Punctuation\n- Em-dashes: frequent\n") is False)
+    check("Em-dashes: occasional -> ban stays on",
+          vc.parse_ban_dashes("### Punctuation\n- Em-dashes: occasional\n") is True)
+    check("taboos carve-out naming dashes -> ban off",
+          vc.parse_ban_dashes('- OK despite being on universal list: "em dashes" (uses them)') is False)
+    check("'em-dashes' carve-out -> ban off",
+          vc.parse_ban_dashes('- OK despite being on universal list: "em-dashes"') is False)
+    check("'dash'-substring word ('dashboard') -> ban stays on",
+          vc.parse_ban_dashes('- OK despite being on universal list: "dashboard metrics"') is True)
+    check("empty block -> ban stays on", vc.parse_ban_dashes("") is True)
 
 
 def main():
@@ -153,6 +191,7 @@ def main():
     test_reconcile_fallback_and_unchanged_and_missing()
     test_unreviewed_counts()
     test_override_roundtrip()
+    test_taboos_and_dash_parsing()
     print()
     if _failures:
         print(f"{len(_failures)} FAILED: " + ", ".join(_failures))

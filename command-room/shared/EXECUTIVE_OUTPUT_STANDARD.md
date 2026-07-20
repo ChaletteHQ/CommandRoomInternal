@@ -98,13 +98,14 @@ Structural gates validate the payload; nothing before this section ever looked a
 
 1. Call `shared/scripts/visual_gate.py` `render_preview(docx_path)` — pages 1–2 as PNGs, rendered to a session temp dir (never the workspace). Best-effort ladder: Word COM (Windows) → `soffice --headless` (if on PATH) → `None`. It **never raises** into the skill.
 2. If it returned `None`: the gate is skipped. Log the audit event with `rendered: false` + a short `skipped_reason` and proceed exactly as if the pass didn't exist. **The honest limit, stated plainly:** Cowork sandboxes may lack both renderers — the ladder returning `None` MUST leave behavior byte-identical to today. The gate upgrades machines that CAN render; it never degrades ones that can't.
-3. If it returned images: LOOK at them and walk the fixed 6-item checklist (`visual_gate.CHECKLIST` is the machine copy):
+3. If it returned images: LOOK at them and walk the fixed 7-item checklist (`visual_gate.CHECKLIST` is the machine copy):
    - orphaned heading at a page break
    - empty or placeholder tile
    - table overflow / wrap damage
    - cramped spacing
    - header/footer intact
    - brand palette applied
+   - chart unreadable / overplotted (SPEC OUT3 — mixed scales, crowded labels, an illegible walk; the fix is usually fewer series or dropping back to the table)
 4. Findings → fix the sections payload and re-save **AT MOST ONCE**, then proceed regardless of the re-render's outcome. One extra model look per document — that cost is ratified (strategy Decision 3, M 2026-07-09). Never loop.
 5. Log the audit event either way: `visual_gate.log_visual_gate(workspace_root, doc, rendered, findings, fixed)` → a `visual_gate` event `{doc, rendered, findings, fixed}`. This is what usage-report / insight-generator mine to prove the gate fires.
 
@@ -139,6 +140,7 @@ One workspace-level profile shapes HOW every `.docx` composer renders, without a
 | `page_cap` | **{}** · `{<kind>: N}` | WARN-ONLY: an over-cap render gets one stderr note; never blocks, never truncates; shared estimate on both backends |
 | `default_format` | **docx** · premium_html | the rendering backend for the LAUNCHED kinds (SPEC OUT5 — see "The premium HTML format" below); everything else stays docx regardless; unknown values resolve back to docx |
 | `format_by_kind` | **{}** · `{<kind>: docx\|premium_html}` | per-kind override beating `default_format` (SPEC OUT5); unknown/unlaunched kinds resolve to docx silently |
+| `visual_first` | **[]** · `[<kind>, ...]` | the kinds that may ADDITIONALLY render as a template-constrained infographic one-pager when a layout fits their content (SPEC OUT4 — `shared/INFOGRAPHIC_LAYOUTS.md`, closed set); OFF by default, unlisted kinds render exactly as before; today only value-receipt's quarterly roll-up consults it |
 
 **Who writes it — exactly two paths, both explicit:**
 1. **"tune output"** / "show output settings" / "reset output to defaults" — owned by workspace-manager ("output" is not a skill, so the bare-tune router rule can't resolve it).

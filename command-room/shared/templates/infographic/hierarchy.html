@@ -1,0 +1,15 @@
+<!--
+  Infographic layout: hierarchy (SPEC OUT4). Tree, <=3 levels. Structure-only
+  fragment; colors/fonts are CSS variables from the OUT5 premium shell (brand-
+  resolved). NO literal hex. Rendered ONLY by infographic.build_infographic.
+  Slots: {{TREE}} (nested <ul> built by the composer; depth validated <=3).
+-->
+<style>
+  .ig-hier,.ig-hier ul{list-style:none;padding:0;margin:0}
+  .ig-hier{margin-top:16px}
+  .ig-hier .node{display:inline-block;padding:8px 14px;border:1px solid var(--line);border-radius:3px;background:rgba(244,240,232,.02);font:600 12.5px/1.35 var(--sans);color:var(--fg);margin:4px 0}
+  .ig-hier .lvl0>.node{font-family:var(--serif);font-size:15px;border-color:var(--accent);background:linear-gradient(90deg,rgba(244,240,232,.05),transparent)}
+  .ig-hier .lvl2>.node{color:var(--fg-2);font-weight:400}
+  .ig-hier ul{margin-left:22px;border-left:1px solid var(--line-soft);padding-left:18px}
+</style>
+<section class="ig ig-hier-wrap"><ul class="ig-hier">{{TREE}}</ul></section>

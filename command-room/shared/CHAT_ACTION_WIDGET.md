@@ -31,7 +31,7 @@ Each scheduled-task skill calls `mcp__visualize__show_widget` (fed the persisted
 │    >                                                     │
 │    > Hey Sam — Got your renderer-pipeline...          │
 │                                                          │
-│    [prep deep work] [send] [edit then send] [draft] [push to] [skip]  │
+│    [prep deep work] [send] [draft] [push to] [snooze 3d]  │
 ├─────────────────────────────────────────────────────────┤
 │ 2. ✉ Quinn (Aspen Hardware) — vendor team account...      │
 │    ... (same pattern) ...                                │
@@ -82,9 +82,10 @@ present). Row-shape driven, so mixed surfaces route correctly:
 Selection model is unchanged — tapping a primary ARMS the row (`.cr-selected`)
 and Apply still batches; a row has one armed verb (tapping a button clears the
 row's dropdown pick and vice versa). Primary buttons carry
-`data-input-type="none"`: Send/Done need nothing typed, and Draft's edit
-surface is the inline-editable body (below), not a popup editor — the
-dropdown's `edit then send` keeps the full To/Cc/Subject form.
+`data-input-type="none"`: Send/Done/Snooze need nothing typed, and Draft's
+edit surface is the inline-editable body (below), not a popup editor. FB-17
+retired the `edit then send` popup form — inline editing replaces it — so the
+email card is Send / Draft / Snooze with no dropdown.
 
 ### 'Later…' — the merged Defer/Snooze option (t3 FB-3 — M ruling)
 
@@ -113,10 +114,11 @@ Edit button. The `cr-eb-body` wrapper is `contenteditable` and carries
 serializes the CURRENT on-screen text; if it differs from `data-original`
 the choice carries `input: {"body": "<current text>"}` — queued equals
 visible, always. Reset restores the original. The orchestrator diffs
-rendered-vs-queued and logs the edit to the voice-corrections file exactly
-as an `edit then send` edit would be logged. An open `edit then send`
-multi-field editor wins over the inline body (it already carries body +
-To/Cc/Subject). Displayed bodies never show the `> ` blockquote-convention
+rendered-vs-queued and logs the edit to the voice-corrections file the same
+way a disposition edit is logged. (FB-17 retired the `edit then send`
+multi-field editor; the inline body is now the sole edit surface. A
+deprecated `edit then send` payload on an in-flight widget still wins over the
+inline body, since it carries body + To/Cc/Subject.) Displayed bodies never show the `> ` blockquote-convention
 markers — the renderer strips them (t3 FB-12); they are markdown plumbing,
 and storage was never affected.
 
@@ -233,14 +235,16 @@ User-facing reference. Every action label across all surfaces, with semantics. A
 
 ### Email-shaped items (Inbox, Commitments YOU OWE / OWED TO YOU)
 
+The plain email card is **Send / Draft / Snooze** — three primary buttons, no dropdown (FB-17, M 2026-07-19). `edit then send` is RETIRED: the FB-10 inline-editable body replaced the To/Cc/Subject/Body popup editor, so the card no longer offers it (the wire id stays a dispatchable deprecated alias → `send` for in-flight widgets, but no new card emits or renders it). Waiting On chase rows are also email-shaped but carry domain verbs (mark received, follow-up call, add to my list) in the tail.
+
 | Action | Display | What it does |
 |---|---|---|
 | `send` | Send | Compose+send the current draft as-is. Zapier first if configured (best thread fidelity); falls back to native Gmail threaded; standalone last resort. Works without Zapier. |
-| `edit then send` | Edit then send | Widget exposes textarea pre-populated with body. User edits inline. Apply submits the edited body via `send`. Single round. |
-| `add email then send` | Add email then send | (v3.13.8+ Bug #44 recovery verb) Widget exposes a single-field email-address input. On submit, updates the To: field on the item + transitions to enabled `send`. Use when the recipient is identified (resolved person record) but no actionable email exists. Writes `contact_email_captured` event with `data.person_id` for downstream people-CRM persistence. |
 | `draft` (consolidated v2.14.4+; was previously two separate verbs) | Draft | One-tap primary button (t3 FB-4). Apply saves the current body — the card body is directly editable (t3 FB-10), so an inline edit rides the choice as `{"body": …}` — to the declared backend's Drafts. |
-| `escalate to memo` | Escalate to memo | Promote to memo-writer skill — generates a longer-form `.docx` memo when an email reply isn't enough. |
-| `skip` | Snooze (1 day) | Mute for 1 day. Resurfaces tomorrow. |
+| `snooze 3d` | Snooze (3 days) | One-tap primary button (FB-17). "Deal with it later" — mutes the card for 3 days, then it resurfaces. |
+| `add email then send` | Add email then send | (v3.13.8+ Bug #44 recovery verb) Widget exposes a single-field email-address input. On submit, updates the To: field on the item + transitions to enabled `send`. Use when the recipient is identified (resolved person record) but no actionable email exists. Writes `contact_email_captured` event with `data.person_id` for downstream people-CRM persistence. |
+| `escalate to memo` | Escalate to memo | (Waiting On / inbox tail verb, not on the plain card) Promote to memo-writer skill — generates a longer-form `.docx` memo when an email reply isn't enough. |
+| `edit then send` *(retired FB-17)* | — | Deprecated alias → `send`. Accepted from in-flight widgets; never emitted anew. The inline body (FB-10) is the edit surface now. |
 
 ### Commitments YOU OWE only
 
@@ -266,6 +270,11 @@ When ONE person owes you multiple things in the same fire (e.g., five outstandin
 |---|---|---|
 | `mark received` | Mark received | Mark THIS specific sub-item as received. Doesn't affect siblings. |
 | `skip` | Snooze (1 day) | Mute this sub-item for 1 day. |
+
+**Two different things render through the sub-row shape — don't conflate them (SUB1):**
+
+1. **Grouped chases (above)** — RENDER-time grouping only: N independent commitments owed by one person, folded into one chase email. No data relationship; the "parent" row doesn't exist on disk; `mark received all` closes N independent items.
+2. **Sub-items (SUB1)** — a DATA relationship: real child commitments carrying `data.parent_id`, nested under their still-open parent on commitment-triage. The child row's id is the child's own `data.id` VERBATIM (identity contract) and dispatches like any commitment row (Done / Later… / Drop — children are real commitments); `never track this` and `add to my list` stay parent-level. The parent row carries the progress chip ("sub-items 1/3 · next: [step]") and, when the last open child closes, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Done on a parent with open sub-items requires the one-line cascade confirm before dispatching `close_subitems=True`. Families are pagination-atomic: a parent and its sub-items never split across pages.
 
 ### Self-commitments (no email — you owe yourself)
 
@@ -294,7 +303,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `never track this` | Never track (permanent) | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). Permanent — the label says so; every TIMED mute is reversible via the S4 ledger (`show muted` + Unmute). |
 | `skip` | Snooze (1 day) | 1-day mute (unchanged semantics; label now states the duration). |
 
-### Confirm section — "Needs a quick confirm" (v4.6.1 W4b, the daily Commitments chat + the triage Unconfirmed block)
+### Confirm section — "Needs a quick confirm" (v4.6.1 W4b, the daily Waiting On chat — CTS1; pre-split: the Commitments chat — + the triage Unconfirmed block)
 
 Rows come from `confirm_flow` selectors: captures younger than the 7-day
 escalation pin that are
@@ -354,6 +363,19 @@ lanes when they share a brief widget.
 | `reminder done` | Done | Clear the reminder (`reminder_cleared`). It leaves the Pinned block; a referenced commitment is NOT touched — closing that is its own action. |
 | `reminder push [date]` | Later… | Move the pin date (`reminder_updated`, action `push`). Date REQUIRED — empty holds Apply with the reason (F-17 contract). Re-arms a cleared one-shot. |
 | `reminder keep` | Keep | Acknowledge without clearing (`reminder_updated`, action `keep`) — resets the escalation clock, stays pinned. |
+
+### Balance — the Sunday reconnect card (SPEC BAL1, `surface: "m_facing"` only)
+
+The personal white-space surface's card. PERSONAL-LANE: this widget never
+renders on any org/board/client surface, and every dispatch stays
+propose-and-confirm — no code path books, sends, or spends without the click.
+
+| Action | Display | What it does |
+|---|---|---|
+| `book` | Book it | THE consent click (BAL1 D4): tentative personal-calendar hold via calendar-writer's Phase 5/6 path + the venue outreach draft queues per the draft posture. Nothing books/sends/spends itself — a reservation is a commitment + potential financial action, both user-click-gated. Optional input = venue name/correction. |
+| `propose other night` | Another night | Type a date (validated against the fire's busy set via `availability.has_conflict` — a conflicted evening gets an honest decline) or leave empty to see the other open evenings. No writes until a later `book`. |
+| `snooze 7d` | Snooze (7 days) | Not this week — the tie re-ranks next Sunday (matches the 7-day per-tie dedupe). |
+| `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Pulse — person dormancy/pattern-break
 
@@ -460,8 +482,11 @@ Brain-family rows (deal signals today; every new detector tomorrow):
 | `confirm proposal` | Confirm | Apply the proposed change through its class's single writer (deal moves via `deal_state`, creations via `deal_state.create_deal`), then retire the proposal. Optional textarea to correct inferred details first. |
 | `dismiss proposal` | Not relevant (60 days) | Decline — the tombstone plus a 60-day fingerprint cooldown in the shared ledger. The same suggestion stays away. |
 | `snooze proposal 7d` | Snooze (7 days) | Set it aside; re-surfaces in a week. The proposal's own TTL keeps running (default 14d — an ignored proposal expires silently). |
+| `merge person records` | Merge records | PID1 D4b — `kind: person_merge` rows only. Merge the duplicate contact into the record it duplicates (`people_writer.merge_person_into`, both ids embedded verbatim), then retire the proposal. Confirm-only forever: no reverser exists, the label says the merge cannot be undone. |
 
-Legacy-family rows keep their OWN shipped verbs, exactly as on their home surfaces (the adapters are read-only — migration is LB2): person proposals render `add person` / `same as [existing]` / `proposal not relevant` (W4b); commitment-review rows render `confirm` / `not relevant` (the orchestrator-commitments Phase 3.6 dispatch); dont-forget dormancy rows render `active` / `archive` / `snooze 14d`; entity proposals render `confirm [type]` / `not relevant`; schedule-add rows are pointer rows (registration only ever happens through the change-schedule add path). Dispatch table: `skills/apply-choices/SKILL.md` Step 2 `cr-brain`.
+PID1 merge-propose rows ride this family too: `kind: person_link` ("[name] is already on file — link it?") uses the generic `confirm proposal` / `dismiss proposal` / `snooze proposal 7d` verbs — confirm dispatches the alias link (`add_person_alias`) + a `same_as` tombstone per underlying proposal; dismiss ALSO tombstones the underlying proposals `not_relevant` (the on-file zombies must die permanently). `kind: person_merge` renders `merge person records` / `proposal not relevant` / `snooze proposal 7d`.
+
+Legacy-family rows keep their OWN shipped verbs, exactly as on their home surfaces (the adapters are permanent fossil readers — LB2 migrated the org/project/dormancy/schedule_add writers onto the bp rail, so NEW rows of those kinds arrive as `bp_` rows with the bp verbs; person/commitment_review remain legacy-written): person proposals render `add person` / `same as [existing]` / `proposal not relevant` (W4b) — since PID1 these are identity-CLUSTERED rows (one person = one row; the row embeds `data.cluster_seqs`, and one click adjudicates every underlying proposal); commitment-review rows render `confirm` / `not relevant` (the orchestrator-commitments Phase 3.6 dispatch); dont-forget dormancy rows render `active` / `archive` / `snooze 14d`; entity proposals render `confirm [type]` / `not relevant`; schedule-add rows are pointer rows (registration only ever happens through the change-schedule add path). Dispatch table: `skills/apply-choices/SKILL.md` Step 2 `cr-brain`.
 
 Card-wide contract: ranking money > identity > hygiene then age; max 2 slots per detector per render; the overflow line teaches the full-queue phrase ("N more queued — say `staff meeting` to review everything."); batch Apply posts ONE consolidated ack; the narrated batch ends with the standard undo affordance ("Say `undo` to reverse this.") and the undo reverses ADDITIVELY (`brain_undo.undo_batch` — commitment reopens, mute clears, archive flips; never edit or delete prior events). Cross-surface dedup (R2): an item rendered on one daily surface today is not re-shown on another the same day — the Staff Meeting full set and explicit asks are exempt. Pagination on Staff Meeting is design, not a size fallback: the full queue renders one `page` of ~10 at a time (§ Transport), each page relayed as `widget_code`; `show more` re-fires the next page.
 
@@ -542,7 +567,7 @@ Every validator fires inside the call — the renderer's canonical-action, data-
 
 6. **Pass ONLY `transport["html"]` (the persisted page's validated bytes, verbatim) as `show_widget`'s `widget_code`, and do NOT echo any fragment of widget HTML into chat text** (style blocks included — the `::view-transition-group` prelude, F-09). Never hand-compose widget HTML, never post-process `transport["html"]`, and never relay an unbounded set in one page — paginate. The `widget_code` parameter is the only carrier; the bytes never appear in chat text. (T2)
 
-**Why these rules exist:** v2.11.0/v2.11.1/v2.11.2 surfaced cases where (a) brief paths inside widget rendered as unclickable text masquerading as links, (b) inbox orchestrator emitted both a widget AND a markdown paragraph describing the widget, (c) upcoming-meetings dumped routing metadata like `Domain match: sam@example.com → Category Company (project_002, active)` into chat. v2.11.3 closes these as forbidden patterns.
+**Why these rules exist:** v2.11.0/v2.11.1/v2.11.2 surfaced cases where (a) brief paths inside widget rendered as unclickable text masquerading as links, (b) inbox orchestrator emitted both a widget AND a markdown paragraph describing the widget, (c) upcoming-meetings dumped routing metadata like `Domain match: sam@example.com → Summit Company (project_002, active)` into chat. v2.11.3 closes these as forbidden patterns.
 
 ## Renderer (shipped v2.10.9 EOD)
 
@@ -577,7 +602,7 @@ Three rules govern the post-Apply chat turn (enforced in `apply-choices/SKILL.md
 
 If any apply-time action produces an email draft (push meeting, draft re-engagement, follow-up call, status check, propose time, schedule catchup, etc.) OR a regenerated document (add more context regenerating the brief, escalate to memo producing a memo .docx), those outputs render through `render_chat_output_widget` as a NEW widget — not as inline markdown.
 
-The new widget's items use the same shape as email-shaped items: metadata, body_lines, original_thread (when relevant), action set `the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11)`. Documents render with `artifact_link` inline. The user can edit + send inline without retyping.
+The new widget's items use the same shape as email-shaped items: metadata, body_lines, original_thread (when relevant), action set `the standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11)`. Documents render with `artifact_link` inline. The user can edit + send inline without retyping.
 
 ### Rule 2 — Mixed batches surface BOTH
 

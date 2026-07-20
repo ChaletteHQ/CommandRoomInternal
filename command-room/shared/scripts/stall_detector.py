@@ -348,7 +348,7 @@ def apply_live_check(
         gets its day-count recomputed from the live date. Under threshold →
         DROPPED (substrate-quiet + live-active = not stalled); the dropped
         record carries `drop_reason` so the surface can say why (F-57's
-        "Category — substrate-dormant, live 2 days ago" honesty).
+        "Summit — substrate-dormant, live 2 days ago" honesty).
       - Still over threshold on the live date → kept, with the honest
         (smaller) day-count and `live_checked: True`.
       - No signal / absent thread key → kept unchanged. The CALLER is

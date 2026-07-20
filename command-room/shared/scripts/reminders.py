@@ -27,8 +27,9 @@ morning brief, show-my-reminders). `active_reminders` defaults to
 render path that forgets to pass a surface gets the safe behavior. (Broader
 still: no client-facing deliverable, team-intelligence output, or export
 should render reminders at all; the default-deny filter is the hard floor,
-not permission.) `personal` defaults to True when the reminder references no
-tracked business entity.
+not permission.) `personal` defaults to True when the reminder carries no
+business reference (`ref` / `primary_thread_id`) — a tracked-PERSON
+reference alone stays personal (PGUARD1 D3).
 
 A reminder MAY carry `ref` (a commitment/event id) for context — "remind me
 about the Pedro chase Friday". The ref is a POINTER, never a coupling:
@@ -154,9 +155,17 @@ def build_reminder_event(
     `origin` exists in the signature ONLY so a wrong caller fails loud here
     instead of at the gate — anything but `user_explicit` raises.
 
-    `personal` default (M choice ④): True when the reminder references no
-    tracked business entity — no `ref`, no `person_ids`, no
-    `primary_thread_id`. Pass it explicitly to override either way.
+    `personal` default (M choice ④, hardened SPEC PGUARD1 D3): True when the
+    reminder references no BUSINESS entity — no `ref` (a commitment/event
+    pointer) and no `primary_thread_id`. A `person_ids` reference alone does
+    NOT flip it to work: "remind me to call Mom" / "dinner with [spouse]"
+    stays personal even when the person is tracked in entities.json.
+    (Pre-PGUARD1 the default treated any tracked-person reference as
+    business, silently declassifying exactly the most sensitive personal
+    reminders. When BAL1's per-person `tie` field lands, a person whose tie
+    resolves NON-personal can re-tighten this; until then person refs are
+    neutral — degrade-gracefully rule.) Pass `personal` explicitly to
+    override either way.
     """
     if origin != REMINDER_ORIGIN:
         raise ReminderError(
@@ -168,7 +177,7 @@ def build_reminder_event(
         raise ReminderError("reminder needs a non-empty summary")
     remind_from_d = _as_date(remind_from, "remind_from")
     if personal is None:
-        personal = not (ref or person_ids or primary_thread_id)
+        personal = not (ref or primary_thread_id)
     data: dict = {
         "id": new_reminder_id(),
         "summary": str(summary).strip(),
@@ -344,11 +353,12 @@ def active_reminders(
                 continue
             personal = data.get("personal")
             if personal is None:
-                # Read-side default mirrors the builder: no tracked business
-                # entity referenced → personal.
+                # Read-side default mirrors the builder (PGUARD1 D3): only a
+                # BUSINESS reference (ref / thread) makes it work — a person
+                # reference alone stays personal, so a legacy flag-less
+                # "call Mom" row is re-classified safely at read time too.
                 personal = not (
                     data.get("ref")
-                    or ev.get("person_ids")
                     or ev.get("primary_thread_id")
                 )
             try:

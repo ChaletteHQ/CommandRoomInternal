@@ -14,7 +14,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode).
 - **NEVER answer a deliverable request with a chat-only draft.** "Just give me a quick tradeoff" is still a decision-memo request — produce the `.docx` through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then say plainly that the gates only run on the rendered file, and offer to produce it.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A fire of this skill that yields a document with NO `gate_ran` event for that turn is a flagged bypass (an inferior path was substituted). Pass `workspace_root` to `make_brief` so the event lands in substrate.
-- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
+- **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied · chart unreadable / overplotted), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 If anything below seems to contradict this gate, THIS GATE WINS.
 
@@ -48,10 +48,10 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/data/events.jsonl` — event type `decision_memo_drafted` with `{topic, primary_thread_id, options[], weighted_criteria, recommendation, source_decision_ids[], source_intel_ids[], artifact_path}`. Distinct from `memo_drafted` (which memo-writer emits) — this event is structured tradeoff specifically, with the comparison matrix captured.
 - **On the `decide [text]` click** → chains to `decision-log` which writes the canonical `decision` event with the memo .docx as rationale link. Mirrors memo-writer's v3.7.1 auto-fire pattern.
 
-**Reads from:**
+**Reads from:** All `events.jsonl` reads come from ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — the decision memo is a shareable .docx artifact): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design.
 - `_hq/data/entities.json` — project context if a project is referenced.
-- `_hq/data/events.jsonl` — `type == "decision"` events on the topic. Surfaces "you already decided X about Y on Z" so the memo doesn't re-litigate settled ground.
-- `_hq/data/events.jsonl` — `type == "commitment"` events to surface current load (affects feasibility of "hire now" / "ship now" options).
+- `_hq/data/events.jsonl` — `type == "decision"` events on the topic (from the org-scoped load). Surfaces "you already decided X about Y on Z" so the memo doesn't re-litigate settled ground.
+- `_hq/data/events.jsonl` — `type == "commitment"` events to surface current load (affects feasibility of "hire now" / "ship now" options) — filter the org-scoped load, or pass it through the seam: `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here).
 - `_hq/intel/*.md` — captured intel on the topic (e.g., for a hiring decision, any captured intel on the role / market).
 - `_hq/data/entities.json` people-crm records of trusted-advisor people + their stated opinions on the topic from past 1:1 transcripts (via `transcript-search` invocation if needed).
 - This skill's Voice Block + `shared/VOICE_CALIBRATION.md`.
@@ -198,8 +198,8 @@ Show defaults, let user adjust the criteria list, then ask: "Weight these by imp
 ### Phase 3 — Substrate pass
 
 In parallel:
-- Pull `decision` events on the topic from events.jsonl. Surface as "Prior decisions on this topic."
-- Pull commitment events to assess current load.
+- Pull `decision` events on the topic from events.jsonl — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read. Surface as "Prior decisions on this topic."
+- Pull commitment events to assess current load — same org-scoped rows (or `load_open_commitments(events_path, events=org_events)`).
 - Pull captured intel on the topic from `_hq/intel/`.
 - Identify trusted-advisor people from people-crm (relationship tier 1, role-matched) — search recent meeting transcripts for their stated opinions on the topic.
 

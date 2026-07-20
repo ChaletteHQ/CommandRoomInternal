@@ -1,12 +1,12 @@
 ---
 name: commitment-triage
-description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'clean up my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the post-Apply ack offers one-tap undo. Also available as an opt-in Friday-afternoon scheduled chat via 'change my schedule'. Does NOT fire on 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Commitments chat (actionable subset with chase drafts — this is the full-set housekeeping pass). Action semantics: Routing section in the body."
+description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'clean up my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the post-Apply ack offers one-tap undo. Also available as an opt-in Friday-afternoon scheduled chat via 'change my schedule'. Does NOT fire on 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (actionable subset with chase drafts — this is the full-set housekeeping pass). Action semantics: Routing section in the body."
 ---
 
 # commitment-triage
 
 The housekeeping surface for the whole open set (Phase 2 Stage D, S4). The
-daily Commitments chat surfaces the actionable SUBSET (capped, filtered,
+daily Waiting On + My Plate chats (CTS1) surface the actionable SUBSET (capped, filtered,
 chase-drafted); this skill renders EVERYTHING open, oldest first, so the user
 can burn down rot in one sitting. Client grounding: repeated customer asks
 for one-click "move this to done" and complaints that items were "not going
@@ -52,7 +52,7 @@ export (v4.5.2 R4 + v4.6.0 MC2): render `total` / `you_owe` / `owed_to_you` /
 them) VERBATIM, never hand-rolled. `stuck` is the real movement metric (no
 movement 21+ days, or blocked on a named person; `blocked` ⊆ `stuck`) — omit
 the segment when the key is absent (not computed, never 0). These are by construction the same numbers the morning brief
-and the daily Commitments chat show (F-47 P2b / F-56: four different open
+and the daily Waiting On / My Plate chats show (F-47 P2b / F-56: four different open
 counts in one day came from each surface folding buckets its own way —
 unowned and unconfirmed are their own lines everywhere, never folded into
 owed-to-you). `pending_review` rows are the `unconfirmed` bucket; they are
@@ -114,6 +114,23 @@ one giant widget. One page's worth of the layout:
   never age-buried. "Keep both" = clear the flag via `commitment_updated`
   (pending_review cleared, note "confirmed distinct"); merge = the flow
   below.
+- **Counterparty-unresolved batch (CTS1 §8.2(b) — OPT-IN, resumable, never a wall):**
+  after the age sections are built, compute the orphaned-promise set in code:
+  `from surface_split import counterparty_unresolved` → `orphans = [c for c in
+  opens if counterparty_unresolved(c, user_id)]`. When non-empty, append ONE
+  offer row at the BOTTOM of the widget (not a section of 49 rows): **"N of
+  your promises have no person attached — knock out a few?"** with actions
+  `confirm` (start a bite) / `skip`. On `confirm`, re-render a bite of ~5
+  orphan rows (oldest first), each carrying the drip verbs — `reassign to
+  [name]` (attaches the named person as COUNTERPARTY on these rows — the CTS1
+  dispatch nuance documented in apply-choices § cr-commitments) and
+  `make task` (demote to Personal) — plus `drop`. After a bite applies, offer
+  the next bite ("M left — another 5?"); any skip ends the run, and the next
+  Friday fire re-offers from wherever it left off (resumable by construction:
+  resolved rows leave the set). Also summonable on demand: "fix my orphaned
+  promises" / "who were these for" in this chat starts a bite directly.
+  NEVER auto-demote — Bug #103 says most of these are REAL promises whose
+  counterparty linking failed; the human attaches or demotes, one tap each.
 - **No size fallback (T2):** the full open set renders by DESIGN as pages of
   ~10 rows (`page=N`), each relayed as `widget_code` per § Transport; `show
   more` re-fires the next page. Never chunk mid-page, never right-size a page
@@ -171,9 +188,57 @@ apply-choices — see its commitment-triage entry for the exact calls):
   capture that landed as one atomic item but is really N. Each part becomes
   its own complete commitment carrying the original's provenance; the
   original closes with a "split into …" note. Needs at least two parts.
+  A parent with open sub-items refuses to split (its parts belong to ONE
+  deliverable) — the writer's error says so; surface it verbatim.
 
 Prose around these uses the SAME words as the verb rows — fix wording,
 reassign, split (F-13 P2a).
+
+## Sub-items (SUB1 — decomposition; the parent STAYS OPEN)
+
+**Add sub-items** — "break #N into: A / B / C" / "add sub-items to #N: …" /
+"steps for #N: …". The sibling of Split with the OPPOSITE closure
+semantics: split = the capture was wrong, one item is really N peers, the
+original CLOSES; sub-items = the capture was right, one real deliverable
+with N internal steps, the parent stays open as the commitment of record.
+Dispatch: `commitment_state.add_subitems` via apply-choices (its
+commitment-triage entry has the exact call). ≥1 step is valid (unlike
+split's ≥2); cap 12 open sub-items per parent (loud writer error above —
+a 13-step item is a project); one level deep (no grandchildren); creation
+is USER-INITIATED only — extraction/sweeps never mint hierarchies.
+
+How the family renders and behaves on this surface:
+
+- The driver nests sub-item rows INSIDE the parent's row (the widget's
+  standard sub-row shape); the parent's context tag carries the progress
+  chip — "sub-items 1/3 · next: [step]". Child rows carry their own
+  `data.id` verbatim (identity contract) and the per-kind dropdown minus
+  `never track this` and `add to my list` (those stay parent-level).
+  Children are real commitments: Done / Later… / Drop work on them with
+  zero special-casing.
+- **Family-atomic pagination:** a parent is never split from its sub-items
+  across pages — a family that doesn't fit moves whole to the next page
+  (structural: pagination slices top-level rows only).
+- When the LAST open sub-item closes, the parent row shows
+  **"all sub-items done — close it?"** — a PROPOSE, never an auto-close
+  (the parent may carry residual work the steps never listed).
+- **Done on a parent with open sub-items** raises `OpenSubitemsError` —
+  ask the one-line confirm ("this also closes its N open sub-items — go
+  ahead?") and only on yes re-dispatch with `close_subitems=True`. The
+  cascade closes children first, parent last; batch undo reopens the whole
+  family (the cascade's `closed_subitems` ids join the undo cache).
+- Orphan sub-items (parent closed through the cascade crash window) render
+  as ordinary top-level rows with a "was part of: [parent title]" note —
+  real open work, never hidden.
+- Sub-items never enter chase (`cru_eligible` excludes them — the
+  counterparty cares about the deliverable, not your step list), never
+  count in the headline (a parent with 3 open steps is **1** open
+  commitment; the header appends "(+N sub-items)" when any exist), and
+  never flag as duplicates of their parent or siblings.
+- "close #7" in chat where 7 is a parent: the cascade confirm is the
+  safety — never resolve a bare ordinal to a child silently.
+
+Prose uses the same words as the verb row — **Add sub-items** (F-13 P2a).
 
 
 ## Step 3 — Render the widget (ONE driver call — T2.2)
@@ -224,6 +289,11 @@ Actions per row (display labels come from
 - task rows: `resolved` (**Done**, the button) · `push to [date]`
   (**Later…**) · `drop` · `promote` (**Make it a commitment**) · `never
   track this` — same `skip` suppression.
+- sub-item rows (SUB1, nested under their parent): the same per-kind set
+  MINUS `never track this` (suppression keys on capture shape — children
+  aren't captures; `add to my list` also stays parent-level). `add
+  subitems [items]` (**Add sub-items**) is a chat-phrase verb like `split
+  into [items]` — it does not render as a dropdown option; see § Sub-items.
 
 **Posting-block rule (t3 FB-11):** chat prose around the widget names ONLY
 the controls the rendered card visibly offers, using their exact labels —
@@ -266,7 +336,7 @@ not in the daily chats.
 
 ## What this skill does NOT do
 
-- No chase drafts, no email surface — that's the daily Commitments chat.
+- No chase drafts, no email surface — that's the daily Waiting On chat (CTS1).
 - No extraction — capture floors live in the producers.
 - Never renders tasks in "commitment aging" framing — tasks age on THIS
   surface only (S5); CRU never chases them (`cru_match.cru_eligible`).

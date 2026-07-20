@@ -41,6 +41,7 @@ Stdlib only — the HTML backend must never need python-docx just to run gates.
 """
 from __future__ import annotations
 
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -76,6 +77,8 @@ EYEBROW_BY_KIND = {
     "one_pager":         "ONE-PAGER",
     "insights":          "INSIGHTS",
     "stress_test":       "STRESS TEST",
+    "kpi_scorecard":     "KPI SCORECARD",  # SPEC OUT7 — the between-packs KPI view / QBR pre-read
+    "chart_on_demand":   "CHART",          # SPEC OUT3B — one substrate-derived chart on demand
 }
 
 SUPPORTED_BRIEF_KINDS = frozenset(EYEBROW_BY_KIND)
@@ -108,6 +111,18 @@ STANDARD_KINDS = frozenset({
     "contract_review",   # verdict = the deal-breaker flag line
     "automation_scan",   # verdict = top opportunity + payback
     "stress_test",       # verdict = the kill-risk line
+    # SPEC OUT7 — the KPI scorecard / QBR pre-read. Brief-family (a recurring
+    # "how are we tracking" digest, sibling to weekly_recap), so it is
+    # deliberately NOT in EXEC_EYEBROW_EXCLUDED_KINDS below: it renders the full
+    # verdict + CHANGED/DECIDE/NEEDED header. verdict = the single most
+    # decision-relevant KPI move this period (build_scorecard computes it).
+    "kpi_scorecard",
+    # SPEC OUT3B — the on-demand single-chart page. A STANDARD_KIND so it rides
+    # the full exec-header contract (verdict = the one-sentence reading of the
+    # chart); eyebrow-excluded below (a one-chart answer is a document, not a
+    # since-yesterday digest — the one_pager posture). verdict is supplied by
+    # the chart-on-demand skill from the series it just rendered.
+    "chart_on_demand",
 })
 # NB: operator_report is deliberately NOT here. Per SPEC EXEC1 §4 its Section 0
 # synthesis lead is "untouched (it's the prototype)" and §5 lists it as a
@@ -148,7 +163,26 @@ EXEC_HEADER_LINES = (("changed", "CHANGED"), ("decide", "DECIDE"), ("needs", "NE
 EXEC_EYEBROW_EXCLUDED_KINDS = frozenset({
     "memo", "one_pager", "decision_memo", "board_pack",
     "contract_review", "automation_scan", "stress_test",
+    # SPEC OUT3B — a single-chart page leads with the verdict (the reading),
+    # then the chart + table twin. The 3-line CHANGED/DECIDE/NEEDED eyebrow
+    # would misframe a one-answer page (same reasoning as one_pager).
+    "chart_on_demand",
 })
+
+# Composer skill whose customer-side voice block (B1: `_hq/voice/voice-block-
+# <skill>.md`) calibrates each outbound brief kind. The override file is keyed
+# by SKILL name, not brief kind — voice-block-memo-writer.md, never
+# voice-block-memo.md — so the voice-tell gate needs this lookup to load it.
+# Scoped to the hard-blocking outbound kinds (voice_tell_detector.
+# FAIL_BLOCKING_KINDS): those are exactly the saves a false-positive tell can
+# block, so they are where the client's Taboos carve-out must reach the gate.
+VOICE_SKILL_BY_KIND = {
+    "memo":          "memo-writer",
+    "one_pager":     "one-pager-composer",
+    "decision_memo": "decision-memo-composer",
+    "board_pack":    "board-pack-assembler",
+    "followup_pack": "follow-up-ritual",
+}
 
 
 # ---------- Gate registry (SPEC OUT5 — the G16 enumeration surface) ----------
@@ -427,19 +461,39 @@ def run_pre_save_gates(
             # and NEVER hard-blocked. Sourced from B1's override loader when
             # present; B2 has no hard dependency on it (ImportError tolerated).
             allow_phrases = None
-            try:
-                from voice_corrections import load_voice_block_override  # type: ignore
+            ban_dashes = True
+            _voice_skill = VOICE_SKILL_BY_KIND.get(brief_kind)
+            if workspace_root and _voice_skill:
+                try:
+                    from voice_corrections import load_voice_block_override  # type: ignore
 
-                override = load_voice_block_override(brief_kind)
-                if override:
-                    allow_phrases = override.get("taboos_allow") or override.get(
-                        "allow_phrases"
+                    override = load_voice_block_override(workspace_root, _voice_skill)
+                    if override:
+                        allow_phrases = override.get("taboos_allow") or None
+                        ban_dashes = override.get("ban_dashes", True)
+                except Exception as exc:
+                    # A malformed override must never kill a save — but say so
+                    # on stderr: this branch silently swallowed a wrong-arity
+                    # loader call for months, leaving allow_phrases always None.
+                    print(
+                        f"[voice-tell gate] voice-block override load failed for "
+                        f"{_voice_skill} ({type(exc).__name__}: {exc}) — "
+                        f"gate runs uncalibrated",
+                        file=sys.stderr,
                     )
-            except Exception:
-                allow_phrases = None
+                    allow_phrases, ban_dashes = None, True
 
+            # FB-16 per-client dash override: forward ban_dashes=False only when
+            # the installed detector knows the kwarg — the dash ban and its
+            # kwarg land together, so a pre-FB-16 detector has no rule to relax.
+            _extra = {}
+            if not ban_dashes and (
+                "ban_dashes" in inspect.signature(check_sections).parameters
+            ):
+                _extra["ban_dashes"] = False
             result = check_sections(
-                sections, brief_kind=brief_kind, allow_phrases=allow_phrases
+                sections, brief_kind=brief_kind, allow_phrases=allow_phrases,
+                **_extra,
             )
             fail_findings = [f for f in result["findings"] if f["severity"] == "fail"]
             blocking = voice_gate == "default" and brief_kind in FAIL_BLOCKING_KINDS

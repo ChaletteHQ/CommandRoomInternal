@@ -29,7 +29,7 @@ Subsequent references within the same file can drop to just the first name (`Sam
 
 - `Acme Co`, `Acme Logistics`, `Acme Fragrances`, `Acme Restaurant`, `Acme Catering`, `Acme Bakery`
 - `Northstar Partners`
-- `Category Company`, `Category Food Truck`, `Category Bakery`
+- `Summit Company`, `Summit Food Truck`, `Summit Bakery`
 
 Any other company name in an example needs an entry in `tests/run_no_real_customer_names_test.py`'s `APPROVED_ORG_PHRASES`.
 

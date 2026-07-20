@@ -157,7 +157,7 @@ Note: the key is `threads` in v2.2, but thread IDs retain the `project_` prefix 
   "scope": "holding",
   "relationship_type": "operating",
   "is_primary_focus": true,
-  "domains": ["category.co"],
+  "domains": ["acme.example.com"],
   "slack_workspace_ids": [],
   "status": "active",
   "inferred_from": ["user", "email_signature"],

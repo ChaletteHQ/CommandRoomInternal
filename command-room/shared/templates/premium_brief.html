@@ -25,9 +25,10 @@
   scan; parity pinned by tests/run_guard_g16_gate_parity_test.py) and asserts
   the file lands on disk.
 
-  CHART SLOT (SPEC OUT3 coordination): the `.chart-slot` region below is
-  DORMANT — it renders only when a section carries an OUT3 charts.py SVG.
-  Leave it dormant until OUT3 merges; do not hand-compose chart markup.
+  CHART SLOT (SPEC OUT3 — live): the `.chart-slot` region renders when a
+  section carries a `charts` entry — premium_html._charts_html embeds the
+  charts.py SVG inline (self-contained, no asset server). Do not hand-compose
+  chart markup; every chart goes through charts.build_chart.
 -->
 <style>
   :root{
@@ -149,7 +150,7 @@
   .events li:last-child{border-bottom:0}
   .events .when{font:600 9.5px/1.6 var(--mono);letter-spacing:.06em;color:var(--accent);white-space:nowrap;min-width:82px;text-transform:uppercase}
 
-  /* chart slot (SPEC OUT3 — dormant until charts.py lands) */
+  /* chart slot (SPEC OUT3 — filled by premium_html._charts_html) */
   .chart-slot{margin:10px 0 14px}
   .chart-slot svg{max-width:100%;height:auto;display:block}
 

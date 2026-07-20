@@ -40,6 +40,7 @@ from chat_output_renderer import scan_for_id_leaks  # noqa: E402
 FILES_TO_CRAWL = [
     ROOT / "skills" / "enable-command-room-schedules" / "references" / "orchestrator-dont-forget.md",
     ROOT / "skills" / "enable-command-room-schedules" / "references" / "orchestrator-commitments.md",
+    ROOT / "skills" / "enable-command-room-schedules" / "references" / "orchestrator-my-plate.md",  # CTS1 review fix 2026-07-18: new surface, same T3.1 leak-scan coverage
     ROOT / "skills" / "enable-command-room-schedules" / "references" / "orchestrator-inbox.md",
     ROOT / "skills" / "enable-command-room-schedules" / "references" / "orchestrator-past-meetings.md",
     ROOT / "skills" / "enable-command-room-schedules" / "references" / "orchestrator-upcoming-meetings.md",

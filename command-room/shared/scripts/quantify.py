@@ -185,7 +185,10 @@ def _money_part(item: dict, entities) -> Optional[str]:
     """Trace to the money figure, in priority order (SPEC PIPE1 extended the
     trace): (1) the item's own nested `deal.value` (the item IS a deal
     thread), (2) the resolved thread's `deal.value` (a commitment on a deal
-    thread), (3) the org's revenue/deal-value fields, (4) a value annotated
+    thread), (3) the org's revenue/deal-value fields — flat top-level keys
+    AND the grouped `org.money` object (SPEC HIST1 D4/B1: set_org_money
+    writes the grouped shape; its inner keys mirror _MONEY_FIELDS, so the
+    sub-dict resolves as one more candidate), (4) a value annotated
     directly on the item. A stated per-deal figure beats the org-level
     convention fields — an org can have three deals. Returns None when no
     such field exists — the no-fabrication guarantee."""
@@ -199,6 +202,8 @@ def _money_part(item: dict, entities) -> Optional[str]:
     org = _resolve_org(item, entities)
     if isinstance(org, dict):
         candidates.append(org)
+        if isinstance(org.get("money"), dict):
+            candidates.append(org["money"])  # grouped org money (SPEC HIST1 D4/B1) — inner keys mirror _MONEY_FIELDS
     if isinstance(item, dict):
         candidates.append(item)  # value annotated straight on the item
         data = item.get("data")

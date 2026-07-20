@@ -1,0 +1,14 @@
+<!--
+  Infographic layout: comparison_2col (SPEC OUT4). A-vs-B rows. Structure-only
+  fragment; colors/fonts are CSS variables from the OUT5 premium shell (brand-
+  resolved). NO literal hex. Rendered ONLY by infographic.build_infographic.
+  Slots: {{AHEAD}}, {{BHEAD}}, {{ROWS}}.
+-->
+<style>
+  .ig-cmp{width:100%;border-collapse:collapse;margin-top:16px}
+  .ig-cmp th{font:600 9.5px/1.4 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent);padding:8px 12px;border-bottom:1px solid var(--line);text-align:left}
+  .ig-cmp td{padding:10px 12px;border-bottom:1px solid var(--line-soft);font:400 12.5px/1.55 var(--sans);color:var(--fg-2);vertical-align:top;width:38%}
+  .ig-cmp td.rowlbl{width:24%;font:600 12px/1.4 var(--sans);color:var(--fg)}
+  .ig-cmp tr:nth-child(even) td{background:rgba(244,240,232,.018)}
+</style>
+<section class="ig ig-cmp-wrap"><table class="ig-cmp"><thead><tr><th></th><th>{{AHEAD}}</th><th>{{BHEAD}}</th></tr></thead><tbody>{{ROWS}}</tbody></table></section>

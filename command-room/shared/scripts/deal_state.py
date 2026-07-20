@@ -147,7 +147,7 @@ def org_deal_coverage(threads: list, org_id: str) -> Optional[dict]:
           the org whose status isn't terminal. An active engagement IS
           tracked coverage (RV-5 M ruling): proposing deal CREATION for such
           an org produces a proposal whose confirm the create path refuses
-          (the Category zombie — confirm errored forever, proposal stayed
+          (the Summit zombie — confirm errored forever, proposal stayed
           open).
 
     ONE helper, two consumers, never forked: `deal_signal_detector` consults

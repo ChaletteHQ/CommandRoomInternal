@@ -133,6 +133,11 @@ DANGLING_READ_OK = {
     "memo_drafted": "value_receipt.compute_metrics reads `memo_drafted` (SPEC C1 D4 'documents produced') as one of the document event types; memo-writer documents emitting it (memo-writer/SKILL.md) but in a prose shape the emit-verb+backtick detector doesn't match, so it reads as writer-less here",
     "relationship_move_suggested": "REL1 — written by relationship_moves.compute_relationship_moves (rows built in a loop then atomic_append_jsonl'd, so the 'type literal next to the append' writer heuristic misses it); the read in relationship_moves._recently_excluded is the 7-day self-dedup check",
     "dont_forget_snooze": "canonical Pulse snooze event written via the dont-forget orchestrator's prose/widget path (no code-shaped writer); REL1's relationship_moves._recently_excluded reads it to honor Pulse snoozes in the weekly outreach dedupe",
+    # balance_nudge_suggested: RESOLVED (BAL1 2026-07-19) — the PGUARD1
+    # forward-compat entry retired: balance.py::compute_balance is the code-
+    # shaped writer ("type" literal next to the append) and the enum carries
+    # the member, so the dangling-read guard sees a real producer.
+    "identity_reconcile_run": "PID1 D7 — written by identity_reconcile.run_identity_reconcile via receipts.log_receipt(receipt_type='identity_reconcile_run') (the receipt-writer indirection the type-literal-next-to-append heuristic can't see); read back by identity_reconcile.load_open_annotations (the annotations_resolved fold) and change_feed.changes_since (the D6 people_added/people_linked narration)",
 }
 
 # Canonical types WRITTEN by production with no production reader that are OK —

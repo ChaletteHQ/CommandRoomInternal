@@ -5,7 +5,7 @@ description: "Surface conversations — email threads, Slack threads, meeting fo
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-Before resolving any person / org / project from loose input in your trigger phrase or arguments, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Only after the resolver returns NO candidates may you fall back to substring grep — and that fallback MUST be flagged to the user, not silently surfaced as a single result. For commitment / event surface, call `shared/scripts/cru_match.py::load_open_commitments` — do NOT hand-roll an `events.jsonl` scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract + rationale (the bug class this closes).
+Before resolving any person / org / project from loose input in your trigger phrase or arguments, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Only after the resolver returns NO candidates may you fall back to substring grep — and that fallback MUST be flagged to the user, not silently surfaced as a single result. For commitment / event surface, call `shared/scripts/cru_match.py::load_open_commitments` — do NOT hand-roll an `events.jsonl` scan — passing the org-scoped rows: `load_open_commitments(events_path, events=org_events)` with `org_events` from `events_io.load_events_org_scoped` (PGUARD2 D2). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract + rationale (the bug class this closes).
 
 ## Skill Boundary (v2.1)
 
@@ -22,12 +22,12 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/data/events.jsonl` — event type `thread_resurrected` when the user clicks "Draft revival" and the draft is created. Carries `{thread_ref, last_msg_ts, days_silent, revival_draft_event_seq, resurrection_hook}`. The `revival_draft_event_seq` points at the `email_drafted` event the chained `email-writer` invocation produced.
 - `_hq/data/entities.json` — `relationship.last_touched_at` bumped on the counterparty record(s) when the revival email is sent.
 
-**Reads from:**
-- `_hq/data/events.jsonl` — `type == "interaction"` events (the thread activity log) to compute per-thread last-activity and days-silent.
-- `_hq/data/events.jsonl` — `type == "meeting"` events to find meetings whose follow-up emails were never sent (no subsequent `interaction` event with `direction == "outbound"` from the host to attendees in the 7 days after the meeting).
+**Reads from:** All `events.jsonl` reads come from ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — this skill selects threads and feeds revival drafts; a masked account's thread must never be resurrected): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design.
+- `_hq/data/events.jsonl` — `type == "interaction"` events (the thread activity log, from the org-scoped load) to compute per-thread last-activity and days-silent.
+- `_hq/data/events.jsonl` — `type == "meeting"` events (from the org-scoped load) to find meetings whose follow-up emails were never sent (no subsequent `interaction` event with `direction == "outbound"` from the host to attendees in the 7 days after the meeting).
 - `_hq/data/entities.json` — for the thread → person → org → project graph. "High-context" means: thread touches an active project OR a high-value person (relationship strength tier 1-2) OR an explicit commitment.
-- `_hq/data/events.jsonl` — `type == "commitment"` events with `status == "open"` involving thread participants — these get surfaced as "use commitment chase instead" alternative actions.
-- `_hq/data/events.jsonl` — prior `thread_resurrected` events to avoid re-surfacing recently revived threads.
+- `_hq/data/events.jsonl` — `type == "commitment"` events with `status == "open"` involving thread participants — via the seam, `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here) — these get surfaced as "use commitment chase instead" alternative actions.
+- `_hq/data/events.jsonl` — prior `thread_resurrected` events (from the org-scoped load) to avoid re-surfacing recently revived threads.
 
 **Conflict boundary:** sole writer of `thread_resurrected` events. The chained `email-writer` invocation writes the `email_drafted` event.
 
@@ -66,7 +66,7 @@ Runs on-demand. Schedulable weekly as a Pulse companion surface.
 
 ### Phase 1 — Load candidate threads
 
-Read `_hq/data/events.jsonl` for `type == "interaction"` events. Group by thread (Gmail thread-id, Slack thread-ts, or meeting follow-up cluster). For each thread:
+Read `_hq/data/events.jsonl` for `type == "interaction"` events — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read; a masked account's threads never enter the candidate pool. Group by thread (Gmail thread-id, Slack thread-ts, or meeting follow-up cluster). For each thread:
 - `last_activity_ts` = max(ts of events in thread)
 - `days_silent = (now - last_activity_ts).days`
 - `direction_of_last_msg` = direction of the latest interaction event

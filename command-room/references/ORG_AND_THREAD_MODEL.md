@@ -27,8 +27,8 @@ Canonical reference for how Command Room represents businesses, affiliations, th
   "relationship_type": "client",       // see enum below
   "is_primary_focus": false,           // bubbles up in briefings when true
   "relationship_label": null,          // free-text override when relationship_type = "other"
-  "aliases": ["CategoryCo", "Category"],
-  "domains": ["category.example.com"],       // email/web domains associated with this org
+  "aliases": ["SummitCo", "Summit"],
+  "domains": ["summit.example.com"],       // email/web domains associated with this org
   "slack_workspace_ids": ["T01ABC"],   // if tracked
   "inferred_from": ["email_domain_cluster", "slack_workspace"],
   "first_seen": "2026-01-04",
@@ -80,8 +80,8 @@ Still stored as `project_NNN` ids for schema stability; user-facing language is 
 ```jsonc
 {
   "id": "project_104",
-  "display_name": "Category — Restaurant sourcing bot",
-  "folder_name": "Category_Restaurant_Sourcing",
+  "display_name": "Summit — Restaurant sourcing bot",
+  "folder_name": "Summit_Restaurant_Sourcing",
   "kind": "initiative",                // see enum below
   "affiliation_id": "org_018",         // the operating co (Acme Restaurant), not the holding
   "parent_thread_id": null,            // nested threads
@@ -189,7 +189,7 @@ Your orgs (primary):
   ✓ Acme Restaurant (operating, owned by Acme Holdings)
 
 Active engagements (secondary):
-  1. Category Company (client) — confirm? `1 confirm` / `1 edit [partner|advisor|other]` / `1 remove`
+  1. Summit Company (client) — confirm? `1 confirm` / `1 edit [partner|advisor|other]` / `1 remove`
   2. Northstar Partners (partner) — confirm? `2 confirm` / `2 edit ...` / `2 remove`
 
 External (collapsed by default — say `show external` to expand):
@@ -244,7 +244,7 @@ Reclassification exists for correctness but is **never proactively surfaced** ou
 - No silent mutation: the original event stays in place, the reclassification event is its amendment.
 
 **Invocation:**
-- CEO explicit: "that email about the vendor belongs under NorthStar, not Category" → reclassification event.
+- CEO explicit: "that email about the vendor belongs under NorthStar, not Summit" → reclassification event.
 - Weekly classification review: batched multi-item confirm.
 - Never: mid-session prompts for reclassification.
 

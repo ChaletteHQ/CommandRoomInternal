@@ -88,6 +88,7 @@ def changes_since(
 
     counts = {
         "closed_from_sent": 0, "opened_from_sent": 0, "swept": 0,
+        "people_added": 0, "people_linked": 0, "facts_noted": 0,
         "cleanup_runs": 0, "maintenance_jobs": 0,
         "proposals_resolved": 0, "proposals_declined": 0,
         "proposals_expired": 0, "changes_undone": 0,
@@ -131,6 +132,28 @@ def changes_since(
             if isinstance(n, (int, float)) and n > 0:
                 counts["maintenance_jobs"] += int(n)
                 refs["maintenance_jobs"].append(seq)
+        elif etype == "identity_reconcile_run":
+            # PID1 D6 — auto-applied identity creations are narrated from
+            # the RECEIPT of what was actually written, never from a plan
+            # (honesty rule). Same for the §0-2 exact-email links.
+            n = data.get("n_auto_added") or 0
+            if isinstance(n, (int, float)) and n > 0:
+                counts["people_added"] += int(n)
+                refs["people_added"].append(seq)
+            n = data.get("n_linked") or 0
+            if isinstance(n, (int, float)) and n > 0:
+                counts["people_linked"] += int(n)
+                refs["people_linked"].append(seq)
+        elif etype in ("person_fact_observed", "org_fact_observed"):
+            # HIST1 Part 2 (D3/S1) — ONLY auto-noted structured facts are
+            # narrated (they carry the brain_change_class stamp); explicit
+            # user facts and confirmed-proposal facts are the user's own
+            # actions, not "what the brain did". Narrated from the WRITTEN
+            # events themselves (the PID1 receipt-honesty rule — the fact
+            # event IS the receipt), refs traceable, undo standing.
+            if data.get("brain_change_class") == "entity_fact_structured":
+                counts["facts_noted"] += 1
+                refs["facts_noted"].append(seq)
         elif etype == "brain_proposal":
             counts["new_proposals"] += 1
             refs["new_proposals"].append(seq)
@@ -169,6 +192,28 @@ def changes_since(
         _line("swept",
               f"Recovered {n} {_plural(n, 'item')} from your ad-hoc chats "
               f"into the workspace record.")
+    n = counts["people_added"]
+    if n:
+        # PID1 D6 — the brief's read-only grammar (FB-20): a chat-phrase
+        # undo affordance, no verbs, no rows. `undo` reverses the whole
+        # batch via brain_undo (adds archive — never delete).
+        _line("people_added",
+              f"Added {n} {_plural(n, 'person', 'people')} from "
+              f"corroborated evidence — say `undo` to reverse.")
+    n = counts["people_linked"]
+    if n:
+        _line("people_linked",
+              f"Linked {n} {_plural(n, 'name')} to "
+              f"{_plural(n, 'a contact', 'contacts')} already on file "
+              f"(exact email match).")
+    n = counts["facts_noted"]
+    if n:
+        # HIST1 Part 2 — the FB-20 read-only grammar: a chat-phrase undo
+        # affordance, no verbs, no rows. `undo` retracts the batch via
+        # brain_undo (appends entity_fact_retracted — never edits history).
+        _line("facts_noted",
+              f"Noted {n} {_plural(n, 'fact')} from your connected "
+              f"sources — say `undo` to reverse.")
     n = counts["proposals_resolved"]
     if n:
         _line("proposals_resolved",

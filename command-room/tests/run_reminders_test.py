@@ -220,8 +220,16 @@ print("\n[4] personal default + client-facing exclusion")
 
 p1 = R.build_reminder_event("renew passport", remind_from="2026-07-10")
 check("no tracked entity → personal defaults True", p1["data"]["personal"] is True)
-p2 = R.build_reminder_event("nudge the Acme renewal", remind_from="2026-07-10", person_ids=["person_sam"])
-check("resolved person → personal defaults False", p2["data"]["personal"] is False)
+# PGUARD1 D3 — a person reference ALONE no longer flips the default to work:
+# "remind me to call Mom" with Mom tracked in entities.json stays personal.
+# Only a business reference (ref / primary_thread_id) makes it work.
+p_mom = R.build_reminder_event("call Mom", remind_from="2026-07-10", person_ids=["person_042"])
+check("person ref alone → personal defaults True (D3)", p_mom["data"]["personal"] is True)
+p2 = R.build_reminder_event("nudge the Acme renewal", remind_from="2026-07-10",
+                            person_ids=["person_sam"], primary_thread_id="project_acme")
+check("thread ref → personal defaults False", p2["data"]["personal"] is False)
+p2b = R.build_reminder_event("chase the invoice", remind_from="2026-07-10", ref="cmt_XYZ")
+check("business ref → personal defaults False", p2b["data"]["personal"] is False)
 p3 = R.build_reminder_event("gym", remind_from="2026-07-10", ref="cmt_ABC", personal=True)
 check("explicit personal=True wins over entity linkage", p3["data"]["personal"] is True)
 
@@ -236,6 +244,16 @@ check(
     "default (client-facing) read excludes BOTH personal rows",
     [r["summary"] for r in cf_rows] == ["nudge the Acme renewal"],
     f"got {[r['summary'] for r in cf_rows]}",
+)
+
+# PGUARD1 D3 read-side mirror: a legacy flag-less row naming only a PERSON
+# defaults personal at read time too — it never reaches a client_facing read.
+legacy = dict(p_mom, ts=ts("2026-07-09"))
+legacy["data"] = {k: v for k, v in p_mom["data"].items() if k != "personal"}
+check(
+    "flag-less person-only row → personal on read (D3)",
+    R.active_reminders([legacy], "2026-07-10") == []
+    and len(R.active_reminders([legacy], "2026-07-10", surface="m_facing")) == 1,
 )
 
 # ---------------------------------------------------------------------------

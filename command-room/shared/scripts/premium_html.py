@@ -380,7 +380,39 @@ def _body_html(body: str) -> str:
     return "".join(paras)
 
 
-def _section_html(sec: dict, visual_bias: str, counter: _CiteCounter) -> str:
+def _charts_html(charts_spec: List[dict], resolved_brand: Optional[dict]) -> str:
+    """SPEC OUT3 — inline chart SVGs in the template's `.chart-slot` region
+    (the slot was dormant until charts.py landed). Self-contained: the SVG
+    embeds directly, no asset server, matching the template posture. A shape
+    refusal or leak finding drops the chart (the section's table/tile
+    representation of the same numbers stands — never an empty frame); the
+    charts module missing entirely (partial install) skips silently, same as
+    the leak scanner."""
+    try:
+        from charts import build_chart, ChartDataError, ChartLeakError
+    except ImportError:
+        return ""
+    parts: List[str] = []
+    for spec in charts_spec:
+        if not isinstance(spec, dict):
+            continue
+        try:
+            svg = build_chart(
+                spec.get("kind"), spec.get("data"),
+                title=spec.get("title"), brand=resolved_brand,
+            )
+        except ChartLeakError as e:
+            print(f"[premium_html] chart dropped (leak scan): {e}",
+                  file=sys.stderr)
+            continue
+        except (ChartDataError, ValueError):
+            continue  # refusal — the fallback representation stands
+        parts.append(f'<figure class="chart-slot">{svg}</figure>')
+    return "".join(parts)
+
+
+def _section_html(sec: dict, visual_bias: str, counter: _CiteCounter,
+                  resolved_brand: Optional[dict] = None) -> str:
     heading = sec.get("heading")
     if not heading:
         raise ValueError(f"section missing 'heading': {sec!r}")
@@ -393,10 +425,13 @@ def _section_html(sec: dict, visual_bias: str, counter: _CiteCounter) -> str:
     people = sec.get("people")
     events = sec.get("events")
     sources = sec.get("sources")
+    charts_spec = sec.get("charts")
     if tiles and not isinstance(tiles, list):
         raise ValueError(f"section 'tiles' must be a list: {sec!r}")
     if body and not isinstance(body, str):
         raise ValueError(f"section 'body' must be a string: {sec!r}")
+    if charts_spec and not isinstance(charts_spec, list):
+        raise ValueError(f"section 'charts' must be a list: {sec!r}")
 
     parts: List[str] = [
         f'<section class="section"><h2>{_html.escape(str(heading))}</h2>'
@@ -404,12 +439,14 @@ def _section_html(sec: dict, visual_bias: str, counter: _CiteCounter) -> str:
 
     # SPEC OUT2 §5 — visual_bias sets the tiles/body order within a section,
     # mirroring the docx backend exactly ("tiles_first" is the default order).
+    # SPEC OUT3: charts ride directly under the tile band in both orders.
     tiles_html = build_tile_band_html(tiles, validate=True) if tiles else ""
     body_html = _body_html(body) if body else ""
+    charts_html = _charts_html(charts_spec, resolved_brand) if charts_spec else ""
     if visual_bias == "prose_first":
-        parts.append(body_html + tiles_html)
+        parts.append(body_html + tiles_html + charts_html)
     else:
-        parts.append(tiles_html + body_html)
+        parts.append(tiles_html + charts_html + body_html)
 
     if bullets:
         if not isinstance(bullets, list):
@@ -452,9 +489,13 @@ def _section_html(sec: dict, visual_bias: str, counter: _CiteCounter) -> str:
 
     if not any((body, bullets, table, matrix, tiles, timeline,
                 people, events, sources)):
+        # SPEC OUT3: 'charts' deliberately does NOT satisfy this — a chart
+        # can refuse, so every charted section carries its fallback
+        # representation (same rule as the docx backend).
         raise ValueError(
             f"section needs 'body', 'bullets', 'table', 'matrix', 'tiles', "
-            f"'timeline', 'people', 'events', or 'sources': {sec!r}"
+            f"'timeline', 'people', 'events', or 'sources' ('charts' is "
+            f"best-effort and never stands alone): {sec!r}"
         )
 
     parts.append("</section>")
@@ -545,7 +586,8 @@ def make_premium_brief(
         else "tiles_first"
     )
     content = "\n".join(
-        _section_html(sec, visual_bias, counter) for sec in sections
+        _section_html(sec, visual_bias, counter, resolved_brand)
+        for sec in sections
     )
 
     source_line = (source_summary or "").strip()

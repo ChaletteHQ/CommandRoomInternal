@@ -106,8 +106,21 @@ def test_kill_switch():
         check("CR_VISUAL_GATE=off forces the skipped path", out is None)
 
 
-def test_checklist_is_the_six_items():
-    check("checklist has exactly the 6 contract items", len(visual_gate.CHECKLIST) == 6)
+def test_checklist_is_the_seven_items():
+    # 6 OUT2 items + the SPEC OUT3 chart item. Extended, never reordered —
+    # the first six stay positionally identical to the OUT2 pins.
+    check("checklist has exactly the 7 contract items", len(visual_gate.CHECKLIST) == 7)
+    check("checklist item 7 is the OUT3 chart item",
+          visual_gate.CHECKLIST[6] == "chart unreadable / overplotted")
+    check("the OUT2 six are unchanged and in order",
+          visual_gate.CHECKLIST[:6] == (
+              "orphaned heading at a page break",
+              "empty or placeholder tile",
+              "table overflow / wrap damage",
+              "cramped spacing",
+              "header/footer intact",
+              "brand palette applied",
+          ))
 
 
 def test_log_visual_gate_event_shape():
@@ -205,7 +218,7 @@ def main():
     test_rung_failures_fall_through_to_none()
     test_bad_inputs_never_raise()
     test_kill_switch()
-    test_checklist_is_the_six_items()
+    test_checklist_is_the_seven_items()
     test_log_visual_gate_event_shape()
     test_log_visual_gate_never_raises()
     test_visual_gate_in_events_schema_enum()

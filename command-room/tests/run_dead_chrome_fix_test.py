@@ -42,7 +42,7 @@ _BASE_VIEW = {
                         ("To", "Daniel (no email)"),
                     ],
                     "body_lines": ["Hello"],
-                    "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                    "actions": ["1 send", "1 draft", "1 snooze 3d"],
                 }
             ],
         }
@@ -80,7 +80,7 @@ def test_valid_email_passes() -> None:
                             ("To", "real@example.com"),
                         ],
                         "body_lines": ["Hello"],
-                        "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                        "actions": ["1 send", "1 draft", "1 snooze 3d"],
                     }
                 ],
             }
@@ -110,7 +110,7 @@ def test_name_email_combo_passes() -> None:
                             ("To", "Recipient <real@example.com>"),
                         ],
                         "body_lines": ["Hello"],
-                        "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                        "actions": ["1 send", "1 draft", "1 snooze 3d"],
                     }
                 ],
             }

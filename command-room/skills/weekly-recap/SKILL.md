@@ -225,7 +225,7 @@ If `scan-for-commitments` fails or times out, continue without it — surface a 
 
 ## Phase 4 — Synthesize the recap
 
-Build the recap structure from events.jsonl over the window. Grouping mode per trigger interpretation (default by-project).
+Build the recap structure from events.jsonl over the window — **read via the org-scoped reader, never a raw load** (PGUARD1): `from events_io import load_events_org_scoped; events, skipped = load_events_org_scoped(workspace_root)`. It applies the account-scope mask and drops personal-lane rows by design, so a reclassified personal account or a personal reminder never enters the recap synthesis. Grouping mode per trigger interpretation (default by-project).
 
 ### Sections (omit any with no real content — never pad)
 
@@ -362,7 +362,7 @@ JSON
 - **The two owe sections render as two-column tables** (what | who · due/age) instead of bullets — same drop rule: no rows, no section. Cap 10 rows per direction with a final "+N more" row.
 - Everything else stays prose/bullets — the tiles and tables carry the scannable layer; no decorative charts, no fabricated numbers, substrate-derived only.
 
-**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
+**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied · chart unreadable / overplotted), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "I made 2 calls: theme-led · internal/external split view"

@@ -14,6 +14,9 @@ surface and prints exactly what the runtime needs to relay:
     python3 shared/scripts/surface_drivers.py staff-meeting \
         --workspace <WORKSPACE> [--page N] [--moves-json <file>] \
         [--fired-via scheduled|manual|catchup]
+    python3 shared/scripts/surface_drivers.py waiting-on \
+        --workspace <WORKSPACE> [--page N] [--chase-json <file>] \
+        [--fired-via scheduled|manual|catchup]
 
 STDOUT SHAPE (fixed contract — the skill texts pin it):
 
@@ -90,9 +93,33 @@ _DUP_VERBS = ["merge", "keep both", "drop"]
 # pending_review rows outside the 7d escalation pin (explicit confirm-shaped
 # actions only — an explicit click IS confirmation).
 _PENDING_VERBS = ["resolved", "drop", "not mine"]
+# SUB1 D6 — child rows get the standard per-kind dropdown MINUS the verbs
+# that don't apply to a child: `never track this` (suppression rules key on
+# capture shape — children aren't captures) stays parent-level, as does
+# `add to my list` (capture-then-curate). Everything else — Done, Later…,
+# Drop, Not mine, Make task / Promote, Skip — works on a child with zero
+# special-casing (children are real commitments).
+_CHILD_PROMISE_VERBS = ["resolved", "push to [date]", "drop", "not mine",
+                        "make task", "skip"]
+_CHILD_TASK_VERBS = ["resolved", "push to [date]", "drop", "promote", "skip"]
 
 _REDUCED_REASON = ("Fewer options — the owner is unconfirmed; clicking Done, "
                    "Drop, or Not mine confirms it.")
+
+# FB-15 — the daily Waiting On chat (CTS1 Surface 1; orchestrator-commitments)
+# row verb sets, post-FB-17. Delegated tasks (owner != user, effective kind
+# `task`) are CRU-INELIGIBLE, so they get NO pre-staged chase draft. The
+# orchestrator set also offers `draft` ("composes a nudge on demand",
+# §2.3) — but that verb is send-class and needs the owner's actionable email
+# resolved + email-writer, both connector-dependent, so it is deliberately
+# OMITTED from this read-only driver (the driver never composes a body or
+# touches a connector — same reason chase bodies arrive via chase_rows). A
+# resolved delegated nudge rides in chase_rows like any other email row; the
+# deterministic row carries only the connector-free actions. The
+# pending_review / unowned confirm tail uses the REVIEW cluster
+# (orchestrator-commitments Phase 3.6/§478).
+_DELEGATED_VERBS = ["mark received", "snooze 3d", "add to my list"]
+_REVIEW_VERBS = ["confirm", "not relevant", "add to my list"]
 
 
 def _now_iso() -> str:
@@ -160,6 +187,21 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         d = ev.get("data") or {}
         return d.get("id") or f"commitment_seq_{ev.get('seq')}"
 
+    # SUB1 D6 — the family nests: sub-items render INSIDE their parent's row
+    # (the existing sub_items shape), never as their own top-level rows.
+    # Pagination is family-atomic structurally: paginate_data_view slices
+    # top-level items only, so a family that doesn't fit moves whole to the
+    # next page (a 12-child family alone on an oversized page degrades via
+    # the transport's over_budget flag rather than splitting). Orphan
+    # children (parent closed — the cascade crash window) partition
+    # top-level and render as ordinary rows with a "was part of" note.
+    from cru_match import partition_subitems
+    top_level, sub_level = partition_subitems(opens)
+    subs_by_parent: dict = {}
+    for ev in sub_level:
+        subs_by_parent.setdefault(
+            (ev.get("data") or {}).get("parent_id"), []).append(ev)
+
     display_n = 0
     sections: list[dict] = []
 
@@ -186,9 +228,9 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
                          "items": rows})
 
     # Age sections, oldest first; escalation-pinned rows excluded (no
-    # double-surfacing).
+    # double-surfacing). SUB1: top-level items only — children render nested.
     aged: list[tuple[int, dict]] = []
-    for ev in opens:
+    for ev in top_level:
         cid = _cid(ev)
         if cid in esc_ids:
             continue
@@ -213,6 +255,19 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
             parts.append("still on your plate?")
         if pending and d.get("review_reason"):
             parts.append(str(d.get("review_reason")))
+        # SUB1 D5/D6 — parent progress chip + orphan note (loader stamps).
+        kids = subs_by_parent.get(cid) or []
+        n_open_k = d.get("n_subitems_open")
+        n_done_k = d.get("n_subitems_done")
+        if kids or isinstance(n_open_k, int):
+            total_k = (n_open_k or 0) + (n_done_k or 0)
+            chip = f"sub-items {n_done_k or 0}/{total_k}"
+            nxt = _next_open_child(kids)
+            if nxt is not None:
+                chip += f" · next: {nxt}"
+            parts.append(chip)
+        if d.get("parent_closed") and d.get("parent_title"):
+            parts.append(f"was part of: {d['parent_title']}")
         row = {
             "n": cid, "display_n": display_n,
             "name": d.get("title") or d.get("summary") or "(untitled)",
@@ -222,7 +277,46 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         }
         if pending:
             row["reduced_verbs_reason"] = _REDUCED_REASON
+        # SUB1 D3 — the PROPOSE-closure line (never auto-close): renders on
+        # the parent row when the last open child closed.
+        if d.get("all_subitems_resolved"):
+            row["annotations"] = ["all sub-items done — close it?"]
+        # SUB1 D6 — nested child rows: id = the child's data.id VERBATIM
+        # (identity contract, Stage B); per-kind dropdown minus the
+        # non-child verbs. Only OPEN children render (done ones are the
+        # chip's numerator).
+        if kids:
+            row["sub_items"] = []
+            for k in kids:
+                kd = k.get("data") or {}
+                k_kind = commitment_kind(k)
+                summary = kd.get("title") or "(untitled)"
+                if kd.get("due"):
+                    summary += f" — {_due_phrase(kd.get('due'), now_iso)}"
+                row["sub_items"].append({
+                    "id": _cid(k),
+                    "summary": summary,
+                    "actions": (_CHILD_TASK_VERBS if k_kind == "task"
+                                else _CHILD_PROMISE_VERBS),
+                })
         return row
+
+    def _next_open_child(kids: list) -> str | None:
+        """The step to name in the progress chip: the open child with the
+        earliest parseable effective due, else the first in append order."""
+        if not kids:
+            return None
+        best_ev, best_date = None, None
+        for k in kids:
+            kd = k.get("data") or {}
+            try:
+                kd_date = _dt.date.fromisoformat(str(kd.get("due"))[:10])
+            except (ValueError, TypeError):
+                kd_date = None
+            if kd_date is not None and (best_date is None or kd_date < best_date):
+                best_ev, best_date = k, kd_date
+        pick = best_ev or kids[0]
+        return (pick.get("data") or {}).get("title") or None
 
     old_rows = [_row(ev, age) for age, ev in aged if age >= 30]
     new_rows = [_row(ev, age) for age, ev in aged if age < 30]
@@ -241,9 +335,15 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         {"label": "Unowned", "value": h["unowned"]},
         {"label": "Unconfirmed", "value": h["unconfirmed"]},
     ]
+    # SUB1 D6 — tiles unchanged in shape (values are top-level per D2); when
+    # sub-items exist the HEADER appends the additive key — never a new tile
+    # that implies a fifth bucket.
+    header = f"Commitment triage — {h['total']} open, oldest first"
+    if h.get("subitems_open"):
+        header += f" (+{h['subitems_open']} sub-items)"
     return {
         "source_skill": "commitment-triage",
-        "header": f"Commitment triage — {h['total']} open, oldest first",
+        "header": header,
         "counters": counters,
         "sections": sections,
     }
@@ -264,6 +364,125 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
              if moves_rows else None)
     return build_card_view(queue, surface="staff-meeting",
                            extra_sections=extra)
+
+
+def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
+                          chase_rows: list | None = None) -> dict:
+    """The daily Waiting On chat data view (CTS1 Surface 1 —
+    orchestrator-commitments, mechanized): canonical loader + `surface_split`
+    five-way partition + the count headline + the deterministic delegated and
+    confirm-tail sections. Pure read.
+
+    `chase_rows` (the pre-staged chase-email items for the CRU-eligible
+    owed-to-you commitments — connector-dependent, so built by the orchestrator
+    exactly like build_staff_meeting_view's `moves_rows`) are appended VERBATIM
+    as the leading "Waiting On" section; the driver never composes an email body
+    or touches a connector. Everything else — the partition, the header counts,
+    the delegated-task rows, and the unowned/unconfirmed confirm tail — is
+    deterministic and built here, killing the ~30-command surface the
+    orchestrator assembled live (FB-15). Owner-me rows never surface here (they
+    are My Plate — the partition routes them away)."""
+    from commitment_activity import derive_commitment_movement
+    from commitment_state import count_commitments
+    from confirm_flow import unconfirmed_classes
+    from cru_match import load_open_commitments
+    from primary_user import resolve_primary_user
+    from surface_split import (SURFACE_UNCONFIRMED, SURFACE_UNOWNED,
+                               SURFACE_WAITING_ON, effective_kind_of,
+                               partition_surfaces)
+
+    ws = Path(workspace_root)
+    now_iso = now_iso or _now_iso()
+    events_path = _events_path(ws)
+    opens = load_open_commitments(events_path)
+    try:
+        user_id = resolve_primary_user(ws)
+    except Exception:
+        user_id = None
+    movement = derive_commitment_movement(events_path)
+    counts = count_commitments(opens, user_person_id=user_id,
+                               now_iso=now_iso, movement=movement)
+    part = partition_surfaces(opens, user_id)
+
+    def _cid(ev) -> str:
+        d = ev.get("data") or {}
+        return d.get("id") or f"commitment_seq_{ev.get('seq')}"
+
+    display_n = 0
+    sections: list[dict] = []
+
+    # 1. Chase drafts — orchestrator-supplied (connector-dependent), appended
+    #    verbatim: email-shaped rows whose pre-staged nudge lives in the widget.
+    if chase_rows:
+        rows = []
+        for r in chase_rows:
+            display_n += 1
+            row = dict(r)
+            row.setdefault("display_n", display_n)
+            rows.append(row)
+        sections.append({"title": "Waiting On", "count": len(rows),
+                         "items": rows})
+
+    # 2. Delegated tasks (owner != user, effective kind `task`) — CRU-ineligible,
+    #    so no pre-staged chase; the manual action set (`draft` composes a nudge
+    #    on demand) per orchestrator-commitments §2.3.
+    delegated = [ev for ev in part[SURFACE_WAITING_ON]
+                 if effective_kind_of(ev) == "task"]
+    if delegated:
+        rows = []
+        for ev in delegated:
+            display_n += 1
+            d = ev.get("data") or {}
+            age = _age_days(ev.get("ts") or "", now_iso)
+            bits = []
+            if age is not None and age >= 0:
+                bits.append("1 day old" if age == 1 else f"{age} days old")
+            bits.append(_due_phrase(d.get("due"), now_iso))
+            bits.append("delegated — nudge is manual, I won't auto-chase this")
+            rows.append({
+                "n": _cid(ev), "display_n": display_n,
+                "name": d.get("title") or d.get("summary") or "(untitled)",
+                "context_tag": " · ".join(bits),
+                "actions": list(_DELEGATED_VERBS),
+            })
+        sections.append({"title": "Delegated", "count": len(rows),
+                         "items": rows})
+
+    # 3. Confirm tail — unowned + pending_review (unconfirmed). The REVIEW
+    #    cluster only: NEVER a pre-staged chase on an unconfirmed/unowned item
+    #    (no auto-email on a guessed owner — orchestrator-commitments §458/§478).
+    confirm_evs = list(part[SURFACE_UNOWNED]) + list(part[SURFACE_UNCONFIRMED])
+    if confirm_evs:
+        rows = []
+        for ev in confirm_evs:
+            display_n += 1
+            d = ev.get("data") or {}
+            pending = "pending_review" in unconfirmed_classes(ev)
+            tag = ("captured from a chat — confirm it's yours" if pending
+                   else "no owner resolved yet — whose is this?")
+            if d.get("review_reason"):
+                tag += f" · {d['review_reason']}"
+            rows.append({
+                "n": _cid(ev), "display_n": display_n,
+                "name": d.get("title") or d.get("summary") or "(untitled)",
+                "context_tag": tag,
+                "actions": list(_REVIEW_VERBS),
+            })
+        sections.append({"title": "Needs a quick confirm", "count": len(rows),
+                         "items": rows})
+
+    h = counts["headline"]
+    counters = [
+        {"label": "Owed to you", "value": h["owed_to_you"]},
+        {"label": "Unowned", "value": h["unowned"]},
+        {"label": "Unconfirmed", "value": h["unconfirmed"]},
+    ]
+    return {
+        "source_skill": "commitments",
+        "header": f"Waiting On — {h['owed_to_you']} owed to you",
+        "counters": counters,
+        "sections": sections,
+    }
 
 
 def _last_brief_ts(workspace_root, now_iso: str) -> str:
@@ -407,7 +626,9 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     from brain_proposals import load_open_proposals, money_prose_lines
     queue = load_open_proposals(ws, "staff-meeting", now_iso=now_iso)
     # Auto-tier items are applied-then-narrated, never adjudicated (LB1
-    # review F5) — they are not "things that need your eyes".
+    # review F5) — they are not "things that need your eyes". Redundant
+    # since LB2 flipped the projector default (include_auto=False) — kept
+    # as defense-in-depth; the parity pin tests the projector, not this.
     queue = [i for i in queue if i.get("tier") != "auto"]
     money_lines = money_prose_lines(queue, cap=MONEY_PROSE_CAP)
     queue_pointer = {"count": len(queue), "line": _pointer_line(len(queue))}
@@ -454,7 +675,8 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
 
 # surface -> the canonical receipts.py task its fire receipts belong to.
 _SURFACE_TASKS = {"commitments": "commitment-triage",
-                  "staff-meeting": "staff-meeting"}
+                  "staff-meeting": "staff-meeting",
+                  "waiting-on": "waiting-on"}   # FB-15 (CTS1 taskId)
 
 # RV-3 guard: a NON-MANUAL driver re-run this close to an already-written
 # non-manual receipt is the same fire re-rendering (the live 2026-07-16
@@ -492,6 +714,7 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
 def run_surface(surface: str, workspace_root, *, page: int = 1,
                 page_size: int = 15, now_iso: str | None = None,
                 moves_rows: list | None = None,
+                chase_rows: list | None = None,
                 fired_via: str | None = None) -> dict:
     """Build the view + render_and_persist ONE page. Returns the transport
     dict (html / pagination / path). The CLI wraps this; tests call it
@@ -520,9 +743,13 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
         view = build_staff_meeting_view(ws, now_iso=now_iso,
                                         moves_rows=moves_rows)
         name_hint = "staff-meeting"
+    elif surface == "waiting-on":
+        view = build_waiting_on_view(ws, now_iso=now_iso,
+                                     chase_rows=chase_rows)
+        name_hint = "waiting-on"
     else:
         raise SystemExit(f"unknown surface {surface!r} "
-                         "(supported: commitments, staff-meeting)")
+                         "(supported: commitments, staff-meeting, waiting-on)")
     transport = render_and_persist(
         data_view=view,
         wrapper="fragment",
@@ -545,7 +772,8 @@ def main() -> int:
         pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("surface",
-                    choices=["commitments", "staff-meeting", "morning-brief"])
+                    choices=["commitments", "staff-meeting", "waiting-on",
+                             "morning-brief"])
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--mode", default="scheduled",
                     choices=["scheduled", "manual"],
@@ -559,6 +787,9 @@ def main() -> int:
     ap.add_argument("--moves-json", default=None,
                     help="staff-meeting only: JSON file with the Phase-4 "
                          "moves rows (email-shaped item dicts)")
+    ap.add_argument("--chase-json", default=None,
+                    help="waiting-on only: JSON file with the pre-staged chase "
+                         "rows (email-shaped item dicts, connector-dependent)")
     ap.add_argument("--fired-via", default=None,
                     choices=["scheduled", "manual", "catchup"],
                     help="the fire's run mode (the orchestrator's Phase-2.9 "
@@ -582,11 +813,14 @@ def main() -> int:
     moves_rows = None
     if args.moves_json:
         moves_rows = json.loads(Path(args.moves_json).read_text(encoding="utf-8"))
+    chase_rows = None
+    if args.chase_json:
+        chase_rows = json.loads(Path(args.chase_json).read_text(encoding="utf-8"))
 
     transport = run_surface(
         args.surface, args.workspace, page=args.page,
         page_size=args.page_size, now_iso=args.now, moves_rows=moves_rows,
-        fired_via=args.fired_via)
+        chase_rows=chase_rows, fired_via=args.fired_via)
 
     pagination = transport.get("pagination") or {}
     print("CR-PAGINATION: " + json.dumps(pagination))
@@ -603,6 +837,7 @@ __all__ = [
     "build_commitment_triage_view",
     "build_morning_brief_pack",
     "build_staff_meeting_view",
+    "build_waiting_on_view",
     "run_surface",
 ]
 

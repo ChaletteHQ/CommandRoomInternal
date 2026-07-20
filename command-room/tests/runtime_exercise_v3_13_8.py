@@ -458,7 +458,7 @@ def exercise_widget_transport() -> None:
                 "name": "Sam Sample", "subject": "Q2 deck review",
                 "metadata": [("Subject", "Q2 deck"), ("To", "sam@example.com")],
                 "body_lines": ["Quick check — does the Q2 deck land Friday?"],
-                "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                "actions": ["1 send", "1 draft", "1 snooze 3d"],
             }],
         }],
     }
@@ -513,7 +513,7 @@ def exercise_dead_chrome_gate() -> None:
                 "name": "Sam Sample", "subject": "Test",
                 "metadata": [("Subject", "Test"), ("To", "Sam (no email)")],
                 "body_lines": ["body"],
-                "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+                "actions": ["1 send", "1 draft", "1 snooze 3d"],
             }],
         }],
     }

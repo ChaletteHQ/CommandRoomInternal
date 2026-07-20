@@ -57,7 +57,10 @@ def analyze_noise(workspace_root) -> Dict[str, dict]:
         data = ev.get("data") or {}
         if t == "commitment":
             cid = data.get("id")
-            if cid:
+            # SUB1 D6 — sub-items never feed noise stats: a child is
+            # user-created decomposition, not capture noise; its drops say
+            # nothing about the extractor's precision for that counterparty.
+            if cid and not data.get("parent_id"):
                 commitments[cid] = {
                     "counterparty_id": data.get("counterparty_id"),
                     "counterparty_name": data.get("counterparty_name"),

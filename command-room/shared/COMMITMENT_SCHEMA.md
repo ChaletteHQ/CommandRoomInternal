@@ -343,6 +343,37 @@ In practice, every producer skill uses the writer helper described in `shared/WO
 
 ---
 
+## Owed vs Task — the two-surface split (SPEC CTS1, 2026-07)
+
+The daily experience partitions the ONE open set into two named surfaces plus a confirm tail. This is a **read-side projection** (`shared/scripts/surface_split.py`) — no new field, no second store, and NEVER a `direction` field (direction is derived from `owner_id` vs the primary user; storing it would create a second source of truth for the same fact).
+
+**Definitions:**
+
+| Term | Definition | Field basis |
+|---|---|---|
+| **Owed** (a promise) | A deliverable a named party is *waiting on*, because it was **communicated** to them. Either direction. | effective `kind` ≠ `task` (post-`commitment_reclassified` fold) |
+| **Task** (a to-do) | Work with **no counterparty** — the user decided it; only their clock is running. | effective `kind` == `task` |
+| **Direction** | Who acts next. Derived, never stored. | `owner_id` present and == user → they do · present and ≠ user → they wait on someone · absent → unowned |
+
+**The trap (encode in every capture prompt): the beneficiary is not the counterparty.** Building a dashboard *for* someone is a personal Task until the user tells them "I'll have it by Friday." Owed-ness is a *communicated expectation*, not who benefits. And a due date does NOT make something Owed — "consolidate by Friday" is a dated Task; deadline is time metadata on either kind.
+
+**The classifier is effective kind, never raw counterparty presence** (RULED 2026-07-16, Option B). ~49 live open promises carry owner=user and NO resolvable counterparty — the Bug #103 class where counterparty LINKING failed on real promises. Those stay Owed, rendered on My Plate · Promised tagged "counterparty unresolved" with a drip + Friday-batch fixup; they are never silently demoted.
+
+**The five-way partition invariant** (asserted by `tests/run_cts1_surface_split_test.py`, over TOP-LEVEL items only — SUB1):
+
+```
+waiting_on + promised + personal + unowned + unconfirmed == total
+```
+
+`waiting_on` == headline `owed_to_you`; `promised + personal` == headline `you_owe`. The surfaces re-group `count_commitments`' buckets — they never re-count them.
+
+**Write-time consistency (warn-level, NEW writes only — the §5 invariant):** `kind: task` ⇒ counterparty empty; `kind: promise` ⇒ counterparty signal present OR `pending_review`. `event_gate.gate_events` warns (stderr, never rejects) when a new commitment violates either half. Historical rows converge via the fixup paths, never via warnings. The counterparty test goes through `commitment_parties` (the MC1 ids/names union) — never the two scalar fields alone.
+
+**Orthogonality guards (keep the line from smearing):**
+- A **Task is NOT a Reminder.** A Task has a deliverable you complete; a Reminder ("renew the domain") is pure surfacing with nothing to finish — its own manual lane (`reminders.py`, user-minted only), never in either surface.
+- **Discuss-later / "big ideas" stay separate** (`commitment_to_discuss` / show-my-list). Not deliverables → never in the two surfaces.
+- **Delegated tasks** (owner ≠ user, kind `task`) render on Waiting On (someone else acts next) but stay out of CRU (`cru_eligible` excludes task kind) — manual nudge only, never auto-chased.
+
 ## Migration notes
 
 - Pre-v2.7.15 events.jsonl files may have commitment events with flat top-level fields (`project_id`, `owner`, `title`, `due`, `status`). The aggregator handles these. Do NOT rewrite existing events to canonical shape — append-only is non-negotiable per the events schema.

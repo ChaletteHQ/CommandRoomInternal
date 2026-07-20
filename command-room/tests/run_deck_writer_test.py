@@ -21,7 +21,8 @@ Covers the contract deck_writer must satisfy:
     NO file on disk
   - brand resolution incl. per-org override (accent hex lands in slide XML);
     unconfigured = byte-stable defaults
-  - deterministic: same sections + same brand → identical .pptx bytes
+  - deterministic: same sections + same brand → identical .pptx zip payload
+    (per-entry bytes; raw archive bytes carry 2s-resolution zip timestamps)
   - docx/deck parity: the deck's KPI values / wins / asks match the .docx
     verbatim (same assembled sections, two renderers)
   - the install path: pip failure → DeckDependencyError (honest stop), never
@@ -59,6 +60,11 @@ from deck_writer import (
 )
 
 results = {"pass": 0, "fail": 0, "failures": []}
+
+# Consolidated 2026-07-19 (FB bundle): the local copy that mirrored
+# run_charts_test.py while out7-kpi-scorecard was in flight is now the shared
+# tests/ooxml_payload_lib.py helper (OUT7 merged @ c122137). Both suites import it.
+from ooxml_payload_lib import zip_payload_identical as _zip_payload_identical  # noqa: E402
 
 
 def check(name, condition, detail=""):
@@ -234,14 +240,14 @@ def test_render_and_brand_and_determinism(tmp):
     make_deck(out1, SECTIONS, **KW)
     make_deck(out2, SECTIONS, **KW)
     check("deck saved non-empty", os.path.getsize(out1) > 10_000)
-    check("deterministic bytes for fixed input",
-          Path(out1).read_bytes() == Path(out2).read_bytes(),
-          "byte-identity couples to python-pptx internals (fixed zip "
-          "timestamps, part ordering) and is only promised WITHIN the pinned "
-          f"version (PYTHON_PPTX_PIN={deck_writer.PYTHON_PPTX_PIN}). If this "
-          "failed right after a pin bump, byte drift is EXPECTED — verify the "
-          "slide XML is still deterministic, then re-baseline deliberately; "
-          "do not chase phantom nondeterminism.")
+    check("deterministic payload for fixed input",
+          _zip_payload_identical(out1, out2),
+          "payload-identity couples to python-pptx internals (part naming, "
+          "part ordering, XML serialization) and is only promised WITHIN the "
+          f"pinned version (PYTHON_PPTX_PIN={deck_writer.PYTHON_PPTX_PIN}). "
+          "If this failed right after a pin bump, payload drift is EXPECTED — "
+          "verify the slide XML is still deterministic, then re-baseline "
+          "deliberately; do not chase phantom nondeterminism.")
 
     prs = Presentation(out1)
     n_plan = len(_plan())
@@ -265,8 +271,10 @@ def test_render_and_brand_and_determinism(tmp):
     make_deck(out3, SECTIONS, brand=org_brand, **KW)
     xml3 = "".join(s._element.xml for s in Presentation(out3).slides)
     check("org brand override accent in slide XML", "8A5A2B" in xml3)
-    check("org override changes bytes vs default",
-          Path(out3).read_bytes() != Path(out1).read_bytes())
+    # not read_bytes() != : zip-timestamp drift alone would make raw bytes
+    # differ and false-pass this even if the override never landed.
+    check("org override changes payload vs default",
+          not _zip_payload_identical(out3, out1))
 
 
 def test_leak_scan_before_save(tmp):

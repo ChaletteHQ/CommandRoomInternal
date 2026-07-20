@@ -154,6 +154,8 @@
         "voice_calibration_review",
         "dormancy_signal",
         "relationship_move_suggested",
+        "balance_nudge_suggested",
+        "balance_nudge_actioned",
         "coach_session",
         "m1_backfill_started",
         "m1_backfill_complete",
@@ -227,6 +229,14 @@
         "brain_proposal_expired",
         "brain_change_undone",
         "person_backlog_swept",
+        "unidentified_attendee_observed",
+        "identity_reconcile_run",
+        "person_role_changed",
+        "person_org_changed",
+        "person_fact_observed",
+        "org_fact_observed",
+        "entity_fact_retracted",
+        "chart_render",
         "note",
         "other"
       ]

@@ -1,0 +1,27 @@
+{
+ "version": "5.0.0",
+ "headline": "Your commitments split into two clear lanes — what's on your plate and what you're waiting on others for — plus people identity cleanup, entity history, and new chart, infographic, and scorecard formats.",
+ "items": [
+  {
+   "id": "v500_instruct_commitments_split_migration",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your commitments are splitting into two lanes: My Plate (things you own) and Waiting On (things you're waiting on other people for). This takes a one-time migration per workspace — say `set up command room schedules` once to run it. Until you do, items you own stay quiet, so run it soon after updating.",
+   "action": "instruct_user"
+  },
+  {
+   "id": "v500_announce_identity_and_privacy",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Two under-the-hood upgrades landed: people identity now reconciles and de-duplicates your contacts automatically, and a privacy pass closes person-side leaks across every surface that reads or composes about people. Nothing to do — your records just get cleaner and safer.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v500_announce_history_and_outputs",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "New this release: entity history (every person, deal, and project now keeps a timeline you can review, with auto-captured facts and undo), plus fresh output formats — charts on demand, infographics, and scorecards — and a Balance Guardian that runs a Sunday check-in you can opt into. Deals can now originate straight from your pipeline.",
+   "action": "announce_only"
+  }
+ ]
+}

@@ -179,6 +179,15 @@
           "type": ["number", "null"],
           "description": "Phase 6 Quick Win B. User-taught cadence baseline in days. Pulse 'just busy' (dont_forget_feedback) widens it via dormancy.record_just_busy so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no override). Optional."
         },
+        "tie": {
+          "type": "string",
+          "enum": ["work", "personal"],
+          "description": "SPEC BAL1 D1. Work/personal partition line. Absent means WORK (back-compat). tie=personal people are read ONLY by the Balance surface: Pulse Phase 3 skips them before any emit, relationship-moves drops them at the load/score boundary, and the secondary dormancy emitters (team-intelligence, dormant-customer-scan) skip them at their emit gates. NOT `relationship_type` — that name is forbidden (org-level). Optional."
+        },
+        "cadence_days": {
+          "type": ["number", "null"],
+          "description": "SPEC BAL1 D1(b). Personal RE-SURFACE interval in days (date-night cadence for a spouse, call cadence for a parent) — read ONLY by shared/scripts/balance.py. The OPPOSITE of cadence_override_days (dormancy's max-widening suppression knob): this one GENERATES a reconnect nudge when the gap exceeds it. Never routed through dormancy.effective_baseline. Meaningful only with tie=personal. Optional."
+        },
         "connections": {
           "type": "array",
           "items": {
@@ -476,6 +485,42 @@
           "type": "boolean",
           "description": "Provisional org from reactive discovery, awaiting CEO confirm (deep-audit #18). On-entity flag; cleared on confirm. Replaces the forbidden pending_review."
         },
+        "money": {
+          "type": "object",
+          "description": "SPEC HIST1 Part A: recurring account/revenue money for this org — the fallback quantify.money_time_tag reads when an item has no deal.value (an org can have both; the stated per-deal figure still wins on deal-thread items). Inner keys are EXACTLY the conventional names in quantify._MONEY_FIELDS so the grouped object resolves through _money_part's candidate list. Written ONLY via org_writer.set_org_money(confirmed=True) — reachable only from an explicit user statement or a confirmed brain_proposal; NEVER estimated, never auto (Bug #92 / PIPE1 D9 money discipline). Absent money = no dollar tag, exactly as before.",
+          "additionalProperties": false,
+          "properties": {
+            "account_value": {
+              "type": ["number", "null"],
+              "description": "Recurring account value in `currency` (e.g. 120000 for a $120k/yr account). User-stated or confirmed only."
+            },
+            "revenue": {
+              "type": ["number", "null"],
+              "description": "Known revenue figure for the relationship. User-stated or confirmed only."
+            },
+            "arr": {
+              "type": ["number", "null"],
+              "description": "Annual recurring revenue. User-stated or confirmed only."
+            },
+            "mrr": {
+              "type": ["number", "null"],
+              "description": "Monthly recurring revenue. User-stated or confirmed only."
+            },
+            "currency": {
+              "type": "string",
+              "default": "USD"
+            },
+            "source": {
+              "type": ["string", "null"],
+              "description": "Where the figure came from — 'user statement', 'confirmed proposal', 'QBO sales-by-customer', … Required in code by set_org_money (money is always sourced)."
+            },
+            "as_of": {
+              "type": ["string", "null"],
+              "format": "date",
+              "description": "Date the figure was stated/confirmed."
+            }
+          }
+        },
         "brand": {
           "$ref": "#/$defs/brand",
           "description": "OPTIONAL, DORMANT per-org deliverable theme (SPEC OUT1). Overrides the workspace brand for documents scoped to THIS org (via make_brief org_id=). Absent = the workspace brand (or premium defaults). Set by hand during a paid customization engagement; never touched by onboarding."
@@ -557,6 +602,39 @@
         "brand": {
           "$ref": "#/$defs/brand",
           "description": "OPTIONAL, DORMANT deliverable theme applied to ALL of this workspace's .docx output (SPEC OUT1). Absent = premium defaults. Set by hand during a paid customization engagement; never touched by onboarding."
+        },
+        "personal_calendars": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "label": { "type": "string" }
+                }
+              }
+            ]
+          },
+          "description": "SPEC BAL1 D5. The declared personal/family calendar ids (personal Google primary, shared family calendar, or an ICS feed id) the Balance surface reads for open evenings. Calendar-specific — deliberately NOT the mail-keyed workspace.accounts[]. Absent/empty = Balance refuses honestly (not-configured != healthy). Set via workspace-manager; read-only calendars unless the user confirms a hold."
+        },
+        "evening_start": {
+          "type": "string",
+          "description": "SPEC BAL1 D5. 'HH:MM' start of the protected evening window for open-evening detection (default 18:00)."
+        },
+        "evening_end": {
+          "type": "string",
+          "description": "SPEC BAL1 D5. 'HH:MM' end of the evening window (default 22:00)."
+        },
+        "min_block_hours": {
+          "type": "number",
+          "description": "SPEC BAL1 D5. Minimum free-block length (hours) for an evening to count as open (default 2)."
+        },
+        "balance_default_cadence_days": {
+          "type": "number",
+          "description": "SPEC BAL1 D2. Default personal re-surface cadence (days) for a tie with no cadence_days of its own (default 14). Read only by shared/scripts/balance.py."
         }
       }
     }

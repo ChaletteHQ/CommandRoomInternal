@@ -96,6 +96,122 @@ def closing_this_month(open_deals: list[dict], today) -> tuple[int, float]:
     return n, total
 
 
+# Canonical stage order for the stage-mix composition (thread_writer.DEAL_STAGES
+# — imported value, not restated, so the two can't drift).
+from thread_writer import DEAL_STAGES  # noqa: E402
+
+# Reader-facing stage labels for deliverable surfaces (the plain-language
+# glossary rule: no internal tokens like 'proposal_sent' in anything the CEO
+# sees). Keyed on the canonical stage set — a new stage without a label here
+# renders title-cased with the underscore replaced, never the raw token.
+_STAGE_LABELS = {
+    "lead": "Lead",
+    "qualified": "Qualified",
+    "proposal_sent": "Proposal sent",
+    "negotiating": "Negotiating",
+}
+
+
+def stage_mix(open_deals: list[dict]) -> list[dict]:
+    """SPEC OUT3 — the stage-mix donut slices: [{label, value}] with value =
+    COUNT of open tracked deals per stage, canonical stage order, zero stages
+    dropped (drop-empty — a donut never charts an empty stage). Counts, not
+    dollars: every open tracked deal has a stage, so the composition is always
+    honest; values are partial (never estimated) and stay in the table.
+
+    Returns [] when nothing is tracked. The chart itself refuses below 2
+    non-zero stages (charts.SELECTION_CAPS min_donut_slices), so a single-
+    stage pipeline renders no donut — the caller's tiles/rows stand alone.
+    Untracked deal threads (no stage) contribute nothing here, exactly as
+    they contribute nothing to any other stage figure."""
+    counts = {s: 0 for s in DEAL_STAGES}
+    for row in open_deals or []:
+        deal = row.get("deal") if isinstance(row.get("deal"), dict) else None
+        stage = (deal or {}).get("stage")
+        if stage in counts:
+            counts[stage] += 1
+    return [
+        {"label": _STAGE_LABELS.get(stage, stage.replace("_", " ").capitalize()),
+         "value": n}
+        for stage, n in counts.items() if n > 0
+    ]
+
+
+def value_by_org(open_deals: list[dict], *,
+                 org_names: Optional[dict] = None) -> list[dict]:
+    """SPEC OUT3B (S3) — per-org open-deal value rollup for the "revenue by
+    client" bar chart: [{label, value}] with value = SUMMED stated values of
+    open tracked deals under each org, ranked value-desc. Same money posture
+    as `open_pipeline_value` / `_deal_value` — a deal with no stated value
+    contributes NOTHING (never estimated, F-60 drop-empty); an org whose deals
+    are ALL unpriced drops entirely (never a $0 bar). Returns [] when no open
+    deal carries a value — the chart then refuses (charts.SELECTION_CAPS: a
+    1-category bar is a single comparison; the skill's <2-bar refusal states
+    what IS chartable), and the caller's table/tiles stand.
+
+    Reader-facing labels (the stage_mix posture — no internal tokens the CEO
+    sees): `org_names` maps org_id -> display name (the caller resolves it from
+    the org records, pure functions stay substrate-free here). A row whose
+    org_id is absent from the map — or which carries no org_id at all — labels
+    from the deal's own reader-facing `name`, so an unaffiliated priced deal is
+    its own bar rather than being silently merged into a blank bucket. Ties
+    break by label asc for a fully deterministic order (exact in tests)."""
+    names = org_names if isinstance(org_names, dict) else {}
+    totals: dict = {}
+    order: list = []
+    for row in open_deals or []:
+        value = _deal_value(row)
+        if value is None:
+            continue
+        org_id = row.get("org_id")
+        if org_id and org_id in names and str(names[org_id]).strip():
+            label = str(names[org_id]).strip()
+        else:
+            label = str(row.get("name") or org_id or "").strip()
+        if not label:
+            continue
+        if label not in totals:
+            totals[label] = 0.0
+            order.append(label)
+        totals[label] += value
+    rows = [{"label": label, "value": totals[label]} for label in order]
+    rows.sort(key=lambda r: (-r["value"], r["label"]))
+    return rows
+
+
+def prospects_not_in_pipeline(entities: dict) -> list[dict]:
+    """PIPE1 D9.1 — the reconciliation readout: prospect orgs with NO deal
+    coverage, i.e. tracked as `relationship_type: "prospect"` on the org
+    side but absent from the pipeline side (no open deal thread AND no
+    active engagement thread). Returns [{org_id, name}], name-asc.
+
+    Coverage comes from `deal_state.org_deal_coverage` — THE shared
+    existence predicate (FS-18b), the same one the deal-signal detector and
+    the apply-choices deal_creation confirm consult; forking it here would
+    let the widget line and the detector disagree about who's "not in the
+    pipeline". Archived orgs don't count (they're not open pursuit). The
+    surface renders the COUNT and drops the line at zero — visibility for
+    the two-"prospect"-systems gap, never a nag."""
+    from deal_state import org_deal_coverage
+
+    ent = entities.get("entities") if isinstance(entities.get("entities"), dict) else entities
+    orgs = ent.get("orgs") or []
+    threads = ent.get("threads") or ent.get("projects") or []
+    out = []
+    for o in orgs:
+        if not isinstance(o, dict) or not o.get("id"):
+            continue
+        if o.get("relationship_type") != "prospect":
+            continue
+        if o.get("status") == "archived":
+            continue
+        if org_deal_coverage(threads, o["id"]) is None:
+            out.append({"org_id": o["id"],
+                        "name": o.get("canonical_name") or o["id"]})
+    out.sort(key=lambda r: r["name"])
+    return out
+
+
 _STALL_FLAGS = frozenset({"rotting", "no_next_step"})
 
 
@@ -231,6 +347,8 @@ __all__ = [
     "WON_RATE_WINDOW_DAYS",
     "HAIRCUT_WEIGHTS",
     "open_pipeline_value",
+    "prospects_not_in_pipeline",
+    "value_by_org",
     "closing_this_month",
     "stalled_count",
     "won_rate_90d",

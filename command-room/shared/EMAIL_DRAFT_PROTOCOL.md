@@ -46,11 +46,13 @@ This protocol was written in Gmail terms. As of the connector-agnostic build it 
 
 - `N send` → compose + send via the resolved send path (§3c dispatch order).
 - `N draft` → opens the inline edit field on the widget; on Apply, calls the resolved draft tool to land the draft in the connector's Drafts. (User reviews/edits via the widget, then the draft persists for further refinement in the connector's UI if desired.)
-- `N edit then send` → opens the inline edit field; on Apply, sends.
+- `N snooze 3d` → NO connector call; mutes the card for 3 days (FB-17 — the email card's third primary button).
 
 **v2.14.4+ canonical-verb consolidation:** the prior `to drafts` verb was merged into `draft` — same effect (lands in Gmail Drafts), with the edit-then-save flow as the default semantic. The renderer's CANONICAL_ACTIONS set rejects `to drafts` as a per-item verb; only the bulk action `to drafts all` retains the older shape. References below to "to drafts" describe the OLD shape — the current emit MUST use `draft`.
 
-For `N skip` — NO Gmail call; just records dismissal.
+**FB-17 (2026-07-19): `edit then send` RETIRED as an emitted verb** — the FB-10 inline-editable body replaced the popup editor, and the email card is Send / Draft / Snooze (3 days). The wire id survives only as a DEPRECATED_ALIAS (→ `send`) for in-flight widgets; the renderer's CANONICAL_ACTIONS set now REJECTS it at render time, so no new data view may include it. References below to "edit then send" describe dispatch of the in-flight alias, never something to emit.
+
+For `N skip` (surfaces that still offer it — not the email card) — NO Gmail call; just records dismissal.
 
 **Why lazy creation:** v2.7.x → v2.9.2 created drafts eagerly at fire time, which cluttered Gmail Drafts with up to 5+ unwanted drafts every day. v2.9.3+ only persists what the user actively chooses to save via `N send` or `N draft`.
 
@@ -273,7 +275,7 @@ Since drafts aren't created at fire time, `N skip` has nothing to delete in Gmai
 
 When this protocol applies, the orchestrator's reply-handling section should reference this doc:
 
-> *"Email-draft actions (`send` / `edit then send` / `draft` / `skip`) follow the lazy-creation + numbered-format + Gmail-defensive rules in `shared/EMAIL_DRAFT_PROTOCOL.md`."*
+> *"Email-draft actions (`send` / `draft` / `snooze 3d`) follow the lazy-creation + numbered-format + Gmail-defensive rules in `shared/EMAIL_DRAFT_PROTOCOL.md`."*
 
 Earlier phase instructions about creating drafts at fire time are SUPERSEDED by this doc.
 
@@ -285,7 +287,7 @@ When deciding which surface to render, follow this ladder. Skills must NOT route
 |---|---|
 | n>1 + actionable items | Path A — canonical batched widget (Apply-all selection model). Render via `widget_transport.render_and_persist(wrapper="fragment", ...)`. |
 | n=1 + actionable + compose-new (no Gmail draft exists yet) | Path B1 — editor card. Multi-field form with editable To/CC/Subject/Body. |
-| n=1 + actionable + confirm-drafted (draft already produced by upstream skill) | Path B2 — confirmation card. Avatar + read-only summary + 2 action buttons (`send` + `edit then send`), board-pack/calendar pattern. |
+| n=1 + actionable + confirm-drafted (draft already produced by upstream skill) | Path B2 — confirmation card. Avatar + read-only summary + the email card's primary buttons (`send` / `draft` / `snooze 3d` — FB-17; an email-shaped item MUST carry all three per `EMAIL_REQUIRED_ACTIONS`), board-pack pattern. Calendar-shaped confirmations carry `send` / `skip` instead. |
 | n=1 + degraded (recipient identified but no actionable email) | Recovery widget per §2.11 — use `add email then send` canonical verb. Single-field email input, transitions to `send` on submit. |
 | Single-question single-decision (no draft involved) | Path D — AskUserQuestion (platform-native), NOT a widget. |
 | n>0 + closure-reversal detected (the recipient just closed the thread you're about to revive) | Confirmation widget per Strength #20 — surface the reversal and ask before proceeding. |

@@ -206,18 +206,47 @@ def derive_commitment_movement(
 
     events, _skipped = load_events_defensively(path, since_ts=since_ts)
 
-    # Pass 1 — commitment index (seq → canonical id) + capture-ts floor.
+    # Pass 1 — commitment index (seq → canonical id) + capture-ts floor +
+    # the SUB1 child→parent chain (data.parent_id / data.parent_seq) + the
+    # C4 merge re-point map (a non-split supersession transfers the closed
+    # parent's children to the SURVIVOR read-side, D3b — bubbles must land
+    # on the survivor's id, because every consumer of this map keys its
+    # lookups by the PROJECTED id: classify_commitments over the loader's
+    # top-level set and stale_tasks via the re-pointed data.parent_id).
     by_id: set[str] = set()
     seq_to_id: dict[int, str] = {}
     last: dict[str, CommitmentMovement] = {}
+    child_parent: dict[str, str] = {}
+    child_parent_seq: dict[str, int] = {}
+    superseded_onto: dict[str, str] = {}
     for ev in events:
-        if (ev.get("type") or ev.get("event")) != "commitment":
+        et1 = ev.get("type") or ev.get("event")
+        if et1 == "commitment_superseded":
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            # Same fold as the loader's merged_onto: split closers
+            # (data.split_into present) are NOT merges and stay skipped.
+            if not d.get("split_into"):
+                old = (d.get("commitment_id") or d.get("thread_id")
+                       or d.get("id") or d.get("target_id"))
+                survivor = d.get("superseded_by") or d.get("survivor_id")
+                if old and survivor:
+                    superseded_onto[str(old)] = str(survivor)
+            continue
+        if et1 != "commitment":
             continue
         cid = _commitment_id(ev)
         by_id.add(cid)
         seq = ev.get("seq")
         if isinstance(seq, int) and not isinstance(seq, bool):
             seq_to_id[seq] = cid
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        pid = d.get("parent_id")
+        if isinstance(pid, str) and pid:
+            child_parent[cid] = pid
+        else:
+            pseq = d.get("parent_seq")
+            if isinstance(pseq, int) and not isinstance(pseq, bool):
+                child_parent_seq[cid] = pseq
         ts = _parse_event_ts(ev)
         if ts is not None:
             prior = last.get(cid)
@@ -225,6 +254,43 @@ def derive_commitment_movement(
                 last[cid] = CommitmentMovement(
                     ts=ts, event_type="commitment", seq=seq if isinstance(seq, int) else None,
                     chase_to=None)
+
+    for ccid, pseq in child_parent_seq.items():
+        if ccid not in child_parent and pseq in seq_to_id:
+            child_parent[ccid] = seq_to_id[pseq]
+
+    if superseded_onto:
+        # Re-point each child's bubble target through the merge chain to its
+        # live end (cycle-safe) — mirrors cru_match._eff_parent and the
+        # writer's _resolve_survivor, so all three surfaces agree on WHICH
+        # id owns a transferred child's activity.
+        def _eff_parent(pid: str) -> str:
+            seen: set = set()
+            while pid in superseded_onto and pid not in seen:
+                seen.add(pid)
+                pid = superseded_onto[pid]
+            return pid
+
+        child_parent = {c: _eff_parent(p) for c, p in child_parent.items()}
+
+    def _bubble(target_cid: str, record: CommitmentMovement) -> None:
+        """SUB1 D5 — child activity IS parent movement: a parent whose steps
+        are being checked off is never 'stuck' at 21 days (false-alarm
+        class). The child keeps its own movement row too."""
+        pcid = child_parent.get(target_cid)
+        if pcid is None or pcid not in by_id:
+            return
+        prior = last.get(pcid)
+        if prior is None or record.ts > prior.ts:
+            last[pcid] = record
+
+    # Bubble the child CAPTURE floor: adding sub-items is itself movement on
+    # the parent (the user just planned the work). At this point last[child]
+    # is exactly the capture record from pass 1.
+    for ccid in child_parent:
+        cm = last.get(ccid)
+        if cm is not None:
+            _bubble(ccid, cm)
 
     def _resolve(raw: str) -> Optional[str]:
         if raw in by_id:
@@ -234,10 +300,19 @@ def derive_commitment_movement(
             return seq_to_id.get(int(m.group(1)))
         return None
 
-    # Pass 2 — movement events, newest-ts-wins per commitment.
+    # Pass 2 — movement events, newest-ts-wins per commitment. SUB1: a
+    # CHILD's movement — and its closure (checking a step off is progress on
+    # the deliverable) — bubbles to the parent id. Closures are bubble-ONLY:
+    # the child's own row is untouched (a closed child leaves the open set;
+    # `commitment_resolved` stays out of MOVEMENT_EVENT_TYPES for the item
+    # itself).
+    _CHILD_CLOSURE_TYPES = frozenset(
+        {"commitment_resolved", "thread_resolved", "commitment_superseded"})
     for ev in events:
         et = ev.get("type") or ev.get("event") or ""
-        if et not in types:
+        is_movement = et in types
+        is_closure = et in _CHILD_CLOSURE_TYPES
+        if not (is_movement or is_closure):
             continue
         ts = _parse_event_ts(ev)
         if ts is None:
@@ -262,9 +337,11 @@ def derive_commitment_movement(
             chase_to=_chase_counterparty(ev) if et in CHASE_EVENT_TYPES else None,
         )
         for cid in targets:
-            prior = last.get(cid)
-            if prior is None or record.ts > prior.ts:
-                last[cid] = record
+            if is_movement:
+                prior = last.get(cid)
+                if prior is None or record.ts > prior.ts:
+                    last[cid] = record
+            _bubble(cid, record)
 
     _MOVEMENT_CACHE[cache_key] = (sig, last)
     return dict(last)

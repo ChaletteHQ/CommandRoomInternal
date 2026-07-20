@@ -197,6 +197,11 @@ FLAG_TINT_KEYS = {
     "review": "flag_warn", "watch": "flag_warn", "caution": "flag_warn",
     "bad": "flag_bad", "red": "flag_bad", "flag": "flag_bad",
     "off-market": "flag_bad", "risk": "flag_bad", "push back": "flag_bad",
+    # OUT4 review F-2: the checklist_scorecard layout RENDERS pass/warn/fail
+    # pills, so the rendered vocabulary must round-trip as input — "pass" was
+    # already mapped; "fail" was not (a status the registry itself advertises
+    # would refuse).
+    "fail": "flag_bad", "failed": "flag_bad",
 }
 
 import re as _re  # noqa: E402

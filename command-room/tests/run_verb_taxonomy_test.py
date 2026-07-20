@@ -99,7 +99,7 @@ def render_all_fixture_widgets():
             {"n": 1, "icon": "✉", "name": "Sam", "subject": "Q2",
              "metadata": [("To", "sam@example.com"), ("Subject", "Re: Q2")],
              "body_lines": ["Hey —"],
-             "actions": ["send", "edit then send", "draft", "escalate to memo", "skip"]},
+             "actions": ["send", "draft", "snooze 3d"]},
             {"n": 2, "name": "Owed to you",
              "actions": ["follow-up call", "mark received", "skip"]},
             {"n": 3, "name": "Self item",

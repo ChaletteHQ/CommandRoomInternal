@@ -206,6 +206,37 @@ Same call with `rollup="quarter"` over a 3-month window. The helper returns
 hours per month). Title it "Value Receipt — Q2 2026"; subtitle the quarter span.
 Everything else (numbers-from-code, leak-clean doc, no names) is identical.
 
+The month-by-month section also carries a **month-over-month hours line
+chart** (SPEC OUT3) — `value_receipt.build_trend_chart(per_month)` attaches
+it inside `_build_sections` automatically, every point verbatim from the same
+`per_month` rows the table renders. It draws best-effort at render time
+(`charts.try_chart_png` inside `make_brief`): a machine with no rasterizer, or
+an all-zero quarter, simply renders the table alone — never an empty frame.
+The forwardability lock is unchanged: the chart carries month labels and
+numbers only, no names. Don't build chart payloads by hand here — the helper
+owns them (selection rules: `shared/CHART_SELECTION.md`).
+
+### Step 6b — Visual one-pager (SPEC OUT4, opt-in)
+
+If the workspace has opted value-receipt into the infographic output mode —
+`output_profile.renders_infographic_first("value_receipt", workspace_root)` is
+`True` — the **quarterly** roll-up may ALSO render as a template-constrained
+`stat_spotlight` infographic (a self-contained premium-HTML one-pager). Call
+`value_receipt.build_value_receipt_infographic(receipt, label="Q2 2026",
+workspace_root=workspace_root)` — it lays the conservative hours-returned figure
+out as the hero number and the remaining receipt tiles as the support band, all
+**verbatim from `build_receipt_tiles`** (no number is re-derived here), and runs
+the same leak scan the .docx does. Write the returned HTML to the same routed
+folder with an `.html` extension and link it. The helper returns `None` on an
+honest no-fit (not a quarter, no hours to headline, or no support tiles) — keep
+the .docx / premium-HTML receipt then. A RAISED error is a different thing: if
+the render raises (`LeakScanError` or a voice gate), keep the .docx AND surface
+the gate's message verbatim to the CEO — a refusal is never folded into "no
+infographic this quarter"; the WHY is the point. This is OFF by default and unlisted
+workspaces are byte-identical to before; do not hand-compose the infographic
+HTML — `infographic.build_infographic` (the closed layout set,
+`shared/INFOGRAPHIC_LAYOUTS.md`) owns it.
+
 ### Zero-activity window
 
 If the window has no recorded activity, the helper returns all-zero metrics and

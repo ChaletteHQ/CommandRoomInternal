@@ -112,9 +112,13 @@ chokepoints (contract: `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The output prof
 `output_profile.validate_output_profile` passes. The knobs (defaults = today's behavior):
 **density** (tight / narrative) · **visual bias** (tiles-first / prose-first) · **page cap** per
 document kind (warn-only) · **default format** (docx / premium html) · **per-kind format**
-(SPEC OUT5: `format_by_kind`, e.g. board pack as premium HTML while everything else stays docx).
+(SPEC OUT5: `format_by_kind`, e.g. board pack as premium HTML while everything else stays docx) ·
+**visual first** (SPEC OUT4: `visual_first`, the kinds that may ALSO render as a template-constrained
+infographic one-pager when their content fits a layout — off by default; today only the quarterly
+value receipt consults it, e.g. "make my quarterly receipt the visual one-pager" →
+`visual_first: [value_receipt]`).
 
-- **"tune output"** → show the five knobs with current values pre-filled (plain English: "how dense
+- **"tune output"** → show the six knobs with current values pre-filled (plain English: "how dense
   the prose runs", "whether numbers lead as stat tiles or prose leads", "whether documents render
   as Word files or the premium dark HTML brief") → validate → save → one-line ack. Freeform works
   too ("make my documents airier" → `density: narrative`; "lead with the numbers" →
@@ -454,6 +458,15 @@ It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-S
 
 **Surface the rendered block — mandatory (v3.18.2+, Bug #86).** After the renderer runs, READ BACK the `<!-- LIVE-STATE:people -->` region from `PROJECT_BRAIN.md` and surface it in the **People** block of the first response (see the response shape below). The **"Proposed — confirm to add"** line in particular MUST appear in the response whenever the renderer produced one — it is the actionable handle for the confirm-gate; if it's rendered into the brain but not surfaced, the confirm-people workflow dead-ends (Bug #86 — see references/HISTORY.md). Surface the block from the brain region; do not re-derive the People list by hand.
 
+**Entity history on `go` (SPEC HIST1 D7).** When the resolver's match is a PERSON (`go Sam Sample` — ENTITY_RESOLVE gated exactly like every name-bearing turn), render/refresh the durable person history and surface the compiled block instead of the thread shape:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+cd "$PLUGIN_ROOT" && python3 shared/scripts/render_person_history.py "<workspace_root>" "<person_id>"
+```
+
+Read the written view back from `_hq/views/people/` and surface it: how-we-met, last touch (derived from events — never the stored date field), cadence, the role/company lineage lines, and any recorded facts. (Freshness: the renderer just recompiled this view from events.jsonl in the same turn, so the render IS the overlay — no separate freshness step applies to a view you just regenerated; never surface a history view you did NOT just render without re-running the renderer first.) When the match is an ORG and the form is **`go [org] all` / `go [org] rollup`**, additionally run `python3 shared/scripts/render_org_history.py "<workspace_root>" "<org_id>"` and fold the compiled block (money tag, derived stats, open deals, people movement, context & news) into the rollup view. Both renderers are deterministic compiles over events — defensive reads, drop-empty sections, tolerant of legacy records missing every new field. Surface the compiled content; never re-derive the history by hand.
+
 **Why default 1 month, not 12:** keeps the first-call demo light (~30-40K vs 250-400K tokens on a heavy project — see references/HISTORY.md). Customers extend on demand with `backfill [N] months on [project]` (caps at 36 months), raise the global default via `set first-go to N months` (see below), or edit `workspace.first_go_months` in entities.json directly.
 
 **First-`go` is intentionally slow on first open** (~5-15 seconds wall-clock at 1 month, longer for heavier defaults). Surface in plain English using the actual configured value: `(Loading [project] for the first time — pulling [N] months of context. Subsequent opens will be instant.)` where `[N]` is `workspace.first_go_months`. Subsequent `go` calls hit the 5-second target.
@@ -497,6 +510,34 @@ The response ends without a question. M drives the next turn. Don't ask "Is this
 
 **Speed target:** under 5 seconds wall-clock from prompt to first token of the response, when connectors are warm. Skip slow connectors (timeout > 3s) silently and footnote: "(Slack didn't respond — retry with `refresh slack`.)"
 
+### Org money & facts — loose-input handler (SPEC HIST1 Part A; bare trigger DEFERRED per D8/B2)
+
+This skill's description is frozen at its budget cap, so there is NO dedicated quoted trigger for these — they arrive through the EXISTING catch-all ladder ("loose input naming a tracked entity", steps 3/4 above) and through the confirm-proposal card. M ruled D8 = DEFER: do not add org-money/fact stems to the description; a dedicated bare verb ships only if a future description trim lands.
+
+**Account value — `[Org] is a $[N] account` / `[Org] is a $[N]/yr account` and equivalents.** A loose statement attaching a recurring dollar figure to a tracked org:
+
+1. ENTITY_RESOLVE the org name first (never first-pick on ambiguity — one question on collision, standard rules above).
+2. Echo the parse in one line and confirm: *"Acme Co — $120k/yr account value, from your statement. Save it?"* (An explicit, fully-specified statement may skip the echo only when the resolver hit is tier-1 and the amount is unambiguous.)
+3. On yes (or the unambiguous case), write through the ONE sanctioned writer — never a hand edit:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+python3 -c "
+import sys; sys.path.insert(0, 'shared/scripts')
+from org_writer import set_org_money
+set_org_money('<workspace_root>', '<org_id>', {'account_value': 120000, 'source': 'user statement'}, source_skill='workspace-manager', confirmed=True)
+print('OK')
+"
+```
+
+`confirmed=True` is legal ONLY here (the user just said it) and on a confirmed proposal card — money is never estimated, never auto (the writer refuses without it). Absent money keeps rendering no dollar tag. Ack in plain English ("Got it — Acme Co carries a $120k/yr account value now; your reports will show it.").
+
+**Org facts — `remember [fact] about [Org]` / a loose org-news statement ("note that Acme Co raised a Series A").** Same shape: ENTITY_RESOLVE the org → `org_writer.record_org_fact(ws, org_id, fact, source_ref, category=..., source_skill='workspace-manager')` with `source_ref` naming where it came from (`chat:user-statement` for a direct statement). Facts are additive events — they never mutate the org record; the org history view (`go [org] rollup`) and board packs read them. Person-shaped facts ("remember Sam prefers Signal") are people-crm's — hand those over.
+
+**Observed-value lane (HIST1 Part 2 — propose, never write).** Two sources feed the SAME confirm rail, and neither ever calls `set_org_money` directly:
+- *Substrate scan:* `org_value_detector.run_org_value_scan(<workspace_root>)` spots account-shaped language + an amount near a tracked client org in recent events and writes capped, cooldown'd `org_money` confirm proposals (money-class rows — they reach the brief's money carve-out and the staff meeting). Cheap and idempotent; fine to run when an org money/rollup context comes up.
+- *QBO, opportunistic:* when a `qbo_*` sales tool is DISCOVERABLE in this session (`tool_discovery` — never assume; QBO absent = silent no-op, no dependency) and M is looking at a client org's money/rollup, you may offer to pull sales-by-customer for that org and, on a figure, propose it via `org_value_detector.propose_org_value(ws, org_id, {'account_value': <figure>, 'source': 'qbo:sales-by-customer', 'as_of': <today>}, evidence='QBO sales-by-customer', source_ref='qbo:sales-by-customer', org_name=<name>)`. The FIGURE IS PROPOSED, NEVER APPLIED — M confirms on the card (apply-choices routes it through `set_org_money(confirmed=True)`). Never annualize, never estimate, never fire without M seeing the number.
+
 ### "new project [Name]" / "new client [Name]"
 
 Create a new project — arrive smart, not blank.
@@ -508,7 +549,7 @@ Create a new project — arrive smart, not blank.
 Maps to `relationship_type` for the new project's affiliation_id org. If the user picks `5 other`, ask for one-line description and store as `relationship_label`. If the user just types the project name without answering, default to the dominant relationship_type for the user's workspace shape (operating_business → operating; service_business → client; fund → portfolio_company; etc.).
 
 
-**Pre-check:** Before creating anything, check if a project with this name (or a close variation) already exists. Check both the folder structure at `[WORKSPACE_ROOT]/` and rows in MASTER_TRACKER.md. Also check `_exploring/` for an existing exploring item. If found:
+**Pre-check:** Before creating anything, check if a project with this name (or a close variation) already exists. Check both the folder structure at `[WORKSPACE_ROOT]/` and rows in MASTER_TRACKER.md (orientation only — a name-collision scan, not a freshness-driving read; the create itself dedups through the typed writer). Also check `_exploring/` for an existing exploring item. If found:
 - Exact match: "You already have a project called [Name]. Want me to open it instead? Say **'go [Name]'**."
 - Close match: "[Similar Name] already exists — is this the same thing, or a new project?"
 - Exploring match: "[Name] is currently in Exploring. Want to promote it to a full project?"
@@ -730,7 +771,7 @@ Each renderer atomic-writes its `_hq/views/*.md` plus the back-compat `_hq/*.md`
 14. Run maintenance rules from references/maintenance-rules.md:
     - **Session notes rollover:** For each project touched, check if SESSION_NOTES exceeds 150 lines. If yes, generate Session History summary, archive older entries per Rule 1.
     - **Brain thread compression:** For each project touched, compress resolved threads older than 30 days to one-liners in Thread History per Rule 2.
-    - **Commitment compression:** Check MASTER_TRACKER commitments and person profiles. Compress delivered items older than 60 days to one-liners in Commitment History per Rule 3. Clean tracker quick tasks/archived entries per Rule 8.
+    - **Commitment compression:** Check MASTER_TRACKER commitments and person profiles. Compress delivered items older than 60 days to one-liners in Commitment History per Rule 3. Clean tracker archived entries per Rule 8 (CTS1: the quick-task lane is retired — if a legacy "Quick Tasks" section still exists, run the one-time migration in the "quick task:" handler above instead of grooming it).
     - **Interaction log tiered compression:** For each person file updated, apply tiered compression per Rule 7: Tier 1 (0–90 days) full detail, Tier 2 (90 days–6 months) one-line summaries, Tier 3 (6 months–1 year) monthly digests, Tier 4 (1 year+) archive to separate file.
     - These run silently. Only mention in the summary if something was actually cleaned: "Tidied up — moved older session notes to history for [Project] and shortened a few stale commitments."
 
@@ -803,11 +844,28 @@ Route to the `cleanup` skill — the on-demand form of the weekly maintenance pa
 
 ### "quick task: [description]"
 
-One-off tasks that need tracking but not full project scaffolding:
+One-off tasks that need tracking but not full project scaffolding. **CTS1 (2026-07): this writes a REAL `kind: task` commitment event** — the old markdown "Quick Tasks" lane in MASTER_TRACKER.md is RETIRED. That lane skipped events.jsonl entirely, so quick tasks never participated in buckets, aging, or close-everywhere — exactly the "closed in one place, still open in another" bug class that hit real customer workspaces (the Jun 19 / Jul 1 tasks-vs-commitments duplication reports). One source of truth; the task lands on **My Plate · Personal** and closes through `close_commitment` like everything else.
 
-1. Add to MASTER_TRACKER.md under "Quick Tasks" or "Completed Quick Tasks"
-2. No folder creation, no session notes
-3. Just track it so it doesn't get lost
+1. Append ONE `commitment` event via `event_gate.append_event` (the gated path — kind is validated, `data.id` minted as `cmt_<ulid>`):
+   ```python
+   from event_gate import append_event
+   append_event(events_path, [{
+       "type": "commitment",
+       "source_skill": "workspace-manager",
+       "data": {
+           "title": "<the description, verbatim>",
+           "kind": "task",              # self-owed by definition — no counterparty
+           "owner_id": "<M's person_id>",
+           "status": "open",
+           "due": "<ISO date ONLY if the description names one — a bare quick task is undated>",
+           "source_ref": "chat:quick-task",
+       },
+   }], holder="workspace-manager")
+   ```
+2. No folder creation, no session notes, no MASTER_TRACKER write.
+3. Confirm in one line: *"On your plate — it'll show on My Plate."* (Undated tasks age into Friday triage's 30-day "still on your plate?" sweep — nothing gets lost.)
+
+**Legacy-lane migration (run ONCE per workspace, on the first quick-task or first maintenance pass that finds the section):** if MASTER_TRACKER.md still has a "Quick Tasks" section with LIVE (unchecked) rows, convert each to a `kind: task` commitment event exactly as above (title = the row text; `source_ref: "tracker:quick-task-migration"`), then remove the "Quick Tasks" section. "Completed Quick Tasks" rows are history — move them under the tracker's `## Archived (history)` section, never convert them. M's live tracker had ZERO Quick Tasks rows at verification (2026-07-16), but client workspaces may differ — always check before removing.
 
 ### "set first-go to N months" / "set first go to N months" (onboarding v2 / 2026-05-17)
 
@@ -907,6 +965,20 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
 - Do NOT modify any cron registration (Cowork's `mcp__scheduled-tasks__update_scheduled_task` does that — surface a one-line follow-up if the user wants schedule fires actually rescheduled, not just the displayed TZ).
 
 **Why this exists:** product-level requirement — every Command Room workspace has one canonical timezone; display + schedule TZ default to the same value at install (`command-room-onboarding` Phase 0 widget Q3). Plumbing that reads the setting: `shared/scripts/tz.py` `load_workspace_tz()` + `to_local()`. (Origin in references/HISTORY.md.)
+
+---
+
+### Personal ties + Balance config (SPEC BAL1 — mirrors "set my timezone")
+
+**Trigger phrases:** `[name] is my wife/husband/partner/mom/dad/brother/sister/kid` (any explicit family/personal relationship statement), `mark [name] as personal`, `set date-night cadence to [N days/weeks]`, `set [name]'s cadence to [N days/weeks]`, `add my personal calendar [id]`, `set my evening start to [time]`.
+
+**Behavior:**
+
+1. **Tie statements** — ENTITY_RESOLVE the name (Gate 1; ambiguous → disambiguation widget, never a first-pick), then `people_writer.update_person(workspace_root, <person_id>, source_skill='workspace-manager', tie='personal', role=<the stated relationship>)`. Never a raw entities.json edit; never inferred from a transcript — explicit user statement only. Effect (say it in plain English): the person moves to the private Balance lane and stops appearing in any work-outreach or reporting surface.
+2. **Cadence statements** — resolve the person (or default to the spouse-tie for "date-night cadence" when exactly one `tie: "personal"` record has a spouse-shaped role; ambiguous → ask), convert weeks→days, then `update_person(..., cadence_days=<N>)`. `cadence_days` is the Balance re-surface interval ONLY — never write `cadence_override_days` for this (that field is Pulse's work-dormancy suppression knob; the two are opposites, BAL1 D1(b)).
+3. **Calendar/evening config** — write `workspace.personal_calendars` (append the id; keep existing), `workspace.evening_start` / `workspace.evening_end` / `workspace.min_block_hours` in `entities.json`'s `workspace` block, then append a `workspace_setting_changed` event (the timezone-handler shape). Confirm: *"Done — Balance can now see [calendar]. It runs Sunday mornings once added ('add balance')."*
+
+**Forbidden:** setting `tie` from inference; writing `relationship_type` on a person (forbidden field); touching dormancy's `cadence_override_days` from any Balance-shaped phrase; registering the balance task from here (that's change-schedule / registration Phase 6 `add`).
 
 ---
 
@@ -1010,7 +1082,7 @@ MASTER_TRACKER.md is a **regenerated projection** of `_hq/data/entities.json` + 
 
 ### Tracker Format (Essentials)
 
-The tracker has these core sections: Active (Stage 3+), Scoping (Stage 2), Exploring (Stage 1), Inbox (Stage 0), Steady State (Stage 4), Completed Quick Tasks, Recently Archived, Commitment Tracking, and Staleness Rules.
+The tracker has these core sections: Active (Stage 3+), Scoping (Stage 2), Exploring (Stage 1), Inbox (Stage 0), Steady State (Stage 4), Recently Archived, Commitment Tracking, and Staleness Rules. (CTS1: "Completed Quick Tasks" is retired — quick tasks are `kind: task` commitment events; a legacy section migrates per the "quick task:" handler.)
 
 For the full template with all section headers and example formatting, see references/workspace-detail.md → "Master Tracker Full Template" or the onboarding skill's templates.md.
 
@@ -1135,3 +1207,5 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > This skill KEEPS the administrative conversion verbs — 'is now a client', 'promote to client', 'convert to client' — and that handler routes through pipeline-tracker's closure path when the org has an open deal.
 
 > Also owns the connector & account management verbs (connector-agnostic-v1 C1 — workspace-manager owns the `workspace.connectors` / `workspace.accounts` blocks): 'set my email backend to [connector]', 'set my calendar backend to [connector]', 'use [connector] for email', '[address] is my personal account', '[address] is my business account', '[address] is a second business email', '[address] is mixed', 'mark [address] out of scope', 'stop filing [address]', 'add account [address]', 'what accounts do I have'. Machine-matchable stems for the mechanical matcher: 'set my email backend', 'set my calendar backend', 'is my personal account', 'is my business account', 'is a second business email', 'out of scope', 'stop filing', 'add account'. Behavior in the body's "Connector & account management" section.
+
+> Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A — D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements — a note-that phrasing whose name resolves to an ORG (e.g. a Series A announcement about Acme Co) routes here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a $120k account', 'is a $120k/yr account'. Money is confirm-only through org_writer.set_org_money — never estimated, never auto. Behavior in the body's "Org money & facts" section.

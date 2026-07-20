@@ -286,7 +286,7 @@ Examples per orchestrator:
 
 **Inbox / Commitments (N-tokenized):**
 ```
-▸ 3 send  ▸ 3 edit then send  ▸ 3 draft  ▸ 3 push to [date]  ▸ 3 skip
+▸ 3 send  ▸ 3 draft  ▸ 3 push to [date]  ▸ 3 snooze 3d
 ```
 
 **Upcoming Meetings (slug-tokenized — pill embeds the literal slug):**
@@ -323,7 +323,7 @@ Body:
 *Real reply by Friday EOD.*
 *MD*
 
-▸ 3 send  ▸ 3 edit then send  ▸ 3 draft  ▸ 3 skip
+▸ 3 send  ▸ 3 draft  ▸ 3 snooze 3d
 ```
 
 Multi-line drafts: each line individually wrapped in italics (the standard markdown rendering preserves line breaks within an italic block but most renderers prefer per-paragraph). Long drafts: wrap each paragraph in its own `*…*` pair.

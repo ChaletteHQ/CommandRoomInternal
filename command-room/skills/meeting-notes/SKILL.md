@@ -29,7 +29,7 @@ You are a **primary appender** for `_hq/data/events.jsonl` — every meeting you
 
 - One `meeting` event with attendees, summary, transcript reference.
 - One `decision` event per captured decision (Step 5b — **MANDATORY in both modes**, v4.5.2; same contract the scheduled past-meetings writer uses).
-- One `commitment` event per captured action item. **Schema is non-negotiable — see `shared/COMMITMENT_SCHEMA.md` and Step 5e below for the exact shape.** v2.7.15+ uses the canonical `data` envelope; legacy flat shape is read-only.
+- One `commitment` event per captured action item. **Schema is non-negotiable — see `shared/COMMITMENT_SCHEMA.md` and Step 5e below for the exact shape.** v2.7.15+ uses the canonical `data` envelope; legacy flat shape is read-only. Extraction never creates hierarchies (SUB1): no captured event carries `data.parent_id` — compound promises pre-split into PEERS; sub-item decomposition is the user's verb (`add subitems`), never an extraction output.
 - One `person_proposal` (or `person_update_proposal`) event per unknown name meaningfully involved (Step 5f, v4.5.2 — pending-review, never chat-only).
 - One `meeting_processed` receipt per processing run (Step 9a, v4.5.2 — the canonical already-processed marker the detectors read).
 - One `interaction` event per person (`channel: "meeting"`) if not already implicit.
@@ -372,7 +372,7 @@ If you cannot assert high confidence, you MUST set the flag. An ambiguous item w
 
 (Render the correct singular/plural from N — "the 1 action item" / "the 3 action items" — never "item(s)".)
 
-Same guard applies for `decision` events. The bug class this closes: Granola has trouble disambiguating same-first-name attendees, and silently pre-v3.2.3 the resolver picked one — usually the alphabetically-first match in `aliases.json`. Memorialized failure: Sam's Category Company has two PMs (Rio Lange, Rio Sample); commitments by either one were attributed to the wrong person and the user had no signal that the attribution was uncertain. **Never auto-pick on ambiguous first-name attribution; surface for review.**
+Same guard applies for `decision` events. The bug class this closes: Granola has trouble disambiguating same-first-name attendees, and silently pre-v3.2.3 the resolver picked one — usually the alphabetically-first match in `aliases.json`. Memorialized failure: Sam's Summit Company has two PMs (Rio Lange, Rio Sample); commitments by either one were attributed to the wrong person and the user had no signal that the attribution was uncertain. **Never auto-pick on ambiguous first-name attribution; surface for review.**
 
 ### Canonical commitment event shape
 
@@ -463,9 +463,74 @@ append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.pe
 
 Every proposal carries `data.pending_review: true` unconditionally (the builder enforces it) — proposals are adjudicated by the user's Add / Not-relevant click, and they re-surface in review surfaces until adjudicated instead of dying with the chat.
 
+**Named humans ONLY (PID1 D5 — MANDATORY).** A person proposal is written only when the source carried a NAME. An unidentified speaker or attendee ("speaker 2", an address with no display name) NEVER becomes a person proposal — `build_person_proposal_event` raises on an empty name by design, and working around that raise is the exact defect this rule closes (the live nameless rows rendered as undecidable queue rows). Instead, write ONE annotation per unidentified attendee:
+
+```python
+from meeting_capture import build_unidentified_attendee_event
+
+ev = build_unidentified_attendee_event(
+    "granola:<meeting_id>",
+    attendee_hint="<the source's own label — e.g. 'speaker 2'>",
+    attendee_email="<address ONLY when the participant metadata literally carries it, else None>",
+    primary_thread_id="<same as parent meeting event>",
+    source_skill="meeting-notes",
+)
+append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.person_proposals")
+```
+
+Annotations are FULLY SILENT (§0-4 ruling): no chat line, no queue row. The Sunday identity-reconcile job joins them against calendar invitees and later mail on the same address, promoting into the identity queue only when a name appears.
+
+**Attach what the source carries (PID1 D10 — the FS-19 upstream lever).** When Granola participant metadata, calendar invitees, or mail From-headers carry a LAST NAME or an ADDRESS for a person you are proposing, put them in the proposal (`name` = the fullest spelling observed; the address goes in `evidence`/`source_ref` text verbatim so the F-3 observed-email rules can attribute it). This is what turns future first-name rows into confident-matchable or auto-eligible ones — the parked first-name cooldown is NOT the mechanism (M ruling: it would hide a real new same-first-name person for ~60 days).
+
 3. **Chat surface:** the `new_person_handling` config still governs whether the suggestion interrupts now (`surface`) or batches to Pulse (`batch_to_pulse`) — but that setting governs the CHAT layer only. The event writes in both settings, in both processing modes. Skip generic attendees (notetaker, silent admin) — same "meaningfully involved" floor as Step 5c.
 
 **This step never writes person records** — `person_proposal` / `person_update_proposal` events only; people-crm executes the create/update on adjudication via `people_writer` (apply-choices Step 3a).
+
+---
+
+## Step 5g: Entity signals — moves and facts about people/orgs ALREADY on file (SPEC HIST1 Part 2 — MANDATORY in both modes)
+
+Step 5f covers UNKNOWN names; this step covers what the meeting revealed about entities the workspace already tracks — a promotion, a company move, a discrete fact ("prefers async updates", "they raised a Series A"). Without it, that history evaporates with the transcript (the same class of loss the reconcile protocol exists for).
+
+After the Step 5b/5e/5f event writes land, run the entity-signal scan over the substrate (it reads the just-appended events — bounded, windowed, capped):
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'shared/scripts')
+from entity_signal_detector import run_entity_signal_scan
+print(run_entity_signal_scan('<workspace_root>', source_skill='meeting-notes'))
+"
+```
+
+Rules (the D3/S2 tier law — the scan enforces them; do not work around it):
+- **Prose-inferred signals are confirm-ONLY.** "Sounds like Mira got promoted" becomes a `person_update` / `entity_fact` proposal on the brain rail (staff meeting / confirm card) — NEVER a silent field write, NEVER an auto fact. The scan writes the proposals itself; do not also hand-write them.
+- **Structured participant metadata may auto-note NON-identity facts.** When Granola/calendar/mail STRUCTURED fields (not transcript prose) carry an atomic `preference`/`contact`/`personal` fact about a RESOLVED entity, pass it to `entity_signal_detector.apply_structured_facts` — it batch-stamps for one-`undo`, dedups, demotes `role`/`company_news` to confirm (S2), and the morning brief's CHANGED line narrates the count with a standing `undo`. Surface the returned `undo_line` in your chat close-out when `n_auto_applied > 0`.
+- **This step never creates people or orgs** (that's 5f/PID1) and never touches records — proposals and additive fact events only.
+
+---
+
+## Step 5h: Deal-Signal Proposals (PIPE1 Part 2 — MANDATORY in both modes, silent tier)
+
+After the substrate writes above land (the detector reads what THIS run just appended), run the deal-signal detector scoped to the orgs this meeting touched, and propose through the Living Brain rails:
+
+```python
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT" (same pattern as Step 5e)
+import sys; sys.path.insert(0, "shared/scripts")
+from deal_signal_detector import detect_deal_signals, propose_candidates
+
+# org_ids = the orgs THIS meeting resolved to (the counterparty org(s) —
+# including one this run just created for a new prospect; never the CEO's own
+# org). Scoping lives in the detector; do NOT hand-filter its return.
+cands = detect_deal_signals("<WORKSPACE>", org_ids=[<resolved org ids>])
+counts = propose_candidates("<WORKSPACE>", cands)
+```
+
+Rules (all load-bearing):
+
+- **Never `run_deal_signal_job` from here** — its `pack_run` receipt belongs to the Sunday `deal-signals` maintenance job; a meeting fire minting one would falsely satisfy the job's due-ness and its validator.
+- **Propose-and-confirm only.** `propose_candidates` goes through `brain_proposals.propose(tier="confirm")` — cooldown + open-dedup enforced inside; nothing here writes a deal field, creates a thread, or touches the org record. Confirmation happens on the brain confirm card / Staff Meeting → apply-choices → `deal_state`.
+- **Chat surface (plain chat lines immediately AFTER the Step 9 four-section card — the card's RECAP → DECISIONS LOGGED → BRIEF → OPEN ITEMS contract is unchanged; never invent a card section):** for each candidate the detector returned, render its `nudge_line` VERBATIM — one line per candidate, cap NOTHING (Bug #92b: the detector owns inclusion; a surface dropping a candidate on its own judgment is the regression class). Zero candidates → zero lines, no filler. The nudge teaches the typed command; the queued proposal is the durable capture either way (same two-layer contract as Step 5f).
+- Detector import fails / raises → swallow silently, skip the step, note it in `pack_run.data.errors[]` if this fire writes one. Best-effort enrichment; meeting processing never blocks on it.
 
 ---
 
@@ -713,10 +778,10 @@ The standard processing path. Fast, focused, minimal file operations. Use this u
 5. **Update tracker** → Master Tracker: last touched, next action, commitments (Step 5)
 6. **Append commitments** → one canonical commitment event per qualifying action item (Step 5e — MANDATORY)
 7. **Append decisions** → one `decision` event per extracted decision via decision-log's write protocol (Step 5b — MANDATORY, v4.5.2)
-8. **Append person proposals** → one `person_proposal` / `person_update_proposal` event per unknown name (Step 5f — MANDATORY, v4.5.2)
+8. **Append person proposals** → one `person_proposal` / `person_update_proposal` event per unknown name (Step 5f — MANDATORY, v4.5.2), then the entity-signal scan for moves/facts about entities already on file (Step 5g — MANDATORY, HIST1 Part 2), then the scoped deal-signal detect → propose (Step 5h — MANDATORY, PIPE1 Part 2; never `run_deal_signal_job`)
 9. **Generate brief, write the `meeting_processed` receipt, run the claim audit, render via renderer** → Step 9 (v2.10.8+ format; 9a2/9a3 MANDATORY, v4.5.2)
 
-**Skipped in light mode:** People database VIEW updates (5c), team profiles (5d), ref file updates (Step 6), Business Lens analysis (Step 7), follow-up questions (formerly Step 8 — gated to deep mode in v2.10.8+), email/calendar context check (old Step 3). These still exist — they run in deep mode. **The event data layer runs in BOTH modes and must not be skipped: commitment events (5e), decision events (5b), person proposals (5f), and the meeting_processed receipt + claim audit (9a2/9a3).** Pre-v4.5.2 the decision-log step was on this skipped list while the chat card still rendered "DECISIONS LOGGED" — that is F-46: the surface claimed writes the mode had skipped. Mode gating applies to views, analysis, and questions — never to substrate events.
+**Skipped in light mode:** People database VIEW updates (5c), team profiles (5d), ref file updates (Step 6), Business Lens analysis (Step 7), follow-up questions (formerly Step 8 — gated to deep mode in v2.10.8+), email/calendar context check (old Step 3). These still exist — they run in deep mode. **The event data layer runs in BOTH modes and must not be skipped: commitment events (5e), decision events (5b), person proposals (5f), the entity-signal scan (5g), and the meeting_processed receipt + claim audit (9a2/9a3).** Pre-v4.5.2 the decision-log step was on this skipped list while the chat card still rendered "DECISIONS LOGGED" — that is F-46: the surface claimed writes the mode had skipped. Mode gating applies to views, analysis, and questions — never to substrate events.
 
 ### Deep Mode ("process deep", "full meeting analysis")
 The full 12-step cascade. Use when the user says "process deep", "full analysis", "deep process", or explicitly asks for the complete treatment.
@@ -729,7 +794,7 @@ The full 12-step cascade. Use when the user says "process deep", "full analysis"
 6. **Update tracker** → Master Tracker (last touched, next action, commitments)
 7. **Append commitment events** → one canonical commitment event per qualifying action item (Step 5e — see `shared/COMMITMENT_SCHEMA.md`)
 8. **Log decisions** → `decision` events via decision-log's write protocol (Step 5b); the DECISION_LOG view regenerates
-9. **Append person proposals** → `person_proposal` / `person_update_proposal` events for unknown names (Step 5f), then update profiles in `_hq/PEOPLE.md` (Step 5c)
+9. **Append person proposals** → `person_proposal` / `person_update_proposal` events for unknown names (Step 5f), then the entity-signal scan (Step 5g), then the scoped deal-signal detect → propose (Step 5h), then update profiles in `_hq/PEOPLE.md` (Step 5c)
 10. **Update team profiles** → If `_people/` exists, update interaction logs + commitments for team members
 11. **Update ref files** → contacts, scope, financials, risks, timeline as needed
 12. **Apply lens** → Surface business implications (scope, financials, relationships, risks, opportunities)

@@ -72,10 +72,6 @@ The brain. One file that shows everything at a glance. Seed with ALL data from d
 | Project | Category | Stage | Last Touched | Status | Next Check-In |
 |---------|----------|-------|-------------|--------|--------------|
 
-## Completed Quick Tasks
-| Task | For | Date | Note |
-|------|-----|------|------|
-
 ## Recently Archived
 | Project | Category | Archived | Reason |
 |---------|----------|----------|--------|

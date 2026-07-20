@@ -26,8 +26,14 @@ CLIENT SAFETY (non-negotiable — runs on 5 live client workspaces)
 - NEVER raises. A sweep that hit one unreadable file flags it ("couldn't verify
   this doc") and keeps going.
 
+The walk covers three deliverable formats — `.docx`, deliverable-shaped
+`.md`/`.markdown`, and `.html`/`.htm` (SPEC FU1) — dispatched to a per-format
+scanner via `_SCANNER_REGISTRY` in `scan_path_for_violations`. Adding a fourth
+format is a three-line change; the recipe is documented at the registry.
+
 Used by:
   - cleanup/SKILL.md (Phase 3f) — the weekly backstop sweep.
+  - check-deliverables/SKILL.md — the on-demand + point-at-target sweep.
   - gate2_turn_sweep.py — the best-effort same-turn Stop-hook runner.
 """
 from __future__ import annotations
@@ -80,6 +86,12 @@ _INFRA_TEXT_DIR_PARTS = frozenset(
         "transcripts",
         "voice",
         "meetings",
+        # SPEC FU1 D3 — live html infra clusters that are not deliverables.
+        # These also apply to the .md walk, which is desired: a template /
+        # design-library / email-template markdown is not a deliverable either.
+        "templates",
+        "design-library",
+        "email-templates",
     }
 )
 # Filename stems (case-insensitive startswith) that mark a .md as context/memory.
@@ -116,19 +128,36 @@ _INFRA_TEXT_NAME_STEMS = (
     "voice_calibration",
     "voice_samples",
     "how_command_room_works",
+    "dashboard",  # SPEC FU1 D3 — a dashboard render (html/md) is infra, not a deliverable
 )
 
 # Skip text files larger than this — a deliverable email/memo is small; a huge
-# .md is almost certainly a log/export, not something to voice-check.
+# .md is almost certainly a log/export, not something to voice-check. (HTML has
+# its own larger cap `_MAX_HTML_BYTES` in docx_leak_scanner — self-contained
+# renders with inline CSS/data-URIs run bigger; SPEC FU1 D4.)
 _MAX_TEXT_BYTES = 2_000_000
 
+# .html/.htm deliverable extensions (SPEC FU1 D1). Premium-HTML briefs /
+# scorecards / infographics land as .html and, until FU1, the sweep never
+# re-scanned them.
+_HTML_DELIVERABLE_EXTS = (".html", ".htm")
 
-def _is_infra_text(path: Path) -> bool:
-    """True if a .md/.markdown path is context/memory, not a deliverable."""
+
+def _is_infra_path(path: Path) -> bool:
+    """True if a candidate path is context/memory/infra, not a deliverable.
+
+    Shared by the .md AND .html walks (SPEC FU1 D3): the dir-part and
+    name-stem lists cover both formats' infra (session notes, build specs,
+    views, intel, meetings, templates, design-library, email-templates,
+    dashboards). Applied to a walk to drop paths that would only add noise."""
     if {p.lower() for p in path.parts} & _INFRA_TEXT_DIR_PARTS:
         return True
     stem = path.name.lower()
     return any(stem.startswith(s) for s in _INFRA_TEXT_NAME_STEMS)
+
+
+# Back-compat alias — pre-FU1 name (the filter also served the .md-only walk).
+_is_infra_text = _is_infra_path
 
 
 def _now_iso() -> Optional[str]:
@@ -219,17 +248,43 @@ def find_candidate_text(
     )
 
 
+def find_candidate_html(
+    workspace_root: str | Path,
+    *,
+    since_ts: Optional[float] = None,
+    max_files: int = 500,
+) -> List[Path]:
+    """Walk for `.html`/`.htm` DELIVERABLES, newest first — skipping infra html
+    (`_is_infra_path`: dashboards, templates, design-library, email-templates,
+    intel/meetings views, etc.) that would only add noise.
+
+    (SPEC FU1 D1 — premium-HTML briefs / scorecards / infographics land as
+    .html; a hand-rolled or later-edited one is invisible to the sweep until
+    it joins the walk here.)"""
+    return _iter_candidate_files(
+        workspace_root,
+        _HTML_DELIVERABLE_EXTS,
+        since_ts=since_ts,
+        max_files=max_files,
+        infra_filter=_is_infra_path,
+    )
+
+
 def find_candidate_deliverables(
     workspace_root: str | Path,
     *,
     since_ts: Optional[float] = None,
     max_files: int = 500,
 ) -> List[Path]:
-    """Every candidate deliverable (.docx + deliverable-shaped .md), newest
-    first. This is what the sweep walks — the LLM emits both formats."""
+    """Every candidate deliverable (.docx + deliverable-shaped .md + .html),
+    newest first. This is what the sweep walks — the LLM emits all three
+    formats. One merge point → all three consumers (cleanup, check-deliverables,
+    the Stop hook) inherit .html coverage with zero edits (SPEC FU1 D1)."""
     merged = find_candidate_docx(
         workspace_root, since_ts=since_ts, max_files=max_files
     ) + find_candidate_text(
+        workspace_root, since_ts=since_ts, max_files=max_files
+    ) + find_candidate_html(
         workspace_root, since_ts=since_ts, max_files=max_files
     )
 
@@ -277,14 +332,44 @@ def scan_text_file(path: str | Path) -> dict:
     return result
 
 
-def scan_path_for_violations(path: str | Path) -> dict:
-    """Dispatch a single path to the right scanner by extension: `.docx` reads
-    the rendered document; everything else is treated as a text deliverable."""
-    p = Path(path)
-    if p.suffix.lower() == ".docx":
-        from docx_leak_scanner import scan_docx_for_violations
+def _scan_docx_path(p: Path) -> dict:
+    from docx_leak_scanner import scan_docx_for_violations
 
-        return scan_docx_for_violations(p)
+    return scan_docx_for_violations(p)
+
+
+def _scan_html_path(p: Path) -> dict:
+    from docx_leak_scanner import scan_html_for_violations
+
+    return scan_html_for_violations(p)
+
+
+# Extension → per-format scanner registry (SPEC FU1 D6). This is the
+# "future formats join cheaply" seam. To add a format:
+#   1. add its extension tuple + `find_candidate_<fmt>` walker above, merged
+#      into `find_candidate_deliverables`;
+#   2. add `scan_<fmt>_for_violations(path)` in `docx_leak_scanner.py`
+#      (same result dict, never raises — route its leak step through
+#      `sweep_leak_scan` so it inherits forbidden-token + personal coverage);
+#   3. add one row here.
+# Anything not in the table falls through to `scan_text_file` (plain-text).
+_SCANNER_REGISTRY = {
+    ".docx": _scan_docx_path,
+    ".html": _scan_html_path,
+    ".htm": _scan_html_path,
+}
+
+
+def scan_path_for_violations(path: str | Path) -> dict:
+    """Dispatch a single path to the right scanner by extension via
+    `_SCANNER_REGISTRY`: `.docx` reads the rendered document, `.html`/`.htm`
+    read the rendered page (visible text + link targets), everything else is
+    treated as a plain-text deliverable. Never raises (the scanners swallow
+    internally; the caller also belts)."""
+    p = Path(path)
+    scanner = _SCANNER_REGISTRY.get(p.suffix.lower())
+    if scanner is not None:
+        return scanner(p)
     return scan_text_file(p)
 
 
@@ -326,9 +411,12 @@ def scan_chat_text(text: str, *, context: str = "email") -> dict:
     if not text:
         return out
     try:
-        from docx_leak_scanner import scan_text_for_leaks
+        # SPEC FU1 M-2 — the flag-only sweep leak scan (forbidden tokens +
+        # personal-lane substrate fingerprints, surface-less). Covers the .md
+        # sweep path (scan_text_file → here) and the Stop-hook chat scan.
+        from docx_leak_scanner import sweep_leak_scan
 
-        out["leaks"] = scan_text_for_leaks(text)
+        out["leaks"] = sweep_leak_scan(text)
     except Exception:
         out["leaks"] = []
     try:
@@ -728,6 +816,7 @@ def detect_gate_bypass(
 __all__ = [
     "find_candidate_docx",
     "find_candidate_text",
+    "find_candidate_html",
     "find_candidate_deliverables",
     "scan_text_file",
     "scan_path_for_violations",

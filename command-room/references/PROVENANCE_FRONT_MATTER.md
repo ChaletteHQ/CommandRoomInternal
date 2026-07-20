@@ -101,7 +101,7 @@ review_url: file:///$WORKSPACE/_hq/staging/2026-04-28/meeting-prep_alexia-q3-rev
 
 ## Complete example — state-watcher fire (v2.8.3+) on a new Granola transcript
 
-File: `_hq/staging/2026-04-28/followup-pack_category-strategy-call_1430.md`
+File: `_hq/staging/2026-04-28/followup-pack_summit-strategy-call_1430.md`
 
 ```markdown
 ---
@@ -109,10 +109,10 @@ trigger: state-change
 fired_by: cr-state-watcher.granola-transcript @ 2026-04-28T14:32:11-07:00
 inputs: [event_104, project_002, person_005]
 ttl: 24h
-review_url: file:///.../followup-pack_category-strategy-call_1430.md
+review_url: file:///.../followup-pack_summit-strategy-call_1430.md
 ---
 
-# Follow-up pack — Category Strategy Call (concluded 2:30 PM)
+# Follow-up pack — Summit Strategy Call (concluded 2:30 PM)
 
 [... follow-up-ritual skill output, including draft emails for each attendee ...]
 ```

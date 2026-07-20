@@ -39,7 +39,7 @@ def _utc_iso(days_ago):
 
 
 def make_workspace(tmp, prospects=12, clients=8, dormancy_days=30,
-                   prior_proposals=(), open_proposals=0):
+                   prior_proposals=(), open_proposals=0, open_deals=0):
     ws = Path(tmp)
     (ws / "_hq" / "data").mkdir(parents=True)
     orgs = (
@@ -47,8 +47,15 @@ def make_workspace(tmp, prospects=12, clients=8, dormancy_days=30,
         + [{"id": f"org_c{i}", "relationship_type": "client"} for i in range(clients)]
         + [{"id": "org_x", "relationship_type": "client", "status": "archived"}]
     )
+    threads = [
+        {"id": f"project_d{i}", "kind": "deal", "status": "active",
+         "canonical_name": f"Deal {i}", "affiliation_id": f"org_p{i}",
+         "deal": {"stage": "lead"}}
+        for i in range(open_deals)
+    ]
     (ws / "_hq" / "data" / "entities.json").write_text(
-        json.dumps({"orgs": orgs, "workspace": {}}), encoding="utf-8")
+        json.dumps({"orgs": orgs, "threads": threads, "workspace": {}}),
+        encoding="utf-8")
     with open(ws / "_hq" / "data" / "events.jsonl", "w", encoding="utf-8") as f:
         for d in range(dormancy_days):
             f.write(json.dumps({"type": "dormancy_signal", "ts": _utc_iso(d + 1),
@@ -147,6 +154,39 @@ def main():
         props = sp.propose_later_add_tasks(ws7, REG)
         check("a PRIOR relationship-moves offer counts as offered-before (R4) -> lighter alternative",
               len(props) == 1 and props[0]["task"] == "dormant-customer-scan", repr(props))
+
+        print("== PIPE1 Part 2: the pipeline digest proposes only on a live pipeline")
+        wsd = make_workspace(Path(td) / "pd", prospects=2, clients=3,
+                             dormancy_days=0, open_deals=2)
+        props = sp.propose_later_add_tasks(wsd, REG)
+        check("open deals + unqualified staff-meeting mix -> digest proposed",
+              len(props) == 1 and props[0]["task"] == "pipeline-digest", repr(props))
+        check("digest line cites the deal count + the add phrase",
+              props and "2 open deals" in props[0]["line"]
+              and "add pipeline digest" in props[0]["line"], repr(props))
+        wsd0 = make_workspace(Path(td) / "pd0", prospects=2, clients=3,
+                              dormancy_days=0, open_deals=0)
+        check("zero open deals -> NO digest (the >=1-open-deal gate, in code)",
+              sp.propose_later_add_tasks(wsd0, REG) == [], repr(None))
+        check("registered digest never re-proposed",
+              sp.propose_later_add_tasks(wsd, REG | {"pipeline-digest"}) == [])
+        wsd2 = make_workspace(Path(td) / "pd2", prospects=2, clients=3,
+                              dormancy_days=0, open_deals=2,
+                              prior_proposals=[("pipeline-digest", 14)])
+        check("recent digest proposal suppressed (6-week window)",
+              sp.propose_later_add_tasks(wsd2, REG) == [])
+        wsd3 = make_workspace(Path(td) / "pd3", open_deals=2)
+        props = sp.propose_later_add_tasks(wsd3, REG)
+        check("staff meeting still wins the round when both qualify (never two proposals)",
+              len(props) == 1 and props[0]["task"] == "staff-meeting", repr(props))
+        wsd4 = make_workspace(Path(td) / "pd4", open_deals=1,
+                              prior_proposals=[("staff-meeting", 14)])
+        props = sp.propose_later_add_tasks(wsd4, REG)
+        check("suppressed staff meeting yields the round to the digest",
+              len(props) == 1 and props[0]["task"] == "pipeline-digest", repr(props))
+        check("1 open deal renders singular, no jargon",
+              props and "1 open deal " in props[0]["line"]
+              and "taskId" not in props[0]["line"], repr(props))
 
         print("== log_proposal writes the suppression record through the gate")
         ok = sp.log_proposal(ws, "staff-meeting")

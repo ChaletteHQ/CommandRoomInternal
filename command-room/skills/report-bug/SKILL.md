@@ -37,7 +37,7 @@ In parallel, while the user is typing Step 1's answer (or immediately after if t
 
 1. **Plugin version** — read `.claude-plugin/plugin.json` from the plugin root. Capture `version` field.
 2. **Workspace shape** — read `_hq/data/entities.json`. Capture: org count, person count, project count, last `tz_set_at` value. Used to confirm workspace isn't empty.
-3. **Last 5 events** — read tail of `_hq/data/events.jsonl`. Capture: type, source_skill, ts for each. This is the skill that most likely fired right before the failure.
+3. **Last 5 events** — read tail of `_hq/data/events.jsonl`. Capture: type, source_skill, ts for each — EXCEPT personal-lane rows: any row where `personal_leak.is_personal(row)` is true (reminder-family personal rows, the balance lane, `tie: personal`) is captured as `(personal-lane event) · (masked) · [ts]`, never its real type or source_skill. This table lands in an OUTBOUND email (Step 4b) and the Step-5 chat fallback — a personal event-type token in it is a firewall fingerprint leaving the workspace. This is the skill that most likely fired right before the failure.
 4. **Active connectors** — list the MCP connectors present in this session (gmail, calendar, granola, drive, slack, github — whatever is mounted). Don't include token counts, just names.
 5. **User's email** — from `entities.json` workspace block, or fall back to `_hq/CLAUDE.md` "Identity" section. Used as the `From` address on the draft.
 

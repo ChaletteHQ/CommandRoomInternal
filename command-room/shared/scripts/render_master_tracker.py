@@ -62,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import events_io  # noqa: E402
 from atomic_write import atomic_write_text  # noqa: E402
 from thread_activity import ALL_TYPES, derive_from_events  # noqa: E402
 
@@ -109,20 +110,12 @@ def _entities_path(ws: Path) -> Path:
     return ws / "_hq" / "data" / "entities.json"
 
 
-def _load_events(p: Path) -> list[dict]:
-    if not p.exists():
-        return []
-    out: list[dict] = []
-    for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if not line.strip():
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-    return out
+# LB2 §3e — event reads route through events_io (shard-transparent): on a
+# rotated workspace a thread whose last activity lives in a yearly shard used
+# to read as inactive/dormant here while the workspace map showed it live
+# (the F-54 divergence class, extended to rotation). Full iteration by
+# default — last-activity derivation must see full history. The old private
+# active-file-only loader is deleted, not wrapped.
 
 
 def _load_collections(p: Path) -> dict:
@@ -228,7 +221,7 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
     deciding whether to write (idempotence)."""
     ws_str = str(workspace_root)
     view = _load_collections(_entities_path(workspace_root))
-    events = _load_events(_events_path(workspace_root))
+    events = events_io.load_all(workspace_root)  # shard-transparent (LB2 §3e)
     name_idx = _name_index(view)
 
     orgs = [o for o in (view.get("orgs") or []) if isinstance(o, dict)]

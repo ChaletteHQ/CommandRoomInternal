@@ -35,13 +35,13 @@ def _ws(entities, events=None, nested=False):
     return d
 
 
-# Org tree: Acme Co (primary, operating) ; Category Company (primary holding)
+# Org tree: Acme Co (primary, operating) ; Summit Company (primary holding)
 # with two operating children ; Northstar Partners (non-primary client).
 ENT = {
     "orgs": [
         {"id": "org_001", "canonical_name": "Acme Co", "is_primary_focus": True,
          "relationship_type": "operating", "scope": "operating"},
-        {"id": "org_holdco", "canonical_name": "Category Company", "is_primary_focus": True,
+        {"id": "org_holdco", "canonical_name": "Summit Company", "is_primary_focus": True,
          "relationship_type": "operating", "scope": "holding"},
         {"id": "org_rest", "canonical_name": "Acme Restaurant", "parent_org_id": "org_holdco",
          "relationship_type": "operating", "scope": "operating"},
@@ -123,7 +123,7 @@ check(res["primary_orgs"] == 2, f"2 primary orgs with active threads (got {res['
 
 # org-tree layout
 check("## Acme Co" in content, "primary operating org section")
-check("## Category Company" in content, "holding org section")
+check("## Summit Company" in content, "holding org section")
 check("### Acme Restaurant" in content and "### Acme Bakery" in content,
       "operating children nested under holding")
 check("## Other Orgs" in content and "### Client" in content and "Northstar Partners" in content,

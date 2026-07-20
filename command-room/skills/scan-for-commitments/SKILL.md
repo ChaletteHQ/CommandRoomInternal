@@ -36,6 +36,8 @@ This skill is a primary appender to `_hq/data/events.jsonl`. It emits `type: com
 
 This skill DOES NOT modify or remove existing events. Append-only is non-negotiable per the events schema. If a previous scan produced bad commitments, the user can either ignore them (they'll age out over time) or run `commitment_resolved` events to close them — but this skill never edits the past.
 
+**Extraction never creates hierarchies (SUB1).** No event this scan writes may carry `data.parent_id` — extraction pre-splits compound promises into PEERS; decomposition into sub-items is planning, and planning is the user's (`add subitems`, user-initiated only).
+
 ---
 
 ## How to Use
@@ -190,7 +192,7 @@ Done — added 14 commitments to your tracker.
 3 were too vague to call either way — I set those aside for you to look at.
 1 was already closed — I left it alone.
 
-Open your Workspace Map or your daily commitments chat to see them.
+Open your Workspace Map or your daily Waiting On / My Plate chats to see them.
 ```
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
@@ -253,7 +255,7 @@ Does NOT fire on:
 - Does not send, post, or react in Slack — read-only, ever.
 - Does not add a Slack schedule — the Slack leg runs inside this skill's explicit trigger only; the existing daily inbox/commitments cadence covers surfacing (a dedicated Slack schedule is a future product decision, not this skill's call).
 - Does not extract from raw text the user pastes — that's `meeting-notes` (paste-fallback path).
-- Does not auto-resolve commitments — resolution events are written by `follow-up-ritual` (when a meeting closes one) or by the user explicitly clicking ✓ done in the daily Commitments chat widget (dispatched through apply-choices).
+- Does not auto-resolve commitments — resolution events are written by `follow-up-ritual` (when a meeting closes one) or by the user explicitly clicking ✓ done in the daily Waiting On / My Plate widgets (CTS1; dispatched through apply-choices).
 - Does not run on a schedule — explicit-trigger only. The whole point is "one-shot bulk fix."
 - Does not modify or remove existing events. Append-only.
 - Does not invent commitments where the source language is ambiguous. If in doubt, skip and surface as "ambiguous candidate" in the conflict log.

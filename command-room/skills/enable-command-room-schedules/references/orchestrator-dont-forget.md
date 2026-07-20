@@ -67,7 +67,9 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 
 # Phase 3 — Per-person dormancy scan
 
-For each person in entities.json (excluding M, excluding flagged-orphan / left-company):
+**BAL1 D1.1(1) — personal-tie source gate (runs FIRST, before anything else in this loop):** skip every person whose record carries `tie: "personal"` BEFORE any computation or emit — no `pattern_break_detected`, no `emit_dormancy_signal`, no live-check, nothing. A spouse or parent going "quiet" is not a work signal; the moment a personal tie's dormancy enters the substrate it flows into relationship-moves and the weekly WORK-outreach pack. Personal ties belong to the Balance surface (`skills/balance/SKILL.md`) exclusively. An absent `tie` field means work (back-compat) — only the explicit `personal` value skips.
+
+For each person in entities.json (excluding M, excluding `tie: "personal"` per the gate above, excluding flagged-orphan / left-company):
 
 1. Compute `last_interaction_date` = max(ts) across **all events.jsonl entries that reference this person**, not just `type: "interaction"` events. **v3.13.0+ — also live-check Gmail before flagging dormancy** (see Step 1b below). Substrate-only dormancy produces false-positives when M has just emailed someone but the substrate hasn't caught up.
 
@@ -144,6 +146,7 @@ For each person in entities.json (excluding M, excluding flagged-orphan / left-c
    **Excluded event types (do NOT count — internal mechanics):**
    - `pattern_break_detected`, `dont_forget_run`, `dont_forget_feedback`, `dont_forget_snooze`, `cracks_watch_*`
    - `dormancy_signal`, `relationship_move_suggested` (REL1 — internal relationship-mechanics signals; never count as interactions)
+   - `balance_nudge_suggested` (BAL1 D3 — the personal-lane nudge; never counts as an interaction, and no org-facing surface reads it at all)
    - `pack_run`, `connector_read`, `scheduled_task_failure`, `errors`
    - `person_record_update`, `person_record_update_rejected`
    - `tier_change`, `tier_validated`, `org_proposal_*`
@@ -197,8 +200,8 @@ For each project with `status: "active"`:
 
 For each project with `status: "active"`:
 
-- If `today - last_event_date > 30 days` AND no `dont_forget_dormant_proposal` event in the last 14 days for this project → propose dormant transition. Surface in chat as "this project is going quiet — move to Dormant?" with one-key confirm.
-- If `today - last_event_date > 60 days` AND no user action on the dormant proposal in the last 30 days → **auto-flip to dormant**. Write `status_change` event with `data: {primary_thread_id, old_status: "active", new_status: "dormant", triggered_by: "auto", inactivity_days: <N>}`. Update entities.json via workspace-manager.
+- If `today - last_event_date > 30 days` → propose the dormant transition **through the Living Brain rail (LB2 §3a — the migrated writer)**: `brain_proposals.propose(workspace_root, kind="dormancy", tier="confirm", fingerprint="dont_forget:<thread_id>", detector="dont-forget", evidence="<N> days quiet", render_line="this project is going quiet — move to Dormant?", ttl_days=30, thread_id=<thread_id>, action_tuples=[{"action": "confirm proposal"}, {"action": "dismiss proposal"}, {"action": "snooze proposal 7d"}], extra={"title": <project display name>})`. Do NOT append a bare `dont_forget_dormant_proposal` event any more — `propose()` owns dedup (an open row or a pre-migration legacy row with the same target suppresses re-proposing; a dismissal carries the shared 60d cooldown, superseding the old 14d prose cooldown) and the row surfaces in this chat AND on the staff meeting with real verbs. Still surface it in this chat's REVIEW section as before — the rail changes where the row LIVES, not where it shows.
+- If `today - last_event_date > 60 days` AND the dormant proposal expired unanswered (its `brain_proposal_expired` tombstone exists — the 30d TTL passed with no user action; pre-migration fossil rows: no user action within 30 days of the legacy event) → **auto-flip to dormant**. Write `status_change` event with `data: {primary_thread_id, old_status: "active", new_status: "dormant", triggered_by: "auto", inactivity_days: <N>}`. Update entities.json via workspace-manager.
 
 ## 4c. Dormant → Archived transition (v2.10.3 NEW)
 
@@ -222,7 +225,7 @@ In addition to dormancy detection, Pulse surfaces high-confidence pending propos
 
 1. **Read** `_hq/insights/.proposal_queue.jsonl` (project proposals from Pass 9) + `_hq/insights/.org_proposal_queue.jsonl` (org proposals from Pass 10).
 2. **Filter** to high-confidence only (score ≥10 — strong-signal candidates that don't need to wait for Sunday's full review).
-3. **Mark** each daily-surfaced proposal with a `surfaced_daily: true` flag in events.jsonl so the weekly insight-generator skips it.
+3. **Persist** each daily-surfaced proposal **through the Living Brain rail (LB2 §3a — the migrated org/project writer)**: `brain_proposals.propose(workspace_root, kind="org"|"project", tier="confirm", fingerprint="org:<name lowercased>"|"project:<name lowercased>", detector="dont-forget", evidence=<the queue row's signal line>, render_line=<the one-line ask>, action_tuples=[{"action": "confirm proposal"}, {"action": "dismiss proposal"}, {"action": "snooze proposal 7d"}], extra={"title": <entity name>, "name": <entity name>})`. The bp row IS the surfaced-daily mark — do NOT write a bare `org_proposal`/`project_proposal` event any more; the weekly insight-generator skips any candidate whose fingerprint has an open bp row, a resolution tombstone, or an active ledger cooldown (its edge case F).
 4. **Cap** at 3 total daily proposals across both project + org types — same UX constraint as the weekly pass.
 
 Pending proposals appear in the chat output's Quick Read closing block (Phase 8) as a sub-section, alongside the people-record review block. Same `a/b/c confirm/edit/skip` action set.
@@ -571,8 +574,8 @@ NEVER expose schema field names, "proposed:" syntax, or "(N signal, low confiden
 |---|---|---|
 | Person has email matching org domain but no org_id set | `Quinn (acme.example.com) — no org linked — email domain acme.example.com suggests Acme Co affiliation` | `Link Quinn to Acme Co? His email is tate@acme.example.com. Confirm to link, Edit to pick a different org, Skip to leave unaffiliated.` |
 | `last_interaction_date` updated, low confidence | `last_interaction proposed: Apr 14 → Apr 28 (1 signal, low confidence)` | `Update Andrea's last contact to Apr 28 (was Apr 14)? Confirm to apply.` |
-| Role change proposal | `role_field proposed: VP Eng → CEO (1 source)` | `Update Sam's role to CEO at Category Company? Confirm to apply.` |
-| Org affiliation change | `org_id proposed: org_005 → org_007` | `Move Bo from Category Company to Northstar Partners? Confirm to apply.` |
+| Role change proposal | `role_field proposed: VP Eng → CEO (1 source)` | `Update Sam's role to CEO at Summit Company? Confirm to apply.` |
+| Org affiliation change | `org_id proposed: org_005 → org_007` | `Move Bo from Summit Company to Northstar Partners? Confirm to apply.` |
 | Email address change | `primary_email proposed: foo@old.example.com → foo@new.example.com` | `Switch Bo's primary email to bo@northstar.example.com (was bo@example.com)? Confirm to apply.` |
 | New org candidate | `Acme Co — new org candidate — 1 person (Quinn) using @acme.example.com` | `Add Acme Co as a new org? Quinn's email is @acme.example.com; 5 recent threads reference setup. Confirm to add as a prospect.` |
 
@@ -706,7 +709,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 ## Person dormancy / pattern-break actions
 
 - `N investigate` → fire `tell me about [name]` chat skill. Cross-reference report.
-- `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Noah's email — missing in entities.json, fill before send]`. The user can fill the To field via the multi-field edit affordance.
+- `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — the standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Noah's email — missing in entities.json, fill before send]`. The user can fill the To field via the `add email then send` recovery affordance (Bug #44).
 - `N schedule catchup [when]` (v2.12.4+ free-text input) → parse the user's typed natural-language window (`next Tuesday afternoon`, `this Friday at 4pm`, `sometime next week`). If parseable to a specific time, create a tentative calendar invite at that time + draft the request email; if just a window, draft the request asking for the user's stated availability. Draft surfaces in the consolidated response widget.
 - `N resolved` (v2.14.1+ — dropped `[reason]`; v2.14.38+ unified verb across all surfaces) → the "expected / just busy" outcome on a person-dormancy item. NO input affordance — clean one-click action. Display label: `Resolved`. Confirmation: `✓ Resolved — <name>'s alert suppressed for 14 days.` Writes:
   1. **The 14-day suppression (made explicit, Phase 6).** Write a `dont_forget_feedback` event `{data: {person_id, feedback: "just_busy"}}` — this is the event Phase 3 step 6 already reads to skip the person for 14 days, and the event insight-generator Pass 14 mines. (Historically the 14-day suppression was implied; Phase 6 names the writer so the read/write contract is one thing. Also stamp `data.fingerprint`/`surface`/`item_class` per apply-choices Step 3f so Loop 2 can key on it.)
@@ -728,7 +731,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 
 - `[a/b/c] add [text]` (v2.14.38+) → opens textarea pre-populated with the inferred change rendered in readable form:
   ```
-  Sam's role: CEO at Category Company
+  Sam's role: CEO at Summit Company
   Source: 1 draft staged Apr 28 (team-plan account setup)
   Add anything you want me to fold in, or leave blank to accept as-is.
   ```
@@ -736,12 +739,14 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 - `[a/b/c] not relevant` (v2.14.38+) → discard the proposed change. Write `person_record_update_rejected` event with 60-day cooldown — same low-confidence signal won't re-surface for 60 days. (Replaces the v2.14.5 `skip` with stronger semantics; 60-day vs 30-day reflects "this isn't right, don't ask again soon.")
 - `[a/b/c] add to my list` (v2.14.38+) → defer indefinitely. Write `commitment_to_discuss` with `data.person_id` set. Surfaces in `show my list`.
 
-## Dormant transition proposal actions (v2.14.38+ — state verbs preserved)
+## Dormant transition proposal actions (v2.14.38+ — state verbs preserved; LB2 rail split)
 
-- `[d1/d2/...] active` → keep the project active; write `dont_forget_dormant_proposal_declined` event. 14-day cooldown.
-- `[d1/d2/...] keep paused` → for projects already paused; no status change. 14-day cooldown.
-- `[d1/d2/...] archive` → skip the dormant step entirely; write `status_change` event direct to archived. 60-day cooldown.
-- `[d1/d2/...] add to my list` (v2.14.38+) → defer indefinitely. Replaces `snooze [duration] / skip` cluster — `add to my list` covers "I'll think about it" without locking in a specific reappear date.
+**LB2:** a NEW dormancy row is a `bp_` proposal (the Phase 4b migrated writer) — its decline path is `brain_proposals.resolve_proposal(workspace_root, <bp_ id verbatim>, "declined", resolved_by=<user person_id>, source_skill="pulse")` (tombstone + the shared 60d cooldown). A PRE-migration fossil row (legacy `dont_forget:` adapter id, no `bp_` prefix) keeps the legacy writes below — the adapters render those rows until they resolve or age out, and their handlers never change.
+
+- `[d1/d2/...] active` → keep the project active. bp row → `resolve_proposal(..., "declined")`; fossil row → write `dont_forget_dormant_proposal_declined` event (14-day cooldown, legacy semantics preserved).
+- `[d1/d2/...] keep paused` → for projects already paused; no status change. Same rail split as `active`.
+- `[d1/d2/...] archive` → skip the dormant step entirely; write `status_change` event direct to archived, then bp row → `resolve_proposal(..., "applied")`; fossil row → the status_change is its natural tombstone (60-day cooldown).
+- `[d1/d2/...] add to my list` (v2.14.38+) → defer indefinitely. Replaces `snooze [duration] / skip` cluster — `add to my list` covers "I'll think about it" without locking in a specific reappear date. No resolve — the row stays open (a defer is not an answer).
 
 ## CRU review actions (v2.14.38+, sub-namespace `r1/r2/...`)
 
@@ -768,8 +773,8 @@ Per M's v2.14.3 preview-cycle ask, the question always names the entity and expl
   Add anything you want me to fold in (e.g. "actually they're a vendor, not prospect"), or leave blank to accept as-is.
   ```
 
-  User accepts as-is by leaving the textarea blank, or types corrections to override the inferred fields. On Apply, workspace-manager `create_org` (or `create_project` for project proposals) parses the inferred OR user-corrected fields. Mark proposal as `surfaced_daily_resolved` in classifier_feedback.jsonl. Confirm: `✓ Acme Co added as a prospect.` (or with corrections applied).
-- `[e1/e2/...] not relevant` (v2.14.38+) → write `org_proposal_declined` event with 60-day fingerprint cooldown. Won't re-surface for 60 days.
+  User accepts as-is by leaving the textarea blank, or types corrections to override the inferred fields. On Apply, workspace-manager `create_org` (or `create_project` for project proposals) parses the inferred OR user-corrected fields. **LB2 rail split:** a NEW entity row is a `bp_` proposal (the Phase 4e migrated writer) — after the entity write, `brain_proposals.resolve_proposal(workspace_root, <bp_ id verbatim>, "applied" (or "edited" when the textarea was non-empty), resolved_by=<user person_id>, source_skill="pulse")`; a PRE-migration fossil row is tombstoned naturally by the entity now existing (the adapter's existence check). Either way, also mark `surfaced_daily_resolved` in classifier_feedback.jsonl (the learning-loop record). Confirm: `✓ Acme Co added as a prospect.` (or with corrections applied).
+- `[e1/e2/...] not relevant` (v2.14.38+) → bp row → `resolve_proposal(..., "declined")` (tombstone + shared 60d fingerprint cooldown); fossil row → write `org_proposal_declined` event with 60-day fingerprint cooldown (legacy semantics preserved). Won't re-surface for 60 days.
 - `[e1/e2/...] add to my list` (v2.14.38+) → defer indefinitely. Surfaces in `show my list`.
 
 The same `[e1] / [e2]` namespace handles project-proposal items too (rendering uses 📁 icon for projects vs 🏢 for orgs). Same action set; workspace-manager invokes `create_project` for project proposals and `create_org` for org proposals based on the proposal type recorded in the queue file.

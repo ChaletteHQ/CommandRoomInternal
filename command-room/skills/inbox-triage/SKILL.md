@@ -282,7 +282,7 @@ Window: [start → end] | Unread: [N]
 
 **Follows `shared/EMAIL_DRAFT_PROTOCOL.md`** (v3.13.0+ universal scope — every recipient-bound email draft surface follows the same protocol, whether the trigger is scheduled or on-demand).
 
-**Reply Now drafts surface as an editable widget, not as blockquote previews.** Per M's 2026-05-20 feedback #15 ("for threads to revive, it's also generating emails without the widget") plus #13/#14 ("if it is to be sent to sender it should open in the widget"). Pre-v3.13.1 inbox-triage rendered each draft as a `> To: / > Subject: / > Body` blockquote that forced back-and-forth chat-turn edits. v3.13.1+ uses the canonical email-writer widget cascade — one widget item per Reply Now draft, with `send / edit then send / draft / skip` actions inline. Edit happens on the widget; no chat-turn round-trips required.
+**Reply Now drafts surface as an editable widget, not as blockquote previews.** Per M's 2026-05-20 feedback #15 ("for threads to revive, it's also generating emails without the widget") plus #13/#14 ("if it is to be sent to sender it should open in the widget"). Pre-v3.13.1 inbox-triage rendered each draft as a `> To: / > Subject: / > Body` blockquote that forced back-and-forth chat-turn edits. v3.13.1+ uses the canonical email-writer widget cascade — one widget item per Reply Now draft, with `send / draft / snooze 3d` actions inline. Edit happens on the widget; no chat-turn round-trips required.
 
 **Construct the widget the same way email-writer does (per `skills/email-writer/SKILL.md` Phase 4 — single shared pattern, do not re-invent).** Use a multi-item `all_batch_widget` with one item per Reply Now draft. Each item carries email-shaped metadata (To / Subject as a LIST of `[key, value]` pairs — not a dict, not packed into `name`):
 
@@ -299,12 +299,7 @@ for i, draft in enumerate(reply_now_drafts, start=1):
         ],
         "context_tag": "Reply to a thread in your inbox",
         "body_lines": [f"> {line}" for line in draft["body_paragraphs"]],
-        "actions": [
-            f"{i} send",
-            f"{i} edit then send",
-            f"{i} draft",
-            f"{i} skip",
-        ],
+        "actions": [f"{i} send", f"{i} draft", f"{i} snooze 3d"],
     })
 
 data_view = {
@@ -336,10 +331,9 @@ print(transport['html'])
 ```
 
 **Action semantics** — same lazy contract as email-writer Phase 4 (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The draft text lives in the widget; NO connector draft exists until the user acts (the tool named is the resolved draft/send path on the declared backend per EMAIL_DRAFT_PROTOCOL §0.5/§3c — Gmail via Zapier leg, Superhuman native, read-only backend degrades to paste):
-- `N send` — apply-choices creates the draft and sends it in one motion via the resolved send dispatch (EMAIL_DRAFT_PROTOCOL §3c order). Logs `email_drafted` + `email_sent`.
-- `N edit then send` — inline edit input on the widget; on Apply, the send fires.
+- `N send` — apply-choices creates the draft and sends it in one motion via the resolved send dispatch (EMAIL_DRAFT_PROTOCOL §3c order). Logs `email_drafted` + `email_sent`. (Body edits happen directly on the card before Apply — FB-10 inline body; `edit then send` is retired per FB-17, never emitted anew.)
 - `N draft` — apply-choices creates the draft on click; it lands in the connector's Drafts for later. Logs `email_drafted`.
-- `N skip` — NO connector call (nothing was created at fire time). Records a `chat_dismissal` event.
+- `N snooze 3d` — NO connector call; mutes the card for 3 days (`chat_dismissal` event). The FB-17 third primary button.
 
 **Decision Needed / Deep Read / FYI items do NOT get the widget surface** — those don't carry a draft to send. Decision Needed renders as a normal list item with a "decide" action; Deep Read as a list with attachment notes; FYI as a one-line summary.
 

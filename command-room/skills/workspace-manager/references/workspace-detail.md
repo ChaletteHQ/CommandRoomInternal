@@ -32,10 +32,6 @@ The MASTER_TRACKER.md file lives at `[WORKSPACE_ROOT]/_hq/MASTER_TRACKER.md` and
 | Project | Category | Stage | Last Touched | Status | Next Check-In |
 |---------|----------|-------|--------------|--------|----------------|
 
-## Completed Quick Tasks
-| Task | For | Date | Note |
-|------|-----|------|------|
-
 ## Recently Archived
 | Project | Category | Archived | Reason |
 |---------|----------|----------|--------|

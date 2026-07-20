@@ -285,7 +285,7 @@ def test_email_inbox_item_does_not_trigger_pulse_validator():
         "n": 1, "icon": "✉", "name": "Sam", "subject": "Q2 deck",
         "metadata": [("To", "sam@x.com"), ("Subject", "Q2 deck")],
         "body_lines": ["Sending tomorrow."],
-        "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+        "actions": ["1 send", "1 draft", "1 snooze 3d"],
     }
     _validate_pulse_richness(_wrap(item))
     _check("inbox email item does not trigger Pulse validator", True)

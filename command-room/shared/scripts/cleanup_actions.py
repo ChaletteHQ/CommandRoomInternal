@@ -18,7 +18,10 @@ folders and real data):
     than 1 hour (only inside `_hq/data/` and `_hq/.system/`) into
     `_archive/stale-locks/`, mirroring their original path. A non-technical CEO is
     never surprised by a vanished file; everything that leaves its working spot
-    lands in `_archive/` instead.
+    lands in `_archive/` instead. ONE ruled exception (LB2 D5, M 2026-07-19):
+    `*.readalarm.json` sidecars >30 days past their last recorded failure are
+    DELETED by `prune_stale_readalarms` — derived alarm state, never substrate
+    or user files; see the function's comment block.
 
 Every function is idempotent: a re-run on an already-clean workspace makes zero
 writes (acceptance #7).
@@ -26,6 +29,7 @@ writes (acceptance #7).
 Public API
 ----------
   sweep_stale_locks(root, max_age_s=3600, now=None) -> list[str]   # archive-moves, never deletes
+  prune_stale_readalarms(root, max_age_days=30, now=None) -> list[str]  # the ONE delete exception (LB2 D5 — derived alarm state, see the function)
   backfill_session_notes(root, folder_name, project_display=None, today=None) -> str | None
   regenerate_decision_log_if_changed(root) -> dict
   check_analytical_view_staleness(root, now=None) -> list[dict]
@@ -128,6 +132,70 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
                 if _archive_move(root, f, "stale-locks"):
                     archived.append(src_rel)
     return archived
+
+
+# --- LB2 D5: stale readalarm-sidecar pruning (the ONE delete exception) --------
+#
+# read_alarm.py sidecars (`<file>.readalarm.json`) are BY DESIGN never cleared
+# on a clean read — evidence preservation — and only age out of the SURFACED
+# view (read_alarm.RECENT_HOURS). Nothing ever pruned the files themselves, so
+# they accumulate forever next to substrate files. LB2 D5 (M ruling
+# 2026-07-19): cleanup's hygiene phase DELETES sidecars whose `last_seen` is
+# older than 30 days — delete, not archive, breaking the module's ARCHIVE-ONLY
+# doctrine for exactly this class because a sidecar is DERIVED ALARM STATE
+# (machine telemetry about a past read failure), never substrate and never a
+# user's file. Everything the archive-only policy protects stays protected.
+# Hard floor regardless of arguments: a sidecar younger than RECENT_HOURS x 2
+# is never deleted — its evidence must have been surfaceable by at least one
+# brief/system-health fire first.
+
+def prune_stale_readalarms(root: str | Path, max_age_days: int = 30,
+                           now: float | None = None) -> list[str]:
+    """Delete `*.readalarm.json` sidecars under `_hq/` whose recorded
+    `last_seen` (fallback: file mtime, for an unreadable sidecar) is older
+    than `max_age_days`. Returns the workspace-relative paths deleted.
+    Floor: never deletes a sidecar younger than read_alarm.RECENT_HOURS * 2.
+    Idempotent — a second run finds nothing."""
+    import json as _json
+
+    from read_alarm import RECENT_HOURS
+
+    root = Path(root)
+    hq = root / "_hq"
+    if not hq.is_dir():
+        return []
+    cutoff_now = time.time() if now is None else now
+    floor_s = RECENT_HOURS * 2 * 3600
+    max_age_s = max(max_age_days * 86400, floor_s)
+    deleted: list[str] = []
+    for f in hq.rglob("*.readalarm.json"):
+        if not f.is_file():
+            continue
+        age_ref = None
+        try:
+            data = _json.loads(f.read_text(encoding="utf-8"))
+            seen = str((data or {}).get("last_seen") or "")
+            if seen:
+                s = seen.replace("Z", "+00:00")
+                dt = datetime.datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                age_ref = dt.timestamp()
+        except (OSError, ValueError, _json.JSONDecodeError):
+            pass
+        if age_ref is None:
+            try:
+                age_ref = f.stat().st_mtime
+            except OSError:
+                continue
+        if (cutoff_now - age_ref) > max_age_s:
+            rel = str(f.relative_to(root)).replace("\\", "/")
+            try:
+                f.unlink()
+                deleted.append(rel)
+            except OSError:
+                continue
+    return deleted
 
 
 # --- D3: missing SESSION_NOTES scaffold backfill -------------------------------

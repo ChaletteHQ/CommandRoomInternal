@@ -55,6 +55,10 @@ from brand import get_brand  # noqa: E402
 from components import validate_tiles as _validate_tiles  # noqa: E402
 from components import validate_table as _validate_table  # noqa: E402
 from docx_leak_scanner import scan_text_for_leaks  # noqa: E402
+# SPEC OUT3 — chart validation (pure) + strings for the plan-time leak scan;
+# the PNG render happens at paint time via charts.try_chart_png. Stdlib-only
+# plugin module, same import category as the three above.
+from charts import ChartDataError, chart_strings, validate_chart  # noqa: E402
 
 
 PYTHON_PPTX_PIN = "1.0.2"
@@ -299,9 +303,25 @@ def build_slide_plan(
                 ]
             table = sec.get("table")
             if isinstance(table, dict) and table.get("rows"):
-                # OUT3 seam: when charts-on-slides lands, a chart PNG replaces
-                # this table beside the tiles; until then the table IS the branch.
+                # SPEC OUT3 (the OUT6 seam, now live): when a plan chart
+                # renders at paint time, its PNG replaces this table beside
+                # the tiles; the table STAYS IN THE PLAN as the fallback — a
+                # machine with no rasterizer paints it exactly as pre-OUT3.
                 slide["table"] = _plan_table(table, g["max_table_rows_per_slide"])
+            # SPEC OUT3 — carry the section's chart specs into the plan
+            # (validated pure, python-pptx-free; strings join the leak scan).
+            # A spec that fails validation is dropped, NOT raised: the deck is
+            # never stricter than the docx that carries the same payload (the
+            # deck-disagrees-with-pack rule), and the refused chart's numbers
+            # already live in the table. ONE chart per KPI slide — the first
+            # valid spec (slide real estate; DECK_GRAMMAR §2).
+            for chart in (sec.get("charts") or []):
+                try:
+                    validate_chart(chart)
+                except (ChartDataError, ValueError):
+                    continue
+                slide["charts"] = [chart]
+                break
             if "tiles" not in slide and "table" not in slide:
                 continue  # a KPI section with neither is empty for the deck
             plan.append(slide)
@@ -442,6 +462,11 @@ def _plan_strings(plan: List[dict]) -> List[str]:
                 out.extend(str(c) for c in row)
             if table.get("note"):
                 out.append(str(table["note"]))
+        # SPEC OUT3 — chart titles/labels become PIXELS the post-save scan
+        # cannot read, so they join the plan-time scan here (charts.py runs
+        # its own scan too; this keeps every painted string in ONE input).
+        for chart in s.get("charts") or []:
+            out.extend(chart_strings(chart))
     return out
 
 
@@ -683,7 +708,32 @@ def _paint(plan: List[dict], brand_dict: dict, output_path: str,
                     run_on(lab, t["label"].upper(), size=_SIZES_PT["tile_label"],
                            color=accent)
                 top += 1.9
-            if s.get("table"):
+            # SPEC OUT3 (the OUT6 seam): a rendered chart PNG replaces the
+            # compact table beside the tiles; refusal or no rasterizer on
+            # this machine falls through to the table, byte-identical to
+            # pre-OUT3. Never both — one message per slide.
+            chart_png = None
+            for chart in s.get("charts") or []:
+                try:
+                    from charts import try_chart_png
+                    chart_png = try_chart_png(chart, brand=brand_dict)
+                except Exception:
+                    chart_png = None
+                if chart_png:
+                    break
+            if chart_png:
+                try:
+                    # charts.py emits 720x400 (1.8:1); fill the remaining
+                    # band under the tiles, centered.
+                    img_h = min(3.3, g["slide_h_in"] - top - 0.7)
+                    img_w = img_h * 1.8
+                    slide.shapes.add_picture(
+                        chart_png,
+                        Inches((g["slide_w_in"] - img_w) / 2), Inches(top),
+                        height=Inches(img_h))
+                except Exception:
+                    chart_png = None  # a bad image never blocks (R26)
+            if not chart_png and s.get("table"):
                 add_table(slide, s["table"], top)
 
         elif s["slide"] == "rows":

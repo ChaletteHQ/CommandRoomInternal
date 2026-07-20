@@ -65,7 +65,7 @@ expected until its phase lands.
 | `m1_voice_proof_shown` | command-room-onboarding Phase 5b voice proof (shipped v4.4.0; registered here retroactively — it was written without enum registration, the exact drift this registry stops) | usage-report, coach (onboarding-beat telemetry) |
 | `commitment_reclassified` | `commitment_state.promote_task_to_commitment` (Phase 2 Stage D — triage `make task`/`promote` verbs) + `shared/scripts/migrate_commitment_kinds.py` (S6 one-time partition, dry-run default) | the projector (`load_open_commitments` kind-override fold), `commitment_counts` by_kind, commitment-triage, `stale_tasks` |
 | `commitment_reopened` | `commitment_state.reopen_commitment` (Phase 2 Stage D — S4 triage undo; also the reconcile-sent `undo` affordance may migrate here) | the projector (`load_open_commitments` order-aware closure state), `close_commitment` idempotency (a reopened item may be re-closed), commitment-triage |
-| `commitment_reassigned` | `commitment_state.reassign_commitment` (v4.6.0 S4 — the `reassign to [name]` verb + the "that's actually [name]'s" chat phrase; W4b's Theirs→[name] confirm verb dispatches it with `confirmed: true`) | the projector (`load_open_commitments` reassignment fold — latest event wins; unconfirmed reassignments stamp `pending_review` so the item sits in the unconfirmed bucket and never enters chase), `commitment_counts` direction buckets, commitment-triage, the daily Commitments chat |
+| `commitment_reassigned` | `commitment_state.reassign_commitment` (v4.6.0 S4 — the `reassign to [name]` verb + the "that's actually [name]'s" chat phrase; W4b's Theirs→[name] confirm verb dispatches it with `confirmed: true`) | the projector (`load_open_commitments` reassignment fold — latest event wins; unconfirmed reassignments stamp `pending_review` so the item sits in the unconfirmed bucket and never enters chase), `commitment_counts` direction buckets, commitment-triage, the daily Waiting On / My Plate chats (CTS1; pre-split: the Commitments chat) |
 | `commitment_partial_received` | `commitment_state.mark_partial_received` (v4.6.0 MC1 — the per-person `mark received from [name]` verb on a multi-counterparty commitment; records "counterparty X delivered" WITHOUT closing the item) | the projector (`load_open_commitments` receipt fold — accumulates `data.received_from` / `data.received_from_names`, stamps `data.all_counterparties_received` when the roster is complete), the daily Commitments chase fan-out (drops received counterparties from the per-person nudge set), the closure PROPOSAL (all-received → propose close, never auto-close) |
 | `chat_dismissal_cleared` | `mute_ledger.clear_dismissal` / `clear_dismissals` (v4.6.0 S4 — the Unmute verb on the `show muted` ledger + the triage batch-undo's mute reversal, F-20 P3a) | `mute_ledger.live_mutes` / `active_dismissal_target_ids` (THE dismissal-liveness readers — every surface that filters on an active `chat_dismissal` honors the clear), show-my-list render filter, relationship_moves exclusion pass, the Commitments/Pulse/Inbox orchestrator dismissal filters |
 | `person_proposal_resolved` | apply-choices confirm-section dispatch via `confirm_flow.build_person_proposal_resolved_event` (v4.6.1 W4b — the proposal tombstone: `Add person` writes it with `resolution: person_added` after `people_writer.create_person`; `Same as [existing]` with `resolution: same_as` after `people_writer.add_person_alias`; `Not relevant` with `resolution: not_relevant`, nothing else written) | `confirm_flow.load_open_person_proposals` (adjudicated proposals stop re-surfacing — the F-46 P2b stranding fix), usage-report |
@@ -123,6 +123,21 @@ as the existing `commitment` / `decision` / `interaction` types through
 `append_event()` (dedup via `source_ref = "session:{session_id}"` in
 `.source_refs.idx`) — no parallel "swept" variants of existing families.
 
+## Balance lane (SPEC BAL1, 2026-07-19) — personal, m_facing only
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `balance_nudge_suggested` | `shared/scripts/balance.py::compute_balance` — ≤1 per Sunday fire, `data.personal: true` always; payload `{tie_person_id, kind, evidence[], gap_days, baseline_days, open_slots[], proposed_action{kind, venue, draft_event_seq}}` | the balance skill's own dedupe pass (7-day per-tie window), `personal_leak.is_personal` (classifies the lane). **NO org-facing surface reads it** — the org-scoped reader (`events_io.load_events_org_scoped`) drops it by design, and Pulse's cadence math excludes it (never counts as an interaction). |
+| `balance_nudge_actioned` | the apply-choices `balance` dispatch `book` confirm path (prose writer — balance SKILL Step 4 confirm item 3 and apply-choices carry the same pinned type; `run_fu_pretest_pins_test` asserts the two stay equal); `data.personal: true` always; payload `{tie_person_id, draft_event_seq}` linking back to the nudge's `proposed_action.draft_event_seq` | `personal_leak.is_personal` (type-classified via `_PERSONAL_EVENT_TYPES` — org-scoped readers drop it). **NO org-facing surface reads it** — same lane rules as `balance_nudge_suggested`. |
+
+Hard rules: personal-lane end to end — renders only at `surface="m_facing"`;
+excluded from every cadence/interaction computation; the `tie: "personal"`
+marker on person records partitions the entity set (Pulse Phase 3, both
+secondary dormancy emitters, and relationship-moves all skip personal ties —
+BAL1 D1.1). The reservation path is propose-and-confirm only: the nudge event
+never books, sends, or spends; `proposed_action.draft_event_seq` is populated
+by a follow-on append after the user's explicit `book` click.
+
 ## Deal lane (SPEC PIPE1, 2026-07-13)
 
 The deal-tracking vocabulary. All five Part 1 types are written ONLY by
@@ -159,9 +174,12 @@ Hard rules:
 
 The unified propose → confirm → narrate → undo layer. `brain_proposal` is the
 ONE generic proposal event every NEW detector writes through
-`shared/scripts/brain_proposals.py::propose()` — the 8 legacy proposal
-families keep their own types and are adapter-read into the same queue
-(migration is LB2). The `deal_update_proposed`/`deal_update_dismissed` pair
+`shared/scripts/brain_proposals.py::propose()`. LB2 (2026-07) migrated the
+org / project / dormancy / schedule_add WRITERS onto this rail — their legacy
+types are now written by nothing and adapter-read as permanent fossils
+(pre-migration rows render until they resolve or age out); person and
+commitment_review still write their legacy types (LB3), adapter-read into the
+same queue. The `deal_update_proposed`/`deal_update_dismissed` pair
 above finally gets its writer in this lane: the deal-signal detector emits
 through `propose()` (a `brain_proposal` with `kind: "deal_update"` /
 `"deal_creation"`), and `propose()` writes the reserved legacy type alongside
@@ -197,6 +215,101 @@ Hard rules:
   whose `action_tuples` map to no registered verb is rejected at `propose()`
   (no-consumer proposals never enter the queue).
 
+## Entity history & lineage lane (SPEC HIST1, 2026-07-18)
+
+The per-person / per-company history vocabulary. Lineage rides the change the
+user already confirmed: the two `*_changed` types are emitted by
+`people_writer.update_person` at the moment a confirm-gated role/company
+change is applied (the before/after snapshot is already in hand at the
+`person_updated` emit site) — no new gate, no new prompt; the head field
+still updates, the prior value is preserved as history. Facts are additive,
+sourced events written by the two `record_*_fact` writers — they NEVER touch
+the entity record (D1: history is events + a renderer, never a frozen
+field). Consumer column lists ONLY the consumers Part 1 actually wires (no
+consumer-inflation); future consumers (dormant-customer-scan, usage-report,
+the change-feed spec) are added when they read. Payload shapes in
+`event-payloads.schema.json`.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `person_role_changed` | people_writer.update_person (auto, at the before/after diff site; suppressed by `suppress_lineage=True` for migration sets) | render_person_history, render_org_history, call-prep (relationship timeline) |
+| `person_org_changed` | people_writer.update_person (auto, same site) | render_person_history, render_org_history (joined/left movement block), call-prep |
+| `person_fact_observed` | people_writer.record_person_fact (explicit user statement, confirmed proposal, or — Part 2 — the `entity_fact_structured` auto tier via entity_signal_detector.apply_structured_facts, batch-stamped for undo; auto is limited to preference/contact/personal, S2) | render_person_history, call-prep, change_feed (auto-noted count line) |
+| `org_fact_observed` | org_writer.record_org_fact (explicit user statement, confirmed proposal, or the Part 2 structured auto tier — same S2 category limits) | render_org_history, board-pack-assembler (§1/§4 company context), change_feed (auto-noted count line) |
+| `entity_fact_retracted` | brain_undo `entity_fact_structured` reverser (Part 2 — landed in the SAME commit as the AUTO_ALLOWED entry, closing the wave-pattern registration) | render_person_history, render_org_history (suppress the retracted fact) |
+
+Hard rules:
+
+- **`source_ref` is never null.** Required on the fact events; on the auto
+  `*_changed` events, when no connector ref is in hand the writer synthesizes
+  `update:<source_skill>:<seq of the triggering person_updated event>` so the
+  future change feed (HIST1 D10) always has a handle.
+- **No lineage from backfill churn.** A `*_changed` event is emitted only
+  when before != after AND both sides are non-empty — filling an empty
+  role/org for the first time is enrichment, not a move. Bulk
+  re-attributions pass `suppress_lineage=True` and emit nothing.
+- **Facts never mutate records.** `record_person_fact` /
+  `record_org_fact` append events only; the entity record is untouched.
+
+## People identity lane (SPEC PID1, 2026-07-19)
+
+The three-tier identity reconciler's vocabulary (auto-add on hard
+corroboration via the existing `person_org_creation_structured_fact` rail;
+identity-clustered confirm rows; merge-propose never auto-merge). Payload
+shapes in `event-payloads.schema.json`.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `unidentified_attendee_observed` | `meeting_capture.build_unidentified_attendee_event` (meeting-notes Step 5f / past-meetings Phase 4.5b for unnamed speakers — NEVER a person proposal; the proposal builder raises on empty names by design) + `identity_reconcile.run_identity_reconcile` (backfill conversion of legacy no-name rows) | `identity_reconcile.load_open_annotations` / `count_open_annotations` (the staff meeting's ONE count line — §0-4: otherwise fully silent, never a queue row) |
+| `identity_reconcile_run` | `receipts.log_receipt` from `identity_reconcile.run_identity_reconcile(apply=True)` — ONE per pass (Sunday `identity-reconcile` maintenance job + the M-fired one-time backfill) | maintenance_dispatcher due-ness rule, `change_feed.changes_since` (the D6 `people_added` / `people_linked` CHANGED lines — counts from what was WRITTEN, never the plan), `identity_reconcile.load_open_annotations` (`annotations_resolved` fold) |
+
+Hard rules:
+
+- **No merge is ever automatic.** `person_merge` / `person_link` proposals
+  ride the bp rail at tier `confirm`; `merge_person_into` has NO registered
+  reverser and `person_merge` is never in `AUTO_ALLOWED`.
+- **Caps spill narrated** (§0-3): auto-add ≤15/backfill batch, ≤10/week
+  steady-state; merge-propose ≤10/Sunday render — overflow is counted in
+  the receipt (`spilled`), never silently dropped.
+- **D8 fingerprint tombstones**: a `seq: null` proposal resolves via
+  `data.proposal_fingerprint` (`confirm_flow.compute_proposal_fingerprint`)
+  on the existing `person_proposal_resolved` / `person_proposal_reopened`
+  types — int-seq matching stays untouched and preferred.
+  A `history[]` / `career[]` field on the entity is the forbidden shape
+  (`FORBIDDEN_PERSON_FIELDS` doctrine).
+- **The auto fact tier is structured-and-non-identity ONLY (Part 2,
+  landed).** Money and identity stay confirm (Bug #92); the
+  structured-connector `entity_fact_structured` auto class and its
+  `entity_fact_retracted` reverser shipped together (brain_proposals.
+  AUTO_ALLOWED + brain_undo.REVERSERS). Auto categories:
+  preference/contact/personal — `role`/`company_news` facts ride the
+  confirm rail even from a structured source (S2). Auto facts are applied
+  directly through the fact writers with `brain_batch_id` stamps and
+  narrated in the brief's CHANGED line with a standing `undo` (the PID1
+  applied-then-narrated posture) — never an open auto proposal.
+
+## Chart lane (SPEC OUT3B, 2026-07-19)
+
+One on-demand chart answer per ask. Written ONLY by the `chart-on-demand`
+skill. Payload shape in `event-payloads.schema.json`.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `chart_render` | chart-on-demand skill (once per ask) | usage-report / insight-generator (mine what gets charted — the ask corpus is empty at ship), check-deliverables / value-receipt / cleanup (see the persisted page via `data.artifact`) |
+
+Hard rules:
+
+- **Refusal logs too (D4).** An ask with no substrate answer emits
+  `chart_render` with `refused: true` + `data.reason` (naming the closest
+  catalog entry). A refusal is text, not a page — `artifact` is absent. With
+  zero recorded chart asks today, refusal receipts are how the closed series
+  catalog learns what the CEO actually wants charted.
+- **Closed catalog only.** `data.catalog_id` is one of the enumerated series
+  (`value_trend` / `pipeline_mix` / `pipeline_by_org`); numbers come from the
+  owning helper, never invented (refusal over fabrication).
+- **One chart per event.** Compound asks split into sequential asks, one
+  `chart_render` each.
+
 ## Commitment-family append contract (gate-enforced)
 
 - `type: commitment` — `data.id` is minted as `cmt_<ulid>` at write time when
@@ -205,6 +318,19 @@ Hard rules:
   kind is stamped `promise` (the behavior-preserving default) until Phase 2
   Stage D migrates every producer to emit kind explicitly; an invalid kind is
   rejected.
+  **CTS1 §5 consistency check (warn-level, NEW writes only — never rejects):**
+  the gate warns to stderr when `kind: task` carries a counterparty signal
+  (a task is self-owed by definition — someone waiting means it's a promise)
+  or when `kind: promise` carries NO counterparty signal and no
+  `pending_review` (it will render "counterparty unresolved" on My Plate —
+  link the counterparty at capture when known). The signal test goes through
+  `commitment_parties` (the MC1 ids/names union) plus `requester_*` /
+  `owner_external`. ~49 live rows predate this check and violate the promise
+  half — they converge via the CTS1 §8.2 drip/batch fixup, never via a
+  substrate-wide warning sweep. CTS1 introduces NO new event types: the two
+  surfaces (Waiting On / My Plate) are read-side filters
+  (`shared/scripts/surface_split.py`) over the projected open set, and every
+  kind change rides the existing additive `commitment_reclassified` marker.
 - `type: commitment_resolved` — MUST carry a readable id in one of
   `data.commitment_id` (preferred), `data.id`, `data.target_id` (legacy),
   `data.commitment_seq`, `data.source_event_seq`. An id-less closure is

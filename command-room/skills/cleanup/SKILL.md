@@ -42,6 +42,8 @@ Before surfacing the summary or composing the `.docx` report, read `shared/PERSO
 - **Brain Live State renderer (v3.17.0+)** — re-renders each active project's `PROJECT_BRAIN` Live State block via the canonical `render_thread_live_state` / `render_brain_block` helpers (marked-region write, byte-preserves hand-written content) and runs the idempotent one-time brain migration (Phase 3.5). Never hand-edits a brain; only the helper touches the marked block.
 - **Derived-view + scaffold + lock writer (bounded, v3.19.x / SPEC CLEAN1)** — regenerates the views it owns from the substrate (`_hq/views/PEOPLE.md` via Phase 3.5c; `_hq/views/DECISION_LOG.md` via the **changed-only** `render_decision_log.regenerate_if_changed`, Phase 3.5d), scaffolds a **missing** `SESSION_NOTES_[NAME].md` (Phase 3c / D3 — never overwrites one that exists), and **archives** `*.lock.stale.*` sentinels older than 1 hour into `_archive/stale-locks/` (Phase 2 Rule 9 / D6 — moved, never deleted). Every one of these is idempotent: re-running on a clean workspace writes nothing.
 - **Living Brain expiry sweep (SPEC LB1, Phase 3j)** — appends the silent `brain_proposal_expired` tombstones for open proposals past their TTL, ONLY via `brain_proposals.expire_stale()` (the canonical sweep helper — never a hand-rolled append). Idempotent: nothing stale → nothing written.
+- **Config-drift proposals (SPEC LB2, Phase 3k — bounded rider, the `expire_stale` precedent)** — the weekly drift pass may append `brain_proposal` rows (`kind: config_drift`), ONLY via `config_drift_detector.run_drift_detector()`. **This is not a pref write: cleanup stays READ-ONLY on `_hq/data/skill_config/` — byte-checked by test.** The proposal re-offers a knob; only the user's tune flow ever writes config.
+- **Readalarm sidecar pruning (SPEC LB2 D5 — the ONE delete exception)** — deletes `*.readalarm.json` sidecars whose recorded failure is >30 days old, ONLY via `cleanup_actions.prune_stale_readalarms()`. Derived alarm state, never substrate or user files; a sidecar younger than 6 days (2× the surfaced window) is never touched regardless of settings. Everything else stays archive-only.
 - **NEVER writes:** `entities.json` (except via the owner skills' helpers it delegates to), `events.jsonl` other than appending one `cleanup_run` event (+ the `corruption_recovery` event that `recover_corruption.py` appends on its own, + the Phase 3j expiry tombstones via `brain_proposals.expire_stale`), `aliases.json`, the **analytical views** (`RELATIONSHIPS`/`TIMELINE`/`COMMITMENT_AGING`/`DORMANT`/`THEMES` — insight-generator owns those; cleanup only flags them stale) or `_hq/views/ALIASES.md` (people-crm owns it — flag only), and `classifier_feedback.jsonl`. Never deletes a user's folders or files; orphan folders are FLAGGED, not removed. Canonical entity mutation stays with the owner skills (workspace-manager / project-manager / people-crm).
 
 ## Substrate validated every run
@@ -113,7 +115,7 @@ Then run all automatic maintenance rules from `workspace-manager/references/main
 4. **Session-notes rollover** (Rule 1): SESSION_NOTES over 150 lines → archive older entries to `SESSION_NOTES_[NAME]_archive_[YYYY].md` — MEMORY (archived, never deleted)
 5. **Brain-thread pruning** (Rule 2): compress resolved threads >30 days to a Thread-History one-liner — MEMORY (compressed)
 6. **Commitment archival** (Rule 3): compress delivered commitments >60 days to a Commitment-History one-liner — MEMORY (compressed)
-7. **Tracker hygiene** (Rule 8): move old Completed Quick Tasks / Recently Archived entries into the tracker's own archive section — STALE POINTERS (archived in place, never deleted; project archive folders remain)
+7. **Tracker hygiene** (Rule 8): move old Recently Archived entries into the tracker's own archive section — STALE POINTERS (archived in place, never deleted; project archive folders remain). CTS1: the markdown quick-task lane is retired — if a legacy "Quick Tasks" section with LIVE rows survives, run workspace-manager's one-time quick-task migration (rows → `kind: task` commitment events) instead of grooming the section; "Completed Quick Tasks" rows file under `## Archived (history)`.
 8. **Interaction-log tiered compression** (Rule 7): Tier 1 (0–90d) full, Tier 2 (90d–6mo) one-liners, Tier 3 (6mo–1yr) monthly digests, Tier 4 (1yr+) archived — MEMORY (compressed)
 9. **Stale lock-file archival** (D6): move `_hq/data/*.lock.stale.*` and `_hq/.system/*.lock.stale.*` sentinels older than **1 hour** into `_archive/stale-locks/` — STALE LOCKS (not memory, not caches; moved, never deleted). Run the code block below; record the count into `actions_taken[]`. A 1-hour floor means a writer that's still mid-recovery is never disturbed; the docstring on `atomic_write.py` long claimed "weekly Tidy Up cleans them" but nothing did — this is the implementation.
 
@@ -148,7 +150,18 @@ else:
 "
 ```
 
-These rules are non-destructive by design — **nothing is ever deleted.** Memory is compressed/archived in place; caches and >1h-stale locks are MOVED into `_archive/` (never a user's folders or files). Record each action taken into `actions_taken[]` for the `cleanup_run` event.
+11. **Stale readalarm-sidecar pruning** (LB2 D5): delete `*.readalarm.json` sidecars under `_hq/` whose last recorded read-failure is older than 30 days — the evidence has been surfaceable by dozens of brief/system-health fires already, and the sidecars otherwise accumulate forever next to substrate files. Run the code block below; record the count into `actions_taken[]`. This is the workspace's ONE true delete (M ruling 2026-07-19): sidecars are derived alarm state — machine telemetry, never substrate, never a user's file. The helper enforces a hard floor (never touches a sidecar younger than 2× the surfaced window) no matter what it's called with.
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'shared/scripts')
+import cleanup_actions as ca
+pruned = ca.prune_stale_readalarms('<workspace_root>')  # >30d-old sidecars only; the one delete exception (D5)
+print('pruned', len(pruned), 'stale read-alarm sidecars')
+"
+```
+
+These rules are non-destructive by design — **nothing is ever deleted, with the ONE ruled exception of Rule 11's stale read-alarm sidecars (derived machine telemetry, LB2 D5).** Memory is compressed/archived in place; caches and >1h-stale locks are MOVED into `_archive/` (never a user's folders or files). Record each action taken into `actions_taken[]` for the `cleanup_run` event.
 
 ## Phase 3: Substrate Integrity (detect → remediate)
 
@@ -359,6 +372,21 @@ print(json.dumps(r))
 ```
 Record into `actions_taken[]` **only when `changed` is True**. The renderer reads every commitment field through `cru_match` (shape-safe) and dual-writes the canonical `_hq/views/MASTER_TRACKER.md` + back-compat `_hq/MASTER_TRACKER.md`; it never rewrites the substrate. `changed` also flips True when only the back-compat copy was missing — so this heals the `_hq/` vs `_hq/views/` path-orphan in older workspaces on the next sweep.
 
+### 3.5d3 — Regenerate changed entity-history views (SPEC HIST1, dirty-checked)
+
+The per-person / per-company history views (`_hq/views/people/*.md`, `_hq/views/orgs/*.md`) are deterministic compiles over events, CREATED on `go [person]` / `go [org] rollup` — cleanup keeps the existing ones fresh. Both regen hooks are seq-dirty-checked (a view is re-rendered only when an event newer than its `source_seq` marker tags that entity), so a quiet workspace is a fast no-op:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import render_person_history as rp, render_org_history as ro
+ws = '<workspace_root>'
+print(json.dumps({'people': rp.regenerate_changed(ws), 'orgs': ro.regenerate_changed(ws)}))
+"
+```
+
+Record into `actions_taken[]` only the entities actually refreshed (both `refreshed` lists). Never hand-edit a history view — the renderers own the whole file. An archived entity's view is pruned to `_archive` on status change by the archive path, never deleted here.
+
 ### 3.5e — Flag stale analytical views + nudge a paused insight-generator (D5)
 
 The analytical views (`RELATIONSHIPS.md`, `TIMELINE.md`, `COMMITMENT_AGING.md`, `DORMANT.md`, `THEMES.md`) are **NOT cleanup's job to regenerate** — they're `insight-generator`'s expensive lazy synthesis (per `references/VIEW_GENERATION.md`). cleanup's job is to **flag honestly** when they've fallen behind the substrate, and to surface the real root cause (a paused insight-generator) — the forensic gap was that cleanup neither regenerated NOR actually flagged, and insight-generator wasn't firing, so nobody owned it.
@@ -486,7 +514,7 @@ Enforcement note (the #98 lesson, generalized): every check above binds to artif
 
 ### 3f. Deliverable voice/privacy sweep — the GATE2 backstop (SPEC GATE2 D3)
 
-This is the load-bearing layer of GATE2's enforcement-by-detection. The save-time voice + leak gates only run when a deliverable routes through `brief_writer.make_brief`; live testing proved the LLM routinely hand-rolls a `.docx` via the generic docx skill (0 `gate_ran`, every gate bypassed). So instead of trusting the route, cleanup **reads the documents that were actually produced this week** and flags any carrying a voice tell or a privacy/substrate leak — regardless of how they were made. The scanner opens the file itself, so a hand-rolled doc is caught exactly like a `make_brief` one.
+This is the load-bearing layer of GATE2's enforcement-by-detection. The save-time voice + leak gates only run when a deliverable routes through `brief_writer.make_brief` (or, for premium HTML, `premium_html.make_premium_brief`); live testing proved the LLM routinely hand-rolls a `.docx` via the generic docx skill (0 `gate_ran`, every gate bypassed), and the same bypass applies to a hand-rolled or later-edited `.html` page. So instead of trusting the route, cleanup **reads the documents that were actually produced this week** — Word docs, deliverable-shaped markdown, and `.html`/`.htm` renders — and flags any carrying a voice tell or a privacy/substrate leak, regardless of how they were made. The scanner opens the file itself, so a hand-rolled doc is caught exactly like a `make_brief` one.
 
 **READ + FLAG ONLY — never deletes, moves, or edits a user's file** (client safety, same posture as orphan folders in 3d). "Quarantine" here means surface loudly, not relocate. The only writes are CR-owned telemetry (a `gate_ran` event + a findings record under `_hq/.system/gate2_findings/`), and they can never block.
 
@@ -549,10 +577,23 @@ import sys; sys.path.insert(0, "shared/scripts")
 from brain_proposals import expire_stale, card_health_counts
 
 swept = expire_stale("<WORKSPACE>")          # appends brain_proposal_expired tombstones (bounded write, see Writer Contract)
-health = card_health_counts("<WORKSPACE>")   # {"open": N, "expired_in_window": M} — 30-day window
+health = card_health_counts("<WORKSPACE>")   # {"open": N, "expired_in_window": M, "resting_auto": R} — 30-day window; R is ALWAYS 0 on a healthy workspace (LB2 auto lifecycle contract)
 ```
 
-The sweep is the ONLY expiry writer (surfaces already exclude TTL-past items from render, so a missed Sunday never shows stale rows — the tombstone just makes the ledger explicit). Feed `health` into the Beat 1 card-health line below. Never narrate proposal ids or event types.
+The sweep is the ONLY expiry writer (surfaces already exclude TTL-past items from render, so a missed Sunday never shows stale rows — the tombstone just makes the ledger explicit). Feed `health` into the Beat 1 card-health line below. Never narrate proposal ids or event types. **LB2:** `health["resting_auto"]` counts open auto-tier proposals — by the auto lifecycle contract that number is ALWAYS 0; a non-zero value is a detector bug (an automation proposed an auto change and never applied/resolved it in the same run). When non-zero, add ONE worth-a-glance line — *"One of my background automations left something half-finished — I've flagged it for the operator."* — and treat it as a `report bug` item; never render the row itself.
+
+### 3k. Config-drift re-offer pass (SPEC LB2 §3b — FIRST_RUN_PROTOCOL "Override-drift", mechanized)
+
+The first-run contract's drift clause finally has code: a knob configured **>6 months ago** that has collected **≥5 tagged contradicting signals** since (corrections rows fighting a configured sign-off; per-fire overrides of a configured default) gets ONE re-offer proposal on the Living Brain rail — `kind: config_drift`, **staff meeting only** (a config nudge is never urgent; it never reaches the daily card or the brief). One call, weekly:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from config_drift_detector import run_drift_detector
+
+drift = run_drift_detector("<WORKSPACE>")   # {"candidates": N, "proposed": K, "suppressed": S}
+```
+
+**Cleanup stays READ-ONLY on prefs** — the helper proposes, never writes `skill_config` (Writer Contract rider; byte-checked by test). Once-per-knob discipline is `propose()`'s own machinery: an open row dedups, a dismissal takes the standard 60-day cooldown, snooze is the shared 7d. On confirm (at the staff meeting, via apply-choices), a re-offer note lands for the next coach session to re-offer THAT KNOB — the tune flow remains the only config writer. No Monday-note line for this pass — the proposal IS the surface. Never narrate detector internals or signal counts beyond what the row's own text says.
 
 ## Phase 4: Monday-Morning Report — the scorecard handshake (no scores)
 
@@ -583,6 +624,7 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 - **Long-unconfirmed items** (Phase 3i, v4.6.1 W4b): when `stale_unconfirmed` is non-empty, ONE line — *"[N] captured to-dos have sat unconfirmed for over a month — say `triage my commitments` and I'll queue them up to drop or keep."* PROPOSE only (the drop is a click on the triage surface, never automatic); omit on zero. Keep this line out of the watchdog cluster below — it's a substrate-hygiene item, not a schedule finding.
 - **Living Brain card health** (Phase 3j, LB1): when `health["open"] > 0` or `health["expired_in_window"] > 0`, ONE line — *"[N] suggestions are waiting on your yes/no — say `staff meeting` to run through them. [M] older ones expired quietly without an answer this month."* (Drop either half at zero; drop the line when both are zero.) This is the queue-rot visibility line — if the expired half keeps growing, the card cadence or the detectors need tuning, and this line is the evidence. Substrate-hygiene item — keep it out of the watchdog cluster.
 - **Lock files archived** (Phase 2 Rule 9, D6): fold the count into the "tidied up" line — *"…tidied away [N] leftover lock files."* Plain English; never say "lock.stale" or surface a path. (They're moved to `_archive/`, never deleted — but don't burden the CEO with that detail unless asked.)
+- **Read-alarm sidecars pruned** (Phase 2 Rule 11, LB2 D5): ONE line, only when the count is non-zero — fold into the "tidied up" line: *"…cleared [N] old system health notes."* Never say "sidecar", "readalarm", or surface a path; omit entirely at zero (the common case).
 - **Deliverable voice/privacy flags** (Phase 3f, GATE2): when the sweep flagged docs, surface its plain-English `summary` verbatim — *"[N] documents produced recently didn't pass the quality gate — worth a glance before any go out: • [filename] — language that doesn't sound like you ('leverage')…"*. Filenames only, never `_hq/` paths or token jargon. When only `suspected_bypass` is non-zero, use the softer "produced without the quality check" line. Omit entirely on a clean sweep.
 - **Scheduled-task watchdog findings** (Phase 3e-bis, W1/R5/R10 + R3 truth rules): surface each returned line verbatim under the "worth a glance" tier — dead task, never-authorized task, folder rename, prompt drift, render-without-write, plus the R3 info lines (dated late catch-ups, first-run-pending). These lead the tier when present (a dead schedule starves every other surface). If the vantage guard fired (F-40), its single line replaces ALL per-task schedule claims. Omit entirely when the watchdog returns nothing (the common case). A task named in any of these lines is never simultaneously described as running normally elsewhere in the note.
 - **Events-lock contention** (Phase 2 Rule 10, A1): include ONLY when there were waits or timeouts this week — *"A few things tried to save to your activity log at the same moment this week — everything saved fine, nothing was lost."* Omit the line entirely on a quiet week (the common case). Never surface file paths, "lock_stats", wait/timeout counts, or lock vocabulary; the point is reassurance that it was handled, not a metric dump. The counters reset after this report.

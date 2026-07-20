@@ -178,7 +178,6 @@ FAIL_RULE_COUNT = len(_FAIL_RULES)
 
 # --- Structural detectors (warn severity) ---
 
-_EM_DASH = "—"
 _TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
 _COLON_SEP_RE = re.compile(r"(?<=[A-Za-z])\s*:\s+(?=[A-Za-z])")
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?]+\s+")
@@ -187,6 +186,20 @@ _HEDGE_RE = re.compile(
     re.IGNORECASE,
 )
 _BULLET_LINE_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
+_BULLET_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+# Dash-as-punctuation (FB-16): em dash, en dash, or a space-hyphen-space run.
+# Hyphenated compounds ("check-in", "follow-up") carry no surrounding spaces
+# and stay legal. Shared by the subject gate and the body gate.
+_DASH_PUNCT_RE = re.compile(r"—|–|\s-\s")
+
+# A standalone sign-off line ("— Sam", "— Sam Sample", "— S.", "– Bo"): a
+# line that is ONLY a leading dash + a name of 1–3 capitalized tokens (a
+# sign-off hierarchy's longest form is a full first + last name).
+# FB-16 EXEMPTS this — the em-dash sign-off is a deliberate brand-voice
+# element, not dash-as-punctuation. A dash with prose BEFORE it on the line is
+# not a sign-off and is still caught.
+_SIGNOFF_RE = re.compile(r"^\s*[—–]\s*[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2}\s*$")
 
 
 def _is_quoted_line(line: str) -> bool:
@@ -275,27 +288,53 @@ def _scan_phrases(
 
 
 def _scan_structural(
-    text: str, *, context: str, skip_quoted: bool
+    text: str, *, context: str, skip_quoted: bool,
+    allow_norm: Optional[List[str]] = None, ban_dashes: bool = True,
 ) -> List[dict]:
+    allow_norm = allow_norm or []
     findings: List[dict] = []
     for start, para in _iter_paragraphs(text):
         first_line = para.split("\n", 1)[0]
         if skip_quoted and _is_quoted_line(first_line):
             continue
 
-        # Em-dash pile-up — >2 em-dashes in one paragraph.
-        em = para.count(_EM_DASH)
-        if em > 2:
-            findings.append(
-                {
-                    "rule": "structural_em_dash_pileup",
-                    "severity": "warn",
-                    "line_no": start,
-                    "line": first_line.strip(),
-                    "match": f"{em} em-dashes in one paragraph",
-                    "hint": "more than 2 em-dashes in a paragraph is a tell — break them up",
-                }
-            )
+        # Dash-as-punctuation (FB-16) — the product-level hard ban in body
+        # prose: em dash, en dash, or spaced hyphen, at FAIL severity, one
+        # finding per occurrence. This REPLACES the old em-dash PILE-UP warn,
+        # which only fired at >2 em-dashes per paragraph — so a quick-drafted
+        # email body with a single "we shipped — fast" scored `pass` and
+        # slipped the gate entirely (the seam FB-16 closes; the subject gate
+        # already banned dashes, the body gate never did). Default-on;
+        # `ban_dashes=False` turns it off for a client whose calibrated voice
+        # keeps dashes, and a demonstrably-used dashed phrase in a client's
+        # allow_phrases feeds its line through. The standalone "— Matthew"
+        # sign-off line is EXEMPT. Runs on body paragraphs only (structural
+        # scope), so list/table/matrix cells are untouched.
+        if ban_dashes:
+            for offset, line in enumerate(para.split("\n")):
+                if skip_quoted and _is_quoted_line(line):
+                    continue
+                if _SIGNOFF_RE.match(line):
+                    continue
+                if allow_norm and _is_allowed(line, allow_norm):
+                    continue
+                # Strip a leading list marker so an indented "  - item" bullet
+                # is not itself read as a spaced-hyphen; a real dash inside the
+                # bullet text is still caught.
+                scan_line = _BULLET_MARKER_RE.sub("", line)
+                for m in _DASH_PUNCT_RE.finditer(scan_line):
+                    findings.append(
+                        {
+                            "rule": "dash_as_punctuation",
+                            "severity": "fail",
+                            "line_no": start + offset,
+                            "line": line.strip(),
+                            "match": m.group(0),
+                            "hint": "no dashes as punctuation — use a comma, a "
+                                    "colon, or rewrite (the “— Name” sign-off "
+                                    "is exempt)",
+                        }
+                    )
 
         # Tri-colon construction — >=2 word:word colon separators in a line.
         no_time = _TIME_RE.sub(" ", para)
@@ -361,6 +400,7 @@ def scan_text(
     context: str = "email",
     allow_phrases: Optional[Sequence[str]] = None,
     skip_quoted: bool = True,
+    ban_dashes: bool = True,
 ) -> Dict:
     """Scan `text` for voice tells.
 
@@ -373,6 +413,11 @@ def scan_text(
         is suppressed — NEVER reported. CLIENT SAFETY hook.
       skip_quoted: when True, line-initial blockquotes and double-quoted lines
         are ignored (transcript pulls, reply blockquotes).
+      ban_dashes: FB-16 product-level ban on dashes-as-punctuation in body
+        prose (default-on, every client). Set False to override for a client
+        whose calibrated voice keeps dashes. The "— Name" sign-off is always
+        exempt; a demonstrably-used dashed phrase can also be fed through
+        allow_phrases.
 
     Returns:
       {"verdict": "fail"|"warn"|"pass", "findings": [ {rule, severity,
@@ -382,14 +427,11 @@ def scan_text(
         text = ""
     allow_norm = _normalize_allow(allow_phrases)
     findings = _scan_phrases(text, allow_norm=allow_norm, skip_quoted=skip_quoted)
-    findings += _scan_structural(text, context=context, skip_quoted=skip_quoted)
+    findings += _scan_structural(
+        text, context=context, skip_quoted=skip_quoted,
+        allow_norm=allow_norm, ban_dashes=ban_dashes,
+    )
     return {"verdict": _verdict(findings), "findings": findings}
-
-
-# Dash-as-punctuation in a subject line: any em dash, any en dash, or a
-# space-hyphen-space run. Hyphenated compounds ("check-in", "follow-up")
-# stay legal. BRAND_VOICE hard rule; F-47 P2d + F-53 hit it twice in one day.
-_SUBJECT_DASH_RE = re.compile(r"—|–|\s-\s")
 
 
 def scan_subject(
@@ -416,7 +458,7 @@ def scan_subject(
         return {"verdict": "pass", "findings": []}
     allow_norm = _normalize_allow(allow_phrases)
     findings = _scan_phrases(subject, allow_norm=allow_norm, skip_quoted=False)
-    for m in _SUBJECT_DASH_RE.finditer(subject):
+    for m in _DASH_PUNCT_RE.finditer(subject):
         findings.append(
             {
                 "rule": "subject_dash",
@@ -454,6 +496,7 @@ def check_sections(
     *,
     brief_kind: str,
     allow_phrases: Optional[Sequence[str]] = None,
+    ban_dashes: bool = True,
 ) -> Dict:
     """brief_writer adapter. Flattens `sections` (the same shape make_brief
     receives) into scannable text and applies the gate.
@@ -503,7 +546,10 @@ def check_sections(
         if isinstance(sec, dict) and isinstance(sec.get("body"), str)
     )
     if body_blob.strip():
-        findings += _scan_structural(body_blob, context="brief", skip_quoted=True)
+        findings += _scan_structural(
+            body_blob, context="brief", skip_quoted=True,
+            allow_norm=allow_norm, ban_dashes=ban_dashes,
+        )
 
     return {"verdict": _verdict(findings), "findings": findings}
 

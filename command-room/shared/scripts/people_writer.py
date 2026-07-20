@@ -56,7 +56,7 @@ USAGE (Python)
                 primary_org_id="org_005",
                 role="Project Manager",
                 aliases=["Rio N"],
-                notes="Project manager at Category Company.",
+                notes="Project manager at Summit Company.",
             )
         except DuplicatePersonError as e:
             # surface "already exists as e.person_id" to the user
@@ -72,7 +72,7 @@ USAGE (CLI for bash callers)
         --canonical-name "Rio Sample" \
         --primary-org-id org_005 \
         --role "Project Manager" \
-        --notes "Project manager at Category Company."
+        --notes "Project manager at Summit Company."
 
     python people_writer.py --workspace "$WS" merge \
         --keep-id person_004 --duplicate-id person_064
@@ -157,6 +157,8 @@ ALLOWED_PERSON_FIELDS = {
     "status",              # "active" | "archived"
     "needs_enrichment",    # bool — provisional record awaiting the people-crm enrichment pull (v3.16+, deep-audit #21). The ON-ENTITY enrichment flag; REPLACES the forbidden pending_review/inferred_from trigger (which this writer strips). people-crm clears it (sets false) after enriching.
     "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: Pulse "just busy" widens it so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
+    "tie",                 # "work" | "personal" | absent (=> work) — SPEC BAL1 D1 partition line. tie=personal people belong to the Balance surface ONLY: Pulse/relationship-moves/team-intel/dormant-scan all skip them. NOT relationship_type (forbidden, org-level).
+    "cadence_days",        # number | absent — SPEC BAL1 D1(b). Personal RE-SURFACE interval (date-night / call-Mom cadence), read ONLY by balance.py. Opposite meaning to cadence_override_days (a suppression widener); never fed to dormancy.effective_baseline.
 }
 
 REQUIRED_PERSON_FIELDS = {"id", "canonical_name", "first_seen"}
@@ -376,6 +378,10 @@ def _validate_person(record: dict) -> None:
                 f"last_interaction must be ISO date YYYY-MM-DD or null, "
                 f"got: {record['last_interaction']!r}"
             )
+    if record.get("tie") is not None and record["tie"] not in ("work", "personal"):
+        raise ValueError(
+            f"tie must be 'work' or 'personal', got: {record['tie']!r}"
+        )
 
 
 def _normalize_legacy_keys(record: dict) -> dict:
@@ -595,6 +601,203 @@ def _log_event(
         "data": data,
     }
     atomic_append_jsonl(_events_path(workspace_root), [event])
+
+
+# Fact categories (SPEC HIST1 D3). `role` / `company_news` are
+# identity-adjacent — the structured auto tier excludes them (S2); they ride
+# the confirm rail even from a structured source. Explicit user statements
+# and confirmed proposals may use any category.
+FACT_CATEGORIES = frozenset({
+    "preference", "contact", "personal", "role", "company_news", "other",
+})
+
+# The ONLY categories legal on the `entity_fact_structured` auto tier
+# (SPEC HIST1 Part 2, D3/S2). A wrong auto `role`/`company_news` fact would
+# poison every composer that reads facts even though it never mutates the
+# record — identity-adjacent categories stay confirm, enforced here at the
+# writer (code-deep, the R1 set_org_money-sanction discipline) and again in
+# brain_proposals for any propose-path caller. org_writer mirrors this set;
+# the auto-tier test pins the three copies equal.
+AUTO_FACT_CATEGORIES = frozenset({"preference", "contact", "personal"})
+
+
+def _last_appended_seq(workspace_root: Path) -> int | None:
+    """Best-effort seq of the most recently appended event (SPEC HIST1 S4).
+
+    Used to synthesize a non-null `source_ref` for auto-emitted lineage
+    events ("update:<source_skill>:<seq>") referencing the person_updated
+    event that just landed. next_seq() - 1 is exact in single-writer flows
+    (tests, normal skill fires); under concurrent appends it is best-effort
+    by design — the D10 contract is "never null", not "provably exact".
+    """
+    try:
+        from next_seq import next_seq
+        n = next_seq(_events_path(workspace_root))
+        return n - 1 if n > 1 else None
+    except Exception:
+        return None
+
+
+def _emit_lineage_events(
+    workspace_root: Path,
+    before: dict,
+    after: dict,
+    source_skill: str,
+) -> list[dict]:
+    """SPEC HIST1 D2 — append person_role_changed / person_org_changed when
+    the applied update moved role / primary_org_id.
+
+    Gate (HIST1 risk: lineage double-emit / backfill churn): emit ONLY when
+    before != after AND both sides are non-empty. Filling an empty field for
+    the first time (backfill/enrichment) is not a move; clearing a field is
+    not a move. Callers running migration sets pass suppress_lineage=True to
+    update_person and this never runs.
+
+    The change was already confirm-gated upstream (person_update_proposal /
+    the people-crm Writer Contract) — no new gate, no new prompt. The head
+    field still updates; these events preserve the prior value as history.
+    Returns the appended events (empty when nothing moved).
+    """
+    events: list[dict] = []
+    upd_seq = None  # resolved lazily — only when something actually moved
+
+    def _source_ref() -> str:
+        nonlocal upd_seq
+        if upd_seq is None:
+            upd_seq = _last_appended_seq(workspace_root) or 0
+        return f"update:{source_skill}:{upd_seq}"
+
+    def _nonempty(v) -> bool:
+        return isinstance(v, str) and bool(v.strip())
+
+    name = after.get("canonical_name")
+
+    from_role, to_role = before.get("role"), after.get("role")
+    if _nonempty(from_role) and _nonempty(to_role) and from_role != to_role:
+        events.append({
+            "type": "person_role_changed",
+            "source_skill": source_skill,
+            "org_ids": [after["primary_org_id"]] if after.get("primary_org_id") else [],
+            "data": {
+                "person_id": after.get("id"),
+                "canonical_name": name,
+                "from_role": from_role,
+                "to_role": to_role,
+                "org_id": after.get("primary_org_id"),
+                "source_ref": _source_ref(),
+                "summary": f"Role: {from_role} → {to_role}",
+            },
+        })
+
+    from_org, to_org = before.get("primary_org_id"), after.get("primary_org_id")
+    if _nonempty(from_org) and _nonempty(to_org) and from_org != to_org:
+        events.append({
+            "type": "person_org_changed",
+            "source_skill": source_skill,
+            "org_ids": [from_org, to_org],
+            "data": {
+                "person_id": after.get("id"),
+                "canonical_name": name,
+                "from_org_id": from_org,
+                "to_org_id": to_org,
+                "from_role": before.get("role"),
+                "to_role": after.get("role"),
+                "source_ref": _source_ref(),
+                "summary": "Moved company",
+            },
+        })
+
+    if events:
+        atomic_append_jsonl(_events_path(workspace_root), events)
+    return events
+
+
+def record_person_fact(
+    workspace_root: str | Path,
+    person_id: str,
+    fact: str,
+    source_ref: str,
+    *,
+    category: str | None = None,
+    confidence: str = "high",
+    source_skill: str = "people_writer",
+    brain_batch_id: str | None = None,
+    brain_change_class: str | None = None,
+) -> dict:
+    """Append a person_fact_observed event (SPEC HIST1 D3) — additive,
+    sourced, and NEVER a mutation of the person record (facts are events;
+    a history[]/facts[] field on the entity is the forbidden shape, D1).
+
+    Callers: an explicit user statement ("remember Sam prefers Signal" —
+    the user is the authority, confidence 'high', no proposal), a confirmed
+    brain_proposal, or (Part 2) the structured-connector auto tier — which
+    MUST pass `brain_change_class="entity_fact_structured"` +
+    `brain_batch_id` so the write is batch-reversible via
+    brain_undo.undo_batch (the entity_fact_retracted reverser). Never call
+    this from a silent prose-inferred path — those go through the confirm
+    rail (D3).
+
+    source_ref is REQUIRED (facts are always sourced — D2/S4). category is
+    optional, one of FACT_CATEGORIES when present — EXCEPT on the auto
+    class, where it is required and restricted to AUTO_FACT_CATEGORIES
+    (S2: identity-adjacent categories stay confirm even from a structured
+    source; enforced here, code-deep). Raises KeyError on an unknown
+    person_id (callers run ENTITY_RESOLVE first — never call this on an
+    unresolved id, Bug #19 discipline). Returns the appended event.
+    """
+    workspace_root = Path(workspace_root)
+    fact = (fact or "").strip()
+    if not fact:
+        raise ValueError("record_person_fact needs a non-empty fact")
+    if not isinstance(source_ref, str) or not source_ref.strip():
+        raise ValueError("record_person_fact needs a non-empty source_ref — facts are always sourced")
+    if category is not None and category not in FACT_CATEGORIES:
+        raise ValueError(
+            f"unknown fact category {category!r} — use one of {sorted(FACT_CATEGORIES)}"
+        )
+    if (brain_batch_id is None) != (brain_change_class is None):
+        raise ValueError(
+            "brain_batch_id and brain_change_class travel together — an "
+            "auto-tier fact write must be batch-reversible (D3/S1)")
+    if brain_change_class is not None:
+        if brain_change_class != "entity_fact_structured":
+            raise ValueError(
+                f"unknown brain_change_class {brain_change_class!r} for a "
+                "fact write — only entity_fact_structured is registered")
+        if category not in AUTO_FACT_CATEGORIES:
+            raise ValueError(
+                f"category {category!r} is not auto-eligible — the "
+                "entity_fact_structured auto tier is limited to "
+                f"{sorted(AUTO_FACT_CATEGORIES)} (SPEC HIST1 S2); "
+                "role/company_news facts stay confirm even from a "
+                "structured source")
+
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+
+    event: dict[str, Any] = {
+        "type": "person_fact_observed",
+        "source_skill": source_skill,
+        "data": {
+            "person_id": person_id,
+            "canonical_name": target.get("canonical_name"),
+            "fact": fact,
+            "category": category,
+            "confidence": confidence,
+            "source_ref": source_ref.strip(),
+            "summary": fact,
+        },
+    }
+    if brain_batch_id is not None:
+        # Part 2 auto tier — the stamps brain_undo._changes_for_brain_batch
+        # resolves, so ONE undo_batch retracts every fact this batch noted.
+        event["data"]["brain_batch_id"] = brain_batch_id
+        event["data"]["brain_change_class"] = brain_change_class
+    atomic_append_jsonl(_events_path(workspace_root), [event])
+    return event
 
 
 # ---------- public API ----------
@@ -856,6 +1059,7 @@ def update_person(
     provenance: dict | None = None,
     source_ref: str | None = None,
     account_address: str | None = None,
+    suppress_lineage: bool = False,
     **fields: Any,
 ) -> dict:
     """Update fields on an existing person. Returns the updated record. Field
@@ -865,6 +1069,13 @@ def update_person(
     `provenance` / `source_ref` / `account_address` are account-scope inputs
     (see create_person) — pass them when the update is derived from a connector
     read; an out-of-scope account raises AccountScopeError before the write.
+
+    Lineage (SPEC HIST1 D2): when the applied update changed `role` or
+    `primary_org_id` with both sides non-empty, a person_role_changed /
+    person_org_changed event is appended alongside person_updated — the prior
+    value is preserved as history instead of vanishing on overwrite. Bulk
+    migrations / re-attribution sets pass `suppress_lineage=True` (a
+    migration is not a career move — the backfill-churn gate).
     """
     workspace_root = Path(workspace_root)
     _enforce_record_scope(workspace_root, provenance=provenance,
@@ -900,6 +1111,8 @@ def update_person(
     _validate_person(target)
     _save_entities(workspace_root, data, source_skill)
     _log_event(workspace_root, "person_updated", target, source_skill, before=before)
+    if not suppress_lineage:
+        _emit_lineage_events(workspace_root, before, target, source_skill)
     return target
 
 

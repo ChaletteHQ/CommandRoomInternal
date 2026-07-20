@@ -23,9 +23,12 @@ DESIGN RULES:
 - **LB1 R4 (M ruling 2026-07-14): the standalone relationship-moves chat is
   no longer proposed to new installs — the Staff Meeting is offered instead
   (it absorbs the moves as its "This week's moves" section, reusing the same
-  machinery). EXISTING relationship-moves registrations are untouched — this
-  module never proposed removals and still doesn't; their supersede is a
-  later bridge migration, not this build.**
+  machinery). EXISTING relationship-moves registrations are untouched by
+  THIS module — it never proposed removals and still doesn't. Their
+  supersede shipped in LB2 as the `rm_supersede_v1` update-bridge migration
+  (propose-and-confirm, adjudication-gated, never silent —
+  `schedule_config.rm_supersede_plan` is the pure planner; the bridge
+  executes on the user's yes).**
 - **Never both:** the Staff Meeting's moves section consumes dormancy
   detection (as relationship-moves did), so dormant-customer-scan is offered
   only as the LIGHTER alternative when the staff meeting doesn't land (not
@@ -73,6 +76,14 @@ PROPOSAL_THRESHOLDS = {
     "dormant-customer-scan": {
         # the lighter alternative when the staff meeting doesn't land
         "min_client_orgs": 5,
+    },
+    # PIPE1 Part 2 — the weekly Tuesday deal review. Gated in CODE on a
+    # non-empty open pipeline (spec: "only when >=1 open deal exists" —
+    # a digest over an empty pipeline is noise); the pipeline-tracker
+    # skill's digest.enabled config is a PREFERENCE record, never a
+    # registration.
+    "pipeline-digest": {
+        "min_open_deals": 1,
     },
 }
 
@@ -137,7 +148,9 @@ def propose_later_add_tasks(
     now: Optional[_dt.datetime] = None,
 ) -> list[dict]:
     """The R3 readiness check. Returns 0 or 1 proposal dicts
-    ({task, line, reason}) — never both candidates in one round.
+    ({task, line, reason}) — never more than one candidate in one round
+    (staff-meeting > pipeline-digest > dormant-customer-scan; the 6-week
+    suppression window rotates the round between qualifiers).
 
     Callers surface `line` verbatim, then log ONE `schedule_add_proposed`
     event per surfaced proposal via `log_proposal()`. This function only
@@ -216,6 +229,34 @@ def propose_later_add_tasks(
             )
         return [{"task": "staff-meeting", "reason": reason, "line": line}]
 
+    # PIPE1 Part 2 — the pipeline digest, when the pipeline is live. Slots
+    # after the staff meeting (the wider review wins the round) and before
+    # the dormant-scan alternative; the 6-week suppression window then
+    # yields the round back, so no candidate is permanently shadowed.
+    # Tolerant read — proposal machinery never blocks the Monday note.
+    n_open_deals = 0
+    try:
+        import deal_state
+
+        n_open_deals = len(deal_state.list_open_deals(workspace_root))
+    except Exception:
+        pass
+    if (
+        "pipeline-digest" not in registered
+        and n_open_deals >= PROPOSAL_THRESHOLDS["pipeline-digest"]["min_open_deals"]
+        and not suppressed("pipeline-digest")
+    ):
+        deals_word = "deal" if n_open_deals == 1 else "deals"
+        return [{
+            "task": "pipeline-digest",
+            "reason": f"{n_open_deals} open {deals_word}",
+            "line": (
+                f"You have {n_open_deals} open {deals_word} in the pipeline — a weekly "
+                f"digest shows what moved, what's stalling, and the top three moves "
+                f"every Tuesday morning. Say 'add pipeline digest' to turn it on."
+            ),
+        }]
+
     # Lighter alternative — only when the staff meeting did NOT land this
     # round (unqualified, already registered, or previously proposed and
     # still not added). Never both. Prior relationship-moves offers count
@@ -246,10 +287,21 @@ def propose_later_add_tasks(
     return []
 
 
-def log_proposal(workspace_root, task_id: str) -> bool:
+def log_proposal(workspace_root, task_id: str, *,
+                 line: str = "", reason: str = "") -> bool:
     """Log ONE schedule_add_proposed event for a surfaced proposal (the
-    suppression record). Returns False instead of raising — telemetry
-    never blocks the surface."""
+    suppression record) AND — LB2 §3a, the schedule_add writer migration —
+    persist the proposal itself as a `brain_proposal` row through
+    `propose()`, so the offer sits on the ONE rail (staff meeting, TTL,
+    verbs) instead of existing only as a Monday-note line that scrolls away.
+
+    Suppression authority is unchanged and singular: propose_later_add_tasks
+    consults THIS module's `schedule_add_proposed` log (6-week window)
+    before any proposal surfaces — the bp row's own dedup/cooldown is a
+    second net, never the primary. The legacy event keeps writing (it is the
+    suppression record + usage-report telemetry, and it was never
+    adapter-read — no double-row risk). Returns False instead of raising —
+    telemetry never blocks the surface."""
     try:
         from event_gate import append_event
 
@@ -262,9 +314,31 @@ def log_proposal(workspace_root, task_id: str) -> bool:
             },
             holder="schedule_proposals",
         )
-        return True
     except Exception:
         return False
+    # LB2 — the bp-rail write. Best-effort like the event above; the
+    # fingerprint carries the family natural-key convention (schedule:<task>)
+    # so cross-rail dedup against any pre-migration adapter row holds.
+    try:
+        from brain_proposals import propose
+
+        propose(
+            workspace_root,
+            kind="schedule_add",
+            tier="confirm",
+            fingerprint=f"schedule:{task_id}",
+            detector="schedule-proposals",
+            evidence=reason or f"readiness thresholds met for {task_id}",
+            action_tuples=[{"action": "confirm proposal"},
+                           {"action": "dismiss proposal"},
+                           {"action": "snooze proposal 7d"}],
+            render_line=line,
+            extra={"task": task_id,
+                   "title": task_id.replace("-", " ").title()},
+        )
+    except Exception:
+        pass
+    return True
 
 
 __all__ = [

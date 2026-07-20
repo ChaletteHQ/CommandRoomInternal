@@ -226,6 +226,91 @@ def gate_events(
                         "data.id to have one minted."
                     )
                 data["id"] = trimmed
+            # SUB1 § 3 — parent_id sanity (the referential checks the gate
+            # CAN do without reads; existence/depth live in the writer,
+            # commitment_state.add_subitems, like every closer):
+            #   - non-string never matches the read-side exact-id index;
+            #   - self-parent is incoherent;
+            #   - a seq-alias-shaped parent_id (bare digits / seq_N / event_N
+            #     / commitment_seq_N) is the R1c shadowing class — the writer
+            #     stamps the parent's canonical data.id VERBATIM, so any
+            #     alias spelling here is a hand-built append.
+            if "parent_id" in data:
+                pid = data.get("parent_id")
+                if not isinstance(pid, str) or not pid.strip():
+                    raise EventGateError(
+                        f"commitment event has a non-string/empty "
+                        f"data.parent_id {pid!r} (holder={holder}) — a "
+                        "sub-item must carry its parent's canonical data.id "
+                        "verbatim. Write through "
+                        "commitment_state.add_subitems."
+                    )
+                if pid.strip() == data.get("id"):
+                    raise EventGateError(
+                        f"commitment event is its own parent "
+                        f"(data.parent_id == data.id == {pid!r}; "
+                        f"holder={holder}) — a sub-item cannot parent "
+                        "itself. Write through commitment_state.add_subitems."
+                    )
+                if LEGACY_SEQ_ID_RE.match(pid.strip()):
+                    raise EventGateError(
+                        f"commitment event data.parent_id {pid!r} is shaped "
+                        f"like a legacy seq alias (holder={holder}) — the "
+                        "parent reference must be the parent's canonical "
+                        "data.id verbatim (cmt_<ulid>), never a seq "
+                        "spelling. Write through "
+                        "commitment_state.add_subitems."
+                    )
+            # CTS1 §5 — kind/counterparty consistency check, WARN-LEVEL ONLY
+            # and NEW WRITES ONLY (RULED 2026-07-16: 49 live rows already
+            # violate the promise half — a substrate-wide scan would fire 49
+            # warnings on day one; historical rows converge via the §8.2
+            # drip/batch fixup, never via warnings). The invariant that keeps
+            # the two surfaces un-blurry:
+            #   kind: task    ⇒ counterparty empty (a task with a counterparty
+            #                   is a promise wearing the wrong label)
+            #   kind: promise ⇒ counterparty signal present OR pending_review
+            #                   (a promise with nobody on the other end is
+            #                   either mis-linked — Bug #103 — or a task)
+            # Never rejects: extraction legitimately fails to LINK real
+            # counterparties, and blocking the capture would lose the item.
+            # The warning is the writer-side nudge; surfaces stay correct
+            # either way because they classify on effective kind (§2.2).
+            _cts1_kind = data.get("kind")
+            if _cts1_kind in ("task", "promise"):
+                try:
+                    from commitment_parties import counterparty_ids as _cp_ids
+                    from commitment_parties import counterparty_names as _cp_names
+                    _has_cp = bool(
+                        _cp_ids(data) or _cp_names(data)
+                        or data.get("owner_external")
+                        or data.get("requester_id")
+                        or data.get("requester_person_id")
+                    )
+                    if _cts1_kind == "task" and _has_cp:
+                        sys.stderr.write(
+                            f"[event_gate] CTS1 §5 warn (holder={holder}): "
+                            f"commitment kind=task carries a counterparty — "
+                            f"a task is self-owed by definition; if someone "
+                            f"is waiting on this, capture it as kind=promise "
+                            f"(title={str(data.get('title') or '')[:60]!r})\n"
+                        )
+                    elif (
+                        _cts1_kind == "promise"
+                        and not _has_cp
+                        and not data.get("pending_review")
+                    ):
+                        sys.stderr.write(
+                            f"[event_gate] CTS1 §5 warn (holder={holder}): "
+                            f"commitment kind=promise carries no counterparty "
+                            f"signal — it will render 'counterparty "
+                            f"unresolved' on My Plate; link the counterparty "
+                            f"at capture when known, or classify kind=task "
+                            f"if only the user's clock is running "
+                            f"(title={str(data.get('title') or '')[:60]!r})\n"
+                        )
+                except Exception:
+                    pass  # the check is advisory — never let it break a write
             kind = data.get("kind")
             if kind in (None, ""):
                 # Stage D flip: kind is REQUIRED AT CAPTURE. Strict path

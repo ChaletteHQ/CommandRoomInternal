@@ -1,0 +1,18 @@
+<!--
+  Infographic layout: checklist_scorecard (SPEC OUT4). pass / warn / fail rows.
+  Structure-only fragment; the status pill hues reuse the OUT5 premium shell's
+  brand-resolved semantic variables (--forest / --gold / --carmine). NO literal
+  hex. Rendered ONLY by infographic.build_infographic.
+  Slots: {{ROWS}} (each row already carries its pass|warn|fail class).
+-->
+<style>
+  .ig-check{list-style:none;padding:0;margin:16px 0 0}
+  .ig-check-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;padding:11px 16px;border:1px solid var(--line);border-radius:3px;margin-bottom:7px;background:rgba(244,240,232,.02)}
+  .ig-check-row .st{font:600 8.5px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;padding:3px 9px;border-radius:999px;white-space:nowrap;min-width:50px;text-align:center}
+  .ig-check-row.pass .st{color:var(--forest);border:1px solid var(--forest)}
+  .ig-check-row.warn .st{color:var(--gold);border:1px solid var(--gold)}
+  .ig-check-row.fail .st{color:var(--carmine);border:1px solid var(--carmine)}
+  .ig-check-row .lbl{font:600 13px/1.35 var(--sans);color:var(--fg);flex:1}
+  .ig-check-row .note{flex-basis:100%;font:400 11.5px/1.55 var(--sans);color:var(--fg-3);margin:2px 0 0 62px}
+</style>
+<section class="ig ig-check-wrap"><ul class="ig-check">{{ROWS}}</ul></section>

@@ -147,6 +147,20 @@ VERB_TAXONOMY = (
                "doctrine; this is the MANUAL correction path. Dispatch: "
                "commitment_state.split_commitment. Chat phrase: 'split that "
                "into A / B / C'."),
+    _row("add subitems [items]", "Add sub-items", "commitment",
+         "Break the item into named steps you check off one at a time — the "
+         "item itself stays open as the one commitment of record.",
+         ("commitment-triage", "commitments"), input="required",
+         family="commitment",
+         notes="SUB1 (M ruling 2026-07-16). Dispatch: commitment_state."
+               "add_subitems — DECOMPOSITION, not a split: the parent stays "
+               "open; `split into [items]` closes it (peers, not steps). "
+               "Input parsing identical to split's (newlines / semicolons / "
+               "' / '); >=1 item is valid here (unlike split's >=2). Cap 12 "
+               "open sub-items per parent (loud writer error above). Chat "
+               "phrases: 'break #N into: A / B / C', 'add sub-items to #N: "
+               "…', 'steps for #N: …'. User-initiated ONLY — extraction/"
+               "sweeps never mint hierarchies."),
     _row("make task", "Make task", "commitment_reclassified",
          "Reclassify promise → task: stays open, stops being chased, ages on "
          "the triage surface only.",
@@ -247,10 +261,18 @@ VERB_TAXONOMY = (
          notes="Also the footer bulk button (was 'Dismiss rest'/'Skip all')."),
     _row("snooze 3d", "Snooze (3 days)", "chat_dismissal",
          "Mute this alert for 3 days.",
-         ("dont-forget",), mute_ttl_days=3, family="mute"),
+         ("dont-forget", "inbox", "commitments"), mute_ttl_days=3,
+         family="mute",
+         notes="FB-17 (M, 2026-07-19): the email card's third primary button "
+               "(Send / Draft / Snooze). 'Deal with it later' — the card mutes "
+               "for 3 days. Also the Waiting On chase deferral verb (v2.14.38+, "
+               "with `add to my list`, replacing the old `skip`)."),
     _row("snooze 7d", "Snooze (7 days)", "chat_dismissal",
          "Re-surface the deployed-yet check in a week.",
-         ("scaffold-automation",), mute_ttl_days=7, family="mute"),
+         ("scaffold-automation", "balance"), mute_ttl_days=7, family="mute",
+         notes="BAL1: on the Balance reconnect card this is the 'not this "
+               "week' verb — the tie re-ranks next Sunday; the 7d TTL "
+               "matches the surface's own per-tie dedupe window."),
     _row("snooze 14d", "Snooze (14 days)", "chat_dismissal",
          "Check back in two weeks.",
          ("dont-forget", "stalled-projects", "cr-pipeline", "cr-brain"),
@@ -319,10 +341,11 @@ VERB_TAXONOMY = (
     _row("send", "Send", None,
          "Send the draft as-is (Zapier first, native Gmail fallback).",
          ("inbox", "commitments", "dont-forget"), family="email"),
-    _row("edit then send", "Edit then send", None,
-         "Open To/Cc/Subject/Body inline, edit, then send.",
-         ("inbox", "commitments", "dont-forget"), input="optional",
-         family="email"),
+    # FB-17 (M, 2026-07-19): `edit then send` RETIRED — the FB-10 inline
+    # contenteditable body obsoletes the To/Cc/Subject/Body popup editor. The
+    # email card is now Send / Draft / Snooze (3 days), no dropdown. The wire id
+    # stays a DEPRECATED_ALIAS (→ `send`) so in-flight widgets still dispatch,
+    # and "Edit then send" joins LEGACY_DISPLAY_LABELS so no new render shows it.
     _row("draft", "Draft", None,
          "Review/edit, then save to Gmail Drafts (consolidated v2.14.4 verb).",
          ("inbox", "commitments", "dont-forget"), input="optional",
@@ -345,6 +368,29 @@ VERB_TAXONOMY = (
     _row("decline [reason]", "Decline", None,
          "Decline with a short note.",
          ("inbox",), input="optional", family="email"),
+
+    # --- Balance (SPEC BAL1 — the personal white-space surface, m_facing) ----
+    _row("book", "Book it", None,
+         "Hold the evening as a tentative personal-calendar event and stage "
+         "the venue outreach as a draft — this click is the consent; nothing "
+         "books, sends, or spends on its own.",
+         ("balance",), input="optional", family="work",
+         notes="BAL1 D4 propose-and-confirm. Dispatch: the tentative hold "
+               "routes through calendar-writer's Phase 5/6 consent path "
+               "(never a direct calendar write) and any venue outreach "
+               "through the email-writer chain, queued to Drafts per the "
+               "draft posture — never auto-sent. Optional input = a venue "
+               "name/correction. The whole verb is user-click-gated: no "
+               "autonomous reservation, payment, or send exists (D4 hard "
+               "line, not a v1 shortcut)."),
+    _row("propose other night", "Another night", None,
+         "Pick a different evening — type a date, or leave it empty to see "
+         "the other open evenings.",
+         ("balance",), input="optional", family="work",
+         notes="BAL1 D8. A typed date is VALIDATED via availability."
+               "has_conflict against the same busy set before anything is "
+               "drafted; empty input re-renders the remaining open_slots "
+               "from the fire's own computation (never re-fetched ad hoc)."),
 
     # --- Work / deep-context -------------------------------------------------
     _row("prep deep work", "Prep deep work", None,
@@ -426,6 +472,20 @@ VERB_TAXONOMY = (
                "permanent (F-59 rule). Commitment rows keep the 60-day "
                "`not relevant` mute; this verb renders ONLY on "
                "unknown-person proposal rows."),
+    _row("merge person records", "Merge records", "person_merged",
+         "Fold the duplicate contact into the record it duplicates — one "
+         "record survives carrying both histories. Permanent: a record "
+         "merge has no undo.",
+         ("cr-brain",), family="review",
+         notes="PID1 D4b — the reconciler's duplicate-suspect rows (kind "
+               "person_merge). Dispatch: people_writer.merge_person_into("
+               "workspace_root, keep_id=<row data.keep_id verbatim>, "
+               "duplicate_id=<row data.duplicate_id verbatim>) then "
+               "brain_proposals.resolve_proposal(..., 'applied'). CONFIRM-"
+               "ONLY FOREVER: person_merge is never in AUTO_ALLOWED and "
+               "merge_person_into has NO registered reverser — no code "
+               "path merges without this click. Distinct from the "
+               "commitment `merge` verb (commitment_superseded)."),
     _row("add as person to [org]", "Add as person to org", None,
          "Create a person record under the org you type.",
          ("past-meetings", "meeting-notes"), input="required", family="review"),
@@ -559,6 +619,10 @@ DEPRECATED_ALIASES = {
     "snooze [duration]": "snooze 3d",           # pre-v2.14.38 free-text snooze
     "add more context [text]": "context [text]",  # v2.12.4–v2.14.36
     "ask question [text]": "context [text]",      # v2.14.14–v2.14.36
+    "edit then send": "send",                     # FB-17 — inline editing (FB-10)
+                                                  # obsoletes the popup editor;
+                                                  # accepted for in-flight widgets,
+                                                  # never emitted by new renders.
 }
 
 # Display labels that MUST NOT appear on any newly rendered button — the
@@ -575,6 +639,7 @@ LEGACY_DISPLAY_LABELS = frozenset({
     "Never track this",  # → Never track (permanent)
     "Not relevant",    # → Not relevant (60 days) — bare form hides the TTL
     "Make it a task",  # → Make task
+    "Edit then send",  # FB-17 — retired; the FB-10 inline body replaces it
 })
 
 # ---------------------------------------------------------------------------
@@ -617,6 +682,7 @@ _THING_OVERRIDES = {
     "theirs to [name]": "name",
     "same as [existing]": "name",
     "split into [items]": "list of items",
+    "add subitems [items]": "list of items",
     "mark received from [name]": "name",
 }
 

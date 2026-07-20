@@ -33,25 +33,47 @@ def _load_json(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        with path.open() as f:
+        # encoding pinned (LB2 §3e): Windows defaults to cp1252 — one
+        # non-ASCII char (a name with diacritics, a curly quote) used to
+        # crash the whole tree render with UnicodeDecodeError.
+        with path.open(encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
 
 
-def _load_events(path: Path) -> list[dict]:
+def _load_events(root: Path) -> list[dict]:
+    """Shard-transparent event load (LB2 §3e): route through
+    events_io.iter_events so a rotated workspace's yearly shards count
+    toward last-activity — the old active-file-only read showed a thread
+    whose last touch lives in a shard as dormant. Defensive fallback (the
+    documented never-brick posture — render_tree is standalone-runnable
+    like _compute_last_activity's own fallback): active file only, utf-8."""
+    try:
+        shared = Path(__file__).resolve().parents[2] / "shared" / "scripts"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        from events_io import load_all
+
+        return load_all(root)
+    except Exception:
+        pass
+    path = root / "_hq" / "data" / "events.jsonl"
     if not path.exists():
         return []
     out: list[dict] = []
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
     return out
 
 
@@ -431,7 +453,6 @@ def main() -> int:
         return 2
 
     entities_path = root / "_hq" / "data" / "entities.json"
-    events_path = root / "_hq" / "data" / "events.jsonl"
     aliases_path = root / "_hq" / "data" / "aliases.json"
 
     entities = _load_json(entities_path)
@@ -439,7 +460,7 @@ def main() -> int:
         print(folder_fallback(root))
         return 0
 
-    events = _load_events(events_path)
+    events = _load_events(root)  # shard-transparent (LB2 §3e)
     aliases_data = _load_json(aliases_path)
 
     root_orgs, workspace_projects = build_tree(

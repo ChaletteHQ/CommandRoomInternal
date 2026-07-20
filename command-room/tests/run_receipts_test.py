@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -363,6 +364,22 @@ def main() -> int:
               and back_sp[0]["raw"]["data"]["flagged_thread_ids"] == ["project_001", "project_004"],
               repr(back_sp))
 
+        print("== pipeline-tracker report receipt (RCPT1 — the OBJ1-surfaced latent crash)")
+        # Before RCPT1 this exact SKILL.md-mandated call raised
+        # ValueError: unknown task_id 'pipeline-tracker' on every report fire.
+        ev_pt = R.log_receipt(ws2, "pipeline-tracker", fired_via="manual",
+                              surfaced=3,
+                              extra_data={"flagged_thread_ids": ["deal_001"],
+                                          "untracked": 2})
+        check("pipeline-tracker is a canonical receipted task",
+              ev_pt["data"]["task_id"] == "pipeline-tracker"
+              and ev_pt["type"] == "pack_run")
+        back_pt = R.iter_receipts(ws2, task_ids=["pipeline-tracker"])
+        check("pipeline-tracker receipt reads back with surfaced ids for nag-dedup",
+              len(back_pt) == 1
+              and back_pt[0]["raw"]["data"]["flagged_thread_ids"] == ["deal_001"],
+              repr(back_pt))
+
         print("== writer validation (drift is a write-time defect)")
         for label, kwargs in [
             ("unknown task_id rejected", dict(task_id="not-a-task")),
@@ -376,6 +393,46 @@ def main() -> int:
                 check(label, False, "no ValueError raised")
             except ValueError:
                 check(label, True)
+
+    print("== SKILL.md-mandated log_receipt ids exist in the vocabulary (RCPT1 guard)")
+    # The bug class this guards: a skill text mandates
+    # `log_receipt(WORKSPACE_ROOT, "<id>", ...)` on every fire, but the id
+    # was never registered in CANONICAL_TASK_IDS/RECEIPT_TYPES — so the
+    # mandated call is a guaranteed runtime ValueError that no unit test of
+    # receipts.py alone can see (pipeline-tracker shipped this way; the
+    # instruction-layer-gap class). Grep the instruction layer, validate
+    # each mandated id against the writer's own vocabulary.
+    _mandate_re = re.compile(r"log_receipt\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*['\"]([A-Za-z0-9_-]+)['\"]")
+    _any_call_re = re.compile(r"log_receipt\(")
+    mandated: dict[str, list[str]] = {}
+    unparseable: list[str] = []
+    for md in sorted((ROOT / "skills").rglob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        starts = set()
+        for m in _mandate_re.finditer(text):
+            starts.add(m.start())
+            mandated.setdefault(m.group(1), []).append(str(md.relative_to(ROOT)))
+        # Every log_receipt( site must parse as a mandate the id-extractor
+        # understands — a keyword-form (`task_id="x"`) or wrapped-first-arg
+        # (`str(ws)`) mandate would otherwise ESCAPE the id validation below
+        # silently, which is the exact bug class this guard exists to close.
+        for loose in _any_call_re.finditer(text):
+            if loose.start() not in starts:
+                line_no = text.count("\n", 0, loose.start()) + 1
+                unparseable.append(f"{md.relative_to(ROOT)}:{line_no}")
+    check("instruction layer mandates at least one log_receipt id (grep not broken)",
+          len(mandated) >= 2, repr(sorted(mandated)))
+    check("every skill-text log_receipt( site parses as a canonical mandate "
+          "(positional workspace var, then quoted id)",
+          not unparseable, f"unparseable mandate sites: {unparseable}")
+    for raw_id, sources in sorted(mandated.items()):
+        canonical = R.normalize_task_id(raw_id)
+        check(f"mandated id {raw_id!r} is a canonical task id",
+              canonical in R.CANONICAL_TASK_IDS,
+              f"normalized {canonical!r} missing from CANONICAL_TASK_IDS; mandated in {sources}")
+        check(f"mandated id {raw_id!r} has a registered receipt shape",
+              canonical in R.RECEIPT_TYPES,
+              f"no RECEIPT_TYPES entry for {canonical!r}; mandated in {sources}")
 
     print("== log_pack_run back-compat wrapper")
     with tempfile.TemporaryDirectory(prefix="receipts_lpr_") as td:

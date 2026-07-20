@@ -279,7 +279,7 @@ def exercise_turn_backstop() -> None:
         "n": 1, "icon": "✉️", "name": "Lead",
         "metadata": [["To", "lead@example.com"], ["Subject", "Checking in"]],
         "body_lines": ["I hope this email finds you well."],
-        "actions": ["1 send", "1 edit then send", "1 draft", "1 skip"],
+        "actions": ["1 send", "1 draft", "1 snooze 3d"],
     }]}]}
     try:
         html = render_chat_output_widget(rdv, wrapper="fragment")

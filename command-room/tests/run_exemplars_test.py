@@ -88,6 +88,8 @@ PINNED_KINDS = frozenset({
     "call_prep", "memo", "board_pack", "weekly_recap", "one_pager",
     "followup_pack", "decision_memo", "dormant_scan", "contract_review",
     "automation_scan", "stress_test",
+    "kpi_scorecard",  # SPEC OUT7 (2026-07-18) — new kind + seed landed together.
+    "chart_on_demand",  # SPEC OUT3B (2026-07-19) — new kind + seed landed together.
 })
 
 

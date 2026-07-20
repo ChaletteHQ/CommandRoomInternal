@@ -52,7 +52,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 **Reads from:**
 - `_hq/data/skill_config/boardroom.json` — the configured bench (falls back to the default five archetypes if unconfigured).
 - `_hq/data/advisors/*.json` via `shared/scripts/advisor_profile_writer.py::list_advisors()` — available persona seats (imported or locally-modeled colleagues). This is the consumer half of `advisor_profile_imported` / `advisor_profile_modeled`.
-- `_hq/data/events.jsonl` — `board_convened` events (its own, for `board history` / `reconvene`); `decision` / `decision_superseded` events on the subject (the skeptic seat); `commitment` events (the COO seat's load check); financial events.
+- `_hq/data/events.jsonl` — `board_convened` events (its own, for `board history` / `reconvene`); `decision` / `decision_superseded` events on the subject (the skeptic seat); `commitment` events (the COO seat's load check); financial events. **Read via the org-scoped reader, never a raw load** (PGUARD1): `from events_io import load_events_org_scoped; events, skipped = load_events_org_scoped(workspace_root)` — the account-scope mask and personal-lane drop apply by design, so no seat ever reasons from a reclassified personal account's history or a personal reminder.
 - `_hq/data/entities.json` — project + person context; `workspace.user_first_name`.
 - `_hq/intel/*.md` — captured intel on the subject (the strategy seat).
 - QuickBooks MCP — P&L / cash / AR aging for the CFO seat when connected.

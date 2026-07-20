@@ -55,7 +55,13 @@ def check(cond: bool, msg: str) -> None:
 
 orch = ORCH.read_text(encoding="utf-8")
 
-check("Phase 3.8 — WAITING ON" in orch, "Phase 3.8 WAITING ON section missing")
+# CTS1 §4.1: the whole chat is named "Waiting On" now, so the Phase 3.8
+# section was mandatorily renamed to "NUDGED — NO REPLY" (one phrase must not
+# mean two things in one product). The section itself — the W5 quiet chased
+# tail — is unchanged.
+check("Phase 3.8 — NUDGED — NO REPLY" in orch, "Phase 3.8 NUDGED — NO REPLY section missing")
+check("⏳ WAITING ON" not in orch,
+      "a section titled WAITING ON survives inside the Waiting On chat (CTS1 §4.1 collision)")
 check(
     "machine-local weekday is Tuesday or Thursday" in orch,
     "Tue/Thu machine-local gate missing",
@@ -78,7 +84,7 @@ check(
 )
 
 # W5 actions must all be canonical — no smuggled verbs.
-w5_actions = ["send", "edit then send", "draft", "mark received", "skip"]
+w5_actions = ["send", "draft", "mark received", "snooze 3d"]
 for a in w5_actions:
     check(
         a in CANONICAL_ACTIONS,

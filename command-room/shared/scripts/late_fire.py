@@ -89,6 +89,7 @@ if str(_HERE) not in sys.path:
 
 from event_time import event_dt  # noqa: E402
 from receipts import (  # noqa: E402
+    TASK_PREDECESSORS,
     _iter_events,  # the one defensive event reader — shared, not re-rolled
     normalize_fired_via,
     normalize_task_id,
@@ -170,6 +171,12 @@ def served_slot_markers(workspace_root, task_id) -> dict:
                              by the change (F-51) — never a missed fire.
     """
     canonical = normalize_task_id(task_id)
+    # CTS1 — a split successor's ledger also reads its RETIRED predecessor's
+    # receipts and schedule changes (receipts.TASK_PREDECESSORS): the morning
+    # after the commitments split, the 8:30 slot was served by a receipt
+    # written under the old id — without this the first post-split fire
+    # fabricates lateness for a slot that ran.
+    accepted = {canonical} | set(TASK_PREDECESSORS.get(canonical, ()))
     last_receipt: Optional[_dt.datetime] = None
     last_change: Optional[_dt.datetime] = None
     for ev in _iter_events(workspace_root):
@@ -184,12 +191,12 @@ def served_slot_markers(workspace_root, task_id) -> dict:
                          for c in changes if isinstance(c, dict)]
             else:  # defensive: flat single-task shapes
                 named = [normalize_task_id(data.get("task_id") or data.get("taskId"))]
-            if canonical in named:
+            if accepted & set(named):
                 dt = event_dt(ev)
                 if dt is not None and (last_change is None or dt > last_change):
                     last_change = dt
             continue
-        if receipt_task_id(ev) == canonical:
+        if receipt_task_id(ev) in accepted:
             dt = event_dt(ev)
             if dt is not None and (last_receipt is None or dt > last_receipt):
                 last_receipt = dt

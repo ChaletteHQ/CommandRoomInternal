@@ -8,7 +8,7 @@ template_version: 2.7.1
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-Before resolving any attendee from the meeting transcript or trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the action-item / commitment scan that feeds the follow-up pack, use `shared/scripts/cru_match.py::load_open_commitments` — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
+Before resolving any attendee from the meeting transcript or trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the action-item / commitment scan that feeds the follow-up pack, use `shared/scripts/cru_match.py::load_open_commitments` — do NOT hand-roll an events.jsonl scan — and pass it the org-scoped rows: `load_open_commitments(events_path, events=org_events)` where `org_events` comes from `events_io.load_events_org_scoped` (PGUARD2 D2 — attendee-facing output must not see personal-lane or masked-account commitments). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
 ## Skill Boundary (v2.1)
 
@@ -151,7 +151,7 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
    - Priority: pasted transcript > uploaded file > most recent Granola note > named meeting (search Granola by name/time).
    - If ambiguous, ask ONE question: "Last call was [Title] at [Time] — use that one?"
 2. **Extract attendees, decisions, action items.**
-   - Identify each attendee with role context (pull from `_hq/PEOPLE.md` if available — orientation only / static-tier lookup; outstanding-state reads come from events.jsonl via `load_open_commitments`, never from this Tier 2 view).
+   - Identify each attendee with role context (pull from `_hq/PEOPLE.md` if available — orientation only / static-tier lookup; outstanding-state reads come from events.jsonl via `load_open_commitments(events_path, events=org_events)` over the org-scoped load — PGUARD2 D2, never the no-arg owner form and never from this Tier 2 view).
    - Surface explicit decisions, not just discussion.
    - Attribute action items by owner + due date. If no date was stated, mark TBD, don't invent.
 3. **Pull voice.**
@@ -204,7 +204,7 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
                    ],
                    "context_tag": "Ready for your review — nothing sends until you click",
                    "body_lines": [f"> {line}" for line in draft.body.split(chr(10))],
-                   "actions": [f"{i} send", f"{i} edit then send", f"{i} draft", f"{i} skip"],
+                   "actions": [f"{i} send", f"{i} draft", f"{i} snooze 3d"],
                }
                for i, draft in enumerate(per_attendee_drafts, start=1)
            ],
@@ -226,14 +226,14 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
 
 ## Step: Surface Open Commitments (v2.7.15+)
 
-Before drafting follow-up emails, scan `_hq/data/events.jsonl` for **open commitments** that involve the meeting's attendees. The pack must surface them so the user knows what's already on the floor before adding more — and so each attendee's follow-up email can include a "still open from before" line where relevant.
+Before drafting follow-up emails, scan `_hq/data/events.jsonl` for **open commitments** that involve the meeting's attendees. **Read via the org-scoped reader, never a raw load** (PGUARD2 — the follow-up emails reach the attendees): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then feed the open-set projection through the seam — `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — the injection keeps personal-lane and masked-account commitments out of the pack; never the no-arg owner form here). The pack must surface them so the user knows what's already on the floor before adding more — and so each attendee's follow-up email can include a "still open from before" line where relevant.
 
 ### Read recipe
 
-For each attendee `person_id`, find events where:
+From the org-scoped `load_open_commitments(events_path, events=org_events)` result, for each attendee `person_id`, keep events where:
 - `type == "commitment"` AND
 - `data.status` (or top-level `status`, for legacy events) is `"open"` or `"overdue"` AND
-- the commitment hasn't been closed by a later `commitment_resolved` / `thread_resolved` event referencing its id AND
+- the commitment hasn't been closed by a later `commitment_resolved` / `thread_resolved` event referencing its id (the projection already applies the closer chain) AND
 - `data.owner_id == <attendee_person_id>` OR `data.owner_id == <user_id>` for outbound (you owe this attendee)
 
 Group by attendee. For each attendee with ≥1 open commitment, include a "Still open" subsection in their per-attendee section of the pack:
@@ -276,7 +276,7 @@ If zero on either side, omit that half of the line.
 
 > **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("followup_pack", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions. Workspace exemplar (`_hq/exemplars/followup_pack/`) beats the shipped seed; `None` = compose on the structure below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header, the YOUR-items-first ordering, or the one-ask-surface rule, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the pack. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (shared with the visual pass below, warn-only). When the user gives structural feedback on a delivered pack ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="followup_pack", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
-**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 6-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
+**Visual pass (SPEC OUT2 §3, after the .docx save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied · chart unreadable / overplotted), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
 
 ```
 # Follow-Up: [Meeting Name]
@@ -400,6 +400,7 @@ Mira
 ## Integration
 
 - **Enhances `meeting-notes`** (doesn't replace). `meeting-notes` produces structured notes — this adds the close-the-loop layer on top. If `meeting-notes` already ran for this meeting, reuse its output and add the email drafts.
+- **Deal-signal post-step (PIPE1 Part 2 — silent tier, MANDATORY).** After the substrate writes land, run meeting-notes Step 5h's exact recipe scoped to this meeting's counterparty org(s): `detect_deal_signals("<WORKSPACE>", org_ids=[...])` → `propose_candidates(...)` (never `run_deal_signal_job` — the Sunday job owns that receipt). When the internal meeting-notes run already executed Step 5h for THIS meeting, skip the propose call (open-fingerprint dedup makes a double-call harmless, but one call is the contract) — still render the lines: each returned candidate's `nudge_line` goes under **Logged** in the pack chat card, verbatim, every candidate (Bug #92b — no re-deciding inclusion). Zero candidates → zero lines. Propose-and-confirm only; nothing here writes a deal field.
 - **Commitments** — land as `commitment` events via the internal `meeting-notes` run; MASTER_TRACKER regenerates from the substrate (never written directly).
 - **Decisions** — invokes `decision-log` skill (event append; DECISION_LOG view regenerates).
 - **Appends to `SESSION_NOTES_[NAME].md`** — 1-line log entry: "Closed the loop on [Meeting] — 3 follow-up emails drafted, 2 decisions logged."

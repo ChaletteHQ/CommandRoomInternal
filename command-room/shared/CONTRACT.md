@@ -16,7 +16,7 @@ If the renderer pre-flight import check fails: ABORT, surface plain-English erro
 
 ## Rule 2 — Apply-time drafts come back as a widget
 
-Per M's standing rule: *"if you need to send an email — the widget should open."* Whenever apply-time produces an email draft (push meeting, draft re-engagement, follow-up call, status check, propose time, schedule catchup, edit then send rewrite, etc.), the response includes a NEW widget with that draft surfaced through the same the standard email-card controls — Send + Draft one-tap buttons, the directly-editable body, Edit then send in the row's menu (labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) action set.
+Per M's standing rule: *"if you need to send an email — the widget should open."* Whenever apply-time produces an email draft (push meeting, draft re-engagement, follow-up call, status check, propose time, schedule catchup, an in-flight `edit then send` rewrite, etc.), the response includes a NEW widget with that draft surfaced through the same standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) action set.
 
 Multiple drafts → ONE widget with N items, NEVER N separate widgets. Per M's ask: *"You can host all of those in the same widget."*
 
@@ -248,8 +248,8 @@ End of every meaningful session: append to project `SESSION_NOTES_<PROJECT>.md` 
 
 Per Bo's Apr 30 testing: "Edit then send didn't open" + "this one doesn't have a resolve button." Both root-cause to the same class of bug — orchestrator builds items with INCONSISTENT shapes. The renderer raises `DataShapeError` (blocking) on:
 
-- **Email-shaped item rule (v2.14.4+ consolidated form):** if `metadata` contains `To` AND `Subject` with non-empty values, the item MUST include the canonical email action set: `send`, `edit then send`, `draft`, `skip`. No item can have email metadata but offer a partial set. The pre-v2.14.4 set (`send` / `edit then send` / `to drafts` / `edit then draft` / `skip`) was consolidated — `to drafts` + `edit then draft` merged into `draft` (which always opens a multi-field edit before saving to Drafts).
-- **Edit-then-send requires populated content rule:** if the action set includes `edit then send`, the item MUST have at least one of `To` / `Cc` / `Subject` metadata populated AND non-empty `body_lines`. Otherwise the multi-field input opens with all blank fields = looks broken. (Same rule applies to `draft` since v2.14.4+ — `draft` is the consolidated edit-then-save verb.)
+- **Email-shaped item rule (FB-17 form, 2026-07-19):** if `metadata` contains `To` AND `Subject` with non-empty values, the item MUST include the required email action set: `send`, `draft`, `snooze 3d` (`EMAIL_REQUIRED_ACTIONS`). No item can have email metadata but offer a partial set; extra domain verbs (Waiting On chase rows) ride in the tail. History: pre-FB-17 the required set was `send` / `edit then send` / `draft` (skip was un-required in v2.14.31 — the v2.14.28 coupling-bug lesson); pre-v2.14.4 it was `send` / `edit then send` / `to drafts` / `edit then draft` / `skip`. `edit then send` is RETIRED — a deprecated alias (→ `send`) accepted only from in-flight widgets, rejected by CANONICAL_ACTIONS at render. Calendar-shaped items (Time/Duration/Location/Date keys) are exempt and use `send` / `skip`.
+- **Draft requires populated content rule:** if the action set includes `draft` (or a deprecated in-flight `edit then send`), the item MUST have at least one of `To` / `Cc` / `Subject` metadata populated AND non-empty `body_lines`. Otherwise the edit surface opens with all blank fields = looks broken.
 
 Fix is always at the orchestrator level — populate the data view consistently before render. Never disable the validator.
 
@@ -360,13 +360,13 @@ The leak scanner (`chat_output_renderer.py` `_LEAK_PATTERNS`) catches every CRU 
 
 ## Rule 26 — No real customer or partner names in plugin source (v3.6.1+)
 
-Plugin source is granted to beta operators (private repo access today, broader collaboration later). Examples, fixtures, CHANGELOG entries, docstrings, comments, and skill references MUST NOT contain real beta-customer or partner names, real email domains, or real org names. Use the placeholders documented in `references/PRIVACY_POLICY.md`: `Sam Sample`, `Bo Sample`, `Rio Sample`, `Rio Lange`, `Acme Co`, `Northstar Partners`, `Category Company`, and `@example.com` / `*.example.com` domains.
+Plugin source is granted to beta operators (private repo access today, broader collaboration later). Examples, fixtures, CHANGELOG entries, docstrings, comments, and skill references MUST NOT contain real beta-customer or partner names, real email domains, or real org names. Use the placeholders documented in `references/PRIVACY_POLICY.md`: `Sam Sample`, `Bo Sample`, `Rio Sample`, `Rio Lange`, `Acme Co`, `Northstar Partners`, `Summit Company`, and `@example.com` / `*.example.com` domains.
 
 The failure mode this rule closes: the v3.5.2 sanitization pass claimed "25 files, 69 lines swapped — every real name replaced with placeholder" but a 2026-05-18 IT security audit confirmed the sweep was incomplete — ~68 residual hits remained across 16 non-CHANGELOG files. The same agent-improvisation pattern that drives Rule 25 path leaks drives name leaks: doc examples + memorialized-failure narratives in reference files become the substrate the agent samples from when writing chat output.
 
 **Rule:**
 - Replace real names at write time. Don't ship a CHANGELOG entry, fixture, or example that names a real beta customer or partner.
-- `Category Company` is the canonical fictional org for the "operator's main client" placeholder pairing with `Sam Sample`. `Northstar Partners` is the canonical fictional partner org pairing with `Bo Sample`. `Acme Co` is the canonical fictional prospect-org for entity-proposal examples.
+- `Summit Company` is the canonical fictional org for the "operator's main client" placeholder pairing with `Sam Sample`. `Northstar Partners` is the canonical fictional partner org pairing with `Bo Sample`. `Acme Co` is the canonical fictional prospect-org for entity-proposal examples.
 - `matthew@chaletteholdings.com` is exempt — it's the project's intentional public support address used by the `report-bug` skill.
 - CHANGELOG.md is in scope as of v3.6.3. Pre-v3.6.3 the audit-trail-preservation argument exempted it, but the historical content was itself a significant leak surface and was sanitized to placeholder names + `@example.com` domains. The narrative of what each release closed is preserved; only the specific names and domains are placeholderized.
 

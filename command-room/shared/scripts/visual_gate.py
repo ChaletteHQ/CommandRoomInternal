@@ -51,9 +51,11 @@ _DPI_MIN, _DPI_MAX = 100, 150
 
 _SUBPROCESS_TIMEOUT_S = 120
 
-# The fixed 6-item checklist the calling skill walks against the rendered
+# The fixed 7-item checklist the calling skill walks against the rendered
 # pages (EXECUTIVE_OUTPUT_STANDARD § "The visual pass"). Kept here as the one
-# machine-readable copy so prose and tests reference the same list.
+# machine-readable copy so prose and tests reference the same list. Extend,
+# don't reorder (the pins are positional history): item 7 landed with SPEC
+# OUT3 (charts).
 CHECKLIST = (
     "orphaned heading at a page break",
     "empty or placeholder tile",
@@ -61,6 +63,7 @@ CHECKLIST = (
     "cramped spacing",
     "header/footer intact",
     "brand palette applied",
+    "chart unreadable / overplotted",
 )
 
 

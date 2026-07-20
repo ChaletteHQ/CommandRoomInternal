@@ -92,6 +92,7 @@ ALLOWED_ORG_FIELDS = {
     "domain",               # DEPRECATED (use domains[])
     "notes",                # free text
     "needs_enrichment",     # bool — provisional org from reactive discovery, awaiting CEO confirm (deep-audit #18). On-entity flag; cleared on confirm. Replaces the forbidden pending_review.
+    "money",                # grouped account/revenue object (SPEC HIST1 Part A) — written ONLY via set_org_money(confirmed=True); inner keys mirror quantify._MONEY_FIELDS; never estimated (Bug #92)
 }
 
 REQUIRED_ORG_FIELDS = {"id", "canonical_name"}
@@ -135,6 +136,31 @@ LEGACY_KEY_RENAMES = {
 }
 
 ORG_ID_RE = re.compile(r"^org_[a-z0-9_]+$")
+
+# Inner keys of the grouped `money` object (SPEC HIST1 Part A / D4).
+# The numeric names are EXACTLY quantify._MONEY_FIELDS entries so the grouped
+# object resolves through _money_part's candidate list (the one-line B1 edit).
+MONEY_NUMERIC_FIELDS = frozenset({"account_value", "revenue", "arr", "mrr"})
+MONEY_STRING_FIELDS = frozenset({"currency", "source", "as_of"})
+ALLOWED_MONEY_FIELDS = MONEY_NUMERIC_FIELDS | MONEY_STRING_FIELDS
+
+# Fact categories (SPEC HIST1 D3) — mirrors people_writer.FACT_CATEGORIES.
+FACT_CATEGORIES = frozenset({
+    "preference", "contact", "personal", "role", "company_news", "other",
+})
+
+# Auto-eligible fact categories (SPEC HIST1 Part 2, D3/S2) — mirrors
+# people_writer.AUTO_FACT_CATEGORIES; the auto-tier test pins the copies
+# equal. role/company_news are identity-adjacent and stay confirm even from
+# a structured source.
+AUTO_FACT_CATEGORIES = frozenset({"preference", "contact", "personal"})
+
+# True only while set_org_money is routing its own update_org call —
+# update_org refuses a `money` field from any other caller, so the
+# confirm-only/sourced discipline (SPEC HIST1 D4 / Bug #92) can't be
+# bypassed by writing the field directly. Writer-lock serialization makes
+# a module flag sufficient here.
+_money_write_sanctioned = False
 
 
 # ---------- exceptions ----------
@@ -293,6 +319,25 @@ def _validate_org(record: dict) -> list[str]:
                 f"last_interaction must be ISO date YYYY-MM-DD or null, "
                 f"got: {record['last_interaction']!r}"
             )
+    money = record.get("money")
+    if money is not None:
+        if not isinstance(money, dict):
+            raise ValueError(
+                f"money must be a grouped object (SPEC HIST1 D4), got: {type(money).__name__}"
+            )
+        extras_m = set(money) - ALLOWED_MONEY_FIELDS
+        if extras_m:
+            raise ValueError(
+                f"money object has unknown keys {sorted(extras_m)} — allowed: "
+                f"{sorted(ALLOWED_MONEY_FIELDS)} (mirror quantify._MONEY_FIELDS)"
+            )
+        for k in MONEY_NUMERIC_FIELDS:
+            v = money.get(k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
+                raise ValueError(
+                    f"money.{k} must be a number or null, got: {v!r} — money is "
+                    f"never a string or an estimate"
+                )
     return advisory_org_warnings(record)
 
 
@@ -592,6 +637,13 @@ def update_org(
     # have to know the canonical names.
     normalized_in = _normalize_legacy_keys(fields)
 
+    if "money" in normalized_in and not _money_write_sanctioned:
+        raise ValueError(
+            "org.money is written ONLY via set_org_money(confirmed=True) — "
+            "the confirm-gated, sourced money writer (SPEC HIST1 D4 / "
+            "Bug #92). Direct update_org(money=...) is refused."
+        )
+
     ARRAY_FIELDS = {"aliases", "domains", "inferred_from", "slack_workspace_ids"}
     for k, v in normalized_in.items():
         if k in ARRAY_FIELDS and isinstance(v, list):
@@ -612,6 +664,163 @@ def update_org(
     _save_entities(workspace_root, data, source_skill=source_skill)
     _log_event(workspace_root, "org_updated", record, source_skill, before=before)
     return record
+
+
+def set_org_money(
+    workspace_root: str | Path,
+    org_id: str,
+    money: dict,
+    *,
+    source_skill: str = "unknown",
+    confirmed: bool = False,
+) -> dict:
+    """THE writer for the grouped org `money` object (SPEC HIST1 Part A/D4).
+
+    Reachable ONLY from (a) an explicit user statement ("Acme Co is a
+    $120k/yr account") or (b) a confirmed brain_proposal (Part 2 detector /
+    QBO reader). Money is identity-adjacent trust: **always confirm-gated,
+    never estimated, never auto** (Bug #92 / PIPE1 D9) — the caller must
+    pass `confirmed=True`, which it may do only on those two paths. A
+    silent/auto context that cannot truthfully pass it gets a loud raise.
+
+    `money` carries any subset of {account_value, revenue, arr, mrr,
+    currency, source, as_of}. `source` is REQUIRED (money is always
+    sourced); `as_of` defaults to today. Partial updates MERGE into the
+    existing money object (pass an explicit None value to clear a field).
+    Routes through update_org, so the org_updated event carries the money
+    delta in `before` — the change-feed input (D10). Returns the updated
+    org record.
+    """
+    if confirmed is not True:
+        raise ValueError(
+            "set_org_money refused: money is confirm-only (SPEC HIST1 D4 / "
+            "Bug #92). Pass confirmed=True ONLY from an explicit user "
+            "statement or a confirmed proposal — never from a silent/auto "
+            "path, and never with an estimated figure."
+        )
+    if not isinstance(money, dict) or not money:
+        raise ValueError("set_org_money needs a non-empty money dict")
+    extras = set(money) - ALLOWED_MONEY_FIELDS
+    if extras:
+        raise ValueError(
+            f"set_org_money: unknown money keys {sorted(extras)} — allowed: "
+            f"{sorted(ALLOWED_MONEY_FIELDS)}"
+        )
+    workspace_root = Path(workspace_root)
+
+    data = _load_entities(workspace_root)
+    orgs = entities_collection(data, "orgs")
+    existing = next((o for o in orgs if o.get("id") == org_id), None)
+    if existing is None:
+        raise KeyError(f"org_id not found: {org_id!r}")
+
+    merged = dict(existing.get("money") or {})
+    for k, v in money.items():
+        if v is None:
+            merged.pop(k, None)
+        else:
+            merged[k] = v
+    if not (isinstance(merged.get("source"), str) and merged["source"].strip()):
+        raise ValueError(
+            "set_org_money: money.source is required — record where the "
+            "figure came from ('user statement', 'confirmed proposal', ...)"
+        )
+    merged.setdefault("as_of", _today_iso())
+    merged.setdefault("currency", "USD")
+
+    # update_org re-loads and emits org_updated with the money delta in
+    # `before` — the single write path; no hand-rolled entities edit here.
+    # The sanction flag is what lets update_org accept the money field at
+    # all (it refuses money from every other caller).
+    global _money_write_sanctioned
+    _money_write_sanctioned = True
+    try:
+        return update_org(workspace_root, org_id, money=merged,
+                          source_skill=source_skill)
+    finally:
+        _money_write_sanctioned = False
+
+
+def record_org_fact(
+    workspace_root: str | Path,
+    org_id: str,
+    fact: str,
+    source_ref: str,
+    *,
+    category: str | None = None,
+    confidence: str = "high",
+    source_skill: str = "unknown",
+    brain_batch_id: str | None = None,
+    brain_change_class: str | None = None,
+) -> dict:
+    """Append an org_fact_observed event (SPEC HIST1 D3) — additive, sourced,
+    never a mutation of the org record. Callers: an explicit user statement
+    ("note that Acme Co raised a Series A"), a confirmed proposal, or
+    (Part 2) the structured-connector auto tier — which MUST pass
+    `brain_change_class="entity_fact_structured"` + `brain_batch_id` so the
+    write is batch-reversible via brain_undo.undo_batch. Never a silent
+    prose-inferred path (those ride the confirm rail). On the auto class,
+    category is restricted to AUTO_FACT_CATEGORIES (S2 — enforced here,
+    code-deep, mirroring people_writer.record_person_fact).
+
+    Raises KeyError on an unknown org_id (callers run ENTITY_RESOLVE first).
+    Returns the appended event. Top-level org_ids[] carries the org so the
+    org-activity derivation and the history renderer see it.
+    """
+    workspace_root = Path(workspace_root)
+    fact = (fact or "").strip()
+    if not fact:
+        raise ValueError("record_org_fact needs a non-empty fact")
+    if not isinstance(source_ref, str) or not source_ref.strip():
+        raise ValueError("record_org_fact needs a non-empty source_ref — facts are always sourced")
+    if category is not None and category not in FACT_CATEGORIES:
+        raise ValueError(
+            f"unknown fact category {category!r} — use one of {sorted(FACT_CATEGORIES)}"
+        )
+    if (brain_batch_id is None) != (brain_change_class is None):
+        raise ValueError(
+            "brain_batch_id and brain_change_class travel together — an "
+            "auto-tier fact write must be batch-reversible (D3/S1)")
+    if brain_change_class is not None:
+        if brain_change_class != "entity_fact_structured":
+            raise ValueError(
+                f"unknown brain_change_class {brain_change_class!r} for a "
+                "fact write — only entity_fact_structured is registered")
+        if category not in AUTO_FACT_CATEGORIES:
+            raise ValueError(
+                f"category {category!r} is not auto-eligible — the "
+                "entity_fact_structured auto tier is limited to "
+                f"{sorted(AUTO_FACT_CATEGORIES)} (SPEC HIST1 S2); "
+                "role/company_news facts stay confirm even from a "
+                "structured source")
+
+    data = _load_entities(workspace_root)
+    orgs = entities_collection(data, "orgs")
+    target = next((o for o in orgs if o.get("id") == org_id), None)
+    if target is None:
+        raise KeyError(f"org_id not found: {org_id!r}")
+
+    event: dict[str, Any] = {
+        "type": "org_fact_observed",
+        "source_skill": source_skill,
+        "org_ids": [org_id],
+        "data": {
+            "org_id": org_id,
+            "canonical_name": target.get("canonical_name"),
+            "fact": fact,
+            "category": category,
+            "confidence": confidence,
+            "source_ref": source_ref.strip(),
+            "summary": fact,
+        },
+    }
+    if brain_batch_id is not None:
+        # Part 2 auto tier — the stamps brain_undo._changes_for_brain_batch
+        # resolves, so ONE undo_batch retracts every fact this batch noted.
+        event["data"]["brain_batch_id"] = brain_batch_id
+        event["data"]["brain_change_class"] = brain_change_class
+    atomic_append_jsonl(_events_path(workspace_root), [event])
+    return event
 
 
 def repair_org(
@@ -793,6 +1002,12 @@ def attribute_person_to_org(
             person_id,
             primary_org_id=matched_org["id"],
             source_skill=source_skill,
+            # Machine attribution is not a confirmed career move — lineage
+            # rides only user-confirmed changes (SPEC HIST1 D2/§8). Today's
+            # callers only touch unattached people (the both-sides-non-empty
+            # gate already blocks), but a future re-attribution caller must
+            # not emit person_org_changed from a domain match.
+            suppress_lineage=True,
         )
         return (matched_org, reason)
 
@@ -815,6 +1030,7 @@ def attribute_person_to_org(
             person_id,
             primary_org_id=new_org["id"],
             source_skill=source_skill,
+            suppress_lineage=True,  # machine attribution, not a confirmed move (D2/§8)
         )
         return (
             new_org,

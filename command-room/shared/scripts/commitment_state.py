@@ -78,6 +78,7 @@ try:
         _is_pending_review,
         load_open_commitments,
         match_calendar_to_commitments,
+        partition_subitems,
     )
 except ImportError:
     from pathlib import Path as _Path
@@ -89,6 +90,7 @@ except ImportError:
         _is_pending_review,
         load_open_commitments,
         match_calendar_to_commitments,
+        partition_subitems,
     )
 
 RECENT_ACTIVITY_WINDOW_DAYS = 7
@@ -290,11 +292,33 @@ def count_commitments(
     `user_person_id=None` (unresolvable primary user) degrades safely: nothing
     matches the user, so you_owe=0 and every owned commitment counts as
     they_owe — total/overdue/undated/by_kind stay exact.
+
+    SUB1 D2 (M ruling 2026-07-16) — a parent with 3 open sub-items counts as
+    **1**, not 4: the supplied open set is partitioned via
+    cru_match.partition_subitems into TOP-LEVEL items (no live parent link in
+    the same set — orphan children count here; they are real open work) and
+    SUB-ITEMS, and every number above — total, the four headline buckets,
+    overdue, undated, by_kind, stuck/blocked — is computed over the
+    TOP-LEVEL partition only. The invariant holds over that partition. This
+    is NOT a repoint of a shipped number: every existing workspace has zero
+    sub-items, so every existing output is byte-identical (the MC1
+    vacuous-safety argument). Counting children in `total` would punish the
+    user for planning (decomposing one item jumps 12 → 15 and the headline
+    lies about how many real-world promises exist — the W4c volume class).
+    Two ADDITIVE headline keys when (and only when) sub-items exist:
+      subitems_open                 — open sub-items in the supplied set;
+      subitems_done_of_open_parents — closed children of still-open parents
+                                      (from the loader's n_subitems_done
+                                      stamp; 0 for raw unprojected input).
+    ABSENT when the workspace has no sub-items — the MC2 "absent, never a
+    guessed 0" rule.
     """
+    from cru_match import partition_subitems
+    top_level, sub_items = partition_subitems(open_commitments)
     you_owe = they_owe = unowned = overdue = undated = 0
     h_you_owe = h_owed_to_you = h_unowned = unconfirmed = 0
     by_kind: dict[str, int] = {}
-    for ev in open_commitments:
+    for ev in top_level:
         owner = _commitment_field(ev, "owner_id")
         pending = _is_pending_review(ev)
         if owner and user_person_id and owner == user_person_id:
@@ -319,7 +343,7 @@ def count_commitments(
         kind = commitment_kind(ev)
         by_kind[kind] = by_kind.get(kind, 0) + 1
     headline = {
-        "total": len(open_commitments),
+        "total": len(top_level),
         "you_owe": h_you_owe,
         "owed_to_you": h_owed_to_you,
         "unowned": h_unowned,
@@ -329,15 +353,31 @@ def count_commitments(
     if movement is not None and now_iso:
         # v4.6.0 MC2 — the real stuck/blocked metric, from THE one derivation
         # (F-54 cross-surface-split rule: no surface computes its own).
+        # SUB1: classified over top-level items only — a child never renders
+        # as its own stuck row (its activity bubbles to the parent).
         from commitment_activity import classify_commitments
-        cls = classify_commitments(open_commitments, movement, now_iso)
+        cls = classify_commitments(top_level, movement, now_iso)
         headline["stuck"] = len(cls["stuck"])
         headline["blocked"] = len(cls["blocked"])
+    # SUB1 D2 — the two ADDITIVE keys, present only when sub-items exist
+    # (absent, never a guessed 0): open children in the supplied set + closed
+    # children of still-open parents (the loader's n_subitems_done stamp).
+    subitems_done = 0
+    for ev in top_level:
+        n = (ev.get("data") or {}).get("n_subitems_done")
+        if isinstance(n, int) and not isinstance(n, bool):
+            subitems_done += n
+    if sub_items or subitems_done:
+        headline["subitems_open"] = len(sub_items)
+        headline["subitems_done_of_open_parents"] = subitems_done
     return {
-        # Canonical open-commitment total == len(open_commitments). Both the
-        # brief header and the coach MUST report THIS number (Bug #85 + the
-        # A85 followup). you_owe + they_owe alone drops ownerless items.
-        "total": len(open_commitments),
+        # Canonical open-commitment total == len(top_level): one real-world
+        # promise per line (SUB1 D2 — sub-items are steps of a top-level
+        # item, never additional promises; zero sub-items → byte-identical
+        # to the pre-SUB1 len(open_commitments)). Both the brief header and
+        # the coach MUST report THIS number (Bug #85 + the A85 followup).
+        # you_owe + they_owe alone drops ownerless items.
+        "total": len(top_level),
         "you_owe": you_owe,
         "they_owe": they_owe,
         "unowned": unowned,
@@ -549,7 +589,7 @@ def match_commitments_to_meetings(
                         match, matched_name = "name_mention", display
                         break
             if match:
-                out.append({
+                row = {
                     "commitment_id": _commitment_id(ev),
                     "title": _commitment_field(ev, "title") or "",
                     "kind": commitment_kind(ev),
@@ -562,7 +602,17 @@ def match_commitments_to_meetings(
                     "meeting_title": m.get("title") or "",
                     "match": match,
                     "matched_name": matched_name,
-                })
+                }
+                # SUB1 D5 — meeting-match deliberately KEEPS seeing children
+                # (F-44: a step relevant to today's meeting must surface on
+                # the day of the meeting); the row carries the parent link so
+                # renderers show "part of: [parent]".
+                d_ev = ev.get("data") or {}
+                if isinstance(d_ev.get("parent_id"), str) and d_ev.get("parent_id"):
+                    row["parent_id"] = d_ev["parent_id"]
+                    if d_ev.get("parent_title"):
+                        row["parent_title"] = d_ev["parent_title"]
+                out.append(row)
                 break  # first matching meeting wins; one row per commitment
     return out
 
@@ -649,8 +699,13 @@ def compute_brief_state(
         movement=commitment_movement,
     )
 
+    # SUB1 D2/D5 — needs_attention iterates TOP-LEVEL you-owe items only: a
+    # parent row carries its progress; a child never renders as its own brief
+    # line (orphan children partition top-level and surface normally).
+    from cru_match import partition_subitems
+    top_level_commitments, _sub_items = partition_subitems(open_commitments)
     you_owe_commitments: list[dict] = [
-        ev for ev in open_commitments
+        ev for ev in top_level_commitments
         if _commitment_field(ev, "owner_id") == user_person_id
     ]
 
@@ -687,7 +742,7 @@ def compute_brief_state(
             continue
 
         due = _commitment_field(ev, "due")
-        needs_attention.append({
+        row = {
             "commitment_id": cid,
             "title": _commitment_field(ev, "title") or "",
             "owner_id": user_person_id,
@@ -697,7 +752,20 @@ def compute_brief_state(
             # When True the brief MUST soften this item (you may have already sent
             # the email that closes it) rather than telling the CEO to redo it.
             "reconcile_stale": reconcile_stale,
-        })
+        }
+        # SUB1 D5 — parent progress rides the row ("2 of 3 sub-items done ·
+        # next: …"); keys present only when the item HAS sub-items (the MC2
+        # absent-not-0 rule). Values come from the loader's stamps verbatim.
+        d_ev = ev.get("data") or {}
+        if isinstance(d_ev.get("n_subitems_open"), int) or isinstance(
+                d_ev.get("n_subitems_done"), int):
+            row["n_subitems_open"] = d_ev.get("n_subitems_open") or 0
+            row["n_subitems_done"] = d_ev.get("n_subitems_done") or 0
+            if d_ev.get("next_subitem_due"):
+                row["next_subitem_due"] = d_ev["next_subitem_due"]
+            if d_ev.get("all_subitems_resolved"):
+                row["all_subitems_resolved"] = True
+        needs_attention.append(row)
 
     # Meeting relevance is its own ranking signal (F-44): matched over the
     # FULL open set (both directions), with none of the needs_attention
@@ -841,6 +909,13 @@ class PendingReviewError(ValueError):
     (deep-audit 2026-05-29 finding #9 / F2)."""
 
 
+class OpenSubitemsError(ValueError):
+    """Refused to close a parent commitment that still has open sub-items
+    (SUB1 D3). A silent close would orphan the children; the caller must
+    either close/drop the children first or pass close_subitems=True from an
+    explicit user confirmation ("this also closes its N open sub-items")."""
+
+
 def _closer_target_id(ev: dict) -> str:
     """The id a commitment_resolved / thread_resolved / commitment_superseded
     event closes — MUST mirror load_open_commitments' closer chain exactly, so
@@ -886,6 +961,14 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
                      undo; a later re-close closes it again)
       resolved_seqs: commitment seqs currently closed via the F3 seq aliases
       kind_by_id:    effective-kind overrides from commitment_reclassified
+      superseded_onto: superseded cid → survivor cid, from non-split
+                     `commitment_superseded` events (SUB1 D3b: children of a
+                     merged-away parent belong to the SURVIVOR read-side; the
+                     writer honors the same re-point when it looks for a
+                     parent's open children)
+      children_of:   raw on-disk data.parent_id → [child commitment events]
+                     (SUB1 — resolve through superseded_onto at query time
+                     via `_live_children`)
     Mirrors load_open_commitments' state machine exactly.
     """
     from cru_match import load_events_defensively
@@ -899,13 +982,16 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
     reopened_seqs_at: dict[int, int] = {}
     kind_by_id: dict[str, str] = {}
     kind_by_seq: dict[int, str] = {}
+    superseded_onto: dict[str, str] = {}
+    children_of: dict[str, list] = {}
     p = _Path(events_jsonl_path)
     if not p.exists():
         return {"by_id": by_id, "by_seq": by_seq,
                 "closed_ids_at": closed_ids_at, "closed_seqs_at": closed_seqs_at,
                 "reopened_ids_at": reopened_ids_at,
                 "reopened_seqs_at": reopened_seqs_at,
-                "kind_by_id": kind_by_id, "kind_by_seq": kind_by_seq}
+                "kind_by_id": kind_by_id, "kind_by_seq": kind_by_seq,
+                "superseded_onto": superseded_onto, "children_of": children_of}
     events, _skipped = load_events_defensively(p)
     for idx, ev in enumerate(events):
         et = ev.get("type") or ev.get("event") or ""
@@ -915,12 +1001,22 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
             seq = ev.get("seq")
             if isinstance(seq, int):
                 by_seq[seq] = ev
+            pid = d.get("parent_id")
+            if isinstance(pid, str) and pid.strip():
+                children_of.setdefault(pid.strip(), []).append(ev)
         elif et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
             cid = _closer_target_id(ev)
             if cid:
                 closed_ids_at[str(cid)] = idx
             for s in _closer_target_seqs(ev):
                 closed_seqs_at[s] = idx
+            # SUB1 D3b — merge re-point map (mirrors the loader's merged_onto
+            # fold): a non-split supersession transfers the closed parent's
+            # children to the survivor read-side. Split closers stay skipped.
+            if et == "commitment_superseded" and not d.get("split_into"):
+                survivor = d.get("superseded_by") or d.get("survivor_id")
+                if cid and survivor:
+                    superseded_onto[str(cid)] = str(survivor)
         elif et == "commitment_reopened":
             target = d.get("commitment_id") or d.get("target_id") or ev.get("commitment_id")
             if target:
@@ -943,7 +1039,37 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
             "closed_ids_at": closed_ids_at, "closed_seqs_at": closed_seqs_at,
             "reopened_ids_at": reopened_ids_at,
             "reopened_seqs_at": reopened_seqs_at,
-            "kind_by_id": kind_by_id, "kind_by_seq": kind_by_seq}
+            "kind_by_id": kind_by_id, "kind_by_seq": kind_by_seq,
+            "superseded_onto": superseded_onto, "children_of": children_of}
+
+
+def _resolve_survivor(superseded_onto: dict, cid: str) -> str:
+    """Follow the merge re-point chain (superseded → survivor) to its live
+    end, cycle-safe. Identity when the id was never superseded (SUB1 D3b)."""
+    seen: set = set()
+    while cid in superseded_onto and cid not in seen:
+        seen.add(cid)
+        cid = superseded_onto[cid]
+    return cid
+
+
+def _live_children(index: dict, parent_cid: str) -> list[dict]:
+    """OPEN child commitments whose EFFECTIVE parent is `parent_cid` (SUB1):
+    on-disk data.parent_id resolved through the merge re-point chain, closure
+    state per the same order-aware math the loader uses. Orphan children of a
+    CLOSED parent still resolve here — the caller decides what that means."""
+    out: list[dict] = []
+    for raw_pid, kids in index["children_of"].items():
+        if _resolve_survivor(index["superseded_onto"], raw_pid) != parent_cid:
+            continue
+        for ch in kids:
+            ch_cid = _commitment_id(ch)
+            status = _commitment_field(ch, "status") or "open"
+            if status not in ("open", "overdue"):
+                continue
+            if not _currently_closed(index, ch_cid, ch.get("seq")):
+                out.append(ch)
+    return out
 
 
 def _currently_closed(index: dict, cid: str, seq) -> bool:
@@ -1020,6 +1146,7 @@ def close_commitment(
     primary_thread_id: Optional[str] = None,
     user_confirmed: bool = False,
     extra_data: Optional[dict] = None,
+    close_subitems: bool = False,
 ) -> dict:
     """THE closure path (F2). Every closer — log-resolution, apply-choices,
     the workspace-manager catch-all, reconcile-sent, the Commitments
@@ -1040,6 +1167,19 @@ def close_commitment(
         close without it — no path may AUTO-resolve them (PendingReviewError).
       extra_data: optional additional data keys (e.g. Bug #51's
         resolved_via_wrapper_seq). Never overrides the canonical keys.
+      close_subitems: SUB1 D3 — closing a parent with OPEN sub-items raises
+        OpenSubitemsError unless this is True (from a one-line user confirm:
+        "this also closes its N open sub-items"). The cascade then closes
+        the children FIRST (each an ordinary per-child closure, evidence
+        "parent closed", inheriting the caller's user_confirmed and
+        resolution), then the parent — crash-safe ordering: a failure
+        mid-cascade leaves closed children + an OPEN parent (recoverable),
+        never a closed parent with silently-orphaned open children. A
+        pending_review child blocks an unconfirmed cascade exactly as it
+        blocks a direct close (the error names WHICH child, F-59). The
+        whole sequence runs inside the one writer-lock span. Programmatic
+        closers (reconcile-sent, CRU auto_resolve) NEVER pass True — they
+        downgrade to a propose (cru_match.parent_blocks_auto_resolve).
 
     Returns {"status": "closed", "commitment_id": <canonical>, "event": {...}}
     or {"status": "already_resolved", "commitment_id": <canonical>} (idempotent
@@ -1084,6 +1224,57 @@ def close_commitment(
                 "it for review instead of auto-resolving."
             )
 
+        # SUB1 D3 — no silent cascade, no silently-orphaned children.
+        open_kids = _live_children(index, cid)
+        closed_subitem_ids: list[str] = []
+        if open_kids:
+            if not close_subitems:
+                titles = ", ".join(
+                    repr(_commitment_field(k, "title") or _commitment_id(k))
+                    for k in open_kids[:3]
+                )
+                raise OpenSubitemsError(
+                    f"commitment {cid!r} has {len(open_kids)} open "
+                    f"sub-item(s) ({titles}{'…' if len(open_kids) > 3 else ''}) "
+                    "— closing the parent also closes them. Confirm with the "
+                    "user, then pass close_subitems=True; or close/drop the "
+                    "sub-items individually first."
+                )
+            # Pre-check EVERY child before writing anything (atomic refuse):
+            # a pending_review child blocks an unconfirmed cascade, and the
+            # ack must say WHICH child blocked and why (F-59).
+            if not user_confirmed:
+                for k in open_kids:
+                    if _is_pending_review(k):
+                        raise PendingReviewError(
+                            f"sub-item {_commitment_id(k)!r} "
+                            f"({(_commitment_field(k, 'title') or '')!r}) of "
+                            f"commitment {cid!r} is pending_review — the "
+                            "cascade may only close it on an explicit user "
+                            "confirmation (pass user_confirmed=True). Nothing "
+                            "was closed."
+                        )
+            # Children FIRST (crash-safe: a mid-cascade failure leaves closed
+            # children + an open parent — recoverable — never a closed parent
+            # with open children), then the parent, all in this lock span.
+            from event_gate import append_event as _append_ev
+            child_closers: list[dict] = []
+            for k in open_kids:
+                k_cid = _commitment_id(k)
+                closed_subitem_ids.append(k_cid)
+                child_closers.append({
+                    "type": "commitment_resolved",
+                    "source_skill": source_skill,
+                    "primary_thread_id": k.get("primary_thread_id") or "",
+                    "data": {
+                        "commitment_id": k_cid,
+                        "resolved_by": resolved_by,
+                        "evidence": "parent closed",
+                        "resolution": resolution,
+                    },
+                })
+            _append_ev(events_path, child_closers, holder=source_skill)
+
         data = dict(extra_data) if isinstance(extra_data, dict) else {}
         data.update({
             "commitment_id": cid,
@@ -1104,7 +1295,13 @@ def close_commitment(
 
         from event_gate import append_event
         append_event(events_path, [ev], holder=source_skill)
-    return {"status": "closed", "commitment_id": cid, "event": ev}
+    result = {"status": "closed", "commitment_id": cid, "event": ev}
+    if closed_subitem_ids:
+        # SUB1 D3 — the cascade's child ids, in close order: the dispatch
+        # layer caches these alongside the parent id so a batch undo reopens
+        # the whole family (reopen is per-item; see reopen_commitment).
+        result["closed_subitems"] = closed_subitem_ids
+    return result
 
 
 def supersede_commitment(
@@ -1147,6 +1344,11 @@ def supersede_commitment(
       - survivor == superseded (after normalization) is a hard error, and a
         CLOSED survivor is allowed — the duplicate of an already-done thing
         is itself done; the closure is still correct.
+      - SUB1 D3b: the superseded item's SUB-ITEMS transfer to the survivor
+        READ-SIDE — the loader (and the writer index) re-point `parent_id`
+        through the supersession chain on in-memory copies only; no history
+        rewrite, no per-child event. This is why a merge needs no cascade
+        guard: the children stay open, just under the survivor.
     """
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
@@ -1563,6 +1765,65 @@ def mark_partial_received(
     }
 
 
+def _mint_child_commitments(
+    index: dict,
+    parent: dict,
+    children: list[dict],
+    *,
+    source_skill: str,
+    provenance_fields: dict,
+) -> tuple[list[dict], list[str]]:
+    """The shared child-minting loop (SUB1 § 3): given an open parent and a
+    list of child dicts, mint Stage-D-complete `commitment` events — fresh
+    cmt_<ulid> ids, explicit kind, owner/counterparty/source_ref/
+    primary_thread_id inherited from the parent unless the child overrides
+    them — with `provenance_fields` stamped on every child right after
+    `status` (split passes split_from/source_event_seq; add_subitems passes
+    parent_id/parent_seq). Returns (child_events, child_ids); the caller
+    appends them (children FIRST — crash-safe ordering) inside its own
+    writer-lock span. Factored out of split_commitment byte-identically."""
+    from event_gate import new_commitment_id
+    pdata = parent.get("data") or {}
+    parent_kind = effective_kind(index, parent)
+    parent_owner = _commitment_field(parent, "owner_id")
+    parent_cp = _commitment_field(parent, "counterparty_id")
+    parent_ref = pdata.get("source_ref") or parent.get("source_ref")
+
+    child_events: list[dict] = []
+    child_ids: list[str] = []
+    for ch in children:
+        child_id = new_commitment_id()
+        child_ids.append(child_id)
+        cdata: dict = {
+            "id": child_id,
+            "title": ch["title"].strip()[:300],
+            "kind": ch.get("kind") or parent_kind,
+            "status": "open",
+        }
+        cdata.update(provenance_fields)
+        due = ch.get("due")
+        if due:
+            cdata["due"] = due
+        owner = ch.get("owner_id") or parent_owner
+        if owner:
+            cdata["owner_id"] = owner
+        cp = ch.get("counterparty_id") or parent_cp
+        if cp:
+            cdata["counterparty_id"] = cp
+        cp_name = ch.get("counterparty_name") or pdata.get("counterparty_name")
+        if cp_name:
+            cdata["counterparty_name"] = cp_name
+        if isinstance(parent_ref, str) and parent_ref.strip():
+            cdata["source_ref"] = parent_ref
+        child_events.append({
+            "type": "commitment",
+            "source_skill": source_skill,
+            "primary_thread_id": parent.get("primary_thread_id") or "",
+            "data": cdata,
+        })
+    return child_events, child_ids
+
+
 def split_commitment(
     workspace_root,
     commitment_id,
@@ -1625,48 +1886,27 @@ def split_commitment(
                 "the item, so it may only happen on an explicit user action "
                 "(pass user_confirmed=True from the split verb / chat phrase)."
             )
+        # SUB1 D4 — a decomposed item being "really N unrelated peers" is
+        # incoherent: the user already said the parts belong to ONE
+        # deliverable. Refuse; the fix is closing/dropping the children first,
+        # or `add subitems` for more decomposition.
+        live_kids = _live_children(index, cid)
+        if live_kids:
+            raise ValueError(
+                f"commitment {cid!r} has {len(live_kids)} open sub-item(s) — "
+                "a split closes the parent, but sub-items say the parts "
+                "belong to ONE deliverable. Close or drop the sub-items "
+                "first, or use `add subitems` to decompose further."
+            )
 
-        from event_gate import append_event, new_commitment_id
-        pdata = parent.get("data") or {}
-        parent_kind = effective_kind(index, parent)
-        parent_owner = _commitment_field(parent, "owner_id")
-        parent_cp = _commitment_field(parent, "counterparty_id")
-        parent_ref = pdata.get("source_ref") or parent.get("source_ref")
-
-        child_events: list[dict] = []
-        child_ids: list[str] = []
-        for ch in children:
-            child_id = new_commitment_id()
-            child_ids.append(child_id)
-            cdata: dict = {
-                "id": child_id,
-                "title": ch["title"].strip()[:300],
-                "kind": ch.get("kind") or parent_kind,
-                "status": "open",
-                "split_from": cid,
-            }
-            if isinstance(parent.get("seq"), int):
-                cdata["source_event_seq"] = parent["seq"]
-            due = ch.get("due")
-            if due:
-                cdata["due"] = due
-            owner = ch.get("owner_id") or parent_owner
-            if owner:
-                cdata["owner_id"] = owner
-            cp = ch.get("counterparty_id") or parent_cp
-            if cp:
-                cdata["counterparty_id"] = cp
-            cp_name = ch.get("counterparty_name") or pdata.get("counterparty_name")
-            if cp_name:
-                cdata["counterparty_name"] = cp_name
-            if isinstance(parent_ref, str) and parent_ref.strip():
-                cdata["source_ref"] = parent_ref
-            child_events.append({
-                "type": "commitment",
-                "source_skill": source_skill,
-                "primary_thread_id": parent.get("primary_thread_id") or "",
-                "data": cdata,
-            })
+        from event_gate import append_event
+        provenance: dict = {"split_from": cid}
+        if isinstance(parent.get("seq"), int):
+            provenance["source_event_seq"] = parent["seq"]
+        child_events, child_ids = _mint_child_commitments(
+            index, parent, children,
+            source_skill=source_skill, provenance_fields=provenance,
+        )
         # Children FIRST (crash-safe: a parent is never closed without its
         # parts on disk), then the split closer referencing the child ids.
         append_event(events_path, child_events, holder=source_skill)
@@ -1697,12 +1937,134 @@ def split_commitment(
     }
 
 
+# SUB1 D-8 (M ruling 2026-07-16): hard cap on open children per parent — a
+# 13-step item is a project, not a commitment; the cap also bounds the
+# family-atomic widget page. Loud writer error above it, never a silent trim.
+MAX_SUBITEMS_PER_PARENT = 12
+
+
+def add_subitems(
+    workspace_root,
+    commitment_id,
+    children,
+    *,
+    added_by: str,
+    source_skill: str,
+    user_confirmed: bool = False,
+) -> dict:
+    """THE sub-item writer (SUB1 — M ruling 2026-07-16, all 8 recommendations).
+
+    Decomposition with the parent's SURVIVAL: "break that into A / B / C"
+    takes one OPEN commitment → N new child `commitment` events, each
+    Stage-D complete (minted cmt_<ulid> id, explicit kind, inherited owner/
+    counterparty/source_ref unless the child overrides them) and carrying
+    `data.parent_id` (the parent's canonical id VERBATIM) + `data.parent_seq`
+    (F3-style seq alias). The parent stays open as the commitment of record —
+    this is the sibling of split_commitment (extraction of peers with the
+    parent's DEATH), sharing its child-minting loop but writing no closer.
+
+    Children are real commitments: close/defer/drop/undo and the widget wire
+    format work on them with zero special-casing. Creation is USER-INITIATED
+    only — extraction/sweeps never mint hierarchies (the "extraction
+    pre-splits into peers" doctrine, M 2026-07-09/16); no skill may call this
+    from a scan path.
+
+    Guards (SUB1 § 5): id normalization over legacy spellings, loud
+    CommitmentIdError on no match, refuses a CLOSED parent ({"status":
+    "not_open"} — decomposing a tombstone plans nothing), pending_review
+    floor (decomposing IS adjudicating the item — requires
+    user_confirmed=True from an explicit action, same as split), ONE level
+    deep (a parent that is itself a live sub-item refuses — no grandchildren
+    in v1), ≥ 1 titled child (unlike split's ≥ 2: one named step is a
+    legitimate decomposition), and the D-8 cap — at most
+    MAX_SUBITEMS_PER_PARENT (12) OPEN children after the add. Whole sequence
+    inside the writer lock (R1c).
+
+    `children`: list of dicts — {"title" (required), "due"?, "owner_id"?,
+    "counterparty_id"?, "counterparty_name"?, "kind"?}. Same shape and
+    input parsing as split_commitment's (`split into [items]`'s newline/
+    semicolon/" / " rule, reused verbatim by the dispatch layer).
+    """
+    children = list(children or [])
+    if len(children) < 1:
+        raise ValueError(
+            "add_subitems needs at least 1 child — an empty decomposition "
+            "changes nothing"
+        )
+    for i, ch in enumerate(children):
+        if not isinstance(ch, dict) or not (ch.get("title") or "").strip():
+            raise ValueError(f"sub-item {i} has no title — every child "
+                             "must be a Stage-D-complete commitment")
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"add_subitems:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        parent = index["by_id"][cid]
+        if _currently_closed(index, cid, parent.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        if _is_pending_review(parent) and not user_confirmed:
+            raise PendingReviewError(
+                f"commitment {cid!r} is pending_review — decomposing "
+                "adjudicates the item, so it may only happen on an explicit "
+                "user action (pass user_confirmed=True from the add-subitems "
+                "verb / chat phrase)."
+            )
+        # One level deep (SUB1 § 3): no grandchildren in v1 — keeps every
+        # fold O(1) and the family widget renderable. "Live" = the parent's
+        # own parent_id resolves to a real commitment event (merge re-point
+        # honored); a dangling link degrades to top-level, same as the loader.
+        own_pid = (parent.get("data") or {}).get("parent_id")
+        if isinstance(own_pid, str) and own_pid.strip():
+            eff_pid = _resolve_survivor(index["superseded_onto"], own_pid.strip())
+            if eff_pid in index["by_id"]:
+                raise ValueError(
+                    f"commitment {cid!r} is itself a sub-item of {eff_pid!r} "
+                    "— sub-items nest one level deep (no grandchildren in "
+                    "v1). Add the steps to the top-level parent instead."
+                )
+        existing_open = _live_children(index, cid)
+        if len(existing_open) + len(children) > MAX_SUBITEMS_PER_PARENT:
+            raise ValueError(
+                f"commitment {cid!r} would carry "
+                f"{len(existing_open) + len(children)} open sub-items "
+                f"(cap: {MAX_SUBITEMS_PER_PARENT}, currently open: "
+                f"{len(existing_open)}) — a {MAX_SUBITEMS_PER_PARENT + 1}+-"
+                "step item is a project, not a commitment. Close finished "
+                "steps first or track the plan outside the commitment."
+            )
+
+        from event_gate import append_event
+        provenance: dict = {"parent_id": cid}
+        if isinstance(parent.get("seq"), int):
+            provenance["parent_seq"] = parent["seq"]
+        child_events, child_ids = _mint_child_commitments(
+            index, parent, children,
+            source_skill=source_skill, provenance_fields=provenance,
+        )
+        # No closer — the parent STAYS OPEN (the whole point of SUB1).
+        append_event(events_path, child_events, holder=source_skill)
+    return {
+        "status": "subitems_added",
+        "commitment_id": cid,
+        "children": child_ids,
+        "added_by": added_by,
+    }
+
+
 def close_commitments(workspace_root, closures, *, source_skill: str) -> list[dict]:
     """Batch closure for callers that close several commitments in one run
     (reconcile-sent). Same contract as close_commitment per item; a
-    CommitmentIdError or PendingReviewError on one item is recorded as
-    {"status": "error", ...} and does NOT abort the rest (a bad id in a batch
-    of real closes must not lose the real closes).
+    CommitmentIdError, PendingReviewError, or OpenSubitemsError on one item
+    is recorded as {"status": "error", ...} and does NOT abort the rest (a
+    bad id in a batch of real closes must not lose the real closes).
+
+    SUB1 D3 — this batch path NEVER cascades (no close_subitems passthrough,
+    deliberately): programmatic closers propose, they don't cascade. The
+    matchers already downgrade a parent-with-open-children auto_resolve to
+    pending_review (cru_match.parent_blocks_auto_resolve); an
+    OpenSubitemsError here is the loud defensive floor, not the design path.
     """
     results: list[dict] = []
     for c in closures or []:
@@ -1718,7 +2080,7 @@ def close_commitments(workspace_root, closures, *, source_skill: str) -> list[di
                 user_confirmed=bool(c.get("user_confirmed")),
                 extra_data=c.get("extra_data"),
             ))
-        except (CommitmentIdError, PendingReviewError) as e:
+        except (CommitmentIdError, PendingReviewError, OpenSubitemsError) as e:
             sys.stderr.write(
                 f"[close_commitments] {type(e).__name__} for "
                 f"{c.get('commitment_id')!r}: {e}\n"
@@ -1752,6 +2114,12 @@ def reopen_commitment(
     projector honors whichever came last. Same id normalization + loud
     no-match as close_commitment, and the same scan->append lock span
     (v4.5.2 R1c). A later re-close works normally.
+
+    SUB1 D3 — reopening a cascade-closed PARENT reopens the PARENT ONLY;
+    each child has its own tombstone and is reopened individually. The
+    triage batch-undo already caches every closed id in the batch (the
+    cascade's `closed_subitems` return joins that cache), so an undone
+    cascade round-trips with zero new undo code.
     """
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
@@ -1839,7 +2207,12 @@ def stale_tasks(
     metric uses (capture ts is the movement floor, so a never-touched task
     ages exactly as before; a task updated last week is NOT "still on your
     plate?" noise). Without `movement`, falls back to capture-ts age
-    (pre-MC2 behavior)."""
+    (pre-MC2 behavior).
+
+    SUB1 D6 — a task-kind CHILD ages with its PARENT's movement: the anchor
+    is the newer of the child's own movement and the parent's (whose map
+    entry already includes bubbled-up child activity), so a step of an
+    actively-moving parent never draws a "still on your plate?" nudge."""
     from event_time import event_time
     now = _parse_date(now_iso)
     out: list[dict] = []
@@ -1851,6 +2224,11 @@ def stale_tasks(
             m = movement.get(_commitment_id(ev))
             if m is not None:
                 anchor = m.ts.date()
+            pid = (ev.get("data") or {}).get("parent_id")
+            if isinstance(pid, str) and pid:
+                pm = movement.get(pid)
+                if pm is not None and (anchor is None or pm.ts.date() > anchor):
+                    anchor = pm.ts.date()
         if anchor is None:
             anchor = _parse_date(event_time(ev))
         if anchor is None or now is None:
@@ -1875,9 +2253,13 @@ __all__ = [
     "KIND_DEFAULT",
     "TASK_STALE_DAYS",
     "VALID_RESOLUTIONS",
+    "MAX_SUBITEMS_PER_PARENT",
     "CommitmentIdError",
     "PendingReviewError",
+    "OpenSubitemsError",
     "effective_kind",
+    "partition_subitems",
+    "add_subitems",
     "supersede_commitment",
     "edit_commitment_wording",
     "reassign_commitment",

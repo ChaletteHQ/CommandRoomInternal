@@ -91,9 +91,28 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "label": "7:15 AM weekdays",
         "enabled": True,
     },
-    "commitments": {
+    # CTS1 (2026-07, §10.3 RULED: fresh taskIds) — the daily Commitments chat
+    # split into TWO surfaces. `commitments` is REMOVED from the default set
+    # (row disabled on migration per the enable-command-room-schedules Phase 1
+    # legacy table — the v2.14.27 pattern; Cowork derives the sidebar title
+    # FROM the taskId, so a re-scope would have left it saying "Commitments"
+    # forever). Its DISPLAY_NAMES row stays for legacy renders. Neither new
+    # task is first-install (same later-add posture the old `commitments`
+    # had — a fresh workspace's open set hasn't accumulated).
+    "waiting-on": {
+        # Inherits the old commitments slot — the accountability chat is the
+        # direct successor of the daily fire M's day was already built around.
         "cron": "30 8 * * 1-5",
         "label": "8:30 AM weekdays",
+        "enabled": True,
+    },
+    "my-plate": {
+        # 15 minutes after waiting-on, so its rows read the substrate the
+        # waiting-on fire's CRU pre-scans (2.5/2.6/2.7) just reconciled —
+        # My Plate itself is a pure substrate read (no connector pre-scans).
+        # Before pulse (9:00). Tunable via change-schedule like any chat.
+        "cron": "45 8 * * 1-5",
+        "label": "8:45 AM weekdays",
         "enabled": True,
     },
     "pulse": {  # taskId aligned with display name (v2.14.27+); orchestrator filename stays orchestrator-dont-forget.md for events.jsonl source_skill back-compat
@@ -192,6 +211,38 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
                                         # lockstep guard in the FB-20 test
         "enabled": True,
     },
+    # PIPE1 Part 2 (2026-07) — Pipeline Digest: the weekly deal-review chat
+    # (since-last-digest movement + the report's own tile band and ranked
+    # rows + top-3 moves + a pending-count pointer at the Staff Meeting —
+    # FB-20: adjudication stays there; the digest renders NO confirm rows).
+    # Tuesday 8 AM per the backlog's SPEC-10 slot — Monday already carries
+    # the Staff Meeting (9 AM Mon/Wed/Fri) and the Sunday-evening
+    # deal-signals job has just refilled the proposal queue. NOT
+    # first-install — proposed by schedule_proposals ONLY when >=1 open
+    # tracked deal exists (a digest over an empty pipeline is noise);
+    # registers via change-schedule `add pipeline digest` / Phase 6 add /
+    # update-bridge proposal, never silently (the pipeline-tracker skill's
+    # digest.enabled config records the PREFERENCE only — it never
+    # registers).
+    "pipeline-digest": {
+        "cron": "0 8 * * 2",
+        "label": "8 AM Tuesdays",
+        "enabled": True,
+    },
+    # BAL1 (2026-07, §0 RULED Sunday 8AM) — Balance: the weekly personal
+    # white-space surface (m_facing ONLY — the personal lane never reaches an
+    # org output). 8 AM Sunday is a reflective moment before the week loads;
+    # the slot was empty (relationship-moves holds 17:00, cleanup-era work
+    # 18:00). NOT first-install — needs accumulated substrate AND a declared
+    # personal calendar (workspace.personal_calendars); with none declared the
+    # fire refuses honestly instead of rendering an all-clear. Registers via
+    # change-schedule / Phase 6 add / update-bridge proposal, the same
+    # later-add posture as relationship-moves.
+    "balance": {
+        "cron": "0 8 * * 0",
+        "label": "8 AM Sundays",
+        "enabled": True,
+    },
     # cr-refresh-workspace-map removed v2.14.25. The five silent-task rows
     # (cleanup 18:00 Sun / reconcile-sent 6:45,12:45,17:45 weekdays /
     # monthly-report 7:00 on the 1st / weekly-insights 19:00 Sun /
@@ -208,8 +259,9 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
 # friday-wrap), with inbox deferred to a later Zapier-integration session.
 # M1 brings inbox forward — the Chat 2 substantive education + the Phase 4
 # Run Now ritual establish all 5 in one onboarding pass.
-# The remaining 2 defaults (commitments, pulse) stay deferred — both benefit
-# from accumulated workspace signal before they fire well.
+# The remaining defaults (waiting-on, my-plate, pulse — CTS1 split the old
+# commitments chat into the first two) stay deferred — all benefit from
+# accumulated workspace signal before they fire well.
 FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "morning-brief",
     "upcoming-meetings",
@@ -281,10 +333,26 @@ SILENT_TASKS: dict[str, dict] = {
             "never in parallel: reconcile-sent -> skills/reconcile-sent/SKILL.md; "
             "session-sweep -> skills/session-sweep/SKILL.md; cleanup -> "
             "skills/cleanup/SKILL.md (every phase); weekly-insights -> "
-            "skills/insight-generator/SKILL.md; monthly-report -> the previous full "
+            "skills/insight-generator/SKILL.md; identity-reconcile -> run "
+            "`python3 shared/scripts/identity_reconcile.py --workspace "
+            "<workspace_root> --apply` from the plugin root (PID1 — the flag "
+            "matters: without --apply it dry-runs, writes no receipt, and "
+            "stays due forever; auto-adds are narrated + batch-undoable, "
+            "links/merges are propose-only, its identity_reconcile_run "
+            "receipt is written by the script itself); monthly-report -> the previous full "
             "calendar month per skills/operator-report/SKILL.md then "
             "skills/value-receipt/SKILL.md (quarter boundary adds the quarterly "
-            "roll-up).\n"
+            "roll-up); monthly-scorecard (OPT-IN, SPEC OUT7 — present only when the "
+            "workspace turned it on) -> assemble the prior month's KPIs-vs-targets "
+            "readings the way board-pack §2 does (QuickBooks + KPI-target decision "
+            "events + the prior pack; every reading substrate-derived — a KPI with "
+            "no substrate value passes current=None, NEVER an estimated or invented "
+            "number), then render the scorecard via "
+            "shared/scripts/scorecard.py build_scorecard(period='month', "
+            "data_through=<latest substrate date>) -> make_brief(brief_kind='kpi_scorecard', "
+            "...); write its pack_run receipt via receipts.log_receipt(workspace_root, "
+            "'monthly-scorecard', receipt_type='pack_run', fired_via='scheduled') so it "
+            "self-limits to monthly.\n"
             "3. A job COMPLETED only when its own receipt validator confirms its own "
             "substrate receipt (validate_reconcile_ran / validate_sweep_ran / the "
             "cleanup, insights, and report receipts per each SKILL.md). Never report "
@@ -354,7 +422,9 @@ DISPLAY_NAMES: dict[str, str] = {
     "morning-brief": "Morning Brief",
     "upcoming-meetings": "Upcoming Meetings",
     "inbox": "Inbox",
-    "commitments": "Commitments",
+    "commitments": "Commitments",  # CTS1 — retired taskId (disabled on migration; row kept for legacy renders of pre-CTS1 receipts/schedules)
+    "waiting-on": "Waiting On",  # CTS1 Surface 1 — things people owe the user (the re-scoped daily; owns the unowned/unconfirmed confirm tail)
+    "my-plate": "My Plate",      # CTS1 Surface 2 — things the user does (Promised group + Personal group, one chat)
     "pulse": "Pulse",
     "past-meetings": "Past Meetings",
     "friday-wrap": "Friday Wrap",  # v3.11.0
@@ -367,6 +437,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "session-sweep": "Session Sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (not a CEO-facing chat); a maintenance JOB as of MAINT1
     "maintenance": "Maintenance",  # MAINT1 — THE silent background dispatcher task (not a CEO-facing chat). cleanup / reconcile-sent / monthly-report keep their rows above for job-level renders.
     "staff-meeting": "Staff Meeting",  # LB1 R3 — weekly Monday Living Brain review chat (opt-in later-add)
+    "balance": "Balance",  # BAL1 — weekly Sunday personal white-space surface (opt-in later-add; m_facing only)
     "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
 }
 
@@ -691,7 +762,57 @@ def task_display_name(task_id: str) -> str:
     return task_id.removeprefix("cr-").replace("-", " ").title()
 
 
+def rm_supersede_plan(registered_tasks: list) -> dict | None:
+    """LB2 §3d — the `rm_supersede_v1` planner (pure; the update bridge
+    executes it, adjudication-gated, on the user's explicit yes — NEVER
+    silently).
+
+    LB1 R4 left workspaces that already registered a standalone
+    relationship-moves chat in a permanent fork: R4's own suppression rule
+    means they are never offered the staff meeting, so the moves never merge
+    into the one adjudication surface. This plans the fold: given the LIVE
+    registered task records (from the scheduler MCP — each carries at least
+    `taskId` and `cron`), returns None when no standalone relationship-moves
+    registration exists (nothing to supersede — most workspaces), else:
+
+        {"marker": "rm_supersede_v1",
+         "remove_task_id": "relationship-moves",
+         "staff_meeting_registered": bool,   # already there → register step skipped
+         "carry_cron": str | None}           # the RM chat's CUSTOM cron, to
+                                             # carry onto a NEW staff-meeting
+                                             # registration; None = RM was on
+                                             # its default → use the
+                                             # staff-meeting default (M/W/F)
+
+    Decline path and idempotency are the bridge's adjudication machinery
+    (`migration_adjudication` on the marker id) — this planner holds no
+    state. The RM skill, its orchestrator, and Pulse are untouched by design.
+    """
+    rm = None
+    sm_registered = False
+    for t in registered_tasks or []:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("taskId") or t.get("task_id") or t.get("id")
+        if tid == "relationship-moves":
+            rm = t
+        elif tid == "staff-meeting":
+            sm_registered = True
+    if rm is None:
+        return None
+    rm_default = DEFAULT_SCHEDULES.get("relationship-moves", {}).get("cron")
+    rm_cron = (rm.get("cron") or "").strip()
+    carry = rm_cron if (rm_cron and rm_cron != rm_default) else None
+    return {
+        "marker": "rm_supersede_v1",
+        "remove_task_id": "relationship-moves",
+        "staff_meeting_registered": sm_registered,
+        "carry_cron": carry,
+    }
+
+
 __all__ = [
+    "rm_supersede_plan",
     "DEFAULT_SCHEDULES",
     "FIRST_INSTALL_TASK_IDS",
     "SILENT_TASKS",

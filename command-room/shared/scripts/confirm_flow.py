@@ -61,6 +61,8 @@ I/O is the explicitly-named load_open_person_proposals.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import re as _re
 import sys
 from pathlib import Path
 from typing import Iterable, Optional
@@ -120,6 +122,21 @@ def _first_str(data: dict, keys) -> Optional[str]:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return None
+
+
+def compute_proposal_fingerprint(ev_type, name, captured_ts) -> str:
+    """D8 (SPEC PID1) — the content fingerprint that makes a SEQ-LESS person
+    proposal adjudicatable: sha256(type|normalized name|captured_ts)[:12],
+    computed IDENTICALLY by the reader (`load_open_person_proposals`) and by
+    any tombstone writer. Events are immutable (event_gate doctrine), so a
+    freelance-written `seq: null` proposal can never gain a seq — without
+    this path such rows are unadjudicatable forever.
+
+    ACTIVATION RULE: the fingerprint path activates ONLY for seq-less rows.
+    Int-seq matching is untouched and always preferred."""
+    norm = _re.sub(r"\s+", " ", (name or "").strip().lower())
+    basis = f"{ev_type or ''}|{norm}|{captured_ts or ''}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:12]
 
 
 # -----------------------------------------------------------------------------
@@ -411,6 +428,7 @@ def load_open_person_proposals(
         return []
     events, _skipped = load_events_defensively(path)
     resolved_seqs: set = set()
+    resolved_fps: set = set()
     proposals: list[dict] = []
     for ev in events:
         et = ev.get("type") or ""
@@ -427,6 +445,15 @@ def load_open_person_proposals(
                     resolved_seqs.add(ps)
                 else:
                     resolved_seqs.discard(ps)
+            else:
+                # D8 (PID1): the fingerprint tombstone path for SEQ-LESS
+                # proposals — activates only when no int seq is carried.
+                fp = d.get("proposal_fingerprint")
+                if isinstance(fp, str) and fp.strip():
+                    if et == "person_proposal_resolved":
+                        resolved_fps.add(fp.strip())
+                    else:
+                        resolved_fps.discard(fp.strip())
         elif et in PROPOSAL_TYPES:
             proposals.append(ev)
     dismissed = set(dismissed_target_ids or ())
@@ -443,6 +470,16 @@ def load_open_person_proposals(
         # name is load-bearing downstream ("{name — badge · evidence ·
         # consequence}"); `source_refs` (list) is the plural legacy spelling.
         name = _first_str(d, PERSON_NAME_KEYS)
+        # D8 (PID1): a seq-less row (freelance-written `seq: null`) folds via
+        # its content fingerprint — the ONLY way it can ever be adjudicated.
+        # Int-seq rows never compute one (activation rule).
+        fingerprint = None
+        if not (isinstance(seq, int) and not isinstance(seq, bool)):
+            fingerprint = compute_proposal_fingerprint(
+                ev.get("type"), name,
+                ev.get("ts") or ev.get("timestamp") or "")
+            if fingerprint in resolved_fps:
+                continue
         # FS-19 — already a contact? An ADD-type proposal whose name
         # confidently resolves to an existing record never surfaces (see
         # person_name_on_file); update-type rows are exempt.
@@ -465,19 +502,23 @@ def load_open_person_proposals(
             "review_reason": d.get("review_reason"),
             "source_ref": source_ref,
             "captured_ts": (ev.get("ts") or ev.get("timestamp") or ""),
+            # D8: present ONLY on seq-less rows (None otherwise) — the
+            # tombstone key downstream writers pass back.
+            "fingerprint": fingerprint,
         })
     out.sort(key=lambda r: r["captured_ts"])
     return out
 
 
 def build_person_proposal_resolved_event(
-    proposal_seq: int,
+    proposal_seq: Optional[int],
     *,
     resolution: str,
     source_skill: str,
     person_id: Optional[str] = None,
     alias: Optional[str] = None,
     note: str = "",
+    proposal_fingerprint: Optional[str] = None,
 ) -> dict:
     """The proposal tombstone. `resolution` ∈ {person_added, same_as,
     not_relevant}:
@@ -493,6 +534,13 @@ def build_person_proposal_resolved_event(
     hand-rolled. The entity write happens FIRST (apply-choices Step 3a
     path); the tombstone records the outcome so the proposal stops
     re-surfacing.
+
+    D8 (PID1): a SEQ-LESS proposal (freelance-written `seq: null`) is
+    tombstoned by `proposal_fingerprint` instead — pass proposal_seq=None
+    plus the fingerprint the reader computed (the row's `fingerprint` field,
+    from `compute_proposal_fingerprint`). ACTIVATION RULE: the fingerprint
+    path exists only for seq-less rows; when an int seq is available it MUST
+    be passed (int matching stays the preferred, untouched contract).
     """
     if resolution not in PROPOSAL_RESOLUTIONS:
         raise ValueError(
@@ -500,9 +548,28 @@ def build_person_proposal_resolved_event(
         )
     if isinstance(proposal_seq, str) and proposal_seq.strip().isdigit():
         proposal_seq = int(proposal_seq.strip())
+    if proposal_seq is None:
+        if not (isinstance(proposal_fingerprint, str)
+                and proposal_fingerprint.strip()):
+            raise ValueError(
+                "proposal_seq must be the proposal event's integer seq — or, "
+                "for a seq-less proposal ONLY, pass proposal_fingerprint (D8)")
+        data: dict = {"proposal_fingerprint": proposal_fingerprint.strip(),
+                      "resolution": resolution}
+        if person_id:
+            data["person_id"] = person_id
+        if alias:
+            data["alias"] = alias
+        if note:
+            data["note"] = note[:200]
+        return {
+            "type": "person_proposal_resolved",
+            "source_skill": source_skill,
+            "data": data,
+        }
     if not isinstance(proposal_seq, int) or isinstance(proposal_seq, bool):
         raise ValueError("proposal_seq must be the proposal event's integer seq")
-    data: dict = {"proposal_seq": proposal_seq, "resolution": resolution}
+    data = {"proposal_seq": proposal_seq, "resolution": resolution}
     if person_id:
         data["person_id"] = person_id
     if alias:
@@ -553,5 +620,6 @@ __all__ = [
     "load_open_person_proposals",
     "person_name_on_file",
     "build_person_proposal_resolved_event",
+    "compute_proposal_fingerprint",
     "confirm_pointer_line",
 ]

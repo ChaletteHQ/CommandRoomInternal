@@ -63,7 +63,12 @@ FORBIDDEN_NAME_PATTERNS = [
     r"Bailey Berro",
     r"Brett Nestat",
     r"Brett Baker",
-    r"categoryco",
+    # FU-2 (2026-07-19): the retired "Category Company" / "CategoryCo"
+    # placeholder was replaced fleet-wide by "Summit Company" — it read as
+    # potentially real. Deny both the spaced org form and the CamelCase
+    # alias, case-insensitively, so no future example can reintroduce it.
+    r"(?i)categoryco",
+    r"(?i)category\s+company",
     r"peaiventure",
     r"pe-ai\.io",
     r"[Mm]isuma",

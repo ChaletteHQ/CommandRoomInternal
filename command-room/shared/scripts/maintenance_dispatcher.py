@@ -110,6 +110,19 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "nominal_cron": "0 17 * * 0",
         "description": "propose observed deal stage/value/creation changes for confirmation",
     },
+    # PID1 D7 — the identity reconciler: same Sunday slot, ordered AFTER
+    # deal-signals (settled substrate first; Monday's Staff Meeting opens
+    # with a fresh, clustered identity queue). Entry point:
+    # identity_reconcile.run_identity_reconcile(workspace_root, apply=True,
+    # caps=STEADY_CAPS) — auto-adds ride the R1 rail (narrated + batch-
+    # undoable), links/merges are propose-only, caps spill narrated.
+    "identity-reconcile": {
+        "skill": "identity reconciler (shared/scripts/identity_reconcile.py "
+                 "--apply — dry-run without the flag)",
+        "nominal_cron": "0 17 * * 0",
+        "description": "reconcile person identities: auto-add corroborated "
+                       "people, link/merge-propose the rest for review",
+    },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     "monthly-report": {
         "skill": "operator-report + value-receipt",
@@ -118,8 +131,44 @@ MAINTENANCE_JOBS: dict[str, dict] = {
     },
 }
 
+# OPT-IN jobs (SPEC OUT7). A separate registry from MAINTENANCE_JOBS so the
+# silent-job execution ORDER above stays the load-bearing contract it is (the
+# order pin never sees these). An optional job is NEVER due unless the
+# workspace explicitly opted it in — `schedule_config.maintenance_jobs.<id> =
+# {"enabled": true}`, written only after a propose-and-confirm through
+# enable-command-room-schedules. This is the "never auto-registered" posture in
+# code: the job rides inside the already-authorized `maintenance` task (zero
+# client Run-Now), but it stays inert until the user turns it on, and its own
+# pack_run receipt self-limits it to its nominal cadence thereafter. Due
+# optional jobs run AFTER the core jobs.
+OPTIONAL_JOBS: dict[str, dict] = {
+    # The monthly KPI scorecard (SPEC OUT7 §3c route 2). Renders the prior
+    # month's scorecard via scorecard.py through the board-pack render path;
+    # writes a pack_run receipt tagged monthly-scorecard so the uniform due
+    # rule self-limits it to once a month. Opt-in ONLY.
+    "monthly-scorecard": {
+        "skill": "scorecard (shared/scripts/scorecard.py) via the board-pack render path",
+        "nominal_cron": "0 0 1 * *",
+        "description": "monthly KPI scorecard for the prior month (opt-in)",
+        "opt_in": True,
+    },
+}
+
 MAINTENANCE_TASK_ID = "maintenance"
 RECEIPT_EVENT_TYPE = "maintenance_run"
+
+
+def _all_job_ids() -> list[str]:
+    """Every job id whose receipts drive due-ness — core plus optional."""
+    return list(MAINTENANCE_JOBS) + list(OPTIONAL_JOBS)
+
+
+def _optin_enabled(overrides: dict, job_id: str) -> bool:
+    """An opt-in job is due-eligible ONLY when the workspace turned it on
+    (`{"enabled": true}` in schedule_config.maintenance_jobs). Absent /
+    malformed / anything but an explicit True = not opted in (never auto)."""
+    ov = overrides.get(job_id)
+    return isinstance(ov, dict) and ov.get("enabled") is True
 
 
 def _job_overrides(workspace_root) -> dict:
@@ -153,39 +202,49 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
     if now.tzinfo is not None:
         now = _to_local_naive(now)
     overrides = _job_overrides(workspace_root)
-    lasts = last_receipts(workspace_root, list(MAINTENANCE_JOBS))
+    lasts = last_receipts(workspace_root, _all_job_ids())
 
-    due: list[dict] = []
-    skipped_disabled: list[str] = []
-    for job_id, spec in MAINTENANCE_JOBS.items():
-        override = overrides.get(job_id)
-        if isinstance(override, dict) and override.get("enabled") is False:
-            skipped_disabled.append(job_id)
-            continue
+    def _due_dict(job_id: str, spec: dict) -> Optional[dict]:
         try:
             slots = expected_fires(spec["nominal_cron"], now=now, count=1)
         except CronParseError:
-            continue  # unparseable registry cron — never crash a fire
+            return None  # unparseable registry cron — never crash a fire
         if not slots:
-            continue
+            return None
         slot = slots[0]
         last = lasts.get(job_id)
         if last is not None and last >= slot:
-            continue  # already served this slot
-        if last is None:
-            reason = "no run recorded yet"
-        else:
-            reason = (
-                f"last ran {last.isoformat()}, its {slot.isoformat()} slot has passed"
-            )
-        due.append({
+            return None  # already served this slot
+        reason = ("no run recorded yet" if last is None else
+                  f"last ran {last.isoformat()}, its {slot.isoformat()} slot has passed")
+        return {
             "job_id": job_id,
             "skill": spec["skill"],
             "description": spec["description"],
             "reason": reason,
             "last_receipt": last.isoformat() if last else None,
             "slot": slot.isoformat(),
-        })
+        }
+
+    due: list[dict] = []
+    skipped_disabled: list[str] = []
+    # Core silent jobs — always considered (opt-OUT via {"enabled": false}).
+    for job_id, spec in MAINTENANCE_JOBS.items():
+        override = overrides.get(job_id)
+        if isinstance(override, dict) and override.get("enabled") is False:
+            skipped_disabled.append(job_id)
+            continue
+        d = _due_dict(job_id, spec)
+        if d is not None:
+            due.append(d)
+    # Opt-IN jobs — considered ONLY when the workspace turned them on; they run
+    # after the core jobs and never appear in the order-is-the-contract pin.
+    for job_id, spec in OPTIONAL_JOBS.items():
+        if not _optin_enabled(overrides, job_id):
+            continue  # never auto: no confirmation => not registered => not due
+        d = _due_dict(job_id, spec)
+        if d is not None:
+            due.append(d)
     return {
         "now": now.isoformat(),
         "due": due,
@@ -331,6 +390,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 __all__ = [
     "MAINTENANCE_JOBS",
+    "OPTIONAL_JOBS",
     "MAINTENANCE_TASK_ID",
     "RECEIPT_EVENT_TYPE",
     "dispatch_plan",

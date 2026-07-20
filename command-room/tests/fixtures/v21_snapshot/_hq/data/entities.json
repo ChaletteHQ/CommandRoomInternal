@@ -85,8 +85,8 @@
       },
       {
         "id": "project_003",
-        "folder_name": "Category Bakery",
-        "display_name": "Category Bakery — Rollout",
+        "folder_name": "Summit Bakery",
+        "display_name": "Summit Bakery — Rollout",
         "status": "paused",
         "stage": 0,
         "org_id": "org_acme_co",
@@ -127,9 +127,9 @@
       {
         "id": "org_acme_co",
         "canonical_name": "Acme Co",
-        "aliases": ["Category", "CategoryCo"],
+        "aliases": ["Summit", "SummitCo"],
         "type": "home",
-        "domain": "category.com",
+        "domain": "summit.com",
         "first_seen": "2025-11-04",
         "last_interaction": "2026-03-28",
         "status": "active"

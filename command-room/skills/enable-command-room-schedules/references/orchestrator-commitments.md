@@ -1,6 +1,8 @@
-# Orchestrator prompt — Commitments
+# Orchestrator prompt — Waiting On (SPEC CTS1 Surface 1)
 
-This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: commitments`. Fires 8:30 AM weekdays local. Replaces the v2.7-v2.10.1 split between `cr-commitment-nudge` and `cr-commitment-chase` — both directions now surface in one chat thread. Events this file writes carry `source_skill='commitments'` (bare since v2.14.27); workspaces with pre-rename history at `source_skill='cr-commitments'` stay valid as append-only history.
+This file is the EXACT prompt the bootloader cats and executes for `taskId: waiting-on`. Fires 8:30 AM weekdays local (the slot the retired `commitments` task held). **CTS1 (RULED 2026-07-16): the old two-direction Commitments chat is SPLIT** — this chat is now **things people owe the user** (they act next; the user nudges, they don't do) plus the unowned/unconfirmed confirm tail (§2.4 ruling: My Plate stays a pure act-list). The owner-me direction — Promised + Personal — renders on the **My Plate** chat (`orchestrator-my-plate.md`, taskId `my-plate`). The two surfaces are read-side filters over the SAME projected open set (`shared/scripts/surface_split.py` — one lane, views not stores; classifier = EFFECTIVE kind, never raw counterparty presence).
+
+Filename + event continuity: this file keeps its name and events keep `source_skill='commitments'` (the pulse/orchestrator-dont-forget pattern) — history at `source_skill='cr-commitments'` / `'commitments'` stays valid as append-only history and every reader that filters on the commitments family keeps matching. Fire receipts log under task id `waiting-on` (see Phase 8); the last-fire window reads BOTH `waiting-on` and legacy `commitments` receipts so the first post-split fire doesn't re-scan a week of mail.
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** every chat post follows `shared/CONTRACT.md`. The renderer enforces canonical action labels (`CanonicalActionError`) and blocks leaks (`LeakDetectedError`) before any post. Rules 1–18 are non-negotiable. The widget + Links section is the ENTIRE chat turn; STOP after that. No commentary, no narration.
 **Chat-output rules:** follow `references/SHARED_CHAT_OUTPUT_PROTOCOL.md` for the markdown-mode legacy rules; follow `shared/CONTRACT.md` for the v2.13.0 strict contract.
@@ -16,7 +18,9 @@ The applies-to-this-orchestrator framing: re-runs of THIS orchestrator (`regener
 
 ---
 
-You are firing the Command Room "Commitments" chat. Surfacing both directions: things M owes (with status drafts) AND things owed to M (with chase drafts). Single chat, two sections (plus a Tue/Thu WAITING ON section — Phase 3.8), global numbering, direction-aware per-item actions.
+You are firing the Command Room "Waiting On" chat (CTS1 Surface 1). Surfacing what OTHER PEOPLE owe M — chase drafts, delegated work, the quiet nudged-no-reply tail (Tue/Thu — Phase 3.8), and the unowned/unconfirmed confirm tail. Read-mode is ACCOUNTABILITY: M nudges; M doesn't do. Items M owes render on the My Plate chat, never here (the one exception: nothing — a row where M acts next does not belong in this chat; if the partition puts a row here, someone else acts next).
+
+The CRU pre-render scans below (Phases 2.5/2.6/2.7) still run ALL THREE directions of substrate hygiene — including the OUTBOUND scan that closes items M owed (those rows render on My Plate, which fires 15 minutes after this chat and reads the substrate this fire just reconciled). Splitting the surfaces did NOT split the reconciliation; this fire remains the morning's one bulk scan.
 
 # Phase 1 — Always run (no idempotency gate, v2.10.5+)
 
@@ -60,14 +64,17 @@ from cru_match import load_open_commitments
 events_path = '<absolute path to _hq/data/events.jsonl>'
 opens = load_open_commitments(events_path)
 
-# Determine the time window: max(last Commitments receipt ts, today - 7 days).
+# Determine the time window: max(last Waiting On fire ts, today - 7 days).
 # First fire ever defaults to last 7 days. Provided as <newer_than_iso> below.
-# v4.5.2 R1 — find the prior fire through the shared receipt reader (parses
-# every legacy shape: cr-commitments, kind-only, task_id-only — forever):
+# v4.5.2 R1 + CTS1 — find the prior fire through the shared receipt reader
+# (parses every legacy shape: cr-commitments, kind-only, task_id-only —
+# forever). CTS1: read BOTH the new task id and the retired one and take the
+# newest — the first post-split fire must see the last pre-split fire:
 #   from receipts import last_receipt_times
-#   last_fire_dt = last_receipt_times(WORKSPACE_ROOT, ["commitments"])["commitments"]
+#   times = last_receipt_times(WORKSPACE_ROOT, ["waiting-on", "commitments"])
+#   last_fire_dt = max((t for t in times.values() if t), default=None)
 # events.jsonl is append-only — never rewritten.
-last_fire_ts = '<ISO of last_receipt_times(...)["commitments"], or today-7d>'
+last_fire_ts = '<ISO of the max above, or today-7d>'
 print(f'WINDOW={last_fire_ts}')
 print(f'OPEN_COUNT={len(opens)}')
 "
@@ -377,7 +384,7 @@ Cowork fires a missed slot at next app launch, hours or days late, and without t
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'commitments', fired_via='<scheduled|manual>')))
+print(json.dumps(check_lateness('<workspace_root>', 'waiting-on', fired_via='<scheduled|manual>')))
 "
 ```
 
@@ -390,7 +397,9 @@ Branch on `tier` (this does not weaken the anti-improvisation contract — every
 
 The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
-# Phase 3 — Find commitments in 6 buckets (3 per direction)
+# Phase 3 — Find the Waiting On set (3 date buckets, owner ≠ M)
+
+**The surface filter (CTS1 — code, never prose):** after the base filter below, partition the projected open set via `surface_split.partition_surfaces(opens, <M's person_id>)` (`shared/scripts/surface_split.py`) and render rows from `partition["waiting_on"]` plus the confirm tail (`partition["unowned"]` + `partition["unconfirmed"]` ride the "Needs a quick confirm" section below — the §2.4 ruling). `partition["promised"]` and `partition["personal"]` belong to My Plate — NEVER render them here. The partition is TOP-LEVEL only (SUB1 — sub-items are excluded by `partition_subitems` inside it) and classifies on EFFECTIVE kind (§2.2 Option B). The filter trap is encoded in the module: Waiting On is owner PRESENT and ≠ M — a missing owner is unowned, never waiting-on.
 
 **Multi-shape field reads (v3.4.3+ — REQUIRED, supersedes the v3.4.2 dual-shape spec).** Per `shared/COMMITMENT_SCHEMA.md` consumers MUST handle every commitment-event shape variant produced by any writer. Five distinct shapes have been observed in production workspaces (M's events.jsonl 2026-05-17 audit):
 
@@ -405,7 +414,8 @@ Use `cru_match._commitment_field(ev, "<field>")` for every commitment-field read
 For the confidence threshold specifically, use `cru_match._commitment_confidence(ev)` (returns a normalized float in [0.0, 1.0]). Some writers store confidence as a string label (`"HIGH"`, `"medium"`, `"high"`) rather than a 0-1 float; the comparison crashes on string values and silently drops the event. The helper coerces both via `_CONFIDENCE_LEVEL_MAP`.
 
 Read events.jsonl. Apply base filter to every commitment event (every field read uses `_commitment_field`; confidence read uses `_commitment_confidence`):
-- **Kind filter (Phase 2 Stage D — REQUIRED):** effective `data.kind != "task"` (the loader's returned copies already carry `commitment_reclassified` overrides). Tasks are self-owed items with no counterparty — they never surface on the daily chase widget, never enter the CRU legs above (`cru_match.cru_eligible` enforces this in code), and age on the weekly Commitment Triage surface instead (`triage my commitments`). The header counts from `count_commitments` still include them in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
+- **Kind filter (Phase 2 Stage D, re-scoped by CTS1):** OWNER-ME task-kind items never surface here — they are My Plate · Personal rows (the `surface_split` partition already routes them). **Delegated tasks (owner ≠ M, effective kind `task` — CTS1 §2.3) DO render in this chat**: someone else acts next, so they belong on Waiting On — but `cru_match.cru_eligible` excludes task-kind from CRU, so they get NO pre-staged chase draft and NO reconcile: render with the manual action set only (`draft` composes a nudge on demand + `mark received` + `snooze 3d` + `add to my list`), tagged "(delegated — nudge is manual, I won't auto-chase this)". The header counts from `count_commitments` still include every kind in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
+- **Sub-item filter (SUB1 — REQUIRED):** live sub-items (projected `data.parent_id` naming an open parent) NEVER surface as their own chase rows and NEVER enter the CRU legs — `cru_match.cru_eligible` excludes them in code, same mechanism as the task filter. The PARENT is the commitment of record: its row carries the progress annotation ("2 of 3 sub-items done · next: [step]" — from the loader's `n_subitems_open`/`n_subitems_done`/`next_subitem_due` stamps) and, when the last open child has closed, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Child activity already bubbles into the parent's movement (never render a parent "stuck" while its steps are moving). Orphan children (parent closed — cascade crash window) surface as ordinary top-level rows with "was part of: [parent title]". `data.next_subitem_due` is an annotation/ranking signal ONLY — never the parent's due; a deferred parent stays deferred.
 - `_commitment_confidence(ev) >= confidence.CONFIDENCE_SURFACE_MIN` (== 0.7 as of v3.5.0; canonical constant in `shared/scripts/confidence.py`)
 - `_commitment_field(ev, "status") not in ("pending_review", "proposed")` — filter out shape-5 pending-review events; they surface via Pulse CRU-review, not daily commitments
 - No subsequent `commitment_resolved` event with matching id (Sam Apr 29 — stale "this is really old" items were resolved-but-still-surfacing because the prior filter only checked `thread_resolved`. Both event types close the commitment; both must filter it out. Mirror `shared/scripts/cru_match.py::load_open_commitments`, which already does both.)
@@ -417,7 +427,7 @@ Read events.jsonl. Apply base filter to every commitment event (every field read
 - **(v2.10.3)** Commitment's primary_thread_id resolves to a project with `status` in `{active, paused, blocked}` — exclude commitments tied to `dormant` or `archived` projects (those are accessible via `show more` + `go [project]` but don't surface in the daily commitments flow). If the user wants visibility on dormant-project commitments, they can run `show more` to see everything regardless of status.
 - **Aging cap (Sam Apr 29):** for `aging_undated` items only, exclude commitments logged ≥ 60 days ago with NO related event activity (no outreach_sent, no commitment_update, no chat_dismissal, no thread reply touching the commitment) in the last 30 days. These are ghost items that almost certainly resolved outside the system; surfacing them daily as "wrong person" / "really old" pollutes the widget. The user can still see them via `show more`. `overdue` and `due_near` items are unaffected — those have an explicit due date that gives the user a concrete reason to keep seeing them.
 
-**Header counts — the one bucket export (Phase 2 Stage A + v4.5.2 R4 + v4.6.0 MC2, MANDATORY).** The widget-header numbers (and the all-clear counters) MUST come from `commitment_state.count_commitments(opens, user_person_id=<M's person_id>, now_iso=<now>, movement=movement)["headline"]` over the FULL `load_open_commitments` set — `n_total = headline["total"]`, `n_you_owe = headline["you_owe"]`, `n_owed_to_you = headline["owed_to_you"]`, `n_unowned = headline["unowned"]`, `n_unconfirmed = headline["unconfirmed"]`, `n_stuck = headline["stuck"]`, `n_blocked = headline["blocked"]` — where `movement = commitment_activity.derive_commitment_movement("<WORKSPACE>/_hq/data/events.jsonl")` (v4.6.0 MC2: the REAL stuck metric — no movement 21+ days, or blocked on a named person; `blocked ⊆ stuck`. Derive the map ONCE per fire and pass the SAME map everywhere a movement-based number or row renders — the F-54 cross-surface-split rule. If `headline` carries no `stuck` key the derivation was unavailable: omit the segment, never render 0). **Never fold unowned or unconfirmed into a direction** — the pre-R4 rule here (`n_owed_to_you = they_owe + unowned`) is exactly why one dogfood day produced four different open counts across surfaces (F-47 P2b / F-56: this chat said 52 owed-to-you while triage said 40 + 18 unowned, from the same substrate). Unowned and unconfirmed render as their own numbers, identical on the morning brief, this chat, and commitment-triage. The confidence / dismissal / project-status / aging filters above decide which items SURFACE as actionable rows — they never shrink the header counts. This is the same export the morning brief and commitment-triage render; the 2026-07-01 audit found three surfaces disagreeing (104 vs 54 vs 105) because each hand-rolled this math. Note `load_open_commitments` now folds `commitment_updated` deferrals into the effective `data.due` (a `push to [date]` item stops rendering overdue) — never re-derive due from the raw original event.
+**Header counts — the one bucket export (Phase 2 Stage A + v4.5.2 R4 + v4.6.0 MC2, MANDATORY).** The widget-header numbers (and the all-clear counters) MUST come from `commitment_state.count_commitments(opens, user_person_id=<M's person_id>, now_iso=<now>, movement=movement)["headline"]` over the FULL `load_open_commitments` set — `n_total = headline["total"]`, `n_you_owe = headline["you_owe"]`, `n_owed_to_you = headline["owed_to_you"]`, `n_unowned = headline["unowned"]`, `n_unconfirmed = headline["unconfirmed"]`, `n_stuck = headline["stuck"]`, `n_blocked = headline["blocked"]` — where `movement = commitment_activity.derive_commitment_movement("<WORKSPACE>/_hq/data/events.jsonl")` (v4.6.0 MC2: the REAL stuck metric — no movement 21+ days, or blocked on a named person; `blocked ⊆ stuck`. Derive the map ONCE per fire and pass the SAME map everywhere a movement-based number or row renders — the F-54 cross-surface-split rule. If `headline` carries no `stuck` key the derivation was unavailable: omit the segment, never render 0). **Never fold unowned or unconfirmed into a direction** — the pre-R4 rule here (`n_owed_to_you = they_owe + unowned`) is exactly why one dogfood day produced four different open counts across surfaces (F-47 P2b / F-56: this chat said 52 owed-to-you while triage said 40 + 18 unowned, from the same substrate). Unowned and unconfirmed render as their own numbers, identical on the morning brief, this chat, and commitment-triage. The confidence / dismissal / project-status / aging filters above decide which items SURFACE as actionable rows — they never shrink the header counts. This is the same export the morning brief and commitment-triage render; the 2026-07-01 audit found three surfaces disagreeing (104 vs 54 vs 105) because each hand-rolled this math. Note `load_open_commitments` now folds `commitment_updated` deferrals into the effective `data.due` (a `push to [date]` item stops rendering overdue) — never re-derive due from the raw original event. SUB1: every headline number is computed over TOP-LEVEL items only — a parent with 3 open sub-items is **1** open commitment, never 4 (decomposing an item must not jump the headline). When sub-items exist the headline carries the additive `subitems_open` / `subitems_done_of_open_parents` keys (absent otherwise — never render a guessed 0); the header may append "(+N sub-items)" from `subitems_open`, never a new bucket.
 
 ## NEEDS A QUICK CONFIRM — the daily confirm section, renders FIRST in the widget (v4.6.1 W4b)
 
@@ -461,30 +471,24 @@ meeting_today = match_commitments_to_meetings(opens, todays_meetings,
                                               user_person_id="<M's person_id>")
 ```
 
-Rows match by counterparty (`counterparty_id` / `owner_id` is an attendee) OR name-mention (an attendee's name appears in the item's own text — catches counterparty-less legacy captures whose title names the person). Split rows into the two directions by `owner_id` as usual and render each as the FIRST bucket of its direction, labeled with the meeting ("you see [name] at [time] — this is open between you").
+Rows match by counterparty (`counterparty_id` / `owner_id` is an attendee) OR name-mention (an attendee's name appears in the item's own text — catches counterparty-less legacy captures whose title names the person). **CTS1 scope:** render ONLY the rows whose surface is `waiting_on` (owner present, ≠ M) as the FIRST bucket of the chat, labeled with the meeting ("you see [name] at [time] — this is open between you"). The owner-me matches render as My Plate's meeting bucket (that orchestrator runs the same `match_commitments_to_meetings` call over ITS partition) — never here.
 
-**Exemptions (deliberate, all four):** the meeting_today bucket bypasses (a) the due-date requirement — undated items render "no date set", never a blank; (b) the `aging_undated` ≥ 7-day floor — a fresh undated capture that matters today surfaces today; (c) the confidence floor — recovered captures carry no confidence score and would otherwise never surface here; (d) the kind ≠ task filter — a meeting-linked task renders with the self-commitment action set (`prep deep work` / `push to [date]` / `resolved` / `snooze 3d` / `add to my list`), never a chase draft. Everything else holds: closed/dismissed/suppressed items never enter (they are not in `opens`), and the surface-preference filter still applies.
+**Exemptions (deliberate, all four):** the meeting_today bucket bypasses (a) the due-date requirement — undated items render "no date set", never a blank; (b) the `aging_undated` ≥ 7-day floor — a fresh undated capture that matters today surfaces today; (c) the confidence floor — recovered captures carry no confidence score and would otherwise never surface here; (d) the chase-eligibility filter — a meeting-linked DELEGATED task (owner ≠ M, kind task) renders with the manual set (`draft` / `mark received` / `snooze 3d` / `add to my list`), never a pre-staged chase draft. The surface partition itself is NOT bypassed (CTS1): owner-me meeting matches belong to My Plate's meeting bucket. Everything else holds: closed/dismissed/suppressed items never enter (they are not in `opens`), and the surface-preference filter still applies.
 
 **pending_review rows render as a confirm, not a chase:** tag `(captured from a chat — confirm it's yours)` and use the REVIEW action cluster (`confirm` / `not relevant` / `add to my list`, dispatching exactly like Phase 3.6's rows). Never pre-stage a chase email on an unconfirmed item — no auto-email on a guessed owner.
 
 **Caps:** meeting_today takes priority INSIDE the existing 7-item total cap (cap 3 meeting_today rows per fire, soonest meeting first; the date buckets fill the remainder). No double-surfacing: an item already rendering in meeting_today is excluded from the date buckets below for this fire. Header counts are untouched — this bucket changes SURFACING only.
 
-Then split surviving commitments into TWO directions × THREE buckets:
+Then split the surviving `waiting_on` rows into THREE date buckets (the owner-me directions are gone from this chat — CTS1; My Plate owns them):
 
-## Direction A: YOU OWE (`owner_id == M's person_id`, read via `_commitment_field`)
+## WAITING ON (`partition["waiting_on"]` — owner present and ≠ M; plus `owner_id null` with non-empty `data.owner_external`)
 
-- **`overdue`** — `due` past today (≥ 1 day late). Sort by aging, oldest first. Cap top 5.
-- **`due_near`** — `due` is today through today + 3 days. Sort by due date soonest. Cap top 5.
-- **`aging_undated`** — `due` empty/null AND commitment logged ≥ 7 days ago. Sort by age, oldest first. Cap top 5.
-
-## Direction B: OWED TO YOU (`owner_id != M's person_id` OR `owner_id is null` with non-empty `data.owner_external`)
-
-Filter additionally: M is requester (`requester_id == M's person_id`) OR (`requester_id` empty AND M was attendee at the meeting where commitment was made — check `source_event_seq`). All field reads in this direction also go through `_commitment_field` for the same dual-shape reason.
+Filter additionally: M is requester (`requester_id == M's person_id`) OR (`requester_id` empty AND M was attendee at the meeting where commitment was made — check `source_event_seq`). All field reads go through `_commitment_field` for the same dual-shape reason.
 
 **v2.14.19+ reachability split — DO NOT exclude unreachable owners; surface them as a different action shape.** Two sub-buckets:
 
 ### B-reachable: owner has entity record + email in entities.json
-Same date buckets (`overdue`, `due_near`, `aging_undated`). Renders with the standard OWED TO YOU action set: `["N send", "N edit then send", "N draft", "N follow-up call", "N mark received", "N escalate to memo", "N skip"]`. Pre-staged chase email lives in the widget.
+Same date buckets (`overdue`, `due_near`, `aging_undated`). Renders with the standard WAITING ON action set: `["N send", "N draft", "N follow-up call", "N mark received", "N escalate to memo", "N snooze 3d"]`. Pre-staged chase email lives in the widget.
 
 **Learned chase cadence (Phase 6 Loop 6).** When surfacing an OWED-TO-YOU item for chase, honor the per-relationship-type chase window learned by insight-generator's Pass 7b instead of the flat 7-day default: `from chase_policy import load_chase_policy, get_chase_window` → `chase_days, escalate = get_chase_window(policy, <owner's org relationship_type>)`. An `aging_undated` item from a relationship that "goes quiet 40% of the time" surfaces to chase at day 3 rather than 7; after `escalate` silent chases, the item's annotation suggests a call (`follow-up call`). Missing store → the default `(7, 3)`, so behavior is unchanged until the CEO approves a policy. This tunes WHEN a chase is offered; it never auto-sends.
 
@@ -497,7 +501,7 @@ Per M's v2.14.18 testing: an owed-to-you commitment due today with no contact in
 - **`due_near`** — same. Cap top 5.
 - **`aging_undated`** — same. Cap top 5.
 
-**Total cap across all buckets — meeting_today plus the 6 date buckets (× 2 reachability sub-buckets where applicable): 7 items per fire (v3.13.7+).** meeting_today rows count toward the 7 and take priority (max 3, see above). Empty buckets are omitted entirely (no "0 items" placeholders).
+**Total cap across all buckets — meeting_today plus the 3 date buckets (× 2 reachability sub-buckets where applicable): 7 items per fire (v3.13.7+, CTS1: this chat's cap is now all owed-to-M rows — the owner-me direction has its own budget on My Plate).** meeting_today rows count toward the 7 and take priority (max 3, see above). Empty buckets are omitted entirely (no "0 items" placeholders).
 
 **Why 7, not 16 — a DESIGN cap (EW2+T reframe):** the cap originated as the v3.13.7 transmission-ceiling fix (Bug #14 — an 11-item, 81KB widget silently failed the byte relay on every fire). The widget_code transport with pagination (§ Transport) removed the byte ceiling, but the 7-cap SURVIVES on design grounds: the daily chat is an attention surface, and 7 chase-ready items is what a CEO actually processes in one sitting. Do not raise the cap because "the transport can carry more" — full-set review is commitment-triage's job, not the daily chat's.
 
@@ -533,37 +537,39 @@ The 0.30–0.55 MEDIUM matches (from apply-choices sends, the 2.5/2.6/2.7 pre-re
 
 Both closers retire the proposal implicitly (append-only — the original `commitment_review_proposed` event is never touched). Pulse keeps its own CRU-review pass — the two surfaces read the same `load_open_review_proposals` set, and whichever the user answers first wins (the other stops showing it).
 
-# Phase 3.8 — WAITING ON (Tue/Thu fires only — W5, enabled Phase 4 2026-07-02)
+# Phase 3.8 — NUDGED — NO REPLY (Tue/Thu fires only — W5, enabled Phase 4 2026-07-02; renamed from "WAITING ON" by CTS1 §4.1)
+
+**Naming (CTS1 §4.1 — mandatory rename):** this section was titled "WAITING ON" when the chat was "Commitments". Now the whole CHAT is named Waiting On, so the old section title would make one phrase mean two things in one product. This section is the quiet chased tail — "nudged, no reply" — and renders under that name. Never render a section titled "WAITING ON" inside the Waiting On chat.
 
 The reliability spec's W5 waiting-on chase, riding this orchestrator's Tue/Thu fires (nothing new registers; the gates it waited on — the Stage D kinds split and Stage E counterparty receipts — are merged). It rescues the "you nudged, they went quiet" set: items the user already chased that the daily filters have stopped surfacing.
 
 **Run only when the fire's machine-local weekday is Tuesday or Thursday.** On other days, skip this phase entirely — no section, no mention.
 
-**Qualification (substrate-only — no connector fetch in this phase):** an OWED TO YOU item from Phase 3's set qualifies when ALL hold:
+**Qualification (substrate-only — no connector fetch in this phase):** a WAITING ON item from Phase 3's set qualifies when ALL hold:
 1. Effective `data.kind != "task"` (same Stage D filter as everything above) and the item is still open after the 2.5/2.6/2.7 pre-render scans. Still-open is the no-reply proxy: if the counterparty had replied or delivered, the inbound leg (Phase 2.6, cumulative across every prior weekday fire) or a `mark received` would have closed it or queued a review proposal.
 2. A prior outbound touch exists: an `outreach_sent` event whose `source_skill` normalizes to `commitments` (via `source_skill_compat.normalize_source_skill`) targeting this commitment_id — OR a `sent_reconcile`-attributed outbound naming its counterparty (Stage E `data.counterparty_id` / `counterparty_name` receipts identify the counterparty; skip items with no resolvable counterparty).
 3. That latest outbound touch is ≥ 3 weekdays old (machine-local, same clock as Phase 2.9).
-4. The item is NOT already rendering as an actionable row in today's OWED TO YOU sections (no double-surfacing — WAITING ON exists for the quiet tail, not to echo the main list), and no `chat_dismissal` for it is live.
+4. The item is NOT already rendering as an actionable row in today's main WAITING ON sections (no double-surfacing — NUDGED — NO REPLY exists for the quiet tail, not to echo the main list), and no `chat_dismissal` for it is live.
 
-**Render:** one extra section after OWED TO YOU, title `⏳ WAITING ON — nudged, no reply`, cap 5 (oldest outbound first; the rest ride the next Tue/Thu fire). Each item: title + counterparty + one plain-English age line ("you nudged Sam last Tuesday — nothing back"). Actions reuse the standard OWED TO YOU cluster verbatim — `send` / `edit then send` / `draft` on a pre-staged nudge email + `mark received` + `skip` — NO new verbs (`CANONICAL_ACTIONS` untouched; apply-choices dispatches these through the existing commitments handlers on this orchestrator's `src`).
+**Render:** one extra section after the main date buckets, title `⏳ NUDGED — NO REPLY`, cap 5 (oldest outbound first; the rest ride the next Tue/Thu fire). Each item: title + counterparty + one plain-English age line ("you nudged Sam last Tuesday — nothing back"). Actions reuse the standard WAITING ON cluster verbatim — `send` / `draft` on a pre-staged nudge email + `mark received` + `snooze 3d` — NO new verbs (`CANONICAL_ACTIONS` untouched; apply-choices dispatches these through the existing commitments handlers on this orchestrator's `src`).
 
 **The nudge draft** goes through email-writer's lazy-draft path exactly like Phase 7's chase drafts, with the Phase 5 severity tier bumped one level (a re-nudge is never `friendly`), and the repeat-chase suppression in Phase 5 applies unchanged — a WAITING ON send writes the same `outreach_sent` receipt, which resets this phase's 3-weekday clock.
 
 **Counts:** WAITING ON items are already inside `count_commitments`' totals (they're open owed-to-you items) — the section changes SURFACING only; never add them to the header numbers twice.
 
-# Phase 4 — Group by recipient (OWED TO YOU only)
+# Phase 4 — Group by recipient
 
-Within OWED TO YOU, if a single owner owes multiple things in the same bucket, merge into ONE chase email listing all items. Subject: "Quick check on a few things" (the old "Circling back..." subject is on the universal banned-phrase list — the voice gate now reads subjects too). Body lists each. Singletons stay single-subject. (This grouping does not happen in YOU OWE — each thing M owes is its own status email.)
+If a single owner owes multiple things in the same bucket, merge into ONE chase email listing all items. Subject: "Quick check on a few things" (the old "Circling back..." subject is on the universal banned-phrase list — the voice gate now reads subjects too). Body lists each. Singletons stay single-subject. (My Plate never groups — each thing M owes is its own status email; that rule lives in orchestrator-my-plate.md now.)
 
 # Phase 4.5 — Multi-counterparty fan-out (MC1)
 
 A single commitment can name N counterparties — "send the deck to the board" is owed to three people at once (`data.counterparty_ids` carries the roster; `data.counterparty_id` stays the primary). Do NOT chase or close it as one blob:
 
 1. **Outstanding set:** call `commitment_parties.outstanding_counterparties(commitment)` — the roster minus everyone already received (`data.received_from` / `data.received_from_names`, folded onto the projection by the loader). Render **one row per OUTSTANDING counterparty**, grouped per person exactly like Phase 4's per-recipient grouping (received counterparties simply don't appear — they've delivered). A single-counterparty commitment has exactly one entry, so this reduces to today's behavior with zero change.
-2. **Per-person verb:** each fan-out row carries `mark received from [name]` (verb_taxonomy `mark received from [name]` → `commitment_state.mark_partial_received`), with the counterparty id embedded on the row so apply-choices dispatches statelessly. A YOU-OWE multi-counterparty item drafts one status note per outstanding recipient; an OWED-TO-YOU one drafts one nudge per outstanding recipient. Never chase a counterparty already in `received_from`.
+2. **Per-person verb:** each fan-out row carries `mark received from [name]` (verb_taxonomy `mark received from [name]` → `commitment_state.mark_partial_received`), with the counterparty id embedded on the row so apply-choices dispatches statelessly. An owed-to-M multi-counterparty item drafts one nudge per outstanding recipient (the owner-me fan-out — one status note per outstanding recipient — lives on My Plate now, CTS1). Never chase a counterparty already in `received_from`.
 3. **Closure PROPOSAL, never auto-close:** when the projection carries `data.all_counterparties_received: true` (every counterparty is in), render a single "everyone's received — close it?" row (the `mark done` / `resolved` verb) INSTEAD of the fan-out. The item stays open until the user clicks; nothing here auto-closes. The CRU pre-render scans (2.5/2.6/2.7) already record per-person receipts rather than whole-closing a multi-counterparty item (`match_*` returns `recommendation: "partial_received"` with `matched_counterparty_ids` — dispatch each through `mark_partial_received`, never `close_commitment`).
 
-# Phase 5 — Apply severity tier (OWED TO YOU only, auto-tone by aging)
+# Phase 5 — Apply severity tier (auto-tone by aging — every chase row in this chat)
 
 | Aging | Tier | Voice tilt |
 |---|---|---|
@@ -573,22 +579,13 @@ A single commitment can name N counterparties — "send the deck to the board" i
 
 Pass tier to email-writer as voice directive. Repeat-chase escalation: scan events.jsonl for prior `outreach_sent` whose `source_skill` normalizes to `commitments` (via `source_skill_compat.normalize_source_skill` — matches the bare `commitments` form AND legacy `cr-commitments` / `cr-commitment-chase` history in workspaces that predate the v2.14.27 rename) targeting same commitment_id within last 14 days. If found → bump tier up one level. Prevents identical chase repetition when nothing's moving.
 
-YOU OWE direction has no tier — voice tilt is fixed: "confident + concrete + brief — minimal apology, no grovel, focus on the path forward."
-
-# Phase 6 — Classify YOU OWE recipients
-
-For each YOU OWE commitment:
-- **External recipient** (data.requester_id is set + person exists in entities.json + has email): standard status email path.
-- **Self-commitment** (data.requester_id empty OR matches M's person_id): no email, just reminder. Mark with ⚙ marker.
-- **Producible deliverable** — heuristic: title contains "deck", "memo", "draft", "doc", "plan", "review" → highlight `prep deep work` as the recommended first action.
+(CTS1: the owner-me direction's fixed status-email voice tilt and the Phase 6 recipient classification moved to `orchestrator-my-plate.md` with the rows they governed.)
 
 # Phase 7 — Draft emails (lazy — no Gmail writes yet)
 
 Per `EMAIL_DRAFT_PROTOCOL.md` §1: generate draft TEXT only. Show inline in chat. NO Gmail draft creation at fire time.
 
-For each external YOU OWE: run `email-writer` with the YOU OWE voice tilt. Brief acknowledgment, new ETA (default: this Friday EOD if no specific date in M's recent context), one-line reason if events.jsonl shows clear cause.
-
-For each external OWED TO YOU (or grouped): run `email-writer` with the tier voice directive.
+For each chase-eligible row (or grouped set): run `email-writer` with the Phase 5 tier voice directive. Delegated-task rows (owner ≠ M, kind task — Phase 3 kind filter) get NO pre-staged draft; their `draft` verb composes the manual nudge on demand at dispatch time.
 
 # Phase 8 — Memory updates (silent per Rule 9)
 
@@ -599,12 +596,12 @@ Append to events.jsonl:
 ```python
 from receipts import log_receipt
 log_receipt(
-    WORKSPACE_ROOT, "commitments",
+    WORKSPACE_ROOT, "waiting-on",  # CTS1 — receipts key on the TASK id; events keep source_skill='commitments'
     fired_via=lateness["receipt_fired_via"],  # from Phase 2.9 — manual | scheduled | catchup; never guess it
     surfaced=n_surfaced,
     duration_ms=elapsed_ms,
     late_tier=lateness["tier"] if lateness["tier"] in ("note", "degrade") else None,
-    extra_data={"items_drafted_text": {...per direction...}, "errors": [],
+    extra_data={"items_drafted_text": {...}, "errors": [],
                 "telemetry": {...}},
 )
 ```
@@ -650,33 +647,33 @@ Specifically forbidden — zero tolerance:
 
 **Why this contract exists:** 2026-05-07 cr-commitments fire visibly broken — Edit-then-send and Add-context buttons selected gold but no textareas opened. Two days of misdiagnosis chasing CSS / scroll / focus issues (v2.14.30 shipped defensive visibility hardening based on flawed premise). Cowork's structural diagnostic finally caught it: the agent post-minified the renderer's output and dropped 4/11 items' input wrappers. Renderer was correct; the bypass dropped wrappers silently. Same anti-pattern as v2.14.18 (empty-state hand-built widget). `validate_rendered_widget` is the structural defense — it makes this class of bug impossible to ship without raising loudly.
 
-**v2.13.0 enforcement:** `CanonicalActionError` raised pre-render → fix the data view's actions to use canonical verbs (`prep deep work`, `send`, `edit then send`, `draft`, `draft` (consolidated v2.14.4+; was previously two separate verbs), `push to [date]`, `resolved`, `mark received`, `mark received all`, `follow-up call`, `escalate to memo`, `skip` — see `CANONICAL_ACTIONS` in `chat_output_renderer.py`). `LeakDetectedError` raised post-render → strip forbidden patterns from headers / context_tags / body_lines / sub-item summaries. Both blocking; no silent fallback.
+**v2.13.0 enforcement:** `CanonicalActionError` raised pre-render → fix the data view's actions to use canonical verbs (`prep deep work`, `send`, `draft` (consolidated v2.14.4+; was previously two separate verbs), `snooze 3d`, `push to [date]`, `resolved`, `mark received`, `mark received all`, `follow-up call`, `escalate to memo`, `skip` — see `CANONICAL_ACTIONS` in `chat_output_renderer.py`; `edit then send` is NOT canonical since FB-17 — emitting it raises this error). `LeakDetectedError` raised post-render → strip forbidden patterns from headers / context_tags / body_lines / sub-item summaries. Both blocking; no silent fallback.
 
 **Empty-state rule (v2.14.19+ — REQUIRED, no exceptions):** if all 6 buckets (× 2 reachability sub-buckets) are empty after filtering, do NOT improvise an "all clear" widget by hand-typing HTML. Build a data_view with `widget_mode: "all_clear_summary"` and pass it to `render_chat_output_widget()` like any other state. The renderer has a first-class branch for this mode that produces counter cards + summary callout + read-only WHAT'S ON THE BOOKS list. Shape:
 
 ```python
 data_view = {
     "widget_mode": "all_clear_summary",
-    "header": "Commitments — nothing needs your attention this morning",
+    "header": "Waiting On — nobody owes you anything that needs a nudge this morning",
     "sub_header": f"{day_full}, {month_short} {day_num} · {fire_time} check",
     "counters": [
         # v4.5.2 R4: values verbatim from counts["headline"] (n_open_total =
         # headline["total"], directions = headline["you_owe"]/["owed_to_you"]).
         # Unowned/unconfirmed items are in Open total but neither direction —
-        # never fold them into Owed to you.
+        # never fold them into Waiting on. The "On your plate" tile keeps the
+        # cross-surface parity visible (F-56) — its ROWS live on My Plate.
         {"label": "Open total", "value": n_open_total},
-        {"label": "You owe", "value": n_you_owe},
-        {"label": "Owed to you", "value": n_owed_to_you},
+        {"label": "Waiting on", "value": n_owed_to_you},
+        {"label": "On your plate", "value": n_you_owe},
         {"label": "Needing action", "value": n_needing_action},  # MUST include B-unreachable items per the v2.14.19 reachability rule above
         # v4.6.0 MC2: append {"label": "Stuck", "value": n_stuck} ONLY when
         # headline carries the key and it is > 0 — an all-clear morning with
         # stuck items should still show the honest number.
     ],
-    "summary_line": "Nothing overdue, nothing due in the next 3 days, and nothing has been sitting open long enough to be aging. The N things on the books were either recently captured or have downstream dates further out.",
+    "summary_line": "Nothing overdue, nothing due in the next 3 days, and nothing has been sitting open long enough to be aging. The N things others owe you were either recently captured or have downstream dates further out.",
     "tracked_items": [
-        # Read-only line list — direction + title + due. NO action buttons.
-        {"direction": "You owe", "title": "Send Sloan the follow-up email", "due": "today"},
-        {"direction": "Owed to you", "title": "Rakesh — 2-3 redacted prior EB-5 packets", "due": "today"},
+        # Read-only line list — this chat's partition only. NO action buttons.
+        {"direction": "Waiting on", "title": "Rakesh — 2-3 redacted prior EB-5 packets", "due": "today"},
         # ...
     ],
     "footer": None,  # NEVER add bottom buttons. The agent's instinct to add Show all open / Add email for X / Prep deep work: Y is what produced the v2.14.18 hand-built widget. Empty-state has no buttons.
@@ -684,12 +681,38 @@ data_view = {
 from widget_transport import render_and_persist
 transport = render_and_persist(data_view=data_view, wrapper="fragment",
                                persist_dir="<WORKSPACE>/_hq/.system/widgets",
-                               name_hint="commitments")
+                               name_hint="waiting-on")
 # Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — same pipeline
 # as the standard widget (EW2+T, § Transport).
 ```
 
 **Why this rule exists:** in v2.14.18 the agent fired this orchestrator with 0 items qualifying after the bucket filter, judged the canonical empty-state as worse UX than a richer custom card, and bypassed the renderer entirely. Result: a hand-typed widget with hardcoded "Needing action: 0" counter, four model-improvised bottom buttons (`Show all open`, `Add email for Sloan`, `Add Rakesh as contact`, `Prep deep work: EB-5`), and zero validators run. Three contracts broken at once (Rule 1 widget format, Rule 5 canonical actions, Rule 19 data shape) — the enforcement chain is structurally unable to catch a renderer bypass because the validators run AT render time. The fix is to make the canonical empty-state look good enough that the agent has no incentive to improvise. NEVER hand-build the empty-state widget, even if you think the canonical version is mid-tier UX. If the canonical UX feels wrong, file a follow-up to improve `_render_all_clear_summary` in `chat_output_renderer.py` — do not improvise around it.
+
+**One-command driver (FB-15) — the deterministic core in ONE call.** The
+partition, the header counts, the Delegated section, and the Needs-a-quick-confirm
+tail are all deterministic, so a single driver invocation builds them,
+renders + persists the page, and — with `--fired-via` — writes the surface's
+`waiting-on` `pack_run` receipt INSIDE the same call (FB-7; render and receipt
+can never be split). You supply only the connector-dependent part: the
+pre-staged **chase drafts** (email-shaped rows, composed via email-writer's
+lazy-draft path — Phase 7), passed as `--chase-json`, exactly as staff-meeting
+passes `--moves-json`.
+
+```bash
+python3 shared/scripts/surface_drivers.py waiting-on \
+    --workspace "$WORKSPACE" [--page N] [--chase-json <chase-rows.json>] \
+    --fired-via "<the Phase 2.9 receipt_fired_via>"
+```
+
+**`--fired-via` is MANDATORY on the page-1 call — it is the receipt (FB-7).**
+Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as
+`widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is
+the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON.
+Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3
+guard window never double-receipts. The manual `python3 -c` assembly below
+remains valid for callers that need to hand-shape sections the driver does not
+build (e.g. the meeting-relevance bucket or the Tue/Thu nudged-no-reply tail);
+those still go through the same `render_and_persist` chokepoint.
 
 **Step 2 — build data_view, render widget HTML, post via show_widget (v2.10.9+):**
 
@@ -699,48 +722,37 @@ import sys
 sys.path.insert(0, "shared/scripts")
 from widget_transport import render_and_persist
 
-# Build sections — one per direction × bucket combo. Empty buckets omitted.
-# v2.14.38+ — SECTION ORDER: OWED TO YOU first, then YOU OWE. Per M's
-# 2026-05-07 ask: "for commitments show those owed to you first then the
-# ones you owe." The OWED TO YOU items are higher-leverage for the user's
-# day (other people's deliverables blocking M's projects) and surface the
-# "who's behind on what they promised me" pattern that feeds M's executive
-# attention. YOU OWE comes second — those are M's own outbound commitments,
-# typically already on his radar from prior fires.
+# Build sections — CTS1: this chat renders the Waiting On partition only
+# (confirm tail first, then meeting_today, then the date buckets, then the
+# Tue/Thu NUDGED — NO REPLY tail). Empty sections omitted.
 sections = []
-if owed_to_you_buckets:
-    sections.append({"title": "↙ OWED TO YOU", "count": ..., "items": ...})
-if you_owe_buckets:
-    you_owe_section_items = []
-    for bucket_label, items_in_bucket in you_owe_buckets:  # ("Overdue", [...]), etc.
-        # Items get appended directly with no inner section split — bucket label
-        # is rendered as part of the item's context_tag instead, OR you can build
-        # multiple sections (one per bucket) within YOU OWE
-        ...
-    sections.append({"title": "↗ YOU OWE", "count": len(all_you_owe), "items": you_owe_section_items})
+if confirm_rows or promo_rows or person_rows:
+    sections.append({"title": "NEEDS A QUICK CONFIRM", "count": ..., "items": ...})
+if waiting_on_rows:
+    sections.append({"title": "↙ WAITING ON", "count": ..., "items": ...})
+if nudged_no_reply_rows:  # Tue/Thu only — Phase 3.8
+    sections.append({"title": "⏳ NUDGED — NO REPLY", "count": ..., "items": ...})
 
-# v2.12.0+ direction icons: ↗ outbound (you owe) / ↙ inbound (owed to you).
-# Sam's Apr 30 ask: "I'd make this UI a little easier to follow."
-# Section titles render in brand-gold monospaced caps via the widget CSS;
-# the directional arrow prefix gives an immediate visual cue for which
-# direction the items below flow.
+# ↙ inbound arrow retained (v2.12.0 visual language — these items flow TO M).
+# Section titles render in brand-gold monospaced caps via the widget CSS.
 
 data_view = {
     "widget_mode": "all_batch_widget",
-    "source_skill": "commitments",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
+    "source_skill": "commitments",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly. CTS1: kept as 'commitments' DELIBERATELY — the dispatch registry, verb surfaces, and event history all key on the commitments family; the TASK id (waiting-on) is a scheduler/receipts concern, not a dispatch concern.
     # v4.5.2 R4 + v4.6.0 MC2: all numbers verbatim from counts["headline"] —
-    # never fold unowned/unconfirmed into a direction. Omit a bucket segment
-    # when it is 0 (never pad); order matches section order: owed to you first
-    # (v2.14.38+). "stuck" is the real movement metric (MC2) — omit the
-    # segment entirely when headline has no stuck key (not computed ≠ 0).
-    "header": f"Commitments — {n_total} total open · {n_owed_to_you} owed to you · {n_you_owe} you owe · {n_unowned} unowned · {n_unconfirmed} unconfirmed · {n_stuck} stuck",
+    # never fold unowned/unconfirmed into a direction. The header still shows
+    # ALL FIVE headline buckets (F-56: identical numbers on every surface —
+    # the split changes which ROWS render here, never the numbers). "on your
+    # plate" = headline["you_owe"] — the My Plate chat renders those rows.
+    # Omit a zero segment (never pad); omit stuck when headline has no key.
+    "header": f"Waiting On — {n_owed_to_you} waiting on others · {n_you_owe} on your plate (see My Plate) · {n_unowned} unowned · {n_unconfirmed} unconfirmed · {n_total} total open · {n_stuck} stuck",
     "sections": sections,
     "quick_read": quick_read,           # 1-3 sentences when N>2 and clustering signal exists
 }
 
 transport = render_and_persist(data_view=data_view, wrapper="fragment",
                                persist_dir="<WORKSPACE>/_hq/.system/widgets",
-                               name_hint="commitments")
+                               name_hint="waiting-on")
 # EW2+T (F-15): the transport runs the full validator chain (canonical
 # actions, data shape, leak scan, wrapper contract) and persists the sealed
 # render. Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — never
@@ -754,22 +766,25 @@ reads its presentation knobs via `get_config(WORKSPACE, "commitments", DEFAULTS)
 
 ```python
 DEFAULTS = {
-    "group_by": "person",      # person (group OWED-TO-YOU by recipient) | project
-    "chase_tone": "friendly",  # friendly | direct (the YOU-OWE draft tone in Phase 7)
+    "group_by": "person",      # person (group waiting-on rows by the person who owes) | project
+    "chase_tone": "friendly",  # friendly | direct (the status-draft register My Plate's Phase 7 twin reads)
 }
 ```
 
-`group_by` drives the Phase 4 grouping; `chase_tone` sets the Phase 7 draft register. On the FIRST
-fire only (`not is_configured(WORKSPACE, "commitments")`): `save_skill_config(WORKSPACE,
-"commitments", DEFAULTS)` BEFORE rendering, then append a **"Make this yours"** section at the
-BOTTOM of `sections` carrying two fr-items — `fr1` group-by (person/project) and `fr2` chase-tone
-(friendly/direct) — each rendered as the documented current-state fixed-option row (the fr-item
-preselect exception in `shared/CHAT_ACTION_WIDGET.md`). A tap emits `{n:"fr1", action, sub?}` →
-apply-choices routes it to `save_skill_config(WORKSPACE, "commitments", cfg, is_reconfigure=True,
-origin="first_fire_override")`. The "Make this yours" section renders exactly once ever
-(`is_configured` gate). This is the orchestrator fr-item transport (no second surface — resolves
-MUST-NOT rule 5). Freeform tune ("group by project" / "chase people more directly") maps to the
-same two keys. Cadence/timing of this scheduled fire is `change-schedule`, not tune.
+`group_by` drives the Phase 4 grouping; `chase_tone` is read by orchestrator-my-plate.md for its
+status drafts (CTS1: the config store stays under the `"commitments"` key — ONE knob set for the
+commitment family, both surfaces read it; a re-keyed store would orphan every already-configured
+workspace). On the FIRST fire only (`not is_configured(WORKSPACE, "commitments")`):
+`save_skill_config(WORKSPACE, "commitments", DEFAULTS)` BEFORE rendering, then append a
+**"Make this yours"** section at the BOTTOM of `sections` carrying two fr-items — `fr1` group-by
+(person/project) and `fr2` chase-tone (friendly/direct) — each rendered as the documented
+current-state fixed-option row (the fr-item preselect exception in `shared/CHAT_ACTION_WIDGET.md`).
+A tap emits `{n:"fr1", action, sub?}` → apply-choices routes it to `save_skill_config(WORKSPACE,
+"commitments", cfg, is_reconfigure=True, origin="first_fire_override")`. The "Make this yours"
+section renders exactly once ever (`is_configured` gate) — and only on ONE surface: this chat owns
+the fr-items; My Plate never re-renders them. Freeform tune ("group by project" / "chase people
+more directly") maps to the same two keys. Cadence/timing of this scheduled fire is
+`change-schedule`, not tune.
 
 **Step 3 — Post the chat-links section (v2.12.0+):**
 
@@ -819,32 +834,9 @@ For Granola-sourced commitments (`source_ref` starts with `granola:`), the equiv
 
 Self-commitments and undated items genuinely have no source thread → no `original_thread` field, no `<details>` block. The chat output's "Sources" section at the end of the turn carries the `(self-commitment, logged <date>)` provenance instead of polluting every item with a content-empty Originally line.
 
-**Per-item shape, YOU OWE (direction A):**
+(CTS1: the YOU OWE and Self-commitment per-item shapes moved to `orchestrator-my-plate.md` with the rows they describe.)
 
-```python
-{
-    "n": 1,
-    "icon": None,                           # commitments items don't use envelope/calendar icons; the bucket label carries meaning
-    "name": "Sam",                       # recipient name (resolved from person_NNN)
-    "subject": "Send Q2 deck",              # commitment title
-    "context_tag": "committed Apr 12, 16 days overdue",
-    "original_thread": {                                # v2.14.36+ MANDATORY when source_ref exists
-        "author": "Sam Sample <sam@example.com>",
-        "date": "Apr 12, 9:43 AM",
-        "subject": "Q2 deck — original ask",
-        "body": "Mira — can you have the Q2 deck refreshed by end of next week? I want to pull margin recovery in earlier...",
-        "url": "<the connector-returned thread URL>",
-    },
-    "metadata": [                                       # v2.14.36+ DROPPED ("Originally", ...) — original_thread carries it
-        ("To", "sam@example.com"),
-        ("Subject", "Q2 deck: status"),   # outbound subjects are dash-free (S3 subject gate)
-    ],
-    "body_lines": [...],                    # email-writer's draft
-    "actions": ["1 send", "1 edit then send", "1 draft", "1 push to [date]", "1 prep deep work", "1 resolved", "1 snooze 3d", "1 add to my list"],  # v2.14.38+ — added `snooze 3d` and `add to my list` to standardize the deferral cluster across all daily-loop surfaces. v2.14.28: Skip dropped (functionally equivalent to no-action since the daily fire resurfaces unhandled items).
-}
-```
-
-**Per-item shape, OWED TO YOU (direction B):**
+**Per-item shape, WAITING ON:**
 
 ```python
 {
@@ -864,7 +856,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
         ("Subject", "NetSuite mapping: timing"),   # dash-free (S3 subject gate)
     ],
     "body_lines": [...],
-    "actions": ["6 send", "6 edit then send", "6 draft", "6 follow-up call", "6 mark received", "6 escalate to memo", "6 snooze 3d", "6 add to my list"],  # v2.14.38+ — standardized deferral cluster (replaces `skip`).
+    "actions": ["6 send", "6 draft", "6 follow-up call", "6 mark received", "6 escalate to memo", "6 snooze 3d", "6 add to my list"],  # v2.14.38+ — standardized deferral cluster (replaces `skip`).
 }
 ```
 
@@ -883,7 +875,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
         {"id": "7b", "summary": "Margin model (committed Apr 12)", "actions": ["7b mark received", "7b not relevant", "7b add to my list"]},
         {"id": "7c", "summary": "Partner-tier proposal (committed Apr 18)", "actions": ["7c mark received", "7c not relevant", "7c add to my list"]},
     ],
-    "actions": ["7 send", "7 edit then send", "7 draft", "7 mark received all", "7 snooze 3d", "7 add to my list"],  # v2.14.38+ — parent gets the daily-loop deferral cluster; sub-items get a tighter set (mark received / not relevant / add to my list — `snooze 3d` per sub-item is noisy when the parent email is the action).
+    "actions": ["7 send", "7 draft", "7 mark received all", "7 snooze 3d", "7 add to my list"],  # v2.14.38+ — parent gets the daily-loop deferral cluster; sub-items get a tighter set (mark received / not relevant / add to my list — `snooze 3d` per sub-item is noisy when the parent email is the action).
 }
 ```
 
@@ -905,26 +897,12 @@ Sub-items render as:
 
 (v2.10.9–v2.12.3 hid the summary; v2.12.4 brings it back. The earlier "redundant duplication" concern was about repeating LONG bullet text below an email body that already had it; the v2.12.4 fix is to make summaries TERSE — single noun phrase, ≤ 8 words — so they're scannable shortcuts, not duplicate prose.)
 
-**Self-commitment (no email recipient):**
-
-```python
-{
-    "n": 4,
-    "icon": "⚙",
-    "name": "Self",
-    "subject": "Refresh Qualiphy data pull",
-    "context_tag": "logged Mar 9, 50 days ago",
-    "actions": ["4 prep deep work", "4 push to [date]", "4 resolved", "4 snooze 3d", "4 add to my list"],  # v2.14.38+ — `mark done` renamed to `resolved` for verb consistency across all surfaces (per M's 2026-05-07 simplification ask). `snooze 3d` + `add to my list` standardize the deferral cluster.
-}
-```
-
 **Pre-build resolution rules (your job, BEFORE calling renderer):**
 - Resolve every `person_NNN` / `org_NNN` to canonical name in name + body_lines + context_tag — and the name is the RESOLVED record's spelling, never a transcript/ASR spelling (F-50 P2b; `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names)
 - Subject fallback per Rule 12 — never ship blank subjects
 - Every OUTBOUND draft subject passes the subject voice gate (v4.6.1 S3): `printf '%s' "$SUBJECT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context subject` — no dashes as punctuation, no banned phrases, no vocabulary words (F-47 P2d's em-dash subject shipped from THIS surface). The inbound `original_thread.subject` stays verbatim — never rewrite the sender's own subject.
 - Source thread → `original_thread` field (v2.14.36+ MANDATORY when `source_ref` exists). Mirror the inbox-triage pattern. Drop the legacy inline `("Originally", ...)` metadata key — the renderer no longer paints it.
-- For producible deliverables (title contains "deck", "memo", "draft", "doc", "plan", "review"), append `← recommended` to the `annotations` array on the item — renderer appends it to the first line
-- For grouped items in YOU OWE direction: do NOT group — each item M owes is its own status email (only OWED TO YOU groups when one owner has multiple things)
+- Grouping applies only when one owner owes multiple things (Phase 4) — never invent groups across owners
 
 **No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the transport (`render_and_persist`); relay its page bytes (`transport["html"]`) as `widget_code` — the persisted render is sealed.
 
@@ -973,39 +951,30 @@ After all items render, append a `Sources:` section listing every connector sour
 
 The action surface is a `show_widget`-rendered button group per item, with per-item selections accumulating in widget local state and one "Apply all" submission at the end. The Apply submission fires `apply choices: [...]` as one consolidated `sendPrompt`, which the `apply-choices` skill catches and dispatches through the reply handlers below.
 
-**Action sets per direction (the buttons rendered in the widget, v2.14.38+ — standardized deferral cluster):**
+**Action sets (the buttons rendered in the widget, v2.14.38+ — standardized deferral cluster; CTS1: this chat renders the waiting-on clusters only — the owner-me clusters live in orchestrator-my-plate.md):**
 
-YOU OWE actions (direction A): `send`, `edit then send`, `draft`, `push to [date]`, `prep deep work`, `resolved`, `snooze 3d`, `add to my list`. Lead with Send/Edit-then-send (primary daily-loop actions); Prep deep work moved later (deeper-dive option, not daily-loop primary). v2.14.38+: added `snooze 3d` + `add to my list` to standardize the deferral cluster across all surfaces.
+WAITING ON actions (chase-eligible rows): `send`, `draft`, `follow-up call`, `mark received`, `escalate to memo`, `snooze 3d`, `add to my list`. `edit then send` retired (FB-17 — inline body edits). Skip removed v2.14.38; `snooze 3d` + `add to my list` replace it.
 
-OWED TO YOU actions (direction B): `send`, `edit then send`, `draft`, `follow-up call`, `mark received`, `escalate to memo`, `snooze 3d`, `add to my list`. Skip removed v2.14.38; `snooze 3d` + `add to my list` replace it.
+Delegated-task rows (owner ≠ M, effective kind `task` — CTS1 §2.3): `draft` (manual nudge, composed at dispatch — no pre-staged chase), `mark received`, `snooze 3d`, `add to my list`.
 
-Self-commitment actions (no email recipient): `prep deep work`, `push to [date]`, `resolved`, `snooze 3d`, `add to my list`. v2.14.38+: `mark done` renamed to `resolved` for verb consistency across all surfaces.
-
-Display labels come from `shared/scripts/verb_taxonomy.py` (F-59 — never restate them locally): `resolved` displays **Done**, `push to [date]` displays **Later…** (t3 FB-3), the rest per their taxonomy rows. Rendering (t3 FB-4): email-shaped rows show **Send** + **Draft** one-tap buttons; commitment rows show **Done**; the tail sits in the row's `— more —` dropdown. Rows carrying `push to [date]` have their separate snooze dropdown option suppressed (the FB-3 merge — Later… covers it). Chat prose under the widget names ONLY the controls the card visibly shows, by their exact labels (t3 FB-11).
+Display labels come from `shared/scripts/verb_taxonomy.py` (F-59 — never restate them locally): `resolved` displays **Done**, `push to [date]` displays **Later…** (t3 FB-3), the rest per their taxonomy rows. Rendering (t3 FB-4, FB-17): email-shaped rows show **Send** / **Draft** / **Snooze (3 days)** one-tap buttons; commitment rows show **Done**; the tail sits in the row's `— more —` dropdown. Rows carrying `push to [date]` have their separate snooze dropdown option suppressed (the FB-3 merge — Later… covers it). Chat prose under the widget names ONLY the controls the card visibly shows, by their exact labels (t3 FB-11).
 
 Action semantics:
 
-- `prep deep work` — generates a context-loaded prompt for M to paste into a new task. Doesn't send anything; sets up a deep-work session. (Renamed v2.12.0 from `work on it` per Sam's Apr 30 confusion: *"is this for me? is this just claude talking?"*)
-- `send` — send the current draft as-is. No edit step.
-- `edit then send` — widget exposes the To/Cc/Subject/Body editor; user edits inline; Apply sends the edited body. One round. (Body-only changes don't need it — the card body is directly editable, t3 FB-10.)
-- `draft` (consolidated v2.14.4+) — one-tap button (t3 FB-4); the card body is the edit surface (t3 FB-10). Apply saves to the declared backend's Drafts.
-- `push to [date]` (YOU OWE only; displays **Later…**) — widget exposes a free-text when-input (a date or a bare number of days). Apply dispatches the t3 FB-3 auto-route (apply-choices § commitment-triage): a YOU-OWE item is the user's own, so it lands as the due-date deferral and updates the draft to mention the new date.
-- `resolved` — mark commitment fulfilled. Writes `commitment_resolved` event. Won't surface again. (Renamed v2.12.3 from `close`. v2.14.38: same verb now used for self-commitments — replaces the old `mark done`.)
-- `follow-up call` (OWED TO YOU only) — drafts a calendar-invite request for a quick 15-min sync.
-- `mark received` (OWED TO YOU only) — mark the commitment as fulfilled by the counterparty. Writes `thread_resolved` event for that commitment id.
-- `escalate to memo` (OWED TO YOU only) — fire memo-writer skill, generates a longer-form `.docx` memo when the conversation has gotten complex enough that a quick reply isn't appropriate.
-- `snooze 3d` (v2.14.38+) — fixed 3-day snooze. Writes `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Item won't re-surface in commitments until the date passes. No textarea — fixed duration per M's standardization.
+- `send` — send the current draft as-is. No edit step. (Body edits happen directly on the card, t3 FB-10; `edit then send` is retired per FB-17 — never emit it, its wire id survives only as an in-flight deprecated alias → `send`.)
+- `draft` (consolidated v2.14.4+) — one-tap button (t3 FB-4); the card body is the edit surface (t3 FB-10). Apply saves to the declared backend's Drafts. On delegated-task rows the draft is composed at dispatch (no pre-staged text).
+- `follow-up call` — drafts a calendar-invite request for a quick 15-min sync.
+- `mark received` — mark the commitment as fulfilled by the counterparty. Writes `thread_resolved` event for that commitment id.
+- `escalate to memo` — fire memo-writer skill, generates a longer-form `.docx` memo when the conversation has gotten complex enough that a quick reply isn't appropriate.
+- `snooze 3d` (v2.14.38+) — fixed 3-day snooze. Writes `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Item won't re-surface until the date passes. No textarea — fixed duration per M's standardization.
 - `add to my list` — write `commitment_to_discuss` event. Surfaces later via the `show my list` skill, grouped by counterparty.
+
+(`prep deep work`, `push to [date]`/Later… as a due-date shift, and `resolved` on the user's own items are My Plate semantics now — see orchestrator-my-plate.md. A `push to [date]` typed HERE on an owed-to-M row still auto-routes per t3 FB-3: it lands as a snooze, never a rewrite of a date the counterparty owns.)
 
 (Removed in v2.12.0: standalone `edit [change]`. Removed in v2.12.1: `edit firmer` / `edit softer`. Removed in v2.12.2: standalone `edit` — combined `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) replace it so editing always pairs with a disposition in one step.)
 
 For grouped items: each sub_item (`7a`, `7b`, `7c`) gets its own `mark received` / `not relevant` / `add to my list` button row inside the parent's group, plus the parent-level `mark received all`.
 
-For producible-deliverable YOU OWE items, append `← recommended` to the item's first line on the `prep deep work` action specifically (visual nudge).
-
-For Self-commitments, drop the `To/Subject/Body/` block. Action set (v2.14.38+): `N prep deep work`, `N push to [date]`, `N resolved`, `N snooze 3d`, `N add to my list`.
-
-If a single recipient gets multiple emails in YOU OWE direction (e.g., 2 overdue + 1 aging-undated all to Aria), append a sub-note under the SECOND occurrence: `(Note: this and item N both go to Aria — recommend folding into one email.)` This is the inline cross-item annotation pattern. Don't surface as a Quick Read — too granular for the macro block.
 
 # Phase 10 — Failure handling
 
@@ -1015,32 +984,19 @@ If Gmail MCP rate limits during email-writer runs: write what you have, surface 
 
 # Reply handling
 
-Parse `N action` (with or without period). Dispatch by direction:
+Parse `N action` (with or without period). (CTS1: the owner-me handler set — `prep deep work`, `push to [date]` as a due shift, `resolved` on the user's own items, `keep` — lives in orchestrator-my-plate.md; a typed owner-me verb landing in THIS chat still dispatches correctly because apply-choices routes on the row's embedded `data.id` and ownership, not on which chat the click came from.)
 
-## YOU OWE actions
-
-- `N prep deep work` → generate a context-loaded prompt for M to paste into his main chat (see EMAIL_DRAFT_PROTOCOL §work-on-it OR the legacy reference at `references/orchestrator-commitment-nudge.md` for prompt template — that file is tombstoned but the template content is preserved in this file's appendix below). Renamed v2.12.0 from `work on it` per Sam's Apr 30 feedback that the original label confused him as chat content vs. an action affordance.
-- `N send` → per `EMAIL_DRAFT_PROTOCOL.md` §3c "Dispatch" + "Zapier param contract", dispatch in priority order: **Zapier first if configured** (the Zapier-send tool discovered in Phase 2 — by pinned server-id / signature, per `discover_zapier_send_tool`; build the payload via `shared/scripts/zapier_send.py` `extract_latest_message_id` + `build_zapier_send_payload` — the `thread_id` param wants the LATEST MESSAGE ID, not the Gmail thread-level ID, per the v2.14.38+ contract), **native Gmail threaded** as fallback (per §3a), **standalone** as last resort. Confirm `✓ Sent (threaded) at HH:MM` (Zapier) or `✓ Sent to [name] at HH:MM` (native). Write `outreach_sent` event with `via` field set to the path used. Commitment stays open with new context.
-- `N keep` → no-op. Confirm `N status kept in Drafts.` (When user says `draft`, lazy-create the Gmail draft now.)
-- `N edit then send` (v2.12.2+, with `input` field) → replace `body_lines` with user's edited input verbatim, then dispatch through the `N send` handler with the new body. Single round.
-- `N draft` (v2.14.4+ consolidated verb; `input` field carries the multi-field edit) → replace `body_lines` (and any edited To/Cc/Subject) with the user's edited input verbatim, then lazy-create the Gmail/Outlook draft. Single round. (Pre-v2.14.4 this was two separate verbs `to drafts` + `edit then draft` — consolidated; the renderer rejects the legacy forms.)
-- (Removed v2.12.2: standalone `N edit`. Combined edit+disposition replaces it. Pre-v2.12.0 `N edit [change]` directive flow also gone.)
-- `N push to [date]` → parse date, validate future. Write `commitment_updated` event with `data: {commitment_id, new_due, reason: "user push"}`. Update draft to mention new date. Stage updated draft. Ask `send / keep`. (Canonical type is `commitment_updated` per `events.schema.json` — same type the CRU schedule-shift path emits via `build_commitment_updated_event`; the timeline `type_label` map renders it as "Updated".)
-- `N resolved` → close through `commitment_state.close_commitment(workspace_root, <item's data.id verbatim>, resolved_by=<user person_id>, evidence="user marked complete via the Commitments task", source_skill="commitments", user_confirmed=True)` (Stage B 2026-07 — THE closure path; never hand-build a `commitment_resolved` append. Normalizes legacy ids, refuses no-match ids loudly, idempotent over the full resolved-id set). Confirm `✓ Resolved: [title].` (Renamed v2.12.3 from `N close`. v2.14.38+ also handles Self-commitment resolution — same verb across all surfaces.)
-- `N snooze 3d` (v2.14.38+) → write `chat_dismissal` with `data.snooze_until: <today + 3d>`. Item suppressed in commitments until the date passes. Confirm: `✓ Snoozed [title] for 3 days.` only if mentioned.
-- `N add to my list` (v2.14.38+) → write `commitment_to_discuss` event with `data.source_event_seq` pointing back to the originating commitment. Surfaces later via the `show my list` skill, grouped by counterparty. Confirm: `✓ Added [title] to your discuss list.` only if mentioned.
-
-## OWED TO YOU actions
+## WAITING ON actions
 
 - `N send` → per `EMAIL_DRAFT_PROTOCOL.md` §3c "Dispatch" + "Zapier param contract", dispatch in priority order: **Zapier first if configured** (build payload via `shared/scripts/zapier_send.py` `extract_latest_message_id` + `build_zapier_send_payload` — the `thread_id` param wants the LATEST MESSAGE ID, not the Gmail thread-level ID, per the v2.14.38+ contract), **native Gmail threaded** as fallback (per §3a), **standalone** as last resort. Confirm `✓ Sent (threaded) at HH:MM` (Zapier) or `✓ Sent to [name] at HH:MM` (native). Write `outreach_sent` event with `via` field set to the path used.
-- `N edit then send` (v2.12.2+) → replace body with input, then send via `N send` handler.
+- `N edit then send` *(retired FB-17 — deprecated alias, accepted ONLY from in-flight widgets, never emitted anew)* → replace body with input, then send via `N send` handler.
 - `N draft` (consolidated v2.14.4+) → widget exposes textarea pre-populated; user edits; Apply saves to Gmail Drafts.
 - `N follow-up call` → drafts a calendar-invite request via email-writer ("Quick 15 min sometime this week?"). If Calendar MCP supports tentative invite, create that too. Stage email draft.
 - `N mark received` (singleton) → close through `commitment_state.close_commitment(workspace_root, <item's data.id verbatim>, resolved_by=<user person_id>, evidence="counterparty delivered — marked received", source_skill="commitments", user_confirmed=True)` (Stage B — supersedes the bare `thread_resolved` write; the canonical `commitment_resolved` shape is what every consumer's closure filter reads first). Confirm. If it returns `already_resolved`, write NOTHING and say so plainly ("that one was already marked received earlier") — never append a second closure (v4.5.2 R1c).
 - `N mark received all` (grouped) → same close_commitment call per sub-item (batch via `commitment_state.close_commitments`). Suppress the parent.
 - `N escalate to memo` → fire memo-writer through standard chat invocation. Memo-writer produces .docx via the docx skill and surfaces the link the standard Cowork way. Do NOT emit `file://` links yourself. Re-prompt in plain English: "Want to send this as the email body, attach it to the reply, or send it standalone?"
-- `N snooze 3d` (v2.14.38+) → same as YOU OWE — `chat_dismissal` with 3-day TTL.
-- `N add to my list` (v2.14.38+) → same as YOU OWE — `commitment_to_discuss` event grouped by counterparty.
+- `N snooze 3d` (v2.14.38+) → `chat_dismissal` with 3-day TTL.
+- `N add to my list` (v2.14.38+) → `commitment_to_discuss` event grouped by counterparty.
 
 ## Sub-item actions (grouped items, v2.14.38+)
 
@@ -1056,7 +1012,14 @@ Three correction verbs for captures that landed WRONG, all registered in `verb_t
 
 - `N fix wording: <text>` / "that should say <text>" → `commitment_state.edit_commitment_wording(workspace_root, <item's data.id verbatim>, new_summary=<text>, edited_by=<user person_id>, source_skill="commitments")`. The item re-renders with the corrected text on every surface; the original stays in history. Confirm with the corrected line, e.g. `✓ Fixed — "send Mira the positioning brief".`
 - `N reassign to [name]` / "that's actually [name]'s" → resolve the name via the standard entity path (ambiguous → ask in one line, never guess), then `commitment_state.reassign_commitment(workspace_root, <id>, new_owner_id=<resolved person_id>, new_owner_name=<display name>, reassigned_by=<user person_id>, reason="user reassigned", source_skill="commitments", confirmed=True)`. The item leaves the user's you-owe and lands on the named owner — `not mine` DISCARDS, reassign ROUTES. Confirm: `✓ Routed to [name] — off your list.` (Unconfirmed/inferred reassignments — never from a typed name — stay in the unconfirmed bucket and are NEVER chased; no auto-email on a guessed owner.)
-- `N split into: A / B / C` (2+ parts, separated by newlines / semicolons / " / ") → `commitment_state.split_commitment(workspace_root, <id>, [{"title": ...}, ...], split_by=<user person_id>, source_skill="commitments", user_confirmed=True)`. Each part becomes its own commitment carrying the original's provenance; the original closes with a "split into …" note. Confirm by naming the N new items. Extraction pre-split stays the doctrine (M decision 2026-07-09) — this is the manual correction path, never an extraction substitute.
+- `N split into: A / B / C` (2+ parts, separated by newlines / semicolons / " / ") → `commitment_state.split_commitment(workspace_root, <id>, [{"title": ...}, ...], split_by=<user person_id>, source_skill="commitments", user_confirmed=True)`. Each part becomes its own commitment carrying the original's provenance; the original closes with a "split into …" note. Confirm by naming the N new items. Extraction pre-split stays the doctrine (M decision 2026-07-09) — this is the manual correction path, never an extraction substitute. A parent with open sub-items refuses to split (ValueError — surface its message verbatim; the parts belong to ONE deliverable).
+
+## Sub-items (SUB1 — decomposition; the parent stays open)
+
+- `N add subitems: A / B / C` / "break #N into: …" / "steps for #N: …" (1+ parts, same newline / semicolon / " / " parsing) → `commitment_state.add_subitems(workspace_root, <parent data.id verbatim>, [{"title": ...}, ...], added_by=<user person_id>, source_skill="commitments", user_confirmed=True)`. The OPPOSITE of split: the parent STAYS OPEN as the one commitment of record; the parts become child commitments nested under it. Confirm by naming the steps and the still-open parent. Cap 12 open children (loud writer error — surface verbatim); one level deep; USER-INITIATED only (extraction/sweeps never mint hierarchies).
+- Closing a child: plain `close_commitment` on the child's `data.id` — zero special-casing. When the LAST open child closes, the parent's next render carries "all sub-items done — close it?" — a PROPOSE; never auto-close the parent.
+- `N resolved` / "close #N" where N is a parent with open sub-items → `close_commitment` raises `OpenSubitemsError`: ask the one-line confirm ("this also closes its N open sub-items — go ahead?"), and only on yes re-dispatch with `close_subitems=True, user_confirmed=True`. Cache the cascade's returned `closed_subitems` ids with the batch's undo set (an undo reopens the whole family, per-item). Never resolve a bare ordinal to a child silently.
+- Programmatic closes (reconcile-sent, CRU auto-resolve) NEVER cascade — the matchers already downgrade a parent-with-open-children to a `pending_review` proposal (`cru_match.parent_blocks_auto_resolve`); render the proposal, don't close.
 
 ## Confirm section actions (v4.6.1 W4b — "Needs a quick confirm" rows; apply-choices dispatches these on this orchestrator's `src`)
 
@@ -1095,7 +1058,9 @@ For unrecognized → respond in plain English: "Reply with the item number + act
 
 # Appendix — `prep deep work` context-loaded prompt template
 
-For YOU OWE items where M replies `N prep deep work` (formerly `N work on it`, renamed v2.12.0), generate this prompt in chat (copy-paste-ready):
+(CTS1: `prep deep work` is a My Plate verb now — the template stays in THIS file because orchestrator-my-plate.md references it here, the tombstoned orchestrator-commitment-nudge.md points here, and moving canonical reference content breaks in-flight pointers. My Plate reads it at dispatch.)
+
+For owner-me items where M replies `N prep deep work` (formerly `N work on it`, renamed v2.12.0), generate this prompt in chat (copy-paste-ready):
 
 ```
 📋 **This is a prompt — not Claude replying to you.**

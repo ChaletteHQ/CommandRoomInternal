@@ -202,6 +202,37 @@ def main() -> int:
                 "text — the F-15 instruction-layer gap",
             )
 
+    # ---- Check 4b: PID1 instruction pins (SPEC PID1 — code helpers the
+    # identity model depends on are invisible unless the skill texts that
+    # must call them name them; the same F-15 class as Check 4).
+    PID1_PINS = [
+        # D5: the capture-side annotation builder — unnamed speakers must
+        # route here, never through a worked-around person proposal.
+        ("skills/meeting-notes/SKILL.md",
+         ["build_unidentified_attendee_event"]),
+        ("skills/enable-command-room-schedules/references/orchestrator-past-meetings.md",
+         ["build_unidentified_attendee_event"]),
+        # D3/D4: the cluster fan-out + the two merge-propose dispatches.
+        ("skills/apply-choices/SKILL.md",
+         ["cluster_seqs", "merge_person_into", "add_person_alias",
+          "proposal_fingerprint"]),
+        # Step 10: the pointer counts CLUSTERS via the shared projection.
+        ("skills/morning-briefing/SKILL.md",
+         ["count_person_rows"]),
+        # §0-4: the annotations' one count line.
+        ("skills/enable-command-room-schedules/references/orchestrator-staff-meeting.md",
+         ["count_open_annotations"]),
+    ]
+    for path, tokens in PID1_PINS:
+        text = (ROOT / path).read_text(encoding="utf-8")
+        for token in tokens:
+            check(
+                f"PID1 instruction pin: {path} names {token}",
+                token in text,
+                "a PID1 helper this surface depends on is not named by its "
+                "text — the F-15 instruction-layer gap",
+            )
+
     # ---- Check 5: T2.2 one-command driver pins (scope 1e) -------------------
     # The drivers exist to kill the ~30-command prep latency AND the RV-3
     # double-render; a driver referenced by zero skill texts is the F-15

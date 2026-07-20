@@ -474,6 +474,64 @@ def main() -> int:
           person_name_on_file(None, "Mira Sample") is False)
 
     # ------------------------------------------------------------------
+    print("[D8] PID1 — seq-less proposals adjudicate by content fingerprint")
+    # ------------------------------------------------------------------
+    from confirm_flow import compute_proposal_fingerprint
+
+    seqless_ts = iso(days_ago=3.0)
+    ws7 = make_workspace([
+        {"seq": 1, "type": "person_proposal", "ts": iso(days_ago=1.0),
+         "source_skill": "meeting-notes",
+         "data": {"name": "Ada West", "evidence": "x", "source_ref": "mail:t"}},
+        # the freelance-written seq:null shape — unadjudicatable pre-D8
+        {"seq": None, "type": "person_proposal", "ts": seqless_ts,
+         "source_skill": "freelance",
+         "data": {"name": "Pia Voss", "evidence": "y",
+                  "source_ref": "mail:t2"}},
+    ])
+    ep7 = events_path(ws7)
+    rows7 = {p["name"]: p for p in load_open_person_proposals(ep7)}
+    check("int-seq row carries NO fingerprint (activation rule)",
+          rows7["Ada West"]["fingerprint"] is None)
+    fp = rows7["Pia Voss"]["fingerprint"]
+    check("seq-less row carries the computed fingerprint",
+          fp == compute_proposal_fingerprint("person_proposal", "Pia Voss",
+                                            seqless_ts), repr(fp))
+    check("fingerprint is stable + normalized (whitespace/case)",
+          compute_proposal_fingerprint("person_proposal", "  pia   VOSS ",
+                                       seqless_ts) == fp)
+    # builder: seq path unchanged; fingerprint path activates on None only
+    tomb = build_person_proposal_resolved_event(
+        None, resolution="not_relevant", source_skill="test",
+        proposal_fingerprint=fp)
+    check("builder emits data.proposal_fingerprint for a seq-less row",
+          tomb["data"]["proposal_fingerprint"] == fp
+          and "proposal_seq" not in tomb["data"])
+    try:
+        build_person_proposal_resolved_event(
+            None, resolution="not_relevant", source_skill="test")
+        check("builder refuses None seq with no fingerprint", False)
+    except ValueError:
+        check("builder refuses None seq with no fingerprint", True)
+    import json as _json
+    with open(ep7, "a", encoding="utf-8") as f:
+        f.write(_json.dumps({"seq": 3, "ts": iso(), **{k: tomb[k] for k in
+                            ("type", "source_skill", "data")}}) + "\n")
+    names_after = {p["name"] for p in load_open_person_proposals(ep7)}
+    check("fingerprint tombstone excludes the seq-less row",
+          names_after == {"Ada West"}, repr(names_after))
+    check("int-seq row untouched by the fingerprint fold",
+          "Ada West" in names_after)
+    with open(ep7, "a", encoding="utf-8") as f:
+        f.write(_json.dumps({"seq": 4, "ts": iso(),
+                             "type": "person_proposal_reopened",
+                             "source_skill": "brain_undo",
+                             "data": {"proposal_fingerprint": fp}}) + "\n")
+    names_after = {p["name"] for p in load_open_person_proposals(ep7)}
+    check("a fingerprint reopen lifts the tombstone (last writer wins)",
+          "Pia Voss" in names_after, repr(names_after))
+
+    # ------------------------------------------------------------------
     print(f"\n=== Summary: {PASS} passed, {FAIL} failed ===")
     if FAIL:
         return 1

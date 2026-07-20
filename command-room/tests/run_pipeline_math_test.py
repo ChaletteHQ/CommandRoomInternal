@@ -138,6 +138,37 @@ no_cat = [row("x1", "X", value=10000, stage="lead")]
 check(pm.haircut_value(no_cat) is None,
       "haircut is None when no open deal carries a forecast_category")
 
+# --- value_by_org (SPEC OUT3B / S3 vectors) -----------------------------------
+def orow(tid, name, org_id, value):
+    deal = {"stage": "lead"}
+    if value is not None:
+        deal["value"] = value
+        deal["currency"] = "USD"
+    return {"thread_id": tid, "name": name, "org_id": org_id,
+            "status": "active", "deal": deal, "untracked": False}
+
+vbo_rows = [
+    orow("d1", "Acme pilot", "org_acme", 40000),
+    orow("d2", "Acme expansion", "org_acme", 60000),   # same org -> summed
+    orow("d3", "Northstar retainer", "org_north", 90000),
+    orow("d4", "Priceless lead", "org_acme", None),    # no value -> contributes nothing
+    {"thread_id": "d5", "name": "Untracked thread", "org_id": "org_ghost",
+     "status": "active", "deal": None, "untracked": True},  # no deal -> nothing
+]
+org_names = {"org_acme": "Acme Co", "org_north": "Northstar Partners"}
+vbo = pm.value_by_org(vbo_rows, org_names=org_names)
+check(vbo == [{"label": "Acme Co", "value": 100000.0},
+              {"label": "Northstar Partners", "value": 90000.0}],
+      "value_by_org: per-org sum, value-desc; Acme 40k+60k=100k > Northstar 90k; "
+      "None-value + deal-less rows contribute nothing")
+# Reader-facing labels: an org_id absent from the map falls back to the deal name.
+vbo_unmapped = pm.value_by_org([orow("d6", "Solo deal", "org_unknown", 15000)],
+                               org_names=org_names)
+check(vbo_unmapped == [{"label": "Solo deal", "value": 15000.0}],
+      "value_by_org: unmapped org_id labels from the deal's own reader-facing name")
+check(pm.value_by_org([]) == [] and pm.value_by_org(vbo_rows[3:]) == [],
+      "value_by_org: [] when no open deal carries a value (never a $0 bar)")
+
 tiles = pm.pipeline_tiles(all_rows, health, terminal, TODAY)
 check(tiles == [
     {"label": "Open pipeline", "value": "$137K"},
@@ -215,6 +246,46 @@ no_value = {"threads": [{"id": "project_019", "affiliation_id": "org_x",
 check(quantify.money_time_tag(no_value["threads"][0], no_value,
                               now=TODAY.isoformat()) is None,
       "no stated value -> no money tag, never an estimate")
+
+# --- prospects_not_in_pipeline (PIPE1 D9.1 reconciliation line) ---------------
+recon_ents = {
+    "orgs": [
+        # uncovered prospect — the reconciliation line's subject
+        {"id": "org_gap", "canonical_name": "Beacon Logistics",
+         "relationship_type": "prospect"},
+        # prospect with an OPEN deal thread — covered, never counted
+        {"id": "org_dealt", "canonical_name": "Acme Co",
+         "relationship_type": "prospect"},
+        # prospect with an active ENGAGEMENT thread — FS-18b coverage counts
+        {"id": "org_engaged", "canonical_name": "Northwind",
+         "relationship_type": "prospect"},
+        # client org — not a prospect, out of scope for this line
+        {"id": "org_client", "canonical_name": "Summit",
+         "relationship_type": "client"},
+        # archived prospect — not open pursuit, dropped
+        {"id": "org_gone", "canonical_name": "Vendor Corp",
+         "relationship_type": "prospect", "status": "archived"},
+    ],
+    "threads": [
+        {"id": "project_500", "kind": "deal", "status": "active",
+         "org_id": "org_dealt", "deal": {"stage": "lead"}},
+        {"id": "project_501", "kind": "product", "status": "active",
+         "org_id": "org_engaged"},
+        # resolved deal thread on the gap org — terminal, NOT coverage
+        {"id": "project_502", "kind": "deal", "status": "resolved",
+         "org_id": "org_gap", "deal": {"stage": "proposal_sent"}},
+    ],
+}
+gap = pm.prospects_not_in_pipeline(recon_ents)
+check([r["org_id"] for r in gap] == ["org_gap"],
+      "prospects_not_in_pipeline counts ONLY uncovered open prospects "
+      "(open deal + active engagement + client + archived all excluded)")
+check(gap[0]["name"] == "Beacon Logistics",
+      "reconciliation rows carry the reader-facing org name")
+check(pm.prospects_not_in_pipeline({"entities": recon_ents}) == gap,
+      "wrapper-shaped entities.json reads identically")
+check(pm.prospects_not_in_pipeline({"orgs": [], "threads": []}) == [],
+      "no prospects -> empty list (the surface drops the line at zero)")
 
 print(f"OK — all {PASS} pipeline_math/deal_health/quantify tests passed")
 sys.exit(0)

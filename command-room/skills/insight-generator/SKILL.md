@@ -254,7 +254,7 @@ Item content (per candidate):
   event summary        e.g. "Apr 18 email from Rio ('invoice batch')"
   current filing       "Filed under: Acme Restaurant — likely" (plain-English
                        confidence word per the output rules below; NEVER a decimal)
-  alternatives         "Could also be: Category Food Truck / Category Bakery"
+  alternatives         "Could also be: Summit Food Truck / Summit Bakery"
                        (listed in the item body as context for the edit input)
 ```
 
@@ -567,7 +567,7 @@ For `ignore`:
 
 **E. workspace-manager hand-off fails:** rollback, surface in `_hq/CONFLICTS.md`.
 
-**F. Daily surfacing in Pulse conflicts with weekly review:** same fingerprint won't surface in both passes. Pulse marks the proposal as `surfaced_daily: true` in events.jsonl on first daily appearance. insight-generator skips already-`surfaced_daily` proposals.
+**F. Daily surfacing in Pulse conflicts with weekly review:** same fingerprint won't surface in both passes. LB2: Pulse persists a daily-surfaced proposal as a `brain_proposal` row (`kind: org`/`project`, fingerprint `org:<name>`/`project:<name>` — the bp row IS the surfaced-daily mark). insight-generator skips any candidate whose fingerprint has an open bp row, a `brain_proposal_resolved`/`_expired` tombstone, or an active ledger cooldown — plus, for pre-LB2 history, any legacy event still carrying `surfaced_daily: true`.
 
 **G. Domain looks like an alias of an existing org:** suppress with -3 penalty AND surface a top-level note: "I see [N] emails to/from [new_domain]. Looks like it might be the same as [existing_org] — want me to link them?" One-line suggestion separate from the proposal table.
 

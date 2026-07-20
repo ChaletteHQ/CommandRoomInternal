@@ -141,6 +141,91 @@ def load_all(root: str | Path, since_ts=None) -> list[dict]:
     return list(iter_events(root, since_ts=since_ts))
 
 
+# ---- org-scoped reader (SPEC PGUARD1 D1) ----
+
+def load_events_org_scoped(
+    root: str | Path, since_ts=None, drop_personal: bool = True,
+) -> tuple[list[dict], list[dict]]:
+    """THE events reader for org/board/client/external outputs — the mask is
+    the default, not a call-site opt-in.
+
+    Every org-facing rollup (operator-report, weekly-recap,
+    board-pack-assembler, boardroom, advisor-export, value_receipt, the
+    staff-meeting proposal load) reads through here instead of a raw load, so
+    a new surface cannot silently skip the privacy layers. Three layers, in
+    order:
+
+      1. defensive shard-transparent load via cru_match.load_events_defensively
+         (skipped-lines channel preserved — callers surface it);
+      2. account-scope mask (account_scope_gate.filter_masked_events, R5):
+         a business→personal account reclassification hides that account's
+         history from org output;
+      3. personal-lane drop (personal_leak.is_personal): personal reminder
+         rows, personal-tie rows, and BAL1 balance-nudge rows never reach an
+         org data view (`drop_personal=False` opts out — for the rare org
+         reader that provably renders no row content).
+
+    Returns (events, skipped). `since_ts` passes through to the loader's
+    shard pruning; masks are computed from the loaded list with a
+    workspace-root fallback so a pruned shard can't hide a mask event.
+
+    OWNER surfaces (the brief, show-my-reminders, person/org history) should
+    NOT use this — they legitimately show personal rows; use `iter_events` +
+    their own surface gate. The run_personal_firewall_test structural guard
+    enforces which files may read raw.
+    """
+    try:
+        from cru_match import load_events_defensively
+    except ImportError:  # pragma: no cover — direct-path fallback
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cru_match import load_events_defensively
+
+    events, skipped = load_events_defensively(active_path(root), since_ts=since_ts)
+
+    # Layer 2 — account mask. Defensive: a broken mask never blanks a surface
+    # (filter_masked_events' own contract); a broken IMPORT leaves events
+    # unfiltered the same way the three inline-masker sites tolerate it.
+    masks = frozenset()
+    try:
+        from account_scope_gate import (filter_masked_events,
+                                        live_masks, live_masks_from_events)
+        if since_ts:
+            # Shard pruning can hide mask events in older shards, and a
+            # second in-window mask would leave the window computation
+            # non-empty — so an "only when empty" fallback still leaks the
+            # pruned account's rows. A pruned load ALWAYS takes the
+            # full-history mask set (restores are order-dependent too).
+            masks = live_masks(root)
+        else:
+            masks = live_masks_from_events(events)
+        events = filter_masked_events(events, masks=masks)
+    except Exception:
+        pass
+
+    # Layer 3 — personal lane. is_personal never raises.
+    if drop_personal:
+        try:
+            from personal_leak import is_personal
+            events = [ev for ev in events if not is_personal(ev, masks=masks)]
+        except ImportError:
+            pass
+
+    return events, skipped
+
+
+def iter_events_org_scoped(
+    root: str | Path, since_ts=None, drop_personal: bool = True,
+) -> Iterator[dict]:
+    """Generator form of `load_events_org_scoped` (same three layers; the
+    skipped-lines channel is dropped — use the load_ form when a surface must
+    report skipped counts)."""
+    events, _skipped = load_events_org_scoped(
+        root, since_ts=since_ts, drop_personal=drop_personal
+    )
+    yield from events
+
+
 # ---- integrity invariants (SPEC A5 §4 step 5) ----
 
 def shard_invariants(root: str | Path) -> list[str]:
@@ -186,7 +271,9 @@ def shard_invariants(root: str | Path) -> list[str]:
     return violations
 
 
-__all__ = ["shard_paths", "active_path", "iter_events", "load_all", "shard_invariants"]
+__all__ = ["shard_paths", "active_path", "iter_events", "load_all",
+           "load_events_org_scoped", "iter_events_org_scoped",
+           "shard_invariants"]
 
 
 if __name__ == "__main__":

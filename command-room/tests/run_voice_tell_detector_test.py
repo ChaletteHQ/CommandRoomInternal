@@ -153,12 +153,52 @@ def test_thanks_for_reaching_out_fails() -> None:
     print("PASS test_thanks_for_reaching_out_fails")
 
 
-def test_em_dash_structural() -> None:
+def test_dash_as_punctuation_ban() -> None:
+    # FB-16: dashes-as-punctuation are a product-level FAIL in body prose (the
+    # old policy only WARNED at >2 em-dashes/paragraph, so a single "— fast"
+    # slipped the gate). One finding per occurrence.
     three = "We shipped — fast — and clean — this week."
-    assert scan_text(three)["verdict"] == "warn", scan_text(three)
-    two = "We shipped — fast — and clean this week."
-    assert scan_text(two)["verdict"] == "pass", scan_text(two)
-    print("PASS test_em_dash_structural")
+    r3 = scan_text(three)
+    assert r3["verdict"] == "fail", r3
+    assert len([f for f in r3["findings"] if f["rule"] == "dash_as_punctuation"]) == 3, r3
+    one = "We shipped — fast this week."
+    assert scan_text(one)["verdict"] == "fail", scan_text(one)
+    # en dash and spaced hyphen are dashes-as-punctuation too
+    assert scan_text("Revenue rose 10 – 20 percent.")["verdict"] == "fail"
+    assert scan_text("Revenue rose - a lot - this quarter.")["verdict"] == "fail"
+    # hyphenated compounds are NOT punctuation — they stay clean
+    assert scan_text("Let's set up a follow-up check-in.")["verdict"] == "pass", \
+        scan_text("Let's set up a follow-up check-in.")
+    print("PASS test_dash_as_punctuation_ban")
+
+
+def test_dash_signoff_exempt() -> None:
+    # The standalone "— Matthew" sign-off is a deliberate brand-voice element.
+    body = "Got it, will send today.\n\n— Matthew"
+    assert scan_text(body)["verdict"] == "pass", scan_text(body)
+    # Second-eyes fix (2026-07-19): a sign-off hierarchy's LONGEST form is a
+    # full first + last name — multi-token sign-offs are exempt too.
+    for signoff in ("— Sam Sample", "— MD", "– Bo Sample"):
+        r = scan_text(f"Got it.\n\n{signoff}")
+        assert r["verdict"] == "pass", (signoff, r)
+    # but a dash used as punctuation with prose before it still fails
+    assert scan_text("Send it today — Matthew asked twice.")["verdict"] == "fail"
+    # and a dash line leading a SENTENCE (4+ capitalized tokens) is not a
+    # sign-off — the exemption caps at 3 name tokens
+    assert scan_text("Got it.\n\n— Please Send It Now")["verdict"] == "fail"
+    # mid-paragraph parenthetical dashes are punctuation, not a sign-off
+    assert scan_text("The plan — like this — slipped.")["verdict"] == "fail"
+    print("PASS test_dash_signoff_exempt")
+
+
+def test_dash_ban_overridable() -> None:
+    text = "We shipped — fast."
+    # ban_dashes=False turns the product ban off for a client who keeps dashes
+    assert scan_text(text, ban_dashes=False)["verdict"] == "pass", \
+        scan_text(text, ban_dashes=False)
+    # a demonstrably-used dashed phrase in the client's Voice Block feeds through
+    assert scan_text(text, allow_phrases=["we shipped — fast"])["verdict"] == "pass"
+    print("PASS test_dash_ban_overridable")
 
 
 def test_tri_colon_warns() -> None:
@@ -228,17 +268,18 @@ def test_check_sections_flattens_bullets_and_cells() -> None:
 
 
 def test_check_sections_structural_only_on_body() -> None:
-    # An em-dash pile-up inside a table cell must NOT warn (structural rules
-    # apply to body paragraphs only). Same content in a body would warn.
+    # Dashes inside a table cell must NOT fail (structural rules — including the
+    # FB-16 dash ban — apply to body paragraphs only; cells are list-shaped
+    # data, not prose). The same content in a body paragraph fails.
     table_sections = [
         {
             "heading": "T",
-            "table": {"rows": [["x — y — z — w (cell pile-up, ignored)"]]},
+            "table": {"rows": [["x — y — z — w (cell dashes, ignored)"]]},
         }
     ]
     assert check_sections(table_sections, brief_kind="memo")["verdict"] == "pass"
     body_sections = [{"heading": "B", "body": "x — y — z — w in a paragraph."}]
-    assert check_sections(body_sections, brief_kind="memo")["verdict"] == "warn"
+    assert check_sections(body_sections, brief_kind="memo")["verdict"] == "fail"
     print("PASS test_check_sections_structural_only_on_body")
 
 
@@ -373,7 +414,9 @@ def main() -> int:
     test_finds_you_well_interpolation()
     test_clean_text_passes()
     test_thanks_for_reaching_out_fails()
-    test_em_dash_structural()
+    test_dash_as_punctuation_ban()
+    test_dash_signoff_exempt()
+    test_dash_ban_overridable()
     test_tri_colon_warns()
     test_hedging_stack_warns()
     test_skip_quoted()
