@@ -177,6 +177,13 @@ def detect_stalled_projects(workspace_root: str | Path) -> list[StallFlag]:
         # project-generic threshold.
         if thread.get("kind") == "deal":
             continue
+        # OBJ1 fence (same shape as D7): kind='objective' threads report
+        # through the objectives surface (objective_math's per-binding drift
+        # — a self-reported objective drifts on missed check-ins, not on
+        # thread quiet) — flagging them here would double-alarm with the
+        # wrong, project-generic threshold.
+        if thread.get("kind") == "objective":
+            continue
         flag = _evaluate_thread(thread, cfg, last_activity_by_thread, now)
         if flag is not None:
             flags.append(flag)

@@ -303,6 +303,7 @@ customer strings). Say the right-hand column instead:
 | person record / entity record | contact / profile (or the person's name) |
 | view(s) (as data-layer noun) | list / page (or the thing's name) |
 | cooldown | "I'll wait N days before bringing this up again" |
+| counterparty | "who it's for" / "'X' isn't in your contacts yet" (UXC1 2026-07-21) |
 | people graph / voice corpus / engagement edge | your contacts / your writing style / (describe the signal) |
 | buffered | saved / noted |
 | version numbers (v3.x) | nothing — versions live in verify diagnostics + changelogs ONLY |

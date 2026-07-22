@@ -43,6 +43,7 @@ Before surfacing the summary or composing the `.docx` report, read `shared/PERSO
 - **Derived-view + scaffold + lock writer (bounded, v3.19.x / SPEC CLEAN1)** — regenerates the views it owns from the substrate (`_hq/views/PEOPLE.md` via Phase 3.5c; `_hq/views/DECISION_LOG.md` via the **changed-only** `render_decision_log.regenerate_if_changed`, Phase 3.5d), scaffolds a **missing** `SESSION_NOTES_[NAME].md` (Phase 3c / D3 — never overwrites one that exists), and **archives** `*.lock.stale.*` sentinels older than 1 hour into `_archive/stale-locks/` (Phase 2 Rule 9 / D6 — moved, never deleted). Every one of these is idempotent: re-running on a clean workspace writes nothing.
 - **Living Brain expiry sweep (SPEC LB1, Phase 3j)** — appends the silent `brain_proposal_expired` tombstones for open proposals past their TTL, ONLY via `brain_proposals.expire_stale()` (the canonical sweep helper — never a hand-rolled append). Idempotent: nothing stale → nothing written.
 - **Config-drift proposals (SPEC LB2, Phase 3k — bounded rider, the `expire_stale` precedent)** — the weekly drift pass may append `brain_proposal` rows (`kind: config_drift`), ONLY via `config_drift_detector.run_drift_detector()`. **This is not a pref write: cleanup stays READ-ONLY on `_hq/data/skill_config/` — byte-checked by test.** The proposal re-offers a knob; only the user's tune flow ever writes config.
+- **Objective-link proposals (SPEC OBJ2 §1B, Phase 3l — same bounded-rider shape as 3k)** — the weekly link pass may append `brain_proposal` rows (`kind: objective_link`), ONLY via `objective_link_detector.run_objective_link_detector()`. The detector consumes the classification envelope's existing stamps through the org-scoped event seam — it never hooks a capture pipeline, re-reads content, or writes anything but the proposal; adjudication (confirm/dismiss on the Staff Meeting card) is the only thing that ever binds a link.
 - **Readalarm sidecar pruning (SPEC LB2 D5 — the ONE delete exception)** — deletes `*.readalarm.json` sidecars whose recorded failure is >30 days old, ONLY via `cleanup_actions.prune_stale_readalarms()`. Derived alarm state, never substrate or user files; a sidecar younger than 6 days (2× the surfaced window) is never touched regardless of settings. Everything else stays archive-only.
 - **NEVER writes:** `entities.json` (except via the owner skills' helpers it delegates to), `events.jsonl` other than appending one `cleanup_run` event (+ the `corruption_recovery` event that `recover_corruption.py` appends on its own, + the Phase 3j expiry tombstones via `brain_proposals.expire_stale`), `aliases.json`, the **analytical views** (`RELATIONSHIPS`/`TIMELINE`/`COMMITMENT_AGING`/`DORMANT`/`THEMES` — insight-generator owns those; cleanup only flags them stale) or `_hq/views/ALIASES.md` (people-crm owns it — flag only), and `classifier_feedback.jsonl`. Never deletes a user's folders or files; orphan folders are FLAGGED, not removed. Canonical entity mutation stays with the owner skills (workspace-manager / project-manager / people-crm).
 
@@ -594,6 +595,19 @@ drift = run_drift_detector("<WORKSPACE>")   # {"candidates": N, "proposed": K, "
 ```
 
 **Cleanup stays READ-ONLY on prefs** — the helper proposes, never writes `skill_config` (Writer Contract rider; byte-checked by test). Once-per-knob discipline is `propose()`'s own machinery: an open row dedups, a dismissal takes the standard 60-day cooldown, snooze is the shared 7d. On confirm (at the staff meeting, via apply-choices), a re-offer note lands for the next coach session to re-offer THAT KNOB — the tune flow remains the only config writer. No Monday-note line for this pass — the proposal IS the surface. Never narrate detector internals or signal counts beyond what the row's own text says.
+
+### 3l. Objective-link proposal pass (SPEC OBJ2 §1B — provisional classifications onto the Staff Meeting rail)
+
+A captured item whose classification envelope **provisionally** targets an open standing objective (confidence below the auto-attach band, or attribution flagged pending review) gets ONE link proposal on the Living Brain rail — `kind: objective_link`, **staff meeting only** (adjudication is never urgent; it never reaches the daily card or the brief). One call, weekly:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from objective_link_detector import run_objective_link_detector
+
+links = run_objective_link_detector("<WORKSPACE>")   # {"candidates": N, "proposed": K, "suppressed": S}
+```
+
+The detector consumes the envelope stamps that already exist — it never hooks a capture pipeline or re-reads content, and it reads events **org-scoped only** (masked/personal-lane items can never drive a row). Once-per-link discipline is `propose()`'s own machinery: an open row dedups, a dismissal takes the standard 60-day cooldown, snooze is the shared 7d; a link the CEO already confirmed never re-lists. No Monday-note line for this pass — the proposal IS the surface. Never narrate detector internals or confidence numbers beyond what the row's own text says.
 
 ## Phase 4: Monday-Morning Report — the scorecard handshake (no scores)
 

@@ -118,13 +118,13 @@ def render_all_fixture_widgets():
                  ("What's at stake", "Aug 4 cutover"),
              ],
              "actions": ["investigate", "draft re-engagement",
-                          "schedule catchup [when]", "resolved", "snooze 3d",
-                          "add to my list"]},
+                          "schedule catchup [when]", "resolved",
+                          "snooze 3d"]},  # MLK1: `add to my list` retired
             {"n": 2, "name": "Stale project",
              "actions": ["prep deep work", "investigate", "mark paused",
                           "status check", "snooze 14d", "skip"]},
             {"n": 3, "name": "Review row",
-             "actions": ["add [text]", "not relevant", "add to my list"]},
+             "actions": ["add [text]", "not relevant"]},
             {"n": 4, "name": "Dormant proposal",
              "actions": ["active", "keep paused", "archive", "skip"]},
             {"n": 5, "name": "Entity proposal",
@@ -140,7 +140,7 @@ def render_all_fixture_widgets():
             {"n": 1, "name": "Michele call",
              "actions": ["context [text]", "push meeting [date]", "skip"]},
             {"n": 2, "name": "Vague timing",
-             "actions": ["set date [when]", "add to my list", "skip"]},
+             "actions": ["set date [when]", "skip"]},
             {"n": 3, "name": "New person",
              "actions": ["add as person to [org]", "add as new org",
                           "add context [text]", "skip"]},
@@ -309,7 +309,7 @@ def main() -> int:
     check("JS validates before Apply (crValidate wired)",
           "function crValidate()" in html and "Apply is waiting on" in html)
     check("crApplyAll re-validates as a backstop",
-          "if (crValidate().length > 0)" in html)
+          re.search(r'if\s*\(crValidate\(\)\.length\s*>\s*0\)', html) is not None)
     # Stripping the reason machinery must be rejected (a hand-built widget
     # with a required-input button and no feedback layer = F-17 reborn).
     try:

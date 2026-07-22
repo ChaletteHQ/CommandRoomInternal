@@ -1,5 +1,30 @@
 # Command Room — Changelog
 
+## v5.1.0 — 2026-07-21 — Objectives go live, Staff-Meeting adjudication for objective links, my-list retirement, and the widget-UX batch
+
+Everything staged since the v5.0.0 promote (2026-07-20, a95b244) — 25 commits, reviewed branch-by-branch (second-eyes on every merge; review records in handoffs/). Minor bump: new capability plus behavior changes, no schema break — the retired my-list surface keeps fossil dispatch for old widgets. Battery 276/0 at the release tip.
+
+### New capability
+- **OBJ1 — standing objectives skill** (#37/#40, F-1+F-2 review fixes #42) — a small set of CEO-level standing priorities (weeks-long, multi-step, too big to mark done), each tracked through the ONE path the CEO picks at creation: reviewed in a recurring meeting, self-reported in one weekly touch riding Friday Wrap, or activity-tracked from linked work. `shared/scripts/objective_state.py` is the SOLE writer of every `objective.*` field and all six `objective_*` events; status is derived (`objective_math.py`), never stored; weekly-recap 8c is the weekly touch; morning brief gains ≤2 conditional read-only lines (FB-20 honored); cold start proposes ≤3 mined candidates; FRP1 first-run with 3 decisions. Plain-English objectives — no key results, no scoring.
+- **OBJ2 + OBJ2-R — objective adjudication moves to the Staff Meeting** (Decision #2) — `objective_link` kind on the brain rail, org-scoped detector (config_drift pattern), apply-choices confirm/dismiss handlers (dismiss writes the standard reclassification+feedback pair), weekly-recap 8c delisting. OBJ2-R closes the reader gap — adjudicating an objective link now changes the movement read (`thread_activity.apply_reclassifications` + own-thread movement join) — plus four independent-review fixes: unlinked-commitment suggested-move leak, `confidence_before` 0.0 fallback, per-key mutation fences, stale waiver prose.
+- **IDM1 — multi-candidate "same as" disambiguation** — 2+ same-name candidates get a count-honest hint + unpopulated verb, never rank-and-pick.
+
+### Behavior changes
+- **MLK1 — my-list retirement** (M ruling 2026-07-21, UX review finding 1) — the "Add to my list" verb is retired from every emission and captures stop; orphan notes re-route to a note or decline honestly (`orphan_note.py`); show-my-list becomes the mute-ledger home + drain-only fossil; old widgets keep fossil dispatch (never aliased). Meeting-notes "let's discuss X" agenda items now skip silently; call-prep block is drain-only.
+- **UXC1 — plain-language rulings** (UX review findings 5/6/7) — counterparty never renders (display overlay + banned-word guard entry), merge announces permanence ("Merge records (permanent)" + undo-footer carve-out), plain deal-picker labels (`STAGE_DISPLAY`/`LOSS_REASON_DISPLAY` pinned to wire enums).
+
+### Fixes
+- **RRF1** — render-time refresh for stale "counterparty has no person record" review-reason tags (display-only, stored gating byte-identical).
+- **Widget review batch (4)** — My Plate orphan-promise "?" lead + empty original-thread stub; Original-thread accordion hardening; Waiting On delegated-owner naming + real ownership verbs on confirm rows; person possible-match candidate + "same as" dedup.
+- **task_watchdog time-of-day flake** — now-relative receipt offset moved off the cron-grid boundary (4d→10d); class documented in the fixture comment.
+- **clients.json CRLF normalization** — killed the perpetual phantom-modified state in every clone.
+
+### Customer migration impact
+No user action required — no schedule change; scheduled chats load steps fresh from the installed plugin at fire time. Objectives proposes cold-start candidates on first use; old my-list widget clicks re-route gracefully.
+
+### What's NOT in this ship
+The reviewed fb-plumbing / SYNC1 / WG1-A train (lands post-promote, in that order), WG1-B, UXR1, the finding-8 polish pair, SC1 (awaiting M rulings). The two v5.0.0 bridge gaps (M/W/F staff-meeting auto-offer, balance opt-in) still ride a future bundle.
+
 ## v5.0.0 — 2026-07-20 — The commitments-split release: Waiting On / My Plate, people identity, the privacy spine, entity history, and a full sweep of new output surfaces
 
 Everything staged since the v4.9.0 client promote (2026-07-18) — 83 commits, 229 files (+23,261/−1,193) across ~45 skill dirs — reviewed branch-by-branch (second-eyes on every merge) and BIG-TEST VERIFIED live on M's workspace across the full runbook (2026-07-19/20; Phase F ruling GO, 33 findings, zero blockers). Major bump: the CTS1 commitments split is a surface clients cross once, via a per-workspace migration. Release commit cut on main. Battery 261/0 at the release tip; triggers 393/393; firewall 78/0; all structural guards green.

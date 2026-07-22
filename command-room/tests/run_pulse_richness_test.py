@@ -131,7 +131,7 @@ def test_accepts_explicit_fallback_strings():
     print("test_accepts_explicit_fallback_strings")
     item = _valid_pulse_item(metadata=[
         ("Last contact", "18 days ago — last touch unknown"),
-        ("Why they matter", "(no role tracked yet — `add to my list` to triage)"),
+        ("Why they matter", "(no role tracked yet)"),  # MLK1: the old copy suggested the retired `add to my list` verb
         ("Open context", "(no open thread tracked — `Investigate` will pull cross-references)"),
         ("What's at stake", "(warm relationship at risk of going cold)"),
     ])

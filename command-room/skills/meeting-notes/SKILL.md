@@ -351,7 +351,7 @@ For **every action item** captured in Step 2's Action Items table, append one `c
 - Counterparty determinable (someone else owes it, or the user owes it TO someone) → `kind: "promise"`.
 - Self-owed with NO counterparty (the user owes it to nobody but themselves) → `kind: "task"` — tasks live on the triage surface, never enter CRU matching, and never render in commitment aging.
 - Scheduling intent ("set up the call with X", "lock time with Y") → `kind: "scheduling"`.
-- "Let's discuss X" / agenda items → the existing `commitment_to_discuss` type (unchanged), NOT a commitment event with `kind: agenda`.
+- "Let's discuss X" / agenda items → NOT captured (MLK1, 2026-07-21: the discuss list is retired and NO capture path writes `commitment_to_discuss`; pre-MLK1 these wrote that type). A bare "let's discuss X" has no owner, no deliverable, and no consequence — it is below the capture floor by all three of its own conditions, so skip it silently. If the discussion intent IS a real commitment ("Sam will bring the pricing options to Friday's call"), it qualifies on its own terms as `kind: "promise"` / `"scheduling"` through the normal floor. Never write `kind: agenda` either — that label remains registered but unwritten.
 - Genuinely ambiguous → `kind: "promise"` with `data.pending_review: true` (existing flag; surfaces for review, never auto-closed).
 
 **pending_review is default-on for low-confidence attribution (v4.5.2 safety inversion — MANDATORY).** CRU auto-resolution gates on `data.pending_review`: a low-confidence extraction that FORGETS the flag auto-resolves at high match with no human gate. So the rule is inverted — absence of the flag is an ASSERTION of high-confidence attribution, never a default. Set `data.pending_review: true` at capture whenever ANY of these hold:
@@ -531,6 +531,39 @@ Rules (all load-bearing):
 - **Propose-and-confirm only.** `propose_candidates` goes through `brain_proposals.propose(tier="confirm")` — cooldown + open-dedup enforced inside; nothing here writes a deal field, creates a thread, or touches the org record. Confirmation happens on the brain confirm card / Staff Meeting → apply-choices → `deal_state`.
 - **Chat surface (plain chat lines immediately AFTER the Step 9 four-section card — the card's RECAP → DECISIONS LOGGED → BRIEF → OPEN ITEMS contract is unchanged; never invent a card section):** for each candidate the detector returned, render its `nudge_line` VERBATIM — one line per candidate, cap NOTHING (Bug #92b: the detector owns inclusion; a surface dropping a candidate on its own judgment is the regression class). Zero candidates → zero lines, no filler. The nudge teaches the typed command; the queued proposal is the durable capture either way (same two-layer contract as Step 5f).
 - Detector import fails / raises → swallow silently, skip the step, note it in `pack_run.data.errors[]` if this fire writes one. Best-effort enrichment; meeting processing never blocks on it.
+## Step 5i: Objective Review Harvest (SPEC OBJ1, DRAFT — meeting-bound objectives only)
+
+Some standing objectives are bound to a recurring review meeting (the objectives skill's meeting path). When THIS transcript is such an objective's review forum, harvest the stated status — this is the ONE place transcripts feed objectives (the objectives skill never reads transcripts itself; no parallel scanner).
+
+1. **Cheap gate first (one call, usually empty):**
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+import objective_state, objective_math
+candidates = objective_math.forum_objectives(
+    objective_state.list_open_objectives("<WORKSPACE>"),
+    meeting_title="<this meeting's title>",
+    attendee_person_ids=[<resolved attendee person_ids>])
+```
+
+Empty `candidates` (the overwhelmingly common case): this step is done — skip silently, zero overhead.
+
+2. **For each candidate, judge from the transcript you already read:** was the objective actually discussed, and was a status STATED or clearly expressed (someone said where it stands)? The bar is topical discussion of the objective's statement/theme with an expressed state — an off-hand name-drop does not qualify. Map the expressed state to exactly one of `on_track | at_risk | off_track | blocked`. If discussed with no clear state, or not discussed at all: **write nothing** — the absence is real signal (the objectives drift math counts undiscussed forum sessions); never fabricate a status to fill the slot.
+
+3. **On a qualifying discussion, record through the single writer (idempotent per meeting — a reprocess is a NO-OP):**
+
+```python
+objective_state.record_review("<WORKSPACE>", "<candidate thread_id>",
+    status="<on_track|at_risk|off_track|blocked>",
+    source_ref="granola:<meeting_id>",
+    context="<one line, their words, what was said about where it stands>",
+    meeting_title="<this meeting's title>",
+    source_skill="meeting-notes")
+```
+
+Commitments made in that discussion are NOT this step's job — Step 5e already captures them (they land on the objective's anchor/linked threads via normal classification). Decisions likewise stay Step 5b's. This step writes `objective_review` events only, and the 9a3 claim audit counts them (`MEETING_WRITE_TYPES` includes `objective_review`).
+
+**Chat surface:** on a harvest, one line in the processing summary — *"✓ Heard where [objective name] stands — [status in plain words]."* No harvest, no line.
 
 ---
 

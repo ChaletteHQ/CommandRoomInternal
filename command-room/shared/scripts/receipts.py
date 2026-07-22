@@ -116,6 +116,7 @@ CANONICAL_TASK_IDS = frozenset({
     "dormant-scan",
     "stalled-projects",
     "pipeline-tracker",  # RCPT1 — the deal-pipeline report's SKILL.md-mandated scan receipt (on-demand, like stalled-projects)
+    "objectives",    # OBJ1 (draft) — the on-demand objectives readout (same shape as stalled-projects: what was surfaced + drifting_thread_ids, so drift-flag value counts read from receipts)
     "maintenance",   # MAINT1 — the single silent dispatcher task (the five silent ids above live on as its JOBS and keep their receipt vocabularies forever)
     "staff-meeting",  # LB1 R3 — the weekly Staff Meeting chat (opt-in later-add)
     "balance",        # BAL1 — the Sunday personal white-space chat (opt-in later-add, m_facing only; receipt carries counts, never personal content)
@@ -213,6 +214,10 @@ RECEIPT_TYPES: dict[str, dict] = {
     # registered here, so every mandated call raised ValueError at runtime
     # (stalled-projects got registered in v4.5.2 C3; pipeline didn't).
     "pipeline-tracker":   {"types": frozenset({"pack_run"})},
+    # objectives readout receipt (SPEC OBJ1, DRAFT — same C3 shape): what was
+    # surfaced + data.drifting_thread_ids, so the next fire dedups its nags
+    # and the monthly value receipt can count drift flags from receipts.
+    "objectives":         {"types": frozenset({"pack_run"})},
     # MAINT1 — the dispatcher task's own per-fire audit event. The five job
     # ids above (cleanup / reconcile-sent / monthly-report / weekly-insights /
     # session-sweep) keep their own receipt types: those are the JOB success

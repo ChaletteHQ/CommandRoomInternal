@@ -414,7 +414,7 @@ Use `cru_match._commitment_field(ev, "<field>")` for every commitment-field read
 For the confidence threshold specifically, use `cru_match._commitment_confidence(ev)` (returns a normalized float in [0.0, 1.0]). Some writers store confidence as a string label (`"HIGH"`, `"medium"`, `"high"`) rather than a 0-1 float; the comparison crashes on string values and silently drops the event. The helper coerces both via `_CONFIDENCE_LEVEL_MAP`.
 
 Read events.jsonl. Apply base filter to every commitment event (every field read uses `_commitment_field`; confidence read uses `_commitment_confidence`):
-- **Kind filter (Phase 2 Stage D, re-scoped by CTS1):** OWNER-ME task-kind items never surface here — they are My Plate · Personal rows (the `surface_split` partition already routes them). **Delegated tasks (owner ≠ M, effective kind `task` — CTS1 §2.3) DO render in this chat**: someone else acts next, so they belong on Waiting On — but `cru_match.cru_eligible` excludes task-kind from CRU, so they get NO pre-staged chase draft and NO reconcile: render with the manual action set only (`draft` composes a nudge on demand + `mark received` + `snooze 3d` + `add to my list`), tagged "(delegated — nudge is manual, I won't auto-chase this)". The header counts from `count_commitments` still include every kind in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
+- **Kind filter (Phase 2 Stage D, re-scoped by CTS1):** OWNER-ME task-kind items never surface here — they are My Plate · Personal rows (the `surface_split` partition already routes them). **Delegated tasks (owner ≠ M, effective kind `task` — CTS1 §2.3) DO render in this chat**: someone else acts next, so they belong on Waiting On — but `cru_match.cru_eligible` excludes task-kind from CRU, so they get NO pre-staged chase draft and NO reconcile: render with the manual action set only (`draft` composes a nudge on demand + `mark received` + `snooze 3d` + `add to my plate`), tagged "(delegated — nudge is manual, I won't auto-chase this)". The header counts from `count_commitments` still include every kind in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
 - **Sub-item filter (SUB1 — REQUIRED):** live sub-items (projected `data.parent_id` naming an open parent) NEVER surface as their own chase rows and NEVER enter the CRU legs — `cru_match.cru_eligible` excludes them in code, same mechanism as the task filter. The PARENT is the commitment of record: its row carries the progress annotation ("2 of 3 sub-items done · next: [step]" — from the loader's `n_subitems_open`/`n_subitems_done`/`next_subitem_due` stamps) and, when the last open child has closed, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Child activity already bubbles into the parent's movement (never render a parent "stuck" while its steps are moving). Orphan children (parent closed — cascade crash window) surface as ordinary top-level rows with "was part of: [parent title]". `data.next_subitem_due` is an annotation/ranking signal ONLY — never the parent's due; a deferred parent stays deferred.
 - `_commitment_confidence(ev) >= confidence.CONFIDENCE_SURFACE_MIN` (== 0.7 as of v3.5.0; canonical constant in `shared/scripts/confidence.py`)
 - `_commitment_field(ev, "status") not in ("pending_review", "proposed")` — filter out shape-5 pending-review events; they surface via Pulse CRU-review, not daily commitments
@@ -473,9 +473,9 @@ meeting_today = match_commitments_to_meetings(opens, todays_meetings,
 
 Rows match by counterparty (`counterparty_id` / `owner_id` is an attendee) OR name-mention (an attendee's name appears in the item's own text — catches counterparty-less legacy captures whose title names the person). **CTS1 scope:** render ONLY the rows whose surface is `waiting_on` (owner present, ≠ M) as the FIRST bucket of the chat, labeled with the meeting ("you see [name] at [time] — this is open between you"). The owner-me matches render as My Plate's meeting bucket (that orchestrator runs the same `match_commitments_to_meetings` call over ITS partition) — never here.
 
-**Exemptions (deliberate, all four):** the meeting_today bucket bypasses (a) the due-date requirement — undated items render "no date set", never a blank; (b) the `aging_undated` ≥ 7-day floor — a fresh undated capture that matters today surfaces today; (c) the confidence floor — recovered captures carry no confidence score and would otherwise never surface here; (d) the chase-eligibility filter — a meeting-linked DELEGATED task (owner ≠ M, kind task) renders with the manual set (`draft` / `mark received` / `snooze 3d` / `add to my list`), never a pre-staged chase draft. The surface partition itself is NOT bypassed (CTS1): owner-me meeting matches belong to My Plate's meeting bucket. Everything else holds: closed/dismissed/suppressed items never enter (they are not in `opens`), and the surface-preference filter still applies.
+**Exemptions (deliberate, all four):** the meeting_today bucket bypasses (a) the due-date requirement — undated items render "no date set", never a blank; (b) the `aging_undated` ≥ 7-day floor — a fresh undated capture that matters today surfaces today; (c) the confidence floor — recovered captures carry no confidence score and would otherwise never surface here; (d) the chase-eligibility filter — a meeting-linked DELEGATED task (owner ≠ M, kind task) renders with the manual set (`draft` / `mark received` / `snooze 3d` / `add to my plate`), never a pre-staged chase draft. The surface partition itself is NOT bypassed (CTS1): owner-me meeting matches belong to My Plate's meeting bucket. Everything else holds: closed/dismissed/suppressed items never enter (they are not in `opens`), and the surface-preference filter still applies.
 
-**pending_review rows render as a confirm, not a chase:** tag `(captured from a chat — confirm it's yours)` and use the REVIEW action cluster (`confirm` / `not relevant` / `add to my list`, dispatching exactly like Phase 3.6's rows). Never pre-stage a chase email on an unconfirmed item — no auto-email on a guessed owner.
+**pending_review rows render as a confirm, not a chase:** tag `(captured from a chat — confirm it's yours)` and use the REVIEW action cluster (`confirm` / `not relevant` / `add to my plate`, dispatching exactly like Phase 3.6's rows). Never pre-stage a chase email on an unconfirmed item — no auto-email on a guessed owner.
 
 **Caps:** meeting_today takes priority INSIDE the existing 7-item total cap (cap 3 meeting_today rows per fire, soonest meeting first; the date buckets fill the remainder). No double-surfacing: an item already rendering in meeting_today is excluded from the date buckets below for this fire. Header counts are untouched — this bucket changes SURFACING only.
 
@@ -493,7 +493,7 @@ Same date buckets (`overdue`, `due_near`, `aging_undated`). Renders with the sta
 **Learned chase cadence (Phase 6 Loop 6).** When surfacing an OWED-TO-YOU item for chase, honor the per-relationship-type chase window learned by insight-generator's Pass 7b instead of the flat 7-day default: `from chase_policy import load_chase_policy, get_chase_window` → `chase_days, escalate = get_chase_window(policy, <owner's org relationship_type>)`. An `aging_undated` item from a relationship that "goes quiet 40% of the time" surfaces to chase at day 3 rather than 7; after `escalate` silent chases, the item's annotation suggests a call (`follow-up call`). Missing store → the default `(7, 3)`, so behavior is unchanged until the CEO approves a policy. This tunes WHEN a chase is offered; it never auto-sends.
 
 ### B-unreachable: `data.owner_id` is null AND `data.owner_external` is set (e.g., `"Rakesh"`) — owner was named in extraction but has no entity record yet
-Same date buckets — **today-due items here STILL count as "needing action."** Renders with a different action set scoped to "you can't auto-chase yet — fix that first": `["N add as person <owner_external> to <inferred_org_or_blank>", "N add to my list", "N skip"]` (v2.14.36+ — `add context [text]` dropped; the per-item "+ Add context" toggle handles context capture universally). Tag annotation: `(no email on file — adding <owner_external> as a contact enables auto-chase next time)`.
+Same date buckets — **today-due items here STILL count as "needing action."** Renders with a different action set scoped to "you can't auto-chase yet — fix that first": `["N add as person <owner_external> to <inferred_org_or_blank>", "N add to my plate", "N skip"]` (v2.14.36+ — `add context [text]` dropped; the per-item "+ Add context" toggle handles context capture universally). Tag annotation: `(no email on file — adding <owner_external> as a contact enables auto-chase next time)`.
 
 Per M's v2.14.18 testing: an owed-to-you commitment due today with no contact info should NOT disappear into "0 needing action." The action is different (add the contact) but it's still action — and the user explicitly noticed the silence as a UX bug. v2.14.19 surfaces these explicitly.
 
@@ -528,12 +528,12 @@ The 0.30–0.55 MEDIUM matches (from apply-choices sends, the 2.5/2.6/2.7 pre-re
 
 1. Load via `cru_match.load_open_review_proposals(events_path)` (last-7-days window, already filtered for confirmed/dismissed/otherwise-closed).
 2. Render as a compact **"Did these get handled?"** section at the BOTTOM of the widget (after the 6 buckets, before any fr-items), sub-namespace `r1/r2/...` — same shape as Pulse's CRU-review items. Cap 3 per fire (oldest first; the rest ride future fires — the 7-day window self-prunes). Each row: the commitment title + the proposal's evidence in plain English ("looks like your Tuesday email to Sam covered this"). NO score display beyond "likely".
-3. Actions per row (REVIEW cluster — all canonical): `confirm` · `not relevant` · `add to my list`.
+3. Actions per row (REVIEW cluster — all canonical): `confirm` · `not relevant` · `add to my plate`.
 
 **Reply handlers (dispatched via apply-choices on this orchestrator's `src`):**
 - `[rN] confirm` → `commitment_state.close_commitment(workspace_root, <underlying commitment_id verbatim>, resolved_by=<the commitment's owner_id>, evidence=<the proposal's evidence>, source_skill="commitments", user_confirmed=True)` — THE closure path; the explicit click IS user confirmation, so this may close a `pending_review`-flagged commitment. Confirm: `✓ Closed: [title].`
 - `[rN] not relevant` → `commitment_review_dismissed` event (via `cru_match.build_commitment_review_dismissed_event`, 60-day cooldown). The commitment STAYS OPEN. Confirm: `✓ Kept open — that signal wasn't it.`
-- `[rN] add to my list` → `commitment_to_discuss` deferral, same as everywhere.
+- `[rN] add to my plate` → `commitment_state.create_personal_task` (owner-me `task` — it lands on My Plate), same as everywhere.
 
 Both closers retire the proposal implicitly (append-only — the original `commitment_review_proposed` event is never touched). Pulse keeps its own CRU-review pass — the two surfaces read the same `load_open_review_proposals` set, and whichever the user answers first wins (the other stops showing it).
 
@@ -856,7 +856,7 @@ Self-commitments and undated items genuinely have no source thread → no `origi
         ("Subject", "NetSuite mapping: timing"),   # dash-free (S3 subject gate)
     ],
     "body_lines": [...],
-    "actions": ["6 send", "6 draft", "6 follow-up call", "6 mark received", "6 escalate to memo", "6 snooze 3d", "6 add to my list"],  # v2.14.38+ — standardized deferral cluster (replaces `skip`).
+    "actions": ["6 send", "6 draft", "6 follow-up call", "6 mark received", "6 escalate to memo", "6 snooze 3d", "6 add to my plate"],  # v2.14.38+ — standardized deferral cluster (replaces `skip`).
 }
 ```
 
@@ -871,11 +871,11 @@ Self-commitments and undated items genuinely have no source thread → no `origi
     "metadata": [("To", "sam@example.com"), ("Subject", "Quick check on a few things")],
     "body_lines": [...],                    # grouped chase draft (lists the items in the EMAIL going to Sam)
     "sub_items": [
-        {"id": "7a", "summary": "Q2 deck refresh (committed Apr 8)", "actions": ["7a mark received", "7a not relevant", "7a add to my list"]},
-        {"id": "7b", "summary": "Margin model (committed Apr 12)", "actions": ["7b mark received", "7b not relevant", "7b add to my list"]},
-        {"id": "7c", "summary": "Partner-tier proposal (committed Apr 18)", "actions": ["7c mark received", "7c not relevant", "7c add to my list"]},
+        {"id": "7a", "summary": "Q2 deck refresh (committed Apr 8)", "actions": ["7a mark received", "7a not relevant", "7a add to my plate"]},
+        {"id": "7b", "summary": "Margin model (committed Apr 12)", "actions": ["7b mark received", "7b not relevant", "7b add to my plate"]},
+        {"id": "7c", "summary": "Partner-tier proposal (committed Apr 18)", "actions": ["7c mark received", "7c not relevant", "7c add to my plate"]},
     ],
-    "actions": ["7 send", "7 draft", "7 mark received all", "7 snooze 3d", "7 add to my list"],  # v2.14.38+ — parent gets the daily-loop deferral cluster; sub-items get a tighter set (mark received / not relevant / add to my list — `snooze 3d` per sub-item is noisy when the parent email is the action).
+    "actions": ["7 send", "7 draft", "7 mark received all", "7 snooze 3d", "7 add to my plate"],  # v2.14.38+ — parent gets the daily-loop deferral cluster; sub-items get a tighter set (mark received / not relevant / add to my plate — `snooze 3d` per sub-item is noisy when the parent email is the action).
 }
 ```
 
@@ -888,11 +888,11 @@ Rule: each sub-item's `summary` MUST be a terse, distinctive label that maps 1:1
 Sub-items render as:
 
 ```
-7a · Recap email + screenshot               [Mark received] [Not relevant] [Add to my list]
-7b · Software license list                  [Mark received] [Not relevant] [Add to my list]
-7c · Document mgmt double-check (Quinn)      [Mark received] [Not relevant] [Add to my list]
-7d · Wendy / RPC setup                      [Mark received] [Not relevant] [Add to my list]
-7e · Cloud-side pricing CC'd to all 3       [Mark received] [Not relevant] [Add to my list]
+7a · Recap email + screenshot               [Mark received] [Not relevant] [Add to My Plate]
+7b · Software license list                  [Mark received] [Not relevant] [Add to My Plate]
+7c · Document mgmt double-check (Quinn)      [Mark received] [Not relevant] [Add to My Plate]
+7d · Lyra / RPC setup                       [Mark received] [Not relevant] [Add to My Plate]
+7e · Cloud-side pricing CC'd to all 3       [Mark received] [Not relevant] [Add to My Plate]
 ```
 
 (v2.10.9–v2.12.3 hid the summary; v2.12.4 brings it back. The earlier "redundant duplication" concern was about repeating LONG bullet text below an email body that already had it; the v2.12.4 fix is to make summaries TERSE — single noun phrase, ≤ 8 words — so they're scannable shortcuts, not duplicate prose.)
@@ -953,9 +953,9 @@ The action surface is a `show_widget`-rendered button group per item, with per-i
 
 **Action sets (the buttons rendered in the widget, v2.14.38+ — standardized deferral cluster; CTS1: this chat renders the waiting-on clusters only — the owner-me clusters live in orchestrator-my-plate.md):**
 
-WAITING ON actions (chase-eligible rows): `send`, `draft`, `follow-up call`, `mark received`, `escalate to memo`, `snooze 3d`, `add to my list`. `edit then send` retired (FB-17 — inline body edits). Skip removed v2.14.38; `snooze 3d` + `add to my list` replace it.
+WAITING ON actions (chase-eligible rows): `send`, `draft`, `follow-up call`, `mark received`, `escalate to memo`, `snooze 3d`, `add to my plate`. `edit then send` retired (FB-17 — inline body edits). Skip removed v2.14.38; `snooze 3d` + `add to my plate` replace it.
 
-Delegated-task rows (owner ≠ M, effective kind `task` — CTS1 §2.3): `draft` (manual nudge, composed at dispatch — no pre-staged chase), `mark received`, `snooze 3d`, `add to my list`.
+Delegated-task rows (owner ≠ M, effective kind `task` — CTS1 §2.3): `draft` (manual nudge, composed at dispatch — no pre-staged chase), `mark received`, `snooze 3d`, `add to my plate`.
 
 Display labels come from `shared/scripts/verb_taxonomy.py` (F-59 — never restate them locally): `resolved` displays **Done**, `push to [date]` displays **Later…** (t3 FB-3), the rest per their taxonomy rows. Rendering (t3 FB-4, FB-17): email-shaped rows show **Send** / **Draft** / **Snooze (3 days)** one-tap buttons; commitment rows show **Done**; the tail sits in the row's `— more —` dropdown. Rows carrying `push to [date]` have their separate snooze dropdown option suppressed (the FB-3 merge — Later… covers it). Chat prose under the widget names ONLY the controls the card visibly shows, by their exact labels (t3 FB-11).
 
@@ -967,13 +967,13 @@ Action semantics:
 - `mark received` — mark the commitment as fulfilled by the counterparty. Writes `thread_resolved` event for that commitment id.
 - `escalate to memo` — fire memo-writer skill, generates a longer-form `.docx` memo when the conversation has gotten complex enough that a quick reply isn't appropriate.
 - `snooze 3d` (v2.14.38+) — fixed 3-day snooze. Writes `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Item won't re-surface until the date passes. No textarea — fixed duration per M's standardization.
-- `add to my list` — write `commitment_to_discuss` event. Surfaces later via the `show my list` skill, grouped by counterparty.
+- `add to my plate` — dispatch `commitment_state.create_personal_task` (owner-me `task`, status `created`). It lands on My Plate. (`add to my list` is RETIRED — MLK1, 2026-07-21; no row emits it. A persisted old widget's click still dispatches through apply-choices with its original meaning.)
 
 (`prep deep work`, `push to [date]`/Later… as a due-date shift, and `resolved` on the user's own items are My Plate semantics now — see orchestrator-my-plate.md. A `push to [date]` typed HERE on an owed-to-M row still auto-routes per t3 FB-3: it lands as a snooze, never a rewrite of a date the counterparty owns.)
 
 (Removed in v2.12.0: standalone `edit [change]`. Removed in v2.12.1: `edit firmer` / `edit softer`. Removed in v2.12.2: standalone `edit` — combined `edit then send` / `draft` (consolidated v2.14.4+; was previously two separate verbs) replace it so editing always pairs with a disposition in one step.)
 
-For grouped items: each sub_item (`7a`, `7b`, `7c`) gets its own `mark received` / `not relevant` / `add to my list` button row inside the parent's group, plus the parent-level `mark received all`.
+For grouped items: each sub_item (`7a`, `7b`, `7c`) gets its own `mark received` / `not relevant` / `add to my plate` button row inside the parent's group, plus the parent-level `mark received all`.
 
 
 # Phase 10 — Failure handling
@@ -996,7 +996,7 @@ Parse `N action` (with or without period). (CTS1: the owner-me handler set — `
 - `N mark received all` (grouped) → same close_commitment call per sub-item (batch via `commitment_state.close_commitments`). Suppress the parent.
 - `N escalate to memo` → fire memo-writer through standard chat invocation. Memo-writer produces .docx via the docx skill and surfaces the link the standard Cowork way. Do NOT emit `file://` links yourself. Re-prompt in plain English: "Want to send this as the email body, attach it to the reply, or send it standalone?"
 - `N snooze 3d` (v2.14.38+) → `chat_dismissal` with 3-day TTL.
-- `N add to my list` (v2.14.38+) → `commitment_to_discuss` event grouped by counterparty.
+- `N add to my plate` → `commitment_state.create_personal_task` (owner-me `task` — it lands on My Plate).
 
 ## Sub-item actions (grouped items, v2.14.38+)
 
@@ -1004,7 +1004,7 @@ For `7a`, `7b`, `7c` style sub-items inside a grouped chase email:
 
 - `Na mark received` → write `thread_resolved` for that specific commitment id. Update parent's chase draft to drop the now-received item.
 - `Na not relevant` → write `chat_dismissal` with `data.target_id: <sub-commitment-id>`, `data.reason: "not_relevant"`, 60-day TTL. Sub-commitment suppressed for 60 days; parent stays open if other sub-items remain.
-- `Na add to my list` → write `commitment_to_discuss` for that sub-commitment. Surfaces later via `show my list` grouped by counterparty.
+- `Na add to my plate` → `commitment_state.create_personal_task` for that sub-item (owner-me `task` — it lands on My Plate).
 
 ## Lifecycle corrections (v4.6.0 S4 — typed chat phrases, both directions)
 

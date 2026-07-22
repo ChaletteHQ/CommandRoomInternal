@@ -43,7 +43,7 @@ ALLOWED_THREAD_FIELDS = {
     "cross_refs", "kind", "project_class", "owner_person_id",
     "stakeholder_person_ids", "last_activity", "next_step", "success_criteria",
     "first_seen", "session_count", "dormancy_reviewed_at", "archived_at",
-    "archive_reason", "roster_overrides", "deal",
+    "archive_reason", "roster_overrides", "deal", "objective",
 }
 REQUIRED_THREAD_FIELDS = {"id", "status"}
 
@@ -61,6 +61,23 @@ ALLOWED_DEAL_FIELDS = {
     "opened_at", "closed_at",
 }
 DEAL_FORECAST_CATEGORIES = ("commit", "best_case", "pipeline")
+
+# --- Objective object (SPEC OBJ1, DRAFT) — allowed ONLY on kind="objective"
+# threads. Single source for the enums; objective_state.py (the only writer of
+# objective.* fields) imports these. entities.schema.json
+# $defs.project.objective mirrors them. Directional status is NOT here — it is
+# never stored on the entity (derived from events by objective_math.py).
+OBJECTIVE_BINDING_TYPES = ("meeting", "self", "activity")
+OBJECTIVE_SERIES_MATCH = ("title_and_people", "title_only")
+OBJECTIVE_OUTCOMES = ("completed", "archived")
+ALLOWED_OBJECTIVE_FIELDS = {
+    "statement", "horizon", "binding", "anchor_thread_id", "milestones",
+    "outcome", "outcome_note", "opened_at", "closed_at",
+}
+ALLOWED_OBJECTIVE_BINDING_FIELDS = {
+    "type", "series_key", "series_match", "series_people", "cadence_days",
+    "entity_ids", "target_note",
+}
 
 # Observed superset (schema enum is missing exploring/scoping/resolved).
 VALID_STATUSES = {
@@ -157,6 +174,8 @@ def _validate_thread(record: dict) -> None:
         raise ValueError(f"stage must be an integer or null, got: {stage!r}")
     if "deal" in record:
         _validate_deal(record)
+    if "objective" in record:
+        _validate_objective(record)
 
 
 def _validate_deal(record: dict) -> None:
@@ -214,6 +233,107 @@ def _validate_deal(record: dict) -> None:
             "string or range; store null + a note in deal.source for ranges")
 
 
+def _validate_objective(record: dict) -> None:
+    """SPEC OBJ1 (DRAFT) — the objective object is allowed ONLY on
+    kind='objective' threads, with an enum-validated tracking binding.
+    Guidance style mirrors _validate_deal: name the fix, not just the
+    failure. Write objective.* ONLY through shared/scripts/objective_state.py
+    (the single writer/closure path); this validation is the schema floor
+    beneath it. Directional status is deliberately NOT a field here —
+    it derives from events (objective_math.py), never stored."""
+    obj = record["objective"]
+    if obj is None:
+        raise ValueError("objective must be an object, not null — omit the field entirely")
+    if not isinstance(obj, dict):
+        raise ValueError(f"objective must be an object, got: {type(obj).__name__}")
+    if record.get("kind") != "objective":
+        raise ValueError(
+            "an objective object is only allowed on kind='objective' threads "
+            f"(this thread's kind: {record.get('kind')!r}). Set kind='objective' "
+            "or drop the objective object.")
+    extras = set(obj) - ALLOWED_OBJECTIVE_FIELDS
+    if extras:
+        raise ValueError(
+            "objective object has fields not in the schema: "
+            f"{sorted(extras)}. Allowed: {sorted(ALLOWED_OBJECTIVE_FIELDS)}. "
+            "Update entities.schema.json $defs.project.objective AND "
+            "ALLOWED_OBJECTIVE_FIELDS first if you genuinely need a new field. "
+            "(A 'status' field here is the one bug class this guard exists "
+            "for — status derives from events, never stored.)")
+    statement = obj.get("statement")
+    if not isinstance(statement, str) or not statement.strip():
+        raise ValueError(
+            "objective.statement must be a non-empty string — the objective "
+            "in the CEO's own words")
+    binding = obj.get("binding")
+    if not isinstance(binding, dict):
+        raise ValueError(
+            "objective.binding must be an object with a 'type' — the CEO's "
+            "three-way tracking choice (meeting | self | activity)")
+    b_extras = set(binding) - ALLOWED_OBJECTIVE_BINDING_FIELDS
+    if b_extras:
+        raise ValueError(
+            "objective.binding has fields not in the schema: "
+            f"{sorted(b_extras)}. Allowed: "
+            f"{sorted(ALLOWED_OBJECTIVE_BINDING_FIELDS)}.")
+    b_type = binding.get("type")
+    if b_type not in OBJECTIVE_BINDING_TYPES:
+        raise ValueError(
+            f"objective.binding.type must be one of "
+            f"{list(OBJECTIVE_BINDING_TYPES)}, got: {b_type!r}")
+    if b_type == "meeting":
+        if not isinstance(binding.get("series_key"), str) or not binding["series_key"].strip():
+            raise ValueError(
+                "a meeting binding requires a non-empty series_key (the "
+                "normalized recurring-meeting title) — propose it from the "
+                "meeting history, confirm with the user, never leave it blank")
+        sm = binding.get("series_match")
+        if sm is not None and sm not in OBJECTIVE_SERIES_MATCH:
+            raise ValueError(
+                f"objective.binding.series_match must be one of "
+                f"{list(OBJECTIVE_SERIES_MATCH)} or null (null = "
+                f"title_and_people default), got: {sm!r}")
+    elif b_type == "self":
+        cadence = binding.get("cadence_days")
+        if cadence is not None and (isinstance(cadence, bool)
+                                    or not isinstance(cadence, int) or cadence < 1):
+            raise ValueError(
+                f"objective.binding.cadence_days must be a positive integer "
+                f"or null (null = weekly default), got: {cadence!r}")
+    elif b_type == "activity":
+        ids = binding.get("entity_ids")
+        if not isinstance(ids, list) or not ids or not all(
+                isinstance(i, str) and i for i in ids):
+            raise ValueError(
+                "an activity binding requires a non-empty entity_ids list of "
+                "thread/deal ids — topic over party: bind to a thread or "
+                "deal, never a bare person")
+    anchor = obj.get("anchor_thread_id")
+    if anchor is not None and (not isinstance(anchor, str) or not anchor.strip()):
+        raise ValueError(
+            f"objective.anchor_thread_id must be a thread id string or null, "
+            f"got: {anchor!r}")
+    outcome = obj.get("outcome")
+    if outcome is not None and outcome not in OBJECTIVE_OUTCOMES:
+        raise ValueError(
+            f"objective.outcome must be one of {list(OBJECTIVE_OUTCOMES)} or "
+            f"null, got: {outcome!r} (set only via objective_state."
+            "complete_objective / archive_objective)")
+    milestones = obj.get("milestones")
+    if milestones is not None:
+        if not isinstance(milestones, list):
+            raise ValueError(
+                f"objective.milestones must be a list, got: {type(milestones).__name__}")
+        for m in milestones:
+            if (not isinstance(m, dict) or not isinstance(m.get("title"), str)
+                    or not m["title"].strip()
+                    or set(m) - {"title", "done"}
+                    or not isinstance(m.get("done", False), bool)):
+                raise ValueError(
+                    "each objective milestone must be {title: non-empty "
+                    f"string, done?: bool}} — got: {m!r}")
+
+
 def _coerce(record: dict) -> dict:
     """Drop forbidden keys and coerce a legacy string `stage` to None so an
     ingest-parser record lands canonical instead of failing."""
@@ -269,6 +389,7 @@ def create_thread(workspace_root: str | Path, *,
                   first_seen: str | None = None,
                   thread_id: str | None = None,
                   deal: dict | None = None,
+                  objective: dict | None = None,
                   source_skill: str = "unknown",
                   skip_dedup: bool = False) -> dict:
     """Create a new thread record. Dedups by folder_name → canonical_name,
@@ -303,6 +424,7 @@ def create_thread(workspace_root: str | Path, *,
     if parent_thread_id:        record["parent_thread_id"] = parent_thread_id
     if spawned_from_thread_id:  record["spawned_from_thread_id"] = spawned_from_thread_id
     if deal is not None:        record["deal"] = deal
+    if objective is not None:   record["objective"] = objective
 
     record = _coerce(record)
     _validate_thread(record)

@@ -106,6 +106,9 @@ def test_coverage_of_load_bearing_types():
     # (unidentified_attendee_observed via meeting_capture.
     # build_unidentified_attendee_event; identity_reconcile_run — the
     # reconciler's per-pass receipt, written only via receipts.log_receipt)
+    # + the OBJ1 objective lane (objective_created / objective_updated /
+    # objective_review / objective_report / objective_completed /
+    # objective_archived, written only by objective_state.py)
     # - each registered per EVENT_TYPES.md with named consumers.
     expected = {"commitment", "commitment_resolved", "decision", "meeting", "meeting_processed",
                 "interaction", "email_drafted", "email_sent", "pack_run", "pattern_break_detected",
@@ -124,8 +127,12 @@ def test_coverage_of_load_bearing_types():
                 "unidentified_attendee_observed", "identity_reconcile_run",
                 # SPEC OUT3B (2026-07-19) — the on-demand chart lane, written
                 # only by the chart-on-demand skill (catalog_id / kind / refused).
-                "chart_render"}
-    check("exactly the 42 load-bearing types are covered", types == expected)
+                "chart_render",
+                # SPEC OBJ1 (DRAFT) — the objective lane, written only by objective_state.py.
+                "objective_created", "objective_updated", "objective_review",
+                "objective_report", "objective_completed",
+                "objective_archived"}
+    check("exactly the 48 load-bearing types are covered", types == expected)
 
 
 def test_warn_only_hook_never_blocks():

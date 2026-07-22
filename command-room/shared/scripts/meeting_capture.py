@@ -50,6 +50,7 @@ MEETING_WRITE_TYPES = (
     "commitment",
     "person_proposal",
     "person_update_proposal",
+    "objective_review",
 )
 
 

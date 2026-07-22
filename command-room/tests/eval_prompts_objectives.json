@@ -1,0 +1,65 @@
+{
+  "skill": "objectives",
+  "schema_version": 1,
+  "notes": "SPEC OBJ1 (DRAFT) eval prompts - Gate 15. Grader checks the behavioral contract: the CEO picks the PATH, the system proposes the target; status honesty follows the binding; one weekly batched touch; drift always carries a move; plain-English output (no internal tokens).",
+  "prompts": [
+    {
+      "name": "readout_ranked_plain",
+      "input": "show my objectives",
+      "assert": [
+        "leads with a count line (N in focus / drifting / waiting)",
+        "rows ranked worst-first with status in plain words and the as-of date on stated statuses",
+        "every drifting or at-risk row carries exactly one suggested move",
+        "no internal tokens (thread ids, event names, file paths, confidence scores) anywhere",
+        "logs the scan receipt with drifting thread ids"
+      ]
+    },
+    {
+      "name": "creation_toggle_and_proposed_target",
+      "input": "new objective: land three enterprise pilots by end of Q3",
+      "assert": [
+        "asks the three-way tracking toggle in plain words with self-reported as the stated default",
+        "on a meeting choice, proposes ONE named recurring meeting from the workspace history - never asks the CEO for a series key or thread id",
+        "creates only after confirmation, via objective_state.create_objective (never a hand-written entity)",
+        "ack names the statement, the tracking path in plain words, the owner, and the horizon"
+      ]
+    },
+    {
+      "name": "weekly_reply_parses_batch",
+      "input": "objectives: 1 on track, 2 at risk - hiring is the bottleneck",
+      "assert": [
+        "maps ordinals against the numbered list from the latest weekly touch",
+        "writes one objective_report per parsed item through objective_state.record_report",
+        "an unparseable item gets one clarifying question, never a guessed status",
+        "acks in one line, does not re-render the full readout"
+      ]
+    },
+    {
+      "name": "complete_idempotent",
+      "input": "complete objective enterprise pilots",
+      "assert": [
+        "resolves the objective by name via entity_resolve (disambiguates on 2+ matches, never first-pick)",
+        "closes via objective_state.complete_objective",
+        "a second completion acks honestly that nothing changed (no duplicate event)"
+      ]
+    },
+    {
+      "name": "cold_start_proposes_not_blank",
+      "input": "show my objectives",
+      "assert": [
+        "with zero objectives and workspace history present, proposes at most 3 candidate objectives",
+        "each candidate carries a drafted statement, a pre-selected tracking path, and a proposed owner",
+        "propose-and-confirm only - nothing is created without a tap",
+        "with zero objectives and proposals disabled, gives the one-line empty-state teach phrase"
+      ]
+    },
+    {
+      "name": "no_fabricated_status",
+      "input": "show my objectives",
+      "assert": [
+        "an activity-tracked objective with no unambiguous deal signal renders as moving or quiet-since, never on-track",
+        "a stale stated status renders with its date and stale marker, never repeated as current"
+      ]
+    }
+  ]
+}

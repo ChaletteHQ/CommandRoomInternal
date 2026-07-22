@@ -473,7 +473,8 @@ class DataShapeError(ValueError):
       verbs are accepted as deprecated aliases, none is emitted anew.) A plain
       email card is EXACTLY Send / Draft / Snooze with no dropdown; Waiting On
       chase rows are also email-shaped but add domain verbs (mark received,
-      follow-up call, add to my list) in the tail. Items that have email
+      follow-up call) in the tail (`add to my list` rode there too until MLK1
+      retired it). Items that have email
       metadata but DON'T offer the required set leave users with widget buttons
       that don't match the visible draft — Drew's "this one doesn't have a
       resolve button" issue was the same class.
@@ -2431,12 +2432,21 @@ def _render_original_thread_html(orig: dict) -> str:
     body = orig.get("body", "")
     url = orig.get("url", "")
 
+    # No displayable content at all → render no accordion. An empty <details>
+    # shell that opens to nothing is worse than none (BUG: content-less
+    # original_thread dicts rendered a doubled label + empty expandable body).
+    if not url and not subject and not body:
+        return ""
+
     summary_parts = []
     if author:
         summary_parts.append(_html_mod.escape(author))
     if date:
         summary_parts.append(_html_mod.escape(date))
-    summary_text = " · ".join(summary_parts) if summary_parts else "Original thread"
+    # When there's no author/date, the summary is just the "📨 Original thread"
+    # label itself — no " — Original thread" tail (that produced the doubled
+    # "Original thread — Original thread").
+    summary_text = " · ".join(summary_parts) if summary_parts else ""
 
     body_html = ""
     if url:
@@ -2464,9 +2474,10 @@ def _render_original_thread_html(orig: dict) -> str:
             else:
                 body_html += '<div class="cr-orig-empty"></div>'
 
+    summary_label = f"📨 Original thread — {summary_text}" if summary_text else "📨 Original thread"
     return (
         f'<details class="cr-orig-thread">'
-        f'<summary class="cr-orig-summary">📨 Original thread — {summary_text}</summary>'
+        f'<summary class="cr-orig-summary">{summary_label}</summary>'
         f'<div class="cr-orig-body">{body_html}</div>'
         f"</details>"
     )
@@ -2907,9 +2918,9 @@ def _merge_later_verbs(actions: list) -> list:
 # FB-17 (M, 2026-07-19): the email card's primaries are Send / Draft / Snooze.
 # A PLAIN email-draft card carries exactly those three, so its tail is empty —
 # "no dropdown", per the ruling. A Waiting On chase row is also email-shaped
-# but carries domain verbs (mark received, follow-up call, add to my list) that
-# cannot collapse into three buttons; those stay in the tail — the ruling is
-# about the plain draft card, not the chase surface.
+# but carries domain verbs (mark received, follow-up call) that cannot
+# collapse into three buttons; those stay in the tail — the ruling is about
+# the plain draft card, not the chase surface.
 _EMAIL_SHAPE_MARKERS = ("send", "draft")   # detects an email-shaped row
 _PRIMARY_EMAIL_VERBS = ("send", "draft", "snooze 3d")
 _PRIMARY_COMMITMENT_VERBS = ("resolved", "mark done")
@@ -3002,7 +3013,13 @@ def _render_widget_item(item: dict) -> str:
         head_parts.append(f'<span class="cr-item-name"><strong>{_md_to_html(name)}</strong></span>')
     subject = item.get("subject", "")
     if subject:
-        head_parts.append(f'<span class="cr-item-subject">· "{_md_to_html(subject)}"</span>')
+        # The "· " separator sits BETWEEN a name and the subject. On a
+        # name=None row (counterparty-unresolved orphan promises, my-plate
+        # CTS1 §8.2) there is no name to separate from — leading with a bare
+        # "· " is the render-side twin of the "?"-lead bug. Only emit it when
+        # a name actually precedes the subject.
+        _sep = '· ' if name else ''
+        head_parts.append(f'<span class="cr-item-subject">{_sep}"{_md_to_html(subject)}"</span>')
     context_tag = item.get("context_tag", "")
     if context_tag:
         head_parts.append(f'<span class="cr-item-context">— {_md_to_html(context_tag)}</span>')
@@ -3427,6 +3444,13 @@ button.cr-action.cr-selected:hover { background: #C9A570 !important; border-colo
  * the selected state is the same .cr-selected treatment as every button. */
 button.cr-action.cr-action-primary { border-color: #B88B4A !important; color: #B88B4A !important; font-weight: 600 !important; }
 button.cr-action.cr-action-primary:hover { background: rgba(184, 139, 74, 0.16) !important; }
+/* FB-CTS1: a SELECTED primary verb carries cr-action + cr-action-primary + cr-selected.
+ * The gold `color:#B88B4A` on `.cr-action-primary` ties on specificity with the dark
+ * `color:#14110F` on `.cr-selected` and, being later in source, WON — painting the
+ * selected label gold-on-gold (its own gold `.cr-selected` background), i.e. invisible.
+ * The 3-class rule below outranks both and restores the intended dark-on-gold selected
+ * label (Done / Send / Draft / Snooze all read correctly once armed). */
+button.cr-action.cr-action-primary.cr-selected { color: #14110F !important; }
 """.strip()
 
 # Collapsible "+ Add context" note toggle + field (v2.14.36+ — M's 2026-05-07
@@ -3575,7 +3599,13 @@ function crToggle(btn) {
 _JS_NOTES = """
 function crToggleNote(btn) {
   const n = btn.dataset.noteForN;
-  const fields = crQ('.cr-note-field');
+  // FB-CTS1 (Bug C): resolve the field WITHIN the clicked row first, not by a
+  // global first-match on data-note-for-n. If the same n ever surfaces on two
+  // rows (confirmed real for id-less sub-items, which all emit n=""), a global
+  // scan opens the wrong row's field and the clicked toggle reads as dead.
+  // closest() pins us to this row; global stays as the fallback.
+  const row = btn.closest('.cr-sub-item') || btn.closest('.cr-item');
+  const fields = (row || document).querySelectorAll('.cr-note-field');
   for (let i = 0; i < fields.length; i++) {
     if (fields[i].dataset.noteForN === n) {
       const f = fields[i];
@@ -3796,6 +3826,27 @@ function crBodyText(el) {
   return lines.join('\\n');
 }
 
+function crRowArmed(row){
+  // Any verb armed on this row — a dropdown value or a pressed primary button?
+  const s=row.querySelectorAll('.cr-action-select');
+  for(let i=0;i<s.length;i++)if(s[i].value)return true;
+  return !!row.querySelector('.cr-action.cr-selected');
+}
+
+function crBodyEdited(el){
+  // FB-CTS1 (Bug A): editing the email body must let the user Apply. The Apply
+  // gate only counts armed verbs + note text, so a body edit alone left Apply
+  // greyed and read as "editing the email breaks Apply." Auto-arm the row's
+  // DRAFT verb (never Send — a mere edit must not queue a send) so the counter
+  // ticks, the edited body serializes, and (post-CSS-fix) "Draft" shows armed.
+  const row=el.closest('.cr-sub-item')||el.closest('.cr-item');
+  if(row&&!crRowArmed(row)){
+    const d=row.querySelector('.cr-action[data-action="draft"]');
+    if(d&&typeof crToggle==='function')crToggle(d);
+  }
+  crUpdateCounter();
+}
+
 function crApplyAll() {
   if (crValidate().length > 0) {
     crUpdateCounter();
@@ -3848,7 +3899,11 @@ function crApplyAll() {
     window.crExtraSkips = [];
   }
   // Orphan-note capture (v3.13.0+): typed context with no action selected
-  // still applies, as the canonical `add to my list`.
+  // still applies. The carrier deliberately keeps the legacy wire id
+  // `add to my list` (MLK1: retired as a BUTTON, kept as this carrier so
+  // old and new widgets emit one shape) — apply-choices re-routes a
+  // context-bearing tuple to a `note` on the resolved person/thread, or
+  // declines honestly when nothing resolves. Never a list write.
   crQ('.cr-note-field').forEach(f => {
     const n = f.dataset.noteForN;
     if (!n || seen.has(String(n))) return;
@@ -3900,6 +3955,8 @@ function crClear() {
     crQ('.cr-action-input').forEach(w => {
       w.querySelectorAll('textarea, input').forEach(f => f.addEventListener('input', crUpdateCounter));
     });
+    // FB-CTS1 (Bug A) — editing the inline email body auto-arms Draft (crBodyEdited).
+    crQ('.cr-eb-body[contenteditable]').forEach(el=>{el.addEventListener('input',()=>crBodyEdited(el));});
     crUpdateCounter();
   } catch (e) {
     console.error('cr-widget bind failed:', e);
@@ -3951,10 +4008,14 @@ def _count_total_selectable_items(sections: list[dict]) -> int:
 # SAFETY: CSS minification is QUOTE-AWARE — it never touches text inside a
 # quoted string, so attribute selectors that depend on a literal space
 # (`.cr-action-input[style*="display: block"]`) are preserved exactly. JS
-# minification is line-level only (drop whole-line `//` comments, strip leading
-# indentation, drop blank lines) — it never joins lines (ASI stays intact) and
-# never rewrites tokens, so string/regex literals and the `__TOTAL_ITEMS__` /
-# `__CR_SRC__` placeholders survive untouched.
+# minification is line-level (drop whole-line `//` comments, strip leading
+# indentation, drop blank lines) PLUS conservative intra-line tightening
+# (_tighten_js_line): spaces adjacent to punctuation are dropped, but any
+# line containing '/' is exempt entirely (regex/comment/division safety),
+# quoted strings are untouched (quote-aware, escape-aware), a space between
+# two word characters always survives, and `+ +` never collapses to `++`.
+# It never joins lines (ASI stays intact), so string/regex literals and the
+# `__TOTAL_ITEMS__` / `__CR_SRC__` placeholders survive untouched.
 # ============================================================================
 
 def _minify_css(css: str) -> str:
@@ -4049,11 +4110,54 @@ def _minify_css(css: str) -> str:
     return "".join(result).strip()
 
 
+def _tighten_js_line(line: str) -> str:
+    """FB-CTS1 scaffold diet: conservative intra-line tightening. Rules:
+    - any line containing '/' is returned UNCHANGED (regex/comment/division safety);
+    - text inside quoted strings is untouched (quote-aware, handles \\ escapes);
+    - a space (run) is dropped only when adjacent to punctuation; a space between
+      two word characters always survives (`return true` never becomes `returntrue`);
+    - a single space between '+' and '+' survives (`a+ +b` must not become `a++b`).
+    Idempotent by construction."""
+    if "/" in line:
+        return line
+    punct = set("{}()[];,=<>+!&|?:")
+    out = []
+    i, n, quote = 0, len(line), None
+    while i < n:
+        c = line[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(line[i + 1]); i += 2; continue
+            if c == quote:
+                quote = None
+            i += 1; continue
+        if c in ("'", '"'):
+            quote = c; out.append(c); i += 1; continue
+        if c == " ":
+            j = i
+            while j < n and line[j] == " ":
+                j += 1
+            prev = out[-1] if out else ""
+            nxt = line[j] if j < n else ""
+            if prev == "+" and nxt == "+":
+                out.append(" ")           # never mint '++'
+            elif prev in punct or nxt in punct or not prev or not nxt:
+                pass                       # drop the run
+            else:
+                out.append(" ")            # word-word: keep one space
+            i = j; continue
+        out.append(c); i += 1
+    return "".join(out)
+
+
 def _minify_js(js: str) -> str:
     """Line-level JS minifier — safe because it never joins lines or rewrites
     tokens. Drops whole-line `//` comments and blank lines, strips leading
-    indentation. Trailing `//` comments and `/* */` blocks are left alone
-    (stripping them risks matching inside a string/regex literal)."""
+    indentation, then applies _tighten_js_line's conservative intra-line
+    tightening (slash-lines exempt, quote-aware). Trailing `//` comments and
+    `/* */` blocks are left alone (their lines contain '/', so tightening
+    skips them too)."""
     kept: list[str] = []
     for raw in js.split("\n"):
         line = raw.strip()
@@ -4061,7 +4165,7 @@ def _minify_js(js: str) -> str:
             continue
         if line.startswith("//"):
             continue
-        kept.append(line)
+        kept.append(_tighten_js_line(line))
     return "\n".join(kept)
 
 

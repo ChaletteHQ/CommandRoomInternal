@@ -11,9 +11,11 @@ connector rows) and riding the FB-7 `--fired-via` receipt path.
 Asserts:
   - the partition drives the surface: owner-me rows never appear (My Plate),
     a delegated task (owner != user, kind task) lands in the Delegated section
-    with the connector-free manual verbs (no `draft` — send-class, composed on
-    demand), and a pending_review item lands in the confirm tail with the
-    REVIEW cluster.
+    NAMING who we delegated to, with the manual verb set led by `draft` (the
+    on-demand nudge — connector-free in the row, composed at dispatch per
+    orchestrator-commitments §417/§958), and the unowned + pending_review items
+    land in the confirm tail with the ownership cluster (`mine` / `theirs to
+    [name]` — never the opaque person-record `confirm`).
   - orchestrator-supplied `chase_rows` (connector-dependent email cards) are
     appended verbatim as the leading Waiting On section.
   - the view renders + persists through the transport (no DataShapeError), and
@@ -67,16 +69,28 @@ def _workspace() -> str:
         "people": [
             {"id": "person:user", "canonical_name": "Sam Sample",
              "is_primary_user": True},
-            {"id": "person:bo", "canonical_name": "Bo Sample"},
+            # Bo has an email on file → the delegated `draft` button is live.
+            {"id": "person:bo", "canonical_name": "Bo Sample",
+             "emails": ["bo@example.com"]},
+            # Cara has NO email → the delegated row degrades `draft` to the
+            # `add email then send` recovery verb (Bug #44).
+            {"id": "person:cara", "canonical_name": "Cara Sample"},
         ],
         "orgs": [], "version": 1,
     }), encoding="utf-8")
     rows = [
-        # delegated task — owner != user, effective kind task → Delegated
+        # delegated task — owner != user, effective kind task → Delegated.
+        # Owner (Bo) has an email → the row carries a live `draft` button.
         {"type": "commitment", "seq": 1, "ts": _ago(5),
          "source_skill": "meeting-notes",
          "data": {"id": "c_del", "title": "Bo ships the mapping doc",
                   "owner_id": "person:bo", "kind": "task"}},
+        # delegated task whose owner (Cara) has NO email → draft degrades to
+        # the `add email then send` recovery verb.
+        {"type": "commitment", "seq": 6, "ts": _ago(5),
+         "source_skill": "meeting-notes",
+         "data": {"id": "c_del2", "title": "Cara reviews the deck",
+                  "owner_id": "person:cara", "kind": "task"}},
         # owed-to-you promise — owner != user, kind promise → CRU-eligible
         # waiting_on (no pre-staged draft here; the chase body rides chase_rows)
         {"type": "commitment", "seq": 2, "ts": _ago(4),
@@ -94,6 +108,11 @@ def _workspace() -> str:
          "source_skill": "meeting-notes",
          "data": {"id": "c_mine", "title": "I file the expense report",
                   "owner_id": "person:user", "kind": "task"}},
+        # unowned — owner missing, NOT pending_review → confirm tail (unowned)
+        {"type": "commitment", "seq": 5, "ts": _ago(6),
+         "source_skill": "meeting-notes",
+         "data": {"id": "c_unowned", "title": "Whose is the vendor follow-up",
+                  "kind": "promise"}},
     ]
     with (d / "_hq" / "data" / "events.jsonl").open("w", encoding="utf-8") as f:
         for r in rows:
@@ -127,24 +146,62 @@ def main() -> int:
           "I file the expense report" not in names)
 
     deleg = _section(view, "Delegated")
-    check("delegated task lands in the Delegated section",
-          deleg is not None
-          and any(it["name"] == "Bo ships the mapping doc"
-                  for it in deleg["items"]))
-    check("delegated row carries connector-free manual verbs, no send-class draft",
-          deleg is not None
-          and deleg["items"][0]["actions"] == ["mark received", "snooze 3d",
-                                                "add to my list"])
+    deleg_by_name = ({it["name"]: it for it in deleg["items"]}
+                     if deleg is not None else {})
+    bo_row = deleg_by_name.get("Bo ships the mapping doc")
+    cara_row = deleg_by_name.get("Cara reviews the deck")
+    check("delegated task lands in the Delegated section", bo_row is not None)
+    check("delegated row (owner has email) carries the manual set led by "
+          "on-demand draft (FIX A)",
+          bo_row is not None
+          and bo_row["actions"] == ["draft", "mark received", "snooze 3d",
+                                    "add to my plate"],
+          bo_row and bo_row.get("actions"))
+    check("live draft row carries the owner's To: (renderer Gate 6 / Bug #44)",
+          bo_row is not None
+          and bo_row.get("metadata") == [["To", "bo@example.com"]],
+          bo_row and bo_row.get("metadata"))
+    check("delegated tag names who we delegated to (owner != M) (FIX A)",
+          bo_row is not None
+          and "delegated to Bo Sample" in bo_row["context_tag"],
+          bo_row and bo_row.get("context_tag"))
+    check("delegated row with NO owner email degrades draft to "
+          "`add email then send` (Bug #44), still naming the owner",
+          cara_row is not None
+          and cara_row["actions"] == ["add email then send", "mark received",
+                                      "snooze 3d", "add to my plate"]
+          and "delegated to Cara Sample" in cara_row["context_tag"],
+          cara_row and cara_row.get("actions"))
 
     confirm = _section(view, "Needs a quick confirm")
-    check("pending_review lands in the confirm tail with the REVIEW cluster",
-          confirm is not None
-          and confirm["items"][0]["actions"] == ["confirm", "not relevant",
-                                                  "add to my list"])
+    check("both confirm-tail classes (unowned + pending_review) render",
+          confirm is not None and len(confirm["items"]) == 2,
+          confirm and len(confirm["items"]))
+    if confirm is not None:
+        by_name = {it["name"]: it for it in confirm["items"]}
+        unowned_row = by_name.get("Whose is the vendor follow-up")
+        pending_row = by_name.get("Someone owes a contract")
+        for label, row in (("unowned", unowned_row),
+                           ("pending_review", pending_row)):
+            check(f"{label} confirm row carries the ownership cluster "
+                  f"(mine + theirs to [name]), not bare confirm (FIX B+E)",
+                  row is not None
+                  and "mine" in row["actions"]
+                  and "theirs to [name]" in row["actions"]
+                  and "confirm" not in row["actions"],
+                  row and row.get("actions"))
+        check("confirm rows use the full ownership cluster verbatim (FIX B+E)",
+              unowned_row is not None
+              and unowned_row["actions"] == ["mine", "theirs to [name]", "drop",
+                                             "not relevant", "add to my plate"],
+              unowned_row and unowned_row.get("actions"))
 
     h = {c["label"]: c["value"] for c in view["counters"]}
-    check("header counts come from count_commitments (owed_to_you=2)",
-          h.get("Owed to you") == 2, str(h))
+    # owed_to_you counts every owner != M item regardless of kind (spec §417:
+    # the split filters SURFACING, not the canonical numbers) — the two
+    # delegated tasks (Bo, Cara) + the owed promise (Bo) = 3.
+    check("header counts come from count_commitments (owed_to_you=3)",
+          h.get("Owed to you") == 3, str(h))
     check("source_skill stamps the shared commitments src",
           view["source_skill"] == "commitments")
 

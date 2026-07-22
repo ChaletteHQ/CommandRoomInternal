@@ -45,6 +45,7 @@ ROUTING_HELPERS = frozenset({
     "engagement_writer",
     "thread_writer",
     "org_writer",
+    "objective_state",  # OBJ1 — the sole objective writer; routes through thread_writer + event_gate.append_event (atomic_append_jsonl)
     "log_pack_run",
     "value_receipt",
     "brief_state",

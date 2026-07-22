@@ -115,6 +115,7 @@ def main() -> int:
         # SPEC OUT2 §5 — the composer wave.
         "board-pack-assembler", "decision-memo-composer",
         "stress-test", "automation-scanner",
+        "objectives",  # SPEC OBJ1 (draft) — 3 decisions: drift preset / active cap / cold-start proposals
     ]
     # OUT2 §5 adopters landed with the G11 catalog budget at cap, so their
     # primary 'tune <skill>' phrase lives in the body's '## Routing (full

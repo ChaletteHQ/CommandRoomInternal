@@ -240,8 +240,26 @@ VERB_TAXONOMY = (
          "`show my list`.",
          ("commitments", "past-meetings", "dont-forget"),
          family="commitment",
-         notes="Deliberately NOT on triage: capture-then-curate design "
-               "(M, v2.14.4; reaffirmed in the F-59 answers)."),
+         notes="RETIRED (MLK1, M ruling 2026-07-21 — UX review finding 1: "
+               "the third 'my ___' lane beside My Plate and my reminders, "
+               "sibling of `add to my plate` on the same rows; the confusion "
+               "IS the coexistence). NO surface emits it and NO capture path "
+               "writes new `commitment_to_discuss` items; the id stays "
+               "registered so persisted old widgets still dispatch (the "
+               "`edit then send` precedent) — the stale-widget click keeps "
+               "its original meaning (a fossil `commitment_to_discuss` "
+               "write), NEVER aliased to a different action. Display label "
+               "is in LEGACY_DISPLAY_LABELS (banned on new renders). "
+               "Remaining open items drain read-only via `show my list`. "
+               "(History: capture-then-curate design, M v2.14.4; reaffirmed "
+               "F-59; killed 2026-07-21.)"),
+    _row("add to my plate", "Add to My Plate", "commitment",
+         "Turn this into a task you own — it lands on My Plate.",
+         ("commitments",), family="commitment",
+         notes="CTS1FIX/D1. Dispatch: commitment_state.create_personal_task "
+               "(owner-me, kind=task) — surfaces via surface_split `personal`. "
+               "The one own-it-later verb since MLK1 retired `add to my "
+               "list` (its old confusable sibling on the same rows)."),
 
     # --- Mutes (every label states its duration — F-59) ---------------------
     _row("skip", "Snooze (1 day)", "chat_dismissal",
@@ -265,8 +283,9 @@ VERB_TAXONOMY = (
          family="mute",
          notes="FB-17 (M, 2026-07-19): the email card's third primary button "
                "(Send / Draft / Snooze). 'Deal with it later' — the card mutes "
-               "for 3 days. Also the Waiting On chase deferral verb (v2.14.38+, "
-               "with `add to my list`, replacing the old `skip`)."),
+               "for 3 days. Also the Waiting On chase deferral verb "
+               "(v2.14.38+, replacing the old `skip`; its one-time sibling "
+               "`add to my list` retired at MLK1)."),
     _row("snooze 7d", "Snooze (7 days)", "chat_dismissal",
          "Re-surface the deployed-yet check in a week.",
          ("scaffold-automation", "balance"), mute_ttl_days=7, family="mute",
@@ -275,7 +294,8 @@ VERB_TAXONOMY = (
                "matches the surface's own per-tie dedupe window."),
     _row("snooze 14d", "Snooze (14 days)", "chat_dismissal",
          "Check back in two weeks.",
-         ("dont-forget", "stalled-projects", "cr-pipeline", "cr-brain"),
+         ("dont-forget", "stalled-projects", "cr-pipeline", "cr-brain",
+          "cr-objectives"),
          mute_ttl_days=14, family="mute",
          notes="On the intro-followup check this writes intro_followup_check "
                "(a scheduled re-emit, not a dismissal) — see apply-choices."),
@@ -472,7 +492,7 @@ VERB_TAXONOMY = (
                "permanent (F-59 rule). Commitment rows keep the 60-day "
                "`not relevant` mute; this verb renders ONLY on "
                "unknown-person proposal rows."),
-    _row("merge person records", "Merge records", "person_merged",
+    _row("merge person records", "Merge records (permanent)", "person_merged",
          "Fold the duplicate contact into the record it duplicates — one "
          "record survives carrying both histories. Permanent: a record "
          "merge has no undo.",
@@ -538,6 +558,43 @@ VERB_TAXONOMY = (
          notes="PIPE1 real-data shape: kind='deal' threads that predate the "
                "deal object render as untracked rows with this one-tap "
                "adoption. Dispatch: deal_state.adopt_deal."),
+
+    # --- Objectives (SPEC OBJ1, DRAFT — the cr-objectives widget; dispatch
+    # via objective_state, the single writer) --------------------------------
+    _row("report [status]", "Report status", "objective_report",
+         "Your word on where it stands — pick on track / at risk / "
+         "off track / blocked.",
+         ("cr-objectives",), input="required", family="objective",
+         notes="OBJ1. Dispatch: objective_state.record_report — the owner's "
+               "word, valid on any binding (the weekly touch only ASKS for "
+               "self-bound ones). Enum enforced at the writer; never an "
+               "inferred status."),
+    _row("mark complete", "Mark complete", "objective_completed",
+         "Close the objective as done (thread resolves).",
+         ("cr-objectives",), family="objective",
+         notes="OBJ1. Dispatch: objective_state.complete_objective — "
+               "idempotent; already_closed acks honestly."),
+    _row("archive [reason]", "Archive", "objective_archived",
+         "Retire it — no longer an objective (the record and reason are "
+         "kept).",
+         ("cr-objectives",), input="optional", family="objective",
+         notes="OBJ1. Dispatch: objective_state.archive_objective — the "
+               "graceful-death landing too ('is this still an objective?' → "
+               "archive). Typed input becomes the outcome note."),
+    _row("rebind", "Fix tracking", "objective_updated",
+         "Re-pick how it's tracked (or point it at a renamed meeting).",
+         ("cr-objectives",), family="objective",
+         notes="OBJ1. Opens the objectives skill's rebind flow — path "
+               "toggle + proposed target + confirm; the write lands via "
+               "objective_state.rebind_objective."),
+    _row("confirm objective", "Add it", "objective_created",
+         "Confirm a proposed objective — it goes on the board as drafted "
+         "(path pre-selected, one binding).",
+         ("cr-objectives",), input="optional", family="objective",
+         notes="OBJ1 cold start. Dispatch: objective_state.create_objective "
+               "with the card's pre-filled statement/binding/owner; typed "
+               "input edits the statement first. Skipped proposals stay "
+               "away 60 days (receipt trail)."),
 
     # --- LB1 Living Brain card ("Needs your eyes" / Staff Meeting) -----------
     # Generic verbs for brain-family (bp_*) proposal rows. Legacy-family rows
@@ -640,6 +697,14 @@ LEGACY_DISPLAY_LABELS = frozenset({
     "Not relevant",    # → Not relevant (60 days) — bare form hides the TTL
     "Make it a task",  # → Make task
     "Edit then send",  # FB-17 — retired; the FB-10 inline body replaces it
+    "Merge records",   # UXC1 2026-07-21 — label now carries "(permanent)";
+                       # the bare form must not appear on any new render
+                       # (batch acks teach "say undo", and a merge is the one
+                       # thing undo can never reverse)
+    "Add to my list",  # MLK1 2026-07-21 — the verb is retired (M ruling, UX
+                       # review finding 1): no new render may offer it. The
+                       # wire id stays registered above so persisted old
+                       # widgets still dispatch with their original meaning.
 })
 
 # ---------------------------------------------------------------------------

@@ -351,7 +351,13 @@ def discuss_later_bullets(
     """Parked discuss-later items (`commitment_to_discuss` events) filtered
     to these attendees, one bullet each. Matches by person_id OR by a name
     token in the event's stored person/title fields — the same
-    counterparty-or-name-mention posture as the OWED matcher."""
+    counterparty-or-name-mention posture as the OWED matcher.
+
+    MLK1 (2026-07-21): the list is retired — nothing writes new
+    `commitment_to_discuss` events. This reader is deliberately KEPT as a
+    drain-only fossil: open items are real parked intentions and must keep
+    rendering until the backlog empties (deleting reader + data together
+    would strand them invisibly)."""
     ids = {i for i in (attendee_person_ids or []) if i}
     name_tokens = set()
     for n in attendee_names or []:

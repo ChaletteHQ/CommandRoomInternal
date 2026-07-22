@@ -1,0 +1,20 @@
+{
+ "version": "5.1.0",
+ "headline": "Standing objectives arrive — a small set of big priorities the workspace tracks for you — plus clearer everyday language and the retirement of the old my-list.",
+ "items": [
+  {
+   "id": "v510_announce_objectives",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "New: standing objectives. Keep a small set of big, weeks-long priorities and let the workspace track each one the way you choose — reviewed in a recurring meeting, self-reported in one weekly touch, or read from the linked work itself. Say `objectives` to see them, `new objective` to add one — first run proposes candidates from your own workspace. Objective updates you confirm or dismiss now flow through your Staff Meeting like everything else.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v510_announce_mylist_and_language",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "The old 'Add to my list' button is retired — items route to real homes (notes, tasks, meeting follow-ups) instead of a parking lot; anything already on your list stays viewable until it drains. Also: plainer language across cards ('Merge records (permanent)' says what it does, deal stages read in plain English), and when two people share a name you now get an honest 'which one?' instead of a silent guess.",
+   "action": "announce_only"
+  }
+ ]
+}

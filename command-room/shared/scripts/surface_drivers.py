@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -93,12 +94,13 @@ _DUP_VERBS = ["merge", "keep both", "drop"]
 # pending_review rows outside the 7d escalation pin (explicit confirm-shaped
 # actions only — an explicit click IS confirmation).
 _PENDING_VERBS = ["resolved", "drop", "not mine"]
-# SUB1 D6 — child rows get the standard per-kind dropdown MINUS the verbs
-# that don't apply to a child: `never track this` (suppression rules key on
-# capture shape — children aren't captures) stays parent-level, as does
-# `add to my list` (capture-then-curate). Everything else — Done, Later…,
-# Drop, Not mine, Make task / Promote, Skip — works on a child with zero
-# special-casing (children are real commitments).
+# SUB1 D6 — child rows get the standard per-kind dropdown MINUS the one verb
+# that doesn't apply to a child: `never track this` (suppression rules key on
+# capture shape — children aren't captures) stays parent-level. Everything
+# else — Done, Later…, Drop, Not mine, Make task / Promote, Skip — works on
+# a child with zero special-casing (children are real commitments).
+# (`add to my list` was the other parent-level carve-out until MLK1 retired
+# the verb entirely — no row emits it now.)
 _CHILD_PROMISE_VERBS = ["resolved", "push to [date]", "drop", "not mine",
                         "make task", "skip"]
 _CHILD_TASK_VERBS = ["resolved", "push to [date]", "drop", "promote", "skip"]
@@ -108,18 +110,33 @@ _REDUCED_REASON = ("Fewer options — the owner is unconfirmed; clicking Done, "
 
 # FB-15 — the daily Waiting On chat (CTS1 Surface 1; orchestrator-commitments)
 # row verb sets, post-FB-17. Delegated tasks (owner != user, effective kind
-# `task`) are CRU-INELIGIBLE, so they get NO pre-staged chase draft. The
-# orchestrator set also offers `draft` ("composes a nudge on demand",
-# §2.3) — but that verb is send-class and needs the owner's actionable email
-# resolved + email-writer, both connector-dependent, so it is deliberately
-# OMITTED from this read-only driver (the driver never composes a body or
-# touches a connector — same reason chase bodies arrive via chase_rows). A
-# resolved delegated nudge rides in chase_rows like any other email row; the
-# deterministic row carries only the connector-free actions. The
-# pending_review / unowned confirm tail uses the REVIEW cluster
-# (orchestrator-commitments Phase 3.6/§478).
-_DELEGATED_VERBS = ["mark received", "snooze 3d", "add to my list"]
-_REVIEW_VERBS = ["confirm", "not relevant", "add to my list"]
+# `task`) are CRU-INELIGIBLE, so they get NO PRE-STAGED chase draft — but the
+# orchestrator set DOES carry `draft`, which composes the nudge ON DEMAND at
+# dispatch (orchestrator-commitments §417 / §958 / §965). The verb id is
+# connector-free in the deterministic row: this driver still never composes a
+# body or touches a connector at render time — apply-choices routes the click
+# through email-writer's lazy-draft path only when the user taps it. A fully
+# resolved, pre-staged chase still rides chase_rows like any other email row.
+# `draft` LEADS the manual set, matching the spec order.
+#
+# The pending_review / unowned confirm tail asks an OWNERSHIP question, so it
+# carries the ownership cluster (orchestrator-commitments §452 + § "Confirm
+# section actions" §1027-1033), not the opaque person-record `confirm` verb:
+#   - `mine`             — CLAIMS (commitment_state.confirm_commitment_owner:
+#                          sets the owner AND clears any pending_review flag)
+#   - `theirs to [name]` — ROUTES (reassign_commitment, confirmed=True)
+#   - `drop`             — closes an item that is nobody's (§452 dismissal)
+#   - `not relevant`     — the soft 60-day mute
+#   - `add to my plate`  — CTS1FIX D5: pull it onto My Plate as an owned task
+# `make task` is deliberately omitted: reclassifying a commitment to a task in
+# place while its owner is still unknown is incoherent — `add to my plate`
+# (make it MY task) is the coherent task path here. Dispatch is keyed per
+# row-id, so the ONE shared cluster preserves the genuinely-different behavior
+# between the two classes (mine clears the pending_review flag only where one
+# is present; on a bare-unowned row it simply stamps the owner).
+_DELEGATED_VERBS = ["draft", "mark received", "snooze 3d", "add to my plate"]
+_REVIEW_VERBS = ["mine", "theirs to [name]", "drop", "not relevant",
+                 "add to my plate"]
 
 
 def _now_iso() -> str:
@@ -152,6 +169,128 @@ def _due_phrase(due, now_iso: str) -> str:
         return f"due {d.strftime('%b')} {d.day}"
     except ValueError:
         return f"due {due}"
+
+
+def _people_by_id(ws: Path) -> dict:
+    """id -> person record from entities.json.
+
+    Defensive: a missing / corrupt entities.json yields an empty map (the
+    caller then falls back to owner_external / a bare 'delegated' tag and the
+    `add email then send` recovery verb)."""
+    try:
+        raw = (ws / "_hq" / "data" / "entities.json").read_text("utf-8")
+        people = (json.loads(raw) or {}).get("people") or []
+    except Exception:
+        return {}
+    out: dict = {}
+    for p in people:
+        pid = p.get("id")
+        if pid:
+            out[pid] = p
+    return out
+
+
+# RRF1 — the one review_reason clause class whose staleness is mechanically
+# checkable at render time: capture_gate stamps it when the counterparty had
+# no person record AT CAPTURE and never revisits it.
+_RR_NO_PERSON_RE = re.compile(r"^counterparty '(.+)' has no person record$")
+
+
+def _display_review_reason(ws: Path, raw, cache: dict) -> str:
+    """Render-time overlay for the frozen "counterparty 'X' has no person
+    record" review_reason clause (RRF1 + UXC1 plain-language ruling
+    2026-07-21). The STORED clause is never shown raw — "counterparty" is
+    banned vocabulary (VOICE_CALIBRATION glossary): an unresolved name
+    renders as "'X' isn't in your contacts yet"; if X NOW resolves to a
+    person record (entity_resolve ladder — the same one brain_proposals
+    uses; A6: one home for the matcher) it renders as "'X' — contact added
+    ✓" so the row stops telling the CEO to do something they already did.
+    Every other clause class passes through verbatim.
+
+    DISPLAY-ONLY: the STORED review_reason is a gating input (cru_match /
+    commitment_dedup / confirm_flow / identity_reconcile read it) and is
+    never written back — this rewrites the rendered string only.
+
+    `cache` is a per-driver-call memo (name -> bool): each distinct name
+    costs at most one resolve_all call per render pass (resolve_all re-reads
+    entities.json internally, so the memo IS the read fence), and reasons
+    with no eligible clause never load the resolver at all.
+    """
+    raw = str(raw)
+    if "has no person record" not in raw:
+        return raw
+    out = []
+    for clause in raw.split("; "):
+        m = _RR_NO_PERSON_RE.match(clause)
+        if not m:
+            out.append(clause)
+            continue
+        name = m.group(1)
+        if name not in cache:
+            try:
+                from entity_resolve import resolve_all
+                cache[name] = any(r.entity_type == "person"
+                                  for r in resolve_all(ws, name))
+            except Exception:
+                # Display nicety only — a resolver failure (fresh workspace,
+                # mid-sync entities.json) must never break a surface render.
+                cache[name] = False
+        out.append(f"'{name}' — contact added ✓" if cache[name]
+                   else f"'{name}' isn't in your contacts yet")
+    return "; ".join(out)
+
+
+def _owner_display_name(ev: dict, people_by_id: dict) -> str | None:
+    """Resolve the delegated-task owner's display name for the row tag.
+
+    A delegated row is owner != M by definition, so it should name who: read a
+    display name carried on the event first (legacy `owner_display` /
+    `owner_name`), else resolve `owner_id` (multi-shape via `_commitment_field`)
+    through entities.json, else fall back to the raw `owner_external` string.
+    Returns None when nothing resolves — the caller then renders bare
+    'delegated'."""
+    from cru_match import _commitment_field
+
+    d = ev.get("data") or {}
+    for k in ("owner_display", "owner_name"):
+        v = (d.get(k) or ev.get(k) or "")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    owner_id = _commitment_field(ev, "owner_id")
+    rec = people_by_id.get(owner_id) if owner_id else None
+    if rec:
+        name = (rec.get("name") or rec.get("canonical_name") or "").strip()
+        if name:
+            return name
+    ext = d.get("owner_external") or ev.get("owner_external") or ""
+    if isinstance(ext, str) and ext.strip():
+        return ext.strip()
+    return None
+
+
+def _owner_email(ev: dict, people_by_id: dict) -> str | None:
+    """The delegated owner's first actionable email, or None.
+
+    `draft` is a send-class verb (chat_output_renderer Gate 6 / Bug #44): a row
+    that exposes it MUST carry a valid To: address or the renderer refuses to
+    ship it. Resolve `owner_id` -> the person record's canonical `emails` array
+    (via `people_writer.get_person_emails`); if `owner_external` is itself an
+    email, use that. None -> the caller degrades `draft` to the canonical
+    `add email then send` recovery verb (no To: required)."""
+    from cru_match import _commitment_field
+    from people_writer import get_person_emails
+
+    owner_id = _commitment_field(ev, "owner_id")
+    rec = people_by_id.get(owner_id) if owner_id else None
+    if rec:
+        emails = get_person_emails(rec)
+        if emails:
+            return emails[0]
+    ext = ((ev.get("data") or {}).get("owner_external")
+           or ev.get("owner_external") or "")
+    if isinstance(ext, str) and "@" in ext and "." in ext.split("@")[-1]:
+        return ext.strip()
+    return None
 
 
 def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) -> dict:
@@ -204,6 +343,7 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
 
     display_n = 0
     sections: list[dict] = []
+    rr_cache: dict = {}  # RRF1 per-render-pass memo (name -> resolves now)
 
     # Unconfirmed block FIRST (v4.6.1 W4b escalation — never age-buried).
     if esc["pin"]:
@@ -217,7 +357,8 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
                         f"drop it? · ")
             tag = (f"{lead}captured {r['days_unconfirmed']} days ago — still "
                    f"unconfirmed"
-                   + (f" · {r['review_reason']}" if r.get("review_reason") else ""))
+                   + (f" · {_display_review_reason(ws, r['review_reason'], rr_cache)}"
+                      if r.get("review_reason") else ""))
             rows.append({
                 "n": r["commitment_id"], "display_n": display_n,
                 "name": r.get("title") or "(untitled)",
@@ -254,7 +395,8 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         if cid in stale_ids:
             parts.append("still on your plate?")
         if pending and d.get("review_reason"):
-            parts.append(str(d.get("review_reason")))
+            parts.append(_display_review_reason(ws, d.get("review_reason"),
+                                                rr_cache))
         # SUB1 D5/D6 — parent progress chip + orphan note (loader stamps).
         kids = subs_by_parent.get(cid) or []
         n_open_k = d.get("n_subitems_open")
@@ -410,6 +552,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
 
     display_n = 0
     sections: list[dict] = []
+    rr_cache: dict = {}  # RRF1 per-render-pass memo (name -> resolves now)
 
     # 1. Chase drafts — orchestrator-supplied (connector-dependent), appended
     #    verbatim: email-shaped rows whose pre-staged nudge lives in the widget.
@@ -429,6 +572,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
     delegated = [ev for ev in part[SURFACE_WAITING_ON]
                  if effective_kind_of(ev) == "task"]
     if delegated:
+        people_by_id = _people_by_id(ws)
         rows = []
         for ev in delegated:
             display_n += 1
@@ -438,13 +582,32 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
             if age is not None and age >= 0:
                 bits.append("1 day old" if age == 1 else f"{age} days old")
             bits.append(_due_phrase(d.get("due"), now_iso))
-            bits.append("delegated — nudge is manual, I won't auto-chase this")
-            rows.append({
+            # A delegated row is owner != M by definition — name who we're
+            # waiting on (FIX A); fall back to bare "delegated" only if no name
+            # resolves.
+            owner_name = _owner_display_name(ev, people_by_id)
+            bits.append(
+                f"delegated to {owner_name} — nudge is manual, "
+                "I won't auto-chase this" if owner_name
+                else "delegated — nudge is manual, I won't auto-chase this")
+            # `draft` composes the nudge on demand at dispatch (no pre-staged
+            # body) — but it is send-class (renderer Gate 6 / Bug #44), so the
+            # row must carry a valid To:. Resolve the owner's email; when none
+            # is on file, degrade `draft` to the `add email then send` recovery
+            # verb so the surface still renders (never a dead button).
+            email = _owner_email(ev, people_by_id)
+            row: dict = {
                 "n": _cid(ev), "display_n": display_n,
                 "name": d.get("title") or d.get("summary") or "(untitled)",
                 "context_tag": " · ".join(bits),
-                "actions": list(_DELEGATED_VERBS),
-            })
+            }
+            if email:
+                row["metadata"] = [["To", email]]
+                row["actions"] = list(_DELEGATED_VERBS)
+            else:
+                row["actions"] = ["add email then send"] + [
+                    v for v in _DELEGATED_VERBS if v != "draft"]
+            rows.append(row)
         sections.append({"title": "Delegated", "count": len(rows),
                          "items": rows})
 
@@ -461,7 +624,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
             tag = ("captured from a chat — confirm it's yours" if pending
                    else "no owner resolved yet — whose is this?")
             if d.get("review_reason"):
-                tag += f" · {d['review_reason']}"
+                tag += f" · {_display_review_reason(ws, d['review_reason'], rr_cache)}"
             rows.append({
                 "n": _cid(ev), "display_n": display_n,
                 "name": d.get("title") or d.get("summary") or "(untitled)",

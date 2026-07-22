@@ -1224,3 +1224,42 @@
 - phrase: "chart of accounts for the restaurant group"
   expected: none
   notes: "finance term, not a chart ask — bare 'chart' is deliberately not a positive trigger"
+# OBJECTIVES (SPEC OBJ1, DRAFT)
+# =========================================================
+- phrase: "show my objectives"
+  expected: objectives
+- phrase: "objectives"
+  expected: objectives
+- phrase: "my objectives"
+  expected: objectives
+- phrase: "objectives review"
+  expected: objectives
+- phrase: "what are my objectives"
+  expected: objectives
+- phrase: "new objective"
+  expected: objectives
+- phrase: "add an objective"
+  expected: objectives
+- phrase: "set an objective"
+  expected: objectives
+- phrase: "complete objective enterprise pilots"
+  expected: objectives
+- phrase: "archive objective ops handbook"
+  expected: objectives
+- phrase: "rebind enterprise pilots"
+  expected: objectives
+- phrase: "tune objectives"
+  expected: objectives
+- phrase: "show objectives settings"
+  expected: objectives
+- phrase: "reset objectives to defaults"
+  expected: objectives
+- phrase: "objectives: 1 on track, 2 at risk"
+  expected: objectives
+  notes: "the weekly-touch reply prefix — fires the objectives parser, not weekly-recap"
+- phrase: "what should I focus on this week"
+  expected: command-room-coach
+  notes: "advisory synthesis stays the coach's — objectives is the record it reads (OBJ1 fence)"
+- phrase: "stalled projects"
+  expected: stalled-projects
+  notes: "objective threads are excluded from that scan in code (OBJ1 fence mirrors PIPE1 D7)"

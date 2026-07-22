@@ -16,6 +16,7 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 - **Use `list-active` for:** rendering the whole project roster without filtering by activity.
 - **Use `cleanup` for:** broader workspace hygiene that includes stall as one check among many.
 - **Use `pipeline-tracker` for:** deal threads. `kind="deal"` threads are EXCLUDED from this scan by fence (SPEC PIPE1 D7 — `stall_detector.detect_stalled_projects` skips them in code): deal rot is stage-dependent (a negotiation goes stale in 7 days, a lead in 10) and reports through the pipeline surface's per-stage thresholds. One quiet deal must never be double-flagged by both scans.
+- **Use `objectives` for:** standing-objective threads. `kind="objective"` threads are EXCLUDED from this scan by the same in-code fence (SPEC OBJ1, DRAFT): objective drift is binding-dependent (a self-reported objective drifts on missed check-ins, a meeting-reviewed one on undiscussed sessions — not on generic thread quiet) and reports through the objectives surfaces with a suggested move. One drifting objective must never be double-flagged.
 
 ## Writer Contract
 

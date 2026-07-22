@@ -146,6 +146,36 @@
     "required": [["thread_id"]],
     "properties": {"thread_id": "string", "fingerprint": "string", "reason": "string"}
   },
+  "objective_created": {
+    "description": "A standing objective opened (SPEC OBJ1 draft). WRITTEN ONLY via objective_state.create_objective — always a NEW kind='objective' thread; an objective about existing work links it via objective.anchor_thread_id instead of mutating the existing thread (cold-start proposals included). Carries the confirmed binding choice; binding detail lives on the thread's objective object — this event records what was chosen at creation.",
+    "required": [["thread_id"], ["statement"], ["binding_type"]],
+    "properties": {"thread_id": "string", "statement": "string", "binding_type": "string", "owner_id": "string", "horizon": "string", "anchor_thread_id": "string"}
+  },
+  "objective_updated": {
+    "description": "A non-terminal field changed on an open objective (binding / owner / horizon / statement / milestones). WRITTEN ONLY via objective_state.update_objective; terminal outcomes are objective_completed / objective_archived. Carries at least one changed field. A binding change carries binding_type (the rebind path — e.g. a renamed review meeting).",
+    "required": [["thread_id"]],
+    "properties": {"thread_id": "string", "statement": "string", "binding_type": "string", "owner_id": "string", "horizon": "string", "milestone": "string", "milestone_done": "boolean"}
+  },
+  "objective_review": {
+    "description": "Meeting-path harvest (SPEC OBJ1 draft): the objective was discussed in its bound review meeting; records the STATED status and a one-line context. WRITTEN ONLY via objective_state.record_review, called from the meeting-notes extraction step (reuses that pipeline — no parallel transcript scanner). status is directional and trusted BECAUSE it was spoken (on_track|at_risk|off_track|blocked). source_ref ties back to the processed meeting; a bound-series meeting with no qualifying discussion writes NOTHING — the absence is what drift math counts.",
+    "required": [["thread_id"], ["status"], ["source_ref"]],
+    "properties": {"thread_id": "string", "status": "string", "context": "string", "source_ref": "string", "meeting_title": "string"}
+  },
+  "objective_report": {
+    "description": "Self-path status (SPEC OBJ1 draft): the owner's own 20-second word, given inside the weekly objectives touch — never a per-objective ping. WRITTEN ONLY via objective_state.record_report. status is directional and trusted because it is the owner's own word (on_track|at_risk|off_track|blocked); it goes stale when reporting stops — drift math counts missed cadence cycles.",
+    "required": [["thread_id"], ["status"]],
+    "properties": {"thread_id": "string", "status": "string", "note": "string", "reported_by": "string"}
+  },
+  "objective_completed": {
+    "description": "Terminal completion (SPEC OBJ1 draft). WRITTEN ONLY via objective_state.complete_objective — idempotent (already-closed is a NO-OP, never a duplicate event); thread status flips to 'resolved' in the same call.",
+    "required": [["thread_id"]],
+    "properties": {"thread_id": "string", "statement": "string", "outcome_note": "string"}
+  },
+  "objective_archived": {
+    "description": "Terminal archive (SPEC OBJ1 draft) — 'no longer an objective', including the self-report graceful-death path (repeatedly ignored asks escalate to 'is this still an objective?' and land here on the CEO's yes-archive). WRITTEN ONLY via objective_state.archive_objective — idempotent; thread status flips to 'archived' in the same call.",
+    "required": [["thread_id"]],
+    "properties": {"thread_id": "string", "statement": "string", "outcome_note": "string"}
+  },
   "brain_proposal": {
     "description": "A unified Living Brain proposal (SPEC LB1): one uncertain observation a detector wants confirmed (tier confirm) or narrated (tier auto — legal only for AUTO_ALLOWED change classes with a registered reverser; propose() raises otherwise). WRITTEN ONLY via brain_proposals.propose(), which consults proposal_ledger.active_cooldowns (declined-within-60d fingerprints suppressed at source) and dedups on fingerprint against open proposals. action_tuples must map to registered verb_taxonomy action ids (no-consumer proposals rejected at source, D10). Deal-kind proposals additionally write the reserved PIPE1 deal_update_proposed alongside.",
     "required": [["proposal_id"], ["kind"], ["fingerprint"], ["tier"], ["detector"]],

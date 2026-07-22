@@ -70,7 +70,8 @@ HEX_ALLOWLIST = {
     # and the inline-editable email body's focus ring (#B88B4A + the existing
     # #221D17 focus background) — all four are REUSED brand tokens already in
     # this file; no new color entered the palette.
-    "shared/scripts/chat_output_renderer.py": (156, "product widget chrome (dark theme) + logo SVG + T2.2 verb-dropdown styles + t3 primary-button/editable-body accents"),
+    # 156 → 159 at FB-CTS1: 3-class selected-primary rule + its comment — reused #B88B4A/#14110F brand tokens, no new color.
+    "shared/scripts/chat_output_renderer.py": (159, "product widget chrome (dark theme) + logo SVG + T2.2 verb-dropdown styles + t3 primary-button/editable-body accents"),
     # Product-branded artifact templates (Chalette dark system) — same
     # product-chrome category as the widget CSS, self-contained by contract.
     # SPEC OUT5: premium_brief.html SUPERSEDES research_brief.html (18 hits,

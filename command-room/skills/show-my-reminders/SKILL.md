@@ -160,11 +160,13 @@ heard of reminders gets the safe behavior by default.
 
 ## Fences
 
-- **`show my list` is a different skill.** show-my-list is the discuss-later
-  queue (`commitment_to_discuss` — "add to my list" captures, grouped by who
-  you'd raise them with). Reminders are date-pinned nags. The two never
-  cross-fire and neither reads the other's events. If the user says "add it
-  to my list" about a reminder, that's show-my-list's verb — hand off.
+- **`show my list` is a different skill.** show-my-list is the RETIRED
+  discuss-later queue (`commitment_to_discuss`, drain-only since MLK1 —
+  nothing captures into it anymore). Reminders are date-pinned nags. The
+  two never cross-fire and neither reads the other's events. If the user
+  says "add it to my list" (old muscle memory), that phrase still routes
+  to show-my-list — it explains the retirement; never treat it as a
+  reminder capture.
 - **Not the commitments lane.** "push [commitment] to [date]" inside the
   Commitments chat is that orchestrator's verb (writes `commitment_updated`);
   "push the reminder" here writes `reminder_updated`. Same word, different

@@ -250,6 +250,12 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
     dormant_resurfaced = 0
     documents_produced = 0
     prep_briefs = 0
+    objectives_status_heard = 0
+    objectives_completed = 0
+    # OBJ1 (draft): distinct objectives flagged drifting BEFORE they stalled
+    # — read from the objectives readout's pack_run receipts (the flag trail
+    # the skill's Writer Contract mandates), never recomputed here.
+    objectives_drift_ids: set = set()
     # Briefings: a pack_run is canonical; a `briefing` event counts only when no
     # same-day morning-brief pack_run exists (one fire can emit both — SPEC C1
     # Risks). Dedupe morning briefings by calendar date.
@@ -283,6 +289,10 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
             dormant_resurfaced += 1
         elif et in DOCUMENT_EVENT_TYPES:
             documents_produced += 1
+        elif et == "objective_review" or et == "objective_report":
+            objectives_status_heard += 1
+        elif et == "objective_completed":
+            objectives_completed += 1
         elif et == "pack_run":
             # v4.5.2 R1 — match through the receipt contract, not data.task_id
             # alone: kind-only receipts (F-10b's live shape) and legacy cr-*/
@@ -294,6 +304,10 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
                     morning_pack_dates.add(d.date())
             elif task_id in PREP_BRIEF_TASK_IDS:
                 prep_briefs += 1
+            elif task_id == "objectives":
+                for tid in (ev.get("data") or {}).get("drifting_thread_ids") or []:
+                    if isinstance(tid, str) and tid:
+                        objectives_drift_ids.add(tid)
         elif et == "briefing":
             d = _parse_dt(ts)
             if d is not None:
@@ -315,6 +329,9 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
         "dormant_resurfaced": dormant_resurfaced,
         "decisions_logged": decisions_logged,
         "documents_produced": documents_produced,
+        "objectives_status_heard": objectives_status_heard,
+        "objectives_completed": objectives_completed,
+        "objectives_drift_flagged": len(objectives_drift_ids),
     }
     return metrics
 
@@ -433,6 +450,17 @@ def _count_bullets(metrics: dict) -> list:
         f"{m['dormant_resurfaced']} quiet {_plural(m['dormant_resurfaced'], 'relationship')} resurfaced")
     add(m["documents_produced"],
         f"{m['documents_produced']} {_plural(m['documents_produced'], 'document')} produced")
+    add(m.get("objectives_status_heard", 0),
+        f"{m.get('objectives_status_heard', 0)} objective status "
+        f"{_plural(m.get('objectives_status_heard', 0), 'update')} heard "
+        "without asking twice")
+    add(m.get("objectives_drift_flagged", 0),
+        f"{m.get('objectives_drift_flagged', 0)} "
+        f"{_plural(m.get('objectives_drift_flagged', 0), 'objective')} "
+        "flagged drifting before they stalled")
+    add(m.get("objectives_completed", 0),
+        f"{m.get('objectives_completed', 0)} "
+        f"{_plural(m.get('objectives_completed', 0), 'objective')} completed")
 
     if not lines:
         lines.append("No recorded activity in this window yet.")

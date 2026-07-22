@@ -76,7 +76,7 @@ Base filters carried over from the daily-chat contract: multi-shape field reads 
 
 Sort: overdue first (oldest overdue at top, by effective due — the loader already folded deferrals), then by due soonest, then undated by age. No cap beyond the overall widget budget of 7 actionable rows per fire (Promised takes priority over Personal inside it — relationships at stake; live basis 16 promised vs 69 personal).
 
-**Counterparty-unresolved rows (CTS1 §8.2 — the 49 orphaned promises):** for each row where `surface_split.counterparty_unresolved(ev, USER_ID)` is True, tag the row `(counterparty unresolved — who was this for?)`. These are REAL promises whose counterparty linking failed (Bug #103) — they stay Promised, NEVER auto-demote. The DRIP fixup rides the row's dropdown with two existing verbs:
+**Counterparty-unresolved rows (CTS1 §8.2 — the 49 orphaned promises):** for each row where `surface_split.counterparty_unresolved(ev, USER_ID)` is True, tag the row `(who was this for?)` — plain words only; "counterparty" is banned vocabulary in anything the CEO reads (UXC1 ruling 2026-07-21, VOICE_CALIBRATION glossary). These are REAL promises whose counterparty linking failed (Bug #103) — they stay Promised, NEVER auto-demote. The DRIP fixup rides the row's dropdown with two existing verbs:
 - `reassign to [name]` — **on a counterparty-unresolved row this attaches the named person as the COUNTERPARTY** (owner stays M): `commitment_state.reassign_commitment(workspace_root, <id>, new_counterparty_id=<resolved person_id>, new_counterparty_name=<display name>, reassigned_by=<user person_id>, reason="counterparty resolved from My Plate", source_skill="commitments", confirmed=True)`. The row's annotation makes the question explicit, so the Reassign label reads as "assign this promise to the person it's for". Ack: `✓ Got it — that one's for [name].` (An unresolvable name → item-level error, nothing written.) This row-class-specific dispatch is documented in apply-choices § `cr-commitments`.
 - `make task` — demote to Personal when M says nobody's actually waiting: `promote_task_to_commitment(new_kind="task", reason="user demoted — no counterparty", source_skill="commitments")`.
 The BATCH fixup (bites of ~5, resumable) lives on Friday commitment-triage — this drip is per-row, opportunistic, never a wall of 49.
@@ -140,7 +140,7 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 
 `n_promised = len(promised)`, `n_personal = len(personal)` — and assert `n_promised + n_personal == counts["headline"]["you_owe"]` before rendering (the CTS1 parity check; a mismatch is a partition defect — fail the fire loudly rather than render disagreeing numbers).
 
-**Widget grammar (RULED §4.2 — existing `CANONICAL_ACTIONS` verbs only, no new interaction patterns):** the one or two most-common actions render as visible buttons — **Done** (`resolved`) and **Later…** (`push to [date]`) on every row; email-shaped Promised rows show **Send** / **Draft** / **Snooze (3 days)** instead (t3 FB-4, FB-17 — `snooze 3d` is a primary on email-shaped rows) with Done in the dropdown. Everything else — `prep deep work`, `promote`, `make task`, `drop`, `reassign to [name]`, `add to my list` (and `snooze 3d` on non-email rows) — rides the per-row `— more —` dropdown. Display labels from `verb_taxonomy` only. Rows carrying `push to [date]` suppress the separate snooze option (FB-3 merge).
+**Widget grammar (RULED §4.2 — existing `CANONICAL_ACTIONS` verbs only, no new interaction patterns):** the one or two most-common actions render as visible buttons — **Done** (`resolved`) and **Later…** (`push to [date]`) on every row; email-shaped Promised rows show **Send** / **Draft** / **Snooze (3 days)** instead (t3 FB-4, FB-17 — `snooze 3d` is a primary on email-shaped rows) with Done in the dropdown. Everything else — `prep deep work`, `promote`, `make task`, `drop`, `reassign to [name]` (and `snooze 3d` on non-email rows) — rides the per-row `— more —` dropdown. Display labels from `verb_taxonomy` only. Rows carrying `push to [date]` suppress the separate snooze option (FB-3 merge).
 
 **Per-item shape, PROMISED (email-shaped — the shape formerly documented as "YOU OWE direction A" in orchestrator-commitments.md):**
 
@@ -151,14 +151,27 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
     "name": "Sam",                          # who's waiting (resolved spelling, never ASR)
     "subject": "Send Q2 deck",              # commitment title
     "context_tag": "committed Apr 12, 16 days overdue",
-    "original_thread": {...},               # v2.14.36+ MANDATORY when source_ref exists — same accordion contract as every surface
+    "original_thread": {...},               # v2.14.36+ attach ONLY when the thread actually hydrates (real author/date/subject/body/url present) — if a source_ref exists but the body can't be hydrated, attach NOTHING (omit the key entirely); never an empty stub. Same accordion contract as every surface
     "metadata": [("To", "sam@example.com"), ("Subject", "Q2 deck: status")],  # dash-free subjects (S3 gate)
     "body_lines": [...],                    # email-writer's status draft
-    "actions": ["1 send", "1 draft", "1 push to [date]", "1 prep deep work", "1 resolved", "1 snooze 3d", "1 add to my list"],
+    "actions": ["1 send", "1 draft", "1 push to [date]", "1 prep deep work", "1 resolved", "1 snooze 3d"],
 }
 ```
 
-Counterparty-unresolved variant: no `metadata`/`body_lines` (no recipient), `context_tag` carries `counterparty unresolved — who was this for?`, actions `["N reassign to [name]", "N make task", "N push to [date]", "N resolved", "N drop", "N snooze 3d"]`.
+**Counterparty-unresolved variant (CTS1 §8.2 — the Bug #103 orphaned promises):** the counterparty never resolved, so there is NO one to lead the row with. Set **`name` to `None`** — omit the leading marker entirely; NEVER render `"?"`, `"Unknown"`, or any placeholder as the lead. The commitment **SUBJECT is the row's primary text**, and the `context_tag` `counterparty unresolved — who was this for?` already carries the question, so the row reads clean without a name prefix. No `metadata`/`body_lines` (no recipient → no status draft). Attach `original_thread` ONLY if it actually hydrates — the orphaned-promise source_ref usually can't, so these rows carry NO accordion (attach nothing; never an empty stub). Actions `["N reassign to [name]", "N make task", "N push to [date]", "N resolved", "N drop", "N snooze 3d"]`.
+
+```python
+{
+    "n": 2,
+    "icon": None,
+    "name": None,                           # counterparty unresolved — NO lead marker, never "?"
+    "subject": "Send Priya the shortlisted developer's profile link",  # the commitment IS the primary text
+    "context_tag": "counterparty unresolved — who was this for?",
+    # NO metadata, NO body_lines (no recipient), and NO original_thread key
+    # (source_ref present but unhydratable → attach nothing, not an empty stub)
+    "actions": ["2 reassign to [name]", "2 make task", "2 push to [date]", "2 resolved", "2 drop", "2 snooze 3d"],
+}
+```
 
 **Per-item shape, PERSONAL (the shape formerly documented as "Self-commitment"):**
 
@@ -169,11 +182,11 @@ Counterparty-unresolved variant: no `metadata`/`body_lines` (no recipient), `con
     "name": "Self",
     "subject": "Refresh Qualiphy data pull",
     "context_tag": "logged Mar 9, 50 days ago",
-    "actions": ["4 resolved", "4 push to [date]", "4 prep deep work", "4 promote", "4 snooze 3d", "4 add to my list"],
+    "actions": ["4 resolved", "4 push to [date]", "4 prep deep work", "4 promote", "4 snooze 3d"],
 }
 ```
 
-Pre-build rules (same as every surface): resolve every `person_NNN`/`org_NNN` to canonical spellings; subjects pass the S3 voice gate; `original_thread` mandatory when a source_ref exists; sub-item families render nested under their parent with the progress chip (SUB1 — the loader's stamps; "all sub-items done — close it?" is a PROPOSE).
+Pre-build rules (same as every surface): resolve every `person_NNN`/`org_NNN` to canonical spellings; subjects pass the S3 voice gate; **`original_thread` attaches ONLY when the thread actually hydrates** (real author/date/subject/body/url present) — when a source_ref exists but the body is unavailable (e.g. the Bug #103 orphaned promises), attach NOTHING rather than an empty stub (an empty stub renders as a bare "Original thread — Original thread" accordion; the renderer guard in the "Original thread accordion" build is the defense-in-depth pair); sub-item families render nested under their parent with the progress chip (SUB1 — the loader's stamps; "all sub-items done — close it?" is a PROPOSE).
 
 **Step 3 — chat-links section:** after the widget, the standard **Links:** block per `shared/CHAT_ACTION_WIDGET.md` (mail-thread / Granola URLs; self-items render `(no source — Self-commitment)` or are skipped; omit the block when no row has a source).
 
@@ -190,7 +203,7 @@ Parse `N action` (with or without period). All writes through the canonical help
 - `N promote` (Personal→Promised) → `promote_task_to_commitment(workspace_root, <id>, new_kind="promise", source_skill="commitments", reason="user promoted from My Plate")`. Ack names the counterparty it will be tracked against (or notes it needs one — the §5 gate will nudge at the next capture).
 - `N make task` (Promised→Personal demote) → `promote_task_to_commitment(..., new_kind="task", reason="user demoted from My Plate")`.
 - `N reassign to [name]` → on a counterparty-unresolved row: the COUNTERPARTY attach documented in Phase 3 Group A. On any other row: the standard S4 owner reassignment (`new_owner_id=...`, confirmed=True) — the item leaves My Plate and lands on Waiting On next fire.
-- `N drop` / `N snooze 3d` / `N add to my list` / `N fix wording: <text>` / `N split into: ...` / `N add subitems: ...` → identical dispatches to the commitment-family handlers (apply-choices § commitment-triage documents the exact calls).
+- `N drop` / `N snooze 3d` / `N fix wording: <text>` / `N split into: ...` / `N add subitems: ...` → identical dispatches to the commitment-family handlers (apply-choices § commitment-triage documents the exact calls).
 - `show my plate` (typed in this chat, or anywhere) → re-render THIS widget with the Personal cap lifted (full Personal group, paginated by the transport) — same pipeline, same validators; never a markdown list.
 - `show muted` / `show snoozed` → the mute ledger view (show-my-list's ledger mode).
 

@@ -57,6 +57,27 @@ from thread_writer import (  # noqa: E402
 )
 from entities_io import entities_collection  # noqa: E402
 
+# UXC1 (2026-07-21 ruling) — plain-English display labels for the wire enums.
+# Pickers, acks, and any rendered stage/reason text use THESE; the snake_case
+# ids stay wire-only (they are banned vocabulary in anything the CEO reads).
+# Pinned by test to cover the enum sets exactly — a new stage/reason without
+# a display label goes red at the pin, never renders raw.
+STAGE_DISPLAY = {
+    "lead": "Lead",
+    "qualified": "Qualified",
+    "proposal_sent": "Proposal sent",
+    "negotiating": "Negotiating",
+}
+LOSS_REASON_DISPLAY = {
+    "no_decision": "No decision",
+    "price": "Price",
+    "competitor": "Competitor",
+    "diy": "Doing it themselves",
+    "timing": "Timing",
+    "bad_fit": "Bad fit",
+    "other": "Other",
+}
+
 
 class DealStateError(ValueError):
     """A deal write was refused. Fail loud — silent fallthrough is how

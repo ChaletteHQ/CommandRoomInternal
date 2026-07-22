@@ -9,6 +9,7 @@ every choice (including orphan-note synthesized choices); legacy data views
 render an empty crSrc (fallback preserved); every widget-emitting surface's
 documented data view passes source_skill (static drift guard).
 """
+import re
 import sys
 from pathlib import Path
 
@@ -44,23 +45,26 @@ def widget(source_skill=None):
 def main():
     print("== renderer bakes the source id")
     html = widget("inbox")
-    check("crSrc carries the data view's source_skill", 'const crSrc = "inbox";' in html)
-    check("Apply-all stamps src on every choice", "choice.src = crSrc" in html)
+    check("crSrc carries the data view's source_skill",
+          re.search(r'const crSrc\s*=\s*"inbox";', html) is not None)
+    check("Apply-all stamps src on every choice",
+          re.search(r'choice\.src\s*=\s*crSrc', html) is not None)
     # T2.2 golfed the orphan-capture block; the synthesized choice variable
     # is `c` and still stamps src before push.
     check("orphan-note synthesized choices carry src too",
-          "action: 'add to my list'" in html and "c.src = crSrc" in html)
+          re.search(r"action:\s*'add to my list'", html) is not None
+          and re.search(r'\bc\.src\s*=\s*crSrc', html) is not None)
 
     print("== legacy fallback preserved")
     html2 = widget(None)
     check("absent source_skill renders empty crSrc (fire-marker fallback)",
-          'const crSrc = "";' in html2)
+          re.search(r'const crSrc\s*=\s*"";', html2) is not None)
 
     print("== source id is JSON-escaped, not raw-injected")
     html3 = widget('x"; alert(1); //')
+    m3 = re.search(r'const crSrc\s*=\s*"([^"]*)"', html3)
     check("hostile source_skill cannot break out of the JS string",
-          'alert(1); //' not in html3.split("const crSrc = ")[1].split(";")[0] or
-          '\\"' in html3.split("const crSrc = ")[1].split("\n")[0])
+          m3 is not None and 'alert(1); //' not in m3.group(1))
 
     print("== static drift guard: every widget-emitting surface passes source_skill")
     sites = {

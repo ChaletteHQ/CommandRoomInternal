@@ -2188,6 +2188,38 @@ def promote_task_to_commitment(
     return {"status": "reclassified", "commitment_id": cid, "event": ev}
 
 
+def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
+                         source_event_seq=None, source_skill="apply-choices",
+                         now_iso=None) -> dict:
+    """CTS1FIX 'Add to My Plate' — mint a fresh owner-me task commitment.
+    Writes a `commitment` event with kind=task, owner_id=<me>, status open, which
+    surface_split's `personal` partition renders on My Plate. Provenance links back
+    to the originating row. Atomic append via the event gate; no in-place mutation.
+    Returns status "created" (in the apply-audit OK vocabulary — FS-18a: a missing
+    status would audit this write as an error)."""
+    from pathlib import Path as _Path
+    from capture_gate import gate_commitment_data
+    from event_gate import append_event
+    data = {
+        "title": (title or "").strip(),
+        "kind": "task",
+        "owner_id": owner_id,
+        "status": "open",
+        "no_due": True,
+        "source": "my_plate_capture",
+    }
+    if source_ref:
+        data["source_ref"] = source_ref
+    if source_event_seq is not None:
+        data["source_event_seq"] = source_event_seq
+    gate_commitment_data(data, subject="add to my plate")
+    ev = {"type": "commitment", "source_skill": source_skill,
+          "person_ids": [owner_id] if owner_id else [], "data": data}
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    append_event(events_path, [ev], holder=source_skill)
+    return {"ok": True, "status": "created", "commitment": ev}
+
+
 def stale_tasks(
     open_commitments: list[dict],
     now_iso: str,
@@ -2269,6 +2301,7 @@ __all__ = [
     "split_commitment",
     "reopen_commitment",
     "promote_task_to_commitment",
+    "create_personal_task",
     "stale_tasks",
     "commitment_kind",
     "load_open_commitments",

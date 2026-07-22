@@ -158,6 +158,83 @@ def event_thread_ids(ev: dict) -> list[str]:
     return ids
 
 
+def apply_reclassifications(events: Iterable[dict]) -> list[dict]:
+    """Fold `reclassification` events into the envelopes they supersede
+    (OBJ2 consumer fix — the read-side half of the Pass-8 idiom).
+
+    A `reclassification` event carries `supersedes_seq` naming the event
+    whose classification it corrects, plus the corrected envelope
+    (`primary_thread_id` / `related_thread_ids` / `classification_confidence`).
+    The write side is append-only — the original event is never edited — so
+    any reader that derives thread attribution from raw events silently
+    ignores the correction. This helper is the seam that honors it: returns
+    a new list where each superseded event is a SHALLOW COPY with the
+    envelope keys patched from its latest correction (highest reclassifying
+    seq wins when several supersede the same event). Everything else passes
+    through untouched, order preserved; reclassification events themselves
+    are kept in the stream (they are not in DEFAULT_ACTIVITY_TYPES, so they
+    never count as activity — they exist to patch, not to be activity).
+
+    Chains do NOT recurse: a reclassification always supersedes the
+    ORIGINAL event's seq (the write contract — apply-choices and Pass 8
+    both read `source_event_seq` off the original), so one hop is the
+    whole story. Pure; no I/O. Callers today: objective_math's movement
+    read + the objective_link detector. Other day-count surfaces still
+    read raw — adopting this seam fleet-wide is a deliberate per-surface
+    decision (F-54: surfaces quoting the same day-count must adopt
+    together, or their numbers diverge)."""
+    patches: dict[int, dict] = {}
+    src = events if isinstance(events, list) else list(events)
+    for ev in src:
+        if not isinstance(ev, dict) or ev.get("type") != "reclassification":
+            continue
+        sup = ev.get("supersedes_seq")
+        if sup is None:
+            sup = (ev.get("data") or {}).get("supersedes_seq") \
+                if isinstance(ev.get("data"), dict) else None
+        if not isinstance(sup, int):
+            continue
+        rseq = ev.get("seq") if isinstance(ev.get("seq"), int) else -1
+        prev = patches.get(sup)
+        if prev is None or rseq >= prev.get("_rseq", -1):
+            patches[sup] = {
+                "_rseq": rseq,
+                "primary_thread_id": ev.get("primary_thread_id"),
+                "related_thread_ids": (ev.get("related_thread_ids")
+                                       if isinstance(
+                                           ev.get("related_thread_ids"), list)
+                                       else []),
+                "classification_confidence":
+                    ev.get("classification_confidence"),
+            }
+    if not patches:
+        return list(src)
+    out: list[dict] = []
+    for ev in src:
+        seq = ev.get("seq") if isinstance(ev, dict) else None
+        patch = patches.get(seq) if isinstance(seq, int) else None
+        if patch is None:
+            out.append(ev)
+            continue
+        patched = dict(ev)
+        patched["primary_thread_id"] = patch["primary_thread_id"]
+        patched["related_thread_ids"] = list(patch["related_thread_ids"])
+        if patch["classification_confidence"] is not None:
+            patched["classification_confidence"] = \
+                patch["classification_confidence"]
+        # legacy data-level spellings would resurrect the old attribution
+        # through event_thread_ids' fallback parse — clear them on the copy
+        if isinstance(patched.get("data"), dict):
+            d = dict(patched["data"])
+            d.pop("project_id", None)
+            d.pop("primary_thread_id", None)
+            d.pop("thread_id", None)
+            patched["data"] = d
+        patched.pop("project_id", None)
+        out.append(patched)
+    return out
+
+
 def _event_dt(ev: dict) -> Optional[datetime]:
     """Parsed, UTC-aware event timestamp, honoring all three live field
     spellings (`ts` → `timestamp` → `date`) via event_time (R7). Defensive
@@ -268,6 +345,7 @@ def _ts_key(ts: datetime) -> datetime:
 __all__ = [
     "derive_thread_activity",
     "derive_from_events",
+    "apply_reclassifications",
     "event_thread_ids",
     "ThreadActivity",
     "DEFAULT_ACTIVITY_TYPES",

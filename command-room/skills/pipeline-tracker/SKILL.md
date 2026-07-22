@@ -160,7 +160,7 @@ print('DEAL_CREATED ' + t['id'] + ' stage=' + t['deal']['stage'])
 
 ### "move [deal] to [stage]"
 
-Resolve the deal (disambiguate on 2+), then `deal_state.set_stage(ws, thread_id, '<stage>', source_skill='pipeline-tracker')`. Backward moves are allowed — deals regress; the event records direction and days-in-stage resets. Invalid stage names get the four real ones offered ("Stages are lead, qualified, proposal_sent, negotiating — won/lost are closes: say 'mark [deal] won'"). Untracked deal thread → offer `track deal` adoption first (`deal_state.adopt_deal`).
+Resolve the deal (disambiguate on 2+), then `deal_state.set_stage(ws, thread_id, '<stage>', source_skill='pipeline-tracker')`. Backward moves are allowed — deals regress; the event records direction and days-in-stage resets. Invalid stage names get the four real ones offered in plain words ("Stages are Lead, Qualified, Proposal sent, Negotiating — won/lost are closes: say 'mark [deal] won'"; labels from `deal_state.STAGE_DISPLAY` — the snake_case wire ids never render, UXC1). Untracked deal thread → offer `track deal` adoption first (`deal_state.adopt_deal`).
 
 ### "mark [deal] won" · "mark [deal] lost — [reason]" · "[Name] signed" · "we lost the [deal]"
 

@@ -170,6 +170,47 @@ Hard rules:
 - **No estimation.** `data.value` appears only when user-stated/confirmed;
   absent value never becomes a guessed figure (quantify.py discipline).
 
+## Objective lane (SPEC OBJ1, DRAFT — under review)
+
+The standing-objectives vocabulary. All six types are written ONLY by
+`shared/scripts/objective_state.py` — the single writer/closure path for
+`objective.*` fields (mirrors the deal_state / commitment_state doctrine: one
+closer, loud failures, idempotent terminal writes). Payload shapes in
+`event-payloads.schema.json`. Directional status is never stored on the
+entity — every surface derives it from these events via
+`shared/scripts/objective_math.py`, branching on the objective's binding type.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `objective_created` | objective_state.create_objective (always a new thread; existing work is linked via anchor_thread_id, never kind-mutated) | objectives (the show-my-objectives readout), morning-briefing (focus line), weekly-recap (objectives section) |
+| `objective_updated` | objective_state.update_objective | objectives (readout deltas, rebind trail) |
+| `objective_review` | objective_state.record_review (called from the meeting-notes extraction step — the meeting-path harvest) | objectives (derived status + drift), morning-briefing (latest context line), weekly-recap |
+| `objective_report` | objective_state.record_report (the weekly objectives touch in Friday Wrap) | objectives (derived status + drift), morning-briefing, weekly-recap, value-receipt (drift-flag count) |
+| `objective_completed` | objective_state.complete_objective | objectives, weekly-recap, value-receipt, operator-report |
+| `objective_archived` | objective_state.archive_objective | objectives, weekly-recap, usage-report |
+
+Hard rules:
+
+- **Status honesty follows the binding.** A directional status
+  (`on_track|at_risk|off_track|blocked`) may come ONLY from a stated meeting
+  review (`objective_review`), the owner's own report (`objective_report`),
+  or an unambiguous activity signal (a linked deal's stage/outcome). Anything
+  looser derives as "moving" or "quiet since [date]" — a fabricated
+  directional status is the bug class this lane exists to prevent.
+- **No parallel scanner.** The meeting-path harvest lives INSIDE the
+  meeting-notes extraction pipeline (a builder in `meeting_capture.py` + one
+  sub-step); relevance capture rides the existing classification envelope
+  (`related_thread_ids` + `classification_confidence`) — objectives are one
+  more attributable thread, corrected via the existing `reclassification`
+  path. Nothing re-reads transcripts, sent mail, or sessions for objectives.
+- **Topic over party.** Auto-attribution to an objective requires TOPICAL
+  evidence (explicit mention / alias match, or membership in a linked
+  thread or deal). Shared people or orgs are party overlap — propose-only,
+  never auto-attach.
+- **One weekly touch.** `objective_report` asks are batched into the single
+  weekly objectives touch; no per-objective pings, no ad-hoc interruptions.
+  The morning brief only surfaces (read-only per FB-20) — it never asks.
+
 ## Living Brain lane (SPEC LB1, 2026-07-14)
 
 The unified propose → confirm → narrate → undo layer. `brain_proposal` is the
@@ -262,6 +303,7 @@ shapes in `event-payloads.schema.json`.
 |---|---|---|
 | `unidentified_attendee_observed` | `meeting_capture.build_unidentified_attendee_event` (meeting-notes Step 5f / past-meetings Phase 4.5b for unnamed speakers — NEVER a person proposal; the proposal builder raises on empty names by design) + `identity_reconcile.run_identity_reconcile` (backfill conversion of legacy no-name rows) | `identity_reconcile.load_open_annotations` / `count_open_annotations` (the staff meeting's ONE count line — §0-4: otherwise fully silent, never a queue row) |
 | `identity_reconcile_run` | `receipts.log_receipt` from `identity_reconcile.run_identity_reconcile(apply=True)` — ONE per pass (Sunday `identity-reconcile` maintenance job + the M-fired one-time backfill) | maintenance_dispatcher due-ness rule, `change_feed.changes_since` (the D6 `people_added` / `people_linked` CHANGED lines — counts from what was WRITTEN, never the plan), `identity_reconcile.load_open_annotations` (`annotations_resolved` fold) |
+| `note` (pre-registry legacy type; new writer registered MLK1 2026-07-21) | `orphan_note.reroute_orphan_note` (apply-choices orphan-note re-route — a typed widget note with no action selected lands as a note on its resolved person/thread, `data.via: "orphan_note_capture"`; DECLINED with nothing written when no target resolves) + legacy writers (session-backfill / session-sweep / historical-backfill / intel-intake prose paths) | `capture_gate` (substantive-candidate types), `entity_signal_detector` / `deal_signal_detector` (signal scans), `session_sweep.SWEEPABLE_TYPES`, update-bridge migration gate (ingest-signal count) |
 
 Hard rules:
 

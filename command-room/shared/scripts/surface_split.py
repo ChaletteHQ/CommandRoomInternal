@@ -32,7 +32,8 @@ extraction class where counterparty LINKING fails on real promises.
 "counterparty empty = Task" would silently demote 49 communicated promises to
 personal to-dos (no reconcile-sent close, no aging pressure, wrong surface).
 A promise stays a promise when the system merely failed to link who it's for;
-those render in My Plate · Promised tagged **counterparty unresolved**
+those render in My Plate · Promised tagged **(who was this for?)** — plain
+words; "counterparty" never reaches the CEO (UXC1)
 (`counterparty_unresolved()` below) with the §8.2 drip + batch fixup — NEVER
 auto-demoted.
 
@@ -140,8 +141,9 @@ def counterparty_unresolved(ev: dict, user_person_id: Optional[str]) -> bool:
     """The CTS1 §8.2 projection-side tag (NEVER a stored field): a row that
     classifies My Plate · PROMISED yet carries no counterparty signal — a
     communicated promise whose counterparty LINKING failed (Bug #103 class,
-    49 live rows at spec time). Renders with the "counterparty unresolved —
-    who was this for?" fixup; NEVER auto-demoted to Personal.
+    49 live rows at spec time). Renders with the plain "(who was this for?)"
+    fixup tag (UXC1 — internal vocabulary never reaches the row); NEVER
+    auto-demoted to Personal.
 
     Defined THROUGH classify_surface so the tag can never disagree with the
     partition: a counterparty-less scheduling/agenda row classifies PERSONAL

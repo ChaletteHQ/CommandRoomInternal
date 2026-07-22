@@ -1527,6 +1527,86 @@ def test_later_route_and_when_parse():
     _check("empty hands off", cs.parse_later_when("", now_iso) is None)
 
 
+def test_original_thread_empty_dict_renders_nothing():
+    """BUG (fleet-wide): a content-less original_thread dict (no author,
+    date, subject, body, or url) rendered a doubled "📨 Original thread —
+    Original thread" summary over an empty expandable body — an accordion
+    that opens to nothing. The fix: with no displayable content, render no
+    accordion at all.
+
+    Real substrate shape: some inbox/commitment items carry an
+    `original_thread` key whose fields were never populated (e.g. a
+    synthetic follow-up with no source email), producing a dict of empty
+    strings rather than an absent key.
+    """
+    from chat_output_renderer import _render_original_thread_html
+
+    print("test_original_thread_empty_dict_renders_nothing")
+    # Dict of empty strings (the real-substrate shape that triggered the bug).
+    _check(
+        "all-empty-string original_thread renders nothing",
+        _render_original_thread_html(
+            {"author": "", "date": "", "subject": "", "body": "", "url": ""}
+        ) == "",
+    )
+    # Falsy dict short-circuit still holds.
+    _check("empty dict renders nothing", _render_original_thread_html({}) == "")
+
+
+def test_original_thread_no_author_date_single_label():
+    """BUG (fleet-wide): when author AND date are both absent but there IS
+    displayable content (subject/body/url), the summary fell back to the
+    literal "Original thread" and got prefixed → "📨 Original thread —
+    Original thread". The fix: render just "📨 Original thread" with no
+    " — Original thread" tail, and still render the body.
+    """
+    from chat_output_renderer import _render_original_thread_html
+
+    print("test_original_thread_no_author_date_single_label")
+    html = _render_original_thread_html(
+        {
+            "author": "",
+            "date": "",
+            "subject": "Q2 deck — your thoughts",
+            "body": "Following up on the deck.",
+            "url": "https://mail.google.com/mail/u/0/#inbox/abc123",
+        }
+    )
+    _check("accordion is rendered", "<details" in html and "cr-orig-thread" in html)
+    _check("single 📨 Original thread label", "📨 Original thread</summary>" in html)
+    _check(
+        "no doubled 'Original thread — Original thread'",
+        "Original thread — Original thread" not in html,
+    )
+    _check("subject body present", "Q2 deck — your thoughts" in html)
+    _check("body line present", "Following up on the deck." in html)
+    _check("open-in-source link present", "Open in Gmail" in html)
+
+
+def test_original_thread_rich_content_unchanged():
+    """Regression guard: the rich-content path (real author + date) still
+    renders the "📨 Original thread — Author · Date" summary exactly as
+    before the empty-accordion fix."""
+    from chat_output_renderer import _render_original_thread_html
+
+    print("test_original_thread_rich_content_unchanged")
+    html = _render_original_thread_html(
+        {
+            "author": "Sam Sample",
+            "date": "Apr 30",
+            "subject": "Q2 deck",
+            "body": "Thoughts?",
+            "url": "",
+        }
+    )
+    _check(
+        "rich summary keeps author · date tail",
+        "📨 Original thread — Sam Sample · Apr 30</summary>" in html,
+    )
+    _check("subject rendered", "Q2 deck" in html)
+    _check("body rendered", "Thoughts?" in html)
+
+
 def main():
     tests = [
         test_minimal_render,
@@ -1580,6 +1660,9 @@ def main():
         test_email_body_inline_editable,
         test_blockquote_markers_stripped_from_widget_body,
         test_later_route_and_when_parse,
+        test_original_thread_empty_dict_renders_nothing,
+        test_original_thread_no_author_date_single_label,
+        test_original_thread_rich_content_unchanged,
     ]
     for t in tests:
         t()

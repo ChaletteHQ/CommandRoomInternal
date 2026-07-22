@@ -279,7 +279,7 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["initiative", "deal", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"],
+          "enum": ["initiative", "deal", "objective", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"],
           "description": "The semantic kind of this thread."
         },
         "project_class": {
@@ -374,6 +374,97 @@
             },
             "loss_note": {
               "type": ["string", "null"]
+            },
+            "opened_at": {
+              "type": ["string", "null"],
+              "format": "date"
+            },
+            "closed_at": {
+              "type": ["string", "null"],
+              "format": "date"
+            }
+          }
+        },
+        "objective": {
+          "type": "object",
+          "description": "SPEC OBJ1 (draft): standing-objective fields, allowed ONLY on kind='objective' threads (thread_writer rejects it elsewhere). An objective is a CEO-level standing priority — too big to mark done in a day, spanning weeks, tracked through ONE of three bindings the CEO picks (meeting / self / activity). Written ONLY by shared/scripts/objective_state.py — the single writer/closure path (mirrors deal_state doctrine). Directional status is NEVER stored here — it derives from objective_review / objective_report / linked-entity events via shared/scripts/objective_math.py. Consistency rules enforced in code: binding.type determines which binding fields are required; outcome is terminal and set only by objective_state.complete_objective / archive_objective (completed → thread status 'resolved', archived → 'archived').",
+          "additionalProperties": false,
+          "properties": {
+            "statement": {
+              "type": "string",
+              "description": "The objective in the CEO's own plain words (e.g. 'Land three enterprise pilots'). Doubles as the topical match surface for relevance capture (alias-style matching via entity_resolve)."
+            },
+            "horizon": {
+              "type": ["string", "null"],
+              "format": "date",
+              "description": "Target date, or null for an open horizon. Never used to fabricate a status — display and drift context only."
+            },
+            "binding": {
+              "type": "object",
+              "description": "HOW this objective is tracked — the one deliberate choice the CEO makes at creation (the three-way toggle). The system proposes the target inside the chosen path; the CEO confirms. Exactly one binding per objective in v1.",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["meeting", "self", "activity"],
+                  "description": "meeting = reviewed in a recurring meeting (status harvested from its transcripts); self = owner reports in the weekly objectives touch; activity = derived from linked threads'/deals' own events."
+                },
+                "series_key": {
+                  "type": ["string", "null"],
+                  "description": "meeting binding only: normalized title of the recurring meeting (the series fingerprint). There is no calendar series id in the substrate — title(+people) matching is the established recurrence convention."
+                },
+                "series_match": {
+                  "type": ["string", "null"],
+                  "enum": ["title_and_people", "title_only", null],
+                  "description": "meeting binding only: how the series fingerprint matches a processed transcript. title_and_people (default) = normalized title plus usual-attendee overlap; title_only = distinctive unique names (e.g. a named leadership call) where attendee churn must not break the match. Proposed automatically: title unique in meeting history → title_only, generic title → title_and_people."
+                },
+                "series_people": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "meeting binding only: person_ids of the usual attendees, used when series_match='title_and_people'."
+                },
+                "cadence_days": {
+                  "type": ["integer", "null"],
+                  "minimum": 1,
+                  "description": "self binding only: expected days between self-reports (default 7 — the weekly objectives touch). Drift math counts missed cycles against this."
+                },
+                "entity_ids": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "activity binding only: the linked thread/deal ids whose OWN events drive status. Topic over party — always threads or deals, never a bare person (party overlap is not a join)."
+                },
+                "target_note": {
+                  "type": ["string", "null"],
+                  "description": "activity binding only, optional: plain-text description of the concrete target (e.g. 'deal reaches negotiating', '3 pilots signed'). Display/context only in v1 — a directional status still requires an unambiguous signal (deal stage/outcome), never a parsed guess from this text."
+                }
+              }
+            },
+            "anchor_thread_id": {
+              "type": ["string", "null"],
+              "description": "Optional link to the existing project/deal thread this objective is about (any binding type). The topical join relevance capture uses: events attributed to the anchor (or to activity-binding entity_ids) count as movement on the objective. Cold-start proposals set this instead of mutating the existing thread's kind."
+            },
+            "milestones": {
+              "type": "array",
+              "description": "Optional light step list — display and progress context only, never a status source. No per-step chores: steps flip via the same confirmation surfaces, not scheduled prompts.",
+              "items": {
+                "type": "object",
+                "required": ["title"],
+                "additionalProperties": false,
+                "properties": {
+                  "title": { "type": "string" },
+                  "done": { "type": "boolean", "default": false }
+                }
+              }
+            },
+            "outcome": {
+              "type": ["string", "null"],
+              "enum": ["completed", "archived", null],
+              "description": "Terminal. Set only by objective_state.complete_objective / archive_objective — never hand-written (completed → thread status 'resolved', archived → 'archived')."
+            },
+            "outcome_note": {
+              "type": ["string", "null"],
+              "description": "Optional one-liner recorded at close (why archived / what completing looked like)."
             },
             "opened_at": {
               "type": ["string", "null"],

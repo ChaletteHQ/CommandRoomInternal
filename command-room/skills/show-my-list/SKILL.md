@@ -1,13 +1,13 @@
 ---
 name: show-my-list
-description: "Surfaces the user's curated 'discuss / follow-up later' list — items captured via the `add to my list` action across scheduled tasks. Read-only review surface. Triggers: 'show my list', 'whats on my list', 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list'. Use this when you want a batch view of everything you've flagged for later conversation, instead of context-switching when each item was originally captured. Does NOT fire on 'show my reminders' / 'my reminders' / 'remind me about' (show-my-reminders — the date-pinned reminder lane)."
+description: "The retired discuss-later list, drain-only — renders whatever is still open read-only so each item can be cleared or dropped; nothing adds to it anymore (new items go to My Plate or a contact note). Triggers: 'show my list', 'whats on my list', 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list'. Also hosts the mute ledger (see Routing). Does NOT fire on 'show my reminders' / 'my reminders' / 'remind me about' (show-my-reminders — the date-pinned reminder lane)."
 ---
 
 # show-my-list
 
-Captured-then-curated review surface. Throughout the day, scheduled-task widgets let the user click `Add to my list` (formerly `Log to discuss` pre-v2.14.4) to flag items they want to bring up in a later conversation but don't want to act on right now. Those flags accumulate as `commitment_to_discuss` events in events.jsonl. This skill is the ONE place to review them in batch.
+**The list is RETIRED (MLK1, M ruling 2026-07-21).** The `Add to my list` capture verb (formerly `Log to discuss` pre-v2.14.4) no longer renders anywhere and no capture path writes new `commitment_to_discuss` events — the live workspace showed the captures were context-free fragments, undecidable later (UX review findings 1 + 11). New items go to My Plate (`add to my plate`) or land as a note on the person/thread they belong to.
 
-Replaces the v2.10.x pattern of immediately-actionable items with a deferred-review pattern: capture quickly, review at a quiet moment.
+This skill remains for two things: (1) the FOSSIL READER — whatever `commitment_to_discuss` events are still open render read-only here so the user can drain them (clear or drop; the backlog only shrinks); (2) the MUTE LEDGER (`show muted` / `show snoozed`), which is unaffected by the retirement and lives here permanently.
 
 ## Behavior
 
@@ -103,7 +103,8 @@ data_view = {
     #   (b) nothing touches revenue (n_revenue == 0) -> drop the clause entirely:
     #       "Your list — {n_open} to discuss · oldest {oldest_days} days"
     "header": f"Your list — {n_open} to discuss · {n_revenue} tied to revenue (${total_k}K) · oldest {oldest_days} days",
-    "sub_header": "Stuff you set aside earlier. Click to clear when handled, or skip.",
+    # MLK1 retirement line — REQUIRED on every fossil render, verbatim:
+    "sub_header": "This list is retired — new items go to My Plate or a contact note.",
     "sections": [{
         "title": None,
         "count": None,
@@ -117,7 +118,10 @@ data_view = {
                 "context_tag": f"next time you talk to {person_name} ({item_count})"
                                + (f" · {tag}" if (tag := money_time_tag(items_for_person[0], entities)) else ""),
                 "body_lines": [f"- {item['data']['summary']}" for item in items_for_person],
-                "actions": [f"{i} resolved", f"{i} skip"],
+                # MLK1 D3 — drain verbs ONLY (Done / Drop). `skip` is gone
+                # from new renders: a snooze grows nothing but keeps the
+                # fossil circling; the two offered verbs both shrink it.
+                "actions": [f"{i} resolved", f"{i} drop"],
             }
             for i, (person_name, items_for_person) in enumerate(grouped, start=1)
         ],
@@ -154,13 +158,13 @@ log_pack_run(
 )
 ```
 
-apply-choices reads the most recent fire-marker (within 60 min) to identify which orchestrator's handler to dispatch through. Without this event, clicking `resolved` or `skip` on a discuss-list item silently no-ops because apply-choices can't tell what surface it came from. (This was the v2.7.x→v2.14.18 silent-no-op bug from the simplify-pass Batch 7 finding #4.)
+apply-choices reads the most recent fire-marker (within 60 min) to identify which orchestrator's handler to dispatch through. Without this event, clicking `resolved` or `drop` on a discuss-list item silently no-ops because apply-choices can't tell what surface it came from. (This was the v2.7.x→v2.14.18 silent-no-op bug from the simplify-pass Batch 7 finding #4.)
 
 ### Step 4 — Post widget, then STOP
 
 Widget IS the post. No commentary.
 
-If 0 items match: surface plain English `Your list is empty — nothing set aside right now. Things land here when you click "Add to my list" in one of your scheduled chats.` No widget, no fire-marker (nothing to dispatch).
+If 0 items match: the backlog has drained — surface ONLY the plain-English empty state: `Your list is empty. This list is retired — new items go to My Plate or a contact note.` No widget, no fire-marker (nothing to dispatch), no retirement widget banner — the empty state is the whole render.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary (these are **scheduled chats** to the customer — never "scheduled tasks" or "daily check-ins" in rendered copy).
 - BAD: "Your list — 5 to discuss · 3 touch revenue — $45K · oldest 12d"
@@ -219,15 +223,13 @@ rule as the other budget-capped skills; enforced by tests/triggers.yaml).
 
 > Also fires on: 'show muted', 'show snoozed', 'what's muted', 'what did I snooze' — the mute-ledger mode: every live snooze/mute with its remaining time and an Unmute action. Does NOT fire on 'never track' rule management (those are permanent suppression rules, not timed mutes).
 
-## Why this pattern
+## Why the retirement (MLK1, 2026-07-21)
 
-Per M's v2.14.4 design discussion: capture-then-curate beats interrupt-driven action. Throughout the day you click `Add to my list` on items you want to bring up later, but don't want to context-switch on RIGHT NOW. They accumulate silently. When you have a quiet moment (between meetings, end of day, etc.), `show my list` surfaces them grouped by who you'd discuss them with — so the next time you're talking to that person, you've got the queue ready.
-
-This is the pattern productivity systems like the GTD "next-action list" use — capture is cheap, review is batched. v2.14.4 implements it as a Cowork-native flow.
+`add to my list` was the most confusable verb in the product: a sibling of `Add to My Plate` on the same rows, and a third "my ___" lane beside My Plate and my reminders. M's live list showed what the capture-then-curate design actually produced — context-free fragments with no decidable next step. The verb is gone from every surface; existing history stays readable here until it drains, and persisted old widgets still dispatch (the retired wire id keeps its original meaning — see apply-choices).
 
 ## See also
 
-- `show-my-reminders` — the OTHER personal lane, fenced by design: reminders are date-pinned nags (`reminder` events, pin to the morning brief daily until cleared); this list is the discuss-later queue (`commitment_to_discuss`, surfaces only when pulled). Neither skill reads the other's events, and the trigger families never cross ("my list" vs "my reminders")
-- `add-to-my-list` action (defined in CHAT_ACTION_WIDGET.md action reference) — the capture verb
-- Past Meetings + Pulse orchestrators — primary surfaces that emit items into the list
+- `show-my-reminders` — the OTHER personal lane, fenced by design: reminders are date-pinned nags (`reminder` events, pin to the morning brief daily until cleared); this list is the retired discuss-later queue (`commitment_to_discuss`, drain-only, surfaces only when pulled). Neither skill reads the other's events, and the trigger families never cross ("my list" vs "my reminders")
+- `add to my plate` (CHAT_ACTION_WIDGET.md action reference) — the own-it-now verb that covers the old capture intent when the item is really a task
+- apply-choices § orphan-note re-route — a typed widget note with no action selected becomes a `note` on the resolved person/thread (or is declined honestly), never a list item
 - `usage report` — separate read of events.jsonl for telemetry; this skill is for action items

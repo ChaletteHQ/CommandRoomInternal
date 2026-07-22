@@ -601,24 +601,24 @@ File save location (v2.10.8+): `[Project]/meetings/Past_Meeting_<slug>_<YYYY-MM-
         {
             "id": "1a",
             "summary": "Rio Sample — new person mentioned by Sam (project manager).",
-            "actions": ["1a add [text]", "1a not relevant", "1a add to my list"],   # v2.14.38+ — REVIEW unified set: `add [text]` opens a textarea (empty = add as inferred / Rio Sample → Summit Company; non-empty = fold corrections, e.g., "actually this was Rio Lange speaking — attribute to him"). `not relevant` 60-day cooldown. Replaces the v2.12.6 `add as person to <Org>` + skip cluster which couldn't handle speaker-attribution corrections without a separate textarea.
+            "actions": ["1a add [text]", "1a not relevant"],   # v2.14.38+ — REVIEW unified set (MLK1 retired the `add to my list` defer; not answering defers naturally): `add [text]` opens a textarea (empty = add as inferred / Rio Sample → Summit Company; non-empty = fold corrections, e.g., "actually this was Rio Lange speaking — attribute to him"). `not relevant` 60-day cooldown. Replaces the v2.12.6 `add as person to <Org>` + skip cluster which couldn't handle speaker-attribution corrections without a separate textarea.
         },
         {
             "id": "1b",
             "summary": "Rio Lange — new person mentioned by Sam (project manager).",
-            "actions": ["1b add [text]", "1b not relevant", "1b add to my list"],
+            "actions": ["1b add [text]", "1b not relevant"],
         },
         # Vague-timing sub-item — `set date [when]` opens a free-text input on click
         {
             "id": "1c",
             "summary": "Vague timing: \"let's revisit in a few weeks.\" (no specific commitment).",
-            "actions": ["1c set date [when]", "1c not relevant", "1c add to my list"],   # v2.14.38+ — `not relevant` (60d cooldown) replaces `skip` (24h dismissal); `add to my list` defers indefinitely.
+            "actions": ["1c set date [when]", "1c not relevant"],   # v2.14.38+ — `not relevant` (60d cooldown) replaces `skip` (24h dismissal). MLK1 retired the `add to my list` defer.
         },
         # Decision-needed sub-item — `decide [text]` opens a textarea on click
         {
             "id": "1d",
             "summary": "Decision needed: should we route Aspen / CHS Limelight as its own project or add as a one-off mapping?",
-            "actions": ["1d decide [text]", "1d not relevant", "1d add to my list"],
+            "actions": ["1d decide [text]", "1d not relevant"],
         },
         # New-org candidate sub-item — v2.14.38+ uses the unified REVIEW
         # `add [text]` action with the candidate name baked into the summary
@@ -627,7 +627,7 @@ File save location (v2.10.8+): `[Project]/meetings/Past_Meeting_<slug>_<YYYY-MM-
         {
             "id": "1e",
             "summary": "Acme Co — new org candidate (Quinn's email is @acme.example.com; 5 recent threads reference setup).",
-            "actions": ["1e add [text]", "1e not relevant", "1e add to my list"],
+            "actions": ["1e add [text]", "1e not relevant"],
         },
     ],
     "actions": [],                             # meeting-level has no actions; sub-items handle them
@@ -688,12 +688,12 @@ Same rule applies to any case where multiple distinct entities surface together 
 Visual rule: ONE LINE for the issue description, then a blank line, then ONE LINE for the action shortcuts. No "Reply:" label prefix — indentation already differentiates the action line. Drop redundant subjects in actions ("add Adan Sample to [org]" → "add to [org]" — the name is in the description above, no need to repeat). Drop trailing "Add or skip?" / "Set a real time?" prompts in the description since the action set IS the answer to that question.
 
 - Sub-IDs are `[N][a/b/c]` — global meeting numbering plus a sub-letter per pending within that meeting
-- Action set per pending type (v2.14.38+ — REVIEW unified set: single permissive `add [text]` / `set date [when]` / `decide [text]` affirmative + `not relevant` (60d cooldown) + `add to my list` (indefinite). Replaces the v2.12.6 `add as person to <Org>` + skip / v2.14.5 separate context cluster):
-  - **Missing person:** `▸ IDX add [text]  ▸ IDX not relevant  ▸ IDX add to my list` — `add [text]` opens a textarea pre-populated with the inferred fields (`Person: Rio Sample / Org: Summit Company / Source: Sam mentioned as PM`). Empty input adds as inferred; non-empty input folds corrections (e.g., "actually this was Rio Lange speaking; attribute to him" → re-attributes the new person record at create time).
-  - **Missing org (new org candidate):** `▸ IDX add [text]  ▸ IDX not relevant  ▸ IDX add to my list` — same textarea pattern. Pre-populated with inferred org name + relationship type + signal.
-  - **Vague timing:** `▸ IDX set date [when]  ▸ IDX not relevant  ▸ IDX add to my list` — `set date [when]` keeps its specific verb since it's about pinning a date, not an entity.
-  - **Decision needed:** `▸ IDX decide [text]  ▸ IDX not relevant  ▸ IDX add to my list` — `decide [text]` keeps its specific verb since the decision text is the captured artifact.
-  - **Sensitive decision (auto-flagged):** `▸ IDX decide [text]  ▸ IDX escalate to memo  ▸ IDX not relevant  ▸ IDX add to my list` — adds escalate.
+- Action set per pending type (v2.14.38+ — REVIEW unified set: single permissive `add [text]` / `set date [when]` / `decide [text]` affirmative + `not relevant` (60d cooldown). MLK1 retired the `add to my list` indefinite defer — an unanswered pending re-surfaces on a later fire. Replaces the v2.12.6 `add as person to <Org>` + skip / v2.14.5 separate context cluster):
+  - **Missing person:** `▸ IDX add [text]  ▸ IDX not relevant` — `add [text]` opens a textarea pre-populated with the inferred fields (`Person: Rio Sample / Org: Summit Company / Source: Sam mentioned as PM`). Empty input adds as inferred; non-empty input folds corrections (e.g., "actually this was Rio Lange speaking; attribute to him" → re-attributes the new person record at create time).
+  - **Missing org (new org candidate):** `▸ IDX add [text]  ▸ IDX not relevant` — same textarea pattern. Pre-populated with inferred org name + relationship type + signal.
+  - **Vague timing:** `▸ IDX set date [when]  ▸ IDX not relevant` — `set date [when]` keeps its specific verb since it's about pinning a date, not an entity.
+  - **Decision needed:** `▸ IDX decide [text]  ▸ IDX not relevant` — `decide [text]` keeps its specific verb since the decision text is the captured artifact.
+  - **Sensitive decision (auto-flagged):** `▸ IDX decide [text]  ▸ IDX escalate to memo  ▸ IDX not relevant` — adds escalate.
 
 **Single context affordance per item (v2.14.36+):** every item and every sub-item carries ONE collapsible "+ Add context" toggle button (rendered by chat_output_renderer.py). Pre-v2.14.36 had two affordances: the per-action `IDX add context [text]` button (per-action context capture, fired with that specific action) AND the always-visible per-item note textarea (per-item, fired with whichever action gets selected). M's 2026-05-07 testing flagged the duplication: "duplicate." v2.14.36 collapses to ONE: the per-item collapsible toggle (button hidden until clicked, textarea revealed on click, captured as `context` field in apply-choices payload alongside whichever action the user selects). Cleaner UX, same captured semantic.
 
@@ -757,7 +757,6 @@ Source links inline (Rule 2): every meeting's transcript gets a clickable `Sourc
 - `IDX decide [text]` (decision needed pending) → user types their decision; orchestrator writes `decision` event with the user's text as the resolved decision.
 - `IDX escalate to memo` → fire memo-writer through the standard chat invocation. The memo-writer produces a .docx via the docx skill and surfaces the link the standard Cowork way. Do NOT emit `file://` links.
 - `IDX not relevant` (v2.14.38+) → write `pending_review_dismissed` event with 60-day cooldown. Item won't reappear for that signal for 60 days. Stronger than the deprecated `skip` (which had no cooldown).
-- `IDX add to my list` (v2.14.38+) → write `commitment_to_discuss` event for indefinite deferral; surfaces in `show my list`.
 
 ## Meeting-level actions
 

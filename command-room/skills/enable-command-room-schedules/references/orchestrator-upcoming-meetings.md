@@ -356,7 +356,7 @@ for brief in briefs:
         "label": "Open full brief",
         "url": "computer:///<URL-encoded-absolute-path-to-Call_Prep_Sam_2026-04-29.docx>",
     },
-    "actions": ["1 push meeting [date]", "1 snooze 3d", "1 add to my list"],  # v2.14.38+ — DROPPED `context [text]` action: the universal `+ Add context` toggle (rendered on every item by chat_output_renderer.py line 1934) covers the same intent without needing a dedicated primary button. Per M's 2026-05-07 ask: "if we can achieve [universal context button] across the board we can drop the actual context button from all actions." Replaced `skip` with the standardized deferral cluster (`snooze 3d` + `add to my list`).
+    "actions": ["1 push meeting [date]", "1 snooze 3d"],  # v2.14.38+ — DROPPED `context [text]` action: the universal `+ Add context` toggle (rendered on every item by chat_output_renderer.py line 1934) covers the same intent without needing a dedicated primary button. Per M's 2026-05-07 ask: "if we can achieve [universal context button] across the board we can drop the actual context button from all actions." Replaced `skip` with `snooze 3d` (MLK1 retired the `add to my list` half of the old deferral cluster).
 }
 ```
 
@@ -404,8 +404,7 @@ The action surface flips from typed-number text to a `show_widget`-rendered butt
 
 **Per-button labels (the strings rendered on each meeting's button row, v2.14.38+):**
 - `push meeting [date]` — schedule a reschedule email. Widget exposes a free-text natural-language input (`monday at 2`, `tomorrow afternoon`, `2026-05-12`). Payload includes `input` field with the user's literal text; the reply handler parses the natural language at apply time. Widget displays as `Push meeting`.
-- `snooze 3d` (v2.14.38+) — fixed 3-day snooze. Widget displays as `Snooze (3 days)`. Item won't re-surface in upcoming-meetings until the date passes.
-- `add to my list` (v2.14.38+) — defer indefinitely. Surfaces in `show my list` grouped by attendee.
+- `snooze 3d` (v2.14.38+) — fixed 3-day snooze. Widget displays as `Snooze (3 days)`. Item won't re-surface in upcoming-meetings until the date passes. (MLK1 retired the `add to my list` indefinite defer — no button emits it.)
 
 **The dedicated `context [text]` action button is REMOVED in v2.14.38+.** The universal `+ Add context` collapsible toggle (rendered on every item by `chat_output_renderer.py` line 1934) covers the same intent-aware affordance — empty input is no-op; non-empty input is captured into the apply-choices payload alongside whatever action fires AND routed intent-aware (question-shaped → synthesize answer; statement/instruction → regenerate brief). Per M's 2026-05-07 ask: *"if we can achieve [universal context button] across the board we can drop the actual context button from all actions."* Single context affordance per item; no per-action context buttons.
 
@@ -456,7 +455,6 @@ Parse:
 - `add more context SLUG [text]` (v2.12.4 - v2.14.36 alias, accepted for back-compat) → translate to `context SLUG [text]` and dispatch through the intent-aware handler above.
 - `ask question SLUG [text]` (v2.14.14 - v2.14.36 alias, accepted for back-compat) → translate to `context SLUG [text]` and dispatch through the intent-aware handler above.
 - `snooze SLUG 3d` (v2.14.38+) → write `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Meeting card won't re-surface until the date passes. Plain-English ack only if mentioned: `"Snoozed #N for 3 days."`
-- `add to my list SLUG` (v2.14.38+) → write `commitment_to_discuss` event grouped by the meeting's primary attendee. Surfaces in `show my list`.
 - `skip SLUG` (deprecated v2.14.38+ — back-compat alias for in-flight pre-v2.14.38 widgets) → translate to `snooze 3d` semantics + same dismissal write.
 - `push SLUG to [when]` → parse the user's natural-language input (`monday at 2`, `tomorrow afternoon`, `2026-05-12`) into a target date/time. If parseable, draft reschedule email via email-writer per EMAIL_DRAFT_PROTOCOL. The draft surfaces inside the apply-choices consolidated response widget (v2.12.4+ — the standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) per the same widget contract as the source orchestrator). If unparseable, surface item-level error in the consolidated ack ("couldn't parse '<input>' as a date — re-fire and try a clearer time").
 - `tell me about [name]` → fire the people-crm "tell me about" cross-reference flow.

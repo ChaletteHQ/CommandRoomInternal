@@ -252,8 +252,8 @@ Pulse is the right surface because (a) it already aggregates "things that need y
     "n": 10,                                             # global numbering continues
     "icon": None,
     "name": "Sam Sample",                           # counterparty / recipient on the original commitment
-    "context_tag": "Did 'Send pricing deck to Sam' get fulfilled? Sent via native mail Apr 30 with subject 'Q2 deck — final'. Match score 0.42 — likely but not certain. Resolved to mark the commitment fulfilled; Not relevant to keep it open in Commitments; Add to my list to defer.",
-    "actions": ["10 resolved", "10 not relevant", "10 add to my list"],  # v2.14.38+ — affirmative is `resolved` (mark commitment fulfilled), negative is `not relevant` (commitment stays open in Commitments view), defer is `add to my list`. Replaces v2.14.7 confirm/skip pair.
+    "context_tag": "Did 'Send pricing deck to Sam' get fulfilled? Sent via native mail Apr 30 with subject 'Q2 deck — final'. Match score 0.42 — likely but not certain. Resolved to mark the commitment fulfilled; Not relevant to keep it open in Commitments.",
+    "actions": ["10 resolved", "10 not relevant"],  # v2.14.38+ — affirmative is `resolved` (mark commitment fulfilled), negative is `not relevant` (commitment stays open in Commitments view). MLK1 retired the `add to my list` deferral; not answering IS the defer — the item re-surfaces on a later fire. Replaces v2.14.7 confirm/skip pair.
 }
 ```
 
@@ -385,13 +385,14 @@ Before building the data view, scan events.jsonl for the last 7 days and count:
 - **Resolved this week** — count of `commitment_resolved` events in window
 - **Pending review** — count of OPEN `commitment_review_proposed` events (filter same as Phase 4g: not closed by subsequent `commitment_resolved`, not dismissed by `commitment_review_dismissed` for the same commitment_id)
 - **Going quiet** — count of `pattern_break_detected` events in window
-- **Captured to list** — count of `commitment_to_discuss` events in window not yet resolved/dismissed
+
+(MLK1 2026-07-21: the fourth segment — "captured to list", counting `commitment_to_discuss` events — is GONE. The list is retired and no capture path writes those events; a count of a dead lane is noise.)
 
 Render as ONE plain-English line that becomes the chat-output header:
 
-> *This week: 7 resolved · 3 pending review · 2 going quiet · 4 captured to list.*
+> *This week: 7 resolved · 3 pending review · 2 going quiet.*
 
-Skip any zero-counts to keep the line lean. If ALL four counts are zero, omit the line entirely (no "0 across the board" placeholder — that reads as system noise).
+Skip any zero-counts to keep the line lean. If ALL three counts are zero, omit the line entirely (no "0 across the board" placeholder — that reads as system noise).
 
 Pass the rendered string into the data view as `header_pulse` (or directly as the first line of the `header` field). Per CONTRACT.md Rule 4: no internal jargon, no event-type names, no IDs.
 
@@ -483,11 +484,11 @@ Per Sam's Apr 30 ask: source links go in regular chat below the widget, not insi
         # All 4 entries below are REQUIRED. Use explicit "no X tracked" / "(unknown)"
         # phrases when a field genuinely lacks data — never silent-omit.
         ("Last contact", "18 days ago — Apr 18, Slack DM about Q3 OKR"),  # date + most-recent specific interaction (email subject, meeting topic, Slack thread, decision touched). NOT just "18 days ago" alone.
-        ("Why they matter", "Direct report · NetSuite migration lead · Q3 OKR owner"),  # relationship + project + role. Pulled from entities.json person record. If person has no role / org / project tied → surface "(no role tracked yet — `add to my list` to triage)".
+        ("Why they matter", "Direct report · NetSuite migration lead · Q3 OKR owner"),  # relationship + project + role. Pulled from entities.json person record. If person has no role / org / project tied → surface "(no role tracked yet)".
         ("Open context", "[NetSuite handoff still pending — Bo owes the mapping doc](<connector-returned thread URL>)"),  # what's specifically open between you (commitment owed, dropped thread, decision pending). Markdown link to the open thread / commitment source. If nothing's tracked → surface "(no open thread tracked — `Investigate` will pull cross-references)".
         ("What's at stake", "NetSuite cutover Aug 4 — handoff doc gates 3 downstream tasks"),  # the consequence of NOT following up. Pulled from project/commitment metadata. If no clear stake → surface "(warm relationship at risk of going cold — typical pattern is silence → drift → lost over 60 days)".
     ],
-    "actions": ["1 investigate", "1 draft re-engagement", "1 schedule catchup [when]", "1 resolved", "1 snooze 3d", "1 add to my list"],  # v2.14.38+ — standardized deferral cluster: snooze fixed at 3 days, add-to-my-list replaces skip.
+    "actions": ["1 investigate", "1 draft re-engagement", "1 schedule catchup [when]", "1 resolved", "1 snooze 3d"],  # v2.14.38+ — snooze fixed at 3 days. MLK1 retired `add to my list`; `snooze 3d` is the one deferral.
 }
 ```
 
@@ -554,7 +555,7 @@ The `context_tag` line answers *why this person is being surfaced today* in lang
         ("Last activity", "Mar 28 (31 days quiet)"),
         ("Last decision", '[Mar 12 — "Hold off on margin restructure until Q3 numbers land."](https://granola.ai/note/...)'),
     ],
-    "actions": ["2 prep deep work", "2 investigate", "2 mark paused", "2 status check", "2 resolved", "2 snooze 3d", "2 add to my list"],  # v2.14.38+ — added `resolved` (the "this is done" outcome was missing) and standardized deferral cluster.
+    "actions": ["2 prep deep work", "2 investigate", "2 mark paused", "2 status check", "2 resolved", "2 snooze 3d"],  # v2.14.38+ — added `resolved` (the "this is done" outcome was missing); `snooze 3d` is the deferral (MLK1 retired `add to my list`).
 }
 ```
 
@@ -596,7 +597,7 @@ NEVER expose schema field names, "proposed:" syntax, or "(N signal, low confiden
     "subject": None,
     "context_tag": "I think you talked Apr 28 — was tracking Apr 14. Confirm or correct.",
     "metadata": [("Signal", "1 draft staged Apr 28 (team-plan account setup); no direct reply yet")],
-    "actions": ["5 add [text]", "5 not relevant", "5 add to my list"],  # v2.14.38+ — REVIEW items consolidated: `add [text]` is the single affirmative (textarea, empty=accept inferred, non-empty=fold context into the entity); `not relevant` is the 60d-cooldown "no, don't apply this update"; `add to my list` defers indefinitely. Replaces v2.14.5 confirm/edit-[change]/snooze/skip cluster which had ambiguity between confirm-as-is and edit-then-confirm.
+    "actions": ["5 add [text]", "5 not relevant"],  # v2.14.38+ — REVIEW items consolidated: `add [text]` is the single affirmative (textarea, empty=accept inferred, non-empty=fold context into the entity); `not relevant` is the 60d-cooldown "no, don't apply this update". MLK1 retired the `add to my list` deferral; not answering defers naturally. Replaces v2.14.5 confirm/edit-[change]/snooze/skip cluster which had ambiguity between confirm-as-is and edit-then-confirm.
     # `edit [change]` opens a textarea so the user can type the corrected value.
 }
 
@@ -606,20 +607,20 @@ NEVER expose schema field names, "proposed:" syntax, or "(N signal, low confiden
     "icon": "📁",
     "name": "Aspen Hardware",
     "context_tag": "currently paused, but new activity Apr 21 suggests revival",
-    "actions": ["8 active", "8 keep paused", "8 archive", "8 add to my list"],  # v2.14.38+ — dormant transitions keep their type-specific state verbs (active/keep paused/archive — each is a distinct outcome). `snooze 3d` dropped: "should this go dormant?" with a 3-day reappear is annoying. `add to my list` lets the user defer indefinitely. Skip removed (no-action surfaces tomorrow anyway).
+    "actions": ["8 active", "8 keep paused", "8 archive"],  # v2.14.38+ — dormant transitions keep their type-specific state verbs (active/keep paused/archive — each is a distinct outcome). `snooze 3d` dropped: "should this go dormant?" with a 3-day reappear is annoying. MLK1 retired `add to my list`; no-action defers (the row surfaces again later). Skip removed for the same reason.
 }
 
 # Entity proposal (Phase 4e high-confidence) — v2.14.38+ unified REVIEW
 # action set: `add [text]` (textarea — empty accepts inferred, non-empty
 # folds context like relationship-type override into the entity record),
-# `not relevant`, `add to my list`. Replaces the v2.14.5 confirm-[type]/
-# edit-[type]/snooze/skip cluster.
+# `not relevant`. Replaces the v2.14.5 confirm-[type]/edit-[type]/snooze/
+# skip cluster. (MLK1 retired the `add to my list` deferral.)
 {
     "n": 9,
     "icon": "🏢",
     "name": "Acme Co",
-    "context_tag": "Track Acme Co as a prospect org? Email domain acme.example.com seen in 5 threads. Add to track as a prospect (textarea lets you override relationship type), Not relevant to dismiss for 60 days, Add to my list to defer.",
-    "actions": ["9 add [text]", "9 not relevant", "9 add to my list"],
+    "context_tag": "Track Acme Co as a prospect org? Email domain acme.example.com seen in 5 threads. Add to track as a prospect (textarea lets you override relationship type), Not relevant to dismiss for 60 days.",
+    "actions": ["9 add [text]", "9 not relevant"],
 }
 ```
 
@@ -714,8 +715,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 - `N resolved` (v2.14.1+ — dropped `[reason]`; v2.14.38+ unified verb across all surfaces) → the "expected / just busy" outcome on a person-dormancy item. NO input affordance — clean one-click action. Display label: `Resolved`. Confirmation: `✓ Resolved — <name>'s alert suppressed for 14 days.` Writes:
   1. **The 14-day suppression (made explicit, Phase 6).** Write a `dont_forget_feedback` event `{data: {person_id, feedback: "just_busy"}}` — this is the event Phase 3 step 6 already reads to skip the person for 14 days, and the event insight-generator Pass 14 mines. (Historically the 14-day suppression was implied; Phase 6 names the writer so the read/write contract is one thing. Also stamp `data.fingerprint`/`surface`/`item_class` per apply-choices Step 3f so Loop 2 can key on it.)
   2. **Quick Win B — widen the cadence baseline (the model update on top of the suppression).** Call `dormancy.record_just_busy(workspace_root, person_id, observed_gap_days=days_since, source_skill="pulse")`. This persists `cadence_override_days = max(existing, days_since)` on the person record via the canonical people writer, so the SAME gap no longer trips the flag in 14 days — the relationship model improves instead of being re-overridden. Never a direct entities.json write; `record_just_busy` returns None (silent no-op) on any error and never blocks the reply.
-- `N snooze 3d` (v2.14.38+) → write `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Person won't re-surface in Pulse until the date passes. Replaces v2.14.5 `snooze [duration]` (textarea version retained as deprecated back-compat alias only).
-- `N add to my list` (v2.14.38+) → write `commitment_to_discuss` event with `data.person_id` set so it surfaces grouped under that person in `show my list`. Use when the user wants to bring this person up next time they connect.
+- `N snooze 3d` (v2.14.38+) → write `chat_dismissal` event with `data.snooze_until: <today + 3d>`. Person won't re-surface in Pulse until the date passes. Replaces v2.14.5 `snooze [duration]` (textarea version retained as deprecated back-compat alias only). (MLK1: `add to my list` — the old indefinite defer that wrote a `commitment_to_discuss` — is retired; no row emits it, and a persisted old widget's click dispatches through apply-choices with its original meaning.)
 
 ## Stale project actions
 
@@ -725,7 +725,6 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 - `N status check` → drafts an internal status-check email asking project owner where things stand. Lazy mail per `EMAIL_DRAFT_PROTOCOL.md`. On `send`, follow §3c priority order (Zapier → native threaded → standalone). Write `outreach_sent` with `via` field.
 - `N resolved` (v2.14.38+) → mark project as resolved/done. Same semantics as commitment `resolved` — write a `status_change` event (v3.5.0+ canonical name; was `project_status_change` pre-v3.5.0) with `data: {primary_thread_id, new_status: "archived"}` and suppress for 14 days. Confirm: `✓ <project> marked resolved.`
 - `N snooze 3d` (v2.14.38+) → 3-day snooze, same dispatch as person dormancy.
-- `N add to my list` (v2.14.38+) → adds the stale-project flag to the discuss list, surfaces in `show my list` grouped under the project's primary contact.
 
 ## Pending-review person record actions (v2.14.38+ — REVIEW unified action set)
 
@@ -736,8 +735,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
   Add anything you want me to fold in, or leave blank to accept as-is.
   ```
   User accepts inferred values by leaving the textarea blank, OR types corrections (e.g. "not CEO, just board chair" → applies that instead). On Apply, people-crm applies the change to entities.json. Write `person_record_update` event with `confidence: user_confirmed` (or `user_corrected` if textarea non-empty + override applied).
-- `[a/b/c] not relevant` (v2.14.38+) → discard the proposed change. Write `person_record_update_rejected` event with 60-day cooldown — same low-confidence signal won't re-surface for 60 days. (Replaces the v2.14.5 `skip` with stronger semantics; 60-day vs 30-day reflects "this isn't right, don't ask again soon.")
-- `[a/b/c] add to my list` (v2.14.38+) → defer indefinitely. Write `commitment_to_discuss` with `data.person_id` set. Surfaces in `show my list`.
+- `[a/b/c] not relevant` (v2.14.38+) → discard the proposed change. Write `person_record_update_rejected` event with 60-day cooldown — same low-confidence signal won't re-surface for 60 days. (Replaces the v2.14.5 `skip` with stronger semantics; 60-day vs 30-day reflects "this isn't right, don't ask again soon." MLK1 retired the `add to my list` deferral; not answering defers naturally.)
 
 ## Dormant transition proposal actions (v2.14.38+ — state verbs preserved; LB2 rail split)
 
@@ -746,15 +744,15 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 - `[d1/d2/...] active` → keep the project active. bp row → `resolve_proposal(..., "declined")`; fossil row → write `dont_forget_dormant_proposal_declined` event (14-day cooldown, legacy semantics preserved).
 - `[d1/d2/...] keep paused` → for projects already paused; no status change. Same rail split as `active`.
 - `[d1/d2/...] archive` → skip the dormant step entirely; write `status_change` event direct to archived, then bp row → `resolve_proposal(..., "applied")`; fossil row → the status_change is its natural tombstone (60-day cooldown).
-- `[d1/d2/...] add to my list` (v2.14.38+) → defer indefinitely. Replaces `snooze [duration] / skip` cluster — `add to my list` covers "I'll think about it" without locking in a specific reappear date. No resolve — the row stays open (a defer is not an answer).
+
+(MLK1 retired the `[d] add to my list` indefinite defer. "I'll think about it" is now simply not answering — the row stays open and surfaces again later; a defer is not an answer.)
 
 ## CRU review actions (v2.14.38+, sub-namespace `r1/r2/...`)
 
 Each CRU review item is a single MEDIUM-confidence match between an outbound signal (Cowork send / native mail send / meeting transcript) and an open commitment. The user resolves it, dismisses it as not relevant, OR defers.
 
 - `[r1/r2/...] resolved` (Stage E 2026-07 — THE closure path; supersedes the v2.14.38 direct write) → `commitment_state.close_commitment(workspace_root, <underlying commitment_id verbatim>, resolved_by=<the commitment owner>, evidence=<the review proposal's evidence>, source_skill="pulse", user_confirmed=True)` — the explicit click IS user confirmation, so this closes even a `pending_review`-flagged commitment. Never hand-build the `commitment_resolved` append. The original commitment drops from "you owe / they owe" on the next Commitments fire. Confirm: `✓ Marked '<commitment title>' as resolved.`
-- `[r1/r2/...] not relevant` (v2.14.38+) → write `commitment_review_dismissed` event with 60-day cooldown referencing this commitment_id. The underlying commitment STAYS OPEN in Commitments (user explicitly rejected this signal as fulfillment). Confirm: `✓ Skipped — the commitment stays open in your Commitments view.`
-- `[r1/r2/...] add to my list` (v2.14.38+) → defer the review decision. Writes `commitment_to_discuss` so the user can come back to it.
+- `[r1/r2/...] not relevant` (v2.14.38+) → write `commitment_review_dismissed` event with 60-day cooldown referencing this commitment_id. The underlying commitment STAYS OPEN in Commitments (user explicitly rejected this signal as fulfillment). Confirm: `✓ Skipped — the commitment stays open in your Commitments view.` (MLK1 retired the `add to my list` defer; an unanswered review re-surfaces on a later fire.)
 
 Both `resolved` and `not relevant` handlers close the review-proposed event implicitly via the new closing event — same pattern as entity-proposal handlers. No mutation of the original `commitment_review_proposed` event (events.jsonl is append-only).
 
@@ -774,8 +772,7 @@ Per M's v2.14.3 preview-cycle ask, the question always names the entity and expl
   ```
 
   User accepts as-is by leaving the textarea blank, or types corrections to override the inferred fields. On Apply, workspace-manager `create_org` (or `create_project` for project proposals) parses the inferred OR user-corrected fields. **LB2 rail split:** a NEW entity row is a `bp_` proposal (the Phase 4e migrated writer) — after the entity write, `brain_proposals.resolve_proposal(workspace_root, <bp_ id verbatim>, "applied" (or "edited" when the textarea was non-empty), resolved_by=<user person_id>, source_skill="pulse")`; a PRE-migration fossil row is tombstoned naturally by the entity now existing (the adapter's existence check). Either way, also mark `surfaced_daily_resolved` in classifier_feedback.jsonl (the learning-loop record). Confirm: `✓ Acme Co added as a prospect.` (or with corrections applied).
-- `[e1/e2/...] not relevant` (v2.14.38+) → bp row → `resolve_proposal(..., "declined")` (tombstone + shared 60d fingerprint cooldown); fossil row → write `org_proposal_declined` event with 60-day fingerprint cooldown (legacy semantics preserved). Won't re-surface for 60 days.
-- `[e1/e2/...] add to my list` (v2.14.38+) → defer indefinitely. Surfaces in `show my list`.
+- `[e1/e2/...] not relevant` (v2.14.38+) → bp row → `resolve_proposal(..., "declined")` (tombstone + shared 60d fingerprint cooldown); fossil row → write `org_proposal_declined` event with 60-day fingerprint cooldown (legacy semantics preserved). Won't re-surface for 60 days. (MLK1 retired the `add to my list` defer; an unanswered proposal re-surfaces on a later fire.)
 
 The same `[e1] / [e2]` namespace handles project-proposal items too (rendering uses 📁 icon for projects vs 🏢 for orgs). Same action set; workspace-manager invokes `create_project` for project proposals and `create_org` for org proposals based on the proposal type recorded in the queue file.
 

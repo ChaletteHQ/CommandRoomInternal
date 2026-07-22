@@ -474,8 +474,8 @@ If thread content can't be retrieved (rate limit, permission error, etc.), omit 
 
 
 
-- **email_reply** (v2.14.38+ — replaced `skip` with `snooze 3d` + `not relevant` per M's standardization across all deferral clusters; `add to my list` intentionally NOT on inbox per M 2026-05-07): `{n, icon: "✉", name: "<resolved name>", subject, context_tag, metadata: [("Subject", real_subject), ("To", recipient_email)], body_lines: [...], actions: ["N send", "N draft", "N escalate to memo", "N snooze 3d", "N not relevant"]}`
-- **calendar_invite** (v2.14.38+ — calendar invites get a tighter cluster: `snooze 3d` + `add to my list` don't fit the "decide now or push" mental model. Just accept / propose / decline plus `not relevant` for "this shouldn't have been routed to me / wrong invite" per M 2026-05-07): `{n, icon: "📅", name, subject, context_tag: "<day time, conflict info>", actions: ["N accept", "N propose [time]", "N decline [reason]", "N not relevant"]}` (no metadata or body)
+- **email_reply** (v2.14.38+ — replaced `skip` with `snooze 3d` + `not relevant` per M's standardization across all deferral clusters): `{n, icon: "✉", name: "<resolved name>", subject, context_tag, metadata: [("Subject", real_subject), ("To", recipient_email)], body_lines: [...], actions: ["N send", "N draft", "N escalate to memo", "N snooze 3d", "N not relevant"]}`
+- **calendar_invite** (v2.14.38+ — calendar invites get a tighter cluster: a snooze doesn't fit the "decide now or push" mental model. Just accept / propose / decline plus `not relevant` for "this shouldn't have been routed to me / wrong invite" per M 2026-05-07): `{n, icon: "📅", name, subject, context_tag: "<day time, conflict info>", actions: ["N accept", "N propose [time]", "N decline [reason]", "N not relevant"]}` (no metadata or body)
 - **contract**: retired in v2.12.2 — contracts show up as `email_reply` like any other thread. No separate item shape.
 
 **Pre-build resolution rules (your job, BEFORE calling renderer):**
@@ -552,7 +552,7 @@ Handlers:
 - `N decline [reason]` → call Calendar MCP to decline; widget exposes textarea for the reason. Note attached to the decline.
 - `N not relevant` (v2.14.38+) → 60-day cooldown dismissal. Use when the invite shouldn't have been routed (wrong invitee, irrelevant meeting). Different from `decline` because no decline notice goes back to the organizer — it just suppresses the invite locally for 60 days. Write `chat_dismissal` with `data.reason: "not_relevant"`.
 
-`snooze 3d` and `add to my list` intentionally NOT on calendar invites — calendar items are decisions, not deferrals. Per M's 2026-05-07 ask: "calendar invite does not need add to my list - or snooze".
+`snooze 3d` intentionally NOT on calendar invites — calendar items are decisions, not deferrals (M 2026-05-07; the since-retired `add to my list` was excluded here for the same reason).
 
 (Removed in v2.12.2: `contract` action category. v2.14.38: `skip` removed in favor of `not relevant` for stronger semantics; the daily fire's no-action behavior provides the same "ask me again tomorrow" effect that `skip` used to.)
 

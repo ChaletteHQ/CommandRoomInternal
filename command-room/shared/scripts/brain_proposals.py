@@ -103,6 +103,10 @@ MIGRATED_KINDS: dict[str, str] = {
     # config_drift is bp-native (no legacy rail) but listed for the
     # fingerprint-convention check: config_drift:<skill>:<knob>.
     "config_drift": "config_drift:",
+    # objective_link is bp-native too (OBJ2 — no legacy rail); listed for
+    # the fingerprint-convention check:
+    # objective_link:<objective_id>:<target_id>.
+    "objective_link": "objective_link:",
 }
 
 # Change classes legal on the auto tier (D2 — a class table, not a
@@ -150,12 +154,18 @@ _IDENTITY_KINDS = frozenset({
     # reverser — a record merge cannot be undone).
     "person_link", "person_merge",
 })
+# OBJ2 — objective-adjudication proposals (Decision #2 on the Staff Meeting
+# card): a proposed link between a standing objective and a target item.
+_OBJECTIVE_KINDS = frozenset({"objective_link"})
 # HIST1 Part 2 N3: `entity_fact_structured` and the confirm-tier
 # `entity_fact` kind deliberately rank HYGIENE via kind_shape's fall-through
 # (below money/identity) — a fact observation is additive context, never a
 # record mutation. `person_update` (role/company-move proposals) is already
 # in _IDENTITY_KINDS above. Pinned by the auto-tier test.
-_SHAPE_RANK = {"money": 0, "identity": 1, "hygiene": 2}
+_SHAPE_RANK = {"money": 0, "identity": 1, "hygiene": 2,
+               # OBJ2: objective-link proposals group LAST — an objective
+               # adjudication is never more urgent than the queue above it.
+               "objective": 3}
 
 # Daily surfaces the R2 cross-surface dedup applies to. staff-meeting and
 # system-health (explicit ask) are exempt by omission; weekly-recap consumes
@@ -214,6 +224,8 @@ def kind_shape(kind: str) -> str:
         return "money"
     if kind in _IDENTITY_KINDS:
         return "identity"
+    if kind in _OBJECTIVE_KINDS:
+        return "objective"
     return "hygiene"
 
 
@@ -621,11 +633,40 @@ def person_proposal_already_on_file(workspace_root, p: dict) -> bool:
     return person_name_on_file(workspace_root, p.get("name"))
 
 
-def _person_render_line(p: dict) -> str:
+_PERSON_NO_RECORD = "no contact record yet"
+
+
+def _possible_match_consequence(match_name: str) -> str:
+    """BUG C/D — the enriched consequence segment when a plausible existing
+    record was resolved for an add-type row: "possible match: {X} — same
+    person?" replaces the false "no contact record yet". Human-in-the-loop —
+    the row still renders and still offers Add person; this is a hint plus a
+    populated `same as` verb, never an auto-merge (Bug #19)."""
+    return f"possible match: {match_name} — same person?"
+
+
+def _possible_match_multi_consequence(count: int, name: str) -> str:
+    """IDM1 — the count-honest hint when the resolver finds 2+ same-name
+    records for an add-type row. Naming ONE of them (the pre-IDM1 shape)
+    invited a one-tap link to whichever same-name person ranked first — a
+    silent wrong-person merge. The count keeps the collision signal (losing
+    it was Bug D's original failure) without guessing; the unpopulated
+    `same as [existing]` verb alongside it forces the CEO to name which
+    record (input="required")."""
+    return (f"possible match: {count} people named {name} on file — "
+            f"same as one of them?")
+
+
+def _person_render_line(p: dict, *,
+                        consequence: str = _PERSON_NO_RECORD) -> str:
     """FS-17 — the enriched identity row: `{badge} · {source-ref-with-date} ·
     {consequence}`, the same shape the deal rows carry. Provenance-honest:
     the source noun comes from the proposal's own source_ref/evidence text,
-    the date from its captured ts — never guessed, dropped when absent."""
+    the date from its captured ts — never guessed, dropped when absent.
+
+    `consequence` is the trailing segment — "no contact record yet" by
+    default, or the "possible match: X — same person?" hint (BUG C/D) when the
+    adapter resolved a plausible existing record for the cluster."""
     role = (p.get("inferred_role") or "").strip()
     org = (p.get("inferred_org") or "").strip()
     if role and org:
@@ -647,7 +688,7 @@ def _person_render_line(p: dict) -> str:
         noun = "a captured note"
     date = _short_date(p.get("captured_ts"))
     evid = f"surfaced in {noun}" + (f" on {date}" if date else "")
-    return f"{badge} · {evid} · no contact record yet"
+    return f"{badge} · {evid} · {consequence}"
 
 
 def _person_row_title(p: dict, person_names: Optional[dict] = None) -> str:
@@ -675,22 +716,26 @@ def _person_row_title(p: dict, person_names: Optional[dict] = None) -> str:
     return ""
 
 
-def _cluster_render_line(cluster: dict) -> str:
+def _cluster_render_line(cluster: dict, *,
+                         consequence: str = _PERSON_NO_RECORD) -> str:
     """D3 — the identity-clustered row's evidence line: the FS-17 enriched
     shape for a single mention, prefixed "seen N× — " with the newest
     source phrases when the cluster merged multiple proposals. Provenance-
     honest exactly like `_person_render_line`: nouns/dates come from each
-    proposal's own captured text, dropped when absent."""
+    proposal's own captured text, dropped when absent.
+
+    `consequence` is the trailing segment (BUG C/D) — the default
+    "no contact record yet" or the "possible match: X — same person?" hint."""
     rows = cluster.get("rows") or []
     best = dict(rows[0]) if rows else {}
     best["name"] = cluster.get("name")
     best["inferred_role"] = cluster.get("inferred_role")
     best["inferred_org"] = cluster.get("inferred_org")
     if len(rows) <= 1:
-        return _person_render_line(best)
-    base = _person_render_line(best)
-    # base = "{badge} · surfaced in {noun}[ on {date}] · no contact record
-    # yet" — swap the middle segment for the multi-mention phrase.
+        return _person_render_line(best, consequence=consequence)
+    base = _person_render_line(best, consequence=consequence)
+    # base = "{badge} · surfaced in {noun}[ on {date}] · {consequence}" — swap
+    # the middle segment for the multi-mention phrase.
     parts = base.split(" · ")
     seen = []
     for r in rows[:3]:  # newest-first, capped (T2.2 density)
@@ -703,7 +748,7 @@ def _cluster_render_line(cluster: dict) -> str:
         else f"seen {len(rows)}×"
     if len(parts) >= 3:
         return " · ".join([parts[0], middle, parts[-1]])
-    return f"{middle} · no contact record yet"
+    return f"{middle} · {consequence}"
 
 
 _PERSON_ROW_ACTIONS = [
@@ -735,6 +780,117 @@ def _person_id_names(workspace_root) -> dict:
         return out
     except Exception:
         return {}
+
+
+def _resolve_person_candidates(workspace_root, cluster: dict) -> list[dict]:
+    """BUG C/D — find the plausible EXISTING person records for an add-type
+    cluster so the daily row can offer "possible match: X — same person?" plus
+    a populated "same as X" action instead of the false "no contact record
+    yet".
+
+    NOT a filter and NOT an auto-merge: the confident-drop stays FS-19's job
+    (suppress_on_file at the loader). This runs on the rows that SURVIVE that
+    drop — the variants the confident, punctuation-blind, alias-blind
+    suppression let through — and only ENRICHES them. The row still renders and
+    still offers Add person, so a wrong candidate is a soft hint the human
+    overrides, never a silent hide (Bug #19 preserved).
+
+    Resolution widens from the confident-only suppression, cheapest first:
+      1. `identity_reconcile.classify_cluster` — the merge_propose tiers
+         (confident full-name / observed-address match) already carry a
+         `matched_person`; the WEEKLY reconcile rail's own resolver, now wired
+         into the DAILY adapter (the shared-root fix).
+      2. `people_writer.list_same_name_people` — token overlap against
+         canonical_name / aliases / nicknames. Catches a lone first name that
+         overlaps a multi-token record ("Bo"→"Bo Sample"), an existing first
+         name embedded in a captured note ("... (or Evan alt account)"), and a
+         "— update" suffix the whitespace/punctuation-blind confident check
+         misses.
+      3. `entity_resolve.resolve_all` (people only) — aliases.json + fuzzy +
+         phonetic, for the typo "natan"→Nathan that no token check can reach.
+
+    Returns the matched person record dicts (each carries `id` +
+    `canonical_name`), or [] when nothing plausibly matches (a genuinely-new
+    name). IDM1: a multi-record return means the name COLLIDES with 2+ people
+    on file — the adapter must not pick one (any ranking still guesses on
+    genuine duplicates); it renders the count-honest hint + an unpopulated
+    `same as [existing]` verb instead. Exactly one record is the pre-IDM1
+    single-candidate shape, unchanged."""
+    name = (cluster.get("name") or "").strip()
+    if not name:
+        return []
+
+    # 1) Confident resolution — the weekly rail's classifier. Confident by
+    #    construction (full-name / observed-address match), so a hit stays a
+    #    single candidate — the IDM1 collision branch guards the PLAUSIBLE
+    #    tiers below, where same-name ambiguity actually lives.
+    try:
+        from identity_reconcile import classify_cluster
+        matched = classify_cluster(workspace_root, cluster).get("matched_person")
+        if isinstance(matched, dict) and (matched.get("id")
+                                          or matched.get("canonical_name")):
+            return [matched]
+    except Exception:
+        pass
+
+    # 2) Token overlap (alias/nickname aware) — the add-person elicit
+    #    pre-check, reused here to surface the candidate the confident tier
+    #    couldn't confirm. IDM1: the helper's natural return (no
+    #    max_candidates=1 cap) so a collision is DETECTED, not truncated to
+    #    one before the adapter ever learns it existed.
+    try:
+        from people_writer import list_same_name_people
+        cands = list_same_name_people(workspace_root, name)
+        if cands:
+            return cands
+    except Exception:
+        pass
+
+    # 3) Fuzzy / phonetic / aliases.json — the typo case. IDM1: every
+    #    distinct person hit (resolve_all dedupes by entity id), not
+    #    first-hit-wins — 2+ hits is the same collision as tier 2.
+    try:
+        from entity_resolve import resolve_all
+        people = [r.record for r in resolve_all(workspace_root, name)
+                  if r.entity_type == "person" and isinstance(r.record, dict)]
+        if people:
+            return people
+    except Exception:
+        pass
+
+    return []
+
+
+def _person_actions_with_candidates(cands: list[dict]) -> list[dict]:
+    """The row's action tuples. Exactly one plausible candidate → splice a
+    POPULATED `same as [existing]` verb (carrying the matched name + id) in
+    after `add person` — the pre-IDM1 shape, unchanged. 2+ candidates (IDM1) →
+    the verb ships UNPOPULATED (no value, no person_id): the handler's
+    input="required" path then forces the CEO to name which record — never
+    rank-and-pick among genuine duplicates. Every branch keeps Add person so
+    a wrong match is still the human's call (Bug #19). No candidate → the
+    unchanged three-verb row."""
+    if not cands:
+        return list(_PERSON_ROW_ACTIONS)
+    match = cands[0] if len(cands) == 1 else None
+    out: list[dict] = []
+    for tup in _PERSON_ROW_ACTIONS:
+        out.append(dict(tup))
+        if tup.get("action") == "add person":
+            if match is not None:
+                # `value` pre-fills the existing contact's name so
+                # apply-choices' `same as [existing]` handler
+                # (input="required") resolves without the user re-typing;
+                # `person_id` carries the record verbatim.
+                out.append({"action": "same as [existing]",
+                            "value": (match.get("canonical_name")
+                                      or "").strip(),
+                            "person_id": match.get("id")})
+            else:
+                # IDM1 collision — the required input IS the disambiguation
+                # step; a pre-fill here would silently pick a winner.
+                out.append({"action": "same as [existing]"})
+    return out
 
 
 def _adapt_person_proposals(workspace_root, events: list[dict],
@@ -778,6 +934,23 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
     out = []
     for cluster in view["clusters"]:
         newest = cluster["rows"][0] if cluster["rows"] else {}
+        # BUG C/D — resolve the plausible existing records for the SURVIVING
+        # cluster (FS-19 already dropped the confident matches). One hit swaps
+        # the false "no contact record yet" for a "possible match" hint and
+        # adds a populated `same as` verb; a miss leaves the row exactly as
+        # before. IDM1: 2+ hits render the count-honest collision hint and an
+        # UNPOPULATED `same as` verb — no match_name / match_person_id reach
+        # the wire, so nothing pre-picks among same-name people.
+        cands = _resolve_person_candidates(workspace_root, cluster)
+        match = cands[0] if len(cands) == 1 else None
+        match_name = ((match or {}).get("canonical_name") or "").strip() or None
+        if len(cands) >= 2:
+            consequence = _possible_match_multi_consequence(
+                len(cands), (cluster.get("name") or "").strip())
+        elif match_name:
+            consequence = _possible_match_consequence(match_name)
+        else:
+            consequence = _PERSON_NO_RECORD
         out.append({
             "id": cluster["row_id"],
             "source_family": "person",
@@ -787,8 +960,9 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "fingerprint": cluster["row_id"],
             "evidence": newest.get("evidence") or newest.get("review_reason")
                         or "",
-            "action_tuples": list(_PERSON_ROW_ACTIONS),
-            "render_line": _cluster_render_line(cluster),
+            "action_tuples": _person_actions_with_candidates(cands),
+            "render_line": _cluster_render_line(cluster,
+                                                consequence=consequence),
             "opened_at": min((r.get("captured_ts") or "")
                              for r in cluster["rows"]) if cluster["rows"]
                          else "",
@@ -802,6 +976,12 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "person_id": None,
             "inferred_role": cluster.get("inferred_role"),
             "inferred_org": cluster.get("inferred_org"),
+            # BUG C/D — the resolved candidate, carried to the wire so the
+            # populated `same as` verb dispatches without a re-type. None when
+            # no plausible match (a genuinely-new person) AND on an IDM1
+            # collision (2+ candidates — the wire must not carry a winner).
+            "match_person_id": (match or {}).get("id"),
+            "match_name": match_name,
             # PID1 D3 — every underlying proposal id VERBATIM so one click
             # adjudicates the whole cluster (fingerprints carry the D8
             # seq-less rows).
@@ -1223,12 +1403,15 @@ def select_confirm_card(
 # so the runtime renders the queue instead of improvising opaque clusters).
 # ---------------------------------------------------------------------------
 
+# OBJ2: the "objective" labels are plain-English placeholders — flagged for
+# the product owner and easy to rename at review.
 _SHAPE_SECTION_LABEL = {"money": "MONEY", "identity": "IDENTITY",
-                        "hygiene": "HYGIENE"}
+                        "hygiene": "HYGIENE", "objective": "OBJECTIVES"}
 _SHAPE_TILE_LABEL = {"money": "Money", "identity": "Identity",
-                     "hygiene": "Hygiene"}
+                     "hygiene": "Hygiene", "objective": "Objectives"}
 _SHAPE_NAME_FALLBACK = {"money": "Deal signal", "identity": "Needs confirming",
-                        "hygiene": "Housekeeping"}
+                        "hygiene": "Housekeeping",
+                        "objective": "Objective proposal"}
 
 
 def _row_actions(item: dict) -> list:
@@ -1260,7 +1443,10 @@ def _row_target_ids(item: dict) -> dict:
     embed their record ids."""
     data = {"id": item["id"]}
     for k in ("thread_id", "org_id", "person_id", "cluster_seqs",
-              "cluster_fingerprints", "keep_id", "duplicate_id"):
+              "cluster_fingerprints", "keep_id", "duplicate_id",
+              # BUG C/D — the resolved possible-match candidate, so the
+              # populated `same as [existing]` verb dispatches without a re-type.
+              "match_person_id", "match_name"):
         if item.get(k):
             data[k] = item[k]
     return data
@@ -1287,13 +1473,14 @@ def build_card_view(
     `render_chat_output_widget` — `source_skill` is "cr-brain" so the renderer
     stamps `src` for stateless apply-choices dispatch.
     """
-    by_shape: dict[str, list] = {"money": [], "identity": [], "hygiene": []}
+    by_shape: dict[str, list] = {"money": [], "identity": [],
+                                 "hygiene": [], "objective": []}
     for it in items:
         by_shape.setdefault(it.get("shape", "hygiene"), []).append(it)
 
     sections: list[dict] = []
     display_n = 0  # T2.2 (RV-5): sequential VISIBLE number; `n` stays the wire id
-    for shape in ("money", "identity", "hygiene"):
+    for shape in ("money", "identity", "hygiene", "objective"):
         rows_in = by_shape.get(shape) or []
         if not rows_in:
             continue
@@ -1323,7 +1510,7 @@ def build_card_view(
     # (an empty frame is never data); a shape with no rows just doesn't tile.
     tiles = [
         {"label": _SHAPE_TILE_LABEL[s], "value": len(by_shape.get(s) or [])}
-        for s in ("money", "identity", "hygiene")
+        for s in ("money", "identity", "hygiene", "objective")
         if by_shape.get(s)
     ]
 

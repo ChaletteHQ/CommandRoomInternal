@@ -15,7 +15,7 @@ The two Layer 1 default dashboards (Workspace Map, Quick Commands) auto-install 
 
 Layer 2 historically housed opt-in dashboards that complemented the daily scheduled tasks. The Commitment Cockpit was retired in v3.11.0 — its kanban surface (you owe / they owe / both stuck) fragmented the truth, since the Commitments scheduled chat (`commitments` taskId, fires 8:30 AM weekdays) is the single source for the same data. Pay Attention To was scoped but never shipped.
 
-The architectural call: scheduled-task chat threads beat snapshot-only Live Artifacts for commitment-shaped surfaces, because the chat threads accumulate context over time and support inline action (resolved / not relevant / add to my list) — the Cockpit only rendered, requiring the user to bounce back to chat to act.
+The architectural call: scheduled-task chat threads beat snapshot-only Live Artifacts for commitment-shaped surfaces, because the chat threads accumulate context over time and support inline action (resolved / not relevant / snooze) — the Cockpit only rendered, requiring the user to bounce back to chat to act.
 
 ---
 

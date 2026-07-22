@@ -43,6 +43,7 @@ BANNED = [
     (r"\bartifacts?\b", "artifact"),
     (r"(?<!email )(?<!Email )(?<!Slack )(?<!Gmail )(?<!text )\bthreads?\b", "thread (as project)"),
     (r"\btaskids?\b", "taskId"),
+    (r"\bcounterpart(?:y|ies)\b", "counterparty"),
     (r"\bv\d+\.\d+(?:\.\d+)?\b", "version number"),
     (r"\bevents\.jsonl\b", "events.jsonl"),
     (r"\bentities\.json\b", "entities.json"),

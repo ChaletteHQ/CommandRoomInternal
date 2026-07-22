@@ -296,10 +296,10 @@ Examples per orchestrator:
 
 **Past Meetings pending items (IDX-tokenized):**
 ```
-▸ 1a add as person to [Org]  ▸ 1a add as new org  ▸ 1a add context [text]  ▸ 1a add to my list  ▸ 1a skip
+▸ 1a add as person to [Org]  ▸ 1a add as new org  ▸ 1a add context [text]  ▸ 1a skip
 ```
 
-(The pre-v2.14.x examples used legacy verbs `to drafts` / `edit` / `manually` / `log to discuss` — all consolidated into the canonical set above. The renderer rejects the legacy forms; only the examples here matter for orchestrator authors learning the pattern.)
+(The pre-v2.14.x examples used legacy verbs `to drafts` / `edit` / `manually` / `log to discuss` — all consolidated into the canonical set above; `add to my list` was retired at MLK1 2026-07-21 and no example emits it. The renderer rejects the legacy forms; only the examples here matter for orchestrator authors learning the pattern.)
 
 The v2.10.2 pattern (dot-separated `Reply: …`) is replaced by the pill pattern. Drop ANY global "Actions per item" / "Actions (replace XXXX with…)" block at the bottom of the chat turn — pills live with each item.
 

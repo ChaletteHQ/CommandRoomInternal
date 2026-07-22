@@ -249,8 +249,16 @@ def main():
         print("== receipt_gap (fired per scheduler, wrote nothing)")
         recs = [{"taskId": "past-meetings", "lastRunAt": _utc_iso(dt.timedelta(hours=1)),
                  "enabled": True, "prompt": "x"}]
-        # Rebuild with a stale past-meetings receipt (4 days) + fresh lastRunAt
-        events2 = [pack_run("past-meetings", "past_meetings", dt.timedelta(days=4))]
+        # Rebuild with a stale past-meetings receipt + fresh lastRunAt.
+        # 10 days, NOT 4: "late" requires missing BOTH of the two most recent
+        # expected fires, and a now-relative 4-day offset crossed the
+        # (fire-time − 90min grace) cutoff late in the local day — the suite
+        # flipped red after ~15:30 local and green before it (time-of-day
+        # flake, root-caused 2026-07-21). 10 days is beyond both fires on any
+        # sane cron at any hour. G14 can't catch this class (relative
+        # offsets, not date literals) — keep fixture offsets FAR from the
+        # cron grid, never near a boundary.
+        events2 = [pack_run("past-meetings", "past_meetings", dt.timedelta(days=10))]
         ws2 = make_workspace(Path(td) / "b", events2, ["past-meetings"])
         reports2 = tw.check_tasks(ws2, task_records=recs)
         pm = {r["task"]: r for r in reports2}["past-meetings"]

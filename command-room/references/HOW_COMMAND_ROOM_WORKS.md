@@ -143,7 +143,7 @@ The most complex orchestrator (~700 lines of prompt). Splits open commitments in
 | ↗ YOU OWE | overdue / due_near / aging_undated |
 | ↙ OWED TO YOU | overdue / due_near / aging_undated |
 
-For each item: per-recipient draft of either a status-update email (YOU OWE) or a chase email (OWED TO YOU). Cowork user reviews + clicks Send / Edit then send / Defer / Done / Snooze (3 days) / Add to my list.
+For each item: per-recipient draft of either a status-update email (YOU OWE) or a chase email (OWED TO YOU). Cowork user reviews + clicks Send / Draft / Done / Snooze (3 days).
 
 **Sam-class bug history**: this orchestrator was the source of the dual-shape commitment bug (Sam 2026-05-17), the all-shape audit (v3.4.4), and the canonical filter using `_commitment_field` + `_commitment_confidence` helpers.
 
@@ -300,7 +300,7 @@ About 47 skills total in `skills/`. Organized here by user intent so you can fin
 | Skill | Trigger | What it does |
 |---|---|---|
 | `list-active` | `list projects`, `active projects`, `roster` | Zero-interaction tree render of all projects. |
-| `show-my-list` | `show my list`, `discuss list` | Curated "discuss later" list captured via "add to my list" actions across surfaces. |
+| `show-my-list` | `show my list`, `show muted` | The retired discuss-later list (drain-only — nothing adds to it since MLK1) plus the mute ledger. |
 | `log-resolution` | (auto on ✓ done clicks) | Writes thread_resolved events when user clicks ✓ in a widget. |
 | `apply-choices` | (auto on Apply all clicks) | Receives consolidated widget submission, dispatches each action. |
 
@@ -605,7 +605,7 @@ The inbound triage skill (`process-bug-report`) was moved to the chalette intern
 | Capture intel | Paste URL + say `intel` / `break this down` |
 | Run a project | `new project` / `go [project name]` / `archive [project]` |
 | List projects | `list projects` / `roster` |
-| See your discuss list | `show my list` |
+| See what you snoozed | `show muted` |
 | Update the plugin | (UI: Personal Plugins → Update → restart Cowork) then `update command room` |
 | Install missing dashboards | `install workspace map` / `install quick commands` |
 | Set up scheduled chats | `set up command room schedules` |

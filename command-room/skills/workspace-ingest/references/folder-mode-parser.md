@@ -96,7 +96,7 @@ data_view = {
                     "name": candidate_name,
                     "context_tag": f"{n_files_for_candidate} files cluster around '{candidate_name}'",
                     "body_lines": [f"- {filename}" for filename in files_for_candidate[:8]],
-                    "actions": ["10 confirm [text]", "10 add to my list", "10 skip"],
+                    "actions": ["10 confirm [text]", "10 skip"],
                     # confirm [text] opens textarea: "Create project as: [pre-filled candidate_name]"
                 }
                 # ...
@@ -144,8 +144,7 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 **Action semantics:**
 - `confirm` (per project / per general bucket) — copy all files in that bucket into the destination folder. Each copy logs a `file_filed` event (v2.14.19+ — see schema).
 - `add context [text]` — CEO types a per-bucket context note (e.g., "these are all from the Q3 review"). Note gets attached to the bucket's first `file_filed` event as `data.context`.
-- `confirm [text]` (candidate new project only) — pre-fills with the suggested project name. CEO can edit. On confirm, fire `workspace-manager` `new project [edited_name]`, then copy files into the new project's `ref/`.
-- `add to my list` (candidate new project only) — defer the decision; file goes to General; surface again in `show my list` later.
+- `confirm [text]` (candidate new project only) — pre-fills with the suggested project name. CEO can edit. On confirm, fire `workspace-manager` `new project [edited_name]`, then copy files into the new project's `ref/`. (MLK1 retired the `add to my list` defer that used to sit here; skipping the bucket or leaving it unanswered covers "not now".)
 - `skip` (per bucket) — drop the bucket entirely. No copy. No event.
 
 **The widget is the only Layer 2 trigger.** Parser F NEVER copies files without explicit confirmation. Even in `auto_apply: true` mode (used by other parsers when called from onboarding), Parser F still requires a Layer 2 widget click — the file-filing decision is too consequential to skip CEO review.

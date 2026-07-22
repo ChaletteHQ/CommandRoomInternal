@@ -503,6 +503,8 @@ RAW_READ_ALLOW = {
     "shared/scripts/identity_reconcile.py",  # PID1 reconciler: person-family proposals/annotations/receipts (work lane per D3) — same category as person_backlog_sweep
     "shared/scripts/meeting_capture.py",
     "shared/scripts/mute_ledger.py",
+    "shared/scripts/objective_state.py",     # OBJ1 — sole objective-event writer (same category as commitment_state/deal_state)
+    "shared/scripts/objective_math.py",      # OBJ1 — derived status/drift projector (work-lane; reads events to compute, proposes/renders nothing personal)
     "shared/scripts/person_backlog_sweep.py",
     "shared/scripts/prep_grading.py",
     "shared/scripts/prospect_conversion_detector.py",

@@ -213,9 +213,9 @@ How the family renders and behaves on this surface:
   standard sub-row shape); the parent's context tag carries the progress
   chip — "sub-items 1/3 · next: [step]". Child rows carry their own
   `data.id` verbatim (identity contract) and the per-kind dropdown minus
-  `never track this` and `add to my list` (those stay parent-level).
-  Children are real commitments: Done / Later… / Drop work on them with
-  zero special-casing.
+  `never track this` (that stays parent-level; suppression rules key on
+  capture shape — children aren't captures). Children are real
+  commitments: Done / Later… / Drop work on them with zero special-casing.
 - **Family-atomic pagination:** a parent is never split from its sub-items
   across pages — a family that doesn't fit moves whole to the next page
   (structural: pagination slices top-level rows only).
@@ -291,9 +291,9 @@ Actions per row (display labels come from
   track this` — same `skip` suppression.
 - sub-item rows (SUB1, nested under their parent): the same per-kind set
   MINUS `never track this` (suppression keys on capture shape — children
-  aren't captures; `add to my list` also stays parent-level). `add
-  subitems [items]` (**Add sub-items**) is a chat-phrase verb like `split
-  into [items]` — it does not render as a dropdown option; see § Sub-items.
+  aren't captures). `add subitems [items]` (**Add sub-items**) is a
+  chat-phrase verb like `split into [items]` — it does not render as a
+  dropdown option; see § Sub-items.
 
 **Posting-block rule (t3 FB-11):** chat prose around the widget names ONLY
 the controls the rendered card visibly offers, using their exact labels —

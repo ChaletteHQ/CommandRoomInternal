@@ -235,7 +235,7 @@ User-facing reference. Every action label across all surfaces, with semantics. A
 
 ### Email-shaped items (Inbox, Commitments YOU OWE / OWED TO YOU)
 
-The plain email card is **Send / Draft / Snooze** — three primary buttons, no dropdown (FB-17, M 2026-07-19). `edit then send` is RETIRED: the FB-10 inline-editable body replaced the To/Cc/Subject/Body popup editor, so the card no longer offers it (the wire id stays a dispatchable deprecated alias → `send` for in-flight widgets, but no new card emits or renders it). Waiting On chase rows are also email-shaped but carry domain verbs (mark received, follow-up call, add to my list) in the tail.
+The plain email card is **Send / Draft / Snooze** — three primary buttons, no dropdown (FB-17, M 2026-07-19). `edit then send` is RETIRED: the FB-10 inline-editable body replaced the To/Cc/Subject/Body popup editor, so the card no longer offers it (the wire id stays a dispatchable deprecated alias → `send` for in-flight widgets, but no new card emits or renders it). Waiting On chase rows are also email-shaped but carry domain verbs (mark received, follow-up call) in the tail.
 
 | Action | Display | What it does |
 |---|---|---|
@@ -274,7 +274,7 @@ When ONE person owes you multiple things in the same fire (e.g., five outstandin
 **Two different things render through the sub-row shape — don't conflate them (SUB1):**
 
 1. **Grouped chases (above)** — RENDER-time grouping only: N independent commitments owed by one person, folded into one chase email. No data relationship; the "parent" row doesn't exist on disk; `mark received all` closes N independent items.
-2. **Sub-items (SUB1)** — a DATA relationship: real child commitments carrying `data.parent_id`, nested under their still-open parent on commitment-triage. The child row's id is the child's own `data.id` VERBATIM (identity contract) and dispatches like any commitment row (Done / Later… / Drop — children are real commitments); `never track this` and `add to my list` stay parent-level. The parent row carries the progress chip ("sub-items 1/3 · next: [step]") and, when the last open child closes, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Done on a parent with open sub-items requires the one-line cascade confirm before dispatching `close_subitems=True`. Families are pagination-atomic: a parent and its sub-items never split across pages.
+2. **Sub-items (SUB1)** — a DATA relationship: real child commitments carrying `data.parent_id`, nested under their still-open parent on commitment-triage. The child row's id is the child's own `data.id` VERBATIM (identity contract) and dispatches like any commitment row (Done / Later… / Drop — children are real commitments); `never track this` stays parent-level. The parent row carries the progress chip ("sub-items 1/3 · next: [step]") and, when the last open child closes, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Done on a parent with open sub-items requires the one-line cascade confirm before dispatching `close_subitems=True`. Families are pagination-atomic: a parent and its sub-items never split across pages.
 
 ### Self-commitments (no email — you owe yourself)
 
@@ -444,8 +444,9 @@ When a meeting mentions one or more new people, **each person gets their OWN sub
 | `add as new org <Org Name>` | Add as new org <Org Name> | (v2.14.5+) Specific-name variant — create the named org as a new entity, with inferred relationship_type pre-populated. Used when the candidate org name is inferable from email domain, transcript mention, or signature block. |
 | `add as new org` | Add as new org | Generic fallback — opens the same flow but prompts for the org name. Used when the candidate name isn't determinable. |
 | `add context [text]` | Add context | Widget exposes textarea for free-form context (where you met, role, etc.). On Apply, opens an interactive entity-creation flow seeded with that context. |
-| `add to my list` | Add to my list | Flag for later review. Surfaces via `show my list` (the retrieval trigger uses the same noun). |
 | `skip` | Snooze (1 day) | 1-day mute. |
+
+(RETIRED at MLK1 2026-07-21: `add to my list` — no new render offers it anywhere. The wire id stays registered in the taxonomy so a persisted old widget's click still dispatches with its original meaning; remaining list items drain read-only via `show my list`.)
 
 (Removed in v2.12.4: `search emails` — per M's Apr 30 ask. Use `tell me about [name]` directly for cross-reference.)
 
@@ -458,7 +459,6 @@ When a meeting mentioned a commitment without a clear due date:
 | Action | Display | What it does |
 |---|---|---|
 | `set date [when]` | Set date | Free-text natural-language date ("monday at 2", "next Thursday"). Sets a specific due date. |
-| `add to my list` | Add to my list | Flag for later review. |
 | `skip` | Snooze (1 day) | 1-day mute. |
 
 ### Upcoming Meetings (per meeting)

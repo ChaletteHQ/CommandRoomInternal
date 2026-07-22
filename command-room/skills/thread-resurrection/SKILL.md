@@ -101,7 +101,7 @@ For each surfaced thread, compose a revival hook tuned to thread context. Every 
 
 ### Phase 4 — Render widget (v3.13.2+ — canonical action widget per CONTRACT Rule 5)
 
-Surface results via `render_chat_output_widget`. Each candidate thread renders as one item with the canonical action set: `draft / resolved / add to my list / skip`. No bracket-style display labels — those crash the renderer's canonical-action validator. Conditional routing for commitment-bearing threads is handled INSIDE the `draft` action's apply-choices dispatch (see "Action semantics" below) — not as a separate per-item verb.
+Surface results via `render_chat_output_widget`. Each candidate thread renders as one item with the canonical action set: `draft / resolved / skip` (MLK1 retired `add to my list` — no row emits it). No bracket-style display labels — those crash the renderer's canonical-action validator. Conditional routing for commitment-bearing threads is handled INSIDE the `draft` action's apply-choices dispatch (see "Action semantics" below) — not as a separate per-item verb.
 
 **Email-draft protocol compliance (v3.13.0+ universal scope per `shared/EMAIL_DRAFT_PROTOCOL.md`):** thread-resurrection follows the protocol VIA the chained `email-writer` invocation. The Phase 4 widget surfaces thread-selection (not the email body), so it doesn't directly emit email-shaped metadata. When the user clicks `draft` on a thread item, apply-choices chains to email-writer, which emits the actual email widget per the protocol §3a/§3c (lazy creation, native Gmail / Zapier-threaded send). Both this widget and email-writer's downstream widget meet CONTRACT Rule 5 + the protocol's lazy-creation rules.
 
@@ -132,7 +132,6 @@ for i, thread in enumerate(candidate_threads, start=1):
         "actions": [
             f"{i} draft",
             f"{i} resolved",
-            f"{i} add to my list",
             f"{i} skip",
         ],
     })
@@ -168,7 +167,6 @@ print(transport['html'])
 **Action semantics** (per `apply-choices`):
 - `draft` — kicks off the revival-email composition. Chains to `email-writer` with the thread context + revival hook pre-filled. The email-writer widget posts as the post-Apply surface so the user can edit/send/draft inline. Writes `thread_resurrected` event with `revival_draft_event_seq` pointing at the new `email_drafted` event. **For commitment-bearing threads** (where `open_commitment` was set in the data view), apply-choices routes through `cr-commitments`'s chase-email flow instead — same `draft` verb, conditional downstream. The decision rule is in the apply-choices handler, not the user-facing widget: the user just clicks `draft`, the system picks the right flow.
 - `resolved` — writes a `thread_resolved` event. The thread is closed; no revival.
-- `add to my list` — writes a `commitment_to_discuss` event so the thread surfaces in the user's discuss list (per `show-my-list` SKILL). Defers without resolving.
 - `skip` — 24h dismissal (`chat_dismissal` event). Re-surfaces on the next thread-resurrection run after 24h.
 
 **Why `draft` covers the commitment-chase case** (per CONTRACT Rule 5 — no improvised action verbs): both flows produce an email draft from the user's perspective. The internal routing (revival hook vs. chase prompt) is plumbing, not UX. Two verbs for the same user-facing outcome would force a choice the user doesn't need to make.
@@ -186,14 +184,14 @@ Pick which conversations to revive — I'll draft each one.
         Last from Bo: "Let me think about the structure and revert"
         Last from you: discovery questions about their distribution
         Suggested opener: Bo — where did we land on the structure question? Any movement?
-        [Draft]  [Resolved]  [Add to my list]  [Skip]
+        [Draft]  [Resolved]  [Skip]
 
   💬 2.  Rio Sample — investor intro thread
         Quiet for 31 days
         Last from her: intro to 2 partners at Northstar Partners
         Last from you: thank-you reply
         Suggested opener: Rio — those Northstar intros are still warm on my side. We just landed [new traction] — worth me pinging them with that?
-        [Draft]  [Resolved]  [Add to my list]  [Skip]
+        [Draft]  [Resolved]  [Skip]
 
   💬 3.  Sam Sample — Acme Co pilot
         Quiet for 18 days
@@ -201,10 +199,10 @@ Pick which conversations to revive — I'll draft each one.
         Last from you: kickoff scope outline
         Suggested opener: Sam — any movement on the pilot brief?
         Sam still owes you: pilot brief (11 days past)
-        [Draft]  [Resolved]  [Add to my list]  [Skip]
+        [Draft]  [Resolved]  [Skip]
 ```
 
-The bracket-style button labels above are illustrative — the actual rendered display labels come from the renderer's `_action_display_label` (e.g., `draft` → `Draft`, `add to my list` → `Add to my list`).
+The bracket-style button labels above are illustrative — the actual rendered display labels come from the renderer's `_action_display_label` (e.g., `draft` → `Draft`, `skip` → `Snooze (1 day)`).
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. In this widget the customer-facing noun is "conversations" (email/Slack threads may be called "threads" only when literally naming an email or Slack thread).
 - Bad: "Pick which threads to revive — thread_resurrected event will be written."
