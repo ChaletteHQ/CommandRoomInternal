@@ -229,6 +229,38 @@ def main() -> int:
         print(f"        gate error: {e}")
     check("person_proposal events pass the strict append gate", gate_ok)
 
+    # --- WG1-B D-B3 writer-side org gate: a "person" name that resolves to a
+    # tracked org comes back as an org_proposal; a real person is untouched;
+    # omitting workspace_root keeps every legacy call byte-identical.
+    ent_path = ws / "_hq" / "data" / "entities.json"
+    ent = json.loads(ent_path.read_text(encoding="utf-8"))
+    holder = ent.get("entities") if isinstance(ent.get("entities"), dict) \
+        else ent
+    holder.setdefault("orgs", []).append(
+        {"id": "org_900", "canonical_name": "Vertex Range (AcademyCo)"})
+    ent_path.write_text(json.dumps(ent), encoding="utf-8")
+    org_shaped = mc.build_person_proposal_event(
+        "Vertex Range (AcademyCo)", source_ref=F46_REF,
+        evidence="Named repeatedly as a partnership channel.",
+        workspace_root=ws)
+    check("D-B3: an on-file org name is refused as a person — org_proposal "
+          "returned", org_shaped["type"] == "org_proposal",
+          json.dumps(org_shaped))
+    check("D-B3: the org-path event keeps the signal + source_ref",
+          org_shaped["data"]["name"] == "Vertex Range (AcademyCo)"
+          and org_shaped["data"]["source_ref"] == F46_REF
+          and org_shaped["data"]["pending_review"] is True
+          and "partnership channel" in org_shaped["data"]["signal"],
+          json.dumps(org_shaped["data"]))
+    person_shaped = mc.build_person_proposal_event(
+        "Casey North", source_ref=F46_REF, workspace_root=ws)
+    check("D-B3: a non-org name stays a person_proposal with the gate armed",
+          person_shaped["type"] == "person_proposal")
+    legacy = mc.build_person_proposal_event(
+        "Vertex Range (AcademyCo)", source_ref=F46_REF)
+    check("D-B3: omitting workspace_root is byte-identical legacy behavior",
+          legacy["type"] == "person_proposal")
+
     # --- meeting_processed receipt (F-46 P2a) + already-processed detector.
     receipt = mc.build_meeting_processed_event(
         "a64c4b14-0000-4dee-b192-cc156153e845",

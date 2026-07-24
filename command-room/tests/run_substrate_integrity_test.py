@@ -94,6 +94,45 @@ def main() -> int:
     finally:
         os.environ.pop("CR_SEQ_HIGHWATER", None)
 
+    # ---- SYNC1 A2: check_substrate_regression truth-checks the marker -----
+    # A healthy file with a lingering marker (row-17 shape) self-archives on
+    # read and returns None — a stale marker can't keep surfacing a false alarm.
+    ws_tc = _mk_ws()
+    ep_tc = os.path.join(ws_tc, "_hq", "data", "events.jsonl")
+    for _ in range(5):  # file max seq 5, healthy
+        atomic_append_jsonl(ep_tc, [{"type": "pack_run", "source_skill": "t", "data": {}}])
+    marker_tc = Path(ep_tc).with_name("events.jsonl.seqregression.json")
+    marker_tc.write_text(json.dumps({
+        "detected": "2026-01-01T00:00:00Z", "file_max_seq": 1, "sidecar_max_seq": 3,
+        "n_quarantined": 1, "quarantine_path": "/x/q.jsonl", "holder": "t"}), encoding="utf-8")
+    check("SYNC1 truth-check: resolved marker returns None",
+          check_substrate_regression(ep_tc) is None)
+    check("SYNC1 truth-check: resolved marker archived off live path", not marker_tc.exists())
+    # a STILL-TRUE marker (sidecar above the live file max) is returned unchanged
+    marker_tc.write_text(json.dumps({
+        "detected": "2026-01-01T00:00:00Z", "file_max_seq": 1, "sidecar_max_seq": 999,
+        "n_quarantined": 1, "quarantine_path": "/x/q.jsonl", "holder": "t"}), encoding="utf-8")
+    check("SYNC1 truth-check: still-true marker returned",
+          (check_substrate_regression(ep_tc) or {}).get("sidecar_max_seq") == 999)
+
+    # ---- SYNC1 A1: read-side stale-view detection ------------------------
+    from atomic_write import events_freshness, _write_seqhw
+    import substrate_health as _sh
+    ws_sv = _mk_ws()
+    ep_sv = os.path.join(ws_sv, "_hq", "data", "events.jsonl")
+    for _ in range(3):
+        atomic_append_jsonl(ep_sv, [{"type": "pack_run", "source_skill": "t", "data": {}}])
+    check("SYNC1 stale-view: healthy view not regressed",
+          events_freshness(ep_sv)["regressed"] is False)
+    check("SYNC1 stale-view: check_stale_view None when healthy",
+          _sh.check_stale_view(ws_sv) is None)
+    _write_seqhw(Path(ep_sv), 4606)  # sidecar ahead of the file we can see
+    check("SYNC1 stale-view: regressed view detected", events_freshness(ep_sv)["regressed"] is True)
+    check("SYNC1 stale-view: check_stale_view returns the freshness dict",
+          (_sh.check_stale_view(ws_sv) or {}).get("regressed") is True)
+    check("SYNC1 stale-view: substrate_alarm_lines carries the stale-view line",
+          any("behind its own high-water" in ln for ln in _sh.substrate_alarm_lines(ws_sv)))
+
     # ---- FS-05/15 + FS-06: substrate_health ------------------------------
     import substrate_health as sh
     ws2 = _mk_ws()

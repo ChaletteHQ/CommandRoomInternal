@@ -20,7 +20,7 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 
 ## Writer Contract
 
-- **Reads from:** `_hq/data/entities.json` (projects), events via `shared/scripts/thread_activity.py::derive_thread_activity` (shard-transparent; top-level `primary_thread_id` + `related_thread_ids` + legacy id spellings, filtered by activity event types from config), `_hq/data/skill_config/stalled-projects.json` (first-run questionnaire answers), and the prior `pack_run` receipt (nag-dedup, below).
+- **Reads from:** `_hq/data/entities.json` (projects), events via `shared/scripts/thread_activity.py::derive_thread_activity` (shard-transparent; top-level `primary_thread_id` + `related_thread_ids` + legacy id spellings, filtered by activity event types from config, `honor_reclassifications=True` — RECL1: user-approved corrections move activity with the event, so day-counts are honest in both directions), `_hq/data/skill_config/stalled-projects.json` (first-run questionnaire answers), and the prior `pack_run` receipt (nag-dedup, below).
 - **NEVER from `thread.last_activity`.** The field is DEPRECATED (v4.5.2, FINDINGS F-54/F-61): the cleanup autopsy proved no code path maintains it — ranking by it reported "43 days quiet" on a project with two same-day meetings. Staleness derives from events at read time; `stall_detector` consults the stored field only for threads with zero event history. See `references/ORG_AND_THREAD_MODEL.md` § last_activity deprecation.
 - **Writes to:** three declared, narrow paths — (1) `_hq/data/skill_config/stalled-projects.json` on first fire, tune, and reset, always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`); (2) a snooze-suppression event (the `snooze 14d` action's `dont_forget_snooze`-style append, dispatched through apply-choices) via `atomic_append_jsonl`; (3) a `pack_run` scan receipt at the end of every Detect fire via `receipts.log_receipt` (v4.5.2 C3 — see "Scan receipt" below). Detection itself persists nothing else — it surfaces flags only. The stall-state write side (emitting `project_stalled_flagged` events on state change) lands in v3.14.2 when Pulse + cleanup integration adds the once-weekly recording call.
 - **No raw substrate writes.** Every write above (and the v3.14.2 write side when it ships) goes through the canonical writer helpers — `skill_config_writer` / `atomic_append_jsonl` / `receipts.log_receipt` (per Bug #81 architectural fix). Hand-rolled writes are forbidden.
@@ -273,7 +273,7 @@ Render flags as a widget via `render_chat_output_widget()` per CONTRACT.md Rule 
 
 Per-item action set (all canonical — P1.1 respec 2026-07-02; dispatch in apply-choices' `stalled-projects` source entry):
 - `draft re-engagement` (displays "Draft re-engagement") — opens `email-writer` or `follow-up-ritual` for that project (lazy draft — nothing sends)
-- `snooze 14d` (displays "Snooze (14 days)") — suppresses re-flag for 14 days (writes a `dont_forget_snooze`-style event referencing the project)
+- `snooze 14d` (displays "Snooze (14 days) — hide until then", UXR1 D7a) — suppresses re-flag for 14 days (writes a `dont_forget_snooze`-style event referencing the project)
 - `mark paused` (displays "Mark paused") — updates the project's status via `workspace-manager`'s writer
 - `archive` (displays "Archive") — moves the project to archive
 - `status check` (displays "Status check") — surfaces the project's recent-events digest inline before deciding
@@ -303,6 +303,8 @@ If the workspace has zero projects (new install, or all archived), the skill res
 This skill ships in v3.14.1. The `stall_detector.py` helper it calls is the canonical detector. v3.14.2 adds the once-weekly recording call (`record_stall_state_changes`) wired into cleanup, plus pulse Phase 9 integration. This skill itself remains the on-demand surface across all v3.14.x releases.
 
 v4.5.2 (C3, FINDINGS F-54): staleness now derives from events at read time via `thread_activity.derive_thread_activity` — the deprecated `thread.last_activity` record stamp can never override events. Adds the mandatory live-check gate (`apply_live_check`, F-57 discipline) and the `pack_run` scan receipt with nag-dedup.
+
+RECL1 (2026-07): the derivation honors user-approved reclassifications (`honor_reclassifications=True` in `stall_detector`). Day-counts are now honest in both directions — a thread borrowing misclassified activity may newly flag (correct), and a thread whose activity was moved onto it stops false-flagging. Pulse Phase 4 adopts the same call shape, so the F-54 one-day-count contract holds through corrections.
 
 ## Routing (full trigger corpus)
 

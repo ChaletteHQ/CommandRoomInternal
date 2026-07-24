@@ -236,9 +236,15 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
     # primary_thread_id only, so a cross-referenced meeting bumped the
     # workspace map and stalled-projects but not this column (the F-54
     # same-project-two-numbers divergence class).
+    # honor_reclassifications (RECL1): corrections move the original event's
+    # credit; under ALL_TYPES the reclassification event ITSELF also bumps
+    # the corrected thread at correction time — correct "last touched"
+    # renderer semantics (pinned in tests).
     last_act: dict[str, str] = {
         tid: act.ts.isoformat()
-        for tid, act in derive_from_events(events, activity_types=ALL_TYPES).items()
+        for tid, act in derive_from_events(
+            events, activity_types=ALL_TYPES, honor_reclassifications=True
+        ).items()
     }
 
     def thread_last_activity(t: dict) -> str:

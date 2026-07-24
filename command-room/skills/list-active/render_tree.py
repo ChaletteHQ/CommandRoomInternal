@@ -137,9 +137,14 @@ def _compute_last_activity(events: list[dict]) -> dict[str, str]:
             sys.path.insert(0, str(shared))
         from thread_activity import ALL_TYPES, derive_from_events
 
+        # honor_reclassifications (RECL1) on the CANONICAL path only — the
+        # raw fallback loop below must not import more from the module that
+        # just failed to import (never-brick posture).
         return {
             tid: act.ts.isoformat()
-            for tid, act in derive_from_events(events, activity_types=ALL_TYPES).items()
+            for tid, act in derive_from_events(
+                events, activity_types=ALL_TYPES, honor_reclassifications=True
+            ).items()
         }
     except Exception:
         pass

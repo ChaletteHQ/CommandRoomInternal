@@ -17,6 +17,9 @@ surface and prints exactly what the runtime needs to relay:
     python3 shared/scripts/surface_drivers.py waiting-on \
         --workspace <WORKSPACE> [--page N] [--chase-json <file>] \
         [--fired-via scheduled|manual|catchup]
+    python3 shared/scripts/surface_drivers.py my-plate \
+        --workspace <WORKSPACE> [--page N] [--status-json <file>] \
+        [--personal-cap N] [--fired-via scheduled|manual|catchup]
 
 STDOUT SHAPE (fixed contract — the skill texts pin it):
 
@@ -97,7 +100,8 @@ _PENDING_VERBS = ["resolved", "drop", "not mine"]
 # SUB1 D6 — child rows get the standard per-kind dropdown MINUS the one verb
 # that doesn't apply to a child: `never track this` (suppression rules key on
 # capture shape — children aren't captures) stays parent-level. Everything
-# else — Done, Later…, Drop, Not mine, Make task / Promote, Skip — works on
+# else — Done, Later…, Drop, Not mine, Turn into a task / Promote, Skip —
+# works on
 # a child with zero special-casing (children are real commitments).
 # (`add to my list` was the other parent-level carve-out until MLK1 retired
 # the verb entirely — no row emits it now.)
@@ -110,14 +114,20 @@ _REDUCED_REASON = ("Fewer options — the owner is unconfirmed; clicking Done, "
 
 # FB-15 — the daily Waiting On chat (CTS1 Surface 1; orchestrator-commitments)
 # row verb sets, post-FB-17. Delegated tasks (owner != user, effective kind
-# `task`) are CRU-INELIGIBLE, so they get NO PRE-STAGED chase draft — but the
-# orchestrator set DOES carry `draft`, which composes the nudge ON DEMAND at
-# dispatch (orchestrator-commitments §417 / §958 / §965). The verb id is
-# connector-free in the deterministic row: this driver still never composes a
-# body or touches a connector at render time — apply-choices routes the click
-# through email-writer's lazy-draft path only when the user taps it. A fully
+# `task`) are CRU-INELIGIBLE, so they get NO PRE-STAGED chase draft. A fully
 # resolved, pre-staged chase still rides chase_rows like any other email row.
-# `draft` LEADS the manual set, matching the spec order.
+#
+# WG1-A D-A4 (M ruling 2026-07-20, big-test row 13b): `nudge` is the delegated
+# row's ruled PRIMARY verb, and it is CONNECTOR-FREE at render — compose-on-
+# CLICK, not compose-at-render. The driver emits the bare `nudge` action id;
+# apply-choices composes the chase draft (email-writer chain, draft posture)
+# only when the row is tapped, so this read-only driver still touches no
+# connector and scheduled fires stay connector-free. It leads the set so the
+# grammar promotes it as the visible primary button. (Train-merge note
+# 2026-07-21: the widget-batch interim used the bare `draft` verb for the same
+# compose-on-demand behavior; D-A4's named `nudge` verb supersedes it — same
+# dispatch chain, grammar-registered id. `add to my plate` is CTS1FIX D5,
+# post-dating the WG1-A build; `add to my list` is retired — MLK1.)
 #
 # The pending_review / unowned confirm tail asks an OWNERSHIP question, so it
 # carries the ownership cluster (orchestrator-commitments §452 + § "Confirm
@@ -126,17 +136,44 @@ _REDUCED_REASON = ("Fewer options — the owner is unconfirmed; clicking Done, "
 #                          sets the owner AND clears any pending_review flag)
 #   - `theirs to [name]` — ROUTES (reassign_commitment, confirmed=True)
 #   - `drop`             — closes an item that is nobody's (§452 dismissal)
-#   - `not relevant`     — the soft 60-day mute
-#   - `add to my plate`  — CTS1FIX D5: pull it onto My Plate as an owned task
+#   - `snooze 3d`        — the deferral tail (UXR1 D1)
 # `make task` is deliberately omitted: reclassifying a commitment to a task in
 # place while its owner is still unknown is incoherent — `add to my plate`
 # (make it MY task) is the coherent task path here. Dispatch is keyed per
 # row-id, so the ONE shared cluster preserves the genuinely-different behavior
 # between the two classes (mine clears the pending_review flag only where one
 # is present; on a bare-unowned row it simply stamps the owner).
-_DELEGATED_VERBS = ["draft", "mark received", "snooze 3d", "add to my plate"]
-_REVIEW_VERBS = ["mine", "theirs to [name]", "drop", "not relevant",
-                 "add to my plate"]
+#
+# UXR1 D1 (M ruling 2026-07-21): the confirm tail SLIMMED from five verbs to
+# four. Removed from EMISSION only — `not relevant` (the dishonest twin of
+# `drop` on this row: hides it 60d while the item stays open + unconfirmed)
+# and `add to my plate` (the redundant twin of `mine`: both land it on My
+# Plate; `mine` keeps the counterparty and the chase, the correct default for
+# a captured promise). Both wire ids stay registered in verb_taxonomy and
+# dispatch unchanged — old persisted widgets carrying the 5-verb rows must
+# still apply. Under WG1-A's ≤4 rule the slimmed row renders as 4 buttons,
+# no dropdown.
+_DELEGATED_VERBS = ["nudge", "mark received", "snooze 3d", "add to my plate"]
+_REVIEW_VERBS = ["mine", "theirs to [name]", "drop", "snooze 3d"]
+
+# FB-plumbing item 6 — My Plate (CTS1 Surface 2; orchestrator-my-plate) row
+# verb sets. The driver renders the CONNECTOR-FREE row classes deterministically
+# (the counterparty-unresolved Promised fixup rows + the whole Personal group);
+# the email-shaped status drafts for counterparty-RESOLVED Promised rows are
+# connector-dependent (email-writer) so the orchestrator composes them and
+# passes them verbatim as `status_rows`, exactly as waiting-on's `chase_rows`.
+# Counterparty-unresolved Promised rows (Bug #103, the 49 orphaned promises):
+# the reassign/make-task fixup rides two existing verbs; NEVER auto-demoted.
+_MP_UNRESOLVED_VERBS = ["reassign to [name]", "make task", "push to [date]",
+                        "resolved", "drop", "snooze 3d"]
+# Personal (owner-me own work) — no drafts; the standard owner-me act verbs.
+# (`add to my list` was in the FB-plumbing build of this set; retired by MLK1
+# before this driver merged — removed at the train merge, never emitted.)
+_MP_PERSONAL_VERBS = ["resolved", "push to [date]", "prep deep work",
+                      "promote", "snooze 3d"]
+# Default Personal-group cap (CTS1 §4.2 — `my-plate` skill config
+# `personal_cap`, default 7); the tail line points at `show my plate`.
+_MP_PERSONAL_CAP = 7
 
 
 def _now_iso() -> str:
@@ -567,8 +604,8 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
                          "items": rows})
 
     # 2. Delegated tasks (owner != user, effective kind `task`) — CRU-ineligible,
-    #    so no pre-staged chase; the manual action set (`draft` composes a nudge
-    #    on demand) per orchestrator-commitments §2.3.
+    #    so no pre-staged chase; the delegated set (`nudge` composes the chase
+    #    on click — D-A4) per orchestrator-commitments §2.3.
     delegated = [ev for ev in part[SURFACE_WAITING_ON]
                  if effective_kind_of(ev) == "task"]
     if delegated:
@@ -590,11 +627,18 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
                 f"delegated to {owner_name} — nudge is manual, "
                 "I won't auto-chase this" if owner_name
                 else "delegated — nudge is manual, I won't auto-chase this")
-            # `draft` composes the nudge on demand at dispatch (no pre-staged
-            # body) — but it is send-class (renderer Gate 6 / Bug #44), so the
-            # row must carry a valid To:. Resolve the owner's email; when none
-            # is on file, degrade `draft` to the `add email then send` recovery
-            # verb so the surface still renders (never a dead button).
+            # `nudge` (WG1-A D-A4) composes the chase on demand at dispatch
+            # (no pre-staged body). Resolve the owner's email so the row
+            # carries a real To:; when none is on file, degrade `nudge` to the
+            # `add email then send` recovery verb so the surface still renders
+            # (never a dead button — the Bug #44 principle). THIS DEGRADE IS
+            # THE ONLY GUARD: renderer Gate 6 (_SEND_CLASS_ACTIONS) deliberately
+            # does NOT include `nudge`, because the WG1-B D-B4 moves adapter
+            # (relationship_moves.moves_rows_from_candidates) legitimately
+            # emits To-less nudge rows on scheduled staff-meeting fires
+            # (compose-on-click resolves the address at dispatch). Train-merge
+            # review F-4 ruling 2026-07-22: keep nudge out of the frozenset;
+            # this driver-level degrade is the enforcement for delegated rows.
             email = _owner_email(ev, people_by_id)
             row: dict = {
                 "n": _cid(ev), "display_n": display_n,
@@ -606,7 +650,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
                 row["actions"] = list(_DELEGATED_VERBS)
             else:
                 row["actions"] = ["add email then send"] + [
-                    v for v in _DELEGATED_VERBS if v != "draft"]
+                    v for v in _DELEGATED_VERBS if v != "nudge"]
             rows.append(row)
         sections.append({"title": "Delegated", "count": len(rows),
                          "items": rows})
@@ -646,6 +690,165 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
         "counters": counters,
         "sections": sections,
     }
+
+
+def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
+                        status_rows: list | None = None,
+                        personal_cap: int = _MP_PERSONAL_CAP) -> dict:
+    """The daily My Plate chat data view (CTS1 Surface 2 — orchestrator-my-plate,
+    mechanized): canonical loader + `surface_split` partition + the count
+    headline + the two owner-me groups. Pure read.
+
+    Mirrors `build_waiting_on_view` exactly (FB-plumbing item 6 — kill the inline
+    builder scripts): the DETERMINISTIC, connector-free row classes are built
+    here — the counterparty-unresolved Promised fixup rows (Bug #103) and the
+    whole Personal group — while the connector-DEPENDENT email-shaped status
+    drafts for counterparty-resolved Promised rows are composed by the
+    orchestrator (email-writer chain) and passed VERBATIM as `status_rows`,
+    appended as the LEADING rows of the Promised section (the `chase_rows`
+    parallel). The driver never composes an email body or touches a connector.
+    Waiting-on rows (owner != user) never surface here — the partition routes
+    them to the Waiting On chat; unowned / pending_review rows are that chat's
+    confirm tail, never My Plate's (this is a pure act-list).
+
+    `personal_cap` (CTS1 §4.2, the `my-plate` skill config knob, default 7)
+    caps the Personal group; the section footer carries the "+N more — say
+    'show my plate' for everything" tail when rows are hidden. `show my plate`
+    re-renders with the cap lifted (the orchestrator passes a large cap)."""
+    from commitment_activity import derive_commitment_movement
+    from commitment_state import count_commitments
+    from cru_match import load_open_commitments
+    from primary_user import resolve_primary_user
+    from surface_split import (SURFACE_PERSONAL, SURFACE_PROMISED,
+                               counterparty_unresolved, partition_surfaces)
+
+    ws = Path(workspace_root)
+    now_iso = now_iso or _now_iso()
+    events_path = _events_path(ws)
+    opens = load_open_commitments(events_path)
+    try:
+        user_id = resolve_primary_user(ws)
+    except Exception:
+        user_id = None
+    movement = derive_commitment_movement(events_path)
+    counts = count_commitments(opens, user_person_id=user_id,
+                               now_iso=now_iso, movement=movement)
+    part = partition_surfaces(opens, user_id)
+    promised = part[SURFACE_PROMISED]
+    personal = part[SURFACE_PERSONAL]
+
+    def _cid(ev) -> str:
+        d = ev.get("data") or {}
+        return d.get("id") or f"commitment_seq_{ev.get('seq')}"
+
+    display_n = 0
+    sections: list[dict] = []
+
+    # === Group A — PROMISED (someone's waiting; renders FIRST) =============
+    promised_rows: list[dict] = []
+
+    # 1. Orchestrator-supplied status drafts (connector-dependent), appended
+    #    verbatim: email-shaped rows whose pre-drafted status lives in the
+    #    widget (the counterparty-RESOLVED, external-recipient promises).
+    if status_rows:
+        for r in status_rows:
+            display_n += 1
+            row = dict(r)
+            row.setdefault("display_n", display_n)
+            promised_rows.append(row)
+
+    # 2. Counterparty-UNRESOLVED promises (deterministic, connector-free): a
+    #    real promise whose counterparty linking failed. The fixup IS the
+    #    action (no recipient to draft to). NEVER auto-demoted to Personal.
+    for ev in promised:
+        if not counterparty_unresolved(ev, user_id):
+            continue
+        display_n += 1
+        d = ev.get("data") or {}
+        age = _age_days(ev.get("ts") or "", now_iso)
+        bits = []
+        if age is not None and age >= 0:
+            bits.append("1 day old" if age == 1 else f"{age} days old")
+        bits.append(_due_phrase(d.get("due"), now_iso))
+        bits.append("counterparty unresolved — who was this for?")
+        promised_rows.append({
+            "n": _cid(ev), "display_n": display_n,
+            "name": d.get("title") or d.get("summary") or "(untitled)",
+            "context_tag": " · ".join(bits),
+            "actions": list(_MP_UNRESOLVED_VERBS),
+        })
+
+    if promised_rows:
+        sections.append({"title": "↗ PROMISED — someone's waiting",
+                         "count": len(promised_rows), "items": promised_rows})
+
+    # === Group B — PERSONAL (my own work; capped) =========================
+    # Sort: dated first (due soonest), then undated by most-recently-touched
+    # (the movement ts, capture ts floor) — newest first. Deterministic.
+    def _touch_ts(ev) -> str:
+        d = ev.get("data") or {}
+        mv = movement.get(_cid(ev)) if isinstance(movement, dict) else None
+        if isinstance(mv, dict) and mv.get("ts"):
+            return str(mv["ts"])
+        return str(ev.get("ts") or "")
+
+    def _personal_key(ev):
+        d = ev.get("data") or {}
+        due = d.get("due")
+        due_s = str(due)[:10] if due else None
+        # dated rows first (0), sorted by due asc; undated (1), newest touch first
+        return (0, due_s, "") if due_s else (1, "", _neg_ts(_touch_ts(ev)))
+
+    personal_sorted = sorted(personal, key=_personal_key)
+    cap = personal_cap if personal_cap and personal_cap > 0 else len(personal_sorted)
+    shown = personal_sorted[:cap]
+    hidden = len(personal_sorted) - len(shown)
+
+    personal_rows: list[dict] = []
+    for ev in shown:
+        display_n += 1
+        d = ev.get("data") or {}
+        age = _age_days(ev.get("ts") or "", now_iso)
+        bits = []
+        if age is not None and age >= 0:
+            bits.append("1 day old" if age == 1 else f"{age} days old")
+        bits.append(_due_phrase(d.get("due"), now_iso))
+        personal_rows.append({
+            "n": _cid(ev), "display_n": display_n,
+            "name": d.get("title") or d.get("summary") or "(untitled)",
+            "context_tag": " · ".join(bits),
+            "actions": list(_MP_PERSONAL_VERBS),
+        })
+    if personal_rows:
+        sec = {"title": "PERSONAL — your own list",
+               "count": len(personal_rows), "items": personal_rows}
+        if hidden > 0:
+            sec["footer_note"] = (f"+{hidden} more — say 'show my plate' "
+                                  "for everything")
+        sections.append(sec)
+
+    h = counts["headline"]
+    counters = [
+        {"label": "On your plate", "value": h["you_owe"]},
+        {"label": "Promised", "value": len(promised)},
+        {"label": "Personal", "value": len(personal)},
+        {"label": "Waiting on others", "value": h["owed_to_you"]},
+    ]
+    return {
+        "source_skill": "commitments",
+        "header": (f"My Plate — {h['you_owe']} on your plate "
+                   f"({len(promised)} promised · {len(personal)} personal)"),
+        "counters": counters,
+        "sections": sections,
+    }
+
+
+def _neg_ts(ts: str) -> str:
+    """Sort helper — invert an ISO ts so `sorted(asc)` yields newest-first.
+    Deterministic + stdlib-only: complement each digit so a later timestamp
+    sorts earlier. Non-digits pass through (they compare stably)."""
+    tbl = str.maketrans("0123456789", "9876543210")
+    return (ts or "").translate(tbl)
 
 
 def _last_brief_ts(workspace_root, now_iso: str) -> str:
@@ -839,7 +1042,8 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
 # surface -> the canonical receipts.py task its fire receipts belong to.
 _SURFACE_TASKS = {"commitments": "commitment-triage",
                   "staff-meeting": "staff-meeting",
-                  "waiting-on": "waiting-on"}   # FB-15 (CTS1 taskId)
+                  "waiting-on": "waiting-on",   # FB-15 (CTS1 taskId)
+                  "my-plate": "my-plate"}       # FB-plumbing item 6 (CTS1 Surface 2)
 
 # RV-3 guard: a NON-MANUAL driver re-run this close to an already-written
 # non-manual receipt is the same fire re-rendering (the live 2026-07-16
@@ -878,6 +1082,8 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
                 page_size: int = 15, now_iso: str | None = None,
                 moves_rows: list | None = None,
                 chase_rows: list | None = None,
+                status_rows: list | None = None,
+                personal_cap: int = _MP_PERSONAL_CAP,
                 fired_via: str | None = None) -> dict:
     """Build the view + render_and_persist ONE page. Returns the transport
     dict (html / pagination / path). The CLI wraps this; tests call it
@@ -910,9 +1116,15 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
         view = build_waiting_on_view(ws, now_iso=now_iso,
                                      chase_rows=chase_rows)
         name_hint = "waiting-on"
+    elif surface == "my-plate":
+        view = build_my_plate_view(ws, now_iso=now_iso,
+                                   status_rows=status_rows,
+                                   personal_cap=personal_cap)
+        name_hint = "my-plate"
     else:
-        raise SystemExit(f"unknown surface {surface!r} "
-                         "(supported: commitments, staff-meeting, waiting-on)")
+        raise SystemExit(
+            f"unknown surface {surface!r} "
+            "(supported: commitments, staff-meeting, waiting-on, my-plate)")
     transport = render_and_persist(
         data_view=view,
         wrapper="fragment",
@@ -936,7 +1148,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("surface",
                     choices=["commitments", "staff-meeting", "waiting-on",
-                             "morning-brief"])
+                             "my-plate", "morning-brief"])
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--mode", default="scheduled",
                     choices=["scheduled", "manual"],
@@ -953,6 +1165,14 @@ def main() -> int:
     ap.add_argument("--chase-json", default=None,
                     help="waiting-on only: JSON file with the pre-staged chase "
                          "rows (email-shaped item dicts, connector-dependent)")
+    ap.add_argument("--status-json", default=None,
+                    help="my-plate only: JSON file with the pre-staged Promised "
+                         "status-draft rows (email-shaped item dicts, "
+                         "connector-dependent — the chase_rows parallel)")
+    ap.add_argument("--personal-cap", type=int, default=_MP_PERSONAL_CAP,
+                    help="my-plate only: Personal-group row cap (CTS1 §4.2 "
+                         "`personal_cap`, default 7); 'show my plate' passes a "
+                         "large value to lift the cap")
     ap.add_argument("--fired-via", default=None,
                     choices=["scheduled", "manual", "catchup"],
                     help="the fire's run mode (the orchestrator's Phase-2.9 "
@@ -979,11 +1199,15 @@ def main() -> int:
     chase_rows = None
     if args.chase_json:
         chase_rows = json.loads(Path(args.chase_json).read_text(encoding="utf-8"))
+    status_rows = None
+    if args.status_json:
+        status_rows = json.loads(Path(args.status_json).read_text(encoding="utf-8"))
 
     transport = run_surface(
         args.surface, args.workspace, page=args.page,
         page_size=args.page_size, now_iso=args.now, moves_rows=moves_rows,
-        chase_rows=chase_rows, fired_via=args.fired_via)
+        chase_rows=chase_rows, status_rows=status_rows,
+        personal_cap=args.personal_cap, fired_via=args.fired_via)
 
     pagination = transport.get("pagination") or {}
     print("CR-PAGINATION: " + json.dumps(pagination))
@@ -999,6 +1223,7 @@ def main() -> int:
 __all__ = [
     "build_commitment_triage_view",
     "build_morning_brief_pack",
+    "build_my_plate_view",
     "build_staff_meeting_view",
     "build_waiting_on_view",
     "run_surface",

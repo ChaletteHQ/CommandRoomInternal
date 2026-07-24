@@ -210,10 +210,15 @@ def append_correction(
 def snapshot_draft(
     workspace_root, *, skill: str, domain: str, recipient_id: Optional[str],
     recipient_email: Optional[str], subject: str, body: str, draft_event_seq,
-    gmail_draft_id=None, gmail_message_id=None,
+    native_draft_id=None, gmail_message_id=None, gmail_draft_id=None,
 ) -> None:
     """Append the drafted body to `_hq/voice/draft-snapshots.jsonl` so a
-    drafted-vs-sent diff is possible later. Bodies stay OUT of events.jsonl."""
+    drafted-vs-sent diff is possible later. Bodies stay OUT of events.jsonl.
+
+    FB-plumbing item 5 — the draft id column stores under `native_draft_id`
+    (the value was never Gmail-specific). The legacy `gmail_draft_id` kwarg is
+    still accepted so existing callers keep working, and it feeds the new
+    column when the new kwarg is absent."""
     try:
         from atomic_write import atomic_append_jsonl
         path = _voice_dir(workspace_root) / "draft-snapshots.jsonl"
@@ -221,7 +226,8 @@ def snapshot_draft(
         atomic_append_jsonl(path, [{
             "ts": _now_iso(), "skill": skill, "domain": domain,
             "recipient_id": recipient_id, "recipient_email": recipient_email,
-            "draft_event_seq": draft_event_seq, "gmail_draft_id": gmail_draft_id,
+            "draft_event_seq": draft_event_seq,
+            "native_draft_id": native_draft_id or gmail_draft_id,
             "gmail_message_id": gmail_message_id, "subject": subject, "body": body,
         }])
     except Exception:

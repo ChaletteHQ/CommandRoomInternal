@@ -162,6 +162,71 @@ def _reverse_entity_fact_structured(workspace_root, change, *, undone_by,
             "retracts_seq": retracts_seq}
 
 
+def _reverse_person_link(workspace_root, change, *, undone_by, source_skill):
+    # UXR1 D3 — reverse ONE auto-link tombstone: (1) remove the written
+    # link (reopen the mention proposal the same_as tombstone closed — the
+    # additive person_proposal_reopened marker; the auto path writes NO
+    # alias by construction, gate (a) requires normalized-exact names, so
+    # the record itself is already alias-free), then (2) re-open a
+    # CONFIRM-tier person_link proposal carrying the original evidence so
+    # the decision comes back to a human — and so the next reconcile run
+    # can NEVER silently re-auto-link the same pair (propose(tier="auto")
+    # dedups against the open confirm row's fingerprint). The tombstones
+    # stamp link_fingerprint/matched_name/link_evidence at write time; a
+    # batch's N member tombstones re-propose once (fingerprint dedup).
+    result = _reverse_person_proposal_tombstone(
+        workspace_root, change, undone_by=undone_by, source_skill=source_skill)
+    fingerprint = change.get("link_fingerprint")
+    if fingerprint:
+        from brain_proposals import propose
+
+        try:
+            # UXR1 D4 — the re-opened ask renders decision-grade too: the
+            # record is re-fetched by id so the differentiator (org > email
+            # > last touched) shows what a confirm would link to.
+            matched = {"id": change.get("person_id"),
+                       "canonical_name": change.get("matched_name") or ""}
+            try:
+                import json as _json
+
+                ents = _json.loads(
+                    (Path(workspace_root) / "_hq" / "data" / "entities.json")
+                    .read_text(encoding="utf-8"))
+                ents = ents.get("entities") if isinstance(
+                    ents.get("entities"), dict) else ents
+                for p in ents.get("people") or []:
+                    if p.get("id") == change.get("person_id"):
+                        matched = p
+                        break
+            except Exception:
+                pass
+            from identity_reconcile import person_link_ask_line
+
+            line = person_link_ask_line(
+                workspace_root, change.get("alias") or "this name",
+                matched, str(change.get("link_evidence") or ""))
+            reopened = propose(
+                workspace_root,
+                kind="person_link",
+                fingerprint=str(fingerprint),
+                evidence=str(change.get("link_evidence") or ""),
+                action_tuples=[{"action": "confirm proposal"},
+                               {"action": "dismiss proposal"},
+                               {"action": "snooze proposal 7d"}],
+                tier="confirm",
+                detector="identity-reconcile",
+                render_line=f"{line} (you undid the automatic link)",
+                person_id=change.get("person_id"),
+                extra={"title": change.get("alias") or "",
+                       "alias_name": change.get("alias") or "",
+                       "matched_name": change.get("matched_name") or ""},
+            )
+            result["confirm_row"] = reopened.get("status")
+        except Exception as exc:  # loud per-item, contained per-batch
+            result["confirm_row"] = f"error: {type(exc).__name__}: {exc}"
+    return result
+
+
 def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
                                        source_skill):
     # T2.2 (backlog sweep) — reverse an expire/skip tombstone on a person
@@ -241,6 +306,20 @@ REVERSERS: dict[str, dict] = {
         "description": "reopen a person proposal the backlog sweep expired "
                        "or skipped (tombstone stays in history)",
     },
+    # UXR1 D3 (M ruling 2026-07-21): the exact-unique-clean auto-link is
+    # legal on the auto tier ONLY because this reverser exists (landed in
+    # the same commit as the AUTO_ALLOWED entry). Undo reopens the mention
+    # proposal AND re-opens a confirm-tier person_link row carrying the
+    # original evidence — the reopened confirm row is also the re-auto
+    # fence (propose(tier="auto") dedups against its open fingerprint).
+    "person_link": {
+        "reverse": _reverse_person_link,
+        "reverses_via": "person_proposal_reopened + a confirm-tier "
+                        "person_link brain_proposal",
+        "description": "unwind an automatic name-mention link (no alias was "
+                       "written — gate (a) requires exact names); the "
+                       "decision returns to the human as a confirm row",
+    },
 }
 
 
@@ -304,7 +383,11 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
             "change_ref": f"seq:{ev.get('seq')}",
         }
         for key in ("commitment_id", "dismissal_seq", "person_id", "org_id",
-                    "proposal_seq", "proposal_fingerprint"):
+                    "proposal_seq", "proposal_fingerprint",
+                    # UXR1 D3 — the person_link reverser's re-propose payload
+                    # (stamped on the same_as tombstones at auto-link time).
+                    "alias", "link_fingerprint", "link_evidence",
+                    "matched_name"):
             if data.get(key) is not None:
                 change[key] = data[key]
         out.append(change)

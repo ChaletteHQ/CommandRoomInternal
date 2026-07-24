@@ -419,6 +419,116 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# UXR1 D3 — the auto-link gate (M ruling 2026-07-21): a person_link
+# auto-applies instead of minting a confirm row ONLY when ALL of (a)-(d)
+# hold. The gate is load-bearing — widen it by ruling, never by drift; the
+# pin test moves WITH the policy, never around it.
+# ---------------------------------------------------------------------------
+
+def _record_org_name(workspace_root, record: dict) -> str:
+    """The on-file record's org display name (primary_org_id resolved via
+    entities.json; legacy org_id honored). "" when none / unreadable."""
+    org_id = (record.get("primary_org_id") or record.get("org_id") or "")
+    if not org_id:
+        return ""
+    try:
+        data = json.loads((Path(workspace_root) / "_hq" / "data" /
+                           "entities.json").read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        for o in ent.get("orgs") or []:
+            if o.get("id") == org_id:
+                return (o.get("canonical_name") or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
+                       email: str | None) -> tuple[bool, str]:
+    """(eligible, why) — the UXR1 D3 (a)-(d) gate for ONE merge-propose
+    entry whose cluster confidently resolved to `matched`.
+
+      (a) exact normalized full-name match, ≥2 tokens (the existing "a bare
+          'Quinn' is never an exact match" rule stands);
+      (b) exactly ONE on-file candidate for that name — two same-name
+          records are the IDM1 class, NEVER auto;
+      (c) no conflicting signal: the mention's observed email, when present,
+          must belong to the record (a role/shared-inbox address is NOT
+          corroboration and never auto-links — §0-2's guard applied here);
+          the mention's inferred org, when present and resolvable, must not
+          contradict the record's org;
+      (d) the pair is not in scan_existing_duplicates' suspect set (a
+          record under duplicate suspicion is not a safe link target).
+
+    Fail-safe throughout: any unverifiable bar returns False (the row still
+    renders as a confirm ask — a human decision is the safe floor)."""
+    name = (cluster.get("name") or "").strip()
+    matched_name = (matched or {}).get("canonical_name") or ""
+    # (a) exact normalized multi-token match
+    if _norm_name(name) != _norm_name(matched_name):
+        return False, "spelling differs from the record — a human decision"
+    if len(_norm_name(name).split()) < 2:
+        return False, "lone first name — never auto (Bug #19)"
+    if _NAME_ANNOTATION_RE.search(name):
+        return False, "name carries annotation/guess markers — never auto"
+    # (b) exactly one on-file candidate
+    from people_writer import list_same_name_people
+
+    try:
+        candidates = list_same_name_people(workspace_root, name)
+    except Exception:
+        return False, "same-name candidate check unavailable — never auto"
+    ids = {c.get("id") for c in (candidates or []) if c.get("id")}
+    if ids != {matched.get("id")}:
+        return False, (f"{len(ids)} on-file candidates for {name!r} — "
+                       "two same-name records are the IDM1 class, never auto")
+    # (c) no conflicting signal — email. RAW scan, not cluster_observed_email
+    # (that helper deliberately SKIPS role-shaped addresses at capture — the
+    # F1 guard — so relying on it here would auto-link a mention whose only
+    # observed address is a shared inbox; the ruling says that case ASKS).
+    observed: list[str] = []
+    try:
+        from person_backlog_sweep import _observed_email
+
+        for row in cluster.get("add_rows") or []:
+            probe = dict(row)
+            probe["name"] = name
+            addr = _observed_email(probe)
+            if addr:
+                observed.append(addr)
+    except Exception:
+        return False, "observed-address scan unavailable — never auto"
+    record_emails = {e.strip().lower() for e in _record_emails(matched)}
+    for addr in observed:
+        if is_role_address(addr):
+            return False, ("observed address is role-shaped (shared inbox) "
+                           "— not corroboration, still asks (§0-2)")
+        if addr.strip().lower() not in record_emails:
+            return False, ("observed address does not belong to the record "
+                           "— conflicting signal, still asks")
+    # (c) no conflicting signal — org
+    inferred_org = (cluster.get("inferred_org") or "").strip()
+    if inferred_org:
+        record_org = _record_org_name(workspace_root, matched)
+        if record_org and _norm_name(inferred_org) != _norm_name(record_org):
+            return False, (f"mention's org {inferred_org!r} contradicts the "
+                           f"record's {record_org!r} — still asks")
+    # (d) not a duplicate suspect
+    try:
+        suspects = scan_existing_duplicates(workspace_root)
+    except Exception:
+        return False, "duplicate-suspect scan unavailable — never auto"
+    mid = matched.get("id")
+    for s in suspects:
+        if mid in (s["keep"].get("id"), s["duplicate"].get("id")):
+            return False, ("record is in the duplicate-suspect set — "
+                           "still asks")
+    return True, (f"exact unique clean match to {matched_name!r} "
+                  "(UXR1 D3 gate a-d)")
+
+
+# ---------------------------------------------------------------------------
 # Existing-record duplicate scan (D4b — the absorbed LB2 dedup detector)
 # ---------------------------------------------------------------------------
 
@@ -697,14 +807,18 @@ def run_identity_reconcile(
 
     events_path = _events_path(ws)
     results: dict = {"added": [], "needs_confirm": [], "linked": [],
+                     "auto_linked": [],
                      "merge_rows_proposed": 0, "annotations": [],
                      "annotations_resolved": [], "expired": [], "errors": [],
                      "spilled": {"auto_add": 0, "merge_propose": 0}}
 
     def _tombstone(cluster_or_row, *, resolution, person_id=None, alias=None,
-                   note="", change_class="person_proposal_tombstone"):
+                   note="", change_class="person_proposal_tombstone",
+                   extra_data=None):
         """One tombstone per member proposal (int seq or D8 fingerprint),
-        batch-stamped for undo. Returns the events appended."""
+        batch-stamped for undo. `extra_data` (UXR1 D3) rides on every member
+        tombstone — the person_link reverser's re-propose payload. Returns
+        the events appended."""
         if isinstance(cluster_or_row, dict) and "rows" in cluster_or_row:
             members = cluster_or_row["rows"]
         else:
@@ -723,6 +837,9 @@ def run_identity_reconcile(
             tomb["data"]["brain_change_class"] = change_class
             if person_id:
                 tomb["data"]["person_id"] = person_id
+            if isinstance(extra_data, dict):
+                for k, v in extra_data.items():
+                    tomb["data"].setdefault(k, v)
             evs.append(tomb)
         if evs:
             append_event(events_path, evs, holder=source_skill)
@@ -801,6 +918,20 @@ def run_identity_reconcile(
                                           "name": cluster["name"],
                                           "person_id": matched["id"],
                                           "email": entry["email"]})
+                continue
+        # UXR1 D3 (M ruling 2026-07-21) — the OBVIOUS link auto-applies
+        # instead of asking: exact-unique-clean per gate (a)-(d). The LB2
+        # auto lifecycle contract holds — propose(tier="auto") + apply +
+        # resolve in the SAME run; the auto proposal never rests open. A
+        # non-"proposed" status (open confirm row after an undo, or the
+        # 60d decline cooldown) falls through to the confirm row path —
+        # the human's standing answer is never steamrolled.
+        if matched is not None:
+            eligible, why = auto_link_eligible(ws, cluster, matched,
+                                               entry["email"])
+            if eligible and _auto_apply_person_link(
+                    ws, cluster, matched, entry, why, batch_id,
+                    _tombstone, results, source_skill):
                 continue
         if results["merge_rows_proposed"] >= merge_cap:
             results["spilled"]["merge_propose"] += 1
@@ -892,6 +1023,13 @@ def run_identity_reconcile(
             "batch_id": batch_id,
             "n_auto_added": len(results["added"]),
             "n_linked": len(results["linked"]),
+            # UXR1 D3 — the auto-link lane's own count (distinct from the
+            # §0-2 exact-email n_linked): change_feed narrates it with the
+            # undo affordance.
+            "n_auto_linked": len(results["auto_linked"]),
+            "people_auto_linked": [{"person_id": a["person_id"],
+                                    "name": a["name"]}
+                                   for a in results["auto_linked"]],
             "n_merge_proposed": results["merge_rows_proposed"],
             "n_clustered": len(plan["confirm"]),
             "n_annotations": len(results["annotations"]),
@@ -912,28 +1050,150 @@ def run_identity_reconcile(
     return plan
 
 
+def _auto_apply_person_link(ws, cluster, matched, entry, why, batch_id,
+                            tombstone, results, source_skill) -> bool:
+    """UXR1 D3 — auto-apply ONE exact-unique-clean person_link on the LB2
+    auto rail: propose(tier="auto") + apply + resolve in the SAME run.
+
+    The APPLY is the same_as tombstone fan-out over the cluster's member
+    proposals (change_class="person_link", batch-stamped + carrying the
+    reverser's re-propose payload). NO alias is ever written here — gate
+    (a) requires the normalized-exact spelling, so there is nothing to
+    save (the exact-email §0-2 path keeps its own alias behavior).
+
+    Returns True when the link applied; False on ANY failure or non-
+    "proposed" propose status (open confirm row after an undo; the 60d
+    decline cooldown) — the caller falls through to the confirm-row path,
+    so a human's standing answer is never steamrolled."""
+    from brain_proposals import propose, resolve_proposal
+
+    matched_name = (matched or {}).get("canonical_name") or ""
+    matched_id = (matched or {}).get("id")
+    fingerprint = f"person_link:{cluster['key']}:{matched_id or 'unresolved'}"
+    evidence = (cluster["rows"][0].get("evidence") or
+                cluster["rows"][0].get("source_ref") or "")
+    try:
+        res = propose(
+            ws,
+            kind="person_link",
+            fingerprint=fingerprint,
+            evidence=evidence,
+            action_tuples=[{"action": "confirm proposal"},
+                           {"action": "dismiss proposal"},
+                           {"action": "snooze proposal 7d"}],
+            tier="auto",
+            change_class="person_link",
+            detector="identity-reconcile",
+            render_line=(f"Linked {cluster['name']} to {matched_name} "
+                         f"({why})"),
+            person_id=matched_id,
+            extra={"title": cluster["name"],
+                   "cluster_seqs": list(cluster["seqs"]),
+                   "cluster_fingerprints": list(cluster["fingerprints"]),
+                   "alias_name": cluster["name"],
+                   "matched_name": matched_name},
+        )
+        if res.get("status") != "proposed":
+            return False
+        tombstone(cluster, resolution="same_as", person_id=matched_id,
+                  alias=cluster["name"],
+                  note=f"identity reconcile {batch_id} — auto-link "
+                       f"(UXR1 D3: {why})",
+                  change_class="person_link",
+                  extra_data={"link_fingerprint": fingerprint,
+                              "link_evidence": evidence,
+                              "matched_name": matched_name})
+        resolve_proposal(ws, res["proposal_id"], "applied",
+                         resolved_by=source_skill, source_skill=source_skill)
+        results["auto_linked"].append({"row_id": cluster["row_id"],
+                                       "name": cluster["name"],
+                                       "person_id": matched_id,
+                                       "why": why})
+        return True
+    except Exception as exc:  # loud per-item, contained per-batch
+        results["errors"].append({"row_id": cluster["row_id"],
+                                  "error": f"{type(exc).__name__}: {exc}"})
+        return False
+
+
+def _link_differentiator(ws, matched) -> str:
+    """UXR1 D4 — what makes the on-file record recognizable in one glance:
+    its org, else an email, else "last touched {date}", else the honest
+    "no details on file". Never empty — a decision row must show what
+    changes on a click."""
+    org = _record_org_name(ws, matched or {})
+    if org:
+        return org
+    for e in _record_emails(matched or {}):
+        e = (e or "").strip()
+        if e:
+            return e
+    rec = matched or {}
+    date = (rec.get("last_interaction") or rec.get("last_touched_at")
+            or rec.get("first_seen") or "")
+    if date:
+        from brain_proposals import _short_date
+
+        short = _short_date(str(date))
+        if short:
+            return f"last touched {short}"
+        return f"last touched {str(date)[:10]}"
+    return "no details on file"
+
+
+def person_link_ask_line(ws, name: str, matched, evidence: str) -> str:
+    """UXR1 D4 — the decision-grade ask for a person_link row that still
+    ASKS (it failed the D3 auto gate, or an undo returned the decision to
+    the human): where the mention came from (its evidence — on every row,
+    never rendered before D4) and which record it would link to (the
+    differentiator: org > email > last touched > "no details on file").
+    A multi-candidate name names the COUNT and never pre-fills —
+    consistent with SPEC_IDM1's daily-rail ruling."""
+    matched_name = (matched or {}).get("canonical_name") or "an existing record"
+    appeared = (evidence or "").strip() or "a captured mention"
+    if (matched or {}).get("id"):
+        diff = _link_differentiator(ws, matched)
+        return (f"'{name}' appeared as {appeared}. "
+                f"Same as {matched_name} ({diff})? — link it?")
+    # No single resolved record — count the same-name candidates so the
+    # collision is named, never ranked-and-picked (IDM1).
+    n = 0
+    try:
+        from people_writer import list_same_name_people
+        n = len(list_same_name_people(ws, name) or [])
+    except Exception:
+        n = 0
+    if n >= 2:
+        return (f"'{name}' appeared as {appeared}. "
+                f"{n} people named {name} on file — "
+                "same as one of them? — link it?")
+    return (f"'{name}' appeared as {appeared}. "
+            f"Same as {matched_name}? — link it?")
+
+
 def _propose_person_link(ws, cluster, matched, source_skill) -> bool:
-    """One D4a merge-propose row on the bp rail: 'already on file — link
-    it?'. Adjudicated via the generic bp verbs (apply-choices `cr-brain`
-    kind `person_link` handlers)."""
+    """One D4a merge-propose row on the bp rail. Adjudicated via the generic
+    bp verbs (apply-choices `cr-brain` kind `person_link` handlers).
+    Render line: person_link_ask_line (UXR1 D4 — decision-grade)."""
     from brain_proposals import propose
 
     matched_name = (matched or {}).get("canonical_name") or "an existing record"
     matched_id = (matched or {}).get("id")
+    evidence = (cluster["rows"][0].get("evidence") or
+                cluster["rows"][0].get("source_ref") or "")
+    render_line = person_link_ask_line(ws, cluster["name"], matched, evidence)
     try:
         res = propose(
             ws,
             kind="person_link",
             fingerprint=f"person_link:{cluster['key']}:{matched_id or 'unresolved'}",
-            evidence=(cluster["rows"][0].get("evidence") or
-                      cluster["rows"][0].get("source_ref") or ""),
+            evidence=evidence,
             action_tuples=[{"action": "confirm proposal"},
                            {"action": "dismiss proposal"},
                            {"action": "snooze proposal 7d"}],
             tier="confirm",
             detector="identity-reconcile",
-            render_line=(f"Looks like {cluster['name']} is already on file "
-                         f"as {matched_name} — link it?"),
+            render_line=render_line,
             person_id=matched_id,
             extra={"title": cluster["name"],
                    "cluster_seqs": list(cluster["seqs"]),
@@ -1004,6 +1264,7 @@ def _narrate(plan: dict) -> str:
         r = plan["results"]
         lines.append(
             f"  applied: {len(r['added'])} added, {len(r['linked'])} linked, "
+            f"{len(r.get('auto_linked') or [])} auto-linked (UXR1 D3), "
             f"{r['merge_rows_proposed']} merge rows proposed, "
             f"{len(r['annotations'])} annotations, {len(r['expired'])} "
             f"expired, {len(r['needs_confirm'])} held for a same-name "
@@ -1056,6 +1317,8 @@ __all__ = [
     "count_person_rows",
     "cluster_observed_email",
     "classify_cluster",
+    "auto_link_eligible",
+    "person_link_ask_line",
     "scan_existing_duplicates",
     "load_open_annotations",
     "count_open_annotations",

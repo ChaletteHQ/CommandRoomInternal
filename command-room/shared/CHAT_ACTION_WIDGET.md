@@ -298,7 +298,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `fix wording [text]` | Fix wording | `commitment_state.edit_commitment_wording` — corrects a mis-extracted title/summary; the projector renders the new text, history keeps the original (S4). |
 | `reassign to [name]` | Reassign | `commitment_state.reassign_commitment` — routes the item to its real owner instead of discarding it; unconfirmed reassignments stay pending_review and never enter chase (S4; W4b's Theirs → [name] confirm verb dispatches the same event). |
 | `split into [items]` | Split | `commitment_state.split_commitment` — N Stage-D-complete children (provenance → the original) + the original closed with "split into …" (S4; extraction pre-split stays the doctrine — this is the manual correction path). |
-| `make task` | Make task | `promote_task_to_commitment(..., new_kind="task")` — additive `commitment_reclassified` marker; drops off CRU/chase/aging, lives on the task surface. |
+| `make task` | Turn into a task | `promote_task_to_commitment(..., new_kind="task")` — additive `commitment_reclassified` marker; drops off CRU/chase/aging, lives on the task surface. |
 | `promote` | Make it a commitment | `promote_task_to_commitment(..., new_kind="promise")` — S5 one-tap promote when a counterparty appears. |
 | `never track this` | Never track (permanent) | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). Permanent — the label says so; every TIMED mute is reversible via the S4 ledger (`show muted` + Unmute). |
 | `skip` | Snooze (1 day) | 1-day mute (unchanged semantics; label now states the duration). |
@@ -316,7 +316,7 @@ in the headline `unconfirmed` bucket. Verb clusters per row class:
 |---|---|---|
 | `mine` | Mine | `commitment_state.confirm_commitment_owner` — you own it; the confirm flag clears and it joins you-owe. |
 | `theirs to [name]` | Theirs | `commitment_state.reassign_commitment(..., confirmed=True)` — routes to the named person; the name is REQUIRED (F-17) and IS the explicit confirmation. |
-| `make task` / `drop` | Make task / Drop | Same dispatch as triage (above) — the click adjudicates a pending_review row (`user_confirmed=True`). |
+| `make task` / `drop` | Turn into a task / Drop | Same dispatch as triage (above) — the click adjudicates a pending_review row (`user_confirmed=True`). |
 | `merge` | Merge | Duplicate rows only — `commitment_state.supersede_commitment(survivor=the flagged suspected_duplicate_of target, superseded=this row, user_confirmed=True)`. Both ids are embedded; no input. |
 | `keep both` | Keep both | Duplicate rows only — `commitment_state.clear_review_flags` ("confirmed distinct"); both stay open. |
 | `add person` | Add person | Unknown-person rows — `people_writer.create_person` via apply-choices Step 3a (dedup-first), then the proposal tombstone. |

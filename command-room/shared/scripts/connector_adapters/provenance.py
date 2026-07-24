@@ -188,27 +188,29 @@ def build_email_drafted_provenance(*, draft_id: Optional[str] = None,
                                    address: Optional[str] = None,
                                    account_id: Optional[str] = None,
                                    workspace_root=None) -> Dict[str, Any]:
-    """The `email_drafted` payload fragment — DUAL-WRITE, additive (EW2+T,
-    F-12: the Superhuman cutover of the click-time substrate writes).
+    """The `email_drafted` payload fragment (EW2+T, F-12; FB-plumbing item 5).
 
     Returns data fields for the draft-created event:
-      - `gmail_draft_id` — the LEGACY id channel, kept for reader back-compat
-        FOREVER (voice_corrections' snapshot store and drafted-but-not-sent
-        detection read it today). Written for every provider — the field
-        NAME is legacy, the VALUE is the declared backend's native draft id
-        (a Superhuman draft id lands here exactly as a Gmail one does).
+      - `native_draft_id` — the declared backend's native draft id, written
+        for EVERY provider (a Superhuman draft id lands here exactly as a Gmail
+        one does). This replaces the old, misleadingly Gmail-flavored
+        `gmail_draft_id` field NAME — the value was never Gmail-specific, so the
+        name lied on every non-Gmail backend. WRITERS EMIT THE NEW NAME;
+        READERS ACCEPT BOTH via `native_draft_id_from_data` (legacy events on
+        disk keep their `gmail_draft_id` and read forever — back-compat lives
+        read-side, never a history rewrite).
       - `provenance` — the structured `{connector, provider, native_id,
         account_id}` shape (R3), so new readers resolve identity + account
-        scope without the legacy name.
+        scope without the id-name channel at all.
 
-    Skills call THIS instead of hand-writing `gmail_draft_id` (grep-gate 1):
-    the provider-token spelling lives here, in the adapter layer, on the
-    allow-list. Mirrors `build_email_sent_provenance` so the drafted/sent
-    pair carries one identity model."""
+    Skills call THIS instead of hand-writing the field (grep-gate 1): the id
+    spelling lives here, in the adapter layer. Mirrors
+    `build_email_sent_provenance` so the drafted/sent pair carries one identity
+    model."""
     out: Dict[str, Any] = {}
     did = (draft_id or "").strip()
     if did:
-        out["gmail_draft_id"] = did
+        out["native_draft_id"] = did
     p = normalize_provenance(server_id=server_id, provider=provider,
                              native_id=did or None, address=address,
                              account_id=account_id,
@@ -216,6 +218,23 @@ def build_email_drafted_provenance(*, draft_id: Optional[str] = None,
     if p:
         out["provenance"] = p
     return out
+
+
+def native_draft_id_from_data(data: Optional[dict]) -> Optional[str]:
+    """Read the native draft id from an `email_drafted` event's `data`, accepting
+    BOTH the new `native_draft_id` and the legacy `gmail_draft_id` spelling
+    (FB-plumbing item 5 — reader back-compat forever; append-only history never
+    gets rewritten). New name wins when both are somehow present. Returns None
+    when neither is set."""
+    if not isinstance(data, dict):
+        return None
+    v = data.get("native_draft_id")
+    if isinstance(v, str) and v.strip():
+        return v
+    legacy = data.get("gmail_draft_id")
+    if isinstance(legacy, str) and legacy.strip():
+        return legacy
+    return None
 
 
 def resolve_account_id(*, event: Optional[dict] = None, address: Optional[str] = None,
@@ -251,6 +270,7 @@ __all__ = [
     "build_email_drafted_provenance",
     "build_email_sent_provenance",
     "canonical_dedup_key",
+    "native_draft_id_from_data",
     "normalize_provenance",
     "resolve_account_id",
 ]

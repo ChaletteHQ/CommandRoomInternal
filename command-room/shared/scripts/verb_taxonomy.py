@@ -161,11 +161,15 @@ VERB_TAXONOMY = (
                "phrases: 'break #N into: A / B / C', 'add sub-items to #N: "
                "…', 'steps for #N: …'. User-initiated ONLY — extraction/"
                "sweeps never mint hierarchies."),
-    _row("make task", "Make task", "commitment_reclassified",
+    _row("make task", "Turn into a task", "commitment_reclassified",
          "Reclassify promise → task: stays open, stops being chased, ages on "
          "the triage surface only.",
          ("commitment-triage", "commitments"), family="commitment",
-         notes="Added to the daily chat's confirm section (v4.6.1 W4b)."),
+         notes="Added to the daily chat's confirm section (v4.6.1 W4b). "
+               "UXR1 D7b (M ruling 2026-07-21, UX review finding 8): the old "
+               "label 'Make task' read as CREATE-a-second-item; the verb "
+               "CONVERTS the existing row. Same wire id, same handler — "
+               "display only; 'Make task' joined LEGACY_DISPLAY_LABELS."),
     _row("promote", "Make it a commitment", "commitment_reclassified",
          "Reclassify task → promise when a counterparty appears; enters chase.",
          ("commitment-triage", "commitments"), family="commitment",
@@ -292,20 +296,33 @@ VERB_TAXONOMY = (
          notes="BAL1: on the Balance reconnect card this is the 'not this "
                "week' verb — the tie re-ranks next Sunday; the 7d TTL "
                "matches the surface's own per-tie dedupe window."),
-    _row("snooze 14d", "Snooze (14 days)", "chat_dismissal",
+    _row("snooze 14d", "Snooze (14 days) — hide until then", "chat_dismissal",
          "Check back in two weeks.",
          ("dont-forget", "stalled-projects", "cr-pipeline", "cr-brain",
           "cr-objectives"),
          mute_ttl_days=14, family="mute",
          notes="On the intro-followup check this writes intro_followup_check "
-               "(a scheduled re-emit, not a dismissal) — see apply-choices."),
+               "(a scheduled re-emit, not a dismissal) — see apply-choices. "
+               "UXR1 D7a (M ruling 2026-07-21, UX review finding 8): label "
+               "differentiated from `hold` by INTENT — snooze is time-based "
+               "disappearance ('hide until then'); hold is parked-while-"
+               "deciding. Wire id + mechanism unchanged; the label still "
+               "states its duration (the F-59 mute contract)."),
     _row("snooze 30d", "Snooze (30 days)", "decision_revisit_scheduled",
          "Push the decision-revisit window out 30 days.",
          ("decision-revisit",), mute_ttl_days=30, family="mute"),
-    _row("hold", "Hold (14 days)", "chat_dismissal",
+    _row("hold", "Hold — parked till you answer (14 days)", "chat_dismissal",
          "Park this until you answer; it stops re-rendering for 14 days.",
          ("staff-meeting", "cr-brain"), mute_ttl_days=14, family="mute",
-         notes="FB-19 (M, 2026-07-16). Distinct from `snooze 14d` by INTENT, "
+         notes="UXR1 D7a (M ruling 2026-07-21, UX review finding 8): the old "
+               "'Hold (14 days)' rendered indistinguishably from 'Snooze "
+               "(14 days)' — same duration, no intent. The label now carries "
+               "the hold INTENT (parked while you decide; cleared early the "
+               "moment the item is answered) and still states its duration "
+               "(the F-59 mute contract — the 14d re-render mute is real). "
+               "Wire id + mechanism unchanged; 'Hold (14 days)' joined "
+               "LEGACY_DISPLAY_LABELS. "
+               "FB-19 (M, 2026-07-16). Distinct from `snooze 14d` by INTENT, "
                "identical in mechanism (a 14d chat_dismissal via "
                "mute_ledger.hold_item, reason='held'): snooze is 'not now', "
                "hold is 'I'm deciding — stop asking until I answer'. The live "
@@ -661,6 +678,29 @@ VERB_TAXONOMY = (
          "for availability when blank).",
          ("upcoming-meetings",), input="optional", family="meeting"),
 
+    # --- WG1-A grammar verbs (fleet widget grammar + row quarantine) ---------
+    # SPEC_WG1-A (M ruling 2026-07-20, big-test Findings Ledger row 13/13b/10b).
+    _row("nudge", "Nudge", None,
+         "Chase a delegated item — composes the nudge email on click (draft "
+         "posture; nothing sends until you do).",
+         ("commitments",), family="work",
+         notes="WG1-A D-A4. The delegated row's ruled PRIMARY verb (was a "
+               "compose-on-demand draft with no standing verb). Compose-on-"
+               "CLICK, not compose-at-render: apply-choices routes it to the "
+               "chase-draft / email-writer chain (draft posture) so scheduled "
+               "fires stay connector-free (same discipline as the moves "
+               "adapter). No substrate event — the draft's own email_drafted "
+               "append is written by the email-writer chain when it runs."),
+    _row("show why", "Show why", None,
+         "Explain why this row was withheld — names the source so you can fix "
+         "the underlying data. Read-only.",
+         ("*",), family="review",
+         notes="WG1-A D-A6. The row-quarantine placeholder's sole action. A "
+               "defective row (failed the per-row leak scan) degrades to an "
+               "honest placeholder carrying this verb instead of blocking the "
+               "whole page; the click dispatches a chat explanation naming the "
+               "seq/source of the defect. Read-only, no substrate event."),
+
     # --- Bulk row ---------------------------------------------------------------
     _row("send all", "Send all", None,
          "Sequential sends across all non-noise items.", ("*",), family="bulk"),
@@ -705,6 +745,14 @@ LEGACY_DISPLAY_LABELS = frozenset({
                        # review finding 1): no new render may offer it. The
                        # wire id stays registered above so persisted old
                        # widgets still dispatch with their original meaning.
+    "Make task",       # UXR1 D7b 2026-07-21 — read as create-new; the verb
+                       # CONVERTS the row → "Turn into a task"
+    "Hold (14 days)",  # UXR1 D7a 2026-07-21 — indistinguishable from Snooze
+                       # (14 days) → "Hold — parked till you answer (14 days)"
+    "Snooze (14 days)",  # UXR1 D7a 2026-07-21 — bare form carries no intent
+                         # → "Snooze (14 days) — hide until then". Exact-label
+                         # ban only (the new label CONTAINS this string as a
+                         # prefix by design — the scan matches whole labels).
 })
 
 # ---------------------------------------------------------------------------

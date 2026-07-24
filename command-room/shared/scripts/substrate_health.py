@@ -38,13 +38,158 @@ _CONFIG_JSONS = ("workspace_config.json",)  # under _hq/
 
 
 def _events_path(ws: Path) -> Path:
-    return ws / "_hq" / "data" / "events.jsonl"
+    # SPEC SYNC1 B1 — route through the (dormant) resolver; byte-identical to
+    # `ws / "_hq" / "data" / "events.jsonl"` with no override.
+    try:
+        from data_root import resolve as _resolve_data_root
+        return _resolve_data_root(ws) / "events.jsonl"
+    except Exception:
+        return ws / "_hq" / "data" / "events.jsonl"
 
 
 def check_seq_regression(workspace_root) -> dict | None:
-    """FS-04 — the regression marker, if a clobber was caught. None = clean."""
+    """FS-04 — the regression marker, if a clobber was caught. None = clean.
+
+    SPEC SYNC1 A2: check_substrate_regression now truth-checks the marker before
+    returning it (a marker whose condition has resolved self-archives and
+    returns None here), so a stale marker can't keep surfacing a false alarm."""
     from atomic_write import check_substrate_regression
     return check_substrate_regression(_events_path(Path(workspace_root)))
+
+
+def check_stale_view(workspace_root) -> dict | None:
+    """SPEC SYNC1 A1 — read-side staleness: is the events.jsonl view we can see
+    behind its own recorded high-water? Returns the freshness dict when
+    regressed, else None. Single-machine / fresh workspaces (no seqhw sidecar)
+    return None — nothing to be stale against (back-compat, D-5)."""
+    from atomic_write import events_freshness
+    fr = events_freshness(_events_path(Path(workspace_root)))
+    return fr if fr.get("regressed") else None
+
+
+def preflight_freshness(
+    workspace_root, retries: int = 3, backoff_s: float = 0.05
+) -> dict:
+    """SPEC SYNC1 A4 — mount-freshness preflight for scheduled fires. Run as
+    step 0 of the maintenance dispatch: any write-chained fire refuses up front
+    on a stale view instead of crashing into FS-04 five times and hand-writing
+    an alert.
+
+    Checks events_freshness regression + entities/aliases parse. Both stale
+    mounts and mid-sync parse glitches are frequently transient (sighting #2's
+    file was clean on disk), so a failing check is RETRIED ×`retries` with a
+    short backoff. Still stale after the retries → write a `.mount_stale.json`
+    sidecar (a sidecar, NOT an events append — any append through a stale view
+    is exactly the clobber vector), render the alert via alarm_artifacts, sweep,
+    and return not-ok so the caller EXITS BEFORE ANY JOB RUNS. Jobs then write no
+    receipts → all stay due → auto re-fire next slot (the row-17 machinery,
+    now without the five FS-04 crashes and the quarantine litter).
+
+    Returns {ok, retries_used, detail}. A healthy workspace returns ok=True with
+    retries_used=0 and never writes anything."""
+    import time as _time
+    from atomic_write import events_freshness
+
+    ep = _events_path(Path(workspace_root))
+
+    def _probe():
+        fr = events_freshness(ep)
+        parse_bad = check_json_parse(workspace_root)
+        return fr, parse_bad
+
+    fr, parse_bad = _probe()
+    retries_used = 0
+    while (fr.get("regressed") or parse_bad) and retries_used < retries:
+        if backoff_s > 0:
+            _time.sleep(backoff_s)
+        retries_used += 1
+        fr, parse_bad = _probe()
+
+    ok = (not fr.get("regressed")) and not parse_bad
+    detail = {
+        "regressed": bool(fr.get("regressed")),
+        "file_max_seq": fr.get("file_max_seq"),
+        "seqhw_max": fr.get("seqhw_max"),
+        "parse_bad": [b["file"] for b in parse_bad],
+    }
+    if not ok:
+        _write_mount_stale_sidecar(ep, fr, retries_used)
+        # Render the alert FROM a marker-shaped dict (A2: never hand-authored)
+        # and immediately sweep — best-effort, must never break the preflight.
+        try:
+            import datetime as _dt
+            from alarm_artifacts import sweep_alerts, write_alert
+            marker = {
+                "detected": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "file_max_seq": fr.get("file_max_seq"),
+                "sidecar_max_seq": fr.get("seqhw_max"),
+                "n_quarantined": 0,
+                "quarantine_path": None,
+                "holder": "preflight_freshness",
+            }
+            write_alert(workspace_root, marker)
+            sweep_alerts(workspace_root)
+        except Exception:
+            pass
+    return {"ok": ok, "retries_used": retries_used, "detail": detail}
+
+
+def _write_mount_stale_sidecar(events_path, fr: dict, retries: int) -> None:
+    """Best-effort `.mount_stale.json` next to events.jsonl (NOT an events
+    append). reconcile_forward folds this into its receipt + clears it on the
+    next healthy first-append."""
+    try:
+        import datetime as _dt
+        from atomic_write import atomic_write_json
+        from pathlib import Path as _P
+        p = _P(events_path)
+        gap = None
+        if isinstance(fr.get("seqhw_max"), int) and isinstance(fr.get("file_max_seq"), int):
+            gap = fr["seqhw_max"] - fr["file_max_seq"]
+        atomic_write_json(p.with_name(p.name + ".mount_stale.json"), {
+            "detected": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "file_max_seq": fr.get("file_max_seq"),
+            "seqhw_max": fr.get("seqhw_max"),
+            "seq_gap": gap,
+            "retries": retries,
+        })
+    except Exception:
+        pass
+
+
+# SPEC SYNC1 D-4 reader half (check_entities_rev) REMOVED — M ruling 2026-07-21
+# (SYNC1 review F4): it was wired to no surface and could only warn on a strict
+# subset of what check_json_parse already surfaces; rev-based staleness detection
+# has a structural ceiling (the sidecar syncs on the same mount as the file).
+# The WRITE half stays: atomic_write stamps + bumps the `.rev` sidecar on every
+# locked write — forward value if a real reader design ever lands.
+
+
+def check_git_in_drive(workspace_root, max_hits: int = 25) -> list[str]:
+    """SPEC SYNC1 B4 (advisory) — any `.git` directory under the workspace root
+    is a git repo living inside a Drive-synced tree (sync churn + corruption
+    risk). Warn + name the path; NEVER blocks. Read-only. Capped so a pathological
+    tree can't hang system-health."""
+    ws = Path(workspace_root)
+    out: list[str] = []
+    try:
+        for gd in ws.rglob(".git"):
+            if not gd.is_dir():
+                continue
+            try:
+                rel = gd.parent.relative_to(ws)
+            except ValueError:
+                rel = gd.parent
+            out.append(
+                f"⚠ A git repository is living inside your synced workspace at "
+                f"`{rel}` — Drive sync can corrupt a live `.git`. Relocate it to "
+                f"~/repos/ (advisory; nothing is blocked)."
+            )
+            if len(out) >= max_hits:
+                break
+    except OSError:
+        pass
+    return out
 
 
 def check_json_parse(workspace_root) -> list[dict]:
@@ -166,6 +311,15 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
     """The LOUD, plain-English alarm lines for the health check / brief. Empty
     list = substrate is healthy (surface nothing). Ordered most-severe first."""
     lines: list[str] = []
+    # SPEC SYNC1 A2 — sweep resolved alerts FIRST, so an alarm that has already
+    # resolved can't survive even a single healthy fire (row 17: the alert
+    # outlived its truth). Best-effort — a sweep failure must never blank the
+    # brief's health surface.
+    try:
+        from alarm_artifacts import sweep_alerts
+        sweep_alerts(workspace_root)
+    except Exception:
+        pass
     reg = check_seq_regression(workspace_root)
     if reg:
         n = reg.get("n_quarantined", "some")
@@ -175,6 +329,24 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
             f"log from Drive version history before relying on counts. (Ask me "
             f"to walk you through it.)"
         )
+    # SPEC SYNC1 A1 — read-side staleness. Distinct from the FS-04 marker above
+    # (that's a refused WRITE); this is a stale READ view with no write attempted
+    # (a mid-sync flush or a stale sandbox mount). Only when no marker already
+    # fired (one loud line, not two for the same condition).
+    if not reg:
+        stale = check_stale_view(workspace_root)
+        if stale:
+            gap = None
+            if isinstance(stale.get("seqhw_max"), int) and isinstance(stale.get("file_max_seq"), int):
+                gap = stale["seqhw_max"] - stale["file_max_seq"]
+            n = gap if gap is not None else "several"
+            lines.append(
+                f"⚠ The activity log I can see is {n} entr"
+                f"{'y' if n == 1 else 'ies'} behind its own high-water mark — "
+                f"this view is stale (mid-sync, or a stale sandbox mount). Counts "
+                f"and recent activity are unreliable; nothing is written while "
+                f"this is true."
+            )
     bad = check_json_parse(workspace_root)
     for b in bad:
         lines.append(
@@ -223,6 +395,9 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
 
 __all__ = [
     "check_seq_regression",
+    "check_stale_view",
+    "preflight_freshness",
+    "check_git_in_drive",
     "check_json_parse",
     "check_read_alarms",
     "check_duplicate_seqs",

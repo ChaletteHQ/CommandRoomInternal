@@ -26,11 +26,13 @@ from typing import Iterator, Optional
 try:
     from event_time import event_time
     from read_alarm import record_read_alarm
+    from data_root import resolve as _resolve_data_root
 except ImportError:  # pragma: no cover
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     from event_time import event_time
     from read_alarm import record_read_alarm
+    from data_root import resolve as _resolve_data_root
 
 _SHARD_RE = re.compile(r"^events-(\d{4})\.jsonl$")
 
@@ -43,7 +45,9 @@ def _data_dir(root: str | Path) -> Path:
         return root.parent
     if (root / "events.jsonl").exists() or root.name == "data":
         return root
-    return root / "_hq" / "data"
+    # SPEC SYNC1 B1 — route the workspace-root case through the (dormant)
+    # resolver. Byte-identical to `root / "_hq" / "data"` with no override.
+    return _resolve_data_root(root)
 
 
 def active_path(root: str | Path) -> Path:
@@ -128,10 +132,57 @@ def _iter_file(p: Path) -> Iterator[dict]:
             yield ev
 
 
+def _record_stale_read(root: str | Path, reader: str) -> None:
+    """SPEC SYNC1 A1 — read-side staleness evidence. Once per load, compare the
+    ACTIVE file's visible max seq against the recorded high-water; on a
+    regression drop a `.stalereads.json` sidecar (the read_alarm pattern) so a
+    between-fires stale-read window leaves evidence even though the reader still
+    proceeds (D-2 warn tier: a degraded view beats no view for read-only
+    surfaces). Best-effort — NEVER raises, never blocks a read. Freshness applies
+    to the active file only (shards are frozen years; seqhw tracks the active
+    file)."""
+    try:
+        from atomic_write import events_freshness
+        ap = active_path(root)
+        fr = events_freshness(ap)
+        if not fr.get("regressed"):
+            return
+        import datetime as _dt
+        from atomic_write import atomic_write_json
+        sidecar = ap.with_name(ap.name + ".stalereads.json")
+        prior_count = 0
+        first_seen = None
+        try:
+            prior = json.loads(sidecar.read_text(encoding="utf-8"))
+            if isinstance(prior, dict):
+                if isinstance(prior.get("count"), int):
+                    prior_count = prior["count"]
+                first_seen = prior.get("first_seen")
+        except (OSError, json.JSONDecodeError):
+            pass
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        gap = None
+        if isinstance(fr.get("seqhw_max"), int) and isinstance(fr.get("file_max_seq"), int):
+            gap = fr["seqhw_max"] - fr["file_max_seq"]
+        atomic_write_json(sidecar, {
+            "file": ap.name,
+            "first_seen": first_seen or now,
+            "last_seen": now,
+            "count": prior_count + 1,
+            "file_max_seq": fr.get("file_max_seq"),
+            "seqhw_max": fr.get("seqhw_max"),
+            "seq_gap": gap,
+            "last_reader": str(reader)[:80],
+        })
+    except Exception:
+        pass
+
+
 def iter_events(root: str | Path, since_ts=None) -> Iterator[dict]:
     """Generator over every event across all shards + the active file, in chronological
     file order. `since_ts` (ISO string or 'YYYY...') skips whole shards whose year is
     below the floor — a cheap, filename-only prune that never opens a too-old shard."""
+    _record_stale_read(root, reader="events_io.iter_events")
     for p in shard_paths(root, since_ts=since_ts):
         yield from _iter_file(p)
 
@@ -181,6 +232,7 @@ def load_events_org_scoped(
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
         from cru_match import load_events_defensively
 
+    _record_stale_read(root, reader="events_io.load_events_org_scoped")
     events, skipped = load_events_defensively(active_path(root), since_ts=since_ts)
 
     # Layer 2 — account mask. Defensive: a broken mask never blanks a surface

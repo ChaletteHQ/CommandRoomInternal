@@ -162,9 +162,14 @@ def detect_stalled_projects(workspace_root: str | Path) -> list[StallFlag]:
     # THE staleness baseline: derived from events at read time (C3 rule).
     # The stored thread.last_activity field is a fossil — zero-event
     # fallback only, inside _evaluate_thread.
+    # honor_reclassifications (RECL1): user-approved corrections move
+    # activity with the event — a thread borrowing misclassified activity
+    # flags honestly, a thread whose activity was moved in stops
+    # false-flagging. Pulse Phase 4 shares this call shape (F-54).
     activity_types = set(cfg["activity_event_types"])
     last_activity_by_thread = derive_thread_activity(
-        workspace_root, activity_types=activity_types
+        workspace_root, activity_types=activity_types,
+        honor_reclassifications=True,
     )
 
     now = datetime.now(timezone.utc)

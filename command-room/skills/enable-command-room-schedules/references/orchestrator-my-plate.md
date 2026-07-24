@@ -46,27 +46,20 @@ print(json.dumps(check_lateness('<workspace_root>', 'my-plate', fired_via='<sche
 
 Carry the returned `receipt_fired_via` into the Phase 8 receipt — never guess it.
 
-# Phase 3 — Build the two groups (read-side partition; code, never prose)
+# Phase 3 — Build the two groups (the one-command driver; code, never prose)
 
-Load the projected open set ONCE via `cru_match.load_open_commitments` (deferral/wording/reassignment/kind/sub-item folds already applied), then partition:
+**One-command driver (FB-plumbing item 6) — the deterministic core in ONE call.** The partition, the header counts, the PROMISED counterparty-unresolved fixup rows, and the whole PERSONAL group are all deterministic, so `surface_drivers.build_my_plate_view` (and the `run_surface("my-plate", …)` CLI in Phase 9) builds them, renders + persists the page, and — with `--fired-via` — writes the `my-plate` `pack_run` receipt INSIDE the same call. This is the exact `build_waiting_on_view` shape from `orchestrator-commitments.md` (FB-15); the orchestrator no longer hand-writes an inline partition/render script. You supply ONLY the connector-dependent part: the pre-staged **status drafts** for counterparty-resolved external-recipient Promised rows (email-shaped rows, composed via the email-writer chain — Phase 3 Group A below), passed as `status_rows` / `--status-json`, exactly as waiting-on passes `chase_rows`.
+
+The driver returns / the CLI persists a data view with `source_skill: "commitments"`, the four count tiles, a `↗ PROMISED — someone's waiting` section (your `status_rows` first, then the counterparty-unresolved fixup rows), and a capped `PERSONAL — your own list` section with the `+N more — say 'show my plate'` footer. To read it directly (for the reply-handling paths):
 
 ```python
 # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
 import sys; sys.path.insert(0, "shared/scripts")
-from cru_match import load_open_commitments
-from commitment_state import count_commitments
-from commitment_activity import derive_commitment_movement
-from surface_split import partition_surfaces, counterparty_unresolved
-
-opens = load_open_commitments(events_path)
-movement = derive_commitment_movement(events_path)   # ONE derivation per fire (F-54)
-counts = count_commitments(opens, user_person_id=USER_ID, now_iso=NOW, movement=movement)
-part = partition_surfaces(opens, USER_ID)
-promised = part["promised"]      # Group A — renders FIRST
-personal = part["personal"]      # Group B — capped
+from surface_drivers import build_my_plate_view
+view = build_my_plate_view(WORKSPACE, now_iso=NOW, status_rows=STATUS_ROWS, personal_cap=PERSONAL_CAP)
 ```
 
-Rules the partition already encodes (never re-derive): TOP-LEVEL items only (SUB1 — a live sub-item never gets its own row; the parent carries the progress chip exactly as on every other surface), effective kind post-reclassify-fold (§2.2 Option B), pending_review and unowned rows excluded (they are Waiting On's confirm tail, NOT this chat's).
+Rules the driver's partition already encodes (never re-derive): TOP-LEVEL items only (SUB1 — a live sub-item never gets its own row; the parent carries the progress chip exactly as on every other surface), effective kind post-reclassify-fold (§2.2 Option B), pending_review and unowned rows excluded (they are Waiting On's confirm tail, NOT this chat's). Counterparty-unresolved Promised rows are NEVER auto-demoted (Bug #103).
 
 Base filters carried over from the daily-chat contract: multi-shape field reads via `_commitment_field`; confidence via `_commitment_confidence >= CONFIDENCE_SURFACE_MIN`; live `chat_dismissal` mutes via `mute_ledger.active_dismissal_target_ids`; dormant/archived-project exclusion; surface-preference suppression (`is_suppressed(prefs, "commitments", ...)`). Filters shape SURFACING only — header counts are untouched.
 
@@ -106,39 +99,20 @@ log_receipt(
 
 Telemetry via `telemetry.build_pack_run_telemetry()` in `extra_data`. Silent — never narrated.
 
-# Phase 9 — Post the chat turn (renderer-driven, ENFORCED)
+# Phase 9 — Post the chat turn (the one-command driver, ENFORCED)
 
-Renderer pre-flight, then build the data view and post via the transport — the same hard pipeline as every widget orchestrator (ZERO-MANIPULATION CONTRACT above; empty-state via `widget_mode: "all_clear_summary"`, never hand-built):
+The driver builds the data view + renders + persists + (with `--fired-via`) writes the receipt in ONE call — the same hard pipeline as waiting-on / staff-meeting (ZERO-MANIPULATION CONTRACT above; empty-state via the canonical `all_clear_summary`, never hand-built). Compose the connector-dependent status drafts first (Phase 3 Group A — email-shaped rows via the email-writer chain), write them to a JSON file, and pass them as `--status-json`:
 
-```python
-from widget_transport import render_and_persist
-
-sections = []
-if promised_rows:
-    sections.append({"title": "↗ PROMISED — someone's waiting", "count": ..., "items": ...})
-if personal_rows:
-    sections.append({"title": "PERSONAL — your own list", "count": ...,
-                     "items": ...,  # capped at personal_cap
-                     "footer_note": f"+{n_hidden} more — say 'show my plate' for everything" if n_hidden else None})
-
-data_view = {
-    "widget_mode": "all_batch_widget",
-    "source_skill": "commitments",  # dispatch family — apply-choices routes these tuples through the commitments handlers; the taskId is a scheduler concern
-    # v4.5.2 R4 + v4.6.0 MC2: numbers verbatim from counts["headline"] — the
-    # SAME five buckets every surface shows (F-56 parity), re-labeled for this
-    # chat's frame. "waiting on others" rows live on the Waiting On chat.
-    "header": f"My Plate — {n_you_owe} on your plate ({n_promised} promised · {n_personal} personal) · {n_owed_to_you} waiting on others (see Waiting On) · {n_total} total open",
-    "sections": sections,
-    "quick_read": quick_read,
-}
-
-transport = render_and_persist(data_view=data_view, wrapper="fragment",
-                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
-                               name_hint="my-plate")
-# Pass transport["html"] to mcp__visualize__show_widget as widget_code, verbatim.
+```bash
+python3 shared/scripts/surface_drivers.py my-plate \
+    --workspace "$WORKSPACE" [--page N] [--status-json <status-rows.json>] \
+    [--personal-cap <N — default 7; a `show my plate` reply passes a large value>] \
+    --fired-via "<the Phase 2.9 receipt_fired_via>"
 ```
 
-`n_promised = len(promised)`, `n_personal = len(personal)` — and assert `n_promised + n_personal == counts["headline"]["you_owe"]` before rendering (the CTS1 parity check; a mismatch is a partition defect — fail the fire loudly rather than render disagreeing numbers).
+**`--fired-via` is MANDATORY on the page-1 call — it IS the receipt (FB-7).** Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as `widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON. Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3 guard window never double-receipts.
+
+The driver stamps the header from `count_commitments` and enforces the CTS1 parity by construction (the PROMISED + PERSONAL groups come from the SAME partition the count tiles read — no inline `n_promised + n_personal == you_owe` assert to hand-write, no way for the numbers to disagree). Because Phase 3's inline builder is gone, an early-stopping fire can no longer render a group while skipping the receipt (the FB-15 lesson, applied to Surface 2).
 
 **Widget grammar (RULED §4.2 — existing `CANONICAL_ACTIONS` verbs only, no new interaction patterns):** the one or two most-common actions render as visible buttons — **Done** (`resolved`) and **Later…** (`push to [date]`) on every row; email-shaped Promised rows show **Send** / **Draft** / **Snooze (3 days)** instead (t3 FB-4, FB-17 — `snooze 3d` is a primary on email-shaped rows) with Done in the dropdown. Everything else — `prep deep work`, `promote`, `make task`, `drop`, `reassign to [name]` (and `snooze 3d` on non-email rows) — rides the per-row `— more —` dropdown. Display labels from `verb_taxonomy` only. Rows carrying `push to [date]` suppress the separate snooze option (FB-3 merge).
 

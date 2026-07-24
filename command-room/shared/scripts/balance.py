@@ -355,6 +355,18 @@ def compute_balance(
             "_default_cadence": default_cadence,
         })
 
+    # BAL1 FB-plumbing item 3 — zero personal ties is a REFUSAL, never an
+    # all-clear. A workspace with a personal calendar connected but nobody
+    # tagged `tie: "personal"` has given Balance nothing to protect — rendering
+    # "white space looks healthy" there is a false all-clear (the same honesty
+    # line as the unconfigured refusal, one step later in setup). Emit nothing
+    # and tell the user what's missing: who counts. Distinct status so the
+    # SKILL.md renders the tie-specific refusal, not the calendar one.
+    if not ties:
+        return {"status": "no_personal_ties",
+                "reason": "no personal ties tagged yet — tell me who counts",
+                "ties_considered": 0}
+
     ranked = white_space_debt(ties, personal_reminders, slots, now_iso)
     excluded = _excluded_ties(events, now_dt)
     ranked = [c for c in ranked if c["person_id"] not in excluded]

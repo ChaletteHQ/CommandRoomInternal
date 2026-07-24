@@ -1,0 +1,20 @@
+{
+ "version": "5.2.0",
+ "headline": "Every card leads with its most likely action as a real button, your corrections now count in every view, and obvious name-matches link themselves — with undo.",
+ "items": [
+  {
+   "id": "v520_announce_corrections_count_everywhere",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "When you correct where something belongs — a meeting filed to the wrong project, a misattributed note — every view now honors it: stalled projects, the pipeline, your tracker, the workspace map, and name lookups all move the activity together. One thing to expect in the first week: a few honest \"is this still active?\" questions may appear. That's your past corrections finally being counted everywhere — each one is a single confirm, capped at a few per day.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v520_announce_buttons_and_autolink",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your action cards got clearer: every row now leads with its most likely action as a visible button (Nudge on delegated items, Done on commitments, Close it on cleanup questions), small option sets show all their buttons instead of hiding in a dropdown, and a single-item card acts the moment you click. Identity questions now show the actual quote they came from plus what's on file, so you can decide in one glance — and when a mentioned name exactly matches one contact with nothing conflicting, it links itself and tells you, with `undo` always one word away.",
+   "action": "announce_only"
+  }
+ ]
+}

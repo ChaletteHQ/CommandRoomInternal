@@ -313,7 +313,7 @@ This means the CEO has skipped or missed three-plus weekly passes. Behavior:
 - No `classification_review` event is ever emitted speculatively. If the user closes the session mid-review, nothing is persisted — the same candidates surface next run (they'll still be provisional).
 
 **I. Alternative-project ties:**
-- If two alternative projects have equal signal strength, render both as "A" and "B" in order of (a) most-recent OBSERVED activity on the project (derive via `thread_activity.derive_thread_activity` — never the deprecated `last_activity` record stamp, which no writer maintains; `first_seen` is the zero-event fallback), (b) alphabetical `display_name`. Never render three alternatives — if more exist, collapse the 3rd+ into a footnote "(+N more; say `expand row <#>` to see)."
+- If two alternative projects have equal signal strength, render both as "A" and "B" in order of (a) most-recent OBSERVED activity on the project (derive via `thread_activity.derive_thread_activity(ws, honor_reclassifications=True)` — RECL1: the skill that PRODUCES reclassifications reads through them; never the deprecated `last_activity` record stamp, which no writer maintains; `first_seen` is the zero-event fallback), (b) alphabetical `display_name`. Never render three alternatives — if more exist, collapse the 3rd+ into a footnote "(+N more; say `expand row <#>` to see)."
 
 **J. No alternatives exist (low-confidence event with no credible alt):**
 - Render the item's alternatives as "Could also be: a new project / not tied to any project". An `edit [change]` input of "new project" spawns one via workspace-manager (this skill hands off, doesn't create projects itself); "no project" / "not tied to any project" files it workspace-level.

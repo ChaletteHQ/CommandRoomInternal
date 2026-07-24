@@ -128,11 +128,15 @@ def test_coverage_of_load_bearing_types():
                 # SPEC OUT3B (2026-07-19) — the on-demand chart lane, written
                 # only by the chart-on-demand skill (catalog_id / kind / refused).
                 "chart_render",
-                # SPEC OBJ1 (DRAFT) — the objective lane, written only by objective_state.py.
+                # SPEC OBJ1 — the objective lane, written only by objective_state.py.
                 "objective_created", "objective_updated", "objective_review",
                 "objective_report", "objective_completed",
-                "objective_archived"}
-    check("exactly the 48 load-bearing types are covered", types == expected)
+                "objective_archived",
+                # SPEC SYNC1 (2026-07-20) — the substrate-sync lane:
+                # substrate_reconciled written only by reconcile_forward,
+                # substrate_alarm_cleared written only by alarm_artifacts.sweep_alerts.
+                "substrate_reconciled", "substrate_alarm_cleared"}
+    check("exactly the 50 load-bearing types are covered", types == expected)
 
 
 def test_warn_only_hook_never_blocks():

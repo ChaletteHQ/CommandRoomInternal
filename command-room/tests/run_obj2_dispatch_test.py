@@ -172,9 +172,13 @@ try:
 except CanonicalActionError as exc:
     html = None
     check(False, f"objective_link verbs must be canonical: {exc}")
+# WG1-A D-A3 (train merge 2026-07-21): a ≤4-verb row renders every verb as a
+# button (data-action=...), no <select> tail — the canonical path emits
+# buttons for this 3-verb row where it previously emitted option values.
 check(html is not None and all(
-    f'value="{v}"' in html for v in ("confirm proposal", "dismiss proposal",
-                                     "snooze proposal 7d")),
+    f'data-action="{v}"' in html for v in ("confirm proposal",
+                                           "dismiss proposal",
+                                           "snooze proposal 7d")),
       "the confirm/dismiss/snooze verbs render through the canonical path")
 
 # ===========================================================================

@@ -74,8 +74,9 @@ except ImportError:  # pragma: no cover
     from read_alarm import SubstrateReadError, record_read_alarm, remedy_line
 
 
-EntityType = Literal["person", "org", "project"]
-MatchSignal = Literal["exact_alias", "exact_canonical", "fuzzy", "phonetic"]
+EntityType = Literal["person", "org", "project", "open_proposal"]
+MatchSignal = Literal["exact_alias", "exact_canonical", "fuzzy", "phonetic",
+                      "open_proposal"]
 
 
 @dataclass
@@ -366,6 +367,7 @@ def resolve_all(
     *,
     min_confidence: float = 0.75,
     max_candidates: int = 10,
+    include_open_proposals: bool = False,
 ) -> list[ResolveResult]:
     """Return every match above `min_confidence`, sorted by confidence
     descending. Used for disambiguation flows.
@@ -373,6 +375,17 @@ def resolve_all(
     Match order: exact_alias > exact_canonical > fuzzy > phonetic. Within a
     tier, results are sorted by name length (shorter matches first — they're
     typically more specific).
+
+    WG1-B D-B5 — `include_open_proposals=True` adds an OPT-IN final tier: on a
+    total entities.json miss (no candidate at any tier), the query is
+    name-matched against the open `person_proposal` queue
+    (`confirm_flow.load_open_person_proposals`). A hit returns the distinct
+    `entity_type="open_proposal"` result carrying the proposal row verbatim
+    (name / evidence / captured_ts / seq / fingerprint) so a mention of a
+    person the workspace has a PENDING proposal for surfaces that proposal
+    instead of a cold "who is X" — a mention is corroboration, never
+    auto-adjudication (the confirm flow keeps the click). Default False keeps
+    every existing caller byte-identical — the proposal read never even runs.
     """
     workspace_root = Path(workspace_root)
     if not query or not query.strip():
@@ -503,7 +516,46 @@ def resolve_all(
     # Sort by confidence descending, then by length of matched string ascending
     # (shorter typically more specific).
     results.sort(key=lambda r: (-r.confidence, len(r.matched_string)))
-    return results[:max_candidates]
+    out = results[:max_candidates]
+    # WG1-B D-B5 — the opt-in proposal tier, ONLY on a total miss: an
+    # entities.json hit at any tier above always wins, and the default-flag
+    # path never reaches this read at all.
+    if not out and include_open_proposals:
+        out = _match_open_proposals(workspace_root, query)[:max_candidates]
+    return out
+
+
+def _match_open_proposals(workspace_root: Path, query: str) -> list[ResolveResult]:
+    """D-B5 — exact-normalized name match against the open person-proposal
+    queue. One result per distinct name (the NEWEST row wins — the loader
+    returns oldest-first). Defensive: an unreadable events log returns []."""
+    try:
+        from confirm_flow import load_open_person_proposals
+        rows = load_open_person_proposals(
+            Path(workspace_root) / "_hq" / "data" / "events.jsonl")
+    except Exception:
+        return []
+    query_norm = _normalize(query)
+    newest_by_name: dict[str, dict] = {}
+    for r in rows:
+        name = (r.get("name") or "").strip()
+        if name and _normalize(name) == query_norm:
+            newest_by_name[_normalize(name)] = r  # oldest-first → last wins
+    out: list[ResolveResult] = []
+    for r in newest_by_name.values():
+        name = (r.get("name") or "").strip()
+        date = str(r.get("captured_ts") or "")[:10]
+        out.append(ResolveResult(
+            entity_type="open_proposal",
+            record=r,
+            matched_via="open_proposal",
+            matched_string=name,
+            confidence=1.0,
+            reason=(f"matches the open add-person proposal {name!r}"
+                    + (f" from {date}" if date else "")
+                    + " — pending your confirm"),
+        ))
+    return out
 
 
 def _sort_by_observed_recency(candidates: list, workspace_root) -> list:
@@ -528,7 +580,11 @@ def _sort_by_observed_recency(candidates: list, workspace_root) -> list:
         return list(candidates)
     try:
         from thread_activity import derive_thread_activity
-        activity = derive_thread_activity(workspace_root)
+        # honor_reclassifications (RECL1): `go [name]` disambiguation honors
+        # merges/moves — a merged-away thread must not outrank its survivor.
+        # Only this rare multi-candidate path pays the fold (laziness above).
+        activity = derive_thread_activity(
+            workspace_root, honor_reclassifications=True)
     except Exception:
         activity = {}
 

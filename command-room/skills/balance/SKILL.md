@@ -50,6 +50,7 @@ result = compute_balance("<abs WORKSPACE root>", horizon_days=14,
 
 Branch on `result["status"]`:
 - `not_configured` / `no_calendar_data` → the Step 0/Step 1.4 refusal line. STOP.
+- `no_personal_ties` → the tie-refusal line, never an all-clear: *"No personal ties tagged yet — tell me who counts and I'll start protecting that white space."* Zero `tie: "personal"` people means Balance has nothing to protect; a calendar being connected does not make an empty tie set healthy. Emit nothing. STOP.
 - `all_clear` → render the `all_clear_summary` data view ("White space looks healthy this week."), never hand-built HTML. STOP after the widget.
 - `nudge` → Steps 3–4.
 
@@ -83,12 +84,14 @@ On `propose other night` with a typed date: validate the date via `availability.
 - Does not read or rank WORK ties (relationship-moves' lane — the `tie` field partitions the entity set).
 - Does not emit dormancy signals, pattern-breaks, or anything an org surface consumes.
 - Does not auto-book, auto-send, or spend — every outward action is an explicit click.
-- Does not render an all-clear when unconfigured — it refuses honestly.
+- Does not render an all-clear when unconfigured OR when no personal ties are tagged — it refuses honestly and asks who counts.
 - Does not nag — 7-day per-tie dedupe, snoozes/dismissals honored, never pads below one real nudge.
 
 ## Tune (first-run personalization)
 
 `tune balance` / `show balance settings` / `reset balance to defaults` — per `shared/SKILL_CUSTOMIZATION.md`: evening window (`evening_start`/`evening_end`), `min_block_hours`, `balance_default_cadence_days`, and per-tie `cadence_days` ("set date-night cadence to 2 weeks" → `people_writer.update_person(..., cadence_days=14)`).
+
+**Every config write leaves a receipt (FB-plumbing item 4).** The workspace-level knobs (`evening_start`/`evening_end`/`min_block_hours`/`balance_default_cadence_days`/`personal_calendars`) go through `workspace_settings.set_workspace_settings(workspace_root, {...}, source_skill="balance")` — it persists the keys AND emits the typed `workspace_setting_changed` receipt in one call. The per-tie `cadence_days` / `tie` writes go through `people_writer.update_person`, which emits `person_updated` (carrying `updated_fields`). Never hand-edit `entities.json` and never hand-append the event — a config change without a receipt is the exact gap this closes.
 
 ## Routing (full trigger corpus)
 

@@ -221,4 +221,97 @@ def compute_relationship_moves(
     return top
 
 
-__all__ = ["score_candidates", "compute_relationship_moves"]
+def _people_names(workspace_root) -> Dict[str, str]:
+    """person_id -> canonical_name (defensive; handles both the top-level and
+    `entities`-wrapped shapes). Empty map on an unreadable entities.json."""
+    try:
+        import json
+        p = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        return {
+            rec["id"]: rec["canonical_name"]
+            for rec in (ent.get("people") or [])
+            if isinstance(rec, dict) and rec.get("id")
+            and rec.get("canonical_name")
+        }
+    except Exception:
+        return {}
+
+
+def _moves_context_tag(components: dict, gap_days, baseline_days) -> str:
+    """The row's why-now line, substrate-derived only: dormancy gap/cadence
+    days from the person's own dormancy_signal when one exists, plus which
+    score components are actually in play. Never fabricates a number —
+    components are normalized/capped, so days come ONLY from the signal."""
+    parts = []
+    if gap_days is not None:
+        parts.append(f"{int(gap_days)}d since last touch")
+    if baseline_days:
+        parts.append(f"{int(baseline_days)}d cadence")
+    if not parts and (components or {}).get("dormancy"):
+        parts.append("gone quiet")
+    if (components or {}).get("commitment_overdue"):
+        parts.append("overdue commitment in play")
+    return " · ".join(parts) or "relationship move suggested"
+
+
+def moves_rows_from_candidates(candidates: List[dict],
+                               workspace_root) -> List[dict]:
+    """WG1-B D-B4 — the deterministic candidate→row adapter for SCHEDULED
+    staff-meeting fires (big-test row 10a: the scheduled path had no way to
+    turn `compute_relationship_moves` candidates into renderable rows, so the
+    moves section silently vanished on every scheduled fire).
+
+    Bare candidates ({person_id, score, components}) become full data-view
+    items the renderer accepts: wire id `n` (`move:<person_id>`), the RESOLVED
+    display name (an unresolvable person_id is SKIPPED with a stderr note —
+    a raw id never renders, D-B1's principle), a substrate-derived why-now
+    context tag (the person's dormancy_signal gap/cadence days when present),
+    and the canonical connector-free verbs `nudge` / `snooze 3d` /
+    `not relevant`. Nudge is compose-on-CLICK (WG1-A D-A4): no email is
+    composed at fire time, so scheduled fires stay connector-free.
+
+    Interactive fires never call this — they keep the full email-writer chain
+    and email-shaped rows exactly as before (row 27 verified that path live)."""
+    import sys
+    names = _people_names(workspace_root)
+    gap_by_pid: Dict[str, tuple] = {}
+    try:
+        import dormancy
+        for s in dormancy.load_dormancy_signals(workspace_root):
+            d = s.get("data") or {}
+            pid = d.get("entity_id")
+            if pid and d.get("entity_type") in ("person", None):
+                gap_by_pid[pid] = (d.get("gap_days"), d.get("baseline_days"))
+    except Exception:
+        gap_by_pid = {}
+    rows: List[dict] = []
+    for c in candidates or []:
+        pid = c.get("person_id")
+        name = names.get(pid)
+        if not name:
+            sys.stderr.write(
+                f"[relationship_moves] moves adapter: candidate {pid!r} has "
+                "no resolvable person record — row skipped (a raw id never "
+                "renders).\n")
+            continue
+        gap, baseline = gap_by_pid.get(pid, (None, None))
+        rows.append({
+            "n": f"move:{pid}",
+            "name": name,
+            "context_tag": _moves_context_tag(c.get("components") or {},
+                                              gap, baseline),
+            "actions": ["nudge", "snooze 3d", "not relevant"],
+            "data": {
+                "id": f"move:{pid}",
+                "person_id": pid,
+                "kind": "relationship_move",
+            },
+        })
+    return rows
+
+
+__all__ = ["score_candidates", "compute_relationship_moves",
+           "moves_rows_from_candidates"]

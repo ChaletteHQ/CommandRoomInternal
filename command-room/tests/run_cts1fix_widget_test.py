@@ -76,3 +76,50 @@ for idx, chunk in enumerate(chunks):
     assert toggles[0] == fields[0], \
         f"C1b sub-item {idx}: toggle n={toggles[0]!r} != field n={fields[0]!r}"
 print("run_cts1fix_widget_test: C1b OK")
+
+# F1 — TRAIN-MERGE review 2026-07-21 (F-1, HIGH): the A1 auto-arm composed with
+# WG1-A's arm-IS-dispatch on single-item pages, so the FIRST input event in a
+# single-item email body fired crBodyEdited -> crToggle -> crSingleDispatch ->
+# crApplyAll -> sendPrompt with zero clicks — a `draft` M never approved
+# (2026-07-15 draft-posture ruling). Neither side's tests composed the two.
+# The fix guards the auto-arm on !crSingleItem; edit-then-click still ships the
+# edited body because crApplyAll's FB-10 block serializes it at click time.
+# The battery has no JS engine, so assert the composition at the string level:
+# the minifier is line-level (never joins lines), so the guard and the auto-arm
+# condition must share one emitted line inside crBodyEdited.
+assert 'class="cr-card cr-card-single"' in html2, \
+    "F1 probe not real — A1's one-item view no longer renders single-item"
+fn = html2.find("function crBodyEdited")
+assert fn != -1, "F1 crBodyEdited missing from emitted single-item page"
+body_edited = html2[fn:html2.find("function crSingleDispatch", fn)]
+assert body_edited.strip(), "F1 crBodyEdited segment extraction came up empty"
+arm_lines = [ln for ln in body_edited.split("\n") if "crRowArmed(row)" in ln]
+assert len(arm_lines) == 1, \
+    f"F1 expected exactly one auto-arm condition line, got {len(arm_lines)}"
+assert "!crSingleItem" in arm_lines[0], \
+    "F1 REGRESSION: crBodyEdited auto-arm not guarded on crSingleItem — " \
+    "first keystroke in a single-item email body dispatches an unapproved draft"
+assert "crToggle(" in body_edited, \
+    "F1 multi-item auto-arm gone — crBodyEdited no longer arms Draft at all " \
+    "(the guard must skip single-item pages, not delete the Bug-A fix)"
+print("run_cts1fix_widget_test: F1 OK")
+
+# F1b — the multi-item side of the composition: a two-email-row page keeps the
+# body-edit listener bound and is NOT single-item, so the runtime flag is false
+# and the A1 auto-arm still fires there (Apply enables on a body edit).
+view4 = {"surface": "commitments", "title": "t", "sections": [{"title": "S",
+    "items": [{"n": "9", "name": "Nudge Bo",
+        "metadata": [["To", "bo.sample@example.com"], ["Subject", "Ping"]],
+        "body_lines": ["Hi Bo,", "", "Ping.", "", "Sam"],
+        "actions": ["send", "draft", "snooze 3d"]},
+        {"n": "10", "name": "Nudge Ada",
+         "metadata": [["To", "ada.sample@example.com"], ["Subject", "Ping 2"]],
+         "body_lines": ["Hi Ada,", "", "Ping.", "", "Sam"],
+         "actions": ["send", "draft", "snooze 3d"]}]}]}
+html4 = render_chat_output_widget(view4, wrapper="fragment")
+assert 'class="cr-card cr-card-single"' not in html4, \
+    "F1b two-row view unexpectedly rendered as single-item"
+assert "function crBodyEdited" in html4, "F1b crBodyEdited missing on multi-item"
+assert any(".cr-eb-body[contenteditable]" in ln and "addEventListener" in ln
+           for ln in html4.split("\n")), "F1b body-edit listener bind missing"
+print("run_cts1fix_widget_test: F1b OK")

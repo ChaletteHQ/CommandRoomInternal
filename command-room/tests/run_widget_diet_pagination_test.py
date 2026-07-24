@@ -80,16 +80,28 @@ def main() -> int:
     # bounds guard the NEW floor; a regression past them is unexplained
     # scaffold growth, not the rulings.
     scaffold = len(r._WIDGET_CSS_MIN) + len(r._WIDGET_JS_TEMPLATE_MIN)
-    check("minified full scaffold under 23.5KB (~22.9KB at t3; 21.4KB at "
-          "T2.2, 35KB pre-diet)",
-          scaffold < 23_500, f"scaffold={scaffold}")
+    # WG1-A re-pin (M rulings, big-test rows 13/13b/10b): the monolith now
+    # carries the single-item direct-dispatch handler (crSingleDispatch, D-A5)
+    # in _JS_CORE — ~0.75KB (22.9→23.65KB). This bound guards the NEW floor;
+    # a regression past it is unexplained scaffold growth, not the ruling.
+    check("minified full scaffold under 24.0KB (~23.65KB at WG1-A; 22.9KB at "
+          "t3; 21.4KB at T2.2, 35KB pre-diet)",
+          scaffold < 24_000, f"scaffold={scaffold}")
+    # A realistic heavy row-list PAGE: a commitment row (Done promoted to a
+    # button) plus a ≥5-verb row that keeps a dropdown tail — so the composed
+    # page ships BOTH the button layer and the select machinery (crSel /
+    # armed-state), the shape a real triage page carries.
     _probe_view = {
         "header": "probe", "source_skill": "commitment-triage",
         "counters": [{"label": "Open", "value": 3}],
-        "sections": [{"title": "S", "items": [{
-            "n": "commitment_seq_1", "display_n": 1, "name": "Probe row",
-            "context_tag": "41 days old · due Jul 22",
-            "actions": ["resolved", "push to [date]", "skip"]}]}],
+        "sections": [{"title": "S", "items": [
+            {"n": "commitment_seq_1", "display_n": 1, "name": "Probe row",
+             "context_tag": "41 days old · due Jul 22",
+             "actions": ["resolved", "push to [date]", "skip"]},
+            {"n": "commitment_seq_2", "display_n": 2, "name": "Dropdown row",
+             "context_tag": "12 days old · undated",
+             "actions": ["resolved", "push to [date]", "drop", "not mine",
+                         "make task", "skip"]}]}],
         "pagination": {"page": 1, "total_pages": 2, "has_more": True},
     }
     import re as _re
@@ -97,9 +109,13 @@ def main() -> int:
     _style = _re.findall(r"<style[^>]*>(.*?)</style>", _probe_html, _re.DOTALL)[0]
     _script = _re.findall(r"<script[^>]*>(.*?)</script>", _probe_html, _re.DOTALL)[0]
     composed = len(_style) + len(_script)
-    check("composed scaffold for a heavy row-list page under 20KB "
-          "(t3 re-pin — the FB-4 primary-button layer rides every row page)",
-          composed < 20_000, f"composed={composed}")
+    # WG1-A re-pin: the probe page now realistically carries BOTH the button
+    # layer (Done primary) AND a ≥5-verb dropdown row, so its composed scaffold
+    # ships the select machinery (crSel + armed-state CSS) alongside the
+    # buttons — plus the single-item dispatch handler in core. ~20.2KB.
+    check("composed scaffold for a heavy row-list page under 20.5KB "
+          "(WG1-A — button layer + select machinery + single-item dispatch)",
+          composed < 20_500, f"composed={composed}")
     # Conditional emission actually conditions: the row-list page ships no
     # email-draft CSS, but SINCE t3 FB-4 it DOES ship the button layer —
     # commitment rows render the Done one-tap primary (the t2.2-era
@@ -281,21 +297,23 @@ def main() -> int:
         check("fit: over-budget floor page is flagged", tx["pagination"].get("over_budget") is True)
         check("fit: fitted pages carry no over_budget flag", "over_budget" not in t1["pagination"])
 
-        # ---- 6. Density gate (T2.2 target, t3 re-pin) ------------------------
+        # ---- 6. Density gate (T2.2 target, t3 + WG1-A re-pins) ---------------
         # T2.2 hit 12-15 heavy real-shape rows per 40KB page. t3 (M rulings
-        # FB-4/FB-10) deliberately spends bytes on the row: Done/Send/Draft
-        # one-tap primaries + the inline-editable body. Measured cost on the
-        # heavy mixed fixture: 11 → 9 rows/page (~2 rows) — accepted in the
-        # t3 BUILD_REPORT as the density tradeoff for one-tap ergonomics;
-        # the binary-search fit absorbs it (more pages, same contract).
-        # This gate now pins the NEW floor: ≥9 heavy rows per page.
+        # FB-4/FB-10) spent bytes on the row (one-tap primaries + editable
+        # body): 11 → 9 rows/page. WG1-A adds the single-item direct-dispatch
+        # handler to _JS_CORE (~0.75KB, D-A5) — the anchored page-1 fit lands
+        # at 8 heavy rows (the extra scaffold makes 9 unsafe: page 1 fit but a
+        # later page with wider ids overran the 40KB budget by ~12B, so the
+        # conservative 8 is correct — every page fits with margin). Accepted
+        # as the density cost of the single-item ergonomics; the binary-search
+        # fit absorbs it (more pages, same contract). NEW floor: ≥8 heavy rows.
         dens = _fit_page_size(hdv, "fragment", 15)
-        check("density: >=9 heavy real-shape rows fit per page (t3 floor)",
-              dens >= 9, f"fit picked {dens} rows")
+        check("density: >=8 heavy real-shape rows fit per page (WG1-A floor)",
+              dens >= 8, f"fit picked {dens} rows")
         dv = render_and_persist(data_view=hdv, wrapper="fragment",
                                 persist_dir=_tmp, page=1, page_size=15)
-        check("density: the 15-requested page renders >=9 rows and fits",
-              dv["pagination"]["page_size"] >= 9
+        check("density: the 15-requested page renders >=8 rows and fits",
+              dv["pagination"]["page_size"] >= 8
               and len(dv["html"]) <= WIDGET_PAGE_BYTE_BUDGET,
               f"eff={dv['pagination']['page_size']}, {len(dv['html'])}B")
         # Display hygiene rides along: wire ids stay in data-n, the visible

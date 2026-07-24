@@ -123,6 +123,11 @@ def _emit_gate_ran_chat_email(
                 # pre-S3 hardcoded ["voice"] under-reported leak findings
                 "gates": ["voice", "leak"],
                 "result": "fail" if fail_count else "pass",
+                # UNIFIED gate_ran shape (FB-plumbing item 1): every gate_ran
+                # receipt carries `artifact` too. The chat-email surface saves
+                # NO file — the empty list is the honest artifact set, and it
+                # keeps the field type (list) identical to the file emitters.
+                "artifact": [],
                 "fail_count": fail_count,
                 "items_scanned": item_count,
             },

@@ -600,8 +600,11 @@ def load_objective_inputs(workspace_root) -> dict:
     # derivation — a confirmed objective link counts, a dismissed one
     # stops counting. This surface adopts the patched seam as a unit
     # (activity + deal + objective + commitment-attribution reads all see
-    # the same envelopes); other day-count surfaces still read raw by
-    # deliberate scope (F-54).
+    # the same envelopes). RECL1 (2026-07) extended the fold fleet-wide:
+    # every other recency reader opts in via the honor_reclassifications
+    # kwarg on derive_thread_activity / derive_org_activity; this direct
+    # composition stays because objective_math needs the patched stream
+    # for non-activity reads too.
     events = apply_reclassifications(events)
     objective_events = [e for e in events
                        if e.get("type") in objective_state.OBJECTIVE_EVENT_TYPES]

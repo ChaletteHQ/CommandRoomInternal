@@ -102,11 +102,102 @@ def test_go_org_resolves_project_on_nested_workspace() -> None:
     print("PASS test_go_org_resolves_project_on_nested_workspace")
 
 
+# ---------------------------------------------------------------------------
+# WG1-B D-B5 — the opt-in open-proposal tier. Fixtures mirror real substrate
+# shapes; dates relative to today (G14).
+# ---------------------------------------------------------------------------
+
+def _proposal_workspace() -> Path:
+    """On-file person 'Avery Nested' + an OPEN person_proposal for a person
+    with no record yet ('Nova Placeholder') + a resolved (tombstoned) one."""
+    import datetime as dt
+    ws = _nested_workspace()
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def _ts(days_ago):
+        return (now - dt.timedelta(days=days_ago)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+
+    events = [
+        {"seq": 1, "ts": _ts(6), "type": "person_proposal",
+         "source_skill": "meeting-notes",
+         "data": {"name": "Nova Placeholder", "pending_review": True,
+                  "evidence": "Introduced as the new ops lead on the call.",
+                  "source_ref": "granola:00000000-b5"}},
+        {"seq": 2, "ts": _ts(5), "type": "person_proposal",
+         "source_skill": "meeting-notes",
+         "data": {"name": "Rex Placeholder", "pending_review": True,
+                  "source_ref": "granola:00000000-b5b"}},
+        {"seq": 3, "ts": _ts(4), "type": "person_proposal_resolved",
+         "source_skill": "apply-choices",
+         "data": {"proposal_seq": 2, "resolution": "not_relevant"}},
+    ]
+    (ws / "_hq" / "data" / "events.jsonl").write_text(
+        "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+    return ws
+
+
+def test_open_proposal_tier_default_off_byte_identical() -> None:
+    """The default path never surfaces proposals — existing callers are
+    byte-identical, hit or miss."""
+    from entity_resolve import resolve_all
+    ws = _proposal_workspace()
+    hit_default = resolve_all(ws, "Avery Nested")
+    hit_flag = resolve_all(ws, "Avery Nested", include_open_proposals=True)
+    assert [r.entity_id for r in hit_default] == \
+           [r.entity_id for r in hit_flag], "entity hit must be identical"
+    miss = resolve_all(ws, "Nova Placeholder")
+    assert miss == [], f"default flag must NOT surface proposals: {miss}"
+    print("PASS test_open_proposal_tier_default_off_byte_identical")
+
+
+def test_open_proposal_tier_hit_on_total_miss() -> None:
+    """Flag on + entities miss + open proposal → the distinct open_proposal
+    result carrying the proposal row; tombstoned proposals never surface."""
+    from entity_resolve import resolve_all
+    ws = _proposal_workspace()
+    res = resolve_all(ws, "Nova Placeholder", include_open_proposals=True)
+    assert len(res) == 1, f"expected one open_proposal hit: {res}"
+    r = res[0]
+    assert r.entity_type == "open_proposal", r.entity_type
+    assert r.matched_via == "open_proposal", r.matched_via
+    assert r.record.get("seq") == 1
+    assert "ops lead" in (r.record.get("evidence") or ""), r.record
+    assert "pending" in r.reason, r.reason
+    gone = resolve_all(ws, "Rex Placeholder", include_open_proposals=True)
+    assert gone == [], f"a tombstoned proposal must never surface: {gone}"
+    none = resolve_all(ws, "Zed Nobody", include_open_proposals=True)
+    assert none == [], f"no proposal, no entity → honest miss: {none}"
+    print("PASS test_open_proposal_tier_hit_on_total_miss")
+
+
+def test_open_proposal_tier_never_shadows_an_entity_hit() -> None:
+    """The row-19 Garrick shape: an ON-FILE person resolves normally with
+    zero proposal noise, even with the flag on and a same-name proposal
+    somehow open."""
+    from entity_resolve import resolve_all
+    ws = _proposal_workspace()
+    ev_path = ws / "_hq" / "data" / "events.jsonl"
+    ev_path.write_text(ev_path.read_text(encoding="utf-8") + json.dumps(
+        {"seq": 4, "ts": "2026-07-01T00:00:00Z", "type": "person_proposal",
+         "source_skill": "meeting-notes",
+         "data": {"name": "Avery Nested", "pending_review": True,
+                  "source_ref": "mail:b5c"}}) + "\n", encoding="utf-8")
+    res = resolve_all(ws, "Avery Nested", include_open_proposals=True)
+    assert res and res[0].entity_type == "person", res
+    assert all(r.entity_type != "open_proposal" for r in res), \
+        "an entity hit must never carry proposal noise"
+    print("PASS test_open_proposal_tier_never_shadows_an_entity_hit")
+
+
 def main() -> int:
     tests = [
         test_no_backwards_signature_in_surfaces,
         test_go_person_resolves_project_on_nested_workspace,
         test_go_org_resolves_project_on_nested_workspace,
+        test_open_proposal_tier_default_off_byte_identical,
+        test_open_proposal_tier_hit_on_total_miss,
+        test_open_proposal_tier_never_shadows_an_entity_hit,
     ]
     failed = 0
     for t in tests:

@@ -164,35 +164,54 @@ def main() -> int:
           "transport" not in pack and "confirm_card" not in pack,
           f"{sorted(pack.keys())}")
 
-    # ---- injected ids in DISPLAY text still refuse (scanner not weakened) ---
-    for label, evidence in [
-        ("entity id in visible context refuses",
+    # ---- injected ids in DISPLAY text: the scanner is NOT weakened, but the
+    # RESPONSE changed under WG1-A D-A6 (M ruling 2026-07-20, big-test row
+    # 10b/10c). A single row whose VISIBLE content carries a wire id no longer
+    # takes the whole page down — it QUARANTINES to an honest placeholder, so
+    # the offending id STILL never reaches the user (the invariant T3.1 guards)
+    # while the healthy rows render. Assert: no page-raise, the id is ABSENT
+    # from the rendered page, and the placeholder is present + names the defect.
+    for label, bad_id, evidence in [
+        ("entity id in visible context", LEGACY_CID,
          f"matched your sent message ({LEGACY_CID})"),
-        ("cmt_ ULID in visible context refuses",
+        ("cmt_ ULID in visible context", "cmt_01TESTFIXTUREULID000000AA",
          "matched cmt_01TESTFIXTUREULID000000AA to your sent mail"),
-        ("commitment_seq_N in visible context refuses",
+        ("commitment_seq_N in visible context", "commitment_seq_1533",
          "closed commitment_seq_1533 from your sent mail"),
-        ("bp_ proposal id in visible context refuses",
+        ("bp_ proposal id in visible context", "bp_d27b6b5244bb",
          "confirmed via bp_d27b6b5244bb"),
     ]:
         bad = build_card_view([_cru_item("cmt_clean_row", evidence)],
                               surface="morning-brief", header="Needs your eyes")
         try:
-            render_chat_output_widget(bad, wrapper="fragment")
-            check(label, False, "rendered without refusing")
-        except LeakDetectedError:
-            check(label, True)
+            bad_html = render_chat_output_widget(bad, wrapper="fragment")
+        except LeakDetectedError as e:
+            bad_html = ""
+            check(f"{label} quarantines (no page-block)", False,
+                  f"page-raised instead of quarantining: {str(e)[:120]}")
+        if bad_html:
+            check(f"{label} quarantines (no page-block)", True)
+            check(f"{label}: the wire id is absent from the page",
+                  bad_id not in bad_html, "id leaked despite quarantine")
+            check(f"{label}: an honest placeholder replaces the row",
+                  "1 row withheld" in bad_html)
 
-    # ---- RV-5 backstop intact: a wire id as the row NAME refuses ------------
+    # ---- RV-5 backstop intact: a wire id as the row NAME never reaches the
+    # user. Through the renderer it now QUARANTINES (placeholder, id absent);
+    # the visible-span check in validate_rendered_widget still hard-raises on
+    # hand-mangled HTML (covered below, line ~220), so the backstop is intact.
     named = build_card_view([_cru_item("cmt_clean_row", "matched a send")],
                             surface="morning-brief", header="Needs your eyes")
     named["sections"][0]["items"][0]["name"] = "commitment_seq_1533"
     try:
-        render_chat_output_widget(named, wrapper="fragment")
-        check("wire id as row name refuses (RV-5)", False,
-              "rendered without refusing")
+        named_html = render_chat_output_widget(named, wrapper="fragment")
     except LeakDetectedError:
-        check("wire id as row name refuses (RV-5)", True)
+        named_html = ""
+        check("wire id as row name quarantines (RV-5)", True)  # a raise is also safe
+    if named_html:
+        check("wire id as row name quarantines (RV-5)",
+              "commitment_seq_1533" not in named_html and "1 row withheld" in named_html,
+              "wire-id name neither quarantined nor absent")
 
     # ---- sub-items: wire-id sub_id gets no visible label; span check covers
     sub_view = {
@@ -202,9 +221,13 @@ def main() -> int:
             "n": 1, "display_n": 1, "name": "Send Sam Sample the draft",
             "context_tag": "matched a send",
             "actions": ["resolved"],
+            # WG1-A D-A3: a ≥5-verb sub-item keeps its dropdown (the F-1
+            # data-disp check below is a select-attribute assertion; a ≤4
+            # sub-item would render buttons with no select).
             "sub_items": [{"id": LEGACY_CID,
                            "summary": "probably handled — undo if not",
-                           "actions": ["resolved", "skip"]}],
+                           "actions": ["resolved", "push to [date]", "drop",
+                                       "not mine", "make task", "skip"]}],
         }]}],
     }
     sub_html = render_chat_output_widget(sub_view, wrapper="fragment")

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -131,6 +132,20 @@ AUTO_ALLOWED: dict[str, str] = {
     "entity_fact_structured": "one atomic non-identity fact (preference/"
         "contact/personal) from a structured connector source — additive "
         "event, retraction-reversible",
+    # UXR1 D3 (M ruling 2026-07-21): the OBVIOUS person_link — a name-mention
+    # that exactly matches ONE on-file record with no conflicting signal —
+    # auto-applies instead of asking (the system already knows the answer).
+    # Legal ONLY under identity_reconcile's (a)-(d) gate: exact normalized
+    # multi-token full-name match; exactly one on-file candidate (two
+    # same-name records → NEVER auto, the IDM1 class); no conflicting
+    # org/email signal (a role/shared-inbox address is never corroboration);
+    # the pair is not in scan_existing_duplicates' suspect set. Linking is
+    # reversible (the registered brain_undo reverser reopens the mention AND
+    # re-opens a confirm-tier row); merging is not — `person_proposal` (add
+    # a NEW person) and `person_merge` stay confirm-tier forever. That
+    # asymmetry is the whole reason this is safe.
+    "person_link": "exact-unique-clean name-mention link to an existing "
+        "record (UXR1 D3 gate a-d) — alias-free, tombstone-reversible",
 }
 
 # The ONLY categories legal on the entity_fact_structured auto class
@@ -149,8 +164,10 @@ _IDENTITY_KINDS = frozenset({
     "person_org_creation_structured_fact",
     # PID1 D4 — the reconciler's merge-propose rows: person_link (an open
     # proposal that is already on file — link it?) and person_merge (two
-    # EXISTING records that look like one person). Both confirm-only;
-    # person_merge is NEVER in AUTO_ALLOWED (merge_person_into has no
+    # EXISTING records that look like one person). UXR1 D3 (M ruling
+    # 2026-07-21) moved person_link onto the auto tier for the exact-unique-
+    # clean case ONLY (identity_reconcile gate a-d; everything else still
+    # asks). person_merge is NEVER in AUTO_ALLOWED (merge_person_into has no
     # reverser — a record merge cannot be undone).
     "person_link", "person_merge",
 })
@@ -404,8 +421,15 @@ def propose(
         except Exception:
             pass
 
+    # UXR1 D3 fix — the event count salts the id. The old basis
+    # (fingerprint|now_iso) collided when the same fingerprint was
+    # re-proposed within one UTC second of a resolved twin (the undo
+    # reverser's re-open after an auto-apply is exactly that shape): the
+    # new row inherited the tombstoned row's id and rendered nowhere. The
+    # id is stored on the event and never re-derived, so salting is safe.
     proposal_id = "bp_" + hashlib.sha256(
-        f"{fingerprint}|{now_iso}".encode("utf-8")).hexdigest()[:12]
+        f"{fingerprint}|{now_iso}|{len(events)}".encode("utf-8")
+    ).hexdigest()[:12]
     data = {
         "proposal_id": proposal_id,
         "kind": kind,
@@ -635,6 +659,59 @@ def person_proposal_already_on_file(workspace_root, p: dict) -> bool:
 
 _PERSON_NO_RECORD = "no contact record yet"
 
+# WG1-B D-B1 — an id-shaped inferred_org (`org_045` live, `org-045` in the
+# seq-3774 sighting class) must NEVER render verbatim. Both separators, case-
+# insensitive; anchored so a real org whose NAME merely contains "org" never
+# matches.
+_ORG_ID_RE = re.compile(r"^org[-_]\d+$", re.IGNORECASE)
+
+
+def _org_id_names(workspace_root) -> dict:
+    """org_id -> canonical_name (D-B1 — the org analogue of _person_id_names).
+    Keys are normalized lowercase-with-underscores so the hyphen sighting class
+    (`org-045`) resolves against the live `org_045` ids. Defensive: an
+    unreadable entities.json means no map (id-shaped badges strip instead)."""
+    try:
+        ent_path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(ent_path.read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        out = {}
+        for o in ent.get("orgs") or []:
+            if o.get("id") and o.get("canonical_name"):
+                out[str(o["id"]).lower().replace("-", "_")] = \
+                    o["canonical_name"]
+        return out
+    except Exception:
+        return {}
+
+
+def _resolve_org_display(org, org_names: Optional[dict] = None) -> str:
+    """D-B1 resolve-or-strip: an id-shaped org resolves to its canonical name
+    via `org_names` (the _org_id_names map) or STRIPS to "" — a raw id never
+    renders. Non-id-shaped text passes through verbatim. Render/adapt-side
+    only — the stored proposal payload is never rewritten."""
+    org = (org or "").strip()
+    if not org or not _ORG_ID_RE.match(org):
+        return org
+    key = org.lower().replace("-", "_")
+    return (org_names or {}).get(key, "") or ""
+
+
+def _evidence_snippet(text, limit: int = 140) -> str:
+    """D-B2 — the coalesced evidence as a quoted snippet, truncated on a word
+    boundary with an ellipsis. Empty evidence returns "" (the caller keeps
+    today's generic line — no fabricated quotes)."""
+    text = " ".join(str(text or "").split())
+    if not text:
+        return ""
+    if len(text) > limit:
+        cut = text[: limit + 1]
+        if " " in cut:
+            cut = cut[: cut.rfind(" ")]
+        text = cut.rstrip(" ,;:.–—-") + "…"
+    return f"“{text}”"
+
 
 def _possible_match_consequence(match_name: str) -> str:
     """BUG C/D — the enriched consequence segment when a plausible existing
@@ -658,17 +735,26 @@ def _possible_match_multi_consequence(count: int, name: str) -> str:
 
 
 def _person_render_line(p: dict, *,
-                        consequence: str = _PERSON_NO_RECORD) -> str:
+                        consequence: str = _PERSON_NO_RECORD,
+                        org_names: Optional[dict] = None) -> str:
     """FS-17 — the enriched identity row: `{badge} · {source-ref-with-date} ·
-    {consequence}`, the same shape the deal rows carry. Provenance-honest:
-    the source noun comes from the proposal's own source_ref/evidence text,
-    the date from its captured ts — never guessed, dropped when absent.
+    {snippet, when evidence exists} · {consequence}`, the same shape the deal
+    rows carry. Provenance-honest: the source noun comes from the proposal's
+    own source_ref/evidence text, the date from its captured ts — never
+    guessed, dropped when absent.
+
+    WG1-B D-B1: an id-shaped `inferred_org` resolves through `org_names`
+    (_org_id_names) or strips — the badge degrades to role-only /
+    "mentioned by name only"; a raw `org-045`-class id never renders.
+    WG1-B D-B2: non-empty evidence renders verbatim as a quoted ~140-char
+    snippet segment so the row is adjudicable; empty evidence keeps today's
+    line byte-identical.
 
     `consequence` is the trailing segment — "no contact record yet" by
     default, or the "possible match: X — same person?" hint (BUG C/D) when the
     adapter resolved a plausible existing record for the cluster."""
     role = (p.get("inferred_role") or "").strip()
-    org = (p.get("inferred_org") or "").strip()
+    org = _resolve_org_display(p.get("inferred_org"), org_names)
     if role and org:
         badge = f"looks like {role} at {org}"
     elif org:
@@ -688,6 +774,9 @@ def _person_render_line(p: dict, *,
         noun = "a captured note"
     date = _short_date(p.get("captured_ts"))
     evid = f"surfaced in {noun}" + (f" on {date}" if date else "")
+    snippet = _evidence_snippet(p.get("evidence"))
+    if snippet:
+        return f"{badge} · {evid} · {snippet} · {consequence}"
     return f"{badge} · {evid} · {consequence}"
 
 
@@ -717,12 +806,16 @@ def _person_row_title(p: dict, person_names: Optional[dict] = None) -> str:
 
 
 def _cluster_render_line(cluster: dict, *,
-                         consequence: str = _PERSON_NO_RECORD) -> str:
+                         consequence: str = _PERSON_NO_RECORD,
+                         org_names: Optional[dict] = None) -> str:
     """D3 — the identity-clustered row's evidence line: the FS-17 enriched
     shape for a single mention, prefixed "seen N× — " with the newest
     source phrases when the cluster merged multiple proposals. Provenance-
     honest exactly like `_person_render_line`: nouns/dates come from each
-    proposal's own captured text, dropped when absent.
+    proposal's own captured text, dropped when absent. WG1-B: id-shaped
+    inferred_org resolves-or-strips (D-B1, via `org_names`) and the newest
+    row's evidence renders as the quoted snippet segment (D-B2) — on the
+    multi-mention path too, where the segment swap used to drop it.
 
     `consequence` is the trailing segment (BUG C/D) — the default
     "no contact record yet" or the "possible match: X — same person?" hint."""
@@ -732,23 +825,29 @@ def _cluster_render_line(cluster: dict, *,
     best["inferred_role"] = cluster.get("inferred_role")
     best["inferred_org"] = cluster.get("inferred_org")
     if len(rows) <= 1:
-        return _person_render_line(best, consequence=consequence)
-    base = _person_render_line(best, consequence=consequence)
-    # base = "{badge} · surfaced in {noun}[ on {date}] · {consequence}" — swap
-    # the middle segment for the multi-mention phrase.
+        return _person_render_line(best, consequence=consequence,
+                                   org_names=org_names)
+    base = _person_render_line(best, consequence=consequence,
+                               org_names=org_names)
+    # base = "{badge} · surfaced in {noun}[ on {date}][ · {snippet}] ·
+    # {consequence}" — swap the source segment for the multi-mention phrase;
+    # the snippet (recomputed, never index-parsed) rides after it (D-B2).
     parts = base.split(" · ")
     seen = []
     for r in rows[:3]:  # newest-first, capped (T2.2 density)
-        src = _person_render_line({**r, "name": cluster.get("name")})
+        src = _person_render_line({**r, "name": cluster.get("name")},
+                                  org_names=org_names)
         mid = src.split(" · ")[1] if src.count(" · ") >= 2 else ""
         mid = mid.replace("surfaced in ", "")
         if mid and mid not in seen:
             seen.append(mid)
     middle = f"seen {len(rows)}× — " + ", ".join(seen) if seen \
         else f"seen {len(rows)}×"
+    snippet = _evidence_snippet(best.get("evidence"))
+    tail = [snippet, parts[-1]] if snippet else [parts[-1]]
     if len(parts) >= 3:
-        return " · ".join([parts[0], middle, parts[-1]])
-    return f"{middle} · {consequence}"
+        return " · ".join([parts[0], middle] + tail)
+    return " · ".join([middle] + tail if snippet else [middle, consequence])
 
 
 _PERSON_ROW_ACTIONS = [
@@ -893,6 +992,171 @@ def _person_actions_with_candidates(cands: list[dict]) -> list[dict]:
     return out
 
 
+# WG1-B D-B3 — org-marker name shapes: a trailing/embedded parenthetical that
+# is NOT an "(or …)" capture annotation (those stay the classify_cluster
+# confirm tier), or a legal-entity suffix. Deliberately narrow: a bare
+# name-only mention ("Garrick") never matches — name-only person rows are
+# legitimate (the row-19 negative control).
+_ORG_MARKER_RE = re.compile(
+    r"\((?!or\s)[^)]*\)"
+    r"|\b(?:inc|llc|ltd|corp|corporation|gmbh|plc|llp)\.?\s*$",
+    re.IGNORECASE)
+
+
+def _open_org_proposal_names(events: list[dict]) -> set:
+    """Normalized names of org_proposals the org rail will render (open, not
+    declined) — the D-B3 re-route target set."""
+    names: set = set()
+    declined: set = set()
+    for ev in events:
+        et = ev.get("type")
+        if et not in ("org_proposal", "org_proposal_declined"):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        nm = " ".join((data.get("name") or data.get("org_name") or "")
+                      .lower().split())
+        if not nm:
+            continue
+        (names if et == "org_proposal" else declined).add(nm)
+    return names - declined
+
+
+def _org_shape_quarantine_row(row: dict) -> dict:
+    """The D-A6-shaped honest placeholder for an org-shaped payload stuck in
+    the person queue (D-B3): real wire id (so `show why` dispatches against
+    the source event), fixed copy naming the defect class — never the payload
+    content — and the single read-only verb."""
+    seq = row.get("seq")
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        rid = f"person:{seq}"
+    elif row.get("fingerprint"):
+        rid = f"person:fp:{row['fingerprint']}"
+    else:
+        rid = "person:withheld"
+    return {
+        "id": rid,
+        "source_family": "person",
+        "kind": "person",
+        "shape": "identity",
+        "tier": "confirm",
+        "fingerprint": rid,
+        "evidence": "",
+        "action_tuples": [{"action": "show why"}],
+        "render_line": ("proposal withheld — org-shaped payload in the "
+                        "person queue"),
+        "opened_at": row.get("captured_ts") or "",
+        "expires_at": "",
+        "detector": "confirm-flow",
+        "seq": seq,
+        "name": "1 row withheld",
+        "title": "1 row withheld",
+        "person_id": None,
+    }
+
+
+def _person_update_quarantine_row(row: dict) -> dict:
+    """UXR1 D5 — the WG1-A honest placeholder for a person_update_proposal
+    with NOTHING to decide (no name after person_id resolution, no evidence
+    after the loader's coalescing — the live seq-1591/1742 class when the
+    person_id no longer resolves). Same D-A6 shape as the org-shape gate's
+    placeholder: real wire id (so `show why` dispatches against the source
+    event), fixed copy naming the DEFECT CLASS — never the payload — and
+    the single read-only verb. A blank ask never renders."""
+    seq = row.get("seq")
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        rid = f"person:{seq}"
+    elif row.get("fingerprint"):
+        rid = f"person:fp:{row['fingerprint']}"
+    else:
+        rid = "person:withheld"
+    return {
+        "id": rid,
+        "source_family": "person",
+        "kind": "person",
+        "shape": "identity",
+        "tier": "confirm",
+        "fingerprint": rid,
+        "evidence": "",
+        "action_tuples": [{"action": "show why"}],
+        "render_line": ("proposal withheld — identity row with nothing "
+                        "to decide"),
+        "opened_at": row.get("captured_ts") or "",
+        "expires_at": "",
+        "detector": "confirm-flow",
+        "seq": seq,
+        "name": "1 row withheld",
+        "title": "1 row withheld",
+        "person_id": row.get("person_id"),
+    }
+
+
+def _gate_org_shaped_person_rows(workspace_root, rows: list[dict],
+                                 events: list[dict],
+                                 *, now: Optional[datetime] = None):
+    """WG1-B D-B3 — the person queue's org-shape gate, run BEFORE clustering.
+
+    Only ADD-type rows carrying NO person signal (no inferred_role, no
+    evidence, no person_id) are eligible — a person-shaped row is never gated,
+    whatever its name matches (the live seq-3774 row names a real person whose
+    ORG record shares her name; role+evidence is what keeps her a person row).
+
+    Eligible rows:
+      - name matches an existing org (`find_existing_org`) → DROPPED — the
+        entity exists, the proposal was actioned (the org adapter's own
+        existence symmetry; render-side truth per the proposal-adapter
+        existence gotcha).
+      - name matches an OPEN org_proposal → DROPPED here — the org rail
+        renders that proposal as a well-formed selectable org row; keeping the
+        person row too would double-render the same subject (the re-route).
+      - org-marker name shape, unroutable → replaced by the honest quarantine
+        placeholder (never a descriptor-less unselectable person row).
+      - anything else (the name-only "Garrick" shape) → kept verbatim.
+
+    Aged low-context rows drop instead of quarantining — the gate honors the
+    same FS-17 age-out the queue view applies, so a placeholder can never
+    outlive the row it replaced.
+
+    Returns (kept_rows, quarantine_items) — quarantine items are already
+    projector-shaped."""
+    kept: list[dict] = []
+    quarantined: list[dict] = []
+    open_org_names = None  # lazy — most queues carry no org-shaped rows
+    for row in rows:
+        if row.get("type") != "person_proposal":
+            kept.append(row)
+            continue
+        if row.get("inferred_role") or row.get("evidence") \
+                or row.get("person_id"):
+            kept.append(row)
+            continue
+        name = (row.get("name") or "").strip()
+        if not name:
+            kept.append(row)  # nameless — the annotation tier owns it (D5)
+            continue
+        try:
+            from org_writer import find_existing_org
+            org_exists = find_existing_org(workspace_root,
+                                           name=name) is not None
+        except Exception:
+            org_exists = False
+        if org_exists:
+            continue  # actioned — the org is on file
+        if open_org_names is None:
+            open_org_names = _open_org_proposal_names(events)
+        if " ".join(name.lower().split()) in open_org_names:
+            continue  # re-routed — the org rail renders the open org_proposal
+        if _ORG_MARKER_RE.search(name):
+            if now is not None and person_proposal_is_low_context(row):
+                opened = _parse_ts(row.get("captured_ts"))
+                if opened is not None and \
+                        (now - opened).days > PERSON_LOW_CONTEXT_STALE_DAYS:
+                    continue  # aged out — never quarantine a row FS-17 retires
+            quarantined.append(_org_shape_quarantine_row(row))
+            continue
+        kept.append(row)
+    return kept, quarantined
+
+
 def _adapt_person_proposals(workspace_root, events: list[dict],
                             *, now: Optional[datetime] = None) -> list[dict]:
     """FS-17 enrichment + PID1 D3 identity clustering: ONE row per person.
@@ -928,10 +1192,18 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
     rows = load_open_person_proposals(_events_path(workspace_root),
                                       dismissed_target_ids=dismissed,
                                       suppress_on_file=True)
+    # WG1-B D-B3 — org-shape gate BEFORE clustering: an org-shaped payload
+    # written as a person_proposal (the TDX-Arena row) re-routes to the org
+    # rail or quarantines; it never renders as a descriptor-less person row.
+    rows, quarantined = _gate_org_shaped_person_rows(workspace_root, rows,
+                                                     events, now=now)
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else None
     view = person_queue_view(rows, now_iso=now_iso)
+    # WG1-B D-B1 — one entities read per adapt; badge composition resolves
+    # id-shaped inferred_org through this map or strips it.
+    org_names = _org_id_names(workspace_root)
 
-    out = []
+    out = list(quarantined)
     for cluster in view["clusters"]:
         newest = cluster["rows"][0] if cluster["rows"] else {}
         # BUG C/D — resolve the plausible existing records for the SURVIVING
@@ -962,7 +1234,8 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
                         or "",
             "action_tuples": _person_actions_with_candidates(cands),
             "render_line": _cluster_render_line(cluster,
-                                                consequence=consequence),
+                                                consequence=consequence,
+                                                org_names=org_names),
             "opened_at": min((r.get("captured_ts") or "")
                              for r in cluster["rows"]) if cluster["rows"]
                          else "",
@@ -975,7 +1248,11 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "title": cluster["name"],
             "person_id": None,
             "inferred_role": cluster.get("inferred_role"),
-            "inferred_org": cluster.get("inferred_org"),
+            # D-B1 — resolved-or-stripped on the emitted row too, so an
+            # id-shaped org never rides the item downstream. The stored
+            # proposal payload is untouched (adapt-side only).
+            "inferred_org": _resolve_org_display(cluster.get("inferred_org"),
+                                                 org_names),
             # BUG C/D — the resolved candidate, carried to the wire so the
             # populated `same as` verb dispatches without a re-type. None when
             # no plausible match (a genuinely-new person) AND on an IDM1
@@ -991,6 +1268,20 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
 
     person_names = _person_id_names(workspace_root) if view["updates"] else {}
     for p in view["updates"]:
+        # UXR1 D5 — resolve-or-quarantine. A person_update_proposal with
+        # name=null but a person_id resolves its display name from the
+        # record (the map _person_row_title already titles from); when name
+        # AND evidence are BOTH empty after the loader's coalescing, the
+        # row has nothing to decide — it quarantines to the WG1-A honest
+        # placeholder instead of rendering a blank ask (the live
+        # seq-1591/1742 defect class).
+        resolved_name = ((p.get("name") or "").strip()
+                         or (person_names.get(p.get("person_id") or "")
+                             or "").strip())
+        evidence = p.get("evidence") or p.get("review_reason") or ""
+        if not resolved_name and not str(evidence).strip():
+            out.append(_person_update_quarantine_row(p))
+            continue
         out.append({
             "id": f"person:{p.get('seq')}",
             "source_family": "person",
@@ -998,18 +1289,22 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "shape": "identity",
             "tier": "confirm",
             "fingerprint": f"person:{p.get('seq')}",
-            "evidence": p.get("evidence") or p.get("review_reason") or "",
+            "evidence": evidence,
             "action_tuples": list(_PERSON_ROW_ACTIONS),
-            "render_line": _person_render_line(p),
+            "render_line": _person_render_line(p, org_names=org_names),
             "opened_at": p.get("captured_ts") or "",
             "expires_at": "",
             "detector": "confirm-flow",
             "seq": p.get("seq"),
-            "name": p.get("name"),
+            # D5 — the resolved display name rides the row (None only when
+            # evidence carried the row past the quarantine gate).
+            "name": resolved_name or p.get("name"),
             "title": _person_row_title(p, person_names),
             "person_id": p.get("person_id"),
             "inferred_role": p.get("inferred_role"),
-            "inferred_org": p.get("inferred_org"),
+            # D-B1 — resolve-or-strip on the update rows too.
+            "inferred_org": _resolve_org_display(p.get("inferred_org"),
+                                                 org_names),
         })
     return out
 
@@ -1521,6 +1816,17 @@ def build_card_view(
     n_extra = 0
     for sec in extras:
         for it in sec.get("items", []) or []:
+            # WG1-B D-B4 — fail LOUD at build-view time, naming the section:
+            # an extra-section row without a wire id used to surface only as
+            # the renderer's opaque "Item missing required 'n' field" deep in
+            # the render (the scheduled-moves drop class).
+            if not isinstance(it, dict) or it.get("n") is None:
+                raise ValueError(
+                    "build_card_view: extra_sections item in "
+                    f"{(sec.get('title') or 'untitled section')!r} is missing "
+                    "its wire id 'n' — every appended row must arrive "
+                    "renderer-ready (see relationship_moves."
+                    "moves_rows_from_candidates for the moves shape)")
             n_extra += 1
             if "display_n" not in it:
                 it["display_n"] = display_n + n_extra

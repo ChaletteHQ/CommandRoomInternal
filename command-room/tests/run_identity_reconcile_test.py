@@ -598,6 +598,33 @@ def main() -> int:
     check("a clean multi-token name still autos (F4 guard is narrow)",
           t == "auto", str(cls))
 
+    # ------------------------------------------------------------------
+    # WG1-B D-B2 — evidence survives clustering (the snippet's substrate):
+    # the cluster keeps each row's evidence verbatim, newest first, so the
+    # brain_proposals cluster line can quote it.
+    rows = [
+        {"seq": 11, "type": "person_proposal", "name": "Pia Placeholder",
+         "evidence": "Named as the rollout lead on the platform call.",
+         "captured_ts": ts(1)},
+        {"seq": 12, "type": "person_proposal", "name": "Pia Placeholder",
+         "evidence": "Older mention in the kickoff notes.",
+         "captured_ts": ts(9)},
+    ]
+    view = ir.person_queue_view(rows)
+    check("evidence-bearing rows cluster to one row",
+          len(view["clusters"]) == 1, str(view["clusters"]))
+    c = view["clusters"][0]
+    check("cluster keeps each row's evidence verbatim, newest first",
+          c["rows"][0]["evidence"].startswith("Named as the rollout lead")
+          and c["rows"][1]["evidence"].startswith("Older mention"),
+          str(c["rows"]))
+    from brain_proposals import _cluster_render_line
+    line = _cluster_render_line(c)
+    check("cluster render line quotes the NEWEST evidence (D-B2)",
+          "“Named as the rollout lead" in line, line)
+    check("multi-mention prefix survives alongside the snippet",
+          "seen 2×" in line, line)
+
     if failures:
         print(f"\nidentity reconcile FAIL — {len(failures)} of {checks}")
         return 1

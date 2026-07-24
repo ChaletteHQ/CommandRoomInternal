@@ -594,6 +594,20 @@ def _log_event(
     }
     if before is not None:
         data["before"] = before
+        # FB-plumbing item 4 — make the person_updated receipt legible: name the
+        # fields that actually changed (added, removed, or re-valued) so a
+        # reader can see "tie" / "cadence_days" moved without diffing the whole
+        # record. Additive; `before` stays for full-history readers. Only
+        # meaningful on updates (create/repair pass before implicitly).
+        try:
+            keys = set(before) | set(record)
+            changed = sorted(
+                k for k in keys if before.get(k) != record.get(k)
+            )
+            if changed:
+                data["updated_fields"] = changed
+        except Exception:
+            pass
     event: dict[str, Any] = {
         # FS-03: OMIT ts — the append gate stamps it UTC-aware.
         "type": event_type,

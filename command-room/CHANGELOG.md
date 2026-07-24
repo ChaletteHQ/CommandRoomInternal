@@ -1,5 +1,28 @@
 # Command Room — Changelog
 
+## v5.2.0 — 2026-07-22 — The widget-grammar release: consistent buttons everywhere, corrections that count everywhere, and the row-quality bundle
+
+Everything staged since the v5.1.0 promote (2026-07-21, 85a451a) — 21 commits across 8 merge trains, every merge independently second-eyed (review records in handoffs/). Minor bump: new capability plus fixes, wire ids frozen throughout, persisted old widgets keep dispatching, no migration. Battery 286/0 at the release tip; one merge-time interaction bug (the F-1 single-item auto-dispatch, found by the train-merge review) was fixed and independently verified before this cut.
+
+### New capability
+- **WG1-A — fleet widget grammar** — declarative `PRIMARY_VERB_GRAMMAR` table: every row class leads with its ruled primary as a visible button (delegated→Nudge, identity→Mine, email→Send/Draft/Snooze, commitment→Done); ≤4-option rows render all-buttons with no dropdown; single-item widgets drop batch chrome and dispatch on click; a defective row degrades to an honest "1 row withheld" placeholder — never a blocked page. New canonical verbs `nudge` (compose-on-click) + `show why`.
+- **WG1-B — row-quality bundle** — id-shaped `inferred_org` resolves or strips at render (never a raw `org_045` badge); identity rows carry a quoted evidence snippet; org-shaped payloads are gated out of the person queue (re-route to the org rail or honest quarantine, plus a writer-side refusal); the scheduled staff-meeting moves section renders deterministically (the silent-drop class closed); mentions of a person with a pending add-proposal surface that proposal instead of a cold "who is X".
+- **RECL1 — corrections count everywhere** — all nine recency readers (stalled-projects, Pulse, deal health, DCC, workspace map, master tracker, list-active, org history, `go [name]` routing) now honor user-approved reclassifications through an opt-in seam (`honor_reclassifications`; default path frozen byte-identical, 9/9 mutation-fenced). A Sunday-review correction now moves the activity in every view at once.
+- **UXR1 — widget vocabulary D1–D7** — confirm tail slimmed to Mine / Theirs to [name] / Drop / Snooze; hygiene rows read "Close it" / "No — still open"; obvious name-links (exact unique clean, gate a–d) auto-apply with a `say undo` receipt and a full undo round-trip; ambiguous identity rows render evidence + an org/email/last-touched differentiator; nameless update rows resolve the on-file name or quarantine honestly; Hold/Snooze/Make-task labels rewritten plain ("Hold — parked till you answer (14 days)" / "Snooze (14 days) — hide until then" / "Turn into a task").
+
+### Hardening + fixes
+- **SYNC1 — substrate-sync hardening** — stale-mount detection with fail-CLOSED absent-file views; the mount_stale sidecar clears at first healthy append; rev stamping on every locked write.
+- **fb-plumbing** — 6 receipts/plumbing fixes from the 2026-07-20 big test (unified gate_ran shape, deliverable-sweep infra exclusion, balance no-ties refusal, typed config/person receipts, `native_draft_id`).
+- **F-1 (HIGH, found by the independent train-merge review)** — on a single-item email card, the first keystroke in the editable body auto-dispatched a draft with zero clicks (two independently-green branches composing badly). Guarded; regression mutation-verified.
+- **F-2/3/4** — orchestrator prose fully re-keyed to `nudge` on delegated rows (the live §476 meeting-today instruction included); `add email then send` composes the nudge body on degraded rows; `nudge` deliberately NOT send-class (scheduled moves rows are To-less by design — counterfactual-verified) with the claims corrected and fenced.
+- **Latent `propose()` id-collision fix** — same-fingerprint re-propose within one UTC second of a resolved twin inherited the tombstoned id and rendered nowhere; salted (ids stored on events, never re-derived — dedup/cooldowns key on fingerprint, unaffected).
+
+### Customer migration impact
+No user action required — no schedule change, no migration; scheduled chats load steps fresh at fire time. Two first-week behaviors worth knowing (both announced via the manifest): a few honest "is this still active?" questions may appear as past corrections are finally counted (capped, confirm-gated), and obvious name-links now apply automatically with a `say undo` receipt.
+
+### What's NOT in this ship
+The C3 migration of morning-briefing's Step-3b scan (separate follow-up per the RECL1 M3 ruling); the §6 per-item attribution readers (future per-surface decisions); the v5.0.0 bridge gaps (M/W/F auto-offer, balance opt-in) still ride a future bundle.
+
 ## v5.1.0 — 2026-07-21 — Objectives go live, Staff-Meeting adjudication for objective links, my-list retirement, and the widget-UX batch
 
 Everything staged since the v5.0.0 promote (2026-07-20, a95b244) — 25 commits, reviewed branch-by-branch (second-eyes on every merge; review records in handoffs/). Minor bump: new capability plus behavior changes, no schema break — the retired my-list surface keeps fossil dispatch for old widgets. Battery 276/0 at the release tip.

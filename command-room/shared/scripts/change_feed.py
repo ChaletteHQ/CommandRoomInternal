@@ -88,7 +88,8 @@ def changes_since(
 
     counts = {
         "closed_from_sent": 0, "opened_from_sent": 0, "swept": 0,
-        "people_added": 0, "people_linked": 0, "facts_noted": 0,
+        "people_added": 0, "people_linked": 0, "people_auto_linked": 0,
+        "facts_noted": 0,
         "cleanup_runs": 0, "maintenance_jobs": 0,
         "proposals_resolved": 0, "proposals_declined": 0,
         "proposals_expired": 0, "changes_undone": 0,
@@ -144,6 +145,14 @@ def changes_since(
             if isinstance(n, (int, float)) and n > 0:
                 counts["people_linked"] += int(n)
                 refs["people_linked"].append(seq)
+            # UXR1 D3 — the auto-link lane (exact-unique-clean name
+            # mentions), narrated with the undo affordance: the links
+            # reverse via brain_undo (reopen + a confirm row returns the
+            # decision to the human).
+            n = data.get("n_auto_linked") or 0
+            if isinstance(n, (int, float)) and n > 0:
+                counts["people_auto_linked"] += int(n)
+                refs["people_auto_linked"].append(seq)
         elif etype in ("person_fact_observed", "org_fact_observed"):
             # HIST1 Part 2 (D3/S1) — ONLY auto-noted structured facts are
             # narrated (they carry the brain_change_class stamp); explicit
@@ -206,6 +215,13 @@ def changes_since(
               f"Linked {n} {_plural(n, 'name')} to "
               f"{_plural(n, 'a contact', 'contacts')} already on file "
               f"(exact email match).")
+    n = counts["people_auto_linked"]
+    if n:
+        # UXR1 D3 — the ruled receipt line, verbatim shape: the read-only
+        # FB-20 grammar (chat-phrase undo affordance, no verbs, no rows).
+        _line("people_auto_linked",
+              f"Linked {n} {_plural(n, 'name-mention')} to existing "
+              f"contacts — say `undo` to reverse any.")
     n = counts["facts_noted"]
     if n:
         # HIST1 Part 2 — the FB-20 read-only grammar: a chat-phrase undo

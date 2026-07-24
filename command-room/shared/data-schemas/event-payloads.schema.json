@@ -77,9 +77,9 @@
     "properties": {"source_ref": "string", "summary": "string", "direction": "string", "dedup_hash": "string", "person_ids": "array", "primary_thread_id": "string"}
   },
   "email_drafted": {
-    "description": "A draft produced by email-writer (event fires from apply-choices on click).",
+    "description": "A draft produced by email-writer (event fires from apply-choices on click). native_draft_id is the declared backend's native draft id (FB-plumbing item 5 — writers emit native_draft_id; the legacy gmail_draft_id spelling stays listed so pre-rename events on disk validate + read forever via native_draft_id_from_data).",
     "required": [["recipient"]],
-    "properties": {"recipient": "string", "topic": "string", "gmail_draft_id": "string", "draft_event_seq": "number", "commitment_refs": "array", "decision_refs": "array"}
+    "properties": {"recipient": "string", "topic": "string", "native_draft_id": "string", "gmail_draft_id": "string", "draft_event_seq": "number", "commitment_refs": "array", "decision_refs": "array"}
   },
   "email_sent": {
     "description": "A sent email; closure event linking back via draft_event_seq. gmail_thread_id (B6) when the send response provides it.",
@@ -240,5 +240,15 @@
     "description": "One on-demand chart answer (SPEC OUT3B). WRITTEN ONLY by the chart-on-demand skill, once per ask. data.catalog_id = the closed-catalog series that answered (value_trend / pipeline_mix / pipeline_by_org); kind = the charts.py kind drawn. refused=true when the ask had no substrate answer (data.reason names why + which catalog entry was closest, per D4) — the refusal is text, not a page, so artifact is absent. On a rendered chart refused=false and artifact = the saved page path. org_id present only when the series was entity-scoped through the ENTITY_RESOLVE ladder. Mined to learn what the (empty at ship) chart-ask corpus actually wants charted.",
     "required": [["catalog_id"], ["kind"], ["refused"]],
     "properties": {"catalog_id": "string", "kind": "string", "refused": "boolean", "org_id": "string", "artifact": "string", "reason": "string"}
+  },
+  "substrate_reconciled": {
+    "description": "SPEC SYNC1 A3 — one receipt per successful quarantine reconcile / merge-forward. WRITTEN ONLY by reconcile_forward (inside the writer lock, after a healthy view is confirmed). data.replayed = quarantined events re-appended with fresh seqs (original ts kept); already_present = quarantined events that content-signature/commitment-id dedup skipped; archived = quarantine/marker files moved into the _recovery_<stamp>/ snapshot. Its presence proves the self-heal ran without manual recovery.",
+    "required": [["replayed"]],
+    "properties": {"replayed": "number", "already_present": "number", "archived": "number", "holder": "string"}
+  },
+  "substrate_alarm_cleared": {
+    "description": "SPEC SYNC1 A2 — best-effort audit event when a substrate-regression alert's condition re-checks false and the alert is annotated + archived to _hq/_resolved_alerts/ (D-3). WRITTEN ONLY by alarm_artifacts.sweep_alerts. data.alert = the archived alert filename; marker = the regression-marker path it referenced; sidecar_max_seq = the high-water the resolved predicate tested against.",
+    "required": [["alert"]],
+    "properties": {"alert": "string", "marker": "string", "sidecar_max_seq": "number", "resolved_at": "string"}
   }
 }

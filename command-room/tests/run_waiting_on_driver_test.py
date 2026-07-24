@@ -11,8 +11,8 @@ connector rows) and riding the FB-7 `--fired-via` receipt path.
 Asserts:
   - the partition drives the surface: owner-me rows never appear (My Plate),
     a delegated task (owner != user, kind task) lands in the Delegated section
-    NAMING who we delegated to, with the manual verb set led by `draft` (the
-    on-demand nudge — connector-free in the row, composed at dispatch per
+    NAMING who we delegated to, with the delegated verb set led by `nudge`
+    (D-A4 — connector-free in the row, composed on click at dispatch per
     orchestrator-commitments §417/§958), and the unowned + pending_review items
     land in the confirm tail with the ownership cluster (`mine` / `theirs to
     [name]` — never the opaque person-record `confirm`).
@@ -69,10 +69,10 @@ def _workspace() -> str:
         "people": [
             {"id": "person:user", "canonical_name": "Sam Sample",
              "is_primary_user": True},
-            # Bo has an email on file → the delegated `draft` button is live.
+            # Bo has an email on file → the delegated `nudge` button is live.
             {"id": "person:bo", "canonical_name": "Bo Sample",
              "emails": ["bo@example.com"]},
-            # Cara has NO email → the delegated row degrades `draft` to the
+            # Cara has NO email → the delegated row degrades `nudge` to the
             # `add email then send` recovery verb (Bug #44).
             {"id": "person:cara", "canonical_name": "Cara Sample"},
         ],
@@ -80,12 +80,12 @@ def _workspace() -> str:
     }), encoding="utf-8")
     rows = [
         # delegated task — owner != user, effective kind task → Delegated.
-        # Owner (Bo) has an email → the row carries a live `draft` button.
+        # Owner (Bo) has an email → the row carries a live `nudge` button.
         {"type": "commitment", "seq": 1, "ts": _ago(5),
          "source_skill": "meeting-notes",
          "data": {"id": "c_del", "title": "Bo ships the mapping doc",
                   "owner_id": "person:bo", "kind": "task"}},
-        # delegated task whose owner (Cara) has NO email → draft degrades to
+        # delegated task whose owner (Cara) has NO email → nudge degrades to
         # the `add email then send` recovery verb.
         {"type": "commitment", "seq": 6, "ts": _ago(5),
          "source_skill": "meeting-notes",
@@ -151,13 +151,23 @@ def main() -> int:
     bo_row = deleg_by_name.get("Bo ships the mapping doc")
     cara_row = deleg_by_name.get("Cara reviews the deck")
     check("delegated task lands in the Delegated section", bo_row is not None)
-    check("delegated row (owner has email) carries the manual set led by "
-          "on-demand draft (FIX A)",
+    # WG1-A D-A4: `nudge` leads the delegated set as the ruled primary. It is
+    # STILL connector-free — compose-on-CLICK (apply-choices runs the chase
+    # chain), no send-class body composed at render. (Train merge 2026-07-21:
+    # supersedes the widget-batch interim `draft` verb, same dispatch chain.)
+    check("delegated row (owner has email) leads with the connector-free "
+          "nudge primary (D-A4, FIX A)",
           bo_row is not None
-          and bo_row["actions"] == ["draft", "mark received", "snooze 3d",
+          and bo_row["actions"] == ["nudge", "mark received", "snooze 3d",
                                     "add to my plate"],
           bo_row and bo_row.get("actions"))
-    check("live draft row carries the owner's To: (renderer Gate 6 / Bug #44)",
+    # The To: on a live nudge row is enforced by THIS DRIVER's degrade (no
+    # email -> `add email then send`), NOT by renderer Gate 6 —
+    # _SEND_CLASS_ACTIONS deliberately excludes `nudge` (F-4 ruling
+    # 2026-07-22: the WG1-B moves adapter emits To-less nudge rows on
+    # scheduled fires, so Gate 6 cannot claim nudge).
+    check("live nudge row carries the owner's To: (driver degrade — the Bug "
+          "#44 principle; Gate 6 deliberately does NOT cover nudge, F-4)",
           bo_row is not None
           and bo_row.get("metadata") == [["To", "bo@example.com"]],
           bo_row and bo_row.get("metadata"))
@@ -165,7 +175,7 @@ def main() -> int:
           bo_row is not None
           and "delegated to Bo Sample" in bo_row["context_tag"],
           bo_row and bo_row.get("context_tag"))
-    check("delegated row with NO owner email degrades draft to "
+    check("delegated row with NO owner email degrades nudge to "
           "`add email then send` (Bug #44), still naming the owner",
           cara_row is not None
           and cara_row["actions"] == ["add email then send", "mark received",
@@ -190,10 +200,16 @@ def main() -> int:
                   and "theirs to [name]" in row["actions"]
                   and "confirm" not in row["actions"],
                   row and row.get("actions"))
-        check("confirm rows use the full ownership cluster verbatim (FIX B+E)",
+        # UXR1 D1 (M ruling 2026-07-21) — the pin moved with the policy: the
+        # emitted tail slimmed to mine/theirs/drop/snooze. `not relevant` and
+        # `add to my plate` left the EMISSION only (wire ids stay registered;
+        # persisted 5-verb widgets still dispatch — pinned in
+        # run_uxr1_vocabulary_test / run_cts1fix_reroute_test).
+        check("confirm rows use the slimmed ownership cluster verbatim "
+              "(FIX B+E + UXR1 D1)",
               unowned_row is not None
-              and unowned_row["actions"] == ["mine", "theirs to [name]", "drop",
-                                             "not relevant", "add to my plate"],
+              and unowned_row["actions"] == ["mine", "theirs to [name]",
+                                             "drop", "snooze 3d"],
               unowned_row and unowned_row.get("actions"))
 
     h = {c["label"]: c["value"] for c in view["counters"]}

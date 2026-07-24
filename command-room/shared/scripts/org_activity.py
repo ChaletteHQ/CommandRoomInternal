@@ -48,6 +48,7 @@ from thread_activity import (  # noqa: E402
     ALL_TYPES,
     _event_dt,
     _iter_events,
+    apply_reclassifications,
     event_thread_ids,
 )
 
@@ -117,6 +118,7 @@ def derive_from_events(
     thread_org: Optional[dict] = None,
     activity_types: Optional[Iterable[str]] = None,
     confidence_floor: float = CONFIDENCE_FLOOR,
+    honor_reclassifications: bool = False,
 ) -> dict[str, OrgActivity]:
     """The fold over an in-memory event iterable — same rules as
     derive_org_activity, for callers that already hold the events
@@ -128,7 +130,15 @@ def derive_from_events(
     day-count, and pass the SAME set from every such surface (the F-54
     contract). The thread_activity.ALL_TYPES sentinel is accepted as an
     explicit spelling of None.
+
+    honor_reclassifications: when True, fold
+    thread_activity.apply_reclassifications over the stream first (RECL1)
+    — an event moved off a thread stops crediting that thread's org, and
+    the corrected thread's org receives it. Default False is the frozen
+    raw path; same seam shape as thread_activity, same default.
     """
+    if honor_reclassifications:
+        events = apply_reclassifications(events)
     if activity_types is ALL_TYPES or activity_types is None:
         types = None
     else:
@@ -166,6 +176,7 @@ def derive_org_activity(
     entities: Optional[dict] = None,
     activity_types: Optional[Iterable[str]] = None,
     confidence_floor: float = CONFIDENCE_FLOOR,
+    honor_reclassifications: bool = False,
 ) -> dict[str, OrgActivity]:
     """{org_id: most-recent OrgActivity} derived from events at read time.
     THE org staleness baseline — never the stored last_interaction field
@@ -179,6 +190,9 @@ def derive_org_activity(
             events reaching an org only via an affiliated thread count.
         activity_types: which event types count. None → all (renderer
             semantics). Day-count surfaces must share one real set (F-54).
+        honor_reclassifications: True = fold user-approved corrections
+            into the stream before deriving (RECL1 adoption; see
+            derive_from_events). Default False is the frozen raw path.
     """
     ws = Path(workspace_root)
     if entities is None:
@@ -193,6 +207,7 @@ def derive_org_activity(
         thread_org=thread_org_map(entities),
         activity_types=activity_types,
         confidence_floor=confidence_floor,
+        honor_reclassifications=honor_reclassifications,
     )
 
 

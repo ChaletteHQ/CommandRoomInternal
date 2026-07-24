@@ -68,14 +68,17 @@ def test_normalize_provenance_shape():
 
 
 def test_email_drafted_provenance_builder():
-    # EW2+T (F-12): the drafted-side dual-write builder — legacy field name,
-    # backend-native value, structured provenance block. Superhuman and Gmail
-    # draft ids land identically.
+    # EW2+T (F-12) / FB-plumbing item 5: the drafted-side builder emits the
+    # backend-neutral native_draft_id (was the misleading gmail_draft_id),
+    # carrying the declared backend's native value + the structured provenance
+    # block. Superhuman and Gmail draft ids land identically.
     d = prov.build_email_drafted_provenance(
         draft_id="sh_draft_123", provider="superhuman",
         server_id="srv0test1", account_id="acct_biz1")
-    check("F-12: legacy gmail_draft_id carries the Superhuman native id",
-          d["gmail_draft_id"] == "sh_draft_123")
+    check("item5: native_draft_id carries the Superhuman native id",
+          d["native_draft_id"] == "sh_draft_123")
+    check("item5: writer no longer emits the misleading gmail_draft_id name",
+          "gmail_draft_id" not in d)
     check("F-12: structured provenance carries provider",
           d["provenance"]["provider"] == "superhuman")
     check("F-12: structured provenance carries native_id",
@@ -84,12 +87,25 @@ def test_email_drafted_provenance_builder():
           d["provenance"]["account_id"] == "acct_biz1")
     g = prov.build_email_drafted_provenance(draft_id="r-9988", provider="gmail")
     check("F-12: gmail draft id lands in the same shape",
-          g["gmail_draft_id"] == "r-9988" and g["provenance"]["provider"] == "gmail")
+          g["native_draft_id"] == "r-9988" and g["provenance"]["provider"] == "gmail")
     empty = prov.build_email_drafted_provenance(draft_id=None, provider="superhuman", server_id="srv0test1")
-    check("F-12: no draft id -> legacy field omitted",
-          "gmail_draft_id" not in empty)
+    check("item5: no draft id -> native_draft_id field omitted",
+          "native_draft_id" not in empty)
     check("F-12: no draft id -> provenance still identifies the connector",
           empty["provenance"]["connector"] == "srv0test1")
+
+    # Reader back-compat (item 5): native_draft_id_from_data reads BOTH the new
+    # name and a legacy gmail_draft_id on a pre-rename event (append-only
+    # history is never rewritten). New name wins when both are present.
+    check("reader reads the new native_draft_id",
+          prov.native_draft_id_from_data({"native_draft_id": "n-1"}) == "n-1")
+    check("reader reads the LEGACY gmail_draft_id (pre-rename events on disk)",
+          prov.native_draft_id_from_data({"gmail_draft_id": "old-7"}) == "old-7")
+    check("reader prefers the new name when both are present",
+          prov.native_draft_id_from_data(
+              {"native_draft_id": "n-2", "gmail_draft_id": "old-9"}) == "n-2")
+    check("reader returns None when neither is set",
+          prov.native_draft_id_from_data({"recipient": "x"}) is None)
 
 
 def test_resolve_account_id_backcompat():

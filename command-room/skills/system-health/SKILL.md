@@ -93,16 +93,23 @@ cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from org_writer import count_failing_orgs
 from brain_proposals import load_open_proposals
-from substrate_health import substrate_alarm_lines
+from substrate_health import substrate_alarm_lines, check_git_in_drive
 ws = '<workspace_root>'
 integ = count_failing_orgs(ws)
 n_waiting = len(load_open_proposals(ws, 'system-health'))
-alarms = substrate_alarm_lines(ws)   # FS-04/05/06/15 — loud substrate alarms
-print(json.dumps({'integ': integ, 'n_waiting': n_waiting, 'alarms': alarms}))
+alarms = substrate_alarm_lines(ws)   # FS-04/05/06/15 + SYNC1 stale-view — loud substrate alarms
+git_lint = check_git_in_drive(ws)    # SYNC1 B4 — .git-in-Drive advisory
+print(json.dumps({'integ': integ, 'n_waiting': n_waiting, 'alarms': alarms + git_lint}))
 "
 ```
 
-- **Substrate alarms (FS-04/05/06/15 — render FIRST, verbatim):** every line in `alarms` renders verbatim, most-severe first, ABOVE the rest of the self-report. These are the log-clobber, unreadable-JSON, and duplicate-entry alarms — LOUD by design (the dogfood found the readers degrading silently). Empty `alarms` → render nothing here.
+- **Substrate alarms (FS-04/05/06/15 + SYNC1 — render FIRST, verbatim):** every line in `alarms` renders verbatim, most-severe first, ABOVE the rest of the self-report. These are the log-clobber, stale-view (SYNC1 A1 — the view is behind its own high-water mark), unreadable-JSON, and duplicate-entry alarms — LOUD by design (the dogfood found the readers degrading silently). `substrate_alarm_lines` also runs `alarm_artifacts.sweep_alerts` on the way through, so a resolved regression alert self-clears here rather than lingering (SYNC1 A2 — an alarm must not outlive its truth). The `check_git_in_drive` lines (SYNC1 B4) are advisory and render last. Empty → render nothing here.
+
+### SYNC1 — substrate-sync doctrine (MANDATORY reads)
+
+- **Never hand-author a substrate-regression alert or its recovery steps.** On a blocked substrate write (a fire that hits `SubstrateRegressionError`), the alert `.md` is rendered ONLY by `alarm_artifacts.write_alert(ws, marker)` FROM the `.seqregression.json` marker — never free prose. The 2026-07-19 fire hand-wrote an alert asserting data loss that was false by read-time; `write_alert` states BOTH hypotheses (stale mount vs real clobber) and never asserts loss as fact. If you find yourself typing recovery instructions, stop and call the helper.
+- **Reconcile is automatic — surface it, don't drive it.** `reconcile_forward` runs inside the writer lock and self-heals quarantined batches once a healthy view returns (it writes a `substrate_reconciled` receipt). A health check SURFACES that the reconcile happened; it never re-runs recovery by hand.
+- **Scheduled/maintenance fires preflight first.** Any write-chained scheduled fire calls `substrate_health.preflight_freshness(ws)` as step 0 and EXITS before any job runs when it returns `ok=False` (a stale mount is refused up front, jobs stay due, no quarantine litter) — see the maintenance prompt.
 - **Entity-integrity line:** `unreadable=True` → surface a LOUD one-liner: *"⚠ I couldn't read your records file — it may be mid-sync or corrupted. If this persists, fully quit and reopen Cowork."* (FS-15 — corruption is never silent.) Else `n_failing == 0` → *"Your records are clean ([n_orgs] orgs checked)."*; `n_failing > 0` → *"[n_failing] of [n_orgs] org records need repair — say `update command room` to fix them."*
 - **Queue-health line:** `n_waiting > 0` → *"[n_waiting] items are waiting on you — say `staff meeting` to work through them."* When `n_waiting > 0` you may NOT claim the queue is empty or that nothing needs the CEO's attention — that was the FS-09 failure (an all-clear line rendered over 77 open proposals). Only `n_waiting == 0` renders the honest empty line: *"Nothing waiting on your eyes right now."*
 

@@ -512,8 +512,11 @@ _raw_append(ws, [
               "note": "title change spotted in a signature",
               "source_ref": "mail:thread_9001"}},
 ])
+# UXR1 D5: update-type rows now RESOLVE their display name from the record
+# (person_ross's update row legitimately carries "Ross Placeholder"), so the
+# FS-19 suppression pin scopes to ADD rows (person_id is None on those).
 pnames = [i.get("name") for i in bp.load_open_proposals(ws)
-          if i["source_family"] == "person"]
+          if i["source_family"] == "person" and not i.get("person_id")]
 check("Ross Placeholder" not in pnames,
       f"FS-19: full-name match to an existing contact is suppressed: {pnames}")
 check("Kevin" in pnames,
@@ -533,5 +536,184 @@ check(bp.person_proposal_already_on_file(
 check(bp.person_proposal_already_on_file(
     ws, {"type": "person_update_proposal", "name": "Ross Placeholder"}) is False,
     "FS-19 helper: update-type is never suppressed")
+
+
+# =============================================================================
+# WG1-B — row quality (D-B1 resolve-or-strip / D-B2 evidence snippet /
+# D-B3 org-shape gate). Fixtures mirror the real substrate shapes: the
+# seq-3774 payload class (person_proposal with role + evidence + an id-shaped
+# inferred_org) and the TDX-Arena row class (org-named person_proposal, no
+# role, no evidence). Placeholder names only; dates relative to today (G14).
+# =============================================================================
+import re as _re  # noqa: E402
+
+ws = Path(tempfile.mkdtemp())
+_data = ws / "_hq" / "data"
+_data.mkdir(parents=True)
+(_data / "entities.json").write_text(json.dumps({
+    "version": 1, "people": [],
+    "orgs": [
+        {"id": "org_045", "canonical_name": "Bluewater Placeholder",
+         "relationship_type": "client"},
+        {"id": "org_101", "canonical_name": "Vertex Range (AcademyCo)",
+         "relationship_type": "prospect"},
+    ],
+    "threads": [],
+}), encoding="utf-8")
+(_data / "events.jsonl").write_text("", encoding="utf-8")
+
+fresh = NOW - timedelta(days=2)
+LONG_EVIDENCE = ("Onboarding session for a new client at 4k per month; "
+                 "instance branded internally. Org record exists but no "
+                 "person record yet, and the transcript names her twice "
+                 "as the decision maker on the rollout.")
+_raw_append(ws, [
+    # seq-3774 class — hyphen id variant (the live sighting class).
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Lia Sample",
+              "inferred_role": "New client",
+              "inferred_org": "org-045",
+              "confidence": 0.75, "pending_review": True,
+              "source_ref": "granola:00000000-mirror-3774",
+              "evidence": LONG_EVIDENCE,
+              "review_reason": "New paying client with no person record."}},
+    # unresolvable id variant — must STRIP, never render.
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Miko Placeholder",
+              "inferred_role": "advisor",
+              "inferred_org": "org_777",
+              "pending_review": True,
+              "source_ref": "granola:00000000-mirror-b",
+              "evidence": "Advisor intro on the platform call."}},
+    # D-B2 negative control — no evidence: line stays byte-identical.
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "meeting-notes",
+     "data": {"name": "Garrick Placeholder",
+              "pending_review": True,
+              "source_ref": ""}},
+    # TDX-Arena class 1 — org-named, no role/evidence, org already ON FILE.
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Vertex Range (AcademyCo)", "pending_review": True,
+              "source_ref": "granola:00000000-mirror-tdx"}},
+    # TDX-Arena class 2 — org-named, no role/evidence, matching an OPEN
+    # org_proposal (the org rail renders it; the person row re-routes away).
+    {"ts": _iso(fresh), "type": "org_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Harbor Deck (StudioCo)",
+              "signal": "External training platform, named repeatedly.",
+              "source_ref": "granola:00000000-mirror-tdx2",
+              "pending_review": True}},
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Harbor Deck (StudioCo)", "pending_review": True,
+              "source_ref": "granola:00000000-mirror-tdx2"}},
+    # TDX-Arena class 3 — org-marker shape, matches NOTHING → quarantine.
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Quantum Placeholder LLC", "pending_review": True,
+              "source_ref": "granola:00000000-mirror-tdx3"}},
+])
+
+items = bp.load_open_proposals(ws)
+person_items = {i.get("name"): i for i in items
+                if i["source_family"] == "person"}
+
+# --- D-B1: id-shaped inferred_org resolves to the canonical name ------------
+lia = person_items.get("Lia Sample")
+check(lia is not None, "seq-3774-class row renders as a person row")
+check("Bluewater Placeholder" in lia["render_line"],
+      f"D-B1: hyphen org id resolves to canonical name: {lia['render_line']}")
+check(_re.search(r"org[-_]\d+", lia["render_line"]) is None,
+      f"D-B1: raw id absent from the rendered line: {lia['render_line']}")
+check(lia["inferred_org"] == "Bluewater Placeholder",
+      "D-B1: the emitted item carries the RESOLVED org, never the id")
+
+# --- D-B1: unresolvable id STRIPS (role-only badge, no org clause) ----------
+miko = person_items.get("Miko Placeholder")
+check(miko is not None, "unresolvable-id row still renders as a person row")
+check(miko["render_line"].startswith("looks like advisor ·"),
+      f"D-B1: unresolvable id strips to role-only badge: {miko['render_line']}")
+check(_re.search(r"org[-_]\d+", miko["render_line"]) is None,
+      "D-B1: unresolvable raw id never renders")
+check(miko["inferred_org"] == "",
+      "D-B1: unresolvable id stripped from the emitted item")
+
+# --- D-B1: the stored payload is UNTOUCHED (no event rewrites) --------------
+stored = [e for e in _events(ws, "person_proposal")
+          if e["data"].get("name") == "Lia Sample"][0]
+check(stored["data"]["inferred_org"] == "org-045",
+      "D-B1: resolve-or-strip is render-side only — payload untouched")
+
+# --- D-B2: evidence renders as a quoted, word-boundary-truncated snippet ----
+check("“" in lia["render_line"] and "”" in lia["render_line"],
+      f"D-B2: evidence renders as a quoted snippet: {lia['render_line']}")
+snippet = lia["render_line"].split("“")[1].split("”")[0]
+check(snippet.endswith("…"), f"D-B2: long evidence truncates with ellipsis: {snippet!r}")
+check(len(snippet) <= 145, f"D-B2: snippet capped near 140 chars ({len(snippet)})")
+body = snippet[:-1]
+check(LONG_EVIDENCE.startswith(body.rstrip()) or body.rstrip() in LONG_EVIDENCE,
+      "D-B2: snippet is the evidence VERBATIM (word-boundary cut, no rewrite)")
+check(" " + body.rstrip().split(" ")[-1] + " " in LONG_EVIDENCE + " ",
+      f"D-B2: truncation lands on a word boundary: …{body[-20:]!r}")
+
+# --- D-B2: evidence-less row keeps today's generic line byte-identical ------
+garrick = person_items.get("Garrick Placeholder")
+check(garrick is not None, "name-only row still renders (negative control)")
+check(_re.fullmatch(
+      r"mentioned by name only · surfaced in a captured note"
+      r"( on [A-Z][a-z]{2} \d{1,2})? · no contact record yet",
+      garrick["render_line"]) is not None,
+      f"D-B2: empty evidence → generic line unchanged (no snippet segment): "
+      f"{garrick['render_line']}")
+
+# --- D-B3: org-on-file person row drops (actioned symmetry) -----------------
+check("Vertex Range (AcademyCo)" not in person_items,
+      "D-B3: org-named row (org on file) never renders as a person row")
+
+# --- D-B3: open org_proposal match re-routes to the org rail ----------------
+check("Harbor Deck (StudioCo)" not in person_items,
+      "D-B3: org-proposal-named row leaves the person queue")
+org_rows = [i for i in items if i["source_family"] == "org"]
+check(any(i.get("name") == "Harbor Deck (StudioCo)" for i in org_rows),
+      "D-B3: the org rail renders the same subject as a proper org row")
+check(sum(1 for i in items
+          if (i.get("name") or "") == "Harbor Deck (StudioCo)") == 1,
+      "D-B3: the re-route never double-renders the subject")
+
+# --- D-B3: unroutable org-marker shape quarantines (honest placeholder) -----
+quar = [i for i in items if i.get("title") == "1 row withheld"]
+check(len(quar) == 1, f"D-B3: exactly one quarantine placeholder: {len(quar)}")
+check("org-shaped payload in the person queue" in quar[0]["render_line"],
+      "D-B3: placeholder names the defect class")
+check("Quantum" not in quar[0]["render_line"]
+      and "Quantum" not in quar[0]["title"],
+      "D-B3: placeholder never echoes the payload content")
+check([t["action"] for t in quar[0]["action_tuples"]] == ["show why"],
+      "D-B3: placeholder carries only the read-only show-why verb")
+check(quar[0]["id"].startswith("person:"),
+      "D-B3: placeholder keeps the real wire id for show-why dispatch")
+
+# --- D-B3: the Laura shape (role+evidence, org-matching name) is NEVER gated
+# (the live org_045 record shares the person's name — person signal wins) ----
+_raw_append(ws, [
+    {"ts": _iso(fresh), "type": "person_proposal", "source_skill": "past-meetings",
+     "data": {"name": "Bluewater Placeholder",
+              "inferred_role": "founder", "pending_review": True,
+              "source_ref": "granola:00000000-mirror-c",
+              "evidence": "Named as the founder on the kickoff call."}},
+])
+names_now = [i.get("name") for i in bp.load_open_proposals(ws)
+             if i["source_family"] == "person"]
+check("Bluewater Placeholder" in names_now,
+      "D-B3: a role+evidence row is never gated, whatever its name matches")
+
+# --- acceptance #6: raw id absent from the FULL rendered page ---------------
+from widget_transport import render_and_persist  # noqa: E402
+view = bp.build_card_view(bp.rank_proposals(bp.load_open_proposals(ws)),
+                          surface="staff-meeting")
+transport = render_and_persist(data_view=view, wrapper="fragment",
+                               persist_dir=tempfile.mkdtemp(),
+                               name_hint="staff-meeting", page=1,
+                               page_size=20)
+visible = _re.sub(r'(data-[a-z-]+="[^"]*")|(href="[^"]*")', "",
+                  transport["html"])
+check(_re.search(r"org[-_]\d+", visible) is None,
+      "D-B1 acceptance: no org id anywhere in the rendered page's visible text")
 
 print(f"OK — {PASS} checks passed")

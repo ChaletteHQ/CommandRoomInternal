@@ -611,7 +611,8 @@ def main() -> int:
     # ONCE per build; the stored record stamp is the zero-event floor only.
     try:
         from thread_activity import derive_thread_activity
-        activity = derive_thread_activity(args.workspace_root)
+        activity = derive_thread_activity(
+            args.workspace_root, honor_reclassifications=True)  # RECL1
     except Exception:
         activity = {}
 

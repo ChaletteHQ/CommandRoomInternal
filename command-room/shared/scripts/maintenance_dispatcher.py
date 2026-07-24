@@ -176,7 +176,13 @@ def _job_overrides(workspace_root) -> dict:
     `workspace.schedule_config.maintenance_jobs.<job_id>` — change-schedule can
     pause ONE job (`{"enabled": false}`) without touching the task. Defensive:
     missing/corrupt config means no overrides."""
-    path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+    # SPEC SYNC1 B1 — route the entities.json read through the (dormant)
+    # resolver; byte-identical to `_hq/data/entities.json` with no override.
+    try:
+        from data_root import resolve as _resolve_data_root
+        path = _resolve_data_root(workspace_root) / "entities.json"
+    except Exception:
+        path = Path(workspace_root) / "_hq" / "data" / "entities.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):

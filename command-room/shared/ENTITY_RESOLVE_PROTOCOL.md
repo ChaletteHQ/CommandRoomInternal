@@ -78,6 +78,18 @@ If `resolve_all()` returns NO candidates, ONLY THEN may a skill fall back
 to substring grep against entities.json — and that fallback MUST be flagged
 to the user, not silently surfaced as a single result.
 
+**Opt-in proposal tier (WG1-B D-B5).** `resolve_all(..., include_open_proposals=True)`
+adds a FINAL tier that fires only on a total miss: the query is exact-name-matched
+against the open `person_proposal` queue. A hit returns
+`entity_type="open_proposal"` (confidence 1.0, `record` = the proposal row with
+name/evidence/captured_ts/seq). Mention-handling consumers (people-crm Gate 1,
+workspace-manager's resolver gate) pass the flag and surface the pending proposal
+— *"[Name] has a pending add-person proposal from [date] — '[evidence]'. Add them
+/ not relevant?"* — instead of a cold "who is X"; adjudication stays with the
+existing confirm-flow verbs. The default (`False`) path is byte-identical and
+never reads the events log. A mention corroborates a proposal; it NEVER
+auto-confirms one.
+
 **Skipping `resolve_all()` and grep'ing directly is a contract violation
 as of v3.13.8.** It produces the false-uniqueness pattern that lost the
 multi-candidate disambiguation step in 5+ skills pre-v3.13.7.

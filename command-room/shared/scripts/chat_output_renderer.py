@@ -750,6 +750,12 @@ _EMAIL_REGEX = _re_mod_send.compile(
 )
 
 # Send-class actions — buttons whose entire UX promise depends on a valid email.
+# `nudge` is DELIBERATELY absent (train-merge review F-4, ruled 2026-07-22):
+# the WG1-B D-B4 moves adapter emits To-less `nudge` rows on scheduled
+# staff-meeting fires (compose-on-click resolves the address at dispatch), so
+# adding it here would DataShapeError that whole surface. The waiting-on
+# driver's own degrade (`nudge` -> `add email then send` when no owner email
+# resolves) is the enforcement for delegated commitment rows.
 _SEND_CLASS_ACTIONS = frozenset({"send", "draft", "edit then send"})
 
 
@@ -1963,11 +1969,18 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
 
     sections = data.get("sections", [])
     total = _count_total_selectable_items(sections)
+    # WG1-A D-A5 — a single-item widget drops the batch footer (counter / Apply
+    # all / Reset / Snooze rest); a button click dispatches directly. The
+    # `cr-card-single` marker is the single source of truth the JS reads for
+    # direct-dispatch mode and validate_rendered_widget reads to exempt the
+    # suppressed footer from the F-58 feedback contract.
+    single_item = (total == 1)
 
     # T2.2 — content renders FIRST; the <style>/<script> scaffold is composed
     # from what the content actually contains (conditional emission).
     parts: list[str] = []
-    parts.append('<div class="cr-card">')
+    parts.append('<div class="cr-card cr-card-single">' if single_item
+                 else '<div class="cr-card">')
     # Brand strip — inline Chalette Command Room stacked logo (v2.12.2+).
     # SVG colors adapted for dark widget background:
     #   "C" stays brand gold #B88B4A (works on either bg)
@@ -2039,17 +2052,21 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # surface: whenever Apply is disabled because a selected action is
     # missing its required input, the reason renders HERE, next to the
     # button the user is staring at.
-    parts.append('<div class="cr-footer">')
-    parts.append(
-        f'<div class="cr-counter"><strong id="cr-count">0</strong> of {total} selected</div>'
-    )
-    parts.append('<div class="cr-footer-actions">')
-    parts.append('<button class="cr-btn-apply" id="cr-apply" type="button" disabled>Apply all</button>')
-    parts.append('<button class="cr-btn-secondary" id="cr-clear" type="button">Reset</button>')
-    parts.append('<button class="cr-btn-secondary" id="cr-skip-all" type="button">Snooze rest (1 day)</button>')
-    parts.append("</div>")
-    parts.append('<div class="cr-apply-reason" id="cr-apply-reason" style="display:none;"></div>')
-    parts.append("</div>")
+    # WG1-A D-A5 — batch chrome only on multi-item widgets. A single-item card
+    # dispatches directly on click (crSingleDispatch); the counter/Apply/Reset/
+    # Snooze-rest footer would be dead chrome, so it is suppressed.
+    if not single_item:
+        parts.append('<div class="cr-footer">')
+        parts.append(
+            f'<div class="cr-counter"><strong id="cr-count">0</strong> of {total} selected</div>'
+        )
+        parts.append('<div class="cr-footer-actions">')
+        parts.append('<button class="cr-btn-apply" id="cr-apply" type="button" disabled>Apply all</button>')
+        parts.append('<button class="cr-btn-secondary" id="cr-clear" type="button">Reset</button>')
+        parts.append('<button class="cr-btn-secondary" id="cr-skip-all" type="button">Snooze rest (1 day)</button>')
+        parts.append("</div>")
+        parts.append('<div class="cr-apply-reason" id="cr-apply-reason" style="display:none;"></div>')
+        parts.append("</div>")
 
     parts.append("</div>")
 
@@ -2279,12 +2296,24 @@ def validate_rendered_widget(html: str, *, surface=None) -> None:
             feedback_missing.append(
                 "armed-state CSS (.cr-select-armed rules inside a <style> block)"
             )
-        if 'id="cr-count"' not in html:
+        # WG1-A D-A5 — a single-item widget legitimately has no batch footer
+        # (counter / Apply / Apply-hold reason); it dispatches directly on
+        # click. The pressed-state CSS requirement below still applies. Match
+        # the full card-open ELEMENT, `<` included — the JS carries a
+        # `.cr-card-single` selector string that a bare substring test would
+        # false-hit, and visible text can carry the bare ATTRIBUTE string too
+        # (quotes are not escaped in text nodes, so a row name containing
+        # `class="cr-card cr-card-single"` renders it verbatim). `<` IS
+        # escaped in every text node, so only the renderer can produce the
+        # element form — either false-hit would silently disable the
+        # F-58/F-17 enforcement for the page.
+        single_item = '<div class="cr-card cr-card-single">' in html
+        if 'id="cr-count"' not in html and not single_item:
             feedback_missing.append('live selection counter (id="cr-count")')
-        if 'id="cr-apply"' not in html:
+        if 'id="cr-apply"' not in html and not single_item:
             feedback_missing.append('Apply button (id="cr-apply")')
         if 'data-input-required="1"' in html:
-            if 'id="cr-apply-reason"' not in html:
+            if 'id="cr-apply-reason"' not in html and not single_item:
                 feedback_missing.append(
                     'Apply-hold reason line (id="cr-apply-reason") — required '
                     "because at least one action needs an input"
@@ -2646,6 +2675,9 @@ def _detect_input_type(action: str) -> Optional[str]:
 # Push-to-vs-Defer: `resolved` displays "Done", `push to [date]` displays
 # "Defer", `skip` displays "Snooze (1 day)" — and every mute states its
 # duration on the button. Never add a local label here; edit the table row.
+# ONE ruled exception (UXR1 D2, M 2026-07-21): CLASS_DISPLAY_LABELS below
+# relabels a verb per GRAMMAR CLASS (hygiene rows only today) — a table,
+# never a call-site string, so the exception stays as auditable as the rule.
 _DISPLAY_LABEL_OVERRIDES = dict(_TAXONOMY_DISPLAY_LABELS)
 
 
@@ -2719,7 +2751,8 @@ def _extract_email_fields(item: Optional[dict]) -> dict:
     return out
 
 
-def _render_action_option(action: str, item_n, item: Optional[dict] = None) -> tuple[str, str]:
+def _render_action_option(action: str, item_n, item: Optional[dict] = None,
+                          label: Optional[str] = None) -> tuple[str, str]:
     """Render a single action as an <option> in the row's verb DROPDOWN
     (T2.2 row diet — M approved dropdowns over the six-button row; RV/FS-10
     density ask). Returns (option_html, input_html).
@@ -2727,6 +2760,9 @@ def _render_action_option(action: str, item_n, item: Optional[dict] = None) -> t
     item_n is the row's data-n (number, sub-letter id like '1a', or a wire id
     like a proposal id). item (optional) is the parent item dict; used to
     pre-populate multi-field edit inputs from the item's metadata + body_lines.
+    label (UXR1 D2) is an explicit per-class display label from
+    CLASS_DISPLAY_LABELS; None → the taxonomy label. The option `value`
+    always carries the frozen wire id.
 
     The option's `value` carries the FULL action string (including brackets) —
     the SAME contract the per-row buttons carried — so apply-choices dispatch
@@ -2738,7 +2774,7 @@ def _render_action_option(action: str, item_n, item: Optional[dict] = None) -> t
     renders the select first, then all input wrappers stacked below.
     """
     safe_action = _html_mod.escape(action, quote=True)
-    label = _action_display_label(action)
+    label = label if label is not None else _action_display_label(action)
     input_type = _detect_input_type(action)
 
     # v4.5.2 S2 (F-17) — required-input contract, unchanged: the requirement
@@ -2925,41 +2961,138 @@ _EMAIL_SHAPE_MARKERS = ("send", "draft")   # detects an email-shaped row
 _PRIMARY_EMAIL_VERBS = ("send", "draft", "snooze 3d")
 _PRIMARY_COMMITMENT_VERBS = ("resolved", "mark done")
 
+# WG1-A D-A1/D-A2 (M ruling 2026-07-20, big-test Findings Ledger rows 13/13b):
+# ONE declarative grammar table replaces the two hardcoded email/commitment
+# special-cases. Each row's most-likely action(s) promote to visible primary
+# buttons; class detection is marker-based on the row's OWN verb set (rows
+# self-describe by their verbs — no new data-view field, so legacy persisted
+# views and every builder keep working unchanged). First matching class wins,
+# so ORDER MATTERS: email is checked before delegated so a Waiting On chase row
+# (email-shaped AND carrying `mark received`) still promotes Send/Draft/Snooze,
+# not Nudge — FB-17's card behaviour is preserved. Wire ids stay frozen; this is
+# display layout only. Buttons carry the CANONICAL taxonomy label + action id —
+# never a locally-relabelled verb (the one-label-per-verb F-59 contract holds).
+#
+# Row = (class, marker verb-ids (any present ⇒ this class), primary verb-ids in
+# display order). The ≤4 rule in _render_widget_item may additionally surface
+# the tail as secondary buttons; primaries here decide what's promoted + styled.
+PRIMARY_VERB_GRAMMAR = (
+    ("email",      _EMAIL_SHAPE_MARKERS,             _PRIMARY_EMAIL_VERBS),
+    ("delegated",  ("nudge", "mark received"),       ("nudge",)),
+    # UXR1 D2 — the hygiene/commitment_review row ("Did you already handle
+    # this? — close it?"). Marker: `hold` (only _CRU_ACTIONS emits it), OR the
+    # confirm+not-relevant PAIR (the same family's commitments-chat Phase 3.6
+    # cluster, which carries `add to my plate` instead of `hold`) — a tuple
+    # marker means ALL its ids must be present. Checked BEFORE the bare
+    # `confirm` class so a hygiene row never falls through to it.
+    ("hygiene",    ("hold", ("confirm", "not relevant")), ("confirm",)),
+    ("commitment", _PRIMARY_COMMITMENT_VERBS,        _PRIMARY_COMMITMENT_VERBS),
+    ("identity",   ("mine",),                        ("mine",)),
+    ("confirm",    ("confirm", "confirm proposal"),  ("confirm", "confirm proposal")),
+)
+
+# UXR1 D2 (M ruling 2026-07-21, UX review finding 9) — per-CLASS display-label
+# overrides, the ONE ruled exception to F-59's one-label-per-verb contract.
+# The hygiene row's question is "close it?", so its affirmative must answer
+# the question ("Close it", not the opaque "Confirm") and its negative must
+# say what actually happens ("No — still open": the suggestion mutes 60d and
+# the commitment STAYS OPEN — the old "Not relevant (60 days)" read as
+# "make this go away" while leaving it open). Wire ids untouched — this is
+# display text only; dispatch and every OTHER surface's labels (the global
+# "Not relevant (60 days)") are unchanged. Add entries here ONLY with an
+# M ruling — a per-class relabel anywhere else recreates the F-59 disease.
+CLASS_DISPLAY_LABELS = {
+    "hygiene": {"confirm": "Close it", "not relevant": "No — still open"},
+}
+
+
+def _class_markers_match(low: set, markers) -> bool:
+    """A marker entry that is itself a tuple requires ALL its ids present
+    (the UXR1 D2 pair marker); a string entry matches on presence."""
+    for m in markers:
+        if isinstance(m, tuple):
+            if set(m) <= low:
+                return True
+        elif m in low:
+            return True
+    return False
+
+
+def _grammar_class_of(actions: list) -> Optional[str]:
+    """The PRIMARY_VERB_GRAMMAR class that owns this row (first match wins,
+    same order as _split_primary_verbs), or None."""
+    low = {str(a).lower() for a in actions}
+    for cls, markers, _primaries in PRIMARY_VERB_GRAMMAR:
+        if _class_markers_match(low, markers):
+            return cls
+    return None
+
+
+def _class_label_overrides(actions: list) -> dict:
+    """The row's CLASS_DISPLAY_LABELS map ({} for every non-overridden
+    class) — computed once per row in _render_widget_item and threaded to
+    the button/option renderers."""
+    return CLASS_DISPLAY_LABELS.get(_grammar_class_of(actions) or "", {})
+
 
 def _split_primary_verbs(actions: list) -> tuple[list, list]:
-    """Split a row's action list into (primary, tail). Email-shaped rows
-    (send/draft present) promote Send / Draft / Snooze; commitment-shaped rows
-    promote the Done verb. Everything else — and rows matching neither
-    shape — stays in the dropdown. Wire ids untouched; this is display
-    layout only."""
+    """Split a row's action list into (primary, tail) per PRIMARY_VERB_GRAMMAR.
+    The first class whose marker set matches the row's verbs owns the row;
+    its primary verbs — those actually present, emitted in the table's declared
+    order so the most-likely action leads — become the promoted set, and the
+    rest is the tail. Rows matching no class → ([], all_actions). Wire ids
+    untouched; this is display layout only (the ≤4 rule in _render_widget_item
+    decides whether the tail renders as secondary buttons or a dropdown)."""
     low = {str(a).lower() for a in actions}
-    if low & set(_EMAIL_SHAPE_MARKERS):
-        primary_ids = _PRIMARY_EMAIL_VERBS
-    elif low & set(_PRIMARY_COMMITMENT_VERBS):
-        primary_ids = _PRIMARY_COMMITMENT_VERBS
-    else:
+    primary_ids: tuple = ()
+    for _cls, markers, primaries in PRIMARY_VERB_GRAMMAR:
+        if _class_markers_match(low, markers):
+            primary_ids = primaries
+            break
+    if not primary_ids:
         return [], list(actions)
-    primary = [a for a in actions if str(a).lower() in primary_ids]
-    tail = [a for a in actions if str(a).lower() not in primary_ids]
+    pset = set(primary_ids)
+    # Table order, not row order, so Send leads Draft leads Snooze regardless of
+    # how the builder ordered the verb set.
+    primary = [a for pid in primary_ids for a in actions if str(a).lower() == pid]
+    tail = [a for a in actions if str(a).lower() not in pset]
     return primary, tail
 
 
-def _render_primary_button(action: str, item_n) -> str:
-    """One-tap primary verb button (t3 FB-4). Same selection model as the
-    dropdown — tap arms the row, Apply batches — and the same wire
-    attributes the legacy cr-action contract carries. Primary buttons are
-    always input-type "none": Send/Done/Snooze need nothing typed, and Draft's
-    edit surface is the FB-10 inline-editable body, not a popup editor
-    (FB-17 retired the `edit then send` popup form — inline editing replaces
-    it, so the card is Send / Draft / Snooze with no dropdown)."""
+def _render_verb_button(action: str, item_n, *, primary: bool = True,
+                        label: Optional[str] = None) -> str:
+    """One-tap verb button (WG1-A D-A3, generalizing t3 FB-4's primary button).
+    `primary=True` → the gold-accented cr-action-primary style (the row's
+    most-likely move); `primary=False` → a secondary cr-action-secondary button
+    (the ≤4 rule renders a small row's WHOLE verb set as buttons — no dropdown).
+    Same selection model as the dropdown (tap arms the row, Apply batches) and
+    the same wire attributes the legacy cr-action contract carries.
+
+    `label` (UXR1 D2) — an explicit per-class display label from
+    CLASS_DISPLAY_LABELS; None → the taxonomy label. The wire attributes
+    (data-action) always carry the frozen action id, whatever the label.
+
+    Always input-type "none": Send/Done/Snooze/Nudge/Mine need nothing typed,
+    and Draft's edit surface is the FB-10 inline-editable body. An input-bearing
+    verb rendered as a button (D-A3 — e.g. `theirs to [name]` on a ≤4 confirm
+    row) dispatches its BARE action id and apply-choices asks the follow-up for
+    the missing input; it never carries an inline wrapper here."""
     safe_action = _html_mod.escape(action, quote=True)
     safe_n = _html_mod.escape(str(item_n), quote=True)
-    label = _html_mod.escape(_action_display_label(action))
+    label = _html_mod.escape(label if label is not None
+                             else _action_display_label(action))
+    cls = "cr-action cr-action-primary" if primary else "cr-action cr-action-secondary"
     return (
-        f'<button class="cr-action cr-action-primary" type="button" '
+        f'<button class="{cls}" type="button" '
         f'data-n="{safe_n}" data-action="{safe_action}" '
         f'data-input-type="none">{label}</button>'
     )
+
+
+def _render_primary_button(action: str, item_n) -> str:
+    """Back-compat alias — the row's promoted primary button (WG1-A: use
+    _render_verb_button directly for secondary buttons)."""
+    return _render_verb_button(action, item_n, primary=True)
 
 
 def _strip_action_n_prefix(action: str, item_n) -> str:
@@ -3073,22 +3206,40 @@ def _render_widget_item(item: dict) -> str:
     # t3 FB-3: merge the Defer/Snooze pair into the one 'Later…' option.
     actions = _merge_later_verbs(item.get("actions", []))
     if actions:
-        # t3 FB-4: primary verbs become visible one-tap buttons; the tail
-        # stays in the dropdown.
+        # WG1-A D-A3 — primary verbs promote to visible buttons; the ≤4 rule
+        # then decides whether the rest are secondary buttons or a dropdown.
         stripped_actions = [_strip_action_n_prefix(a, n) for a in actions]
         primary, tail = _split_primary_verbs(stripped_actions)
-        controls_html = [
-            _render_primary_button(a, n) for a in primary
-        ]
-        options_html = ['<option value="">— more —</option>' if primary
-                        else '<option value="">— leave —</option>']
+        # UXR1 D2 — the row's per-class label overrides ({} everywhere but
+        # the ruled classes). Wire ids on buttons/options stay frozen.
+        overrides = _class_label_overrides(stripped_actions)
         inputs_html = []
-        for a in tail:
-            opt, inp = _render_action_option(a, n, item)
-            options_html.append(opt)
-            if inp:
-                inputs_html.append(inp)
-        if tail:
+        if len(stripped_actions) <= 4:
+            # The ≤4 rule (M ruling row 13): a small row renders EVERY verb as
+            # a visible button and emits NO <select>. Primaries lead (gold);
+            # the rest are secondary buttons. Input-bearing verbs dispatch
+            # their bare id and apply-choices asks the follow-up (D-A3) — so
+            # no inline input wrapper is emitted on this path.
+            controls_html = [_render_verb_button(
+                a, n, primary=True, label=overrides.get(str(a).lower()))
+                for a in primary]
+            controls_html += [_render_verb_button(
+                a, n, primary=False, label=overrides.get(str(a).lower()))
+                for a in stripped_actions if a not in primary]
+        else:
+            # ≥5 options: primaries promote to buttons, the tail stays in the
+            # dropdown (which keeps inline inputs for input-bearing tail verbs).
+            controls_html = [_render_verb_button(
+                a, n, primary=True, label=overrides.get(str(a).lower()))
+                for a in primary]
+            options_html = ['<option value="">— more —</option>' if primary
+                            else '<option value="">— leave —</option>']
+            for a in tail:
+                opt, inp = _render_action_option(
+                    a, n, item, label=overrides.get(str(a).lower()))
+                options_html.append(opt)
+                if inp:
+                    inputs_html.append(inp)
             controls_html.append(
                 f'<select class="cr-action-select" data-n="{safe_n}" '
                 f'data-disp="{safe_disp}">{"".join(options_html)}</select>'
@@ -3135,18 +3286,25 @@ def _render_widget_item(item: dict) -> str:
         for sub in sub_items:
             sub_id = sub.get("id", "")
             sub_summary = sub.get("summary", "")  # rendered as visible label v2.12.4+ (per M's Apr 30 6a-e visual-connection ask)
-            # t3 FB-3 + FB-4 — same merge + primary split as parent rows.
+            # t3 FB-3 + FB-4 + WG1-A D-A3 — same merge + primary split + ≤4
+            # all-buttons rule as parent rows.
             sub_actions = _merge_later_verbs(sub.get("actions", []))
             sub_stripped = [_strip_action_n_prefix(a, sub_id) for a in sub_actions]
             sub_primary, sub_tail = _split_primary_verbs(sub_stripped)
+            # UXR1 D2 — per-class label overrides, same as parent rows.
+            sub_overrides = _class_label_overrides(sub_stripped)
+            sub_all_buttons = len(sub_stripped) <= 4  # WG1-A D-A3 ≤4 rule
             sub_options_html = ['<option value="">— more —</option>' if sub_primary
                                 else '<option value="">— leave —</option>']
             sub_inputs_html = []
-            for a in sub_tail:
-                opt, inp = _render_action_option(a, sub_id, item)
-                sub_options_html.append(opt)
-                if inp:
-                    sub_inputs_html.append(inp)
+            if not sub_all_buttons:
+                for a in sub_tail:
+                    opt, inp = _render_action_option(
+                        a, sub_id, item,
+                        label=sub_overrides.get(str(a).lower()))
+                    sub_options_html.append(opt)
+                    if inp:
+                        sub_inputs_html.append(inp)
             sub_summary_html = (
                 f'<div class="cr-sub-summary">{_md_to_html(sub_summary)}</div>'
                 if sub_summary
@@ -3218,11 +3376,27 @@ def _render_widget_item(item: dict) -> str:
                 f'{sub_id_html}'
                 f'{sub_summary_html}'
                 f'<div class="cr-sub-actions">'
-                + "".join(_render_primary_button(a, sub_id) for a in sub_primary)
                 + (
-                    f'<select class="cr-action-select" data-n="{sub_safe_n}" '
-                    f'data-disp="{sub_disp}">{"".join(sub_options_html)}</select>'
-                    if sub_tail else ""
+                    # WG1-A D-A3 ≤4 rule — every verb a button, no <select>.
+                    "".join(_render_verb_button(
+                        a, sub_id, primary=True,
+                        label=sub_overrides.get(str(a).lower()))
+                            for a in sub_primary)
+                    + "".join(_render_verb_button(
+                        a, sub_id, primary=False,
+                        label=sub_overrides.get(str(a).lower()))
+                              for a in sub_stripped if a not in sub_primary)
+                    if sub_all_buttons else
+                    # ≥5 options — primaries as buttons, tail in the dropdown.
+                    "".join(_render_verb_button(
+                        a, sub_id, primary=True,
+                        label=sub_overrides.get(str(a).lower()))
+                            for a in sub_primary)
+                    + (
+                        f'<select class="cr-action-select" data-n="{sub_safe_n}" '
+                        f'data-disp="{sub_disp}">{"".join(sub_options_html)}</select>'
+                        if sub_tail else ""
+                    )
                 )
                 + f"</div>"
                 f"</div>"
@@ -3237,8 +3411,109 @@ def _render_widget_item(item: dict) -> str:
     return "".join(parts)
 
 
+# ============================================================================
+# WG1-A D-A6 — row-quarantine-not-page-block (M ruling 2026-07-20, big-test
+# Findings Ledger row 10b). A defective row degrades to an honest placeholder
+# and the page still renders every healthy row; the page-level scans in
+# render_chat_output_widget REMAIN as the final backstop over the assembled
+# chrome. Never-silent doctrine preserved: the placeholder IS the user-visible
+# receipt, and quarantine is logged to stderr. No new keys enter the
+# render_and_persist return dict (transport contract frozen).
+# ============================================================================
+
+# Fixed defect-class copy. The placeholder's context line is drawn ONLY from
+# these strings (never the offending content) so it trivially passes the same
+# scan the original row failed (anti-self-leak, spec §7). Scope: the always-on
+# render-path scans (id-leak + non-workspace path). Personal-content leaks stay
+# the transport-layer backstop (surface-gated) exactly as today — the render
+# path never ran that scan, so quarantine does not change its block semantics.
+_QUARANTINE_DEFECT_CLASSES = {
+    "id_leak": "withheld — failed the leak scan (an internal id or token)",
+    "path_leak": "withheld — failed the path scan (a non-workspace path)",
+    "render_error": "withheld — could not be rendered",
+}
+
+
+def _scan_row_fragment(fragment: str):
+    """Per-row content scan (WG1-A D-A6). Returns a defect-class key from
+    _QUARANTINE_DEFECT_CLASSES when the row's rendered fragment carries a leak,
+    else None. Uses the SAME scannable prep as the page-level gate — blank
+    data-* attributes + href values so wire ids parked there don't
+    false-positive; only visible text is scanned — and the SAME always-on
+    scanners (id-leak + non-workspace path)."""
+    if not fragment:
+        return None
+    scannable = _re_mod.sub(r'href="[^"]*"', 'href=""', fragment)
+    scannable = _re_mod.sub(r'(\bdata-[a-z-]+=")[^"]*(")', r"\1\2", scannable)
+    if scan_for_id_leaks(scannable):
+        return "id_leak"
+    try:
+        if _scan_for_path_leaks(scannable):
+            return "path_leak"
+    except Exception:
+        # The path scan needs a resolvable workspace/plugin prefix; when absent
+        # (local pytest) it no-ops. Never let it break a render.
+        pass
+    return None
+
+
+def _quarantine_placeholder_item(item: dict, defect_class: str, ordinal) -> dict:
+    """Build the honest placeholder that replaces a defective row (D-A6). Real
+    `n` (so `show why` dispatches against the same row id), the fixed
+    "1 row withheld" name, a context line naming the defect CLASS + the row's
+    ordinal (never the offending content), and the single `show why` action."""
+    reason = _QUARANTINE_DEFECT_CLASSES.get(
+        defect_class, _QUARANTINE_DEFECT_CLASSES["render_error"])
+    n = item.get("n")
+    return {
+        "n": n if n is not None else f"withheld-{ordinal}",
+        "display_n": ordinal,
+        "icon": "⚠",  # ⚠
+        "name": "1 row withheld",
+        "context_tag": f"row {ordinal} {reason}",
+        "actions": ["show why"],
+    }
+
+
+def _render_widget_item_quarantined(item: dict, *, ordinal) -> str:
+    """Render one row, scanning its fragment; a defective row is REPLACED by an
+    honest placeholder (WG1-A D-A6). The page renders with every healthy row —
+    one bad row degrades to a visible placeholder naming the defect class
+    instead of blocking the whole page. Logged to stderr; the placeholder is
+    the user-visible receipt."""
+    import sys as _sys
+    try:
+        fragment = _render_widget_item(item)
+    except Exception as exc:
+        _sys.stderr.write(
+            f"[chat_output_renderer] WG1-A quarantine: row {ordinal} raised "
+            f"during render ({type(exc).__name__}) — placeholder emitted.\n")
+        return _render_widget_item(
+            _quarantine_placeholder_item(item, "render_error", ordinal))
+    defect = _scan_row_fragment(fragment)
+    if defect is None:
+        return fragment
+    _sys.stderr.write(
+        f"[chat_output_renderer] WG1-A quarantine: row {ordinal} withheld "
+        f"({defect}) — placeholder emitted.\n")
+    placeholder = _render_widget_item(
+        _quarantine_placeholder_item(item, defect, ordinal))
+    # Anti-self-leak backstop: the placeholder is built from fixed strings, so
+    # it must scan clean. If it somehow doesn't, fall back to a minimal row that
+    # cannot carry the defect.
+    if _scan_row_fragment(placeholder) is not None:
+        placeholder = _render_widget_item({
+            "n": item.get("n") if item.get("n") is not None else f"withheld-{ordinal}",
+            "display_n": ordinal, "name": "1 row withheld",
+            "context_tag": "withheld — failed a content scan",
+            "actions": ["show why"]})
+    return placeholder
+
+
 def _render_widget_section(section: dict) -> str:
-    """Render one section: optional title + items separated by dividers."""
+    """Render one section: optional title + items separated by dividers. Each
+    row passes through the WG1-A D-A6 quarantine gate — a defective row becomes
+    an honest placeholder rather than taking the whole page down."""
     parts = []
     title = section.get("title")
     count = section.get("count")
@@ -3252,7 +3527,8 @@ def _render_widget_section(section: dict) -> str:
     for i, item in enumerate(items):
         if i > 0:
             parts.append('<hr class="cr-divider">')
-        parts.append(_render_widget_item(item))
+        ordinal = item.get("display_n", i + 1)
+        parts.append(_render_widget_item_quarantined(item, ordinal=ordinal))
     return "".join(parts)
 
 
@@ -3451,6 +3727,10 @@ button.cr-action.cr-action-primary:hover { background: rgba(184, 139, 74, 0.16) 
  * The 3-class rule below outranks both and restores the intended dark-on-gold selected
  * label (Done / Send / Draft / Snooze all read correctly once armed). */
 button.cr-action.cr-action-primary.cr-selected { color: #14110F !important; }
+/* WG1-A D-A3 — secondary verb buttons (the tail of a ≤4 row, rendered as
+ * buttons instead of a dropdown) deliberately inherit the plain .cr-action
+ * base style: the gold .cr-action-primary is the row's most-likely move and
+ * reads first, the rest sit quieter at the base weight. No new palette. */
 """.strip()
 
 # Collapsible "+ Add context" note toggle + field (v2.14.36+ — M's 2026-05-07
@@ -3530,6 +3810,9 @@ _CSS_FEATURE_BLOCKS: list[tuple[str, str]] = [
     # multi-class attribute the exact-token trigger can't see.
     ('class="cr-action"', _CSS_BUTTONS),
     ("cr-action-primary", _CSS_BUTTONS),
+    ("cr-action-secondary", _CSS_BUTTONS),  # WG1-A D-A3 — a ≤4 row can be all
+                                            # secondary buttons (no primary);
+                                            # the pressed-state CSS must ship.
     ("cr-note-toggle", _CSS_NOTES),
     ("cr-sub-items", _CSS_SUBS),
     ("cr-divider", _CSS_DIVIDER),
@@ -3575,6 +3858,8 @@ function crSel(sel) {
     sel.classList.remove('cr-select-armed');
   }
   crUpdateCounter();
+  // WG1-A D-A5 — single-item ≥5 dropdown: picking an option dispatches.
+  if (crSingleItem && sel.value) crSingleDispatch(sel);
 }
 """.strip()
 
@@ -3593,6 +3878,9 @@ function crToggle(btn) {
     crOpenWrap(n, btn.dataset.action, btn.dataset.inputType, btn);
   }
   crUpdateCounter();
+  // WG1-A D-A5 — no batch footer on a single-item widget: arming IS the
+  // dispatch (only when the button was just selected, never on toggle-off).
+  if (crSingleItem && !was) crSingleDispatch(btn);
 }
 """.strip()
 
@@ -3667,6 +3955,9 @@ const crTotalItems = __TOTAL_ITEMS__;
 const crSrc = __CR_SRC__;
 const crQ = s => document.querySelectorAll(s);
 const crG = id => document.getElementById(id);
+// WG1-A D-A5 — single-item widgets have no batch footer; a click dispatches
+// directly. The marker is baked on the card by the renderer.
+const crSingleItem = !!document.querySelector('.cr-card-single');
 
 function crWrap(n, action) {
   // dataset iteration, never CSS attribute selectors (action strings carry
@@ -3839,12 +4130,45 @@ function crBodyEdited(el){
   // greyed and read as "editing the email breaks Apply." Auto-arm the row's
   // DRAFT verb (never Send — a mere edit must not queue a send) so the counter
   // ticks, the edited body serializes, and (post-CSS-fix) "Draft" shows armed.
+  // NEVER on a single-item page: there arming IS the dispatch (D-A5), so the
+  // auto-arm would fire `draft` on the first keystroke with zero clicks —
+  // violating the draft-posture ruling. The auto-arm is also unnecessary
+  // there: crApplyAll's FB-10 block serializes the current on-screen body at
+  // explicit click time, so edit-then-click-Draft/Send still ships the edit.
   const row=el.closest('.cr-sub-item')||el.closest('.cr-item');
-  if(row&&!crRowArmed(row)){
+  if(row&&!crRowArmed(row)&&!crSingleItem){
     const d=row.querySelector('.cr-action[data-action="draft"]');
     if(d&&typeof crToggle==='function')crToggle(d);
   }
   crUpdateCounter();
+}
+
+function crSingleDispatch(ctl) {
+  // WG1-A D-A5 — a single-item widget has no Apply footer, so a click
+  // dispatches immediately. Build the SAME wire crApplyAll would (byte-equal
+  // to the multi-select form). If the armed action needs an input that is
+  // missing, open its wrapper + show the inline reason and dispatch when the
+  // user supplies it (Enter / blur) — never fire an empty required action.
+  const picks = crSelected();
+  if (!picks.length) return;
+  const sel = picks[0];
+  if (sel.req) {
+    const w = crWrap(sel.n, sel.action);
+    const f = w ? w.querySelector('textarea, input') : null;
+    if (!(f && f.value && f.value.trim())) {
+      crValidate();  // opens the wrapper + surfaces the inline missing reason
+      if (f && !f.dataset.crSingleBound) {
+        f.dataset.crSingleBound = '1';
+        const go = function () { if (f.value && f.value.trim()) crSingleDispatch(ctl); };
+        f.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
+        });
+        f.addEventListener('blur', go);
+      }
+      return;
+    }
+  }
+  crApplyAll();
 }
 
 function crApplyAll() {
@@ -3970,6 +4294,9 @@ _JS_FEATURE_BLOCKS: list[tuple[str, str]] = [
     ("cr-action-select", _JS_SELECT),
     ('class="cr-action"', _JS_BUTTONS),
     ("cr-action-primary", _JS_BUTTONS),  # t3 FB-4 — see the CSS twin note
+    ("cr-action-secondary", _JS_BUTTONS),  # WG1-A D-A3 — a ≤4 row can be all
+                                           # secondary buttons (no primary); the
+                                           # button handler must still ship.
     ("cr-note-toggle", _JS_NOTES),
     ('id="cr-skip-all"', _JS_SKIP),
 ]

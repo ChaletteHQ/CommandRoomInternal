@@ -178,11 +178,14 @@ def apply_reclassifications(events: Iterable[dict]) -> list[dict]:
     Chains do NOT recurse: a reclassification always supersedes the
     ORIGINAL event's seq (the write contract — apply-choices and Pass 8
     both read `source_event_seq` off the original), so one hop is the
-    whole story. Pure; no I/O. Callers today: objective_math's movement
-    read + the objective_link detector. Other day-count surfaces still
-    read raw — adopting this seam fleet-wide is a deliberate per-surface
-    decision (F-54: surfaces quoting the same day-count must adopt
-    together, or their numbers diverge)."""
+    whole story. Pure; no I/O. Adopted fleet-wide by every recency
+    surface (RECL1): objective_math + the objective_link detector fold
+    directly; every other thread/org recency reader opts in through the
+    `honor_reclassifications` kwarg on the two derivation entry points
+    (the greppable adoption ledger). The default stays False — raw
+    history remains available to audit/integrity readers, and per-item
+    attribution readers (§6 of SPEC_RECL1) are each a separate F-54
+    per-surface decision."""
     patches: dict[int, dict] = {}
     src = events if isinstance(events, list) else list(events)
     for ev in src:
@@ -257,6 +260,7 @@ def derive_from_events(
     events: Iterable[dict],
     activity_types: Optional[Iterable[str]] = None,
     confidence_floor: float = CONFIDENCE_FLOOR,
+    honor_reclassifications: bool = False,
 ) -> dict[str, ThreadActivity]:
     """The C3 fold over an in-memory event iterable — same rules as
     derive_thread_activity, for callers that already hold the events
@@ -267,7 +271,16 @@ def derive_from_events(
     module's ALL_TYPES sentinel — renderer "last touched" semantics where
     every event type counts. Never pass ALL_TYPES from a surface that
     quotes a day-count (F-54 contract).
+
+    honor_reclassifications: when True, fold apply_reclassifications over
+    the stream first, so user-approved corrections (Pass 8 edits,
+    objective_link confirm/dismiss, merges) move activity with the event
+    (RECL1). Default False is FROZEN — the raw path stays byte-identical
+    for non-adopting callers; passing True IS the per-surface adoption
+    decision (F-54: surfaces quoting the same day-count adopt together).
     """
+    if honor_reclassifications:
+        events = apply_reclassifications(events)
     if activity_types is ALL_TYPES:
         types = None
     else:
@@ -306,6 +319,7 @@ def derive_thread_activity(
     workspace_root: str | Path,
     activity_types: Optional[Iterable[str]] = None,
     confidence_floor: float = CONFIDENCE_FLOOR,
+    honor_reclassifications: bool = False,
 ) -> dict[str, ThreadActivity]:
     """{thread_id: most-recent ThreadActivity} derived from events at read
     time. THE staleness baseline — never the stored last_activity field.
@@ -319,6 +333,9 @@ def derive_thread_activity(
             21d-vs-37d split).
         confidence_floor: events with numeric classification_confidence
             below this are skipped (absent field = counted).
+        honor_reclassifications: True = fold user-approved corrections
+            into the stream before deriving (RECL1 adoption; see
+            derive_from_events). Default False is the frozen raw path.
 
     Recency is decided by the event timestamp (the honest signal); `seq` is
     carried for traceability. An event with an unparseable/missing
@@ -328,6 +345,7 @@ def derive_thread_activity(
         _iter_events(Path(workspace_root)),
         activity_types=activity_types,
         confidence_floor=confidence_floor,
+        honor_reclassifications=honor_reclassifications,
     )
 
 

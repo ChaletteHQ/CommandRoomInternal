@@ -457,9 +457,12 @@ ev = build_person_proposal_event(
     evidence="<the transcript line that surfaced them>",
     review_reason="<one line: why this needs the user's call>",
     confidence=<0.0-1.0>,
+    workspace_root="<WORKSPACE>",
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.person_proposals")
 ```
+
+`workspace_root` arms the builder's org gate (WG1-B D-B3): a "person" name that is actually a tracked org comes back as an `org_proposal` event instead — append it exactly the same way; the org rail adjudicates it. Never strip the parameter to force a person row.
 
 Every proposal carries `data.pending_review: true` unconditionally (the builder enforces it) — proposals are adjudicated by the user's Add / Not-relevant click, and they re-surface in review surfaces until adjudicated instead of dying with the chat.
 

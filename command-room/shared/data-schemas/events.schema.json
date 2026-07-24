@@ -168,6 +168,8 @@
         "project_stalled_flagged",
         "cleanup_run",
         "substrate_backfill",
+        "substrate_reconciled",
+        "substrate_alarm_cleared",
         "shard_rotated",
         "schedule_config_changed",
         "person_disambiguation_resolved",

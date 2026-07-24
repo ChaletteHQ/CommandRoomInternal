@@ -271,6 +271,7 @@ def build_person_proposal_event(
     evidence: str = "",
     review_reason: str = "",
     confidence: float = 0.7,
+    workspace_root=None,
 ) -> dict:
     """One unknown name → one `person_proposal` event (F-46 P2b: meeting-notes
     surfaced 'say add [name]' in chat only; dismiss the chat and the proposal
@@ -280,9 +281,40 @@ def build_person_proposal_event(
     Dedup contract (caller's job, per past-meetings 4.5b / people_writer):
     call `people_writer.find_existing_person` FIRST; on a match emit a
     `person_update_proposal` referencing the existing id instead.
+
+    WG1-B D-B3 (writer-side belt-and-suspenders): pass `workspace_root` and a
+    name that `org_writer.find_existing_org` resolves to a tracked ORG is
+    REFUSED as a person — the returned event is an `org_proposal` instead
+    (the live TDX-Arena shape: name/signal/source_ref/pending_review), so an
+    org-shaped payload never enters the person queue at the writer. The org
+    rail's own existence gate then drops it at render when the org is already
+    on file — honest, actioned semantics for free. Default None keeps every
+    existing caller byte-identical.
     """
     if not name or not str(name).strip():
         raise ValueError("person_proposal needs a non-empty name")
+    if workspace_root is not None:
+        org = None
+        try:
+            from org_writer import find_existing_org
+            org = find_existing_org(workspace_root, name=str(name).strip())
+        except Exception:
+            org = None
+        if org is not None:
+            org_data: dict = {
+                "name": str(name).strip(),
+                "signal": (evidence or review_reason
+                           or f"mentioned as an org in {source_ref}"),
+                "source_ref": source_ref,
+                "pending_review": True,
+                "confidence": confidence,
+            }
+            return {
+                "type": "org_proposal",
+                "source_skill": source_skill,
+                "primary_thread_id": primary_thread_id,
+                "data": org_data,
+            }
     data: dict = {
         "name": str(name).strip(),
         "inferred_role": inferred_role,

@@ -165,11 +165,17 @@ def render_all_fixture_widgets():
 
 # T2.2 row diet — verbs render as <option>s inside the row dropdown;
 # footer buttons are unchanged. The label contract is identical.
+# WG1-A D-A3 — a ≤4-option row now renders its verbs as cr-action BUTTONS
+# (primary + secondary), not <option>s, so the same label contract must be
+# read off the button text too.
 OPTION_LABEL_RE = re.compile(
     r'<option value="[^"]+"[^>]*>([^<]*)</option>'
 )
 FOOTER_BUTTON_RE = re.compile(
     r'<button class="cr-btn-(?:apply|secondary)"[^>]*>([^<]*)</button>'
+)
+ACTION_BUTTON_RE = re.compile(
+    r'<button class="cr-action(?:[^"]*)"[^>]*data-action="[^"]*"[^>]*>([^<]*)</button>'
 )
 
 
@@ -213,7 +219,7 @@ def main() -> int:
         "snooze 3d": "Snooze (3 days)",
         "not relevant": "Not relevant (60 days)",
         "never track this": "Never track (permanent)",
-        "make task": "Make task",
+        "make task": "Turn into a task",  # UXR1 D7b — conversion, not create-new
         "promote": "Make it a commitment",
         "reminder done": "Done",
         "reminder push [date]": "Later…",  # t3 FB-3 — lockstep with the commitment lane
@@ -247,6 +253,7 @@ def main() -> int:
     for h in htmls:
         seen_labels.update(m.strip() for m in OPTION_LABEL_RE.findall(h))
         seen_labels.update(m.strip() for m in FOOTER_BUTTON_RE.findall(h))
+        seen_labels.update(m.strip() for m in ACTION_BUTTON_RE.findall(h))
     check("fixture coverage: labels were extracted", len(seen_labels) > 20,
           f"only {len(seen_labels)}")
     for legacy in sorted(LEGACY_DISPLAY_LABELS):
@@ -322,13 +329,16 @@ def main() -> int:
         check("HTML with required inputs but no inline reason is rejected", False)
     except WidgetFeedbackContractError:
         check("HTML with required inputs but no inline reason is rejected", True)
-    # add email then send now renders its promised input (dead-toggle fix).
-    # T2.2 markup: the option carries data-input-type="email-text" (default
-    # attrs are omitted, so a truly input-less verb has NO data-input-type).
+    # add email then send renders its promised input (dead-toggle fix) when it
+    # falls in a row's DROPDOWN tail. WG1-A D-A3: on a ≤4-option row every verb
+    # is a button (bare-dispatch; apply-choices prompts for the address), so
+    # this contract is exercised on a ≥5-option row where the recovery verb
+    # stays a dropdown option carrying data-input-type="email-text".
     email_opt = re.search(
         r'<option value="add email then send"[^>]*>',
         _render([{ "n": 1, "name": "No address",
-                   "actions": ["add email then send", "skip"]}],
+                   "actions": ["add email then send", "escalate to memo",
+                               "add to my list", "snooze 3d", "skip"]}],
                 source="commitments"))
     check("add email then send is no longer input-less",
           email_opt is not None

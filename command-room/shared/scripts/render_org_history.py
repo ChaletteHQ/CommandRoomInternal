@@ -39,6 +39,7 @@ from cru_match import load_events_defensively  # noqa: E402
 from event_time import event_time  # noqa: E402
 from org_activity import event_org_ids, thread_org_map  # noqa: E402
 from quantify import money_time_tag  # noqa: E402
+from thread_activity import apply_reclassifications  # noqa: E402
 
 CONFIDENCE_FLOOR = 0.40
 
@@ -146,6 +147,11 @@ def _dedup_by_seq(events: list[dict]) -> list[dict]:
 
 def _gather(ws: Path, org_id: str, view: dict) -> tuple[list[dict], list[dict], int]:
     events, skipped = load_events_defensively(_events_path(ws))
+    # honor reclassifications ONCE, right after the defensive load (RECL1 —
+    # the objective_math pattern): every downstream walk (timeline, stats,
+    # event_org_ids) reads the patched stream, so an event moved off an
+    # org's thread leaves that org's timeline and joins the corrected one's.
+    events = apply_reclassifications(events)
     t_org = thread_org_map(view)
     mine: list[dict] = []
     newest_seq = 0

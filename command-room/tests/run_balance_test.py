@@ -198,6 +198,40 @@ res5 = B.compute_balance(ws4, now=NOW_ISO, personal_busy=allbusy, business_busy=
 check("starved tie but zero open evenings -> suppressed (all_clear, no nudge)",
       res5["status"] == "all_clear", repr(res5.get("status")))
 
+# FB-plumbing item 3 — zero personal ties is a REFUSAL, never an all-clear.
+# State A: personal calendar connected, busy flowing, but NOBODY tagged
+# personal. The old code returned all_clear ("white space looks healthy") —
+# a false all-clear. It must refuse and ask who counts.
+ws_noties = make_ws(people=[], workspace=CAL_WS)
+res_noties = B.compute_balance(ws_noties, now=NOW_ISO,
+                               personal_busy=[], business_busy=[])
+check("no personal ties (calendar connected) -> no_personal_ties, never all_clear",
+      res_noties["status"] == "no_personal_ties", repr(res_noties.get("status")))
+check("no_personal_ties carries the who-counts reason",
+      "who counts" in (res_noties.get("reason") or ""), repr(res_noties))
+check("no_personal_ties emits nothing",
+      "balance_nudge_suggested" not in
+      (ws_noties / "_hq" / "data" / "events.jsonl").read_text(encoding="utf-8"))
+# A workspace whose only people are WORK ties is still zero PERSONAL ties.
+ws_workonly = make_ws(
+    people=[tie_person("person_950", "Dev Sample", days_ago(30), 14, tie="work")],
+    workspace=CAL_WS)
+res_workonly = B.compute_balance(ws_workonly, now=NOW_ISO,
+                                 personal_busy=[], business_busy=[])
+check("work-only roster -> no_personal_ties (work ties are not Balance's lane)",
+      res_workonly["status"] == "no_personal_ties", repr(res_workonly.get("status")))
+
+# State B: empty CALENDAR (no personal_calendars declared) is the OTHER
+# refusal — the pre-existing not_configured, distinct from the tie refusal.
+# Even with a personal tie on file, an unconfigured calendar refuses first.
+ws_nocal = make_ws(
+    people=[tie_person("person_901", "Alex Sample", days_ago(90), 14)],
+    workspace={})
+res_nocal = B.compute_balance(ws_nocal, now=NOW_ISO,
+                              personal_busy=[], business_busy=[])
+check("empty calendar -> not_configured (distinct refusal, never all_clear)",
+      res_nocal["status"] == "not_configured", repr(res_nocal.get("status")))
+
 # ---------------------------------------------------------------------------
 print("\n[4] dedupe + snooze/dismissal")
 # ---------------------------------------------------------------------------

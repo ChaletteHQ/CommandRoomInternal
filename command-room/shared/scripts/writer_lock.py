@@ -89,6 +89,7 @@ from pathlib import Path
 from atomic_write import (  # noqa: E402
     _pid_alive,
     _read_lock_payload,
+    _read_seqhw,
     acquire_write_lock,
     atomic_write_json,
     atomic_write_text,
@@ -189,8 +190,16 @@ def _resolve(workspace_root_or_events_path) -> tuple[Path, Path]:
     elif p.is_file():
         lock_dir = p.parent
     else:
-        # Treated as a workspace root.
-        lock_dir = p / "_hq" / "data"
+        # Treated as a workspace root. SPEC SYNC1 B1 — route through the
+        # (dormant) resolver; byte-identical to `p / "_hq" / "data"` with no
+        # override.
+        try:
+            from data_root import resolve as _resolve_data_root
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from data_root import resolve as _resolve_data_root
+        lock_dir = _resolve_data_root(p)
     lock_path = lock_dir / LOCK_FILENAME
     return lock_path, _root_from_lock_dir(lock_dir)
 
@@ -257,17 +266,73 @@ def _record_lock_stats(workspace_root, **deltas) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Cross-machine identity (SPEC SYNC1 B3)
+# ---------------------------------------------------------------------------
+
+def machine_id_path() -> Path:
+    """The persisted machine-id file. MUST live OUTSIDE any synced/mounted tree
+    (handoff Q2) so it names THIS physical machine, never a copy that rode Drive
+    to another. `%LOCALAPPDATA%\\CommandRoom\\machine_id` on Windows,
+    `~/.commandroom/machine_id` on POSIX."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return Path(base) / "CommandRoom" / "machine_id"
+    return Path(os.path.expanduser("~")) / ".commandroom" / "machine_id"
+
+
+def machine_id() -> str:
+    """A stable per-machine id, persisted on first use (a uuid4). Falls back to
+    the hostname if the id file can't be written (a read-only home). The whole
+    point (B3): every lock diagnostic + marker names the offending machine, so
+    the NEXT multi-machine incident is attributable at a glance."""
+    p = machine_id_path()
+    try:
+        existing = p.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    import uuid
+    mid = uuid.uuid4().hex
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(p, mid + "\n")
+        return mid
+    except OSError:
+        # Can't persist — fall back to hostname (stable enough for attribution,
+        # just not globally unique across identically-named hosts).
+        try:
+            import platform
+            name = platform.node()
+            return f"host:{name}" if name else f"eph:{mid[:8]}"
+        except Exception:
+            return f"eph:{mid[:8]}"
+
+
 def _write_info_sidecar(lock_path: Path, holder: str, mode: str) -> None:
     """Best-effort holder diagnostics to `.writer.lock.info` (a sibling file,
-    NOT the lock file). Never read by the locking logic; swallows errors."""
+    NOT the lock file). Never read by the locking logic; swallows errors.
+
+    SPEC SYNC1 B3 — the payload now carries `machine_id` (cross-machine
+    attribution) and `seqhw_seen` (the high-water this holder observed at lock
+    time), so a lock diagnostic or a post-incident read names the machine AND
+    the seq view it held."""
     try:
         import datetime as _dt
 
+        seqhw_seen = None
+        try:
+            seqhw_seen = _read_seqhw(lock_path.parent / "events.jsonl")
+        except Exception:
+            seqhw_seen = None
         info = {
+            "machine_id": machine_id(),
             "pid": os.getpid(),
             "holder": holder,
             "acquired_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "mode": mode,
+            "seqhw_seen": seqhw_seen,
         }
         atomic_write_text(
             lock_path.parent / INFO_FILENAME,
@@ -473,4 +538,4 @@ def events_writer_lock(workspace_root_or_events_path, holder: str = "unknown", t
         _release(acquired)
 
 
-__all__ = ["events_writer_lock", "LOCK_FILENAME"]
+__all__ = ["events_writer_lock", "LOCK_FILENAME", "machine_id", "machine_id_path"]

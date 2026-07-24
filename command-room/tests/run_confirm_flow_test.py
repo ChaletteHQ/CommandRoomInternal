@@ -532,6 +532,37 @@ def main() -> int:
           "Pia Voss" in names_after, repr(names_after))
 
     # ------------------------------------------------------------------
+    # WG1-B D-B3 — the loader is shape-BLIND by design: an org-shaped
+    # person_proposal (the TDX-Arena row class) passes through UNCHANGED;
+    # the org-shape gate lives adapter-side (brain_proposals), and
+    # suppress_on_file semantics are untouched by it.
+    ws2 = Path(tempfile.mkdtemp())
+    (ws2 / "_hq" / "data").mkdir(parents=True)
+    (ws2 / "_hq" / "data" / "entities.json").write_text(
+        json.dumps({"version": 1, "people": [], "orgs": [
+            {"id": "org_101", "canonical_name": "Vertex Range (AcademyCo)"},
+        ]}), encoding="utf-8")
+    ev_path = ws2 / "_hq" / "data" / "events.jsonl"
+    now2 = dt.datetime.now(dt.timezone.utc)
+    ev_path.write_text(json.dumps({
+        "seq": 1, "ts": (now2 - dt.timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"),
+        "type": "person_proposal", "source_skill": "past-meetings",
+        "data": {"name": "Vertex Range (AcademyCo)", "pending_review": True,
+                 "source_ref": "granola:00000000-mirror-tdx"}}) + "\n",
+        encoding="utf-8")
+    rows_plain = load_open_person_proposals(ev_path)
+    check("D-B3: loader passes an org-shaped row through unchanged",
+          len(rows_plain) == 1
+          and rows_plain[0]["name"] == "Vertex Range (AcademyCo)"
+          and rows_plain[0]["inferred_role"] is None,
+          repr(rows_plain))
+    rows_sup = load_open_person_proposals(ev_path, suppress_on_file=True)
+    check("D-B3: suppress_on_file is untouched by the org gate "
+          "(an org name is not a person on file)",
+          len(rows_sup) == 1, repr(rows_sup))
+
+    # ------------------------------------------------------------------
     print(f"\n=== Summary: {PASS} passed, {FAIL} failed ===")
     if FAIL:
         return 1

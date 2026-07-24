@@ -293,7 +293,15 @@ def emit_gate_ran_audit(
                 "brief_kind": brief_kind,
                 "gates": gates,
                 "surface": surface,
-                "artifact": basename(output_path),
+                # UNIFIED gate_ran shape (FB-plumbing item 1): every gate_ran
+                # receipt carries BOTH `result` and `artifact` (a list of
+                # names). This emitter reaches here only AFTER a successful
+                # gated render + save — the pre-save gate sequence raises
+                # before this line on a fail — so `result` is always "pass".
+                # `artifact` is the one saved file's basename, boxed in a list
+                # so the field type matches the multi-file sweep emitter.
+                "result": "pass",
+                "artifact": [basename(output_path)] if output_path else [],
             },
         }], holder="brief_writer.gate_ran")
     except Exception:

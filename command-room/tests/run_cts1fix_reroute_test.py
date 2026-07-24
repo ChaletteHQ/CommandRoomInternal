@@ -139,9 +139,19 @@ def main():
     check("'add to my plate' present in _DELEGATED_VERBS",
           "add to my plate" in surface_drivers._DELEGATED_VERBS,
           repr(surface_drivers._DELEGATED_VERBS))
-    check("'add to my plate' present in _REVIEW_VERBS",
-          "add to my plate" in surface_drivers._REVIEW_VERBS,
+    # UXR1 D1 (M ruling 2026-07-21) — the pin MOVED with the policy: the
+    # confirm tail slimmed to mine / theirs / drop / snooze 3d. `add to my
+    # plate` left the EMISSION only; the wire id stays registered (dispatch
+    # from persisted 5-verb widgets must keep working — asserted below).
+    check("'add to my plate' absent from _REVIEW_VERBS (UXR1 D1 slim)",
+          "add to my plate" not in surface_drivers._REVIEW_VERBS,
           repr(surface_drivers._REVIEW_VERBS))
+    check("UXR1 D1 confirm tail is exactly mine/theirs/drop/snooze",
+          surface_drivers._REVIEW_VERBS == ["mine", "theirs to [name]",
+                                            "drop", "snooze 3d"],
+          repr(surface_drivers._REVIEW_VERBS))
+    check("'add to my plate' still a registered wire id (legacy dispatch)",
+          "add to my plate" in verb_taxonomy.CANONICAL_ACTION_IDS)
 
     # ------------------------------------------------------------------
     print("\n[4] renderer accepts the new verb, emits the display label")

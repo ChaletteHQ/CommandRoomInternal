@@ -92,6 +92,12 @@ _INFRA_TEXT_DIR_PARTS = frozenset(
         "templates",
         "design-library",
         "email-templates",
+        # FB-plumbing item 2 — engineering docs ABOUT the system are not
+        # client deliverables. The coordinator handoff folder (`Command
+        # Room/handoffs/`) holds build handoffs / runbooks / review notes;
+        # they legitimately quote real org names inside fenced blocks and
+        # would be pure false-positive noise if voice/leak-scanned.
+        "handoffs",
     }
 )
 # Filename stems (case-insensitive startswith) that mark a .md as context/memory.
@@ -129,6 +135,19 @@ _INFRA_TEXT_NAME_STEMS = (
     "voice_samples",
     "how_command_room_works",
     "dashboard",  # SPEC FU1 D3 — a dashboard render (html/md) is infra, not a deliverable
+    # FB-plumbing item 2 — the system's own engineering-doc name families.
+    # A build/coordinator artifact is not a deliverable, wherever it lands.
+    "handoff_",        # HANDOFF_* coordinator/build handoffs
+    "review_",         # REVIEW_* build-review notes
+    "build_report_",   # BUILD_REPORT_* post-build reports
+    "substrate_",      # SUBSTRATE_* substrate/schema notes
+)
+
+# FB-plumbing item 2 — name-CONTAINS infra tokens (the stems above are
+# startswith-only). A runbook is infra no matter what precedes it in the
+# filename (e.g. `BIG_TEST_RUNBOOK_2026-07.md`), so it matches as a substring.
+_INFRA_TEXT_NAME_CONTAINS = (
+    "runbook",
 )
 
 # Skip text files larger than this — a deliverable email/memo is small; a huge
@@ -153,7 +172,9 @@ def _is_infra_path(path: Path) -> bool:
     if {p.lower() for p in path.parts} & _INFRA_TEXT_DIR_PARTS:
         return True
     stem = path.name.lower()
-    return any(stem.startswith(s) for s in _INFRA_TEXT_NAME_STEMS)
+    if any(stem.startswith(s) for s in _INFRA_TEXT_NAME_STEMS):
+        return True
+    return any(tok in stem for tok in _INFRA_TEXT_NAME_CONTAINS)
 
 
 # Back-compat alias — pre-FU1 name (the filter also served the .md-only walk).
@@ -597,6 +618,16 @@ def _emit_sweep_event(workspace_root: str | Path, result: dict, *, source: str) 
     ts = _now_iso()
     try:
         events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        # UNIFIED gate_ran shape (FB-plumbing item 1): carry `artifact` — the
+        # basename(s) of the docs this sweep flagged — alongside the `result`
+        # this emitter already wrote. Same {result, artifact:[…]} contract the
+        # brief_writer emitter now honors, so a reader never has to guess which
+        # gate_ran shape it holds. Names only (never the user's full path).
+        artifacts = [
+            Path(f.get("path", "")).name
+            for f in (result.get("flagged") or [])
+            if f.get("path")
+        ]
         ev = {
             "type": "gate_ran",
             "source_skill": "deliverable_sweep",
@@ -604,6 +635,7 @@ def _emit_sweep_event(workspace_root: str | Path, result: dict, *, source: str) 
                 "surface": source,
                 "gates": ["voice", "leak"],
                 "result": "fail" if result["violation_count"] else "pass",
+                "artifact": artifacts,
                 "scanned": result["scanned"],
                 "violation_count": result["violation_count"],
                 "warn_count": result["warn_count"],

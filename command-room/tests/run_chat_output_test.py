@@ -350,10 +350,17 @@ def test_widget_action_input_attribute_contract():
                 "subject": "Q2 deck",
                 "metadata": [],
                 "body_lines": [],
+                # WG1-A D-A3: the input-affordance-in-a-dropdown contract now
+                # applies to ≥5-option rows (a ≤4 row renders every verb as a
+                # button with bare dispatch). Six verbs keeps the three
+                # input-bearing verbs in the dropdown so their option value +
+                # wrapper action stay byte-identical.
                 "actions": [
                     "add more context [text]",
                     "ask question [text]",
                     "push meeting [date]",
+                    "add to my list",
+                    "snooze 3d",
                     "skip",
                 ],
             }],
@@ -554,9 +561,13 @@ def test_universal_add_context_button_on_pending_subitems():
                 "metadata": [],
                 "body_lines": [],
                 "actions": [],
+                # WG1-A D-A3: the sub-item input-wrapper round-trip contract
+                # lives on the DROPDOWN path (≥5 options); a ≤4 sub-item renders
+                # buttons with bare dispatch. Five verbs keeps add-context in the
+                # dropdown so its wrapper machinery stays under test.
                 "sub_items": [
-                    {"id": "4a", "summary": "vague timing", "actions": ["4a set date [when]", "4a add context [text]", "4a add to my list", "4a skip"]},
-                    {"id": "4b", "summary": "decision needed", "actions": ["4b decide [text]", "4b add context [text]", "4b add to my list", "4b skip"]},
+                    {"id": "4a", "summary": "vague timing", "actions": ["4a set date [when]", "4a add context [text]", "4a add to my list", "4a snooze 3d", "4a skip"]},
+                    {"id": "4b", "summary": "decision needed", "actions": ["4b decide [text]", "4b add context [text]", "4b add to my list", "4b snooze 3d", "4b skip"]},
                 ],
             }],
         }],
@@ -620,11 +631,16 @@ def test_validate_rendered_widget_catches_dropped_wrapper():
     # generic, so this exercises it with a commitment row's `push to [date]`
     # (a still-live REQUIRED-input verb whose dropdown option renders the
     # cr-item-inputs wrapper).
+    # WG1-A D-A3: an input-bearing verb only renders the cr-item-inputs wrapper
+    # when it falls in a DROPDOWN (≥5-option row); on a ≤4 row it is a button
+    # with bare dispatch (no wrapper). Six verbs keeps push to [date] in the
+    # dropdown so the wrapper-drop defense is exercised.
     data = {
         "header": "Commitments",
         "sections": [{"title": None, "items": [
             {"n": 1, "name": "D", "context_tag": "due today",
-             "actions": ["1 resolved", "1 push to [date]", "1 drop"]},
+             "actions": ["1 resolved", "1 push to [date]", "1 drop",
+                         "1 not mine", "1 make task", "1 never track this"]},
         ]}],
         "widget_mode": "all_batch_widget",
     }
@@ -686,11 +702,13 @@ def test_validate_rendered_widget_handles_subitem_wrappers():
             {"n": 5, "name": "Sloan", "subject": "hire",
              "metadata": [], "body_lines": ["topic"],
              "actions": [],
+             # WG1-A D-A3: add-context renders its wrapper only in a dropdown
+             # (≥5 options); ≤4 sub-items render buttons with bare dispatch.
              "sub_items": [
                  {"id": "5a", "summary": "new person",
-                  "actions": ["5a add as person to Chalette Holdings", "5a add context [text]", "5a skip"]},
+                  "actions": ["5a add as person to Chalette Holdings", "5a add context [text]", "5a add to my list", "5a snooze 3d", "5a skip"]},
                  {"id": "5c", "summary": "decision needed",
-                  "actions": ["5c decide [text]", "5c add context [text]", "5c skip"]},
+                  "actions": ["5c decide [text]", "5c add context [text]", "5c add to my list", "5c snooze 3d", "5c skip"]},
              ]},
         ]}],
         "widget_mode": "all_batch_widget",
@@ -1315,13 +1333,13 @@ def test_dropdown_f58_f17_wiring_present():
                         "n": "cmt_fixture_a",
                         "display_n": 1,
                         "name": "Send the revised proposal to Alex Partner",
-                        "actions": ["mark done", "push to [date]", "skip"],
+                        "actions": ["mark done", "push to [date]", "skip", "not mine", "make task", "never track this"],
                     },
                     {
                         "n": "cmt_fixture_b",
                         "display_n": 2,
                         "name": "Review the vendor contract draft",
-                        "actions": ["mark done", "push to [date]", "skip"],
+                        "actions": ["mark done", "push to [date]", "skip", "not mine", "make task", "never track this"],
                     },
                 ],
             }
@@ -1374,8 +1392,12 @@ def _t3_cluster_view() -> dict:
                     {
                         "n": "cmt_fx_a",
                         "display_n": 1,
+                        # WG1-A D-A3: ≥5 effective verbs (skip is merged away by
+                        # the FB-3 Later… rule) so this commitment row keeps a
+                        # dropdown tail — the shape these t3 tests assert (Done
+                        # promoted to a button, the tail in the select).
                         "name": "Send the revised proposal to Alex Partner",
-                        "actions": ["resolved", "push to [date]", "drop", "skip"],
+                        "actions": ["resolved", "push to [date]", "drop", "not mine", "make task", "skip"],
                     },
                 ],
             },
@@ -1607,6 +1629,271 @@ def test_original_thread_rich_content_unchanged():
     _check("body rendered", "Thoughts?" in html)
 
 
+import re as _wg1a_re
+
+
+def _wg1a_render(items, source="commitments", **extra):
+    from chat_output_renderer import render_chat_output_widget
+    data = {"header": "x", "source_skill": source,
+            "sections": [{"title": None, "items": items}]}
+    data.update(extra)
+    return render_chat_output_widget(data, wrapper="fragment")
+
+
+def _wg1a_buttons(html):
+    """Every rendered verb button as (action_id, is_primary)."""
+    out = []
+    for m in _wg1a_re.finditer(
+            r'<button class="cr-action( cr-action-primary| cr-action-secondary)?"'
+            r'[^>]*data-action="([^"]+)"', html):
+        out.append((m.group(2), m.group(1) == " cr-action-primary"))
+    return out
+
+
+def test_wg1a_grammar_primary_per_class():
+    """WG1-A D-A1/D-A2 §6.1 — each verb class's ruled primary renders as a
+    visible primary button, on the SAME grammar table (no hardcoded cases)."""
+    print("test_wg1a_grammar_primary_per_class")
+    cases = [
+        # (source, actions, expected primary action id)
+        ("commitments", ["send", "draft", "snooze 3d"], "send"),          # email
+        ("commitments", ["nudge", "mark received", "snooze 3d", "add to my plate"], "nudge"),  # delegated (my-list retired — MLK1)
+        ("commitments", ["resolved", "push to [date]", "drop", "not mine", "make task", "skip"], "resolved"),  # commitment (≥5 → dropdown)
+        ("commitments", ["mine", "theirs to [name]", "make task", "drop"], "mine"),  # identity
+        ("cr-pipeline", ["confirm", "not relevant", "add to my plate"], "confirm"),  # confirm/review (my-list retired — MLK1)
+    ]
+    for source, actions, want_primary in cases:
+        item = {"n": 1, "display_n": 1, "name": "Row", "actions": actions}
+        if "send" in actions:  # send-class rows need a valid To (Bug #44 gate)
+            item["metadata"] = [("To", "sam@example.com")]
+            item["body_lines"] = ["Hi."]
+        html = _wg1a_render([item], source=source)
+        prims = [a for a, is_p in _wg1a_buttons(html) if is_p]
+        _check(f"{want_primary!r} is the promoted primary button ({source})",
+               want_primary in prims, f"primaries={prims}")
+
+
+def test_wg1a_le4_all_buttons_no_select():
+    """WG1-A D-A3 §6.1 — a row with ≤4 total options renders EVERY verb as a
+    button and emits NO <select>; a ≥5-option row keeps its tail dropdown."""
+    print("test_wg1a_le4_all_buttons_no_select")
+    small = _wg1a_render([{"n": 1, "display_n": 1, "name": "Confirm row",
+                           "actions": ["mine", "theirs to [name]", "make task", "drop"]}])
+    _check("≤4 row emits no <select>", 'class="cr-action-select"' not in small)
+    ids = [a for a, _ in _wg1a_buttons(small)]
+    for v in ("mine", "theirs to [name]", "make task", "drop"):
+        _check(f"≤4 row renders {v!r} as a button", v in ids, f"buttons={ids}")
+
+    big = _wg1a_render([{"n": 1, "display_n": 1, "name": "Personal",
+                         "actions": ["resolved", "push to [date]", "prep deep work",
+                                     "promote", "snooze 3d", "add to my plate"]}])
+    _check("≥5 row keeps a tail <select>", 'class="cr-action-select"' in big)
+    _check("≥5 row promotes Done as the button",
+           ("resolved", True) in _wg1a_buttons(big))
+
+
+def test_wg1a_input_bearing_button_is_bare_dispatch():
+    """WG1-A D-A3 — an input-bearing verb on a ≤4 row renders as a button with
+    data-input-type="none" (bare dispatch; apply-choices asks the follow-up),
+    carries NO inline wrapper, and validates clean."""
+    from chat_output_renderer import validate_rendered_widget
+    print("test_wg1a_input_bearing_button_is_bare_dispatch")
+    html = _wg1a_render([{"n": 1, "display_n": 1, "name": "Confirm",
+                          "actions": ["mine", "theirs to [name]", "drop"]}])
+    m = _wg1a_re.search(r'<button class="cr-action[^"]*"[^>]*data-action="theirs to \[name\]"[^>]*>', html)
+    _check("input-bearing verb rendered as a button", m is not None)
+    _check("button carries data-input-type=none (bare dispatch)",
+           m is not None and 'data-input-type="none"' in m.group(0))
+    _check("no inline wrapper emitted for the bare-dispatch button",
+           'data-input-for-action="theirs to [name]"' not in html)
+    validate_rendered_widget(html)  # must not raise (no dead wrapper)
+    _check("bare-dispatch row validates clean", True)
+
+
+def test_wg1a_single_item_chrome_and_direct_dispatch():
+    """WG1-A D-A5 §6.2 — a single-item widget drops the batch footer (counter /
+    Apply-all / Reset / Snooze-rest) and dispatches directly on click; a
+    multi-item widget keeps the footer."""
+    from chat_output_renderer import validate_rendered_widget
+    print("test_wg1a_single_item_chrome_and_direct_dispatch")
+    solo = _wg1a_render([{"n": 1, "display_n": 1, "name": "Re: deck",
+                          "metadata": [("To", "sam@example.com")],
+                          "body_lines": ["Hi."], "actions": ["send", "draft", "snooze 3d"]}],
+                        source="inbox")
+    _check("single-item card carries the cr-card-single marker",
+           'class="cr-card cr-card-single"' in solo)
+    for gone in ('id="cr-count"', 'id="cr-apply"', 'id="cr-clear"', 'id="cr-skip-all"'):
+        _check(f"single-item widget drops {gone}", gone not in solo)
+    _check("single-item dispatch helper emitted", "function crSingleDispatch(" in solo)
+    _check("single-item mode flag emitted", "crSingleItem" in solo)
+    # Byte-equal wire guarantee (§6.2): crSingleDispatch builds the payload by
+    # delegating to the SAME crApplyAll the multi-select Apply-all fires — so the
+    # emitted `apply choices: [...]` is byte-identical to the batch form.
+    _sd = solo.split("function crSingleDispatch")[1].split("function crApplyAll")[0]
+    _check("single-item dispatch routes through crApplyAll (byte-equal wire)",
+           "crApplyAll()" in _sd)
+    validate_rendered_widget(solo)  # feedback contract exempts single-item footer
+    _check("single-item widget validates clean", True)
+
+    multi = _wg1a_render([{"n": 1, "display_n": 1, "name": "A", "actions": ["resolved", "drop"]},
+                          {"n": 2, "display_n": 2, "name": "B", "actions": ["resolved", "drop"]}])
+    _check("multi-item widget keeps the footer", 'id="cr-apply"' in multi
+           and 'class="cr-card cr-card-single"' not in multi)
+
+
+def test_wg1a_single_item_footer_still_enforced_on_multi():
+    """WG1-A D-A5 regression — the single-item exemption keys on the exact card
+    class, NOT the bare 'cr-card-single' substring (the JS carries a
+    `.cr-card-single` selector). A multi-item widget with the counter stripped
+    must STILL be rejected by the F-58 feedback contract."""
+    from chat_output_renderer import validate_rendered_widget, WidgetFeedbackContractError
+    print("test_wg1a_single_item_footer_still_enforced_on_multi")
+    multi = _wg1a_render([{"n": 1, "display_n": 1, "name": "A", "actions": ["resolved", "drop"]},
+                          {"n": 2, "display_n": 2, "name": "B", "actions": ["resolved", "drop"]}])
+    raised = False
+    try:
+        validate_rendered_widget(multi.replace('id="cr-count"', 'id="x"'))
+    except WidgetFeedbackContractError:
+        raised = True
+    _check("multi-item counter removal still rejected (no false single-item exemption)", raised)
+
+    # Second-eyes regression (2026-07-20): visible TEXT can carry the bare
+    # attribute string — quotes are not escaped in text nodes — so the
+    # exemption must key on the full `<div class="...">` element form (`<` is
+    # always escaped in text). A row NAME quoting the attribute string must
+    # not disable the F-58 enforcement for the page.
+    tricky = _wg1a_render(
+        [{"n": 1, "display_n": 1,
+          "name": 'use class="cr-card cr-card-single" in the doc',
+          "actions": ["resolved", "drop"]},
+         {"n": 2, "display_n": 2, "name": "second row",
+          "actions": ["resolved", "drop"]}])
+    _check("tricky name carries the attr string into visible text (probe is real)",
+           'class="cr-card cr-card-single"' in tricky)
+    raised = False
+    try:
+        validate_rendered_widget(tricky.replace('id="cr-count"', 'id="x"'))
+    except WidgetFeedbackContractError:
+        raised = True
+    _check("attr-string-in-content does not fake the single-item exemption", raised)
+
+
+def test_wg1a_row_quarantine_not_page_block():
+    """WG1-A D-A6 §6.3 — a 3-row fixture with one poisoned row renders 3 rows
+    (2 healthy + 1 honest placeholder); the placeholder names the defect class,
+    echoes NO poisoned content, and scans clean."""
+    from chat_output_renderer import render_chat_output_widget
+    print("test_wg1a_row_quarantine_not_page_block")
+    data = {"header": "Waiting on", "source_skill": "commitments",
+            "sections": [{"title": None, "items": [
+                {"n": 1, "display_n": 1, "name": "Sam owes the deck",
+                 "actions": ["nudge", "mark received"]},
+                {"n": 2, "display_n": 2, "name": "Quinn (person_04521) owes notes",
+                 "actions": ["nudge", "mark received"]},
+                {"n": 3, "display_n": 3, "name": "Dana owes budget",
+                 "actions": ["nudge", "mark received"]},
+            ]}]}
+    html = render_chat_output_widget(data, wrapper="fragment")
+    _check("healthy row 1 rendered", "Sam owes the deck" in html)
+    _check("healthy row 3 rendered", "Dana owes budget" in html)
+    _check("poisoned row replaced by a placeholder", "1 row withheld" in html)
+    _check("placeholder names the defect class", "failed the leak scan" in html)
+    _check("placeholder offers the show why verb", 'data-action="show why"' in html)
+    _check("poisoned content never reaches the page",
+           "person_04521" not in html and "Quinn" not in html)
+    _check("page still renders three rows",
+           len(_wg1a_re.findall(r'class="cr-item"', html)) == 3)
+
+
+def test_wg1a_page_chrome_backstop_still_raises():
+    """WG1-A D-A6 §6.3 — quarantine is per-row; a leak in page CHROME (the
+    header) still hard-raises via the retained page-level backstop."""
+    from chat_output_renderer import render_chat_output_widget, LeakDetectedError
+    print("test_wg1a_page_chrome_backstop_still_raises")
+    data = {"header": "Board pack person_09912 leak", "source_skill": "commitments",
+            "sections": [{"title": None, "items": [
+                {"n": 1, "display_n": 1, "name": "Clean row", "actions": ["resolved", "drop"]}]}]}
+    raised = False
+    try:
+        render_chat_output_widget(data, wrapper="fragment")
+    except LeakDetectedError:
+        raised = True
+    _check("poisoned page header still hard-raises (backstop alive)", raised)
+
+
+def test_wg1a_back_compat_legacy_select_and_aliases():
+    """WG1-A §6.4 — legacy select-markup HTML still parses through the
+    validator, and deprecated wire-id aliases still resolve to their canonical
+    verb (the frozen back-compat surface)."""
+    from chat_output_renderer import validate_rendered_widget
+    from verb_taxonomy import DEPRECATED_ALIASES, display_label, taxonomy_row
+    print("test_wg1a_back_compat_legacy_select_and_aliases")
+    # A ≥5-option row still emits a legacy <select> tail that validates.
+    big = _wg1a_render([{"n": 1, "display_n": 1, "name": "Row",
+                         "actions": ["resolved", "push to [date]", "drop",
+                                     "not mine", "make task", "skip"]}])
+    _check("≥5 row still emits a legacy cr-action-select", 'class="cr-action-select"' in big)
+    validate_rendered_widget(big)
+    _check("legacy select markup validates", True)
+    # Every deprecated alias still resolves to its replacement's row + label.
+    for alias, repl in DEPRECATED_ALIASES.items():
+        _check(f"deprecated alias {alias!r} still resolves",
+               taxonomy_row(alias) is not None and display_label(alias) == display_label(repl))
+
+
+def test_wg1a_persisted_old_widget_still_dispatches():
+    """WG1-A §6.4 — a persisted PRE-WG1 widget (verb set with no nudge, no
+    grammar-table awareness) must still render + validate: old builders keep
+    working because class detection reads only the row's verbs."""
+    from chat_output_renderer import render_chat_output_widget, validate_rendered_widget
+    print("test_wg1a_persisted_old_widget_still_dispatches")
+    # Pre-WG1 delegated row shape (no `nudge` standing verb yet).
+    html = render_chat_output_widget(
+        {"header": "Waiting on", "source_skill": "commitments",
+         "sections": [{"title": None, "items": [
+             {"n": 1, "display_n": 1, "name": "Legacy delegated row",
+              "actions": ["mark received", "snooze 3d", "add to my list"]}]}]},
+        wrapper="fragment")
+    validate_rendered_widget(html)
+    _check("legacy (nudge-less) delegated widget still renders + validates",
+           "mark received" in html)
+
+
+def test_wg1a_pre_wg1_persisted_html_still_validates_and_parses():
+    """WG1-A §6.4 kickoff invariant (second-eyes addition, 2026-07-20): a
+    widget PAGE persisted BEFORE this branch — real HTML captured from the
+    a045dc2 renderer (tests/golden/pre_wg1a_persisted_widget.golden.html),
+    dropdown-heavy pre-grammar markup — must still pass the CURRENT validator
+    and still carry the frozen dispatch surface: `data-n`/`data-action` on its
+    buttons, wire-tuple option values in its selects, and the batch footer the
+    F-58 contract reads. This is the persisted-old-widget contract the
+    render-level back-compat test cannot cover (it re-renders with the NEW
+    renderer; this fixture is the OLD renderer's bytes)."""
+    import os
+    from chat_output_renderer import validate_rendered_widget
+    print("test_wg1a_pre_wg1_persisted_html_still_validates_and_parses")
+    path = os.path.join(os.path.dirname(__file__), "golden",
+                        "pre_wg1a_persisted_widget.golden.html")
+    with open(path, encoding="utf-8") as f:
+        html = f.read()
+    validate_rendered_widget(html)  # current validator accepts old markup
+    _check("pre-WG1 persisted page passes the current validator", True)
+    _check("old promoted primary still carries its wire attrs",
+           'data-action="resolved"' in html and 'data-n="commitment_seq_11"' in html)
+    _check("legacy dropdown tail intact (selects survive)",
+           html.count('class="cr-action-select"') >= 3)
+    # The select option values ARE the wire tuples the apply-choices dispatch
+    # parses — the frozen `apply choices:` surface. Spot-check the legacy
+    # delegated row (nudge-less) and a sub-item option.
+    _check("legacy delegated row's option value intact",
+           '<option value="mark received"' in html)
+    _check("legacy sub-item option value intact",
+           '<option value="set date [when]"' in html
+           or '<option value="13a set date [when]"' in html)
+    _check("batch footer present on the old page (F-58 surface)",
+           'id="cr-apply"' in html and 'id="cr-count"' in html)
+
+
 def main():
     tests = [
         test_minimal_render,
@@ -1663,6 +1950,17 @@ def main():
         test_original_thread_empty_dict_renders_nothing,
         test_original_thread_no_author_date_single_label,
         test_original_thread_rich_content_unchanged,
+        # WG1-A — fleet widget grammar + row quarantine
+        test_wg1a_grammar_primary_per_class,
+        test_wg1a_le4_all_buttons_no_select,
+        test_wg1a_input_bearing_button_is_bare_dispatch,
+        test_wg1a_single_item_chrome_and_direct_dispatch,
+        test_wg1a_single_item_footer_still_enforced_on_multi,
+        test_wg1a_row_quarantine_not_page_block,
+        test_wg1a_page_chrome_backstop_still_raises,
+        test_wg1a_back_compat_legacy_select_and_aliases,
+        test_wg1a_persisted_old_widget_still_dispatches,
+        test_wg1a_pre_wg1_persisted_html_still_validates_and_parses,
     ]
     for t in tests:
         t()

@@ -294,7 +294,8 @@ def _project_matters_fallback(
     if len(matters) < 5:
         try:
             from thread_activity import derive_thread_activity
-            _activity = derive_thread_activity(workspace_root)
+            _activity = derive_thread_activity(
+                workspace_root, honor_reclassifications=True)  # RECL1
         except Exception:
             _activity = {}
         projects = entities.get("projects") or entities.get("threads") or []

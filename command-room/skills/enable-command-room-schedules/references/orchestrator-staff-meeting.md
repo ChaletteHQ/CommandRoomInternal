@@ -93,7 +93,16 @@ print(json.dumps({'feed': feed, 'n_open': len(queue), 'queue': queue}, default=s
 
 # Phase 4 — "This week's moves" (R4 — the relationship-moves machinery, reused never forked)
 
-Render the top-3 moves INSIDE this surface as a section, exactly as `skills/relationship-moves/SKILL.md` specifies:
+Render the top-3 moves INSIDE this surface as a section. **Branch on the Phase 2.9 run mode FIRST (WG1-B D-B4 — big-test row 10a: scheduled fires produced zero renderable rows and the section silently vanished):**
+
+**`scheduled` fires — the deterministic, connector-free path.** No email-writer chain, no connector reads, no improvised row assembly:
+
+1. Call `relationship_moves.compute_relationship_moves(WORKSPACE, top_n=3, thread_totals={})` — the default `emit=True` keeps the 7-day dedupe exactly as on the manual path.
+2. Apply the surface-preference filter (`surface_preferences.is_suppressed`, item_class `relationship_move`).
+3. Convert the survivors via `relationship_moves.moves_rows_from_candidates(<candidates>, WORKSPACE)` — the canonical adapter emits complete data-view rows (`n: "move:<person_id>"`, resolved display name, substrate-derived why-now tag, verbs `nudge` / `snooze 3d` / `not relevant`). Never hand-shape a row; an unresolvable person_id is the adapter's to skip.
+4. Write the adapter's rows to the temp file and pass `--moves-json` whenever it returned **≥1 row** — the omit-when-zero path now fires only on genuinely zero candidates. `nudge` is compose-on-CLICK (WG1-A D-A4): the chase draft AND the live-contact check both run at apply time in the click-handling chat — this fire touches no connector.
+
+**`manual` fires — the interactive path, unchanged (row 27 verified it live):**
 
 1. **MUST-run `live_contact_check` per candidate** (`shared/scripts/live_contact_check.py`) — inherit the dormant-customer-scan MUST-language verbatim: NO dormancy-driven outreach from substrate-only data. Drop any candidate the live check un-dormants — EXCEPT candidates whose rank is carried by overdue commitments (overdue component >= dormancy component): keep the card and cite the recent touch in the why-now line.
 2. Call `relationship_moves.compute_relationship_moves(WORKSPACE, top_n=3, thread_totals={})` — the default `emit=True` appends the `relationship_move_suggested` events, which is exactly what keeps this section and any still-registered standalone Relationship Moves chat from double-suggesting the same person inside 7 days (the machinery's own exclusion window — reuse gives the dedupe for free; existing registrations stay untouched, R4).

@@ -156,15 +156,149 @@ def _write_seqhw(events_path: Path, max_seq: int) -> None:
         pass  # the sidecar is a guard, never a hard dependency of the write
 
 
+# EPOCH_THRESHOLD — any seq at/above this is a nano-epoch artifact (1.77e18…),
+# not a human counter. Shared by the tail scan + the auto-stamp step, kept in
+# one place so the "ignore ≥1e10" contract can never drift between them.
+_EPOCH_THRESHOLD = 10**10
+
+
+def _file_max_seq(events_path: str | Path, existing_text: str | None = None) -> int:
+    """The maximum human-counter seq on disk in `events_path` (0 when the file
+    is absent/empty/all-nano-epoch). Ignores non-dict / non-numeric / nano-epoch
+    (>=1e10) seqs, exactly like next_seq.py. `existing_text` lets a caller that
+    already read the file avoid a second read (the writer's hot path)."""
+    path = Path(events_path)
+    if existing_text is None:
+        try:
+            existing_text = path.read_text(encoding="utf-8") if path.exists() else ""
+        except OSError:
+            return 0
+    max_seq = 0
+    for line in existing_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        s = entry.get("seq")
+        if (
+            isinstance(s, (int, float))
+            and not isinstance(s, bool)
+            and s < _EPOCH_THRESHOLD
+            and s > max_seq
+        ):
+            max_seq = int(s)
+    return max_seq
+
+
+def events_freshness(events_path: str | Path) -> dict:
+    """SPEC SYNC1 A1 — read-side staleness detection. Compare the max seq
+    ACTUALLY VISIBLE in `events_path` against the recorded `.seqhw` high-water.
+
+    A regression (file_max_seq < seqhw_max) means the view we can see is behind
+    its own high-water — a mid-sync flush, a stale Drive last-writer-wins copy,
+    or (the row-17 class) a Cowork sandbox mount serving a copy from a
+    pre-recovery lineage. Reads are stale even with zero laptop involvement, and
+    because `atomic_append_jsonl` is read-modify-write, a write through a stale
+    view rewrites the whole file from stale content — a stale READ becomes a
+    clobbering WRITE. This is the read-path extension of the FS-04 write guard.
+
+    Returns {file_max_seq, seqhw_max, regressed, checked_at}. `seqhw_max` is
+    None on a workspace with no sidecar yet (a fresh log) — `regressed` is False
+    there (nothing to regress below), so single-machine / brand-new workspaces
+    no-op clean (back-compat, D-5).
+
+    An ABSENT events.jsonl with a live `.seqhw` sidecar IS regressed (second-eyes
+    fix): that view once reached the high-water and now shows nothing — the most
+    stale view possible (a partial mount / mid-sync dir). Treating it as fresh
+    let the reconciler rebuild the log from a quarantine at seq 1 and silently
+    LOWER the high-water — the exact clobber this module exists to prevent. The
+    failure direction here must always be refuse."""
+    import datetime as _dt
+    path = Path(events_path)
+    file_max = _file_max_seq(path)
+    seqhw = _read_seqhw(path)
+    regressed = seqhw is not None and file_max < seqhw
+    return {
+        "file_max_seq": file_max,
+        "seqhw_max": seqhw,
+        "regressed": bool(regressed),
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }
+
+
+def _regression_marker_path(events_path: Path) -> Path:
+    return events_path.with_name(events_path.name + ".seqregression.json")
+
+
+def _recovery_dir(events_path: Path) -> Path:
+    """A fresh, timestamped `_recovery_<stamp>/` under the data dir — where the
+    reconciler + the marker truth-check archive resolved artifacts (snapshot-
+    never-delete). Created on demand."""
+    import datetime as _dt
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    d = events_path.parent / f"_recovery_{stamp}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def check_substrate_regression(events_path: str | Path) -> dict | None:
     """Read the FS-04 regression marker if one was left by a refused append.
     system-health / morning-briefing call this to surface the LOUD alarm.
-    Returns the marker dict (with `quarantine_path`, counts, seqs) or None."""
-    p = Path(events_path).with_name(Path(events_path).name + ".seqregression.json")
+    Returns the marker dict (with `quarantine_path`, counts, seqs) or None.
+
+    SPEC SYNC1 A2 — TRUTH-CHECK THE MARKER (the row-17 fix). The 2026-07-19
+    incident left a marker (file 3591 / sidecar 4606) that outlived its truth:
+    the real file on the primary machine was healthy at 4643, but the marker
+    lingered and `substrate_alarm_lines` surfaced a data-loss alarm that was
+    false by read-time. So before returning a marker, re-verify it: if the live
+    file now satisfies `file_max_seq >= sidecar_max_seq`, the condition has
+    resolved — archive the marker into a `_recovery_<stamp>/` snapshot (never
+    delete) and return None. A still-true marker is returned unchanged."""
+    events_path = Path(events_path)
+    p = _regression_marker_path(events_path)
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        marker = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(marker, dict):
+        return None
+    sidecar_max = marker.get("sidecar_max_seq")
+    if isinstance(sidecar_max, (int, float)) and not isinstance(sidecar_max, bool):
+        # Truth-check: is the condition still true against the live file?
+        if _file_max_seq(events_path) >= int(sidecar_max):
+            _archive_resolved_marker(events_path, p, marker)
+            return None
+    return marker
+
+
+def _archive_resolved_marker(events_path: Path, marker_path: Path, marker: dict) -> None:
+    """Best-effort: move a resolved regression marker out of the live path into a
+    `_recovery_<stamp>/` snapshot so it can never be re-surfaced as a live alarm,
+    while the audit trail is preserved. Never raises — a read-time truth-check
+    that could crash the health surface would be a worse bug than the stale
+    marker it clears."""
+    try:
+        dest = _recovery_dir(events_path) / marker_path.name
+        atomic_write_json(dest, marker)
+        try:
+            marker_path.unlink()
+        except OSError:
+            # If the mount refuses unlink, mv-aside so it stops matching the
+            # live marker glob (same doctrine as the lock-litter sweep).
+            try:
+                import time as _time
+                marker_path.rename(
+                    marker_path.with_suffix(marker_path.suffix + f".archived.{int(_time.time())}")
+                )
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 def atomic_append_jsonl(
@@ -326,33 +460,17 @@ def atomic_append_jsonl(
                 existing = existing + "\n"
             # v3.13.8.3 Bug #74 — scan tail for max human-counter seq while we
             # already have the content read. Mirrors next_seq.py contract:
-            # ignore non-dict / non-numeric / nano-epoch (>=1e10) seqs.
+            # ignore non-dict / non-numeric / nano-epoch (>=1e10) seqs. Factored
+            # into _file_max_seq (SPEC SYNC1) so the read path + events_freshness
+            # share one seq-scan contract.
             if is_events:
-                EPOCH_THRESHOLD = 10**10
-                for line in existing.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(entry, dict):
-                        continue
-                    s = entry.get("seq")
-                    if (
-                        isinstance(s, (int, float))
-                        and not isinstance(s, bool)
-                        and s < EPOCH_THRESHOLD
-                        and s > existing_max_seq
-                    ):
-                        existing_max_seq = int(s)
+                existing_max_seq = _file_max_seq(path, existing_text=existing)
 
         # v3.13.8.3 Bug #74 + #75 — auto-stamp seq + ts for events.jsonl writes.
         # Shallow-copy each event to avoid mutating caller's dicts.
         if is_events:
             import datetime as _dt
-            EPOCH_THRESHOLD = 10**10
+            EPOCH_THRESHOLD = _EPOCH_THRESHOLD
             evs = [{**ev} for ev in evs]
             next_seq_val = existing_max_seq + 1
             now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
@@ -395,7 +513,13 @@ def atomic_append_jsonl(
         # CR_SEQ_HIGHWATER=0 disables (emergencies / intentional resets).
         if is_events and os.environ.get("CR_SEQ_HIGHWATER", "1") != "0":
             hw = _read_seqhw(path)
-            if hw is not None and path.exists() and existing_max_seq < hw:
+            # No `path.exists()` here (second-eyes fix 2026-07-20): an ABSENT
+            # events.jsonl with a live .seqhw is the most-regressed view possible
+            # (a partial mount) and is never legitimate — rotation always leaves
+            # the active file in place with its seq-continuity marker. Writing
+            # through it would start a fresh seq-1 lineage and the high-water
+            # advance below would silently LOWER .seqhw. Refuse + quarantine.
+            if hw is not None and existing_max_seq < hw:
                 import datetime as _dt
                 stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
                 q_path = path.with_name(path.name + f".quarantine-{stamp}.jsonl")
@@ -482,6 +606,35 @@ def atomic_append_jsonl(
             _sys.path.insert(0, str(Path(__file__).resolve().parent))
             from writer_lock import events_writer_lock
         with events_writer_lock(path, holder=holder):
+            # SPEC SYNC1 A3 — quarantine auto-reconcile + fail-closed merge-
+            # forward, INSIDE the lock, BEFORE the FS-04 check below. Fast no-op
+            # unless a marker / quarantine / Drive conflict-copy is present, so
+            # the normal append path pays nothing. On a healthy view it replays
+            # any quarantined batches (self-heal — zero manual recovery); on a
+            # regressed view it merges forward ONLY when a candidate at/above the
+            # high-water is visible, and otherwise does nothing so the FS-04
+            # guard in _read_stamp_write stays the last-resort fail-closed floor
+            # (the load-bearing rule: a stale sandbox mount must never let the
+            # reconciler promote the stale copy and become the clobberer itself).
+            # Best-effort: a reconcile failure must never block the caller's
+            # write — the FS-04 guard still protects the substrate.
+            if os.environ.get("CR_RECONCILE_FORWARD", "1") != "0":
+                try:
+                    from reconcile_forward import reconcile_forward
+                except ImportError:
+                    import sys as _sys
+                    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                    try:
+                        from reconcile_forward import reconcile_forward
+                    except Exception:
+                        reconcile_forward = None
+                except Exception:
+                    reconcile_forward = None
+                if reconcile_forward is not None:
+                    try:
+                        reconcile_forward(path, holder=holder)
+                    except Exception:
+                        pass
             _read_stamp_write(events)
     else:
         _read_stamp_write(events)
@@ -978,8 +1131,60 @@ def atomic_write_json_locked(
                     f"Post-write parse check failed on {path.name}: {e}. "
                     f"Restored from newest backup (if any). The write was rejected."
                 ) from e
+        # SPEC SYNC1 D-4 — freshness sidecar for name-bearing substrate.
+        # entities.json / aliases.json have no seq semantics, so the seqhw guard
+        # can't cover them; sighting #2 (2026-07-19) was a transient entities
+        # parse failure in a scheduled fire. A tiny `<file>.rev` sidecar stamped
+        # at this chokepoint lets a reader notice it is looking at an older view
+        # than the last locked write produced. Best-effort — the write is
+        # already durable; a rev-stamp failure must never fail the write.
+        _stamp_rev_sidecar(path)
     finally:
         release_write_lock(lock_path)
+
+
+_REV_SIDECAR_NAMES = ("entities.json", "aliases.json")
+
+
+def _rev_sidecar_path(path: Path) -> Path:
+    return path.with_name(path.name + ".rev")
+
+
+def _stamp_rev_sidecar(path: Path) -> None:
+    """Bump `<file>.rev` = {rev, updated} after a locked write to entities.json /
+    aliases.json (SPEC SYNC1 D-4). rev is a monotonic counter read from the
+    prior sidecar (absent/corrupt → start at 1). No-op for other files."""
+    if path.name not in _REV_SIDECAR_NAMES:
+        return
+    try:
+        import datetime as _dt
+        prior = 0
+        sp = _rev_sidecar_path(path)
+        try:
+            raw = json.loads(sp.read_text(encoding="utf-8"))
+            v = raw.get("rev")
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                prior = v
+        except (OSError, json.JSONDecodeError, AttributeError, ValueError):
+            prior = 0
+        atomic_write_json(sp, {
+            "rev": prior + 1,
+            "updated": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+    except Exception:
+        pass
+
+
+def read_rev_sidecar(path: str | Path) -> dict | None:
+    """The `{rev, updated}` freshness sidecar for entities.json / aliases.json,
+    or None when absent/corrupt (SPEC SYNC1 D-4). Back-compat: a workspace with
+    no sidecar reads as None — readers must treat that as 'no signal', never a
+    warning (a pre-D4 substrate has no sidecars and is perfectly healthy)."""
+    try:
+        raw = json.loads(_rev_sidecar_path(Path(path)).read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _try_restore_from_backup(path: Path) -> None:
@@ -1029,6 +1234,10 @@ __all__ = [
     "release_write_lock",
     "multi_write_context",
     "AtomicWriteLockError",
+    "SubstrateRegressionError",
+    "check_substrate_regression",
+    "events_freshness",
+    "read_rev_sidecar",
 ]
 
 
