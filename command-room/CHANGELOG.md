@@ -1,5 +1,22 @@
 # Command Room — Changelog
 
+## v5.2.2 — 2026-07-27 — Balance confirmations attach to the exact reminder they answer
+
+Patch release: fixes only, no new features, no migration.
+
+### Fix
+- **Balance confirmations key on identity, not on a clock.** A confirmation now ties to exactly the reminder it answers — the relationship and the specific nudge that produced it — instead of matching by timestamp proximity. Clock-keyed matching could credit a confirmation to the wrong reminder when two landed close together, or drop it across a delayed write. Also pinned: a sequence number is never captured before its row lands, so a failed write can never leave a confirmation pointing at a reminder that was never recorded.
+- **Release-headline guard.** The guard that keeps internal build language off customer-facing surfaces now also reads every release manifest headline, so update announcements stay in plain English by construction. A contract-doc claim about where this guard runs was corrected to match reality.
+
+### Files touched
+Per client repo: the balance engine (`shared/scripts/balance.py`), balance / apply-choices / objectives skill texts, contract references. Test additions remain in the source repo.
+
+### Customer migration impact
+No user action. The next balance cycle uses the new keying automatically.
+
+### What's NOT in this ship
+A document-rendering hardening pass and the coach vertical ride a later cut.
+
 ## v5.2.1 — 2026-07-26 — Payload scope: a client install now ships only what a client actually runs
 
 Not a feature release. Two development-only paths were fanning out to every client repo with no reason to be there. They stop shipping, and because the promote stages exclusions as deletions, this release removes them from all thirteen — 327 files per repo.

@@ -1,0 +1,5 @@
+{
+ "version": "5.2.2",
+ "headline": "Fixes — balance reminder confirmations now always attach to the exact reminder they answer, even when several arrive close together. No action needed; nothing about how you use the workspace changed.",
+ "items": []
+}

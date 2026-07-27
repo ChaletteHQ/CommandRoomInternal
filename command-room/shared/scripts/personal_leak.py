@@ -47,10 +47,11 @@ from typing import List, Optional
 # a cycle; run_personal_firewall_test pins the two lists equal).
 _REMINDER_TYPES = ("reminder", "reminder_updated", "reminder_cleared")
 
-# The BAL1 personal-lane event family: the Sunday nudge (balance.py's code
-# writer) and the `book` confirm-path linkage (prose writer — apply-choices
-# balance dispatch; type pinned in both SKILL prose sites, equality asserted
-# by run_fu_pretest_pins_test).
+# The BAL1 personal-lane event family: the Sunday nudge
+# (balance.compute_balance) and the `book` confirm-path linkage
+# (balance.record_actioned — a code writer since OI-3 B-1 2026-07-26; it was
+# prose-only, which is what that finding closed). Type pinned in both SKILL
+# prose sites, equality asserted by run_fu_pretest_pins_test.
 _PERSONAL_EVENT_TYPES = ("balance_nudge_suggested", "balance_nudge_actioned")
 
 

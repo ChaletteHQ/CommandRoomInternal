@@ -52,7 +52,7 @@ Branch on `result["status"]`:
 - `not_configured` / `no_calendar_data` → the Step 0/Step 1.4 refusal line. STOP.
 - `no_personal_ties` → the tie-refusal line, never an all-clear: *"No personal ties tagged yet — tell me who counts and I'll start protecting that white space."* Zero `tie: "personal"` people means Balance has nothing to protect; a calendar being connected does not make an empty tie set healthy. Emit nothing. STOP.
 - `all_clear` → render the `all_clear_summary` data view ("White space looks healthy this week."), never hand-built HTML. STOP after the widget.
-- `nudge` → Steps 3–4.
+- `nudge` → Steps 3–4. Carry `result["nudge_seq"]` forward — it is the seq of the row just emitted and therefore **this card's identity**; the confirm path keys its idempotency on it. `None` means the emit failed (`result["emit_failed"]`); say so and do not offer `book`, because there is no suggestion on disk for a confirm to link to.
 
 ## Step 3 — Draft the reconnect (email-writer chain, warm register)
 
@@ -62,7 +62,7 @@ When the nudge's `proposed_action.kind` is `"reservation"` and a venue is in pla
 
 Render through `widget_transport.render_and_persist` with the data view's `surface: "m_facing"`, then pass `transport["html"]` to `mcp__visualize__show_widget` byte-exact. Two shapes:
 
-1. **Reconnect card** — item = "[You] + [tie name]", `context_tag` = "last [date] · [N] wks", `body_lines` = the why-now line + the 2–3 open slots (plain language: "Thu Jul 24 and Sat Jul 26 are open after 6 PM"), actions `["book", "propose other night", "snooze 7d", "skip"]` — all four are in `CANONICAL_ACTIONS` (the `book` / `propose other night` rows are BAL1's, `shared/scripts/verb_taxonomy.py`).
+1. **Reconnect card** — item = "[You] + [tie name]", `context_tag` = "last [date] · [N] wks", `body_lines` = the why-now line + the 2–3 open slots (plain language: "Thu Jul 24 and Sat Jul 26 are open after 6 PM"), actions `["book", "propose other night", "snooze 7d", "skip"]` — all four are in `CANONICAL_ACTIONS` (the `book` / `propose other night` rows are BAL1's, `shared/scripts/verb_taxonomy.py`). The row embeds the tie's `person_id` AND `result["nudge_seq"]` verbatim — both travel to Apply untouched; the seq is what tells the confirm path which card was clicked.
 2. **Venue-outreach variant** — email-shaped item with `metadata=[["To", venue_email], ["Subject", subj]]`, dispatching through email-writer.
 
 Post-widget Links/Sources section, then STOP — the widget is the entire turn. Zero nudges → the `all_clear_summary` view. **Output guard:** no internal tokens (`tie`, event names, scores) in anything rendered — "last touch 49 days ago", never "score 3.5".
@@ -73,7 +73,23 @@ Nothing below happens at render time. Only on an explicit `book` click from Appl
 
 1. **Tentative hold:** route the personal-calendar hold through `calendar-writer`'s Phase 5/6 propose-and-confirm write path (discover the create tool, write only on the explicit confirm dispatch) — never a direct calendar write. The hold targets the PERSONAL calendar id from `workspace.personal_calendars`.
 2. **Venue outreach:** queue the Step-3 draft per the workspace draft posture (Drafts queue on the user's action — never on render, never auto-sent).
-3. Write the linkage: update nothing in place — append the follow-on linkage as a `balance_nudge_actioned` event (`data.personal: true` always — the type is personal-classified via `personal_leak._PERSONAL_EVENT_TYPES`, so org-scoped readers drop it; never a generic or org-lane type) with `proposed_action.draft_event_seq` populated (append-only discipline).
+3. Write the linkage **through the single gated writer, `balance.record_actioned`** — never a hand-rolled append:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from balance import record_actioned
+record_actioned("<abs WORKSPACE root>",
+                tie_person_id=<the row's person_id verbatim>,
+                source_nudge_seq=<the row's nudge_seq verbatim — REQUIRED>,
+                draft_event_seq=<the queued draft's seq, or None with no email leg>,
+                venue=<the confirmed venue or None>,
+                hold_start=<ISO start of the evening held in item 1, or None>,
+                source_skill="balance")
+```
+
+It updates nothing in place: its whole job is to **append the follow-on linkage as a `balance_nudge_actioned` event** (`data.personal: true` always — the type is personal-classified via `personal_leak._PERSONAL_EVENT_TYPES`, so org-scoped readers drop it; never a generic or org-lane type) with `proposed_action.draft_event_seq` populated (append-only discipline). It refuses loudly on a tie that is not an active `tie: "personal"` person, and on a missing `source_nudge_seq`.
+
+**Idempotency is keyed on the card, not on the calendar.** The key is `(tie_person_id, source_nudge_seq)`. Re-dispatching the SAME card returns `already_actioned` permanently — ack that plainly ("that evening's already held"), never a second linkage. A genuinely NEW card writes a new linkage immediately, even the same week: there is no window to wait out and nothing to configure. When `already_actioned` comes back with a `diverged` map, the ack must name what was kept — *"already held Thursday at [recorded venue]; I did not change it to [passed venue]"* — never a bare "already held" that implies nothing was lost.
 
 On `propose other night` with a typed date: validate the date via `availability.has_conflict` against the SAME busy set from Step 1 before drafting anything; a conflicted date gets an honest "that evening has [conflict] — closest open is [slot]". Empty input → re-render the remaining `open_slots` from this fire's computation.
 

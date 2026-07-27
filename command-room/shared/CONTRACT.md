@@ -407,7 +407,7 @@ See `references/MD_DELIVERABLE_POLICY.md` for the full deliverable-vs-context ta
 
 The non-technical-customer principle: Command Room customers are CEOs and operators who don't think in JSON / schema / migration / `taskId` / `events.jsonl` vocabulary, and they should never be asked to type a phrase to make the system do its own plumbing work.
 
-**Banned in customer-facing surfaces** (manifest `prompt_template` / `notice_template` fields; chat-quoted blocks in SKILL.md; any string the customer will read):
+**Banned in customer-facing surfaces** (manifest top-level `headline`; manifest `prompt_template` / `notice_template` fields; chat-quoted blocks in SKILL.md; any string the customer will read):
 
 - **Schema / file vocabulary:** `events.jsonl`, `entities.json`, `aliases.json`, `workspace_config`, `schema`, `enum`, `MCP`, `mcp__`, action-type literals (`instruct_user`, `auto_apply`, `announce_only`), filename-shaped strings like `orchestrator-*.md`, internal taskId variants (`cr-*-pulse`, `cr-*-nudge`).
 - **Plumbing-instruction shapes** (banned in `announce_only` and `auto_apply` surfaces, allowed in `instruct_user`): `run recovery`, `run [wrapper] backfill`, `run [the] migration`, `apply [the] migration`, `re-fire`, `re-register your tasks/schedules`, `set up command room schedules` (when surfaced as an asking-shape rather than as a recovery instruction), `repair my activity log`.
@@ -416,7 +416,9 @@ The non-technical-customer principle: Command Room customers are CEOs and operat
 
 **The customer-voice contract:** notice templates use past-tense, customer-visible-outcome framing — *"I quietly set aside 12 incomplete entries from old data"* — not *"a quarantine pass moved 12 malformed events.jsonl lines to a sidecar."* Same information, different audience.
 
-**Enforcement:** `tests/run_no_jargon_in_customer_surfaces_test.py` scans every `shared/releases/v*.json` manifest's `prompt_template` and `notice_template` fields for the banned patterns. Pre-commit hook + ship-cr-plugin Step 6 pre-commit gate both invoke this script. New violations block the ship.
+**Enforcement:** `tests/run_no_jargon_in_customer_surfaces_test.py` scans every `shared/releases/v*.json` manifest's top-level `headline` plus its items' `prompt_template`, `notice_template` and `fallback_prompt_template` fields for the banned patterns. The `.githooks/pre-commit` hook invokes this script, and the battery runs it at guard tier. (Step 6 of `ship-cr-plugin` runs a different, smaller guard set that does not include this one — the hook and the battery are what block the ship.) New violations block the ship.
+
+The `headline` carries no `action`, so both rule sets apply to it unconditionally — including the plumbing-instruction shapes that an `instruct_user` item may legitimately use. A headline summarizes what changed; the instruction to type something belongs in the item prompt. Enforcing this cost zero rewrites: all 88 shipped manifests already read that way, including the six whose `instruct_user` items say "set up command room schedules" under an outcome-shaped headline.
 
 **Why a structural guard rather than reviewer discipline:** mirrors Rule 25 / Rule 26 / Rule 27 model. Customer-friendly prose is easy to drift from — a future skill author writes the prompt the way they'd describe the fix to another developer ("type `run X backfill` to apply the migration"), forgetting the customer reads the same string. The static guard catches it at push time.
 

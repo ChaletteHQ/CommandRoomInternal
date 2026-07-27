@@ -36,7 +36,7 @@ Each manifest enumerates these and the update-bridge plays them in order.
 | Field | Required | Notes |
 |---|---|---|
 | `version` | yes | Must match the plugin.json version this manifest ships in. Used by the bridge to advance the "last applied" pointer. |
-| `headline` | yes | One line user-facing summary. Shown above the items list. Plain English; no file paths, no rule numbers, no dev-internal noise (per the existing Rule 9 in `command-room-update-bridge/SKILL.md`). |
+| `headline` | yes | One line user-facing summary. Shown above the items list. Plain English; no file paths, no rule numbers, no dev-internal noise (per the existing Rule 9 in `command-room-update-bridge/SKILL.md`). Guard-enforced: the jargon guard scans this field, and because it carries no `action` it gets both the word-level and the plumbing-instruction rule sets — a headline never tells the customer to type a phrase. |
 | `items` | yes | List of remediation items (may be empty for pure-internal releases that need no user surface). |
 
 **Item:**
@@ -63,7 +63,7 @@ Each manifest enumerates these and the update-bridge plays them in order.
 
 Safety constraint on `auto_apply`: actions MUST be additive, reversible, and no-data-loss. Substrate-rewriting actions (corruption recovery, backfills) are allowed because they quarantine sidecar-style — original data is preserved. Anything destructive (delete, overwrite without backup) MUST stay `instruct_user` so the customer explicitly consents.
 
-The non-technical-customer principle (CONTRACT.md Rule 28): if the question would expose schema / migration / JSON / `taskId` / `enum` / `events.jsonl` / `entities.json` / `backfill` / `quarantine` / `re-fire` / `re-register` / `wrapper` vocabulary to the customer, it MUST be `auto_apply` (the system picks the answer) or rewritten in plain English. The jargon-guard pre-commit test scans customer-facing surfaces (manifest `prompt_template` and `notice_template` fields, and quoted surfaces in SKILL.md files) for these patterns and fails the ship if any leak.
+The non-technical-customer principle (CONTRACT.md Rule 28): if the question would expose schema / migration / JSON / `taskId` / `enum` / `events.jsonl` / `entities.json` / `backfill` / `quarantine` / `re-fire` / `re-register` / `wrapper` vocabulary to the customer, it MUST be `auto_apply` (the system picks the answer) or rewritten in plain English. The jargon-guard pre-commit test scans customer-facing manifest surfaces — the top-level `headline` plus each item's `prompt_template`, `notice_template` and `fallback_prompt_template` — for these patterns and fails the ship if any leak. (Quoted customer prose in SKILL.md files is covered by a sibling guard, `tests/run_customer_facing_voice_test.py`, against its own rule set — not by this one.)
 
 ## Detector contract
 

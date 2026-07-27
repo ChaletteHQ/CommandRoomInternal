@@ -7,10 +7,12 @@ The weekly Sunday surface reads the PERSONAL lane only — `tie: "personal"`
 people, personal reminders, and the open evenings on the declared personal +
 family calendars cross-checked against business busy — and surfaces the single
 most-starved personal relationship with real open evenings attached. The
-firewall is the feature: everything this module emits is personal-lane
-(`balance_nudge_suggested`, classified personal by `personal_leak.is_personal`
-and dropped from every org-scoped read by `events_io.load_events_org_scoped`),
-and this surface renders ONLY at `surface="m_facing"`.
+firewall is the feature: everything this module emits is personal-lane (the
+Sunday `balance_nudge_suggested` from `compute_balance` and the `book`
+confirm-path `balance_nudge_actioned` from `record_actioned` — both classified
+personal by `personal_leak.is_personal` and dropped from every org-scoped read
+by `events_io.load_events_org_scoped`), and this surface renders ONLY at
+`surface="m_facing"`.
 
 Cadence semantics (D1(b) — load-bearing): `cadence_days` is the personal
 RE-SURFACE interval ("date night every 14 days") and is read HERE ONLY. It is
@@ -59,7 +61,11 @@ _INTERACTION_TYPES = ("interaction", "meeting", "meeting_processed", "email_sent
 # workspace.balance_default_cadence_days.
 DEFAULT_CADENCE_DAYS = 14.0
 
-# Per-tie dedupe window: a tie nudged in the last 7 days is not re-nudged.
+# Per-tie SUGGEST-side dedupe window: a tie nudged in the last 7 days is not
+# re-nudged by the next fire (`_excluded_ties`). This is the ONLY thing the
+# constant governs. The confirm-path writer deliberately does NOT use it —
+# `record_actioned` keys idempotency on the identity of the card being clicked
+# (tie + source_nudge_seq), not on elapsed time (OI3FIX F-1, 2026-07-26).
 DEDUPE_WINDOW_DAYS = 7
 
 
@@ -299,8 +305,17 @@ def compute_balance(
           the caller passed no busy data (None); NOTHING emitted — never
           propose an evening against an unknown calendar.
       {"status": "all_clear", ...}                   — nothing starved.
-      {"status": "nudge", "nudge": {...}, ...}       — exactly ONE nudge; one
-          `balance_nudge_suggested` appended when emit=True.
+      {"status": "nudge", "nudge": {...}, "nudge_seq": int|None, ...}
+          — exactly ONE nudge; one `balance_nudge_suggested` appended when
+          emit=True.
+
+    `nudge_seq` is the seq of the row that was actually appended, and it is the
+    card's IDENTITY: the widget row carries it and the `book` confirm hands it
+    straight back as `record_actioned(source_nudge_seq=...)`, which is what
+    makes the confirm path idempotent per card instead of per clock (OI3FIX
+    F-1). It is None — honestly, never faked — when `emit=False` or the append
+    failed (`emit_failed`); there is no suggestion event to link a confirm to
+    in either case.
 
     `personal_busy` / `business_busy` are the fetched busy intervals for the
     declared personal+family calendars and the business calendar. Pass [] for
@@ -402,6 +417,7 @@ def compute_balance(
     }
 
     emit_failed = False
+    emitted_seq = None
     if emit:
         try:
             from next_seq import next_seq
@@ -416,6 +432,9 @@ def compute_balance(
                 # classification personal_leak.is_personal already applies.
                 "data": dict(nudge, personal=True),
             }])
+            # Only after the append RETURNS — a seq handed out for a row that
+            # never landed would key a confirm to a nonexistent suggestion.
+            emitted_seq = seq
         except Exception:
             # Surfaced, not swallowed (second-eyes fix, 2026-07-19): a failed
             # append means no audit trail AND no dedupe next fire — the skill
@@ -424,21 +443,224 @@ def compute_balance(
 
     out = dict(base)
     out["status"] = "nudge"
+    # `nudge` stays byte-equal to the emitted payload (run_balance_test pins
+    # `ev["data"] == dict(res["nudge"], personal=True)`), so the card's seq
+    # rides ONE level up rather than as a self-reference inside the row.
     out["nudge"] = nudge
+    out["nudge_seq"] = emitted_seq
     out["runner_ups"] = ranked[1:]
     if emit_failed:
         out["emit_failed"] = True
     return out
 
 
+class BalanceWriterError(ValueError):
+    """Bad input to the confirm-path writer. Loud, never silent — a linkage
+    written against a missing tie is worse than no linkage at all."""
+
+
+_ACTION_KINDS = ("reservation", "call")
+
+
+def record_actioned(
+    workspace_root,
+    *,
+    tie_person_id: str,
+    source_nudge_seq: Optional[int] = None,
+    draft_event_seq: Optional[int] = None,
+    venue: Optional[str] = None,
+    hold_start: Optional[str] = None,
+    action_kind: str = "reservation",
+    source_skill: str = "balance",
+) -> dict:
+    """THE confirm-path writer: the single gated closure for a `book` click
+    (OI-3 B-1, 2026-07-26).
+
+    Before this existed, `balance_nudge_actioned` had no named writer anywhere
+    in the tree — both prose sites (balance SKILL Step 4.3 and the
+    apply-choices `balance` dispatch) told the executing model to "append the
+    follow-on linkage", and `personal_leak.py` only CLASSIFIED the type. An
+    executing model had to hand-roll the append on the one path in this skill
+    that holds a calendar slot and queues an outbound draft — the Bug #81
+    architectural class (Gate 3) sitting on top of the F-15 invisible-code
+    class (Gate 17). This is the `objective_state` shape: one function, one
+    event, loud on bad input, and — since OI3FIX — idempotent on the IDENTITY
+    of the thing itself, the way `objective_state` keys on entity state rather
+    than on elapsed time.
+
+    Called ONLY from the apply-choices `balance` dispatch, and only after BOTH
+    user-click-gated legs have run: the tentative personal-calendar hold
+    (calendar-writer's Phase 5/6 consent path) and the draft queue. Nothing
+    here books, sends, or spends — it records that the user's click happened.
+
+    IDEMPOTENCY IS KEYED ON IDENTITY, NOT ON A CLOCK (OI3FIX F-1, 2026-07-26).
+    The key is `(tie_person_id, source_nudge_seq)` — the tie plus the seq of
+    the `balance_nudge_suggested` row this click answers. That gives three
+    behaviours a time window could not give at any setting:
+
+      * the SAME card clicked twice is a NO-OP permanently, with no decay —
+        strictly stronger than a 7-day window;
+      * a genuinely NEW card writes a new linkage, correctly, even a minute
+        later — no duration left to configure, no product ruling deferred;
+      * a corrected confirm carrying a new seq LANDS instead of vanishing.
+
+    The first version keyed on `(tie, DEDUPE_WINDOW_DAYS)`. That made one
+    number do two incompatible jobs — a double-click guard (which wants
+    seconds) and a second-booking policy (never ruled) — and it silently
+    discarded a corrected confirm: disk kept the old venue while the ack said
+    "already held". On the one path in this skill that holds a calendar slot
+    and queues an outbound draft, that is a defect, not a tuning choice.
+
+    Args:
+      tie_person_id: the tie's `person_id` VERBATIM off the widget row. Must
+        name an active `tie: "personal"` person — the lane is the point.
+      source_nudge_seq: `compute_balance`'s `nudge_seq` for the fire that
+        rendered this card, VERBATIM off the widget row. REQUIRED — it is the
+        dedupe key, and a missing one would collapse every click on this tie
+        into a single identity, which is the bug this replaces. It also closes
+        the linkage back to the suggestion it answers (previously the row
+        referenced the draft but never the nudge).
+      draft_event_seq: seq of the queued venue-outreach draft event, or None
+        when the reconnect carried no email leg (SKILL Step 3).
+      venue / hold_start: the confirmed venue name and the ISO start of the
+        held evening, both optional. Personal-lane content by construction —
+        which is exactly why the type pin matters.
+      action_kind: mirrors the nudge's `proposed_action.kind`.
+
+    Returns {"status": "actioned" | "already_actioned", ...}. `already_actioned`
+    is the honest NO-OP for a re-dispatched click on the SAME card; it carries
+    the `recorded` values already on disk, plus a `diverged` map naming any
+    field the caller passed differently, so the ack can say what was kept
+    rather than implying nothing was lost.
+
+    Raises BalanceWriterError on an empty/unknown tie, a work-lane tie, a
+    missing or non-integer source nudge seq, a non-integer draft seq, or an
+    unknown action_kind.
+    """
+    if not tie_person_id or not str(tie_person_id).strip():
+        raise BalanceWriterError(
+            "tie_person_id is required — pass the widget row's person_id "
+            "verbatim; a linkage with no tie is unreadable and unrevocable")
+    tie_person_id = str(tie_person_id).strip()
+    if action_kind not in _ACTION_KINDS:
+        raise BalanceWriterError(
+            f"action_kind must be one of {list(_ACTION_KINDS)}, got: "
+            f"{action_kind!r}")
+    if source_nudge_seq is None:
+        raise BalanceWriterError(
+            "source_nudge_seq is required — pass compute_balance's "
+            "`nudge_seq` verbatim off the widget row. It is the idempotency "
+            "key; without it every click on this tie shares one identity and "
+            "a corrected confirm is silently discarded. A None here means the "
+            "suggestion row never landed (emit=False, or emit_failed) — "
+            "re-fire balance rather than linking to a nudge that isn't on "
+            "disk")
+    # bool BEFORE int: isinstance(True, int) is True, so a truthy flag would
+    # otherwise pass as seq 1 — and on the DEDUPE KEY that silently collides a
+    # click with whatever card really carried seq 1.
+    if isinstance(source_nudge_seq, bool) or not isinstance(source_nudge_seq, int):
+        raise BalanceWriterError(
+            f"source_nudge_seq must be an int seq, got: {source_nudge_seq!r}")
+    if draft_event_seq is not None and (
+            isinstance(draft_event_seq, bool)
+            or not isinstance(draft_event_seq, int)):
+        raise BalanceWriterError(
+            f"draft_event_seq must be an int seq or None, got: "
+            f"{draft_event_seq!r}")
+
+    entities = _load_entities(workspace_root)
+    tie = next((p for p in personal_ties(entities)
+                if p.get("id") == tie_person_id), None)
+    if tie is None:
+        raise BalanceWriterError(
+            f"{tie_person_id!r} is not an active personal tie — Balance's "
+            "confirm path writes the PERSONAL lane only (a work tie belongs "
+            "to relationship-moves; the two partition the entity set)")
+
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    events, _skipped = load_events_defensively(events_path)
+
+    # Idempotency: THIS card already closed. Identity only — no clock is read
+    # here, which is also why nothing in this scan can flip on the hour the
+    # suite runs. A row written before source_nudge_seq existed carries None
+    # and therefore matches no real card, so it blocks nothing.
+    hold_start = str(hold_start) if hold_start else None
+    for ev in events:
+        if ev.get("type") != "balance_nudge_actioned":
+            continue
+        d = ev.get("data") or {}
+        if d.get("tie_person_id") != tie_person_id:
+            continue
+        if d.get("source_nudge_seq") != source_nudge_seq:
+            continue
+        prior = d.get("proposed_action") or {}
+        recorded = {
+            "venue": prior.get("venue"),
+            "draft_event_seq": prior.get("draft_event_seq"),
+            "hold_start": d.get("hold_start"),
+            "action_kind": prior.get("kind"),
+        }
+        passed = {"venue": venue, "draft_event_seq": draft_event_seq,
+                  "hold_start": hold_start, "action_kind": action_kind}
+        # The NO-OP is correct here (same card, same click) but it must not be
+        # SILENT: name every field the caller passed differently so the ack can
+        # say what was kept instead of implying nothing was lost.
+        diverged = {k: {"recorded": recorded[k], "passed": passed[k]}
+                    for k in recorded if recorded[k] != passed[k]}
+        out = {"status": "already_actioned",
+               "tie_person_id": tie_person_id,
+               "source_nudge_seq": source_nudge_seq,
+               "seq": ev.get("seq"),
+               "draft_event_seq": recorded["draft_event_seq"],
+               "recorded": recorded}
+        if diverged:
+            out["diverged"] = diverged
+        return out
+
+    # `kind`, not `type`, on the nested dict — a nested "type" literal reads as
+    # an event-type write to the schema-enum guard (run_source_of_truth_test).
+    # Shape mirrors the `balance_nudge_suggested` payload so the two lane rows
+    # are join-compatible.
+    data = {
+        "tie_person_id": tie_person_id,
+        # The linkage back to the suggestion it answers — an id, not tie-plus-
+        # time proximity.
+        "source_nudge_seq": source_nudge_seq,
+        "kind": "reconnect",
+        # personal: true always (D6) — belt on top of the type-level
+        # classification personal_leak.is_personal already applies.
+        "personal": True,
+        "proposed_action": {
+            "kind": action_kind,
+            "venue": venue,
+            "draft_event_seq": draft_event_seq,
+        },
+    }
+    if hold_start:
+        data["hold_start"] = hold_start
+
+    from event_gate import append_event
+    append_event(events_path, [{
+        "type": "balance_nudge_actioned",
+        "source_skill": source_skill,
+        "person_ids": [tie_person_id],
+        "data": data,
+    }], holder=source_skill)
+    return {"status": "actioned", "tie_person_id": tie_person_id,
+            "source_nudge_seq": source_nudge_seq,
+            "draft_event_seq": draft_event_seq}
+
+
 __all__ = [
     "DEFAULT_CADENCE_DAYS",
     "DEDUPE_WINDOW_DAYS",
+    "BalanceWriterError",
     "personal_ties",
     "tie_cadence_days",
     "personal_calendar_query_specs",
     "white_space_debt",
     "compute_balance",
+    "record_actioned",
 ]
 
 
