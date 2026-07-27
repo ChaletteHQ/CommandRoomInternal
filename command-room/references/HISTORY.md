@@ -25,8 +25,8 @@ more than one incident (e.g. two distinct Bug #82s). Entries below disambiguate 
 ## Session-22 Bug #11 — resolver bypass by substring grep (v3.13.7)
 **Symptom:** Queries with misspelled or aliased names produced 4 clarifying questions per name for new customers, despite a shipped fuzzy resolver. **Root cause:** `entity_resolve.py` shipped v3.13.0 + hardened v3.13.6, but a live-trace showed ZERO of its three stated consumers (workspace-manager, people-crm, transcript-search) actually invoked it — the LLM substituted substring grep under time pressure. Queries worked "by luck of grep" on M's matured alias graph; new customers with empty graphs hit the failure from Day 1. **Fix:** MUST-language enforcement gate — resolver first, grep only as fallback when the resolver returns nothing. **Rule it produced:** [workspace-manager] "MUST-language enforcement gate (canonical resolver dispatch)".
 
-## Routing-miss — "my conversation with Elon" (2026-05-20, v3.13.1)
-**Symptom:** Asked 4 open-ended clarifying questions for "my conversation with Elon" when Elan was a known person the resolver would have matched. **Root cause:** Ambiguity handling fired before the substrate check, and its shape was unconstrained (multiple open-ended questions). **Fix:** Strict one-question shape with concrete options; never fall to ambiguity handling when the resolver returns a candidate. **Rule it produced:** [workspace-manager] "Step 5 — Ambiguity handling (strict shape)" + step-3 candidate rule.
+## Routing-miss — "my conversation with Arya" (2026-05-20, v3.13.1)
+**Symptom:** Asked 4 open-ended clarifying questions for "my conversation with Arya" when Aria was a known person the resolver would have matched. **Root cause:** Ambiguity handling fired before the substrate check, and its shape was unconstrained (multiple open-ended questions). **Fix:** Strict one-question shape with concrete options; never fall to ambiguity handling when the resolver returns a candidate. **Rule it produced:** [workspace-manager] "Step 5 — Ambiguity handling (strict shape)" + step-3 candidate rule.
 
 ## Truncation incidents — hand-rolled writes (Apr 2026, fixed v2.10.5)
 **Symptom:** Truncated-file corruption of `entities.json` / `events.jsonl` in v2.7–v2.10.4. Evidence: `_hq/data/_backups/entities.json.pre-rewrite-20260427-223852.backup`; the Apr 28 cracks-watch fire that detected mid-file truncation; the Apr 29 bridge fire that read a stale Drive-sync view of a partial write. **Root cause:** Hand-rolled `write_text()` / `open(.., "w")` writes with no fsync + atomic-rename, unsafe under Drive sync. **Fix:** All substrate writes go through `shared/scripts/atomic_write.py`. **Rule it produced:** [workspace-manager] "Atomic-write requirement (FORBIDDEN hand-rolled writes)" — mirrored by every writer skill.
@@ -168,7 +168,7 @@ more than one incident (e.g. two distinct Bug #82s). Entries below disambiguate 
 
 # workspace-manager (appendix pointers)
 
-The workspace-manager incidents above (both Bug #82s, Bug #11, the Elon/Elan routing miss, the
+The workspace-manager incidents above (both Bug #82s, Bug #11, the Arya/Aria routing miss, the
 truncation incidents, the overlay class, Bug #86, first-go default, Bug #83, Bug #91, Bug #72)
 are also tabulated in `skills/workspace-manager/references/HISTORY.md`, which additionally carries
 the "brain_name read consumers" appendix. The workspace-ingest incidents (Parser C, the

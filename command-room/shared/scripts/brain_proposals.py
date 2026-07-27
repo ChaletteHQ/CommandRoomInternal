@@ -902,11 +902,11 @@ def _resolve_person_candidates(workspace_root, cluster: dict) -> list[dict]:
       2. `people_writer.list_same_name_people` — token overlap against
          canonical_name / aliases / nicknames. Catches a lone first name that
          overlaps a multi-token record ("Bo"→"Bo Sample"), an existing first
-         name embedded in a captured note ("... (or Evan alt account)"), and a
+         name embedded in a captured note ("... (or Rio alt account)"), and a
          "— update" suffix the whitespace/punctuation-blind confident check
          misses.
       3. `entity_resolve.resolve_all` (people only) — aliases.json + fuzzy +
-         phonetic, for the typo "natan"→Nathan that no token check can reach.
+         phonetic, for the typo "skylar"→Skyler that no token check can reach.
 
     Returns the matched person record dicts (each carries `id` +
     `canonical_name`), or [] when nothing plausibly matches (a genuinely-new
@@ -995,7 +995,7 @@ def _person_actions_with_candidates(cands: list[dict]) -> list[dict]:
 # WG1-B D-B3 — org-marker name shapes: a trailing/embedded parenthetical that
 # is NOT an "(or …)" capture annotation (those stay the classify_cluster
 # confirm tier), or a legal-entity suffix. Deliberately narrow: a bare
-# name-only mention ("Garrick") never matches — name-only person rows are
+# name-only mention ("Skyler") never matches — name-only person rows are
 # legitimate (the row-19 negative control).
 _ORG_MARKER_RE = re.compile(
     r"\((?!or\s)[^)]*\)"
@@ -1110,7 +1110,7 @@ def _gate_org_shaped_person_rows(workspace_root, rows: list[dict],
         person row too would double-render the same subject (the re-route).
       - org-marker name shape, unroutable → replaced by the honest quarantine
         placeholder (never a descriptor-less unselectable person row).
-      - anything else (the name-only "Garrick" shape) → kept verbatim.
+      - anything else (the name-only "Skyler" shape) → kept verbatim.
 
     Aged low-context rows drop instead of quarantining — the gate honors the
     same FS-17 age-out the queue view applies, so a placeholder can never

@@ -877,7 +877,7 @@ For upgrade flow (existing workspace with a prior task set already registered, a
 
 > *"Adding [Display Name(s)] to your scheduled chats (you already have the others). One Run Now tap on each to authorize."*
 
-**Friday Wrap generic-add path (v3.14.4+ — David call follow-up, replaces the v3.14.3 manifest item):** also check if `friday-wrap` is in the registered set. If missing AND the workspace is past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register friday-wrap with the current default cadence from `load_schedule_config()` (Fridays 1 PM as of Phase 3/R4). Surface (render the time from the config label):
+**Friday Wrap generic-add path (v3.14.4+ — operator-call follow-up, replaces the v3.14.3 manifest item):** also check if `friday-wrap` is in the registered set. If missing AND the workspace is past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register friday-wrap with the current default cadence from `load_schedule_config()` (Fridays 1 PM as of Phase 3/R4). Surface (render the time from the config label):
 
 > *"Adding Friday Wrap to your scheduled chats — it runs Fridays at [config label time] and wraps the week into a recap. One Run Now tap to authorize."*
 

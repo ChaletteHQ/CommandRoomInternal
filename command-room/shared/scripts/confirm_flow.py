@@ -365,7 +365,7 @@ def person_name_on_file(workspace_root, name) -> bool:
         exact (Tier 1) for a caller that passes one: unambiguously the same
         person → True.
       - MultipleCandidatesError → a lone first-name / alias-only hit (Tier 3):
-        DELIBERATELY ambiguous ("Kevin" could be a different, new Kevin) →
+        DELIBERATELY ambiguous ("Lyra" could be a different, new Lyra) →
         False; this stays a human decision, never an auto-suppress.
       - no match → False.
     Fail-open on any error (show the row rather than silently hide an identity

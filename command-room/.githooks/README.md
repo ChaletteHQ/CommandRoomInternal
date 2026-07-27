@@ -39,6 +39,8 @@ But genuinely consider whether the bypass is necessary. The structural guards ha
 
 ## See also
 
-- `references/PRIVACY_POLICY.md` — the rule (approved placeholder set, the allowlist)
-- `tests/run_no_real_customer_names_test.py` — the enforcement (three layers: denylist for known sticky strings, email-domain allowlist, name-allowlist)
-- `shared/CONTRACT.md` Rule 26 — the contract
+Everything in this section lives in the canonical plugin repo (`ChaletteHQ/cr1`) and is **not** part of the client fan-out — `tests/` is excluded by the payload contract (PROMOTEFENCE) and the privacy policy is excluded as a name-scanner-exempt file (EXEMPTFENCE). If you are reading this in a client repo, these paths are absent by design; `shared/CONTRACT.md` Rule 26 is the shipped statement of the rule.
+
+- `shared/CONTRACT.md` Rule 26 — the contract (ships; carries the approved placeholder roster inline)
+- the privacy policy under `references/` — the full rule, canonical repo only
+- `tests/run_no_real_customer_names_test.py` — the enforcement, canonical repo only (three layers: denylist for known sticky strings, email-domain allowlist, name-allowlist)

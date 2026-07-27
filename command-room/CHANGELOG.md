@@ -1,5 +1,28 @@
 # Command Room — Changelog
 
+## v5.2.1 — 2026-07-26 — Payload scope: a client install now ships only what a client actually runs
+
+Not a feature release. Two development-only paths were fanning out to every client repo with no reason to be there. They stop shipping, and because the promote stages exclusions as deletions, this release removes them from all thirteen — 327 files per repo.
+
+### What changed
+- **`command-room/tests/`** (326 files) — the development battery. A client never runs it: it exercises the source repo's guards, fixtures and internal contracts, and no runtime path in a client install reads it. It stays in the source repo now.
+- **`command-room/references/PRIVACY_POLICY.md`** — a contributor-facing document about how the source repo is maintained, not a runtime path and not addressed to the people using Command Room. `shared/CONTRACT.md` Rule 26 remains the shipped statement of the rule.
+
+### Fix
+- **`scripts/payload_contract.py`** — the one definition of what `command-room/` ships. The promote script (writer) and `verify_fleet.py` (reader) both import it, so the two cannot drift; a writer that stopped shipping a path the reader still expected would report STALE/PARTIAL on every client repo.
+- **Pinned, not merely documented** — a guard suite resolves the exclusion rules against the real tree and fails the battery if a path that must not ship becomes shippable again.
+- **`verify_fleet.py` attests the removal** — leftover excluded paths carry their own `!` glyph, reported as EXPECTED before the first promote after an exclusion lands, and required to clear afterward. Surviving a successful promote means the deletions did not land, which is a real fault.
+- **call-prep Google-Docs fence** — a brief is never created, rendered, or copied as a Google Doc via any connector. The Google Docs API places new documents at My Drive root with no folder control, so a Google-Doc brief breaks the workspace root rule by construction and bypasses every render gate. Same severity as the hand-rolled-`.docx` ban.
+
+### Files touched
+Per client repo: 327 deletions, 68 modifications, 2 additions.
+
+### Customer migration impact
+No user action. Nothing a skill reads was removed. The call-prep fence takes effect on the next brief with no setup.
+
+### What's NOT in this ship
+`oi3fix` and `coach2-pack` — neither merged; both ride the next cut. COACH1 phases 0+1 substrate ships but is inert: no skill reads it yet, and the `coach` pack is an empty scaffold contributing zero files to the two repos enrolled in it.
+
 ## v5.2.0 — 2026-07-22 — The widget-grammar release: consistent buttons everywhere, corrections that count everywhere, and the row-quality bundle
 
 Everything staged since the v5.1.0 promote (2026-07-21, 85a451a) — 21 commits across 8 merge trains, every merge independently second-eyed (review records in handoffs/). Minor bump: new capability plus fixes, wire ids frozen throughout, persisted old widgets keep dispatching, no migration. Battery 286/0 at the release tip; one merge-time interaction bug (the F-1 single-item auto-dispatch, found by the train-merge review) was fixed and independently verified before this cut.
@@ -340,7 +363,7 @@ NEW G11 (`run_guard_g11_description_budget_test.py`): ≤980/skill · no angle b
 None — no behavior change; routing verified lossless (274/274 corpus). No re-registration needed.
 
 ### What's NOT in this ship
-Body diet for the 10 over-500-line skills (v4.6 per the Master Build Plan); Evan repo registration (operational, not code).
+Body diet for the 10 over-500-line skills (v4.6 per the Master Build Plan); first-operator repo registration (operational, not code).
 
 ## v4.5.0 — 2026-07-04 — The consolidated trust wave (Phases 1–7)
 
@@ -388,7 +411,7 @@ Consumer-side loops: the data was already captured, so these turn static thresho
 - `skills/insight-generator/SKILL.md` — Pass 7b extended from report-only to propose-and-apply.
 - `orchestrator-commitments.md` reads the policy for OWED-TO-YOU chase cadence; `email-writer/SKILL.md` reads it for follow-up timing/escalation. Missing store → the `(7, 3)` default, unchanged.
 
-### S3 rider — commitment noise thresholds (Brandon 71→33)
+### S3 rider — commitment noise thresholds (high-volume operator: 71→33)
 - NEW `shared/scripts/commitment_noise.py` — flags counterparties whose captured commitments are mostly `dropped` (≥8 resolved, ≥50% dropped) and proposes a `never-track` rule appended to `_hq/config/commitment-rules.md` — the same file the Stage-D capture floor already reads. Rides the propose-approve machinery; additive, deduped, never a silent capture change.
 
 ### Registration + tests
@@ -1052,7 +1075,7 @@ verify-cr-release loop on v3.18.4: 0.1/A82/A83/A86/A88 PASS (incl. 2 wrong-premi
 The last two items from the v3.18.1 test pass — both minor, neither a promote-blocker. #87 jumped in priority because the v3.18.2 fix for #86 just made the affected line visible to the CEO.
 
 ### Fix
-- **Bug #87 — umbrella-bleed in the "Proposed — confirm to add" line.** When an umbrella thread splits into sub-threads (each carrying `parent_thread_id`), the roster inherits the umbrella's entire people set onto every sub-thread as `inherited` candidates. v3.18.1 proposed all of them — including people on the umbrella but not the specific sub-thread (Marvin/Mehreen/Scott on Hey Alexia). The #86 fix surfaced that line, so the false names now reached the CEO. **Fix:** `render_thread_live_state.format_live_state` tightens the proposed set by **org-association** — an `inherited` person (zero direct project-local signal) is only proposed if affiliated with THIS thread's `org_id` (`primary_org_id` / `affiliation_ids` / deprecated `org_id`). `low`-confidence people (who have direct signal) are unaffected. Degenerate fallback: a sub-thread with no `org_id` keeps the lineage-aware behavior (the design intent — never silently drop a real umbrella-only member). Pure-presentation change in the renderer; `derive_roster`'s membership computation is untouched, so the 16 roster tests stand.
+- **Bug #87 — umbrella-bleed in the "Proposed — confirm to add" line.** When an umbrella thread splits into sub-threads (each carrying `parent_thread_id`), the roster inherits the umbrella's entire people set onto every sub-thread as `inherited` candidates. v3.18.1 proposed all of them — including people on the umbrella but not the specific sub-thread (umbrella-level people who were not on the specific sub-thread). The #86 fix surfaced that line, so the false names now reached the CEO. **Fix:** `render_thread_live_state.format_live_state` tightens the proposed set by **org-association** — an `inherited` person (zero direct project-local signal) is only proposed if affiliated with THIS thread's `org_id` (`primary_org_id` / `affiliation_ids` / deprecated `org_id`). `low`-confidence people (who have direct signal) are unaffected. Degenerate fallback: a sub-thread with no `org_id` keeps the lineage-aware behavior (the design intent — never silently drop a real umbrella-only member). Pure-presentation change in the renderer; `derive_roster`'s membership computation is untouched, so the 16 roster tests stand.
 - **Bug #88 — false "already installed" from a stale event marker.** `command-room-update-bridge` Phase 1 built `installed_artifact_set` purely from `artifact_installed` events, so a removed/never-persisted artifact still read as installed (it told a user Quick Commands was installed when it wasn't). **Fix:** Phase 1 step 3 now reconciles the event-derived set against the **live sidebar** via `mcp__cowork__list_artifacts` (presence-by-id is enforceable even though `read_artifact_bytes` doesn't exist for byte-level checks). An artifact counts as installed only if its id is in the live list; a stale marker drops into `missing_defaults` and gets reinstalled (idempotent + Rule 8-verified). Graceful, explicit fallback when `list_artifacts` is unavailable — never asserts "already installed" from the event log alone.
 
 ### Files touched
@@ -1070,7 +1093,7 @@ Battery 68 → 70 green. **All bug-catalog items (#82–#88) from the v3.18.1 te
 
 ## v3.18.3 (2026-05-31) — Commitments stop lying: the brief and the coach agree, and sent follow-ups actually close (Bug #85)
 
-The v3.18.1 test pass found the coach reporting **4** open commitments while the morning brief reported **~18** for the same substrate, and the brief listing already-sent follow-ups (Bob, Don) as still owed. Two distinct layers — both trust-killers — now fixed.
+The v3.18.1 test pass found the coach reporting **4** open commitments while the morning brief reported **~18** for the same substrate, and the brief listing already-sent follow-ups to two real counterparties as still owed. Two distinct layers — both trust-killers — now fixed.
 
 ### Fix — Layer 2 (the 4-vs-18 divergence)
 Both skills already *spec* the same canonical reader (`cru_match.load_open_commitments`); the coach was freelancing an aggressive post-filter on the headline. **`command-room-coach` now has a hard count gate:** `open_commitments` is defined as exactly `len(load_open_commitments(...))` — the full both-directions set, the SAME total the brief header reports via `brief_state.compute_brief_state` (`you_owe + they_owe`). Highlighting a subset (oldest / stuck) is a separate call-out line, never a shrink of the headline. Parity is pinned by `tests/run_commitment_count_parity_test.py` (coach total == brief header total off a fixed fixture).
@@ -1498,7 +1521,7 @@ When the user asked email-writer to handle a multi-stage outreach ("send these e
 
 **Fix:** added Phase 1 input shape #6 (multi-draft / multi-stage detection — plural noun, stage/version language, scaffold with 2+ drafts) + Phase 4 mode-selection block + n>1 data view example mirroring intro-broker. The renderer + apply-choices + canonical action verbs are unchanged — this is documentation that brings email-writer's surface in line with the existing canonical pattern.
 
-**2. Friday Wrap silently absent on pre-v3.11.0 workspaces (David didn't have it after updating to v3.14.2)**
+**2. Friday Wrap silently absent on pre-v3.11.0 workspaces (an operator didn't have it after updating to v3.14.2)**
 
 Friday Wrap shipped in v3.11.0 but only auto-registers on the M1 fresh-install path. update-bridge Phase 4.7 has hardcoded upgrade logic for the pre-M1 → M1 transition (adds `inbox`) but no generic "detect any missing task and offer to add it." Result: customers on pre-v3.11.0 workspaces silently never get Friday Wrap unless they happen to type `set up command room schedules` and notice the new row.
 
@@ -1926,7 +1949,7 @@ Half the Session-22 bugs shared one root pattern — the contract existed in SKI
 
 ### Anti-lazy-lint judgment gate (architectural principle applied to every fix)
 
-Every enforcement gate in this release splits cheap-trigger (does SKILL.md mention the canonical helper?) from agent-judgment (did the runtime path actually invoke it?). MUST-language language is paired with explicit "if you're about to grep / write Gmail / skip the resolver, stop — that's the exact bypass this gate exists to block" callouts. Per the Ben AI os-optimizer intel intake — static rule alone produces lazy lints; the judgment-gate framing forces the lint to look at runtime behavior, not just whether the right string is on the page.
+Every enforcement gate in this release splits cheap-trigger (does SKILL.md mention the canonical helper?) from agent-judgment (did the runtime path actually invoke it?). MUST-language language is paired with explicit "if you're about to grep / write Gmail / skip the resolver, stop — that's the exact bypass this gate exists to block" callouts. Per an operator-AI os-optimizer intel intake — static rule alone produces lazy lints; the judgment-gate framing forces the lint to look at runtime behavior, not just whether the right string is on the page.
 
 ### What this DOES NOT do (deferred to v3.13.8+)
 
@@ -2020,7 +2043,7 @@ Per "go again." Round-3 verification caught two more ship-blockers from the same
 
 ### Ship-blockers (would crash at render time)
 
-- **orchestrator-upcoming-meetings.md line 270** — example `body_lines[3]` literal `"Last 5 min: switch hats to Hitesh / Loom Phase 1 closeout."` trips the `phase/step label` leak regex. Same class as the v3.13.3 intro-followup-check `"interaction events"` bug. Any orchestrator copy-pasting this example would crash. Rewrote to `"...talk through the discovery launch checklist."` — no Phase number.
+- **orchestrator-upcoming-meetings.md line 270** — example `body_lines[3]` literal (a person name + a `Phase N` project string) trips the `phase/step label` leak regex. Same class as the v3.13.3 intro-followup-check `"interaction events"` bug. Any orchestrator copy-pasting this example would crash. Rewrote to `"...talk through the discovery launch checklist."` — no Phase number.
 - **calendar-writer/SKILL.md line 132** — data view has `metadata: [["To", attendees], ["Subject", title], ["Time", ...], ["Duration", ...], ["Location", ...]]`. `_is_email_shaped()` saw To+Subject and required `draft` action, but calendar invites use `send / edit then send / skip` (no `draft` — Google Calendar's save-as-draft doesn't map to the user's email-draft mental model). Raised `DataShapeError` on every fire. Fix: extended `_is_email_shaped()` to recognize calendar shape (any `Time` / `Duration` / `Location` / `Date` key present) and exempt it. Email-shaped detection still works for true email items; calendar invites no longer false-trigger the email-shape rule.
 
 ### High-severity (doc drift that would mislead orchestrator authors)
@@ -2089,7 +2112,7 @@ Right after v3.13.1 shipped, ran a thorough test pass across everything built in
 
 - **`to drafts` legacy verb references** swept across `EMAIL_DRAFT_PROTOCOL.md`, `SHARED_CHAT_OUTPUT_PROTOCOL.md`, `orchestrator-inbox.md`, `orchestrator-commitments.md`, `orchestrator-past-meetings.md`, `meeting-notes.md`, `email-writer/SKILL.md`, `apply-choices/SKILL.md`, `zapier_send.py`. The v2.14.4 consolidation merged `to drafts` + `edit then draft` into the single `draft` verb; the legacy verbs were rejected by the renderer but still lived in spec docs that orchestrators read. Any LLM following the legacy spec would emit a verb the renderer crashes on.
 - **`apply-choices` doc contradiction** — lines 266-321 listed `to drafts` and `edit then draft` as the "frozen canonical" set while the actual emit on line 297 correctly used `draft`. Rewrote the documentation to the consolidated form. Also reframed line 100's "input-bearing action handling" table — removed 5 forbidden Rule 6 labels (`mark expected [reason]`, `more context [text]`, `add [name] to [org]`, `add to [org]`, `manually [context]`) and replaced with the canonical equivalents.
-- **`entity_resolve.py` phonetic match on multi-token names** — the Soundex matcher computed the code on the full whitespace-stripped string, so single-word queries like "Elon" never matched canonical names stored as multi-token "Elan Sample" (Soundex of "ElanSample" = E452, not E450). Added `_soundex_tokens()` for per-token codes; phonetic tier now also matches a single-word query against any token of a multi-token candidate. Smoke test passes: "Elon" → "Elan Sample", "Denari" → "Dynarii Sample Co".
+- **`entity_resolve.py` phonetic match on multi-token names** — the Soundex matcher computed the code on the full whitespace-stripped string, so single-word queries like "Arya" never matched canonical names stored as multi-token "Aria Sample" (Soundex of "AriaSample" = A625, not A600). Added `_soundex_tokens()` for per-token codes; phonetic tier now also matches a single-word query against any token of a multi-token candidate. Smoke test passes: "Arya" → "Aria Sample", "Northstarr" → "Northstar Sample Co".
 - **`board-pack-assembler` user-visible `entities.json` leak** in the board-pack appendix template — "A. Pipeline by stage (from entities.json projects)" → "(from your project tracker)". Rule 4 voice contract.
 
 ### Structural defense (the recurring-pattern fix)
@@ -2228,8 +2251,8 @@ Three intertwined fixes that finally make "click the link, the document opens" w
 
 Four wins that finally make the entity graph + decision substrate usable from the consumer side:
 
-- **Shared `entity_resolve.py` helper** with 3-tier match ladder: exact alias / canonical → fuzzy edit-distance (≥85% similar) → Soundex phonetic (sound-alike). Used by transcript-search (Step 2.5 — entity-resolve the query BEFORE literal scoring; closes the "search transcripts for dynarii returns 0 results" gap by including attendee-matched meetings even when the brand name isn't spoken) AND by workspace-manager (Step 3 in the handling ladder — fuzzy/phonetic fallback BEFORE falling to "Ambiguous → ask one question"; closes the "Elon → 4 clarifying questions about facts already on disk" gap). One helper, two consumers, single source of truth — same cascade pattern as `email-writer` widget rendering and the renderer fragment mode.
-- **Added Elon, Denari, Dynari, Danari aliases** to M's `aliases.json` so the tier-1 exact match catches the most common misspellings (the phonetic tier-3 fallback still catches anything else). Tagged with `note` fields explaining they were added in v3.13.0 for entity-resolve.
+- **Shared `entity_resolve.py` helper** with 3-tier match ladder: exact alias / canonical → fuzzy edit-distance (≥85% similar) → Soundex phonetic (sound-alike). Used by transcript-search (Step 2.5 — entity-resolve the query BEFORE literal scoring; closes the "search transcripts for northstar returns 0 results" gap by including attendee-matched meetings even when the brand name isn't spoken) AND by workspace-manager (Step 3 in the handling ladder — fuzzy/phonetic fallback BEFORE falling to "Ambiguous → ask one question"; closes the "Arya → 4 clarifying questions about facts already on disk" gap). One helper, two consumers, single source of truth — same cascade pattern as `email-writer` widget rendering and the renderer fragment mode.
+- **Added four sound-alike misspelling aliases** to M's `aliases.json` so the tier-1 exact match catches the most common misspellings (the phonetic tier-3 fallback still catches anything else). Tagged with `note` fields explaining they were added in v3.13.0 for entity-resolve.
 - **Decision-log renderer** (`shared/scripts/render_decision_log.py`). Pre-v3.13.0 the doc header claimed AUTO-GENERATED but no script existed — M's view was 81 decisions vs 138 in substrate (~57 stale). The renderer reads events.jsonl, applies lifecycle overlays (`decision_superseded` → [SUPERSEDED] badge + replacement link; `decision_reaffirmed` → [REAFFIRMED] + review date + snooze window; `decision_revisit_scheduled` → [SNOOZED] + revisit-after date), resolves IDs to display names via entities.json (no `person_NNN` leaks per Rule 4), groups by status (Active / Reaffirmed / Snoozed / Superseded), atomic-writes via `atomic_write_text`. Wired into `decision-log` SKILL with required project_id stamping (closes the "decisions have no project linkage" gap from the same handoff). Bridge runs `render_decision_log.py` once on first v3.13.0 install via the new `decision_log_view_regenerate_v3_13_0` migration. M's workspace regenerated from 81 → 138 decisions with correct lifecycle overlays.
 - **Inbox-triage trust fix.** Before classifying a thread as "Reply Now" / "stalled" / "awaiting them", inbox-triage now MUST call `get_thread(threadId, messageFormat=FULL_CONTENT)` and read the LAST message. Pre-v3.13.0 the skill derived state from `search_threads` results — which return a TRUNCATED, NON-LATEST slice (a snippet from an older matching message, NOT the newest message). This produced the 2026-05-20 mis-classification of an active prospect thread (high-value offer cluster) as "stalled — no reply from you in 10 days" when the user had replied two days earlier and the counterparty had confirmed they'd build out the next deliverable — ball was in the counterparty's court, not stalled on the user. Ball-in-court is now determined by latest-message direction (SENT label / sender == user → awaiting counterparty; inbound newest → Reply Now or owed-to-you commitment). Unread state is the primary inclusion criterion; time windows rank recency but don't exclude. No silent collapse to 24h on stale LAST_TRIAGE. No human-counterparty thread relegated to a footnote without `get_thread` expansion.
 
@@ -2304,7 +2327,7 @@ The pre-commit hook closes the timing gap: pre-v3.12.2 the guard ran at push tim
 
 ### Limit of the current detection
 
-The first-name dictionary catches names in clear person-context patterns. It does NOT catch bare standalone references like "Read Daniel today" — too many false positives on common verbs. Layer 1 (denylist) catches specific sticky strings the dictionary misses; Layer 2 (email allowlist) catches any address that ships. The three layers combined catch ~95%+ of real-world leaks; the remaining ~5% require manual review for files that introduce new examples.
+The first-name dictionary catches names in clear person-context patterns. It does NOT catch bare standalone references like "Read Bo today" — too many false positives on common verbs. Layer 1 (denylist) catches specific sticky strings the dictionary misses; Layer 2 (email allowlist) catches any address that ships. The three layers combined catch ~95%+ of real-world leaks; the remaining ~5% require manual review for files that introduce new examples.
 
 ### Test suite
 
@@ -2328,7 +2351,7 @@ Two coordinated polish changes on top of v3.12.0.
 
 ### Example sanitization
 
-The privacy guard (`tests/run_no_real_customer_names_test.py`) was expanded with six new name patterns surfaced by a broader sanitization sweep beyond the canonical placeholder allowlist. Fourteen example flows across seven skills were updated to use only canonical placeholders from `references/PRIVACY_POLICY.md` (Sam / Bo / Rio / Skyler / Mira / Aria / Bowie / Lyra / Quinn / Dustin / Adan Sample, with org names Acme Co / Northstar Partners / Summit Company / @example.com domains).
+The privacy guard (`tests/run_no_real_customer_names_test.py`) was expanded with six new name patterns surfaced by a broader sanitization sweep beyond the canonical placeholder allowlist. Fourteen example flows across seven skills were updated to use only canonical placeholders from `references/PRIVACY_POLICY.md` (the canonical allowlist in `references/PRIVACY_POLICY.md`, with org names Acme Co / Northstar Partners / Summit Company / @example.com domains).
 
 The six new guard patterns are listed in `FORBIDDEN_NAME_PATTERNS` in the test file itself — that's the canonical list. They cover a maintainer surname, a beta-customer surname, a company name fragment, an org name, another beta-customer surname, and a first name that doesn't sanitize cleanly to the approved placeholder set.
 
@@ -3467,7 +3490,7 @@ The agent reads these as part of skill context. When it emits a `review_url` or 
 
 ## v3.5.2 (2026-05-18) — Privacy sanitization pass
 
-Maintenance release. Plugin source is granted to beta operators (private repo access today, broader collaboration later); CHANGELOG entries, skill docs, fixtures, and code examples were leaking real beta-customer and partner names. 25 files swept, 69 lines swapped — every real name replaced with placeholder (`Sam Sample`, `Bo Sample`, `Dustin Sample`, `Adan Sample`); every real email domain replaced with `@example.com`. `matthew@chaletteholdings.com` retained — it's the project's intentional public support address used by the `report-bug` skill.
+Maintenance release. Plugin source is granted to beta operators (private repo access today, broader collaboration later); CHANGELOG entries, skill docs, fixtures, and code examples were leaking real beta-customer and partner names. 25 files swept, 69 lines swapped — every real name replaced with placeholder (`Sam Sample`, `Bo Sample`, `Dustin Sample`); every real email domain replaced with `@example.com`. `matthew@chaletteholdings.com` retained — it's the project's intentional public support address used by the `report-bug` skill.
 
 New file: `references/PRIVACY_POLICY.md` codifies the no-real-names rule going forward.
 
@@ -3692,12 +3715,12 @@ Follow-up patch on v3.4.2's dual-shape commitment-field fix. After the maintaine
 The schema doc (`shared/COMMITMENT_SCHEMA.md`) requires consumers to handle both canonical and flat shapes. In practice, the production-workspace audit revealed **five** distinct commitment-event shape variants actively present:
 
 1. **Canonical** — `data.owner_id` / `data.title` / `data.due` / `data.status` / `data.confidence` (post-v2.7.15 standard).
-2. **flat-new** — top-level `owner_id` etc. (Sam's reported shape; covered in v3.4.2).
+2. **flat-new** — top-level `owner_id` etc. (an operator's reported shape; covered in v3.4.2).
 3. **legacy** — top-level `owner` (no `_id`), `owner_display`, `requester_display` (pre-v2.7.15 per schema doc).
 4. **owner_person_id-variant** — `data.owner_person_id`, `data.requester_person_id`, `data.due_date` (not `due`), `data.state` (not `status`). Actively produced by `cr-past-meetings` in some fires (M's events.jsonl 2026-04-30 → 2026-05-09).
 5. **pending-review** — `data.owner_name_proposed` + `data.pending_review: true`. Intentionally separate; filtered out of standard surface, routes to Pulse CRU-review queue.
 
-v3.4.2's helper only handled shapes 1 + 2. Shapes 3 + 4 were still silently dropped — including 7 of Sam's "owed to him" items from his April 30 Cowork working session (which `cr-past-meetings` wrote in the `owner_person_id-variant` shape), plus 19 legacy-shape items and ~15 `owner_person_id-variant` items in M's own workspace.
+v3.4.2's helper only handled shapes 1 + 2. Shapes 3 + 4 were still silently dropped — including 7 of that operator's "owed to him" items from an April 30 Cowork working session (which `cr-past-meetings` wrote in the `owner_person_id-variant` shape), plus 19 legacy-shape items and ~15 `owner_person_id-variant` items in M's own workspace.
 
 Also surfaced: some writers (cr-past-meetings, legacy events) store `confidence` as a string label (`"HIGH"` / `"medium"` / `"high"`) rather than a 0-1 float. The filter `data.confidence >= 0.7` crashes on string values and silently drops the event — separate bug class, same symptom.
 
@@ -3729,7 +3752,7 @@ Pre-v3.4.4 dropped-commitment count by shape:
 
 | Shape | Open commitments dropped |
 |---|---|
-| flat-new (Sam's reported, covered in v3.4.2) | 6 |
+| flat-new (operator-reported, covered in v3.4.2) | 6 |
 | legacy | 19 |
 | owner_person_id-variant | 7 |
 | other (heterogenous untagged events) | 15 |
@@ -3739,7 +3762,7 @@ Includes time-sensitive items like a prospect proposal (committed 2026-05-02, no
 
 ### Writer-side question
 
-Still deferred — Sam's events.jsonl sample (asked for separately) will confirm whether his workspace shows the same writer-bug pattern as M's (cr-past-meetings producing the `owner_person_id` variant). If yes, a v3.5.0-class writer normalization is the structural fix; the v3.4.4 consumer extension is the operational fix that immediately restores correctness for all existing customers.
+Still deferred — that operator's events.jsonl sample (asked for separately) will confirm whether their workspace shows the same writer-bug pattern as M's (cr-past-meetings producing the `owner_person_id` variant). If yes, a v3.5.0-class writer normalization is the structural fix; the v3.4.4 consumer extension is the operational fix that immediately restores correctness for all existing customers.
 
 ### Out of scope (deferred)
 
@@ -3813,7 +3836,7 @@ Applied to:
 7 new tests in `tests/run_cru_match_test.py` pin the contract:
 - 4 unit tests for `_commitment_field` (canonical, flat, canonical-wins-over-flat, empty-data-falls-through).
 - `test_load_open_commitments_includes_flat_shape` — round-trip via events.jsonl.
-- `test_send_match_finds_flat_shape_commitment` — directly exercises Sam's reported case for Path 1.
+- `test_send_match_finds_flat_shape_commitment` — directly exercises the operator-reported case for Path 1.
 - `test_transcript_match_finds_flat_shape_commitment` — same for Path 3.
 
 All 42 cru_match tests green. Pre-fix, the last 2 would have returned `[]` and failed.
@@ -3830,7 +3853,7 @@ Triage discipline: verify before believing (per the existing `feedback_dont_over
 
 Triggers: `process bug report`, `process the bug from [name]`, `triage bug`, `ingest bug`, `[name] sent a bug`, `bug from [name]`, `bug intake`, `look at this bug report`. Does NOT fire on the maintainer describing his own bug (workspace-manager handles that) or on feature requests / praise / billing.
 
-Bug #1 ingested under this flow is Sam's 2026-05-17 dual-shape commitments report — triaged manually in this same session before the skill existed; future inbound reports go through the skill directly.
+Bug #1 ingested under this flow is an operator's 2026-05-17 dual-shape commitments report — triaged manually in this same session before the skill existed; future inbound reports go through the skill directly.
 
 ### Notes
 
@@ -3912,13 +3935,13 @@ Initial migration from `plugin-source-v3` → staging clone blew away the v3.2.3
 
 ---
 
-## v3.3.0 (2026-05-13) — Onboarding streamline + report-bug skill + operator-report skill (Lior audit feedback)
+## v3.3.0 (2026-05-13) — Onboarding streamline + report-bug skill + operator-report skill (product-audit feedback)
 
-Three coordinated changes driven by Lior's 2026-05-12 product feedback session before the May 15 CEO-group pitch.
+Three coordinated changes driven by a 2026-05-12 product feedback session before the May 15 CEO-group pitch.
 
 ### Onboarding rewrite — streamlined the longest demo flow
 
-**Bug class:** the v3.2.x onboarding had ~38 user-input stopping points across 8 steps. Lior's flagging: too many beats interrupt momentum, especially with multiple CEOs onboarding in parallel. Several beats also asked the CEO to make decisions before they had enough exposure to answer well.
+**Bug class:** the v3.2.x onboarding had ~38 user-input stopping points across 8 steps. The reviewer's flagging: too many beats interrupt momentum, especially with multiple CEOs onboarding in parallel. Several beats also asked the CEO to make decisions before they had enough exposure to answer well.
 
 **Cuts in `skills/command-room-onboarding/SKILL.md`:**
 
@@ -3932,7 +3955,7 @@ Three coordinated changes driven by Lior's 2026-05-12 product feedback session b
 
 5. **Step 2b (org tree per-org gating) — auto-confirm by default.** Previously asked the CEO to confirm/edit/remove each secondary org one by one (3-8 keystrokes). Now: auto-confirms primary + secondary on inferred classification, surfaces `review my orgs` as the on-demand correction trigger. The 2-3% case where inference is wrong gets fixed on-demand instead of gating every onboarding.
 
-**Addition: Step 7d — closing recap (the "receipt").** The wow-close was forward-looking ("tomorrow morning, say `what's going on`"). What was missing: a backward-looking surface showing what just got captured in the last 45 minutes. Lior's framing: show them specific things they might have forgotten that the system caught. New beat renders:
+**Addition: Step 7d — closing recap (the "receipt").** The wow-close was forward-looking ("tomorrow morning, say `what's going on`"). What was missing: a backward-looking surface showing what just got captured in the last 45 minutes. The reviewer's framing: show them specific things they might have forgotten that the system caught. New beat renders:
 - Structured counts (orgs, projects, people, commitments, decisions)
 - 3 specific "things you might have forgotten" pulled from the Step 1d fallback chain
 - Voice profile sample size
@@ -3942,7 +3965,7 @@ Three coordinated changes driven by Lior's 2026-05-12 product feedback session b
 
 ### New skill — `report-bug`
 
-**Bug class:** customer support flow without this skill was: customer emails M → M asks diagnostic questions → customer answers across multiple round-trips → M finally has enough to verify. Three days, four threads per bug. Lior endorsed building a "report this" surface as a high-value cheap fix.
+**Bug class:** customer support flow without this skill was: customer emails M → M asks diagnostic questions → customer answers across multiple round-trips → M finally has enough to verify. Three days, four threads per bug. The reviewer endorsed building a "report this" surface as a high-value cheap fix.
 
 **What ships:** `skills/report-bug/SKILL.md` + `skills/report-bug/references/known-issue-patterns.md` (seeded with 9 patterns from real v3.x bug fixes — VHD-cache, Rio-Lange speaker attribution, Zapier RFC 822, onboarding re-trigger, canonical-path improv class, commitment pipeline gap, voice profile thin-data, scheduled-task no-fire, onboarding strip-down).
 
@@ -3994,7 +4017,7 @@ Two targeted fixes bundled in one ship.
 
 ### Fix 1 — Speaker-attribution ambiguity guard (Rio Lange / Rio Sample misattribution)
 
-**Bug class:** Granola tags each transcript segment with a speaker name. When two attendees on a call share a first name (Sam's Summit Company has BOTH Rio Lange and Rio Sample as PMs), Granola's first-name tag is ambiguous — pre-v3.2.3 the alias resolver silently picked one (usually the alphabetically-first match in `aliases.json`), attributing commitments / decisions to the wrong person. Memorialized: Sam flagged the misattribution repeatedly through April 2026; no signal was surfaced to the user that the attribution was uncertain.
+**Bug class:** Granola tags each transcript segment with a speaker name. When two attendees on a call share a first name (one operator's Summit Company has BOTH Rio Lange and Rio Sample as PMs), Granola's first-name tag is ambiguous — pre-v3.2.3 the alias resolver silently picked one (usually the alphabetically-first match in `aliases.json`), attributing commitments / decisions to the wrong person. Memorialized: Sam flagged the misattribution repeatedly through April 2026; no signal was surfaced to the user that the attribution was uncertain.
 
 **Fix:** new Phase 4.5d in `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md`. For each `commitment` / `decision` / `action_item` proposed in a fire that has a speaker attribution:
 
@@ -4045,7 +4068,7 @@ Targeted patch for the recurring Zapier reply-thread-fork bug. Sam hit it twice 
 
 Zapier's `gmail.reply_to_message` action uses the `thread_id` field value to construct the `In-Reply-To` and `References` MIME headers on the outbound reply. Those headers must contain the RFC 822 Message-ID format (`<local-part@domain>`). Zapier rejects bare hex IDs with "Requested entity was not found" and — when the call is somehow accepted with a wrong-shape ID — silently drops the headers, which forks the reply into a new thread on the recipient's side.
 
-The previous helper at `shared/scripts/zapier_send.py:extract_latest_message_id()` returned `messages[-1]["id"]`, which is Gmail's internal hex resource ID. For single-message threads where the resource ID coincidentally encoded enough to be "close enough," some sends threaded. For multi-message threads (Josh on 2026-05-07; Andy/Greg/Joshua/Sam on 2026-05-12), the helper's output was consistently rejected. Sam's 2026-05-12 Cowork session diagnosed the exact format expectation by reading Zapier's response payloads.
+The previous helper at `shared/scripts/zapier_send.py:extract_latest_message_id()` returned `messages[-1]["id"]`, which is Gmail's internal hex resource ID. For single-message threads where the resource ID coincidentally encoded enough to be "close enough," some sends threaded. For multi-message threads (one on 2026-05-07, a four-participant one on 2026-05-12), the helper's output was consistently rejected. A 2026-05-12 Cowork session diagnosed the exact format expectation by reading Zapier's response payloads.
 
 ### Fix
 
@@ -4110,7 +4133,7 @@ Replies that went out via the v2.14.38 → v3.2.1 helper between 2026-05-07 and 
 
 ## v3.2.1 (2026-05-11) — Bootloader picks Command Room clone deterministically; clearer abort surfaces VHD-cache fix
 
-Targeted fix for Sam + Drew's `upcoming-meetings could not load its orchestrator` reports 2026-05-11. Both on v3.0+ with current bootloader code — the bug was structural, not a stale install.
+Targeted fix for two operators' `upcoming-meetings could not load its orchestrator` reports 2026-05-11. Both on v3.0+ with current bootloader code — the bug was structural, not a stale install.
 
 ### Root cause
 
@@ -4221,9 +4244,9 @@ The file now distinguishes session notes (`[Project Name]/SESSION_NOTES_<NAME>.m
 
 **Fix:** Header rewritten to canonical `taskId: pulse` post-v2.14.27. Migration warning rephrased to cover both `cr-pulse` and `cr-dont-forget` and any other `cr-*`-prefixed legacy variants — points readers at the migration table in `enable-command-room-schedules/SKILL.md`. Bonus cleanup: 3 adjacent stale references in `enable-command-room-schedules/SKILL.md` (line 36 install-verification block, line 303 v2.8.x migration line, line 560 history note) updated to canonical bare-name taskIds.
 
-### Fix 3 — Financial-signal filter override in cr-inbox priority scoring (Marble Complete fix from Sam's call)
+### Fix 3 — Financial-signal filter override in cr-inbox priority scoring (vendor-invoice fix from an operator call)
 
-**Problem:** Phase 4 priority scoring in `orchestrator-inbox.md` demotes financial-signal senders by `−20 automated-domain` + `−15 List-Unsubscribe` + occasionally `−10 known-newsletters`, netting up to −45. M's testing 2026-05-07 surfaced Marble Complete ($10,400 QuickBooks estimate) being demoted out of top-5 even though it's a real-money signal. Billing systems are STRUCTURALLY automated by design — those demotes are wrong for the financial-signal class.
+**Problem:** Phase 4 priority scoring in `orchestrator-inbox.md` demotes financial-signal senders by `−20 automated-domain` + `−15 List-Unsubscribe` + occasionally `−10 known-newsletters`, netting up to −45. M's testing 2026-05-07 surfaced Acme Logistics ($10,400 QuickBooks estimate) being demoted out of top-5 even though it's a real-money signal. Billing systems are STRUCTURALLY automated by design — those demotes are wrong for the financial-signal class.
 
 **Fix:** new financial-signal flag fires in Phase 4 when EITHER:
 - sender local-part matches `^(billing|invoices?|estimates?|payments?|accounting)@` (case-insensitive — catches generic billing-system addresses), OR
@@ -4233,7 +4256,7 @@ When the flag is set: the −20 / −15 / −10 demotes do NOT apply, AND a +30 
 
 Recommended seed list documented inline (notification.intuit.com, quickbooks.intuit.com, intuit.com, stripe.com, notifications.stripe.com, bill.com, notifications.bill.com, invoice.docusign.net, invoices.pandadoc.com). The list is workspace-local and operator-seeded — agent does NOT seed it on first fire (would be agent-improvises-around-canonical-paths). Operator seeds during onboarding or `weekly-audit` surfaces specific demoted senders worth allowlisting.
 
-The v2.14.29 Quick Read consistency rule's Marble Complete example footnote was added — the rule itself stands, just no longer fires on this specific case.
+The v2.14.29 Quick Read consistency rule's Acme Logistics example footnote was added — the rule itself stands, just no longer fires on this specific case.
 
 ### Test fix
 
@@ -4264,8 +4287,8 @@ Major version bump marks the architectural shift from per-version-repo distribut
 
 The v2.14.38 candidate work that was sitting in `Dev/_porting-2177/` ships as part of v3.0.0 since both land in the same cycle:
 
-- **Pulse renderer `PulseRichnessError` validator** + mandatory `original_thread` for email/transcript-sourced person-dormant cards. Closes Sam's 2026-05-07 sales call complaint about bare cards with "no link to the email, sparse description."
-- **`shared/scripts/zapier_send.py` helper** with `extract_latest_message_id` + `build_zapier_send_payload`. Closes the Zapier reply-thread-fork bug (Sam's diagnosis: `gmail.reply_to_message`'s `thread_id` parameter is misleadingly named — actually wants the LATEST MESSAGE ID, not the Gmail thread-level ID). `EMAIL_DRAFT_PROTOCOL.md` §3c updated.
+- **Pulse renderer `PulseRichnessError` validator** + mandatory `original_thread` for email/transcript-sourced person-dormant cards. Closes an operator's 2026-05-07 sales call complaint about bare cards with "no link to the email, sparse description."
+- **`shared/scripts/zapier_send.py` helper** with `extract_latest_message_id` + `build_zapier_send_payload`. Closes the Zapier reply-thread-fork bug (the operator's diagnosis: `gmail.reply_to_message`'s `thread_id` parameter is misleadingly named — actually wants the LATEST MESSAGE ID, not the Gmail thread-level ID). `EMAIL_DRAFT_PROTOCOL.md` §3c updated.
 - **373 unit tests green** (was 341 in v2.14.37; +32 new tests covering Pulse validator + Zapier helper).
 
 ### Source folder rename: plugin-source-v2 → plugin-source-v3
@@ -4374,7 +4397,7 @@ M tested v2.14.35 fires across upcoming-meetings, commitments, past-meetings liv
 
 ### 2. commitments — collapsible "Original thread" accordion replaces the inline `Originally:` line
 
-**Symptom:** M's commitments fire showed mixed UI per item. Adan Sample's DocuSeal commitment used the rich collapsible block (`▼ Original thread — DocuSeal <info@example.com> · Apr 30, 4:53 PM` + `↗ Open in Gmail` link + original Subject + body). Sam Sample's commitment used the legacy plain text pattern (`Originally: the Apr 27 thread` — no expand-to-read, no Gmail link). Half the items rich, half the items broken. M: *"the previous thread section should work like the inbox version where you can open up the previous thread and see it or click the link."*
+**Symptom:** M's commitments fire showed mixed UI per item. Lyra Sample's DocuSeal commitment used the rich collapsible block (`▼ Original thread — DocuSeal <info@example.com> · Apr 30, 4:53 PM` + `↗ Open in Gmail` link + original Subject + body). Sam Sample's commitment used the legacy plain text pattern (`Originally: the Apr 27 thread` — no expand-to-read, no Gmail link). Half the items rich, half the items broken. M: *"the previous thread section should work like the inbox version where you can open up the previous thread and see it or click the link."*
 
 **Root cause:** v2.12.1 introduced `original_thread` (rich collapsible accordion, mirrors inbox-triage); v2.14.28 added a hard contract for the legacy `Originally:` inline metadata key. Both patterns survived in the orchestrator example shapes. Some items got `original_thread` populated, others got `("Originally", "<plain text>")` in the metadata array. Renderer rendered both — the half-and-half UI was the result.
 
@@ -4704,7 +4727,7 @@ After v2.14.28 shipped the 7 source-fixable items from M's first-fire testing, C
 
 `orchestrator-inbox.md` Phase 8 now declares a hard contract: `quick_read_summary` may ONLY reference threads present in `top_threads` (the items rendered in the widget). NEVER reference noise-filtered threads, below-threshold threads, or threads suppressed by `chat_dismissal`.
 
-Pre-v2.14.29: customer saw Quick Read mention a Marble Complete / QuickBooks invoice email that wasn't in the widget's top-5. Phase 4 scoring correctly demoted the email (auto-domain + List-Unsubscribe → −35 → falls out of top-5) and the noise sub-counter correctly counted it. But the LLM saw it during data-gathering and pulled it into Quick Read commentary anyway, creating a "you mentioned this but I can't find it" inconsistency. v2.14.29 makes Quick Read scope explicit.
+Pre-v2.14.29: customer saw Quick Read mention a Acme Logistics / QuickBooks invoice email that wasn't in the widget's top-5. Phase 4 scoring correctly demoted the email (auto-domain + List-Unsubscribe → −35 → falls out of top-5) and the noise sub-counter correctly counted it. But the LLM saw it during data-gathering and pulled it into Quick Read commentary anyway, creating a "you mentioned this but I can't find it" inconsistency. v2.14.29 makes Quick Read scope explicit.
 
 If the most interesting overnight signal IS in a noise-filtered thread, the orchestrator now logs a `noise_filter_review_needed` event for next week's Pulse synthesis instead of leaking through Quick Read.
 
@@ -5211,7 +5234,7 @@ Button label `Prep deep work` left alone — the v2.12.0 rename FROM `work on it
 
 ### Deferred
 
-- **Zapier email-thread reply** (Sam: *"I will never use"* without it). Needs Sam's Zapier account + ~$20/mo subscription decision. Not a code-only fix; the dispatch path is already there per `EMAIL_DRAFT_PROTOCOL.md` §3c.
+- **Zapier email-thread reply** (operator: *"I will never use"* without it). Needs that operator's Zapier account + ~$20/mo subscription decision. Not a code-only fix; the dispatch path is already there per `EMAIL_DRAFT_PROTOCOL.md` §3c.
 - **Performance / "this part's slow"** — still deferred per v2.14.14's "can't optimize blind, need 7d telemetry" rule.
 
 ## v2.14.21 (2026-05-04) — Scheduled-task registration bug: stub prompts replaced with verbatim orchestrator files
@@ -5381,7 +5404,7 @@ If this release breaks an ingest flow, the canonical rollback is: revert this CH
 
 ### The big architectural fix — empty-state widget mode (Item 1)
 
-**Symptom:** Commitments scheduled-task widget bypassed the canonical renderer entirely when there were no items in any bucket. The agent improvised raw HTML, hard-typed a `Needing action: 0` counter, and invented four bottom-row buttons (`Show all open`, `Add email for Sloan`, `Add Rakesh as contact`, `Prep deep work: EB-5`) that aren't in `CANONICAL_ACTIONS`. Three contracts broken at once: Rule 1 (widget format), Rule 5 (canonical actions), Rule 19 (data shape) — and because the renderer was bypassed, none of the validators could fire.
+**Symptom:** Commitments scheduled-task widget bypassed the canonical renderer entirely when there were no items in any bucket. The agent improvised raw HTML, hard-typed a `Needing action: 0` counter, and invented four bottom-row buttons (`Show all open`, `Add email for Sloan`, `Add Bowie as contact`, `Prep deep work: EB-5`) that aren't in `CANONICAL_ACTIONS`. Three contracts broken at once: Rule 1 (widget format), Rule 5 (canonical actions), Rule 19 (data shape) — and because the renderer was bypassed, none of the validators could fire.
 
 **Root cause:** the canonical empty-state UX (renderer called with empty `sections: []`) was a bare header. The agent judged that as worse than its custom card and improvised. The enforcement chain has a structural gap: validators run AT render time, so a renderer bypass skips them.
 
@@ -5389,13 +5412,13 @@ If this release breaks an ingest flow, the canonical rollback is: revert this CH
 
 ### The Past Meetings cluster (Items 4, 5, 6, 7, 10)
 
-These all came from one fresh-install test where item 2d in the past-meetings widget said *"Rakesh's sample-packets commitment was promised 'tomorrow' relative to May 2 — that date is now past"* — but today was May 4, the meeting was earlier the same day, and "tomorrow" should have been May 5 (future). Cowork's runtime-debugger diagnosed it as cross-meeting fusion plus three independent date errors stacked.
+These all came from one fresh-install test where item 2d in the past-meetings widget said *"Bowie's sample-packets commitment was promised 'tomorrow' relative to May 2 — that date is now past"* — but today was May 4, the meeting was earlier the same day, and "tomorrow" should have been May 5 (future). Cowork's runtime-debugger diagnosed it as cross-meeting fusion plus three independent date errors stacked.
 
 - **Item 4 (commitment date prose):** orchestrator-past-meetings now requires composing the summary string against the stored `data.due` field, NOT re-deriving from "tomorrow relative to X" prose. The stored value is authoritative; today-due never says "now past." Concrete examples in the spec.
 - **Item 5 (cross-meeting fusion guardrail):** before writing any `commitment` event, the orchestrator must verify that the commitment's verbatim phrase (or 5+ word substring of `data.title` / `data.evidence`) actually appears in the source meeting's transcript. If it doesn't, fusion has crossed meetings — pending_review instead of write.
 - **Item 6 (`meeting_date` formalized):** `shared/COMMITMENT_SCHEMA.md` now documents `data.meeting_date` as an optional derivation hint, with explicit "authoritative due-date is `data.due`; readers MUST compute against that, never against `meeting_date`" language. Also added `data.owner_external`, `data.pending_review`, `data.review_reason` (all already used in code, now documented).
 - **Item 7 (canonical `meeting` events):** cr-past-meetings Phase 4 Step 8 now writes a canonical `type: meeting` event in addition to `type: meeting_processed`. The former is the data substrate ("the meeting happened"); the latter is the orchestrator's status flag ("we processed this transcript"). Without #1, queries like "when did I last meet with X?" silently return nothing.
-- **Item 10 (reachability filter):** Direction B (OWED TO YOU) in cr-commitments split into B-reachable + B-unreachable. Items where the owner has no entity record (e.g., `owner_external: "Rakesh"`) no longer disappear into "Needing action: 0" — they surface with a different action set scoped to "you can't auto-chase yet — fix that first" (`add as person <name> to <org>`, `add context [text]`, `add to my list`, `skip`). The "Needing action" counter now includes B-unreachable items.
+- **Item 10 (reachability filter):** Direction B (OWED TO YOU) in cr-commitments split into B-reachable + B-unreachable. Items where the owner has no entity record (e.g., `owner_external: "Bowie"`) no longer disappear into "Needing action: 0" — they surface with a different action set scoped to "you can't auto-chase yet — fix that first" (`add as person <name> to <org>`, `add context [text]`, `add to my list`, `skip`). The "Needing action" counter now includes B-unreachable items.
 
 ### UX polish (Items 2, 3, 8, 9)
 
@@ -5596,7 +5619,7 @@ Output of a multi-batch /simplify review against v2.14.14. **Twenty-nine files m
 
 ### What was deliberately deferred
 
-These all surfaced in the /simplify pass and are real bugs but were ruled out of low-risk scope: `chat_output_renderer.py` leak-pattern gap (production hot path); CRU narrative-leak coverage; apply-choices canonical-action verb sweep (Apply dispatch path); `inbox-triage` and `follow-up-ritual` markdown→widget conversion (daily user-visible output); `workspace-ingest` migration to `atomic_write.py` (bootstrap path, highest blast radius); `log-resolution` event shape correction; hardcoded user identity (`Matt`/`—M` defaults in writer Voice Blocks). Plus 130+ polish items. All catalogued in `.simplify-findings/FINDINGS_SUMMARY.md` for a future targeted pass.
+These all surfaced in the /simplify pass and are real bugs but were ruled out of low-risk scope: `chat_output_renderer.py` leak-pattern gap (production hot path); CRU narrative-leak coverage; apply-choices canonical-action verb sweep (Apply dispatch path); `inbox-triage` and `follow-up-ritual` markdown→widget conversion (daily user-visible output); `workspace-ingest` migration to `atomic_write.py` (bootstrap path, highest blast radius); `log-resolution` event shape correction; hardcoded user identity (a first-name/initial default in writer Voice Blocks). Plus 130+ polish items. All catalogued in `.simplify-findings/FINDINGS_SUMMARY.md` for a future targeted pass.
 
 ### What this version does NOT include
 
@@ -6784,7 +6807,7 @@ New input type `when-text` in `_detect_input_type`. Single-line text input with 
 |---|---|
 | Don't Forget — REVIEW | Plain-English context_tag REQUIRED. Forbidden: `last_interaction proposed:`, `(N signal, low confidence)`. Required: `I think you talked Apr 28 — was tracking Apr 14. Confirm or correct.` |
 | Don't Forget | `mark expected [reason]` renamed to `resolved [reason]` (display: `Resolved`) per M's Apr 30 ask. Same mechanic, more intuitive label. Shares the verb with Commitments YOU OWE — different mechanics, same user-mental-model: "this isn't open anymore." |
-| Don't Forget | Missing-email surface: `[Noah's email — not on file, add before sending]` (was `missing in entities.json, fill before send` — file-name leak). |
+| Don't Forget | Missing-email surface: `[Bowie's email — not on file, add before sending]` (was `missing in entities.json, fill before send` — file-name leak). |
 | Inbox / Commitments | `original_thread.url` field now REQUIRED whenever known. Renderer adds `↗ Open in Gmail` / `↗ Open in Granola` link at top of expanded original-thread block. |
 | Upcoming Meetings | `more context [text]` renamed to `add more context [text]` (display: `Add more context`) per M's Apr 30 ask. |
 | Upcoming Meetings | Body content STRIPPED of: raw calendar URLs, internal routing leaks (`Unrouted — Northstar Partners (org_003) has no active threads`), verbose attendee bios with typo callouts. Brief preview = meeting substance only. |
@@ -6891,7 +6914,7 @@ Patch over v2.12.0 driven by M's call after auditing the action-label inventory.
 
 ### Collapsible original-thread block above email drafts
 
-Inline `<details>` block above each email-draft blockquote in inbox + commitments items. Collapsed by default; user clicks "Original thread — <author> · <date>" to expand and see the source message they're responding to. Per Sam's Apr 30 ask: he wanted to see what he was replying to inline before reviewing the draft.
+Inline `<details>` block above each email-draft blockquote in inbox + commitments items. Collapsed by default; user clicks "Original thread — <author> · <date>" to expand and see the source message they're responding to. Per an operator's Apr 30 ask: they wanted to see what they were replying to inline before reviewing the draft.
 
 Data shape addition (per item, optional):
 
@@ -6920,11 +6943,11 @@ Renderer's markdown mode unchanged. All 17 existing tests still pass. Inline edi
 
 ## v2.12.0 (2026-04-30) — Inline input affordances + direct-edit + chat-links section + branded action labels
 
-Major UX bump driven by Sam's Apr 30 Granola call feedback. M and Sam walked the v2.11.x widget surface end-to-end; Sam surfaced concrete friction points. v2.12.0 closes them.
+Major UX bump driven by an operator's Apr 30 Granola call feedback. M and the operator walked the v2.11.x widget surface end-to-end; the operator surfaced concrete friction points. v2.12.0 closes them.
 
 ### Inline edit (direct text rewrite, no round-trip)
 
-Sam's exact ask: *"If I'm editing, just edit it. This is too slow and annoying."* Pre-v2.12.0 the `edit` action required a directive ("type `1 edit firmer`") and a server round-trip to regenerate. v2.12.0 makes `edit` reveal a textarea pre-populated with the current draft body — user edits the text directly, hits Apply, the edited text becomes the new draft. One step, no round-trip.
+The operator's exact ask: *"If I'm editing, just edit it. This is too slow and annoying."* Pre-v2.12.0 the `edit` action required a directive ("type `1 edit firmer`") and a server round-trip to regenerate. v2.12.0 makes `edit` reveal a textarea pre-populated with the current draft body — user edits the text directly, hits Apply, the edited text becomes the new draft. One step, no round-trip.
 
 `edit firmer` / `edit softer` quick-directive buttons stay alongside for when the user wants a tone shift without rewriting by hand.
 
@@ -6944,13 +6967,13 @@ Renderer detects input type from the action label via `_detect_input_type()`. Di
 ### Action label cleanup
 
 - **Dropped `open`** from upcoming-meetings — Sam and M agreed on the Apr 30 call the action wasn't useful. Brief expansion was redundant with the per-item brief link in the new chat-links section.
-- **Renamed `push to [date]` → `push meeting [date]`** in upcoming-meetings — *"push" alone wasn't clear; "push meeting" reads as the obvious action* (Sam's wording).
-- **Renamed `work on it` → `prep deep work`** across commitments + don't-forget — Sam's confused reaction on the call: *"is this for me? is this just claude talking?"* The new label makes the affordance unambiguous.
+- **Renamed `push to [date]` → `push meeting [date]`** in upcoming-meetings — *"push" alone wasn't clear; "push meeting" reads as the obvious action* (the operator's wording).
+- **Renamed `work on it` → `prep deep work`** across commitments + don't-forget — The operator's confused reaction on the call: *"is this for me? is this just claude talking?"* The new label makes the affordance unambiguous.
 - **Removed standalone `edit [change]`** from commitments + inbox — redundant with the new `edit` direct-edit action.
 
 ### Post-widget chat-links section
 
-Sam's Apr 30 ask: *"those briefs hyperlinked right under that UI."* Hyperlinks inside the widget's iframe are unreliable (Cowork's iframe sandbox blocks `computer://` and some `https://` clicks). Hyperlinks in regular chat markdown work reliably. v2.12.0 architecture:
+The operator's Apr 30 ask: *"those briefs hyperlinked right under that UI."* Hyperlinks inside the widget's iframe are unreliable (Cowork's iframe sandbox blocks `computer://` and some `https://` clicks). Hyperlinks in regular chat markdown work reliably. v2.12.0 architecture:
 
 - **Widget HTML** = action surface only. No source/brief links inside.
 - **Chat markdown post AFTER widget** = per-item source thread + brief links, numbered to match widget items.
@@ -6986,7 +7009,7 @@ Sam: *"I'd make this UI a little easier to follow."* `↗ YOU OWE` (outbound) an
 
 ### ID-leak guard (validator)
 
-New `scan_for_id_leaks()` function in `chat_output_renderer.py` flags forbidden patterns (`person_NNN`, `project_NNN`, `Domain match:`, `_hq/staging/`, `seq N`, `Phase N`, `Step N`, `confidence: 0.87`, schema field names) before posting. Sam's Apr 30 ask: *"Why is it showing IDs?"* — leak guard catches the patterns at render time so they never reach the user.
+New `scan_for_id_leaks()` function in `chat_output_renderer.py` flags forbidden patterns (`person_NNN`, `project_NNN`, `Domain match:`, `_hq/staging/`, `seq N`, `Phase N`, `Step N`, `confidence: 0.87`, schema field names) before posting. The operator's Apr 30 ask: *"Why is it showing IDs?"* — leak guard catches the patterns at render time so they never reach the user.
 
 ### apply-choices skill — v2.12.0 input handling
 
@@ -7132,7 +7155,7 @@ M ran v2.10.8 live across all 5 scheduled-task fires (Don't Forget, Commitments,
 
 ## v2.10.8 (2026-04-29) — Format militancy + brief-link fix + multi-source meeting convergence
 
-After a live walkthrough with Sam on v2.10.6/v2.10.7, three failure modes surfaced. Diagnostic in Cowork pinpointed the root causes precisely; v2.10.8 fixes all three plus four downstream gaps the diagnostic surfaced.
+After a live walkthrough with an operator on v2.10.6/v2.10.7, three failure modes surfaced. Diagnostic in Cowork pinpointed the root causes precisely; v2.10.8 fixes all three plus four downstream gaps the diagnostic surfaced.
 
 ### Architectural fix #1 — renderer execution is now mandatory, not aspirational
 
@@ -7175,7 +7198,7 @@ When a meeting processes, three things now happen automatically (in `orchestrato
 
 ### Inbox — counterparty-level already-replied dedup (v2.10.8+)
 
-**Diagnosis (Apr 29 Cowork):** Sam's diagnostic dump thread surfaced as priority despite M having replied 16 hours earlier. Per-thread "did the user reply" check is structurally insufficient — Sam's emails have bare `Re:` subjects, Gmail's threading-by-subject fallback splits the chain, M's reply lands in a sibling thread, original thread reads "unanswered."
+**Diagnosis (Apr 29 Cowork):** An operator's diagnostic dump thread surfaced as priority despite M having replied 16 hours earlier. Per-thread "did the user reply" check is structurally insufficient — Sam's emails have bare `Re:` subjects, Gmail's threading-by-subject fallback splits the chain, M's reply lands in a sibling thread, original thread reads "unanswered."
 
 **Fix:** new Phase 4.5 in `orchestrator-inbox.md` runs after priority scoring. For each candidate, ONE Gmail search: `from:me to:<counterparty> newer_than:2d`. If body/subject n-gram overlap ≥ 0.30 with a recent outbound, suppress the candidate. Logs `chat_suppressed` event for audit.
 
@@ -7386,7 +7409,7 @@ Body:
 
 **Enforced item numbering (Rule 3 reinforcement).** Real fire showed first lines like `✉ Sam Sample · "..."` with no `1.` prefix, but reply tokens referenced `1 send`. v2.10.5 mandates the `N.` prefix on EVERY item — never silently dropped, even at N=1.
 
-**Tighter pending-item shape (Past Meetings).** Pre-v2.10.5 had `Reply:` label + verbose action verbs (`add Adam Sadanic to [org]` / `search recent emails for Adam Sadanic`). v2.10.5 drops the label, drops redundant subjects in actions (`add to [org]` / `search emails`), uses one description line + one pill line per pending item.
+**Tighter pending-item shape (Past Meetings).** Pre-v2.10.5 had `Reply:` label + verbose action verbs (`add Lyra Stone to [org]` / `search recent emails for Lyra Stone`). v2.10.5 drops the label, drops redundant subjects in actions (`add to [org]` / `search emails`), uses one description line + one pill line per pending item.
 
 ### B. Atomic-write enforcement (root-cause fix for truncation incidents)
 
@@ -7797,7 +7820,7 @@ Bot's first fire returned 0 strict-overdue while 10+ commitments aged silently w
 
 - **overdue** — `data.due` past today
 - **due_near** — due today through today + 3 days
-- **aging_undated** — no due date AND age ≥ 7 days (the bucket that catches silent staleness — Qualiphy 50d, Marble 12d, etc.)
+- **aging_undated** — no due date AND age ≥ 7 days (the bucket that catches silent staleness — Qualiphy 50d, Acme 12d, etc.)
 
 Each bucket caps at top 5; cross-bucket cap of 12. Item numbering is global. Empty buckets are omitted.
 
@@ -8948,10 +8971,10 @@ v2.7.15 made `meeting-notes`, `inbox-triage`, and `scan-for-commitments` write c
 - `'draft an email to Skyler about the contract'` — added bare `'draft an email'` trigger to email-writer
 - `'email to Bowie about the Q2 pricing change'` — added `'email to'` trigger
 - `'write an email to the team'` — added `'write an email'` trigger
-- `"DM Jessica about tomorrow's call"` — added `'DM '` trigger to slack-writer (and lowered test min trigger length 3→2 so 2-letter abbreviations like DM/PR/AI are valid triggers)
+- `"DM Mira about tomorrow's call"` — added `'DM '` trigger to slack-writer (and lowered test min trigger length 3→2 so 2-letter abbreviations like DM/PR/AI are valid triggers)
 - `'post in #ops about the deploy'` — added bare `'post in'` trigger
 - `'announce the new hire in #general'` — added bare `'announce'` trigger to slack-writer + `'announce'` as negative on workspace-manager so workspace-manager's `'hire'` trigger no longer wins
-- `'slack Kevin a quick update'` — added bare `'slack'` trigger
+- `'slack Lyra a quick update'` — added bare `'slack'` trigger
 - `'memo on the pricing strategy'` — added bare `'memo on'` to memo-writer
 - `'decision doc for the vendor selection'` — added bare `'decision doc'`
 - `'decision memo on the pricing change'` — `'decision memo'` is workspace-manager's lifecycle command; added it as negative on memo-writer so workspace-manager wins.
@@ -9150,11 +9173,11 @@ Stacked on v2.7.12. Surfaced from a single iteration cycle across two real-clien
 
 **5. `<!doctype html>` + `<meta charset="utf-8">` added to the Workspace Map canonical template.** v2.7.12 added it to DCC only, leaving WM exposed to the same browser-default-decode bug — Cowork on M's machine grepped the installed bytes and found 0 mojibake-byte signatures and 17 proper UTF-8 em-dashes, but the iframe was rendering them as `â€"` because it had no charset declaration to override the default Latin-1 fallback. v2.7.13 declares charset on both templates.
 
-**6. `build_dcc_input.py` native fallback projection.** Both M's and Sam's first DCC installs shipped with empty Today/Inbox/Meetings tabs because their respective Cowork sessions called the projector with only `--workspace-root` and `--output`, no projection flags. The script defaulted all three flags to empty arrays — silently — so Rule 8 verification passed but the user saw a blank dashboard. v2.7.13 keeps that exact CLI surface (no breaking change) but adds a fallback: if `--matters` is not provided, the script natively projects from `_hq/data/` (stuck commitments → "stuck" cards, aging open commitments owned by user → "priority" cards, stale-but-active projects → "anomaly" cards). Caps at 5 items. Validated: M's no-commitment-events workspace yields 1 anomaly card (Acme Trading System stale 3w); Sam-shape fixture yields 3 cards across all three layers.
+**6. `build_dcc_input.py` native fallback projection.** Both M's and an operator's first DCC installs shipped with empty Today/Inbox/Meetings tabs because their respective Cowork sessions called the projector with only `--workspace-root` and `--output`, no projection flags. The script defaulted all three flags to empty arrays — silently — so Rule 8 verification passed but the user saw a blank dashboard. v2.7.13 keeps that exact CLI surface (no breaking change) but adds a fallback: if `--matters` is not provided, the script natively projects from `_hq/data/` (stuck commitments → "stuck" cards, aging open commitments owned by user → "priority" cards, stale-but-active projects → "anomaly" cards). Caps at 5 items. Validated: M's no-commitment-events workspace yields 1 anomaly card (Acme Trading System stale 3w); Sam-shape fixture yields 3 cards across all three layers.
 
 **7. `command-room-onboarding` writes a `plugin_install` event at completion.** v2.7.12's bridge logged `from_version: "unknown_legacy"` on first run because no prior install event existed. v2.7.13's onboarding appends `{type: "plugin_install", version: <plugin_version>, fresh: true, actor: "command-room-onboarding"}` so the bridge has a real baseline.
 
-**8. Bridge SKILL Phase 4 + enable-DCC SKILL Phase 3a hardened against confabulation.** Both M's Cowork and Sam's Cowork pre-emptively logged `artifact_install_failed` with reason `relay_capacity_constraint` on first install attempt — a failure reason that exists nowhere in source. Same shape as v2.7.10's `rule_7_override` confabulation. v2.7.13 adds explicit "pre-emptive refusal is NOT a sanctioned failure mode" language listing forbidden invented reasons (`relay_capacity_constraint`, `create_artifact_no_file_path_param`, anything invoking "payload too large" without a real `create_artifact` error). enable-DCC SKILL Phase 3a now opens with "MANDATORY" + a self-check (`ls /tmp/cr-dcc-*.json` should list three files before invoking the projector) so future Cowork sessions don't skip the projection step.
+**8. Bridge SKILL Phase 4 + enable-DCC SKILL Phase 3a hardened against confabulation.** Both M's Cowork and that operator's Cowork pre-emptively logged `artifact_install_failed` with reason `relay_capacity_constraint` on first install attempt — a failure reason that exists nowhere in source. Same shape as v2.7.10's `rule_7_override` confabulation. v2.7.13 adds explicit "pre-emptive refusal is NOT a sanctioned failure mode" language listing forbidden invented reasons (`relay_capacity_constraint`, `create_artifact_no_file_path_param`, anything invoking "payload too large" without a real `create_artifact` error). enable-DCC SKILL Phase 3a now opens with "MANDATORY" + a self-check (`ls /tmp/cr-dcc-*.json` should list three files before invoking the projector) so future Cowork sessions don't skip the projection step.
 
 ### New feature
 

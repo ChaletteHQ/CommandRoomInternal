@@ -625,7 +625,7 @@ When Chat 4 opens via `show me what you know about me`, the skill's first messag
 6. **A volume cue** — total activity volume shows the scale of what was read and sets up the Insights that follow.
 7. **A soft spot** — something specific that wouldn't show up in a generic scan (silence anomaly, paused-but-still-active project).
 
-**Seed-aware Mirror (Spec 3).** If a pre-onboarding brief was ingested (1a.0), the Mirror gets sharper — it distinguishes **what the customer told you** from **what you found they didn't mention**. Weave both: confirm a few declared facts back ("You told me the AZ deal is your top focus and Kevin runs it") AND surface 1–2 things the scan found that the brief didn't ("You didn't mention it, but there's a thread with Northstar heating up — 6 emails in the last week"). That contrast is the strongest possible proof: it shows you both listened on the call AND read their actual workspace. Respect `sensitivities[]` — never surface an excluded person/thread here even if the scan found it.
+**Seed-aware Mirror (Spec 3).** If a pre-onboarding brief was ingested (1a.0), the Mirror gets sharper — it distinguishes **what the customer told you** from **what you found they didn't mention**. Weave both: confirm a few declared facts back ("You told me the AZ deal is your top focus and Lyra runs it") AND surface 1–2 things the scan found that the brief didn't ("You didn't mention it, but there's a thread with Northstar heating up — 6 emails in the last week"). That contrast is the strongest possible proof: it shows you both listened on the call AND read their actual workspace. Respect `sensitivities[]` — never surface an excluded person/thread here even if the scan found it.
 
 After the Mirror prose lands, anchor it to a workspace file:
 

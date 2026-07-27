@@ -8,7 +8,8 @@ HIGH-confidence matches when a send goes through the IN-PRODUCT draft path
 (`N send`). But when the CEO sends a follow-up DIRECTLY FROM GMAIL (outside the
 product), no in-product send event is produced, the match engine never runs,
 and the commitment stays open forever. That is the v3.18.1 trust-killer: the
-morning brief listed already-sent follow-ups (Bob, Don) as still owed and told
+morning brief listed already-sent follow-ups to two real counterparties as
+still owed and told
 the CEO to redo done work.
 
 This module is the missing CALLER: it takes the open commitments + a batch of
@@ -145,7 +146,7 @@ def reconcile_sent(
             subject=msg.get("subject"),
             body=msg.get("body"),
             # Bug #103 recall fallback: recipient display names + email local-parts
-            # so a commitment that names the recipient in its title ("Send Don a
+            # so a commitment that names the recipient in its title ("Send Bo a
             # recap") still matches even when the counterparty isn't linked into
             # person_ids or has no email on file.
             recipient_names=msg.get("recipient_names") or [],

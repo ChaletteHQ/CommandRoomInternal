@@ -19,7 +19,7 @@ Contains:
 2. The banned-phrase list of universal LLM tells.
 3. The correction-log schema.
 4. Staleness rules.
-5. The voice regression harness spec (lives in the chalette internal plugin as of v3.9.0 — Matthew-only tooling, not customer-facing).
+5. The voice regression harness spec (lives in the chalette internal plugin as of v3.9.0 — maintainer-only tooling, not customer-facing).
 
 Contains NOTHING client-specific. Never references a CEO's actual voice.
 
@@ -201,9 +201,9 @@ Staleness does not block output — the skill still produces a draft, just with 
 
 ---
 
-## Voice regression harness (Matthew-only, chalette plugin)
+## Voice regression harness (maintainer-only, chalette plugin)
 
-The monthly voice-regression harness (`voice-test` skill) was retired from this plugin in v3.9.0 and moved to the chalette internal plugin (`chaletteholdings/chalette` v0.5.0+). It is Matthew-only — used during plugin development to catch voice drift before it reaches customer-facing output. Customers do not run it.
+The monthly voice-regression harness (`voice-test` skill) was retired from this plugin in v3.9.0 and moved to the chalette internal plugin (`chaletteholdings/chalette` v0.5.0+). It is maintainer-only — used during plugin development to catch voice drift before it reaches customer-facing output. Customers do not run it.
 
 For customer installs, the staleness check above (date + correction count) is the trigger to re-run voice calibration. The corrections corpus accumulated in `_hq/voice/corrections-*.jsonl` is the canonical input.
 

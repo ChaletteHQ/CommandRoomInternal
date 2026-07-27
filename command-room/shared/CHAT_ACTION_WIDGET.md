@@ -195,7 +195,7 @@ After `mcp__visualize__show_widget` posts, emit a second chat turn with a markdo
 
 1. [Sam Sample — Framing the build](https://mail.google.com/mail/u/0/#all/198abc...) · [📄 brief](computer://C:\Users\...\Past_Meeting_Sam_2026-04-30.docx)
 2. [Lyra Sample — Acme Research](https://mail.google.com/mail/u/0/#all/198def...)
-3. [Adan Sample — Apr 14 kickoff call](https://notes.granola.ai/d/abc...) · [📄 brief](computer://C:\Users\...\Past_Meeting_Adan_2026-04-14.docx)
+3. [Bowie Sample — Apr 14 kickoff call](https://notes.granola.ai/d/abc...) · [📄 brief](computer://C:\Users\...\Past_Meeting_Bowie_2026-04-14.docx)
 ```
 
 Numbering matches the widget's item numbering exactly so the user can map widget items → links.

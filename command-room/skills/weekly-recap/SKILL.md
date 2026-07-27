@@ -39,7 +39,7 @@ Outputs must be substantively rich, not just longer. "Rich" means:
 
 2. **Cross-references over isolated data.** Every output should connect at least 2-3 entities (this person + that project + that commitment + that older thread). Demonstrates the memory layer at work, not just data retrieval.
 
-3. **Concrete > generic.** "Adan disagreed on sequencing on the Oct 14 call" beats "team has differing views on timing." If the data supports a concrete reference, use it.
+3. **Concrete > generic.** "Mira disagreed on sequencing on the Oct 14 call" beats "team has differing views on timing." If the data supports a concrete reference, use it.
 
 4. **Length scales with signal density.** A project with 47 events in 14 days gets a 6-bullet "where things stand"; a project with 4 events gets 2 bullets. No padding to hit a target length.
 
@@ -277,7 +277,7 @@ Test: does the lead name a dated moment AND say what CHANGED? If the counts alon
 
 - **Length scales with signal density.** A quiet week with 4 meetings and 12 emails produces a 20-line recap. A heavy week with 47 events on one project produces 50-60 lines. **Never pad to hit a target length.**
 - **No placeholders.** Sections with no content are omitted entirely, not stubbed with "No data captured."
-- **Named references > adjectives.** "Adan disagreed on sequencing on the Tue Oct 14 call" > "team has differing timing views."
+- **Named references > adjectives.** "Mira disagreed on sequencing on the Tue Oct 14 call" > "team has differing timing views."
 - **Cross-reference at least 2-3 entities per bullet.** This person + that project + that commitment.
 
 ---

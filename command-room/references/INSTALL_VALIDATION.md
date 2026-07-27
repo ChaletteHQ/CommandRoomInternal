@@ -53,7 +53,7 @@ Validate the customer workspace has the minimum structure.
 Validate the seeded JSON matches the schemas.
 
 - [ ] `entities.json` validates against `shared/data-schemas/entities.schema.json` — top-level `entities.{people, threads, orgs}` arrays present.
-- [ ] `events.jsonl` — every line (if any) validates against `shared/data-schemas/events.schema.json`. Every `type:` value is in the enum.
+- [ ] `events.jsonl` — every line (if any) validates against `shared/data-schemas/events.schema.json`. Every `type:` value is in the enum **or** is a documented pre-registry fossil (`shared/scripts/event_types.py::PRE_REGISTRY_FOSSILS` / `is_pre_registry_fossil()`). An unregistered type that is NOT on that list is the defect this check is looking for. Corrected 2026-07-25: a migrated workspace legitimately carries ~50 fossil types written before the append gate went strict on 2026-07-02 — reading the bare enum check literally flags a healthy install. See `shared/EVENT_TYPES.md` § Pre-registry fossils.
 - [ ] `aliases.json` validates against `shared/data-schemas/aliases.schema.json`.
 - [ ] Every reference in entities.json (owner_person_id, reports_to_id, affiliation_id, parent_org_id) resolves to an existing record.
 - [ ] Every canonical_id in aliases.json resolves.

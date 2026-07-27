@@ -7,8 +7,8 @@ Two layers, one module:
   1. THE CAPTURE BLOCK (consolidation) — the Stage-D / S2 / Stage-E gate
      every commitment writer runs (`gate_commitment_data`). See below.
 
-  2. THE RELEVANCE GATE + OBSERVED TIER (W4c — the volume fix, M/Brandon
-     feedback 2026-07-08). An item enters the ledger as an OPEN commitment
+  2. THE RELEVANCE GATE + OBSERVED TIER (W4c — the volume fix, maintainer +
+     high-volume-operator feedback 2026-07-08). An item enters the ledger as an OPEN commitment
      only if the workspace owner is a party (owes it or is owed it).
      Third-party↔third-party items observed in meetings/Slack/sessions, and
      items whose attribution can't be confidently resolved (amber), are
@@ -1060,7 +1060,7 @@ def observed_counts(workspace_root, *, since_ts=None, now=None) -> dict:
 
 def prep_context_observed(workspace_root, attendee_person_ids, *, limit: int = 5) -> list:
     """Observed items involving any of these attendees — the prep-context
-    surface ('last time Stacy owed Rick the report'). SURFACING ONLY: prep
+    surface ('last time Mira owed Lyra the report'). SURFACING ONLY: prep
     renders these with a track-it affordance; promotion stays one explicit
     tap away (`promote_observed(..., corroborated_by="user")`) so recurring
     meetings never auto-refill the confirm flow. Newest first."""

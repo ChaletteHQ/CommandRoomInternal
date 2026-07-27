@@ -52,9 +52,9 @@ import sys
 sys.path.insert(0, 'shared/scripts')
 from entity_resolve import resolve, resolve_to_linked_project
 # For 'go [name]' flows that want to load a project:
-result = resolve_to_linked_project('$WORKSPACE', 'Elon')
+result = resolve_to_linked_project('$WORKSPACE', 'Arya')
 # For pure name-mention flows that want the matched entity (person/org/project):
-# result = resolve('$WORKSPACE', 'Elon')
+# result = resolve('$WORKSPACE', 'Arya')
 if result:
     print(f'{result.entity_type} {result.entity_id} ({result.display_name})')
     print(f'  via: {result.matched_via} (conf {result.confidence:.2f})')

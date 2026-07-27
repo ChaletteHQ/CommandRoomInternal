@@ -10,8 +10,8 @@ Design (brain-substrate-drift audit, 2026-05-30):
     umbrella (e.g. the 3 live Command Room threads all carry
     parent_thread_id = project_001) inherits the umbrella's people as
     `inherited` candidates — lower confidence, surfaced for the confirm-gate —
-    so real members tagged only to the pre-split umbrella (the Wetsels) are
-    NOT silently dropped. Verified against the live substrate.
+    so real members tagged only to the pre-split umbrella (the family-business
+    case) are NOT silently dropped. Verified against the live substrate.
   - OVERRIDES ONLY are persisted: `thread.roster_overrides = {pin:[...],
     suppress:[...]}`. Pins force-include (e.g. a durable contact with no
     events); suppresses force-exclude (kill cross-thread bleed the CEO

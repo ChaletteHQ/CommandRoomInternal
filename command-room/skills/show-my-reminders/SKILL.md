@@ -58,7 +58,7 @@ ev = capture_reminder(
     "<summary>",
     remind_from="<YYYY-MM-DD>",
     due=None,                # only when the phrase carries a real deadline distinct from the pin date
-    ref=None,                # commitment/event id when the user points at a tracked item ("the Pedro chase")
+    ref=None,                # commitment/event id when the user points at a tracked item ("the Rio chase")
     repeat=None,             # "weekly" | "monthly" | {"every_days": N}
     person_ids=[...],        # resolved via entity_resolve when the summary names tracked people
     primary_thread_id=None,
@@ -70,7 +70,7 @@ ev = capture_reminder(
   otherwise. A marked-personal or not-personal correction in the capture
   exchange overrides the default either way (it's a flow reply, not a
   routed command).
-- When the summary names a tracked commitment ("remind me about the Pedro
+- When the summary names a tracked commitment ("remind me about the Rio
   chase Friday"), resolve it via `entity_resolve` + the commitment loader and
   set `ref` to its id. The ref is context only — **clearing the reminder
   never closes the commitment, and closing the commitment never clears the
@@ -143,7 +143,7 @@ append_event(events_path, build_reminder_updated_event(rem_id, action="keep"), h
   scheduler and none may be added — derive-next-on-read is the design). Ack
   plainly: *"Cleared — it'll be back Monday."*
 - Clearing a reminder with `ref` clears ONLY the reminder. If the user's
-  phrasing says the underlying item is also done ("done with the Pedro
+  phrasing says the underlying item is also done ("done with the Rio
   chase, clear the reminder too"), close the commitment through
   `commitment_state.close_commitment` as its own action — two events, two
   acks folded into one line.

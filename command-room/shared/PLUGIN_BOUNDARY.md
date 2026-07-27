@@ -81,7 +81,7 @@ The only exceptions are connectors (Gmail, Slack, Calendar) where the write is t
 
 ### 3. Telemetry — customer-facing skill retired; internal pack-run metrics still active
 
-**Customer-facing telemetry skill: retired v3.9.0.** The `beta-telemetry` user-facing skill (which once asked customers to opt in to plugin-developer telemetry) moved to the chalette internal plugin (`chaletteholdings/chalette` v0.5.0+) and is Matthew-only, never customer-facing in Command Room.
+**Customer-facing telemetry skill: retired v3.9.0.** The `beta-telemetry` user-facing skill (which once asked customers to opt in to plugin-developer telemetry) moved to the chalette internal plugin (`chaletteholdings/chalette` v0.5.0+) and is maintainer-only, never customer-facing in Command Room.
 
 **Internal pack-run telemetry: still active and customer-local.** Every scheduled-task fire (`cr-morning-brief`, `cr-inbox`, `cr-commitments`, etc.) emits a `pack_run` event to the customer's own `_hq/data/events.jsonl` via `shared/scripts/telemetry.py::build_pack_run_telemetry()`. This is per-workspace metrics (token usage, connector call counts, duration) used by the `usage-report` skill to answer "where is my Command Room spend going?" — the data never leaves the customer's workspace and is not aggregated anywhere. This is workspace-local diagnostics, not telemetry-the-developer-feedback-loop.
 

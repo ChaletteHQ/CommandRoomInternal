@@ -192,7 +192,7 @@ Discovery is DATA-first: the declared backend + the capability manifest (`shared
 
 When a meeting / surface mentions N new people who could each be added separately, render N separate sub_items (`1a`, `1b`, ...), each scoped to ONE person. NEVER stack as competing actions on one item — the radio-button rule forces an artificial choice. Same for multi-org candidates.
 
-Per M's Apr 30 ask: *"I am trying to add both bretts to people but it does not let me select."*
+Per M's Apr 30 ask: *"I am trying to add both people with the same first name but it does not let me select."*
 
 ## Rule 11 — REVIEW items: explicit "what does Confirm do"
 
@@ -360,7 +360,7 @@ The leak scanner (`chat_output_renderer.py` `_LEAK_PATTERNS`) catches every CRU 
 
 ## Rule 26 — No real customer or partner names in plugin source (v3.6.1+)
 
-Plugin source is granted to beta operators (private repo access today, broader collaboration later). Examples, fixtures, CHANGELOG entries, docstrings, comments, and skill references MUST NOT contain real beta-customer or partner names, real email domains, or real org names. Use the placeholders documented in `references/PRIVACY_POLICY.md`: `Sam Sample`, `Bo Sample`, `Rio Sample`, `Rio Lange`, `Acme Co`, `Northstar Partners`, `Summit Company`, and `@example.com` / `*.example.com` domains.
+Plugin source is granted to beta operators (private repo access today, broader collaboration later). Examples, fixtures, CHANGELOG entries, docstrings, comments, and skill references MUST NOT contain real beta-customer or partner names, real email domains, or real org names. Use these placeholders: `Sam Sample`, `Bo Sample`, `Rio Sample`, `Rio Lange`, `Acme Co`, `Northstar Partners`, `Summit Company`, and `@example.com` / `*.example.com` domains. This rule is the shipped statement of the roster; the full policy behind it is a development-only document that does not fan out to client repos (EXEMPTFENCE, 2026-07-26 — a name-scanner-exempt file must contain the patterns it forbids, so it is the last file that should be distributed).
 
 The failure mode this rule closes: the v3.5.2 sanitization pass claimed "25 files, 69 lines swapped — every real name replaced with placeholder" but a 2026-05-18 IT security audit confirmed the sweep was incomplete — ~68 residual hits remained across 16 non-CHANGELOG files. The same agent-improvisation pattern that drives Rule 25 path leaks drives name leaks: doc examples + memorialized-failure narratives in reference files become the substrate the agent samples from when writing chat output.
 

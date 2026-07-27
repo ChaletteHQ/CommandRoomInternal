@@ -433,7 +433,7 @@ def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
     carries connector provenance resolving to a classified OUT-OF-SCOPE account
     raises AccountScopeError BEFORE the entities.json write.
 
-    A payload with NO connector provenance passes (manual "add Bob" stays
+    A payload with NO connector provenance passes (manual "add Dustin" stays
     frictionless). An unresolvable account passes (back-compat, §4b). Same
     never-brick posture as enforce_scope: empty map → no-op; any INTERNAL error
     (corrupt entities.json, broken map) → allow the write."""

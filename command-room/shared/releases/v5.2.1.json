@@ -1,0 +1,5 @@
+{
+ "version": "5.2.1",
+ "headline": "Internal — your install now carries only the files it actually runs; the development-only test tree and a contributor document no longer ship. Also: a meeting brief is never delivered as a Google Doc, which had been landing copies at your Drive root instead of the meeting folder. Nothing about how the workspace behaves changed.",
+ "items": []
+}

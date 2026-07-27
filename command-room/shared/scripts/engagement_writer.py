@@ -45,6 +45,11 @@ from entities_io import entities_collection  # noqa: E402
 ALLOWED_ENGAGEMENT_FIELDS = {
     "id", "from_org_id", "to_org_id", "kind",
     "label", "notes", "started_at", "ended_at", "is_active", "inferred_from",
+    # SPEC COACH1 §4.3. Forward-looking contract dates, distinct from
+    # `ended_at` (which records when the engagement actually ended). Renewal
+    # watching reads a real term date instead of inferring from silence.
+    # Both optional — every existing engagement record stays valid unchanged.
+    "term_end", "renewal_date",
 }
 REQUIRED_ENGAGEMENT_FIELDS = {"id", "from_org_id", "to_org_id", "kind"}
 ENGAGEMENT_KINDS = {

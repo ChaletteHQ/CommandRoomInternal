@@ -21,7 +21,7 @@ deliverable running on TWO generators:
           no-prep flag may only render when NO `prep_brief` receipt exists
           for that meeting id.
   F-29b — 'prep me' minted a SECOND, differently-slugged brief for the same
-          meeting (`az-bus-joe-pashman-session` vs `joseph-pashman`) because
+          meeting (`acme-bo-sample-session` vs `bo-sample`) because
           slugs came from attendee-name phrasing. Fixed by `prep_slug`: the
           slug is a pure function of the MEETING ID, so regeneration always
           resolves to the same file (refresh-in-place, never a sibling).
@@ -108,14 +108,14 @@ def _meeting_hash(meeting_id: str) -> str:
 def prep_slug(meeting_id: str, title: Optional[str] = None) -> str:
     """THE slug for a prep brief — a pure function of the MEETING ID.
 
-    F-29b's duplicate (`az-bus-joe-pashman-session` vs `joseph-pashman`, one
+    F-29b's duplicate (`acme-bo-sample-session` vs `bo-sample`, one
     meeting) happened because each fire improvised a slug from attendee-name
     phrasing. Here the identity lives in the meeting-id hash suffix; the
     title prefix is readability only and never part of the identity check.
 
-    >>> prep_slug("evt_abc123", "Joe Pashman — SOD sync")[-9:] == "-" + _meeting_hash("evt_abc123")
+    >>> prep_slug("evt_abc123", "Bo Sample — SOD sync")[-9:] == "-" + _meeting_hash("evt_abc123")
     True
-    >>> prep_slug("evt_abc123", "Joseph Pashman session") .endswith(_meeting_hash("evt_abc123"))
+    >>> prep_slug("evt_abc123", "Bo Sample session") .endswith(_meeting_hash("evt_abc123"))
     True
     """
     h = _meeting_hash(meeting_id)

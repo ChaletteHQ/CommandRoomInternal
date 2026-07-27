@@ -4,13 +4,18 @@ Canonical event-type vocabulary loader (Phase 1 Foundation, 2026-07).
 
 ENUM HOME DECISION (final — later phases register events HERE, nowhere else):
 `shared/data-schemas/events.schema.json` is the ONE home of the event-type
-enum. It was already enforced by two independent consumers before this module
-existed (run_source_of_truth_test.py Check 4 scans every documented
-`"type": "<name>"` literal against it; weekly-audit validates live events
-against it), so duplicating the list as a Python literal would create a
-second source of truth that drifts. This module makes the same enum
-runtime-readable for the append gatekeeper (event_gate.py) without ever
-owning a copy of the list.
+enum. It was already enforced before this module existed
+(run_source_of_truth_test.py Check 4 scans every documented
+`"type": "<name>"` literal against it), so duplicating the list as a Python
+literal would create a second source of truth that drifts. This module makes
+the same enum runtime-readable for the append gatekeeper (event_gate.py)
+without ever owning a copy of the list.
+
+Corrected 2026-07-25: this docstring used to claim a second enforcer —
+"weekly-audit validates live events against it." No such skill exists in core,
+and `is_known_type` has exactly one caller (the write gate). NOTHING validates
+event types on the read side. What live substrate actually holds is documented
+in PRE_REGISTRY_FOSSILS at the bottom of this module.
 
 To register a new event type:
   1. Add it to the `type` enum in shared/data-schemas/events.schema.json.
@@ -89,12 +94,69 @@ def is_known_type(event_type) -> bool:
     return isinstance(event_type, str) and event_type in types
 
 
+# --- Pre-registry fossils (2026-07-25) --------------------------------------
+# Event types that EXIST in live substrate but are deliberately NOT in the
+# enum. Surveyed on a real workspace: 52 unregistered types across ~200 rows,
+# every one of them written before the append gate went strict on 2026-07-02
+# (event_gate Phase 4) — the newest fossil write is dated 2026-07-02 itself.
+# Nothing has written an unregistered type since, because nothing CAN: the
+# gate raises EventGateError on both entries.
+#
+# They stay unregistered on purpose. The enum is the WRITE permission list —
+# `is_known_type` is consulted by exactly one caller, event_gate, on append.
+# Registering these would re-legalize writing them and undo the drift fix the
+# registry exists for. It would also break the registry's own admission rule
+# (EVENT_TYPES.md: a registered type names a writer AND a named consumer);
+# these have neither. run_source_of_truth_test Check 4 is green, which is the
+# proof no current skill prose or shared script declares one as a write.
+#
+# This set is the READ-side companion: it lets an auditor tell "expected
+# historical row" from "new unregistered type, which is a defect". It is
+# NEVER consulted on the write path.
+#
+# Extending it: only for a type already present in shipped substrate and
+# written before 2026-07-02. A type you want to write goes in the enum, with
+# a writer + consumer row in EVENT_TYPES.md — never here.
+PRE_REGISTRY_FOSSILS: FrozenSet[str] = frozenset({
+    "apply_choices_audit", "apply_choices_dispatch", "apply_choices_dispatched",
+    "apply_choices_processed", "apply_dispatch", "artifact_refreshed",
+    "artifact_updated", "chat_action", "cleanup_residue_removed",
+    "commitment_update", "correction", "corruption-recovery",
+    "cracks_watch_action", "cracks_watch_run", "cracks_watch_snooze",
+    "decision_pending", "entity_creation_requested", "entity_search",
+    "follow_up", "follow_up_draft", "list_item_added", "meeting_reprocessed",
+    "noise_filter_review_needed", "org_added", "org_archived", "org_deleted",
+    "org_membership", "org_proposal_confirmed", "org_review_pending",
+    "outreach_drafted", "owner_remap", "packaging_problem",
+    "pending_enrichment", "pending_review", "pending_review_resolved",
+    "pending_review_skipped", "person_context_captured", "person_context_note",
+    "person_enrichment_pending", "person_merge_proposed",
+    "person_record_review_queued", "person_review_pending", "probe_click",
+    "project_status_change", "prospect_stage_changed", "reclassification_batch",
+    "scan_completed", "schedule_skipped", "schedule_updated", "session_close",
+    "session_end", "substrate_cleanup",
+})
+
+
+def is_pre_registry_fossil(event_type) -> bool:
+    """True when `event_type` is a documented pre-gate historical type.
+
+    Read-side only. A row of this type in events.jsonl is expected and not an
+    install defect; a row of ANY OTHER unregistered type is. Never call this
+    from a write path — `is_known_type` is the write gate, and a fossil is
+    deliberately not writable.
+    """
+    return isinstance(event_type, str) and event_type in PRE_REGISTRY_FOSSILS
+
+
 __all__ = [
     "KIND_VALUES",
     "LEGACY_SEQ_ID_RE",
     "COMMITMENT_CLOSURE_ID_FIELDS",
+    "PRE_REGISTRY_FOSSILS",
     "load_event_types",
     "is_known_type",
+    "is_pre_registry_fossil",
 ]
 
 

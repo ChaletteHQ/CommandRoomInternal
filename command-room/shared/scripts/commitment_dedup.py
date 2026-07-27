@@ -47,13 +47,13 @@ gate must hold:
    resolved ids equal when both present; otherwise counterparty NAME tokens
    must overlap, where a side with no counterparty fields falls back to its
    TITLE tokens (the Bug #103 recall pattern: the sweep wrote "…to
-   Michelle…" in the title with empty Stage-E fields). `counterparty_id` is
+   Skylar…" in the title with empty Stage-E fields). `counterparty_id` is
    expanded to name tokens via entities.json when available. Two sides that
    BOTH have zero counterparty signal (self-owed tasks) pass vacuously.
 4. **Title gate** — strong overlap between the titles with BOTH sides'
    person-name tokens stripped first, so the deliverable — not the person —
    carries the match. This is what keeps the near-miss unflagged: "send
-   Michele the positioning brief" vs "send Michele the invoice" share only
+   Skyler the positioning brief" vs "send Skyler the invoice" share only
    the person + verb. Score = max(unigram overlap coefficient, bigram
    Jaccard), same machinery as cru_match.
 5. **Tier rule** — with at least one POSITIVE person corroboration (owner
@@ -213,8 +213,8 @@ def _edit_distance_le_1(a: str, b: str) -> bool:
 
 def _name_tokens_match(a: set, b: set) -> bool:
     """Lenient overlap for PERSON-NAME tokens only: equal, one is a >=4-char
-    prefix of the other (Dan/Daniel), or within edit distance 1 for >=5-char
-    tokens (Michelle/Michele — F-53's exact raw-transcript drift). Exact
+    prefix of the other (Ron/Ronald), or within edit distance 1 for >=5-char
+    tokens (Skylar/Skyler — F-53's exact raw-transcript drift). Exact
     equality would miss the real cross-writer pairs, since one writer stores
     the resolved entity name and another the raw spelling. Lenient matching is
     safe here because a name match only OPENS candidacy — the title gate still
@@ -233,8 +233,8 @@ def _name_tokens_match(a: set, b: set) -> bool:
 
 def _expand_name_drop(name_toks: set, title_tokens: Iterable[str]) -> set:
     """Title tokens to strip as person-name noise: exact members of
-    `name_toks` plus any title token that lenient-matches one (so "michelle"
-    in a title is stripped when the counterparty is "Michele")."""
+    `name_toks` plus any title token that lenient-matches one (so "skylar"
+    in a title is stripped when the counterparty is "Skyler")."""
     out = set(name_toks)
     for t in title_tokens:
         if _name_tokens_match({t}, name_toks):

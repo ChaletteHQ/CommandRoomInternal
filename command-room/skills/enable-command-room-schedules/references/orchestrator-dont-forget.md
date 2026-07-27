@@ -575,7 +575,7 @@ NEVER expose schema field names, "proposed:" syntax, or "(N signal, low confiden
 | Situation | FORBIDDEN context_tag | REQUIRED context_tag |
 |---|---|---|
 | Person has email matching org domain but no org_id set | `Quinn (acme.example.com) — no org linked — email domain acme.example.com suggests Acme Co affiliation` | `Link Quinn to Acme Co? His email is tate@acme.example.com. Confirm to link, Edit to pick a different org, Skip to leave unaffiliated.` |
-| `last_interaction_date` updated, low confidence | `last_interaction proposed: Apr 14 → Apr 28 (1 signal, low confidence)` | `Update Andrea's last contact to Apr 28 (was Apr 14)? Confirm to apply.` |
+| `last_interaction_date` updated, low confidence | `last_interaction proposed: Apr 14 → Apr 28 (1 signal, low confidence)` | `Update Lyra's last contact to Apr 28 (was Apr 14)? Confirm to apply.` |
 | Role change proposal | `role_field proposed: VP Eng → CEO (1 source)` | `Update Sam's role to CEO at Summit Company? Confirm to apply.` |
 | Org affiliation change | `org_id proposed: org_005 → org_007` | `Move Bo from Summit Company to Northstar Partners? Confirm to apply.` |
 | Email address change | `primary_email proposed: foo@old.example.com → foo@new.example.com` | `Switch Bo's primary email to bo@northstar.example.com (was bo@example.com)? Confirm to apply.` |
@@ -594,7 +594,7 @@ NEVER expose schema field names, "proposed:" syntax, or "(N signal, low confiden
 {
     "n": 5,                                              # global numbering continues
     "icon": None,
-    "name": "Andrea Wetsel",
+    "name": "Lyra Sample",
     "subject": None,
     "context_tag": "I think you talked Apr 28 — was tracking Apr 14. Confirm or correct.",
     "metadata": [("Signal", "1 draft staged Apr 28 (team-plan account setup); no direct reply yet")],
@@ -711,7 +711,7 @@ Parse `N action` (with or without period). Sub-letter `a/b/c` for pending-review
 ## Person dormancy / pattern-break actions
 
 - `N investigate` → fire `tell me about [name]` chat skill. Cross-reference report.
-- `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — the standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Noah's email — missing in entities.json, fill before send]`. The user can fill the To field via the `add email then send` recovery affordance (Bug #44).
+- `N draft re-engagement` → run email-writer with re-engagement voice tilt. The drafted email surfaces in the apply-choices consolidated response widget per `apply-choices/SKILL.md` Step 4 — the standard email-card controls — Send / Draft / Snooze (3 days) one-tap buttons and the directly-editable body (FB-17; labels from the verb taxonomy; prose names only what the card shows, t3 FB-11) available inline (v2.12.4+). On `send`, follow §3c priority order. **Email-on-file check (v2.12.4+):** if the person has no email address recorded, the consolidated response surfaces the draft with the To field showing `(not on file — add before sending)` instead of internal jargon like `[Bowie's email — missing in entities.json, fill before send]`. The user can fill the To field via the `add email then send` recovery affordance (Bug #44).
 - `N schedule catchup [when]` (v2.12.4+ free-text input) → parse the user's typed natural-language window (`next Tuesday afternoon`, `this Friday at 4pm`, `sometime next week`). If parseable to a specific time, create a tentative calendar invite at that time + draft the request email; if just a window, draft the request asking for the user's stated availability. Draft surfaces in the consolidated response widget.
 - `N resolved` (v2.14.1+ — dropped `[reason]`; v2.14.38+ unified verb across all surfaces) → the "expected / just busy" outcome on a person-dormancy item. NO input affordance — clean one-click action. Display label: `Done` (UXR1 D6 — the verb_taxonomy label; "Resolved" is banned on new renders). Confirmation: `✓ Done — <name>'s alert suppressed for 14 days.` Writes:
   1. **The 14-day suppression (made explicit, Phase 6).** Write a `dont_forget_feedback` event `{data: {person_id, feedback: "just_busy"}}` — this is the event Phase 3 step 6 already reads to skip the person for 14 days, and the event insight-generator Pass 14 mines. (Historically the 14-day suppression was implied; Phase 6 names the writer so the read/write contract is one thing. Also stamp `data.fingerprint`/`surface`/`item_class` per apply-choices Step 3f so Loop 2 can key on it.)

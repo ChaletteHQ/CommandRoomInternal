@@ -197,7 +197,7 @@ def _normalize_name(s: str) -> str:
 
 def _slugify_name(s: str) -> str:
     """Convert a display name to a slug for org_id generation.
-    'Continental Floral Greens' → 'continental_floral_greens'.
+    'Summit Food Truck' → 'summit_food_truck'.
     """
     s = s.lower().strip()
     s = re.sub(r"[^a-z0-9]+", "_", s)
@@ -889,9 +889,9 @@ def _parse_org_hint(hint: str) -> tuple[str | None, str | None]:
     """Parse the capture-event `org_hint` field into (domain, canonical_name).
 
     Expected format from cr-upcoming-meetings / cr-past-meetings:
-      "cfgreens.com — Continental Floral Greens"
-      "uscontinental.com — U.S. Continental (org_010)"
-      "lhdottie.com — LH Dottie (no record)"
+      "summitfoodtruck.example.com — Summit Food Truck"
+      "northstar.example.com — Northstar Partners (org_042)"
+      "acmebakery.example.com — Acme Bakery (no record)"
 
     Returns (domain_or_None, name_or_None). Both can be None if hint is empty
     or malformed.

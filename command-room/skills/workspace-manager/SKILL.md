@@ -84,7 +84,7 @@ When Step 5 fires, the response shape is constrained (v3.13.1+ enforcement). The
 **Rules — all must hold:**
 
 - **Exactly ONE question.** Not 2, not 4. ONE.
-- **2-4 concrete options.** Use the `AskUserQuestion` tool, not a free-text prompt. Options must be specific actions ("Catch me up on Dynarii", "Show my open commitments", "Open the morning brief"), not open-ended buckets ("Tell me more", "Pick a topic").
+- **2-4 concrete options.** Use the `AskUserQuestion` tool, not a free-text prompt. Options must be specific actions ("Catch me up on Northstar", "Show my open commitments", "Open the morning brief"), not open-ended buckets ("Tell me more", "Pick a topic").
 - **Never open-ended.** Phrases like "What would you like me to do?" / "What's on your mind?" / "Where do you want to start?" / "Tell me more about [X]" are forbidden as the prompt body. They look polite but they shift the work back to the user.
 - **Default-and-tell beats asking.** If a reasonable default exists, take it and surface what you did in one sentence — *"Loaded Northstar Partners — last touched 3 days ago, the next action is sending Sam the packet. Work on that?"* — with one option to redirect. Don't ask when you can act.
 - **Substrate before questions.** If the input mentions any name that could match a person/org/project, run `entity_resolve.py` first (step 3 above). Never ask clarifying questions on a name-bearing turn before checking the resolver. Content questions like *"what's the current offer?"* must never substitute for context that's already on disk.
@@ -141,7 +141,7 @@ an insight-generator proposal the user confirms. Never confuse it with a per-ski
 
 ### Name resolution rules
 
-- **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Elon' → Elan Torbati" or "phonetic match (sound-alike) to canonical 'Dynarii'"). Never re-implement the match ladder inline; this skill calls the helper.
+- **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Arya' → Aria Sample" or "phonetic match (sound-alike) to canonical 'Northstar'"). Never re-implement the match ladder inline; this skill calls the helper.
 - Match names case-insensitive, word-boundary only (don't match "Bowie" inside "bobcat") — the helper handles this.
 - On collision within the same affiliation, prefer recency — the resolver ranks by the most recent OBSERVED event on each thread (the thread_activity derivation; HYG1 retired the deprecated `last_activity` stamp from this tiebreak — the record field is a zero-event floor only). Use `resolve_all` and take the top result.
 - On collision across affiliations, disambiguate with one question: "Which Acme — the customer deal or the advisory gig?" Use `resolve_all` to enumerate candidates.

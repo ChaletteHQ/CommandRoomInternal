@@ -128,7 +128,7 @@ This is the standard flow for any MCP-sourced data:
 
 4. Ingest skill calls owner skills (implicit handoff)
    - "Decided to ship Q2" → DECISION_LOG append
-   - "John mentioned a new vendor" → PEOPLE.md suggestion
+   - "Bo mentioned a new vendor" → PEOPLE.md suggestion
    - "Project X status changed" → MASTER_TRACKER surgical edit
 
 5. Each owner skill applies the Write Protocol
@@ -155,7 +155,7 @@ Every skill that modifies state follows this rhythm:
 6. LOG
 ```
 
-Skipping any step breaks the contract. The most common violation: skipping step 3 (canonicalize) and writing a raw "John" to DECISION_LOG. That breaks cross-skill lookups days later.
+Skipping any step breaks the contract. The most common violation: skipping step 3 (canonicalize) and writing a raw "Bo" to DECISION_LOG. That breaks cross-skill lookups days later.
 
 ---
 

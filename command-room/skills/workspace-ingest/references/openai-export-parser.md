@@ -137,7 +137,7 @@ The hardest extraction. Chat content mentions LOTS of names — most of them fic
 - Mentioned in **3+ distinct conversations** (filters out one-off article references).
 - Appears in **user messages** (not only assistant messages — the assistant invents names; the user names real people).
 - Token doesn't match common-noun pattern: not `["Today", "Tomorrow", "Monday", ...weekday names, "January", ...month names, "Q1", "Q2", ...]`.
-- Token doesn't appear in the OpenAI fictional-name blocklist (curated): `Aria, Bowie, Carol, Reed, Eve, Frank, Grace, Heidi, Ivan, Judy, Mallory, Niaj, Oscar, Peggy, Rupert, Sybil, Trent, Victor, Walter, ...` — common cryptography/example names ChatGPT gravitates to.
+- Token doesn't appear in the OpenAI fictional-name blocklist (curated): `Aria, Bowie, Carol, Reed, Eve, Frank, Grace, Heidi, Olga, Judy, Mallory, Niaj, Oscar, Peggy, Rupert, Sybil, Trent, Victor, Walter, ...` — common cryptography/example names ChatGPT gravitates to.
 - If connectors are available (Gmail, Calendar): cross-check — does this name appear as a contact, sender, recipient, or attendee anywhere in the connector data? If yes, confidence boost. If no, **default confidence 0.4** and flag for INGEST_REPORT review.
 
 **Step 3c — confidence assignment:**

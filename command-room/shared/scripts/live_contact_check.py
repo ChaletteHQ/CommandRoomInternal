@@ -13,7 +13,8 @@ Session 22 testing (2026-05-21 → 2026-05-22) surfaced TWO parallel bugs:
   "going quiet" flags.
 
 - Bug #28 — dormant-customer-scan had NO live-check before flagging.
-  Substrate-only scan flagged Pioneer/Jeff as dormant; meanwhile Jeff had a
+  Substrate-only scan flagged a dormant-looking client contact;
+  meanwhile that contact had a
   calendar meeting 3 weeks ago that wasn't written to events.jsonl. Real
   CEO-trust miss caught only by Cowork's diagnostic confirm-prompt.
 

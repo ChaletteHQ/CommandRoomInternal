@@ -448,7 +448,7 @@ def commitment_counts(
 
 def _name_tokens(name: Optional[str]) -> list[str]:
     """Lowercase word tokens of a display name / free text, possessives and
-    punctuation stripped ("Don's" -> "don")."""
+    punctuation stripped ("Bo's" -> "bo")."""
     if not name or not isinstance(name, str):
         return []
     out = []
@@ -463,8 +463,8 @@ def _name_tokens(name: Optional[str]) -> list[str]:
 
 def _one_edit_apart(a: str, b: str) -> bool:
     """True iff strings are equal or one insert/delete/substitute apart —
-    catches transcript-spelling drift like "Michelle" vs the resolved
-    "Michele" (the exact F-44 item) without fuzzy-matching short names."""
+    catches transcript-spelling drift like "Skylar" vs the resolved
+    "Skyler" (the exact F-44 item) without fuzzy-matching short names."""
     if a == b:
         return True
     la, lb = len(a), len(b)
@@ -490,7 +490,7 @@ def _one_edit_apart(a: str, b: str) -> bool:
 def _tokens_match(a: str, b: str) -> bool:
     """Name-token equality with single-edit tolerance for tokens long enough
     that a typo/ASR variant can't collide with a different real name (>= 5
-    chars both). Short names ("Don", "Evan") must match exactly."""
+    chars both). Short names ("Bo", "Rio") must match exactly."""
     if not a or not b:
         return False
     if a == b:
@@ -532,7 +532,7 @@ def match_commitments_to_meetings(
       - name_mention: an attendee's name appears in the commitment's
         title/summary/free-text name fields (full-name substring, or
         given-name token match with single-edit tolerance for >= 5-char
-        tokens — "Michelle" in a sweep summary matches attendee "Michele").
+        tokens — "Skylar" in a sweep summary matches attendee "Skyler").
 
     Deliberately applies NO due-date, kind, pending_review, or activity
     filter: a missing due date must not make a meeting-relevant item

@@ -83,7 +83,7 @@
       "id": "v3130_entity_resolve_shared_helper",
       "detector_module": "release_detectors.always",
       "detector_function": "always_applies",
-      "prompt_template": "Name resolution is sharper now. When you mention `Elon` or `Dynarii` anywhere, I match through exact alias, fuzzy similarity, and sound-alike — so a misspelled name or a brand never mentioned in transcripts still finds the right person or org instead of producing four open-ended clarifying questions.",
+      "prompt_template": "Name resolution is sharper now. When you mention `Arya` or `Northstar` anywhere, I match through exact alias, fuzzy similarity, and sound-alike — so a misspelled name or a brand never mentioned in transcripts still finds the right person or org instead of producing four open-ended clarifying questions.",
       "action": "announce_only"
     },
     {

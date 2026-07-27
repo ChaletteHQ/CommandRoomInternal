@@ -154,8 +154,8 @@ def doc_headline_link(label: str, url: str) -> str:
     Usage:
 
         from chat_output_renderer import doc_headline_link
-        link = doc_headline_link("1:1 Prep — Elan Torbati", artifact_url)
-        # link == '## → **[1:1 Prep — Elan Torbati](computer://...)**'
+        link = doc_headline_link("1:1 Prep — Aria Sample", artifact_url)
+        # link == '## → **[1:1 Prep — Aria Sample](computer://...)**'
 
     For multi-document lists (e.g. upcoming-meetings task surfacing several
     briefs at once), use H3 instead of H2 to avoid visual overload — call
@@ -742,7 +742,7 @@ def _validate_data_shape(data: dict) -> None:
 # v3.13.8+ — Gate 6: send-class items must carry a valid To: email address.
 # Closes Bug #44 (dead-chrome in degraded n=1 case). The pre-v3.13.8 renderer
 # would happily ship a widget with action buttons that could never succeed
-# because the To: was a placeholder like "Daniel (no email)".
+# because the To: was a placeholder like "Bo (no email)".
 import re as _re_mod_send  # ensure available at module-load time
 
 _EMAIL_REGEX = _re_mod_send.compile(

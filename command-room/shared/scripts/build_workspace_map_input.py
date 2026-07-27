@@ -255,7 +255,7 @@ def _aggregate_commitments(
             # commitment-event shapes are covered. Pre-v3.4.5 this used a
             # narrower local handler that missed the owner_person_id-variant
             # (data.state instead of data.status) — ~42% of M's commitments
-            # in his 2026-05-17 audit, plus 7 of Sam's "owed to him" items
+            # in his 2026-05-17 audit, plus 7 of an operator's "owed to him" items
             # from the 2026-04-30 working session.
             status = _commitment_field(ev, "status") or "open"
             # Pending-review commitments (shape #5) carry data.pending_review=True

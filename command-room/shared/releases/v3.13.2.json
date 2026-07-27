@@ -27,7 +27,7 @@
       "id": "v3132_entity_resolve_multitoken_soundex",
       "detector_module": "release_detectors.always",
       "detector_function": "always_applies",
-      "prompt_template": "When you misspell someone's first name (e.g., `Elon` for `Elan Sample`), I now correctly find them. Before, I only matched single-token names — multi-token canonical names would silently miss against single-word queries. Sound-alike matching now works token-by-token, so `Elon` matches the first part of `Elan Sample` and `Denari` matches `Dynarii Sample Co`.",
+      "prompt_template": "When you misspell someone's first name (e.g., `Arya` for `Aria Sample`), I now correctly find them. Before, I only matched single-token names — multi-token canonical names would silently miss against single-word queries. Sound-alike matching now works token-by-token, so `Arya` matches the first part of `Aria Sample` and `Northstarr` matches `Northstar Sample Co`.",
       "action": "announce_only"
     }
   ]

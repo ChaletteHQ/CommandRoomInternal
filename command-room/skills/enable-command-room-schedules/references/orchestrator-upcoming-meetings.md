@@ -99,7 +99,7 @@ This gate governs the SCHEDULED auto-prep only. A manual "prep me for my 2pm" al
 
 # Phase 4 — Per-meeting prep (v4.5.2 S1 — ONE GENERATOR)
 
-**⛔ ONE-GENERATOR CONTRACT (v4.5.2 S1, fixes FINDINGS F-60):** this phase runs the SAME prep pipeline as on-demand 'prep me' — full synthesis, five blocks, visual layer, `prep_pipeline.assemble_prep_sections` → `brief_writer.make_brief`. The pre-v4.5.2 thin template fill (the 209-word Michele brief vs the 1,683-word on-demand brief, same day, same folder) is DEAD. There is no "lighter scheduled variant" — depth comes ONLY from the call-prep Standard/Deep setting, never from which path fired. If a brief comes out as generic template fill, that is a defect, not a mode.
+**⛔ ONE-GENERATOR CONTRACT (v4.5.2 S1, fixes FINDINGS F-60):** this phase runs the SAME prep pipeline as on-demand 'prep me' — full synthesis, five blocks, visual layer, `prep_pipeline.assemble_prep_sections` → `brief_writer.make_brief`. The pre-v4.5.2 thin template fill (the 209-word scheduled brief vs the 1,683-word on-demand brief, same day, same folder) is DEAD. There is no "lighter scheduled variant" — depth comes ONLY from the call-prep Standard/Deep setting, never from which path fired. If a brief comes out as generic template fill, that is a defect, not a mode.
 
 For each kept meeting the Phase 3.5 gate did not exclude, in time order:
 
@@ -135,7 +135,7 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
    "
    ```
 
-   **The slug is a pure function of the MEETING ID** (`prep_pipeline.prep_slug` — readable title prefix + meeting-id hash suffix). NEVER improvise a slug from attendee names: F-29b's duplicate (`az-bus-joe-pashman-session` vs `joseph-pashman`, one meeting) came from exactly that. If `BRIEF_REFRESH=True`, an earlier brief for this meeting exists at BRIEF_PATH — the regeneration OVERWRITES it in place; a second file for the same meeting is a defect.
+   **The slug is a pure function of the MEETING ID** (`prep_pipeline.prep_slug` — readable title prefix + meeting-id hash suffix). NEVER improvise a slug from attendee names: F-29b's duplicate (`acme-bo-sample-session` vs `bo-sample`, one meeting) came from exactly that. If `BRIEF_REFRESH=True`, an earlier brief for this meeting exists at BRIEF_PATH — the regeneration OVERWRITES it in place; a second file for the same meeting is a defect.
 
    Then assemble the five blocks and render — `assemble_prep_sections` is the ONE section-order authority (both prep paths call it; there is no hand-ordered section list anymore):
 

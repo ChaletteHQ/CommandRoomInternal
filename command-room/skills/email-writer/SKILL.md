@@ -246,7 +246,7 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until the detector exit
 1. If the inbound thread's subject is non-empty (contains text after any `Re:`/`Fwd:` prefix), prepend `Re: ` to that subject and use it. Done.
 2. If the inbound subject is empty OR is exactly `Re:` / `Re: ` / `Fwd:` / `Fwd: ` (bare prefix, no original subject text):
    - Walk back through prior messages in the thread looking for any non-empty subject. If found, use `Re: <recovered subject>`.
-   - If all prior subjects are also empty, **synthesize one from the first non-greeting line of the inbound body** (5-8 words, sentence-cased, descriptive of the message's actual topic). Examples: `Re: Renderer pipeline diagnostic dump`, `Re: Q2 deck timing`, `Re: NetSuite mapping handoff`. Never synthesize from generic phrases ("Hey," "Hi Matthew,"); skip greetings.
+   - If all prior subjects are also empty, **synthesize one from the first non-greeting line of the inbound body** (5-8 words, sentence-cased, descriptive of the message's actual topic). Examples: `Re: Renderer pipeline diagnostic dump`, `Re: Q2 deck timing`, `Re: NetSuite mapping handoff`. Never synthesize from generic phrases ("Hey," "Hi Aria,"); skip greetings.
    - If body is too thin to synthesize from (one-liner, attachment-only, etc.), use `Re: Following up` as a last-resort fallback. Better than bare `Re:`.
 
 This rule applies to all reply paths — `N send`, `N draft`, on-demand reply drafts. Synthesizing a subject ALSO improves Gmail's threading reliability for any send path that doesn't set `In-Reply-To` (the §3a fallback case in EMAIL_DRAFT_PROTOCOL), because the synthesized subject gives Gmail's subject-normalization fallback something to anchor to.

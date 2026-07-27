@@ -238,10 +238,14 @@
         "display_name": {
           "type": "string"
         },
+        "canonical_name": {
+          "type": "string",
+          "description": "The thread's name as the CEO says it. Present on every live thread and allowed by thread_writer since it shipped; declared here 2026-07-25 (it was allowed-but-undeclared, the same drift class as the field additions below). Readers resolve canonical_name first and fall back to display_name."
+        },
         "status": {
           "type": "string",
-          "enum": ["active", "dormant", "paused", "blocked", "archived"],
-          "description": "Project lifecycle state. v2.10.3+ adds 'dormant' between active and archived: real activity but quiet for 30+ days. Don't Forget proposes the active→dormant transition at 30d and auto-flips at 60d if no user action. Dormant projects are accessible by name (go [project]) but invisible in daily flows. Re-opening a dormant project (go [project] + adding a session note) auto-revives to active."
+          "enum": ["active", "dormant", "paused", "blocked", "archived", "exploring", "scoping", "resolved"],
+          "description": "Project lifecycle state. v2.10.3+ adds 'dormant' between active and archived: real activity but quiet for 30+ days. Don't Forget proposes the active→dormant transition at 30d and auto-flips at 60d if no user action. Dormant projects are accessible by name (go [project]) but invisible in daily flows. Re-opening a dormant project (go [project] + adding a session note) auto-revives to active. 2026-07-25: 'exploring' / 'scoping' / 'resolved' declared here to match thread_writer.VALID_STATUSES, which has accepted them since it shipped — the enum, not the writer, was the stale side."
         },
         "stage": {
           "type": "integer",
@@ -279,8 +283,8 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["initiative", "deal", "objective", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"],
-          "description": "The semantic kind of this thread."
+          "enum": ["initiative", "deal", "objective", "coaching", "cohort", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"],
+          "description": "The semantic kind of this thread. SPEC COACH1 §4.1 adds 'coaching' (one coaching engagement with one client — the arc a coach reads) and 'cohort' (a group/peer-group engagement with a roster; carries the `cohort` sub-object below). Widening only — no existing kind changed meaning, and no reader keys off the enum's length."
         },
         "project_class": {
           "type": "string",
@@ -326,6 +330,27 @@
         "archive_reason": {
           "type": ["string", "null"]
         },
+        "paused_at": {
+          "type": ["string", "null"],
+          "format": "date",
+          "description": "When this thread was paused — the pair-mate of archived_at for status='paused'. User-authored; no code reader today."
+        },
+        "paused_by": {
+          "type": ["string", "null"],
+          "description": "Who paused this thread — the pair-mate of archive_reason for status='paused'. User-authored; no code reader today."
+        },
+        "key_contact_id": {
+          "type": ["string", "null"],
+          "description": "Person id of the main contact for this thread. Read by build_workspace_map_input (which also tolerates the legacy spelling primary_contact_id) and by transcript-search's project scoping."
+        },
+        "notes": {
+          "type": ["string", "null"],
+          "description": "Free-text context on the thread. Read by build_workspace_map_input (the map's project line) and build_dcc_input (first sentence as the next_action fallback)."
+        },
+        "roster_overrides": {
+          "type": ["object", "null"],
+          "description": "Pin/suppress overrides applied on top of the derived thread roster (thread_roster.derive_roster). Allowed by thread_writer since the brain-substrate fix; declared here 2026-07-25."
+        },
         "deal": {
           "type": "object",
           "description": "SPEC PIPE1 (v4.8): sales-deal fields, allowed ONLY on kind='deal' threads (thread_writer rejects it elsewhere). Namespaced so deal.stage (sales stage, string enum) never collides with the integer project-lifecycle `stage`. Written ONLY by shared/scripts/deal_state.py — the single writer/closure path; hand edits are the bug class the typed writers exist to kill. Consistency rules enforced in code: outcome='lost' requires a loss_reason; outcome is terminal and set only by deal_state.close_deal (won → thread status 'resolved', lost → 'archived'). `value` is user-stated or user-confirmed money — NEVER estimated (quantify.py discipline); absent value renders no money tag. Recency/rot derive from events via thread_activity — nothing here stores activity.",
@@ -360,7 +385,7 @@
             },
             "source": {
               "type": ["string", "null"],
-              "description": "Free text — where the deal came from (e.g. 'referral — Jono'). Also holds value-range notes."
+              "description": "Free text — where the deal came from (e.g. 'referral — Bowie'). Also holds value-range notes."
             },
             "outcome": {
               "type": ["string", "null"],
@@ -473,6 +498,141 @@
             "closed_at": {
               "type": ["string", "null"],
               "format": "date"
+            }
+          }
+        },
+        "is_primary_focus": {
+          "deprecated": true,
+          "description": "LEGACY-TOLERATED, never written (thread_writer.LEGACY_THREAD_FIELDS). This is an ORG field — every reader takes it off an org record. Pre-writer ingest copied it onto 21 live threads, inconsistently (three sibling threads of one org carry different values). Tolerated so those records round-trip; a thread bubbles up via its org, never a thread-side copy."
+        },
+        "last_writer": {
+          "deprecated": true,
+          "description": "LEGACY-TOLERATED, never written (thread_writer.LEGACY_THREAD_FIELDS). This is the entities.json ENVELOPE field set by _save_entities; it leaked onto one thread record from a prose write. Not a thread field."
+        },
+        "created_at": {
+          "deprecated": true,
+          "description": "LEGACY-TOLERATED, never written (thread_writer.LEGACY_THREAD_FIELDS). Creation provenance belongs in the thread_created event — but THREE of the four live threads carrying this (project_020, project_021, project_026) have NO such event, so it is their only record of when they were created. Preserved for that reason; new threads get the event instead. Was FORBIDDEN (silently dropped) until 2026-07-25, which destroyed it on any unrelated update. (project_019 is the fourth and DOES have a thread_created event; the first survey missed it because pre-writer rows carry the thread id at top-level primary_thread_id, not under data.primary_thread_id — survey both shapes.)"
+        },
+        "created_by": {
+          "deprecated": true,
+          "description": "LEGACY-TOLERATED, never written (thread_writer.LEGACY_THREAD_FIELDS). Same story as created_at — the only creation provenance those three records have."
+        },
+        "aliases": {
+          "deprecated": true,
+          "description": "LEGACY-TOLERATED, never written (thread_writer.LEGACY_THREAD_FIELDS). Threads have no alias resolver: entity_resolve builds its corpus from person.aliases and org.aliases and matches threads on canonical_name only. Present on the workspace_mini test fixture; absent from every live thread. Declare a resolver before making this canonical."
+        },
+        "cohort": {
+          "type": "object",
+          "description": "SPEC COACH1 §4.2: group/peer-group engagement fields, allowed ONLY on kind='cohort' threads (thread_writer rejects it elsewhere). Follows the deal/objective sub-object shape exactly. A group is a book of business with a ROSTER — `stakeholder_person_ids` is insufficient because each seat carries its own state (when they joined, whether they're paused, who pays for them). Read ONLY through shared/scripts/coach_state.py; the pack's writers are the only writers. NOTHING derived is stored here: session counts, arc items, billable tallies and renewal windows are all computed from events, never stamped (the `last_activity` lesson).",
+          "additionalProperties": false,
+          "properties": {
+            "cadence": {
+              "type": ["string", "null"],
+              "enum": ["monthly", "biweekly", "quarterly", "other", null],
+              "description": "How often this cohort meets. Drives the scheduled prep/capture passes. 'other' when the real cadence doesn't fit — the interval then lives in the coach's own directives, not here."
+            },
+            "seat_count": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "CONTRACTED seats — what the coach sold, which legitimately differs from how many are currently filled (a departed member frees a seat that is still paid for, or still being sold). It is NOT a cached len(members): occupancy derives from `members` via coach_state.cohort_roster, which returns seats_contracted AND seats_filled side by side and never reconciles one into the other. Null = the coach never stated a contracted number."
+            },
+            "members": {
+              "type": "array",
+              "description": "The roster. One entry per seat, past and present — a departed member stays on the roster with status='departed' so history, billing periods, and the member's own arc remain readable. Never pruned.",
+              "items": {
+                "type": "object",
+                "required": ["person_id"],
+                "additionalProperties": false,
+                "properties": {
+                  "person_id": {
+                    "type": "string",
+                    "description": "Canonical person id. Must reference an existing person; the pack resolves through entity_resolve before writing (never a bare name)."
+                  },
+                  "joined_at": {
+                    "type": ["string", "null"],
+                    "format": "date"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "departed"],
+                    "default": "active",
+                    "description": "Seat state. 'paused' still holds the seat (and usually still bills); 'departed' does not."
+                  },
+                  "departed_at": {
+                    "type": ["string", "null"],
+                    "format": "date",
+                    "description": "Required in code when status='departed' — a departure with no date can't be billed to a period boundary."
+                  },
+                  "also_1to1": {
+                    "type": ["boolean", "null"],
+                    "default": false,
+                    "description": "HINT ONLY: this member is also a 1:1 coaching client. The truth is whether a kind='coaching' thread names this person, and coach_state.member_is_also_1to1 derives it that way — this flag is the fallback when no coaching thread has been created yet. Never treated as authoritative (a stored duplicate of a derivable fact is the drift class the typed readers exist to prevent)."
+                  },
+                  "billing_target": {
+                    "type": ["object", "null"],
+                    "description": "SPEC COACH1 §8.1: who pays for THIS seat. Null means the cohort's own payer (`cohort.billing.payer`) — the common case. Set when one company's person sits in a cohort but is invoiced to their own company rather than the cohort's payer.",
+                    "additionalProperties": false,
+                    "required": ["kind", "id"],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": ["person", "org"]
+                      },
+                      "id": {
+                        "type": "string",
+                        "description": "person_id or org_id matching `kind`."
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "materials_thread_id": {
+              "type": ["string", "null"],
+              "description": "Optional link to the thread holding this cohort's placemat / materials history."
+            },
+            "term_end": {
+              "type": ["string", "null"],
+              "format": "date",
+              "description": "SPEC COACH1 §4.3, cohort side: the contracted end of this cohort's term. A cohort has a term of its own, distinct from any single seat's. Null = no stated term, and renewal watching is OFF for this cohort (stated plainly at enable-coach rather than inferred from silence)."
+            },
+            "renewal_date": {
+              "type": ["string", "null"],
+              "format": "date",
+              "description": "When the renewal conversation is due. Usually before `term_end`; null falls back to term_end minus the workspace's coach.renewal_lead_days."
+            },
+            "billing": {
+              "type": ["object", "null"],
+              "description": "SPEC COACH1 §8.1: the cohort's own payer and rate — the default every seat with a null `billing_target` rolls up to. Written by the pack's billing skill in Phase 4; defined here in Phase 1 so `billing_target: null` has a documented referent from the start. Money is user-stated or user-confirmed only, never estimated (quantify.py discipline).",
+              "additionalProperties": false,
+              "properties": {
+                "payer": {
+                  "type": ["object", "null"],
+                  "additionalProperties": false,
+                  "required": ["kind", "id"],
+                  "properties": {
+                    "kind": { "type": "string", "enum": ["person", "org"] },
+                    "id": { "type": "string" }
+                  }
+                },
+                "unit": {
+                  "type": ["string", "null"],
+                  "enum": ["session", "hour", "retainer", null]
+                },
+                "rate": {
+                  "type": ["number", "null"],
+                  "description": "Rate per `unit` in `currency`. Null = unknown; an absent rate renders no money figure rather than a guess."
+                },
+                "currency": {
+                  "type": "string",
+                  "default": "USD"
+                },
+                "consolidate_by_payer": {
+                  "type": ["boolean", "null"],
+                  "default": true,
+                  "description": "True = one invoice per payer per period, itemized per person and per cohort seat (§8.1 roll-up rule)."
+                }
+              }
             }
           }
         }
@@ -655,7 +815,18 @@
         },
         "ended_at": {
           "type": ["string", "null"],
-          "format": "date"
+          "format": "date",
+          "description": "When the engagement ACTUALLY ended (backward-looking). Distinct from `term_end`, which is the contracted end date and may sit in the future on a live engagement."
+        },
+        "term_end": {
+          "type": ["string", "null"],
+          "format": "date",
+          "description": "SPEC COACH1 §4.3: the contracted end of the current term — forward-looking, and set while the engagement is still live. Renewal watching reads this instead of leaning on the dormancy heuristic: a coaching term has a real end date, so `dormant-customer-scan`'s pattern gets reused against a real date rather than inferred silence. Null = no stated term, and renewal watching is OFF for this engagement (said plainly at setup, never guessed). Additive and optional — every existing engagement record stays valid unchanged."
+        },
+        "renewal_date": {
+          "type": ["string", "null"],
+          "format": "date",
+          "description": "SPEC COACH1 §4.3: when the renewal conversation is due. Usually earlier than `term_end`; null falls back to term_end minus the workspace's coach.renewal_lead_days."
         },
         "is_active": {
           "type": "boolean",
@@ -726,6 +897,90 @@
         "balance_default_cadence_days": {
           "type": "number",
           "description": "SPEC BAL1 D2. Default personal re-surface cadence (days) for a tie with no cadence_days of its own (default 14). Read only by shared/scripts/balance.py."
+        },
+        "coach": {
+          "type": "object",
+          "description": "SPEC COACH1 §4.4: the coach pack's workspace block. ABSENT on every non-coach workspace, and absence is the off switch — `coach_state.get_coach_config` returns {} and every coach surface stays silent. Written at enable-coach (Phase 2) through shared/scripts/workspace_settings.py so the `workspace_setting_changed` receipt can never separate from the write. Values here are the workspace-wide DEFAULTS; a per-engagement value on the thread always wins, and a per-skill knob in _hq/data/skill_config/<skill>.json wins over both.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Master switch. False (or the whole block absent) = the pack's scheduled passes and surfaces do nothing. Set true only when enable-coach has completed."
+            },
+            "practice_name": {
+              "type": ["string", "null"],
+              "description": "The coaching practice's own name, as the coach says it. Used in member-facing artifacts (§9) — never a Chalette or Command Room string."
+            },
+            "default_session_minutes": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "description": "Default scheduled session length. Per-engagement value wins. Feeds the billable-unit derivation when the calendar event carries no duration."
+            },
+            "default_cadence_days": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "description": "Default days between sessions (e.g. 30 for monthly). Drives the prep/capture pass anchors and the 'a session was missed' read. Per-engagement cadence wins."
+            },
+            "renewal_lead_days": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "default": 60,
+              "description": "How far before `term_end` a renewal window opens when no explicit `renewal_date` is set. The one derived-date default, kept here so the number is stated once."
+            },
+            "report_output_shape": {
+              "type": ["string", "null"],
+              "enum": ["file_per_session", "single_running_document", null],
+              "default": "file_per_session",
+              "description": "§5.2. `file_per_session` (default) writes one record per session. `single_running_document` appends newest-first to one file — SHIPS, but only via the atomic-write path with a per-session copy kept alongside so the running doc is always reconstructible. A plain read-modify-write append on Drive-synced storage loses history when a stale second machine writes (§5.3 — a known clobber pattern in this system, not a hypothetical)."
+            },
+            "personal_thread_split": {
+              "type": ["boolean", "null"],
+              "default": false,
+              "description": "§5.1 / §12. True = follow-up and action items render work and personal separately. The SPLIT is a knob; the personal/business FIREWALL is not — it holds either way."
+            },
+            "attribution_footer": {
+              "type": ["boolean", "null"],
+              "default": true,
+              "description": "§9.3 (OPEN — M's ruling pending): one restrained attribution line in the footer of member-facing artifacts. Default on; flipping the default is this one value and nothing else."
+            },
+            "billing": {
+              "type": ["object", "null"],
+              "description": "§8.1 workspace-wide billing defaults. Per-engagement and per-seat values win. Rate is user-stated only — never estimated.",
+              "additionalProperties": false,
+              "properties": {
+                "unit": {
+                  "type": ["string", "null"],
+                  "enum": ["session", "hour", "retainer", null]
+                },
+                "rate": { "type": ["number", "null"] },
+                "currency": { "type": "string", "default": "USD" },
+                "invoice_posture": {
+                  "type": ["string", "null"],
+                  "enum": ["draft_then_send", null],
+                  "default": "draft_then_send",
+                  "description": "M ruling 7, and the ONLY legal value in v1: the draft assembles automatically, the coach confirms EACH invoice, one confirm sends one invoice. There is deliberately no batch or scheduled auto-send value to select — the enum is single-valued so a future 'auto' can only be added by a deliberate schema change."
+                },
+                "consolidate_by_payer": {
+                  "type": ["boolean", "null"],
+                  "default": true
+                },
+                "qbo_connected": {
+                  "type": ["boolean", "null"],
+                  "default": false,
+                  "description": "§8.4. False = the tally, the unbilled-contact confirmation pass, and an exportable invoice-ready summary all still work; only the send step is unavailable. Billing must never present a dead surface to a coach who never connects QuickBooks."
+                }
+              }
+            },
+            "hero_template_ref": {
+              "type": ["string", "null"],
+              "description": "§7.3. Workspace-relative path to the coach's own session-record template (conventionally _hq/coach/templates/session_record.md). Null = the shipped hero template. Once supplied it is NEVER ours — same posture as advisor_profile: read, never rewritten."
+            },
+            "placemat_template_ref": {
+              "type": ["string", "null"],
+              "description": "§7.3. Workspace-relative path to the coach's own group-placemat template. Null = the shipped default."
+            }
+          }
         }
       }
     }

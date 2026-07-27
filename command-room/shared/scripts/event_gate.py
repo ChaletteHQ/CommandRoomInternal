@@ -195,7 +195,7 @@ def gate_events(
             else:
                 # v4.5.2 R1c — explicit ids must ROUND-TRIP through
                 # normalize_commitment_id (custom-string ids like
-                # commit_navid_… are legitimate; the failure modes aren't):
+                # commit_lyra_… are legitimate; the failure modes aren't):
                 #   - non-string ids never match the read-side exact-id index;
                 #   - leading/trailing whitespace breaks the strip()-then-look-
                 #     up on close (trimmed here, not rejected);

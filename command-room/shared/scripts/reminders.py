@@ -32,7 +32,7 @@ business reference (`ref` / `primary_thread_id`) — a tracked-PERSON
 reference alone stays personal (PGUARD1 D3).
 
 A reminder MAY carry `ref` (a commitment/event id) for context — "remind me
-about the Pedro chase Friday". The ref is a POINTER, never a coupling:
+about the Rio chase Friday". The ref is a POINTER, never a coupling:
 clearing the reminder does not close the commitment, closing the commitment
 does not clear the reminder.
 

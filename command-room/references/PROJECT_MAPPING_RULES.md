@@ -61,7 +61,7 @@ Event title contains a `person.canonical_name` or any `person.nicknames[]` entry
 
 Examples:
 - Event title `"Catch up with Bo"` → token `Bo` matches person.nicknames → person_003 → org_003 → primary thread
-- Event title `"Catch up with Cal"` (where multiple Steves exist in entities.json) → ambiguous → Rule D doesn't fire (falls through)
+- Event title `"Catch up with Cal"` (where multiple people share that nickname in entities.json) → ambiguous → Rule D doesn't fire (falls through)
 
 ## Ambiguity handling
 

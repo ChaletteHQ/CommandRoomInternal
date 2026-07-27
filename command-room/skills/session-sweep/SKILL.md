@@ -98,7 +98,7 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d
                "owner_id": "<primary user id>", "counterparty_name": "Mira"}},
      # genuinely no date in the source -> say so explicitly:
      {"session_id": "<id>", "type": "commitment",
-      "summary": "Move Evan to the new version as the first user",
+      "summary": "Move Rio to the new version as the first user",
       "data": {"kind": "task", "no_due": True, "owner_id": "<primary user id>"}},
      {"session_id": "<id>", "type": "decision",   "summary": "<what was decided>"},
      {"session_id": "<id>", "type": "interaction","summary": "<who / what>",

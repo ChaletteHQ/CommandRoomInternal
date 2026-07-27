@@ -200,7 +200,7 @@ When the import gate passes:
 2. **Branch on result — three outcomes (v3.13.7+):**
    - **Existing record (single safe match) → update.** `find_existing_person` returned a dict. Call `update_person(workspace_root, existing["id"], ...)` with whatever new fields the action carried (e.g., `last_interaction`, role correction, notes append). Surface in the consolidated ack: *"#N: Dustin Sample is already in your network — updated."*
    - **No match → create.** `find_existing_person` returned `None`. Call `create_person(workspace_root, canonical_name=..., primary_org_id=..., source_skill=<source_orchestrator>)`. Surface: *"#N: added Rio Sample under Summit Company."*
-   - **`MultipleCandidatesError` raised → disambiguation widget.** `find_existing_person` raised because the name was too ambiguous to safely commit (e.g., single-token "Daniel" hit an alias on an existing record but might be a different Daniel). Do NOT auto-pick. Render a disambiguation widget. See "Disambiguation widget shape" below. v3.13.7+ Bug #19 fix.
+   - **`MultipleCandidatesError` raised → disambiguation widget.** `find_existing_person` raised because the name was too ambiguous to safely commit (e.g., single-token "Lyra" hit an alias on an existing record but might be a different Lyra). Do NOT auto-pick. Render a disambiguation widget. See "Disambiguation widget shape" below. v3.13.7+ Bug #19 fix.
 3. **Catch `DuplicatePersonError` defensively.** If the dedup helper missed a match (rare — usually means the caller didn't pass the matching alias / email), the writer's internal dedup catches it. Treat it as the "existing record" branch and surface the resulting id to the user.
 
 **Disambiguation widget shape (v3.13.7+).** When `MultipleCandidatesError` fires, render a single-item widget per candidate plus a "different person — create new" affordance:
@@ -717,7 +717,7 @@ Three lines max for the overall ack. NO internal jargon. NO IDs. NO file paths. 
 
 Examples (good):
 - *"Done — 4 of 5 applied. Rio added under Summit Company. Aspen logged for next Pulse. Item 4 needed a clearer date so it's still open."*
-- *"Marked Adan items received (5 of 5). Nothing else outstanding from the Apr 8 call."*
+- *"Marked Aria items received (5 of 5). Nothing else outstanding from the Apr 8 call."*
 - *"Pushed your 8:45 with Sam to next Saturday. Item 3 (Dustin Sample) skipped for 24 hours."*
 
 Examples (forbidden):
@@ -733,7 +733,7 @@ Plain-English ack line at top summarizing terminal outcomes. Widget below with t
 
 > *"Pushed #4 to Saturday. #6 marked received. Drafts ready below for #1, #3."*
 >
-> [WIDGET: 2 items — Sam reschedule draft + Adan chase draft]
+> [WIDGET: 2 items — Sam reschedule draft + Aria chase draft]
 
 Same forbidden-pattern rules apply (no leaks, no version refs, no event-type names — see the forbidden examples in Step 4B).
 

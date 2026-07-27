@@ -747,7 +747,7 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 
 - ❌ "Window: 2026-05-13 to 2026-05-20 · Events analyzed: 247" — surface this as "Looking back at this week" in prose, not as metadata
 - ❌ "Confidence: 0.87 · Signals: 3" — drop the score; if signal strength matters, frame in prose ("strong signal" / "worth a look but I'm not sure")
-- ❌ "person_072 surfaced in 4 events with project_020" — use names ("Elan came up in 4 conversations about Dynarii")
+- ❌ "person_072 surfaced in 4 events with project_020" — use names ("Aria came up in 4 conversations about Northstar")
 - ❌ Section headers like "STABLE / ROUTINE" — use sentence case ("What's on track")
 - ❌ "Classification Review — N items" as a doc section header — split off into a separate interactive widget
 - ❌ Any reference to `.json` / `.jsonl` / `_hq/` paths in the user-facing prose

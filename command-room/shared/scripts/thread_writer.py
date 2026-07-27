@@ -15,11 +15,43 @@ Schema-reality notes baked in (verified against the live substrate):
   - real threads carry `canonical_name` (schema's project def names only
     `display_name`) — both are allowed;
   - real statuses include `scoping` / `resolved` / `exploring` beyond the
-    schema enum — VALID_STATUSES is the observed superset (schema enum should
-    be widened to match);
+    schema enum — VALID_STATUSES is the observed superset (the schema enum was
+    widened to match in the same change that added this note);
   - `stage` is an integer per schema but legacy ingest parsers wrote it as a
     string — non-int stage is coerced to None;
   - `roster_overrides` (brain-substrate fix) is allowed.
+
+Two field buckets, not one (2026-07-25 — the P0/P1 second-eyes review found
+21 of 32 live threads REJECTED by _validate_thread, so `update_thread` raised
+on two thirds of the real workspace; the shared workspace_mini fixture failed
+4 of 4 for the same reason):
+
+  ALLOWED_THREAD_FIELDS — canonical and writable. A field earns a place here
+  by having a live reader (`notes` and `key_contact_id` are read by
+  build_workspace_map_input / build_dcc_input) or by being the pair-mate of an
+  allowed lifecycle field (`paused_at`/`paused_by` mirror
+  `archived_at`/`archive_reason`; `paused` is a valid status).
+
+  LEGACY_THREAD_FIELDS — present on pre-writer records, TOLERATED so a record
+  round-trips without loss, never newly written (update_thread rejects them as
+  explicit kwargs). These have no thread-side reader and do not belong on a
+  thread, but deleting them on an unrelated update is data loss, not cleanup.
+  That is not hypothetical: `created_at`/`created_by` used to sit in
+  FORBIDDEN_THREAD_FIELDS, whose hint says "track via thread_created event" —
+  but THREE of the four live threads carrying them (`project_020`, `_021`,
+  `_026`) have NO thread_created event, so _coerce's silent drop destroyed
+  their only creation provenance.
+
+  `project_019` is the fourth, and it DOES have one — which the first survey
+  missed. Reusable reason: pre-writer thread_created rows carry the thread id
+  at TOP LEVEL (`primary_thread_id`, with `data.thread_id` alongside), not
+  under `data.primary_thread_id` the way _log_event writes it today. Survey
+  BOTH shapes; 1 of the 10 live thread_created rows uses the top-level form,
+  so a `data.primary_thread_id`-only scan reports zero coverage for it.
+
+The one rule both buckets serve: an unknown key still REJECTS loudly.
+_coerce deliberately does not drop unknown keys — a loud, fixable failure
+beats silently deleting a field two projectors read.
 
 stdlib only.
 """
@@ -43,9 +75,42 @@ ALLOWED_THREAD_FIELDS = {
     "cross_refs", "kind", "project_class", "owner_person_id",
     "stakeholder_person_ids", "last_activity", "next_step", "success_criteria",
     "first_seen", "session_count", "dormancy_reviewed_at", "archived_at",
-    "archive_reason", "roster_overrides", "deal", "objective",
+    "archive_reason", "roster_overrides", "deal", "objective", "cohort",
+    # Live-read on threads (build_workspace_map_input._key_contact / the
+    # project notes line; build_dcc_input's next_action fallback). These were
+    # on 21 of 32 live threads while being rejected — the write path was dead
+    # for two thirds of the workspace.
+    "key_contact_id", "notes",
+    # Pause provenance — the pair-mate of archived_at/archive_reason for the
+    # `paused` status. User-authored ("who paused this, when"); no reader yet.
+    "paused_at", "paused_by",
 }
 REQUIRED_THREAD_FIELDS = {"id", "status"}
+
+# Tolerated on records that already carry them, NEVER newly written (see the
+# module docstring). Value = why it is not canonical, surfaced when a caller
+# tries to write one. Do not add to this map to make a new field "work" — add
+# a canonical field to ALLOWED_THREAD_FIELDS (and the schema) instead.
+LEGACY_THREAD_FIELDS = {
+    "is_primary_focus": (
+        "(an ORG field — every reader takes it off an org record, never a "
+        "thread; the live values are inconsistent across sibling threads of "
+        "one org. Bubble a thread via its org, not a thread-side copy)"),
+    "last_writer": (
+        "(that's the entities.json ENVELOPE field set by _save_entities — it "
+        "leaked onto one thread record from a prose write; not a thread field)"),
+    "created_at": (
+        "(creation provenance belongs in the thread_created event — but three "
+        "of the four live records carrying this have no such event, so it is "
+        "preserved rather than dropped. New threads get the event instead)"),
+    "created_by": (
+        "(same as created_at — preserved as the only provenance those three "
+        "records have; new threads get a thread_created event instead)"),
+    "aliases": (
+        "(threads have no alias resolver — entity_resolve reads person.aliases "
+        "and org.aliases only, and matches threads on canonical_name. Present "
+        "on the workspace_mini fixture; absent from every live thread)"),
+}
 
 # --- Deal object (SPEC PIPE1) — allowed ONLY on kind="deal" threads. --------
 # Single source for the enums; deal_state.py (the only writer of deal.* fields)
@@ -79,19 +144,46 @@ ALLOWED_OBJECTIVE_BINDING_FIELDS = {
     "entity_ids", "target_note",
 }
 
+# --- Cohort object (SPEC COACH1 §4.2) — allowed ONLY on kind="cohort"
+# threads. Single source for the enums; the coach pack's writers import these.
+# entities.schema.json $defs.project.cohort mirrors them. NOTHING derived lives
+# here: session counts, arc items, billable tallies and renewal windows are
+# computed by shared/scripts/coach_state.py from events, never stamped.
+COHORT_CADENCES = ("monthly", "biweekly", "quarterly", "other")
+COHORT_MEMBER_STATUSES = ("active", "paused", "departed")
+BILLING_TARGET_KINDS = ("person", "org")
+BILLING_UNITS = ("session", "hour", "retainer")
+# M ruling 7: draft-then-send is the only legal posture in v1. Single-valued on
+# purpose — a batch/auto-send option can only appear via a deliberate change.
+INVOICE_POSTURES = ("draft_then_send",)
+ALLOWED_COHORT_FIELDS = {
+    "cadence", "seat_count", "members", "materials_thread_id",
+    "term_end", "renewal_date", "billing",
+}
+ALLOWED_COHORT_MEMBER_FIELDS = {
+    "person_id", "joined_at", "status", "departed_at", "also_1to1",
+    "billing_target",
+}
+ALLOWED_COHORT_BILLING_FIELDS = {
+    "payer", "unit", "rate", "currency", "consolidate_by_payer",
+}
+
 # Observed superset (schema enum is missing exploring/scoping/resolved).
 VALID_STATUSES = {
     "active", "dormant", "paused", "blocked", "archived",
     "exploring", "scoping", "resolved",
 }
 
-# Legacy → canonical guidance surfaced in validation errors.
+# Legacy → canonical guidance surfaced in validation errors. These are dropped
+# by _coerce: each one is a MISNAMING of a field that lives elsewhere, so the
+# value carries no information the canonical field doesn't already hold.
+# (`created_at`/`created_by` were here until 2026-07-25 and are now
+# LEGACY_THREAD_FIELDS — they are real provenance with no event behind them,
+# so dropping them destroyed data. Misnamings get dropped; orphan facts don't.)
 FORBIDDEN_THREAD_FIELDS = {
     "name": "(use 'canonical_name')",
     "primary_project_id": "(that's an EVENT field — use 'parent_thread_id' on a thread)",
     "members": "(do NOT store membership — derive it via thread_roster.derive_roster)",
-    "created_at": "(remove — track via thread_created event in events.jsonl)",
-    "created_by": "(remove — track via thread_created event in events.jsonl)",
 }
 
 
@@ -151,7 +243,7 @@ def _norm(s: str) -> str:
 
 
 def _validate_thread(record: dict) -> None:
-    extras = set(record) - ALLOWED_THREAD_FIELDS
+    extras = set(record) - ALLOWED_THREAD_FIELDS - set(LEGACY_THREAD_FIELDS)
     if extras:
         msgs = []
         for k in sorted(extras):
@@ -176,6 +268,8 @@ def _validate_thread(record: dict) -> None:
         _validate_deal(record)
     if "objective" in record:
         _validate_objective(record)
+    if "cohort" in record:
+        _validate_cohort(record)
 
 
 def _validate_deal(record: dict) -> None:
@@ -334,13 +428,196 @@ def _validate_objective(record: dict) -> None:
                     f"string, done?: bool}} — got: {m!r}")
 
 
+def _validate_billing_target(target, where: str) -> None:
+    """SPEC COACH1 §8.1 — a payer is a person OR an org, and an id-less payer
+    routes an invoice nowhere. Null is legal and MEANINGFUL at the seat level
+    ('bill this seat to the cohort's own payer'), so callers pass null through
+    rather than omitting the key."""
+    if target is None:
+        return
+    if not isinstance(target, dict):
+        raise ValueError(
+            f"{where} must be an object or null, got: {type(target).__name__}")
+    extras = set(target) - {"kind", "id"}
+    if extras:
+        raise ValueError(
+            f"{where} has fields not in the schema: {sorted(extras)}. "
+            "Allowed: ['id', 'kind'].")
+    kind = target.get("kind")
+    if kind not in BILLING_TARGET_KINDS:
+        raise ValueError(
+            f"{where}.kind must be one of {list(BILLING_TARGET_KINDS)}, "
+            f"got: {kind!r}")
+    tid = target.get("id")
+    if not isinstance(tid, str) or not tid.strip():
+        raise ValueError(
+            f"{where}.id must be a non-empty {kind}_id — an id-less payer "
+            "bills nobody. Resolve the payer before writing.")
+
+
+def _validate_cohort(record: dict) -> None:
+    """SPEC COACH1 §4.2 — the cohort object is allowed ONLY on kind='cohort'
+    threads, with an enum-validated roster. Guidance style mirrors
+    _validate_deal / _validate_objective: name the fix, not just the failure.
+    Write cohort.* ONLY through the coach pack's typed writer; this validation
+    is the schema floor beneath it.
+
+    The roster rules exist because of a real live defect (§4.2): two cohorts
+    with overlapping member sets got crossed in prep. Duplicate person_ids
+    inside one roster, and a departure with no date, are the two shapes that
+    make a roster un-resolvable — both reject here.
+
+    Derived numbers are deliberately NOT fields: session counts, arc items,
+    billable tallies and renewal windows all come from coach_state.py. A
+    stored `session_count` or `open_items` here would be the `last_activity`
+    bug class all over again.
+    """
+    coh = record["cohort"]
+    if coh is None:
+        raise ValueError("cohort must be an object, not null — omit the field entirely")
+    if not isinstance(coh, dict):
+        raise ValueError(f"cohort must be an object, got: {type(coh).__name__}")
+    if record.get("kind") != "cohort":
+        raise ValueError(
+            "a cohort object is only allowed on kind='cohort' threads "
+            f"(this thread's kind: {record.get('kind')!r}). Set kind='cohort' "
+            "or drop the cohort object. A 1:1 coaching engagement is "
+            "kind='coaching' and carries no roster.")
+    extras = set(coh) - ALLOWED_COHORT_FIELDS
+    if extras:
+        raise ValueError(
+            "cohort object has fields not in the schema: "
+            f"{sorted(extras)}. Allowed: {sorted(ALLOWED_COHORT_FIELDS)}. "
+            "Update entities.schema.json $defs.project.cohort AND "
+            "ALLOWED_COHORT_FIELDS first if you genuinely need a new field. "
+            "(A stored count, tally, or 'last session' field here is the bug "
+            "class this guard exists for — those derive from events via "
+            "coach_state.py, never stored.)")
+
+    cadence = coh.get("cadence")
+    if cadence is not None and cadence not in COHORT_CADENCES:
+        raise ValueError(
+            f"cohort.cadence must be one of {list(COHORT_CADENCES)} or null, "
+            f"got: {cadence!r}")
+
+    seats = coh.get("seat_count")
+    if seats is not None and (isinstance(seats, bool)
+                              or not isinstance(seats, int) or seats < 0):
+        raise ValueError(
+            f"cohort.seat_count must be a non-negative integer or null, got: "
+            f"{seats!r}. It is the CONTRACTED seat count, not a cached "
+            "len(members) — occupancy derives from the roster.")
+
+    members = coh.get("members")
+    if members is not None:
+        if not isinstance(members, list):
+            raise ValueError(
+                f"cohort.members must be a list, got: {type(members).__name__}")
+        seen: set[str] = set()
+        for i, m in enumerate(members):
+            at = f"cohort.members[{i}]"
+            if not isinstance(m, dict):
+                raise ValueError(f"{at} must be an object, got: {type(m).__name__}")
+            m_extras = set(m) - ALLOWED_COHORT_MEMBER_FIELDS
+            if m_extras:
+                raise ValueError(
+                    f"{at} has fields not in the schema: {sorted(m_extras)}. "
+                    f"Allowed: {sorted(ALLOWED_COHORT_MEMBER_FIELDS)}.")
+            pid = m.get("person_id")
+            if not isinstance(pid, str) or not pid.strip():
+                raise ValueError(
+                    f"{at}.person_id must be a non-empty canonical person id — "
+                    "resolve the name through entity_resolve before writing "
+                    "(a bare name on a roster is the seat that can never be "
+                    "billed or briefed).")
+            if pid in seen:
+                raise ValueError(
+                    f"{at}.person_id {pid!r} is already on this roster. One "
+                    "seat per person per cohort: a duplicate makes the roster "
+                    "un-resolvable, which is the §4.2 crossing defect. A "
+                    "person who left and rejoined keeps ONE entry — update "
+                    "status/joined_at rather than appending a second.")
+            seen.add(pid)
+            status = m.get("status", "active")
+            if status not in COHORT_MEMBER_STATUSES:
+                raise ValueError(
+                    f"{at}.status must be one of "
+                    f"{list(COHORT_MEMBER_STATUSES)}, got: {status!r}")
+            if status == "departed" and not m.get("departed_at"):
+                raise ValueError(
+                    f"{at} has status='departed' with no departed_at — a "
+                    "departure with no date cannot be billed to a period "
+                    "boundary or excluded from one. Set departed_at.")
+            also = m.get("also_1to1")
+            if also is not None and not isinstance(also, bool):
+                raise ValueError(
+                    f"{at}.also_1to1 must be a boolean or null, got: {also!r}")
+            _validate_billing_target(m.get("billing_target"), f"{at}.billing_target")
+
+    billing = coh.get("billing")
+    if billing is not None:
+        if not isinstance(billing, dict):
+            raise ValueError(
+                f"cohort.billing must be an object or null, got: "
+                f"{type(billing).__name__}")
+        b_extras = set(billing) - ALLOWED_COHORT_BILLING_FIELDS
+        if b_extras:
+            raise ValueError(
+                f"cohort.billing has fields not in the schema: "
+                f"{sorted(b_extras)}. Allowed: "
+                f"{sorted(ALLOWED_COHORT_BILLING_FIELDS)}.")
+        _validate_billing_target(billing.get("payer"), "cohort.billing.payer")
+        unit = billing.get("unit")
+        if unit is not None and unit not in BILLING_UNITS:
+            raise ValueError(
+                f"cohort.billing.unit must be one of {list(BILLING_UNITS)} or "
+                f"null, got: {unit!r}")
+        rate = billing.get("rate")
+        if rate is not None and (isinstance(rate, bool)
+                                 or not isinstance(rate, (int, float))):
+            raise ValueError(
+                f"cohort.billing.rate must be a number or null, got: {rate!r} "
+                "— never a string or a range. Money is user-stated or "
+                "user-confirmed only, never estimated.")
+
+
 def _coerce(record: dict) -> dict:
     """Drop forbidden keys and coerce a legacy string `stage` to None so an
-    ingest-parser record lands canonical instead of failing."""
+    ingest-parser record lands canonical instead of failing.
+
+    Deliberately does NOT drop unknown keys. Dropping every unrecognized field
+    would have "fixed" the 21 rejected live threads by deleting `notes` and
+    `key_contact_id` off all of them — two fields the workspace-map and DCC
+    projectors read. Unknown keys reject loudly; known-legacy keys are
+    tolerated via LEGACY_THREAD_FIELDS. Silence is the one option that isn't
+    on the table.
+    """
     out = {k: v for k, v in record.items() if k not in FORBIDDEN_THREAD_FIELDS}
     if isinstance(out.get("stage"), str):
         out["stage"] = None
     return out
+
+
+def _reject_uncanonical_writes(fields: dict) -> None:
+    """Guard the explicit-kwarg path of update_thread.
+
+    A field on disk may be tolerated (LEGACY_THREAD_FIELDS) or silently
+    coerced away (FORBIDDEN_THREAD_FIELDS); a field a CALLER names in an
+    update is a stated intention, and honoring it silently — or dropping it
+    silently, which is what the forbidden path did before — hides a real
+    caller bug. Both cases raise here instead.
+    """
+    bad = []
+    for k in sorted(fields):
+        if k in FORBIDDEN_THREAD_FIELDS:
+            bad.append(f"  - {k!r} → {FORBIDDEN_THREAD_FIELDS[k]}")
+        elif k in LEGACY_THREAD_FIELDS:
+            bad.append(f"  - {k!r} → {LEGACY_THREAD_FIELDS[k]}")
+    if bad:
+        raise ValueError(
+            "update_thread cannot write these fields — they are tolerated on "
+            "records that already carry them, never written:\n"
+            + "\n".join(bad))
 
 
 def _log_event(ws: Path, event_type: str, record: dict, source_skill: str) -> None:
@@ -390,6 +667,7 @@ def create_thread(workspace_root: str | Path, *,
                   thread_id: str | None = None,
                   deal: dict | None = None,
                   objective: dict | None = None,
+                  cohort: dict | None = None,
                   source_skill: str = "unknown",
                   skip_dedup: bool = False) -> dict:
     """Create a new thread record. Dedups by folder_name → canonical_name,
@@ -425,6 +703,7 @@ def create_thread(workspace_root: str | Path, *,
     if spawned_from_thread_id:  record["spawned_from_thread_id"] = spawned_from_thread_id
     if deal is not None:        record["deal"] = deal
     if objective is not None:   record["objective"] = objective
+    if cohort is not None:      record["cohort"] = cohort
 
     record = _coerce(record)
     _validate_thread(record)
@@ -439,13 +718,17 @@ def update_thread(workspace_root: str | Path, thread_id: str, *,
                   source_skill: str = "unknown", **fields) -> dict:
     """Update allowed fields on an existing thread (e.g. status, last_activity,
     next_step, roster_overrides). Validates, atomic-writes, emits
-    `thread_updated`."""
+    `thread_updated`.
+
+    Any LEGACY_THREAD_FIELDS the record already carries survive untouched;
+    naming one in `fields` raises (see _reject_uncanonical_writes)."""
     workspace_root = Path(workspace_root)
     data = _load_entities(workspace_root)
     threads = _threads(data)
     target = next((t for t in threads if t.get("id") == thread_id), None)
     if target is None:
         raise ValueError(f"thread not found: {thread_id}")
+    _reject_uncanonical_writes(fields)
     for k, v in fields.items():
         target[k] = v
     coerced = _coerce(target)

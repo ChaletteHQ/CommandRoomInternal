@@ -88,14 +88,14 @@ For the discovered platform:
 
 Cap candidate list at 50 meetings. If the connector returns more, take the most recent 50 by date.
 
-### Step 2.5 — Entity-resolve the query BEFORE literal scoring (v3.13.0+ — closes the "Dynarii returns 0 results" gap; v3.13.7+ MUST-language enforcement + layer-on-top design)
+### Step 2.5 — Entity-resolve the query BEFORE literal scoring (v3.13.0+ — closes the "Northstar returns 0 results" gap; v3.13.7+ MUST-language enforcement + layer-on-top design)
 
 **MUST-language enforcement gate (v3.13.7+):** for every transcript-search invocation, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` in this step, per `shared/ENTITY_RESOLVE_PROTOCOL.md` (the ladder, tiers, and fallback rules live there). The resolver runs LAYERED ON TOP of any Granola NL search, NOT as a replacement for it.
 
 > **Run entity_resolve in parallel with Granola NL. Take the UNION of attendee-matched meetings (from resolver) + content-matched meetings (from Granola NL / literal scoring). Both signals contribute to the candidate set. Never skip the resolver because Granola NL "looked sufficient" — that's exactly the bypass Session-22 Bug #11 documented.**
 
 Why layer-on-top, not either-or:
-- **Granola NL** is excellent at content-match — it found the right 7 transcripts for "empower group" by language similarity, no aliases needed
+- **Granola NL** is excellent at content-match — it found the right 7 transcripts for "acme logistics" by language similarity, no aliases needed
 - **entity_resolve** is excellent at attendee-match — it pulls every meeting where a person/org/project member attended, even when the brand name was never spoken (the code-named-project class)
 - The union covers both classes; either alone misses the other's specialty
 

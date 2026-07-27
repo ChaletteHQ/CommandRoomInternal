@@ -64,7 +64,7 @@ CEO's private profiles on their leadership team and key people. Created during o
 _people/
 ├── _team-config.md                # Roster, prep format, staleness rules
 ├── [name].md                      # One PERSON.md per tracked team member
-├── [name].md                      # Filename: lowercase, hyphenated (e.g., philippe.md, dave-coo.md)
+├── [name].md                      # Filename: lowercase, hyphenated (e.g., bo-sample.md, rio-coo.md)
 └── prep/                          # Auto-created by team-intelligence skill
     └── Prep_[name]_[DATE].md      # 1:1 prep briefs
 ```
@@ -149,13 +149,13 @@ One folder per active project listed in MASTER_TRACKER.md. Folder name must matc
 | Element | Format | Example | Notes |
 |---------|--------|---------|-------|
 | Workspace root | `[WORKSPACE_ROOT]` | Resolved at skill runtime | User's mounted folder |
-| User first name | `[NAME]` | `Alex` | Set during onboarding; used identically everywhere |
-| Session notes file | `SESSION_NOTES_[NAME].md` | `SESSION_NOTES_Alex.md` | Exactly one per project |
+| User first name | `[NAME]` | `Aria` | Set during onboarding; used identically everywhere |
+| Session notes file | `SESSION_NOTES_[NAME].md` | `SESSION_NOTES_Aria.md` | Exactly one per project |
 | Date format | `YYYY-MM-DD` | `2026-04-09` | ISO 8601; used in filenames + content |
 | Call prep file | `Call_Prep_[DATE].md` | `Call_Prep_2026-04-09.md` | Title case "Call_Prep" |
 | Project folders | Exact match to MASTER_TRACKER.md | If tracker says "Acme Corp", folder = `Acme Corp/` | Case-sensitive |
-| Person profile files | Lowercase, hyphenated, disambiguated | `philippe.md`, `dave-coo.md` | Match _team-config.md roster |
-| 1:1 prep files | `Prep_[name]_[DATE].md` | `Prep_philippe_2026-04-09.md` | Title case "Prep" |
+| Person profile files | Lowercase, hyphenated, disambiguated | `bo-sample.md`, `rio-coo.md` | Match _team-config.md roster |
+| 1:1 prep files | `Prep_[name]_[DATE].md` | `Prep_bo-sample_2026-04-09.md` | Title case "Prep" |
 | Briefing/summary/audit files | Descriptive, lowercase with hyphens | `weekly-summary.md`, `q2-financial-audit.md` | Keep under 40 chars |
 
 ## File Creation Rules

@@ -157,7 +157,7 @@ For each meeting:
 
 **Cross-meeting fusion guardrail (v2.14.19+ — REQUIRED):** before writing any `commitment` or `decision` event extracted from a transcript, validate that the commitment's verbatim phrase (or a 5+ word substring of `data.title` / `data.evidence`) actually appears in the transcript text of the meeting it's being attributed to. If it doesn't, the extraction has crossed meetings — DO NOT write the event. Instead, append a `pending_review` row noting "extracted phrase not in source transcript" and surface in the next Pulse fire for manual review.
 
-This guardrail addresses the v2.14.18 fresh-install bug where the extraction layer fused two same-topic meetings (Rakesh sample-packets call + Sloan interview, both about EB-5) and wrote a commitment to the wrong source meeting via `data.source_ref`. The diagnosis showed the language `"send me a sample file tomorrow"` was in the Sloan transcript but the commitment was attributed to Rakesh's earlier call. A simple substring check on the source transcript would have caught it.
+This guardrail addresses the v2.14.18 fresh-install bug where the extraction layer fused two same-topic meetings (Bowie sample-packets call + Sloan interview, both about EB-5) and wrote a commitment to the wrong source meeting via `data.source_ref`. The diagnosis showed the language `"send me a sample file tomorrow"` was in the Sloan transcript but the commitment was attributed to Bowie's earlier call. A simple substring check on the source transcript would have caught it.
 
 Implementation hint: use the Granola transcript text already loaded in Phase 4 (don't re-fetch). Match case-insensitively. If `data.evidence` is set, check that exact string (it should be a verbatim quote from the transcript per the schema). If only `data.title` is set, take a 5+ word substring and fuzzy-match (allow 1-2 word reorderings or paraphrases) — `data.title` is sometimes paraphrased so exact match is too strict.
 
@@ -477,7 +477,7 @@ counts_by_meeting = {m["source_ref"]: count_meeting_writes("<WORKSPACE>", m["sou
 # each -> {"meeting": 1, "meeting_processed": 1, "decision": 2, "commitment": 4, "person_proposal": 1, ...}
 ```
 
-Every number ANY Phase 6 surface renders — the widget header counts, each meeting item's "N decisions / N commitments" lines, the quick_read enumeration, and the `pack_run` receipt's counts — comes from `counts_by_meeting`, never from extraction intent. If a count is lower than what Phase 5 attempted, a write FAILED: say so plainly in the quick_read ("captured 3 decisions for the Jono call but only 2 saved — say 'process the call Jono' to retry the missing one") and never render the failed item as logged. The regression suite for the primitive lives with meeting-notes (`run_meeting_notes_writer_parity_test.py`) — this paragraph is the surface half of F-50 P2a.
+Every number ANY Phase 6 surface renders — the widget header counts, each meeting item's "N decisions / N commitments" lines, the quick_read enumeration, and the `pack_run` receipt's counts — comes from `counts_by_meeting`, never from extraction intent. If a count is lower than what Phase 5 attempted, a write FAILED: say so plainly in the quick_read ("captured 3 decisions for the Bowie call but only 2 saved — say 'process the call Bowie' to retry the missing one") and never render the failed item as logged. The regression suite for the primitive lives with meeting-notes (`run_meeting_notes_writer_parity_test.py`) — this paragraph is the surface half of F-50 P2a.
 
 **Step 2 — build data_view, render widget HTML, post via show_widget (v2.10.9+):**
 
@@ -595,7 +595,7 @@ File save location (v2.10.8+): `[Project]/meetings/Past_Meeting_<slug>_<YYYY-MM-
     },
     "sub_items": [                             # pending review items (1a, 1b, ...) — v2.12.6+ shape
         # Multi-person items: each gets its OWN sub_item. NEVER stack as competing actions.
-        # Per M's Apr 30 ask: "I am trying to add both bretts to people but it does not
+        # Per M's Apr 30 ask: "I am trying to add both people with the same first name but it does not
         # let me select" — one action per item rule means multi-person needs multi-item.
         # When the org is known, bake it into the action label (no [org] placeholder).
         {
@@ -685,7 +685,7 @@ Same rule applies to any case where multiple distinct entities surface together 
 
 **Pending review items (per Rule 5 + IDX action token, v2.10.5+ format):**
 
-Visual rule: ONE LINE for the issue description, then a blank line, then ONE LINE for the action shortcuts. No "Reply:" label prefix — indentation already differentiates the action line. Drop redundant subjects in actions ("add Adan Sample to [org]" → "add to [org]" — the name is in the description above, no need to repeat). Drop trailing "Add or skip?" / "Set a real time?" prompts in the description since the action set IS the answer to that question.
+Visual rule: ONE LINE for the issue description, then a blank line, then ONE LINE for the action shortcuts. No "Reply:" label prefix — indentation already differentiates the action line. Drop redundant subjects in actions ("add Lyra Sample to [org]" → "add to [org]" — the name is in the description above, no need to repeat). Drop trailing "Add or skip?" / "Set a real time?" prompts in the description since the action set IS the answer to that question.
 
 - Sub-IDs are `[N][a/b/c]` — global meeting numbering plus a sub-letter per pending within that meeting
 - Action set per pending type (v2.14.38+ — REVIEW unified set: single permissive `add [text]` / `set date [when]` / `decide [text]` affirmative + `not relevant` (60d cooldown). MLK1 retired the `add to my list` indefinite defer — an unanswered pending re-surfaces on a later fire. Replaces the v2.12.6 `add as person to <Org>` + skip / v2.14.5 separate context cluster):

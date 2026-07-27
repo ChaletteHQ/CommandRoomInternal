@@ -1458,11 +1458,11 @@ def match_send_to_commitments(
 
     `recipient_names` (Bug #103 — real-data recall fix): display names and/or
     email local-parts of the recipients (e.g. "Sam" plus the local-part "sam"
-    taken from an address like sam@<domain>; or "Jordan Lee" plus "jlee"). Commitment extraction frequently fails to LINK the
+    taken from an address like sam@<domain>; or "Bowie Stone" plus "bstone"). Commitment extraction frequently fails to LINK the
     counterparty into `person_ids` (some commitments were stored with only the
     user) or the counterparty person has no email on file, so the resolved-
     person_id gate alone misses real completions. Titles almost always name the
-    recipient ("Send Sam a recap", "Send Jordan Lee a product summary"), so a
+    recipient ("Send Sam a recap", "Send Bowie Stone a product summary"), so a
     recipient-name token appearing in the title opens the candidacy gate. The
     score_match threshold still decides the recommendation, which keeps false
     positives down — a name in the title only makes the commitment a candidate;

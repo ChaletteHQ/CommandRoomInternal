@@ -492,7 +492,7 @@ Same date buckets (`overdue`, `due_near`, `aging_undated`). Renders with the sta
 
 **Learned chase cadence (Phase 6 Loop 6).** When surfacing an OWED-TO-YOU item for chase, honor the per-relationship-type chase window learned by insight-generator's Pass 7b instead of the flat 7-day default: `from chase_policy import load_chase_policy, get_chase_window` → `chase_days, escalate = get_chase_window(policy, <owner's org relationship_type>)`. An `aging_undated` item from a relationship that "goes quiet 40% of the time" surfaces to chase at day 3 rather than 7; after `escalate` silent chases, the item's annotation suggests a call (`follow-up call`). Missing store → the default `(7, 3)`, so behavior is unchanged until the CEO approves a policy. This tunes WHEN a chase is offered; it never auto-sends.
 
-### B-unreachable: `data.owner_id` is null AND `data.owner_external` is set (e.g., `"Rakesh"`) — owner was named in extraction but has no entity record yet
+### B-unreachable: `data.owner_id` is null AND `data.owner_external` is set (e.g., `"Bowie"`) — owner was named in extraction but has no entity record yet
 Same date buckets — **today-due items here STILL count as "needing action."** Renders with a different action set scoped to "you can't auto-chase yet — fix that first": `["N add as person <owner_external> to <inferred_org_or_blank>", "N add to my plate", "N skip"]` (v2.14.36+ — `add context [text]` dropped; the per-item "+ Add context" toggle handles context capture universally). Tag annotation: `(no email on file — adding <owner_external> as a contact enables auto-chase next time)`.
 
 Per M's v2.14.18 testing: an owed-to-you commitment due today with no contact info should NOT disappear into "0 needing action." The action is different (add the contact) but it's still action — and the user explicitly noticed the silence as a UX bug. v2.14.19 surfaces these explicitly.
@@ -673,7 +673,7 @@ data_view = {
     "summary_line": "Nothing overdue, nothing due in the next 3 days, and nothing has been sitting open long enough to be aging. The N things others owe you were either recently captured or have downstream dates further out.",
     "tracked_items": [
         # Read-only line list — this chat's partition only. NO action buttons.
-        {"direction": "Waiting on", "title": "Rakesh — 2-3 redacted prior EB-5 packets", "due": "today"},
+        {"direction": "Waiting on", "title": "Bowie — 2-3 redacted prior EB-5 packets", "due": "today"},
         # ...
     ],
     "footer": None,  # NEVER add bottom buttons. The agent's instinct to add Show all open / Add email for X / Prep deep work: Y is what produced the v2.14.18 hand-built widget. Empty-state has no buttons.
@@ -686,7 +686,7 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 # as the standard widget (EW2+T, § Transport).
 ```
 
-**Why this rule exists:** in v2.14.18 the agent fired this orchestrator with 0 items qualifying after the bucket filter, judged the canonical empty-state as worse UX than a richer custom card, and bypassed the renderer entirely. Result: a hand-typed widget with hardcoded "Needing action: 0" counter, four model-improvised bottom buttons (`Show all open`, `Add email for Sloan`, `Add Rakesh as contact`, `Prep deep work: EB-5`), and zero validators run. Three contracts broken at once (Rule 1 widget format, Rule 5 canonical actions, Rule 19 data shape) — the enforcement chain is structurally unable to catch a renderer bypass because the validators run AT render time. The fix is to make the canonical empty-state look good enough that the agent has no incentive to improvise. NEVER hand-build the empty-state widget, even if you think the canonical version is mid-tier UX. If the canonical UX feels wrong, file a follow-up to improve `_render_all_clear_summary` in `chat_output_renderer.py` — do not improvise around it.
+**Why this rule exists:** in v2.14.18 the agent fired this orchestrator with 0 items qualifying after the bucket filter, judged the canonical empty-state as worse UX than a richer custom card, and bypassed the renderer entirely. Result: a hand-typed widget with hardcoded "Needing action: 0" counter, four model-improvised bottom buttons (`Show all open`, `Add email for Sloan`, `Add Bowie as contact`, `Prep deep work: EB-5`), and zero validators run. Three contracts broken at once (Rule 1 widget format, Rule 5 canonical actions, Rule 19 data shape) — the enforcement chain is structurally unable to catch a renderer bypass because the validators run AT render time. The fix is to make the canonical empty-state look good enough that the agent has no incentive to improvise. NEVER hand-build the empty-state widget, even if you think the canonical version is mid-tier UX. If the canonical UX feels wrong, file a follow-up to improve `_render_all_clear_summary` in `chat_output_renderer.py` — do not improvise around it.
 
 **One-command driver (FB-15) — the deterministic core in ONE call.** The
 partition, the header counts, the Delegated section, and the Needs-a-quick-confirm
@@ -814,7 +814,7 @@ Per Sam's Apr 30 ask: *"this needs to be a response to an email. I'd want to see
 
 **Original-thread block (v2.12.1+; v2.14.36+ MANDATORY for every email-shaped commitment with a source_ref):** populate the `original_thread` field on the item dict with the source thread snippet. The renderer wraps it in a collapsible `<details>` block above the draft so the user can expand to see the original message they're following up on. Mirrors the inbox-triage `original_thread` block one-for-one — the same accordion + ↗ Open in Gmail link the user already knows from inbox.
 
-Pre-v2.14.36 the orchestrator was emitting an inline `("Originally", "<plain text>")` metadata key as a fallback when `original_thread` wasn't populated (or in addition to it). M's 2026-05-07 testing surfaced the gap: half the commitment items showed the rich collapsible (Adan Sample / DocuSeal example), the other half showed the plain inline "Originally: the Apr 27 thread" pointer with no expand-to-read and no Gmail link. v2.14.36 hard-contracts the rich pattern for every item: ALWAYS populate `original_thread` when the commitment has any traceable origin. The inline `("Originally", ...)` metadata key is DROPPED from the v2.14.36+ item shapes (renderer also defensively skips it now if orchestrator still emits it).
+Pre-v2.14.36 the orchestrator was emitting an inline `("Originally", "<plain text>")` metadata key as a fallback when `original_thread` wasn't populated (or in addition to it). M's 2026-05-07 testing surfaced the gap: half the commitment items showed the rich collapsible (Dustin Sample / DocuSeal example), the other half showed the plain inline "Originally: the Apr 27 thread" pointer with no expand-to-read and no Gmail link. v2.14.36 hard-contracts the rich pattern for every item: ALWAYS populate `original_thread` when the commitment has any traceable origin. The inline `("Originally", ...)` metadata key is DROPPED from the v2.14.36+ item shapes (renderer also defensively skips it now if orchestrator still emits it).
 
 Shape:
 

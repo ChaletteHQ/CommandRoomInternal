@@ -3,7 +3,8 @@
 #
 # Runs the structural privacy test BEFORE any commit lands, catching real
 # customer/partner-name leaks at write-time instead of months later during a
-# manual audit. Per CONTRACT.md Rule 26 + references/PRIVACY_POLICY.md.
+# manual audit. Per CONTRACT.md Rule 26 (the shipped statement of the rule; the
+# full privacy policy is canonical-repo-only and does not fan out to clients).
 #
 # To install on a fresh clone:
 #   git config core.hooksPath .githooks

@@ -1,6 +1,6 @@
 # Known Issue Patterns — report-bug seed
 
-Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped in v3.x and a fix Matthew already knows. New patterns get added here whenever a real bug is fixed from customer feedback.
+Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped in v3.x and a fix the maintainer already knows. New patterns get added here whenever a real bug is fixed from customer feedback.
 
 ## Schema per entry
 
@@ -60,7 +60,7 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
   - Skill name: meeting-notes, enable-command-room-schedules (past-meetings orchestrator)
   - Symptom: any
 
-**Likely cause:** Granola transcript has ambiguous speaker labels and the Rio-Baker speaker-attribution guard (v3.2.3) didn't fire. Usually happens when one attendee dominates a meeting >70% by time.
+**Likely cause:** Granola transcript has ambiguous speaker labels and the Rio-Sample speaker-attribution guard (v3.2.3) didn't fire. Usually happens when one attendee dominates a meeting >70% by time.
 
 **User-side fix:** (none — escalate immediately)
 
@@ -107,7 +107,7 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
 
 **Likely cause:** This is a recurring class of bug — the agent makes up a "reasonable-looking" path instead of using the documented canonical one. Fix is structural (make the canonical UX good enough that improv stops being attractive); reporting individual instances helps map the surface.
 
-**User-side fix:** Tell me where the file should have gone (best guess is fine), and what folder it ACTUALLY landed in. The path mismatch is the data point Matthew needs.
+**User-side fix:** Tell me where the file should have gone (best guess is fine), and what folder it ACTUALLY landed in. The path mismatch is the data point the maintainer needs.
 
 **Escalate?** yes
 
@@ -160,7 +160,7 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
 
 ## How to add a new pattern
 
-When Matthew fixes a real bug from customer feedback:
+When the maintainer fixes a real bug from customer feedback:
 
 1. Add an entry under "Patterns" using the schema above.
 2. Keep the **Signature → Keywords** tight (5-10 phrases the customer would actually type — not technical jargon they wouldn't use).

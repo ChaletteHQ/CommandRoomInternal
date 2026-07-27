@@ -536,7 +536,7 @@ def scan_existing_duplicates(workspace_root) -> list[dict]:
     """Duplicate suspects among EXISTING non-archived records: exact
     multi-token normalized canonical_name pairs, or a shared personal email.
     Single-token name pairs are EXCLUDED from name-based suspicion entirely
-    (the live person_077/person_124 "two Dons" pin — two different real
+    (the live person_077/person_124 two-short-names pin — two different real
     people); role-shaped shared addresses are excluded from email-based
     suspicion (a shared inbox is not an identity). PROPOSE-only input —
     nothing here merges anything."""

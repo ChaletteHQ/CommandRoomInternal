@@ -9,8 +9,8 @@ WHY THIS EXISTS:
   (workspace-manager): two skills hit the same problem class — a user types
   a name M's workspace knows about, but the skill's lookup misses because:
 
-    - The name is a misspelling (`Elon` for `Elan`)
-    - The name is phonetic (`Denari` for `Dynarii`)
+    - The name is a misspelling (`Arya` for `Aria`)
+    - The name is phonetic (`Northstarr` for `Northstar`)
     - The skill only does literal-token / exact-match lookup
     - The aliases.json entry doesn't exist YET for that specific variant
 
@@ -35,7 +35,7 @@ PUBLIC API:
   - resolve_all(workspace_root, query) → list[ResolveResult]
       Like `resolve` but returns ALL candidates above the threshold,
       sorted by confidence. Use for disambiguation flows ("did you mean
-      Elan or Elise?").
+      Aria or Mira?").
 
 EXACT VS FUZZY VS PHONETIC:
   - Exact: case-insensitive whitespace-normalized match against alias `raw`,
@@ -46,7 +46,7 @@ EXACT VS FUZZY VS PHONETIC:
     Confidence == the ratio (0.85 - 1.0). Catches typos like Mark→Marc.
   - Phonetic: Soundex code match against names that share a sound-alike key.
     Confidence 0.75 (constant — Soundex is binary match-or-not). Catches
-    `Denari` ≈ `Dynarii`, `Elon` ≈ `Elan`.
+    `Northstarr` ≈ `Northstar`, `Arya` ≈ `Aria`.
 
 CONFIDENCE THRESHOLDS (open question per #31 handoff):
   - 0.95+ → auto-load (highest confidence, no disambiguation needed)
@@ -92,7 +92,7 @@ class ResolveResult:
       confidence: 0.0-1.0 numeric (1.0 = exact, ~0.85-1.0 = fuzzy ratio,
         0.75 = phonetic match constant)
       reason: short plain-English explanation for surfacing to the user
-        (e.g., "matched via alias 'Elan's company' to Dynarii")
+        (e.g., "matched via alias 'Aria's company' to Northstar")
     """
     entity_type: EntityType
     record: dict[str, Any]
@@ -132,16 +132,16 @@ def _soundex(s: str) -> str:
     the same code. Standard algorithm — no external deps.
 
     Operates on the FULL string (whitespace stripped). For multi-token names
-    like `Elan Sample`, this computes the Soundex of the concatenated tokens —
-    which means single-word queries like `Elon` won't match `Elan Sample`.
+    like `Aria Sample`, this computes the Soundex of the concatenated tokens —
+    which means single-word queries like `Arya` won't match `Aria Sample`.
     For that case use `_soundex_tokens` (v3.13.2+) which returns per-token
     codes, and compare against ANY of them in the resolver.
 
     Examples:
-      _soundex('Elan') == 'E450'
-      _soundex('Elon') == 'E450'  → matches
-      _soundex('Dynarii') == 'D560'
-      _soundex('Denari') == 'D560'  → matches
+      _soundex('Aria') == 'A600'
+      _soundex('Arya') == 'A600'  → matches
+      _soundex('Northstar') == 'N632'
+      _soundex('Northstarr') == 'N632'  → matches
     """
     if not s:
         return ""
@@ -181,12 +181,12 @@ def _soundex_tokens(s: str) -> list[str]:
     """Compute the Soundex code for each whitespace-separated token in `s`.
 
     v3.13.2+ — closes the multi-token-name match gap. Without per-token
-    Soundex, single-word misspellings like `Elon` never matched canonical
-    names stored as `Elan Sample` (because the full-string Soundex of
-    `Elan Sample` is `E452`, not `E450`).
+    Soundex, single-word misspellings like `Arya` never matched canonical
+    names stored as `Aria Sample` (because the full-string Soundex of
+    `Aria Sample` is `A625`, not `A600`).
 
     Examples:
-      _soundex_tokens('Elan Sample')  == ['E450', 'S514']
+      _soundex_tokens('Aria Sample')  == ['A600', 'S514']
       _soundex_tokens('Bo Stone')     == ['B000', 'S350']
       _soundex_tokens('Sam')          == ['S500']
       _soundex_tokens('')             == []
@@ -472,7 +472,7 @@ def resolve_all(
     # Tier 3: phonetic (Soundex) match
     # Only meaningful for word-like strings; skip for empty Soundex or numeric queries.
     # v3.13.2+ — single-word queries also match per-token Soundex on the candidate,
-    # so "Elon" matches multi-token "Elan Sample" (matches first-token "Elan").
+    # so "Arya" matches multi-token "Aria Sample" (matches first-token "Aria").
     PHONETIC_CONFIDENCE = 0.75
     query_is_single_token = query.strip() and len(query.strip().split()) == 1
     if query_soundex and PHONETIC_CONFIDENCE >= min_confidence:
@@ -482,7 +482,7 @@ def resolve_all(
             name_soundex = _soundex(name)
             full_match = name_soundex and name_soundex == query_soundex
             # Per-token match: single-word query against any token of a
-            # multi-token candidate name (e.g., `Elon` vs `Elan Sample`).
+            # multi-token candidate name (e.g., `Arya` vs `Aria Sample`).
             token_match = False
             matched_token = None
             if query_is_single_token and not full_match:
@@ -609,9 +609,9 @@ def resolve_to_linked_project(
     or org, walk to their linked project (the most recently active project
     where they're an attendee/key contact).
 
-    Used by workspace-manager loose-input matching: when M says "go Elan",
-    Elan resolves to person_072, and the helper walks to project_020
-    (Dynarii — COO Partnership, the most-recently-active project where Elan
+    Used by workspace-manager loose-input matching: when M says "go Aria",
+    Aria resolves to person_072, and the helper walks to project_020
+    (Northstar — COO Partnership, the most-recently-active project where Aria
     is the key contact).
 
     Returns the linked PROJECT match (with `entity_type='project'`), or None

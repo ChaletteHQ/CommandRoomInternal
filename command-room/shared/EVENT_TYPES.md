@@ -2,19 +2,24 @@
 
 **Enum home (decided once, final):** the event-type enum lives in
 `shared/data-schemas/events.schema.json` — nowhere else. It is machine-read by
-three enforcers, so there is no second copy to drift:
+two enforcers, so there is no second copy to drift:
 
 1. **Write time** — `shared/scripts/event_gate.py` (the `append_event()`
    gatekeeper, wired inside `atomic_append_jsonl`'s events.jsonl branch)
    validates every appended event's `type` against the enum via
-   `shared/scripts/event_types.py`. Strict (reject) through `append_event()`;
-   warn-on-stderr through the legacy `atomic_append_jsonl` entry during
-   burn-in.
+   `shared/scripts/event_types.py`. Strict (reject) on BOTH entries since
+   Phase 4, 2026-07-02 — the burn-in warn-only posture is over.
 2. **Static guard** — `tests/run_source_of_truth_test.py` Check 4 fails the
    battery when any documented `"type": "<name>"` literal in skill prose or
    shared scripts is absent from the enum.
-3. **Workspace audit** — weekly-audit validates live events against the same
-   schema.
+
+> Corrected 2026-07-25: this list used to name a third enforcer — "weekly-audit
+> validates live events against the same schema." There is no weekly-audit
+> skill in core (`skills/` has `cleanup` and `system-health`), and
+> `is_known_type` has exactly one caller: the write gate. **Nothing validates
+> event types on the read side.** The same stale claim is echoed in
+> `event_types.py`'s module docstring. Do not rely on a read-side check that
+> does not exist; see the fossil section below for what real substrate holds.
 
 ## Registering a new event type
 
@@ -26,6 +31,67 @@ three enforcers, so there is no second copy to drift:
 3. Never write a type that isn't registered; never spell-variant an existing
    type (the gate normalizes known drift — e.g. `commitment_update` →
    `commitment_updated` — but new drift is a defect).
+
+## Pre-registry fossils — read-tolerated, never writable (2026-07-25)
+
+Real substrate contains event types that are NOT in the enum and are not
+going to be. A survey of a live workspace found **52 unregistered types across
+216 rows** (of 5,689 total); every one predates the gate going strict, and the
+newest fossil write is dated **2026-07-02** — the very day Phase 4 closed the
+write path. Nothing has written an unregistered type since, because nothing
+can.
+
+**They stay unregistered on purpose.** Three reasons, in order of weight:
+
+1. The enum is the **write permission list**. `is_known_type` has exactly one
+   caller — `event_gate`, on append. Registering 52 dead types would
+   re-legalize writing every one of them and undo the drift fix this registry
+   exists for.
+2. Registration requires a **writer and a named consumer** (rule 2 above — no
+   consumer-less writes). These have neither. Registering them would break the
+   registry's own admission rule 52 times over.
+3. `run_source_of_truth_test.py` Check 4 is **green**, which proves no current
+   skill prose or shared script declares any of them as a write. They are
+   historical rows, not a live code path.
+
+The machine-readable list lives in
+`shared/scripts/event_types.py::PRE_REGISTRY_FOSSILS`, with
+`is_pre_registry_fossil()` as the read-side classifier. Its job is to let an
+auditor distinguish **an expected historical row** from **a new unregistered
+type, which is a defect**. It is never consulted on the write path.
+`tests/run_event_fossils_test.py` keeps the set honest (disjoint from the
+enum; no fossil declared as a write by current code) and — since 2026-07-25 —
+anchors it to substrate: `tests/fixtures/event_fossils/_hq/data/events.jsonl`
+carries one real-shaped row per fossil, and the suite asserts the fixture's
+unregistered types and this list are the same 52 in **both** directions. So a
+brand-new unregistered type shows up as a defect instead of being quietly
+appended here, and a deleted fossil goes red too. That guard exists because
+the whole DOCUMENT-not-register ruling rests on an eight-minute margin — the
+newest unregistered write is `2026-07-02T13:54:43Z`, the commit that made the
+legacy append path strict is `14:02:43Z`.
+
+Notes on the families, for anyone reading old rows:
+
+| Family | Types | Rows | What it was |
+|---|---|---|---|
+| `apply_choices_*` (4 spellings), `apply_dispatch`, `chat_action`, `probe_click` | 7 | 54 | Pre-gate widget/dispatch telemetry. The surviving lane is `triage_feedback` + the receipt contract. |
+| `pending_review`, `pending_review_resolved`, `pending_review_skipped`, `decision_pending`, `person_review_pending`, `org_review_pending`, `pending_enrichment` | 7 | 55 | The pre-LB1 proposal queue. Superseded by `brain_proposal` / `brain_proposal_resolved`. |
+| `cracks_watch_*` | 3 | 11 | The retired "cracks watch" pass. Its role is now Pulse + `brain_proposal`. |
+| `org_added`, `org_archived`, `org_deleted`, `org_membership`, `org_proposal_confirmed` | 5 | 9 | Pre-`org_writer` prose org lifecycle. Superseded by `org_created` / `org_updated`. |
+| `person_context_*`, `person_enrichment_pending`, `person_merge_proposed`, `person_record_review_queued` | 5 | 9 | Pre-`people_writer` prose person lifecycle. Superseded by the PID1 lane. |
+| `session_close`, `session_end`, `scan_completed`, `substrate_cleanup`, `schedule_updated`, `schedule_skipped` | 6 | 14 | Assorted pre-receipt-contract run markers. Superseded by `shared/RECEIPT_CONTRACT.md`. |
+| everything else (one-off prose writes: `follow_up`, `artifact_*`, `correction`, `owner_remap`, …) | 19 | 64 | Individually hand-written by pre-gate skill prose; no family, no successor lane. |
+
+Seven fossils are near-misses of a registered name — read them as the
+registered type, never re-mint the fossil spelling:
+`commitment_update` → `commitment_updated` (the gate already normalizes this
+one on append), `corruption-recovery` → `corruption_recovery` (hyphen; the
+underscore form is what `recover_corruption.py` writes — the hyphenated
+spelling in `RELIABILITY.md` refers to a `_hq/CONFLICTS.md` log line, a
+different artifact), `apply_choices_audit` → `apply_choices_applied`,
+`meeting_reprocessed` → `meeting_processed`, `reclassification_batch` →
+`reclassification`, `pending_review` → `person_pending_review`,
+`schedule_updated` → `schedule_created`.
 
 ## 2026-07 wave vocabulary (registered up front, Phase 1)
 
@@ -351,6 +417,67 @@ Hard rules:
   owning helper, never invented (refusal over fabrication).
 - **One chart per event.** Compound asks split into sequential asks, one
   `chart_render` each.
+
+## Coach lane (SPEC COACH1 §4.5, 2026-07-24) — coach-pack repos only
+
+The Business Coach Pack's whole vocabulary, **registered in one pass up front**
+per the wave pattern above: every type below is in the enum from Phase 1, so
+each later phase's source-of-truth check passes without re-opening it. A type
+whose writer names a phase later than the one that shipped is
+registered-but-not-yet-written — expected until its phase lands.
+
+The pack ships in `packs/coach/` and reaches only the client repos that name
+`"packs": ["coach"]` in `_chalette/clients.json`; the types are core-owned
+because the enum is core-owned. On a non-coach workspace nothing writes them —
+same posture as any other registered-but-unwritten type, no migration, no
+reader change.
+
+Derived numbers never appear as stored entity fields: every count, window,
+tally, roster occupancy, and flag the pack surfaces is computed from these
+events by `shared/scripts/coach_state.py` (the `brief_state.py` / `eos_state.py`
+discipline). All writes go through `append_event()` / `atomic_append_jsonl`
+(the A1 lock contract) — no exceptions, no second append path.
+
+| Type | Writer (phase) | Named consumers |
+|---|---|---|
+| `coaching_engagement_started` | coach-intake (Phase 2) — one per coaching relationship opened; carries the thread id, cadence, and stated term | coach-renewal (term watch anchor), coach-practice-review (engagement count + tenure) |
+| `engagement_baseline_set` | coach-intake (Phase 2) — the arc's zero point: where the client stood at session one | coach-session-prep (the "since the baseline" read), coach-practice-review (movement against baseline) |
+| `session_captured` | coach-session-capture (Phase 2) — one per 1:1 session turned into the coach's template; the arc's spine | coach-session-prep (last session + what's open), coach-billing (a real session is a billable unit), coach-practice-review |
+| `session_prep_generated` | coach-session-prep (Phase 2) — one receipt per prep pack built | usage-report (did the scheduled prep actually fire) |
+| `arc_pattern_flagged` | coach-session-capture (Phase 2) — a long-arc observation, e.g. a commitment promised twice without motion | coach-session-prep (surfaces the pattern in the next prep, which is the whole point of the arc) |
+| `cohort_session_captured` | coach-group-pack (Phase 3) — one per GROUP session, with per-member items inside the record; never one event per attendee | coach-session-prep (cohort prep), coach-billing (seat-level units for the period) |
+| `cohort_member_added` | coach-group-pack, enable-coach (Phase 2/3) — a seat joins; `{cohort_thread_id, person_id, joined_at}` | coach-billing (the seat enters the period), coach-renewal (roster size at renewal) |
+| `cohort_member_departed` | coach-group-pack, enable-coach (Phase 2/3) — a seat leaves; a departure with no date is rejected at the writer (it can't be billed to a period boundary) | coach-billing (the seat leaves the period), coach-renewal |
+| `material_surfaced` | coach-toolbox (Phase 5) — a piece of the coach's own material was surfaced into a session or prep; names the material, NEVER another client's situation (§12 firewall) | coach-practice-review (which material actually gets used) |
+| `billable_session_logged` | coach-billing (Phase 4) — a unit CONFIRMED by the coach, including informal contact that never hit the calendar. Never written from a silent inference | coach-billing itself (the period tally), coach-practice-review (practice economics) |
+| `invoice_drafted` | coach-billing (Phase 4) — the assembled draft, one per payer per period, itemized per person and per cohort seat | coach-practice-review, value-receipt |
+| `invoice_sent` | coach-billing (Phase 4) — written only after a per-invoice explicit confirm; one confirm, one invoice | coach-practice-review, value-receipt |
+| `renewal_window_opened` | coach-renewal (Phase 6) — a real `term_end` / `renewal_date` came into range; not a dormancy inference | morning-briefing (it belongs in the day), coach-practice-review |
+| `referral_moment_flagged` | coach-renewal (Phase 6) — a win the coach could ask a referral off | relationship-moves (it owns the ask), coach-practice-review |
+| `member_artifact_delivered` | coach-member-pack (Phase 3) — a member-facing artifact went out in the coach's name (§9, the channel) | coach-practice-review, value-receipt |
+
+Hard rules:
+
+- **Draft, then send (M ruling 7).** `invoice_sent` may only follow an explicit
+  per-invoice confirm. There is no batch or scheduled send path, and
+  `workspace.coach.billing.invoice_posture` is single-valued (`draft_then_send`)
+  so one cannot be selected into existence.
+- **Never a silent billable.** `billable_session_logged` records the coach's
+  confirmation. Candidate unbilled contact is surfaced as a proposal through the
+  action widget and is dismissible; the proposal is not the event.
+- **Group means group.** A cohort session is ONE `cohort_session_captured` with
+  per-member items in the payload — never one event, and never one recap email,
+  per attendee. Eight personalized sends read as automation and cost the coach
+  credibility.
+- **Email stays email-writer's monopoly (Rule 30).** Every type here is a
+  content/state event; none of them sends anything. The pack produces content
+  and delegates the draft.
+- **Cross-client firewall (§12).** `material_surfaced` names material. A payload
+  that identifies another client's situation is the defect this lane's review
+  looks for first.
+- **No `coach_session` reuse.** The pre-existing `coach_session` type belongs to
+  `command-room-coach` (the skill that coaches the USER on Command Room) and is
+  unrelated. Use `session_captured` / `cohort_session_captured`.
 
 ## Commitment-family append contract (gate-enforced)
 
