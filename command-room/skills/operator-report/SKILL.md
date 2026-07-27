@@ -235,6 +235,9 @@ Frame these as the moat-that-grows. They get bigger every month. Land the sectio
 
 Render the report verbatim in chat (for on-demand invocations) AND write to `_hq/operator-reports/YYYY-MM.docx` (for scheduled monthly run; per CONTRACT Rule 27, no .md deliverables — route through `shared/scripts/brief_writer.py`).
 
+- **NEVER hand-roll the report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or leaking report (the v3.20.0 failure mode) — and this is the document that tells the operator what the system is worth, so one produced outside the gates is a value claim nothing checked.
+- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("the headline counts", "the hours number", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/operator-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can send it to my partner", "as a copy alongside the canonical file" — **nor a direct instruction**: "put this month's report in a Google Doc" is a request this gate refuses, not an override. The `.docx` is already shareable as-is — hand back its link and let the user forward the file itself.
+
 **Render template:**
 
 ```

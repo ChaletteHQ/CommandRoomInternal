@@ -153,6 +153,42 @@ RULES_BY_KIND: Dict[str, dict] = {
     "chart_on_demand": {
         "table_no_blank_cells": True,
     },
+    # SPEC TRIAGEROUTE — the daily inbox triage brief. Every number below is
+    # inbox-triage's OWN stated bar, not another kind's borrowed: Step 5 "Surface
+    # 3-5 items — these are the ones the CEO reads first. Everything else listed
+    # in an appendix"; the five-bucket model ("Classify into one of five
+    # buckets") is a CLOSED taxonomy; Step 6 "2-3 drafts max (more than that and
+    # drafts become noise)". Sync rule: these mirror the floors in
+    # skills/inbox-triage/SKILL.md Step 7 — change one, change the other.
+    #
+    # THE CAPS CARRY THE WEIGHT HERE, and the floors are deliberately 1. This
+    # kind's length is a function of the INBOX, not of effort: a 9-email morning
+    # and a 150-email Monday produce the same quality of brief at wildly
+    # different sizes. A floor of 3 on "Top of the Pile" would force exactly the
+    # padding the skill's own gotcha bans ("Err toward Reply Now + Decision
+    # Needed getting smaller rather than padding the 'top 5' with weak items"),
+    # so the 3 in "3-5" is guidance to the composer and the 5 is the contract.
+    # For the same reason there is NO total_words rule (the chart_on_demand
+    # precedent, inverted): a word bound would gate the inbox, not the brief.
+    "inbox_triage": {
+        # The one section that IS the artifact — this skill's stated job is
+        # "5-bucket classification", and a triage brief with no bucket
+        # accounting is a note about email, not a triage. Everything else is
+        # conditional by the skill's own text: the ranked list presupposes
+        # candidates, "Reply Drafts" is absent under default_action=brief_only,
+        # and "Commitments I Caught" is omit-when-zero by instruction.
+        "required_sections": ["By Bucket"],
+        "section_rules": {
+            # Cap 5 = Step 5's ranked list. A "top of the pile" with 12 entries
+            # is not a top of the pile, it is the appendix moved up.
+            "Top of the Pile": {"bullet_range": (1, 5)},
+            # Cap 5 = the five buckets. A sixth bullet means a bucket was
+            # invented past the closed taxonomy the classifier runs on.
+            "By Bucket": {"bullet_range": (1, 5)},
+            # Cap 3 = Step 6's own ceiling, and its own stated reason.
+            "Reply Drafts": {"bullet_range": (1, 3)},
+        },
+    },
 }
 
 

@@ -131,6 +131,9 @@ construction. Resolve the backend with
 `output_profile.resolve_format_for_kind("chart_on_demand", workspace_root,
 override=...)` ("as a doc" → docx twin, free via the kind registry).
 
+- **NEVER hand-roll the page** — not the `.html` by writing or editing markup yourself, and not the docx twin with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Both bypass every gate the OUT5 rail exists to run (the v3.20.0 failure mode) — and the whole point of this kind is that the chart and its table twin come out of one validated spec, so a hand-built page is a chart whose spec was never checked.
+- **NEVER create, render, copy, upload, or update the page — or any part, derivative, or restatement of it (the chart image alone, "just the table", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.html` or its docx twin, that is My Drive root, not `_hq/deliverables/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can drop it in the deck", "as a copy alongside the canonical file" — **nor a direct instruction**: "put this chart in a Google Doc" is a request this gate refuses, not an override. Pasting the chart into a Slides deck is the same bypass class as a Google-Doc copy; hand back the rendered link and let the user take it from there.
+
 The page is ONE section carrying THREE things — the chart, a source line, and
 the table twin of the same numbers. The table twin is mandatory: it is the
 precision companion AND the fallback if the chart spec refuses (charts never

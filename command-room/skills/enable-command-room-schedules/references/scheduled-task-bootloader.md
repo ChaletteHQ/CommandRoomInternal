@@ -141,6 +141,15 @@ If the output is `CONTRACT_FAIL`, post EXACTLY this message in chat and STOP. Do
 
 > ⚠️ The orchestrator file for `<TASK_ID>` exists but doesn't contain the canonical OUTPUT CONTRACT marker. The plugin may be partially installed or corrupted. Please reinstall Command Room and type `set up command room schedules`.
 
+## Step 2.5 — Determine the run mode (DOGFIX1 2026-07-27)
+
+**This prompt is not evidence of the run mode.** Cowork registers ONE body per task and replays it for the cron fire AND for any Run Now / re-run, so "scheduled task `<TASK_ID>`" above names WHICH task you are running, never HOW this fire started. Decide once, here, and carry the answer into the orchestrator's Phase 2.9 `fired_via`:
+
+- **`manual`** — a human-authored message exists anywhere in this session, or a human clicked Run Now / asked for a re-run, **or you cannot tell**.
+- **`scheduled`** — the scheduler started this session with no human message initiating the turn, and you are sure.
+
+**When uncertain, it is `manual`** (`shared/RECEIPT_CONTRACT.md` § Run-mode detection). A mis-labeled manual costs one missing lateness note; a mis-labeled scheduled refuses a surface a human asked for (the live 2026-07-27 report: a Monday morning `my-plate` answered with "Skipped the full My Plate — it was scheduled for 8:45 AM Friday"). Pass the literal word `scheduled` or `manual` — never the placeholder `<scheduled|manual>`, never a description like `Run Now`. Unrecognized values fail safe to `manual` in `check_lateness`, which protects the surface but silently drops lateness detection on a real scheduled fire. Say the word.
+
 ## Step 3 — Read the orchestrator and execute it verbatim
 
 Run this bash to fetch the full orchestrator content:

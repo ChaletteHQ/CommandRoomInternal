@@ -169,6 +169,13 @@ person, project, or topic; if you find yourself wanting to, that content belongs
 in `operator-report`, not here. `value_receipt` is intentionally NOT an
 executive-header kind — it takes no `exec_header` and no `asks`.
 
+**Forwardable means forward THE FILE (DOCFENCE1).** This receipt is built to be
+sent onward, which is exactly the pressure that produces a connector copy — so
+the render path is fenced harder, not softer:
+
+- **NEVER hand-roll the receipt** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass the privacy gate this doc's entire counts-and-hours-only posture depends on (the v3.20.0 failure mode) — an ungated receipt is a receipt whose leak scan never ran.
+- **NEVER create, render, copy, upload, or update the receipt — or any part, derivative, or restatement of it ("the headline numbers", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/operator-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with my partner", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the receipt in a Google Doc so I can send it" is a request this gate refuses, not an override. The `.docx` is already forwardable by design — hand back its link and let the user forward the file itself.
+
 **Format selection (SPEC OUT5).** Before rendering, resolve the backend:
 `output_profile.resolve_format_for_kind("value_receipt", workspace_root,
 override=...)` — an explicit "as a doc" / "as HTML" in the ask beats the

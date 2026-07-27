@@ -34,7 +34,9 @@ This orchestrator ALWAYS runs when fired — cron or manual. A fire receipt writ
 
 # Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2)
 
-Identical contract to every scheduled chat (see orchestrator-commitments.md Phase 2.9 for the full tier semantics — manual/none/note/degrade). Compute via:
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled refuses a surface a human asked for (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon; DOGFIX1 2026-07-27 — this file was the ONE orchestrator missing this paragraph, and the degrade notice it produced on a Monday manual fire is what the customer saw).
+
+Then compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local), passing the detected run mode. Substitute a real word for the placeholder — `scheduled` or `manual`, nothing else:
 
 ```bash
 python3 -c "
@@ -43,6 +45,8 @@ from late_fire import check_lateness
 print(json.dumps(check_lateness('<workspace_root>', 'my-plate', fired_via='<scheduled|manual>')))
 "
 ```
+
+Tier semantics are identical to every scheduled chat (see orchestrator-commitments.md Phase 2.9 for the full branch table — manual/none/note/degrade). Restated for the two that matter here: on **`manual`** run EVERY phase normally with NO timing banner and NO lateness narrative anywhere; on **`degrade`** post only the returned `degrade_notice` and skip Phase 9's render, but still perform Phase 8's receipt write.
 
 Carry the returned `receipt_fired_via` into the Phase 8 receipt — never guess it.
 

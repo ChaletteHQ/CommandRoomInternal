@@ -1,5 +1,28 @@
 # Command Room — Changelog
 
+## v5.3.0 — 2026-07-27 — Ask for it now and it runs, the triage brief arrives as a real document, and every document lands where it belongs
+
+Minor bump: user-visible behavior changes plus fixes, no migration. Unlike the last two patch releases, this one you will notice.
+
+### Fixes you'll notice
+- **A manual request is never late.** Asking for a scheduled surface on demand — the full My Plate, the Friday wrap — was refused when its scheduled slot had already passed: a Monday-morning ask answered "skipped, it was scheduled for 8:45 AM Friday." Anything you ask for now runs now. The rule always said that; the code disagreed. Both halves are fenced now — the wording every scheduled surface carries, and the code that decides — so a fire it doesn't recognize is read as a manual one instead of degrading into a skip.
+- **Applying a batch of choices no longer writes each note twice.** The same choice applied twice landed two identical notes. The write is idempotent now: one note, however many times it runs.
+
+### The inbox triage brief now renders properly
+The brief was required to arrive as a Word document but had no registered way to produce one, so every run hand-built it. That skipped the checks every other document goes through: the section-depth gate, the voice check, and the scan that keeps internal identifiers and file paths out of anything you read. It now has a registered document type and goes through the same writer as every other brief. Nothing about what the brief contains changed — the section structure is byte-identical.
+
+### Documents land where they belong
+Twenty-five files that produce a document now carry the same two-part rule: never hand-build it, and never create, copy, or upload it through a file connector. The second half is what puts a document in the folder you expect instead of at the top of your Drive. The on-demand path was closed in v5.2.1; this release closes the scheduled path — three scheduled surfaces, including the scheduled twin of call prep, were writing into the meetings folder without it. The guard behind this derives its own coverage from the tree instead of a hand-kept list, so a new document surface is covered the day it's added rather than the day someone remembers to add it.
+
+### Files touched
+Per client repo: 34 modifications, 1 addition, plus the release files. Scheduled-surface and skill texts, the run-mode and note-writing engines, the brief gates and output validator, and a new inbox-triage exemplar. Test additions remain in the source repo.
+
+### Customer migration impact
+No user action. Nothing to re-register — scheduled chats load their steps fresh at fire time, and the next inbox triage brief arrives through the new route with no setup.
+
+### What's NOT in this ship
+The coach vertical, and the confirm-volume work on applying choices — both ride a later cut.
+
 ## v5.2.2 — 2026-07-27 — Balance confirmations attach to the exact reminder they answer
 
 Patch release: fixes only, no new features, no migration.

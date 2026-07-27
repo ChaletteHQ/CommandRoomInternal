@@ -177,6 +177,11 @@ print(json.dumps({'slug': slug, 'paths': paths, 'recipe': recipe_path, 'rollback
 "
 ```
 
+**Both `.docx` files render through brief_writer, and nothing else (DOCFENCE1).** The recipe and the rollback doc are deliverables the user acts on, so they carry the same render discipline as every other Command Room document:
+
+- **NEVER hand-roll either file** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking doc (the v3.20.0 failure mode) — and a rollback doc that skipped the gates is the worst one to get wrong.
+- **NEVER create, render, copy, upload, or update either file — or any part, derivative, or restatement of it ("the setup steps", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `automations/<slug>/` where the rest of the scaffold lives (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so the tool owner can follow along", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the recipe in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link.
+
 **On `FileExistsError`** from `write_artifacts`: the slug is taken. Surface plain English: *"There's already an automation by that name. Want to give this one a different name? Say `scaffold #N as <new-name>`."* Do NOT improvise by appending `-2` or overwriting.
 
 **On `ValueError` for empty slug**: the opportunity title cleaned to nothing (all punctuation). Ask the user for a name: *"I need a short name for this automation — what should I call it?"*

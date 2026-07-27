@@ -117,6 +117,20 @@ to both `check_lateness(fired_via=...)` and the closing `log_receipt`:
   scheduled-context fire is serving a genuinely missed slot (note/degrade
   tier). The receipt carries what the helper returned — nothing else.
 
+**The asymmetry is enforced in code, not just asserted here (DOGFIX1
+2026-07-27).** `check_lateness` runs lateness math ONLY when `fired_via`
+normalizes into `late_fire.SCHEDULED_CONTEXT` (`scheduled` / `catchup`).
+Every other value — an unsubstituted `<scheduled|manual>` placeholder, a
+freeform `Run Now`, an empty string, an omitted argument (the parameter
+default is `manual`) — returns tier `manual` with
+`suppressed: "unrecognized_run_mode"` and the raw string echoed as
+`fired_via_raw`. Pre-DOGFIX1 the fallback ran the other way and any
+unrecognized value fabricated lateness: the live report was a Monday
+morning `my-plate` answered with "Skipped the full My Plate — it was
+scheduled for 8:45 AM Friday". Consequence worth stating plainly: a
+genuine scheduled fire must spell the word `scheduled`, or it silently
+loses lateness detection. That is the cheap side of the trade.
+
 Rules that follow from the mode:
 
 1. **Manual fires never write `late_fire`**, never carry `late_tier`, and

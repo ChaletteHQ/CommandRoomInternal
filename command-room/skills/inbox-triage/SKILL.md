@@ -172,8 +172,11 @@ Optional modifiers:
      On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0 (`pass`/`warn`). Never surface a draft the detector still fails. A phrase the sender's calibrated Voice Block demonstrably allows is exempt via `allow_phrases`; never improvise the override.
 7. **Write the triage brief.**
    - Save: `_hq/inbox/TRIAGE_[YYYY-MM-DD_HH-MM].docx` — the triage brief is ALWAYS a `.docx` (never a `.md` file), matching the "Saved triage brief file" contract below.
+   - **Rendering (SPEC TRIAGEROUTE).** Render the `.docx` via the canonical `shared/scripts/brief_writer.py` `make_brief(brief_kind="inbox_triage", ...)`, passing the sections payload and exec header in "Output Structure" below. That route is mandatory, not a preference: it is what runs the output-contract gate, the voice-tell gate and the post-render leak scanner, and it enforces canonical typography and heading hierarchy. Before this route existed, the step named a `.docx` and no way to produce one, so the brief was hand-rolled every morning — every gate skipped, on the one document in this product assembled entirely out of the CEO's mail.
+     - **NEVER hand-roll the brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and this brief carries senders, subjects and quoted body text lifted straight out of real mail, which is exactly what the leak scan exists to catch.
+     - **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the top five", "a summary", "just the drafts") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/inbox/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can read it on the way in", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the triage in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link.
    - Record timestamp in `_hq/inbox/LAST_TRIAGE.txt`
-8. **Return:** file link + headline ("12 overnight emails. 3 top items flagged. 2 replies drafted. 1 decision needed: Acme pricing.")
+8. **Return:** file link + headline ("12 overnight emails. 3 top items flagged. 2 replies drafted. 1 decision needed: Acme pricing.") — the same sentence is the brief's exec-header verdict, written once and used twice.
 
 ## Step: Extract Commitments (MANDATORY in every triage run)
 
@@ -254,6 +257,42 @@ If zero commitments captured, omit the section — don't print "0 commitments".
 ---
 
 ## Output Structure (saved triage brief file)
+
+Rendered by `make_brief(brief_kind="inbox_triage", ...)`. Nothing below is new content — it is the brief
+this skill has always produced, expressed as the structured payload the chokepoint takes, plus the exec
+header every STANDARD_KIND carries. `title` is the `# Inbox Triage — …` line, `subtitle` is the `Window: …`
+line, and each `##` heading below is one entry in `sections`.
+
+**Exec header (SPEC EXEC1 element 1 — `make_brief` REFUSES the render without it).** `inbox_triage` is
+brief-family, so it renders the FULL three-line eyebrow (verdict + CHANGED / DECIDE / NEEDED), not the
+verdict-only lead the memo / one-pager kinds use — a triage brief is a since-last-pass digest, which is
+exactly what that scaffold is for. You have already computed all four; they are the Step 8 return line:
+
+- **verdict** = what the inbox amounts to, in one sentence. *"Two threads are waiting on you and one needs a call you have not made."* Concrete or nothing — never a count dressed up as a finding.
+- **changed** = what arrived since the last pass · **decide** = the one item only the CEO can answer · **needs** = the drafted replies waiting on approval. Nothing-forms are legal and encouraged on a quiet morning.
+
+**Depth floors (SPEC B3 — the output-contract gate blocks the save on a violation).** Sync rule: these
+mirror `output_contract_validator.RULES_BY_KIND["inbox_triage"]` — change one, change the other. The CAPS
+carry the weight; the floors are 1 on purpose, because this brief's length is a function of the inbox, not
+of effort, and a floor of 3 would force exactly the padding the Gotchas ban.
+
+| Section | Presence | Bullets | Where the bound comes from |
+|---|---|---|---|
+| tile band (unread · flagged · drafted) | optional, drop-empty | — | a real zero renders; an unknown datum is omitted |
+| `Top of the Pile` | conditional on candidates | 1–5 | Step 5's "surface 3–5 items"; past 5 it is the appendix moved up |
+| `By Bucket` | **required** | 1–5 | the five-bucket model is a closed taxonomy — a 6th bullet is an invented bucket |
+| `Commitments I Caught` | omit entirely when zero | — | already stated above: never print a zero line |
+| `Reply Drafts` | absent under `default_action = brief_only` | 1–3 | Step 6's "2-3 drafts max" and its own reason |
+
+**Exemplar anchor (SPEC OUT8).** Before composing, load `exemplars.get_exemplar("inbox_triage", workspace_root)`
+(`shared/scripts/exemplars.py`) and anchor STRUCTURE on it — section order, visual placement, proportions.
+Workspace exemplar beats the shipped seed; `None` = compose on the layout below, unchanged. **Contract beats
+exemplar beats default**, and it anchors structure, never facts: no name, subject, or number from the
+exemplar may appear in the brief.
+
+**Visual pass (SPEC OUT2 §3, after the save):** run the render-then-critique pass per
+`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass", then log it either way. Warn-only forever — a
+finding never refuses a save, and the pass never loops.
 
 ```
 # Inbox Triage — [YYYY-MM-DD HH:MM]

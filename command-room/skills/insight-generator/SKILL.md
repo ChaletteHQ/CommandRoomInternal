@@ -703,6 +703,11 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 
 **Generation:** via `shared/scripts/brief_writer.py make_brief(brief_kind="insights", title=..., sections=[...])` — same canonical Word formatting as every other generated deliverable. Per CONTRACT Rule 27 (no .md deliverables), insights are now a polished .docx.
 
+**That call is the only generator (DOCFENCE1):**
+
+- **NEVER hand-roll the insights doc** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking document (the v3.20.0 failure mode) — and this doc is dense with people, customers, and relationship read-outs, which is precisely what the leak scan is for.
+- **NEVER create, render, copy, upload, or update the insights doc — or any part, derivative, or restatement of it ("the top three", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/insights/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the insights in a Google Doc" is a request this gate refuses, not an override. The inline top-3-to-5 in chat is the read-without-opening surface; the file is the deliverable.
+
 **Chat surface:** the chat post for insight-generator follows the friendly-voice contract. Lead with a one-line summary of what the week showed. Then surface the top 3-5 insights INLINE in chat (so M reads them without opening the doc). Then the canonical H2 deliverable link at the BOTTOM of the chat turn pointing to the full .docx for the deeper version. No file path interspliced through the prose body; no `entities.json` / `events.jsonl` / `project_NNN` leaks; no internal mechanism names ("Pass 7 probe found", "classification review"); no scores or grades on the user's business.
 
 **Document structure (.docx body, also follows the voice contract):**

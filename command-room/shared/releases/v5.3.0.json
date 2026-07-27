@@ -1,0 +1,20 @@
+{
+ "version": "5.3.0",
+ "headline": "Ask for anything on demand and it runs now — no more \"skipped, it was scheduled for Friday.\" Applying a batch of choices no longer duplicates notes, and your inbox triage brief now arrives as a properly formatted document.",
+ "items": [
+  {
+   "id": "v530_announce_manual_fire_is_never_late",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "One thing worth knowing: when you ask for something on demand, it runs — full stop. Asking for the full My Plate or the Friday wrap outside its usual slot used to get you \"skipped, it was scheduled for 8:45 AM Friday\" instead of the thing you asked for. That's fixed. Anything you ask for now is treated as a request for right now, whatever the clock says. Applying a batch of choices also no longer leaves you with each note written twice.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v530_announce_triage_brief_renders",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your inbox triage brief now arrives as a properly formatted document. It was always meant to be one, but it was being assembled by hand each run, which meant it skipped the quality checks every other brief goes through — formatting depth, your voice, and the scan that keeps internal identifiers and file paths out of anything you read. It now goes through the same writer as your call prep and memos. What's in the brief hasn't changed — the same sections, in the same order.",
+   "action": "announce_only"
+  }
+ ]
+}

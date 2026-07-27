@@ -229,6 +229,11 @@ make_brief(
 
 Save to `_hq/meetings/` (CONTRACT Rule 27 — never .md), and surface it as the H2 heading link at the bottom of the chat turn per CONTRACT Rule 3 (`doc_headline_link` + `get_brief_artifact_url`).
 
+**Same generator means same fence (DOCFENCE1).** This brief is `brief_kind="call_prep"` landing in `_hq/meetings/` — the identical kind and folder call-prep fences, so it inherits the identical bans:
+
+- **NEVER hand-roll the 1:1 brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and a 1:1 brief is the most person-dense document this system writes.
+- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("talking points", "an agenda", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/meetings/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can share it with the report", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the 1:1 in a Google Doc" is a request this gate refuses, not an override. Say the canonical brief already exists and hand back its link. This brief is prep FOR the manager — it is not a document to hand the direct report through a shared connector.
+
 ### "what's [name] working on?" / "status on [name]" / "how's [name] doing?"
 
 Cross-project person view. Reads the same data as 1:1 prep but presents it differently — status-focused, not meeting-focused. **Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), commitment state derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id == <person_id>`, NOT from the PERSON.md commitment table** — the table is a Tier 2 projection that lags.

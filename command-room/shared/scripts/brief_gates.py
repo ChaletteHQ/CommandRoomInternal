@@ -79,6 +79,14 @@ EYEBROW_BY_KIND = {
     "stress_test":       "STRESS TEST",
     "kpi_scorecard":     "KPI SCORECARD",  # SPEC OUT7 — the between-packs KPI view / QBR pre-read
     "chart_on_demand":   "CHART",          # SPEC OUT3B — one substrate-derived chart on demand
+    # SPEC TRIAGEROUTE — the daily inbox triage brief. Registered because
+    # inbox-triage MANDATED `_hq/inbox/TRIAGE_[...].docx` ("the triage brief is
+    # ALWAYS a `.docx`") with no brief_kind and no route: the model hand-rolled
+    # it every morning, skipping the output-contract gate, the voice-tell gate
+    # and the post-render leak scan on the most PII-dense artifact in the
+    # product. It takes a NAMED eyebrow because it is brief-family — see the
+    # EXEC_EYEBROW_EXCLUDED_KINDS note below.
+    "inbox_triage":      "INBOX TRIAGE",
 }
 
 SUPPORTED_BRIEF_KINDS = frozenset(EYEBROW_BY_KIND)
@@ -123,6 +131,14 @@ STANDARD_KINDS = frozenset({
     # since-yesterday digest — the one_pager posture). verdict is supplied by
     # the chart-on-demand skill from the series it just rendered.
     "chart_on_demand",
+    # SPEC TRIAGEROUTE — the daily inbox triage brief. The exec header costs
+    # this kind nothing new: inbox-triage's Step 8 return line is ALREADY the
+    # 30-second contract in prose — "12 overnight emails. 3 top items flagged.
+    # 2 replies drafted. 1 decision needed: Acme pricing." That is a verdict
+    # (what the inbox amounts to) plus CHANGED (what arrived) / DECIDE (the one
+    # call to make) / NEEDED (the drafts to approve). Registering it here makes
+    # the header the document's first line instead of only the chat line.
+    "inbox_triage",
 })
 # NB: operator_report is deliberately NOT here. Per SPEC EXEC1 §4 its Section 0
 # synthesis lead is "untouched (it's the prototype)" and §5 lists it as a
@@ -135,6 +151,17 @@ STANDARD_KINDS = frozenset({
 # (earliest occurrence at section index > 2) → ValueError. Analysis exists to
 # audit the recommendation, not to defer it.
 DECISION_SHAPED_KINDS = frozenset({"decision_memo", "memo", "one_pager"})
+# NB: inbox_triage is deliberately NOT here (SPEC TRIAGEROUTE). A triage brief
+# REPORTS what arrived and who is waiting; it recommends nothing, so there is no
+# recommendation to hoist. Adding it would not merely be inert — it would block
+# ordinary content, for exactly the reason the `past_meeting` carve-out below
+# names. `Decision Needed` is ONE OF THE FIVE BUCKETS this skill classifies into,
+# so its brief carries that heading as a matter of course; `_REC_HEADING_RE`
+# matches `\bdecision\b`, and the buckets section sits after the ranked list and
+# the tile band (index > 2). Registering the kind as decision-shaped would refuse
+# a correct, unremarkable triage on a normal morning. Same class of finding as
+# `past_meeting`'s "Decisions" list: a heading that reports decisions is not a
+# heading that makes one.
 
 # A section heading reads as a recommendation when it matches this. Scoped to
 # DECISION_SHAPED_KINDS only, so a past_meeting "Decisions" list (decisions
@@ -168,6 +195,18 @@ EXEC_EYEBROW_EXCLUDED_KINDS = frozenset({
     # would misframe a one-answer page (same reasoning as one_pager).
     "chart_on_demand",
 })
+# NB: inbox_triage is deliberately NOT excluded (SPEC TRIAGEROUTE) — it renders
+# the full three-line eyebrow, like dormant_scan and weekly_recap. The split
+# above is brief-family (a recurring digest of what MOVED) versus document /
+# analysis kinds (one-shot, verdict-led). Two members settle it by example:
+# `dormant_scan` is absent from this set because its whole subject is what
+# changed since the last scan, while `automation_scan` IS in it — a workspace
+# audit is a one-shot analysis, no "since last time" to report, which is why it
+# sits alongside contract_review and stress_test rather than alongside
+# dormant_scan. A triage brief is the archetype of the first group: it fires
+# daily, its window is literally "since LAST_TRIAGE", and the thing it reports
+# is what arrived overnight. Excluding it would strip the one scaffold its
+# content is already shaped like.
 
 # Composer skill whose customer-side voice block (B1: `_hq/voice/voice-block-
 # <skill>.md`) calibrates each outbound brief kind. The override file is keyed

@@ -21,6 +21,21 @@ a slot the change itself created. The contract now:
   - Lateness is evaluated ONLY on scheduled-context fires (`fired_via` in
     {scheduled, catchup}). A `manual` fire (typed trigger, Run Now, re-run)
     is interactive and never late — tier `manual`, no event, no banner.
+  - THE FALLBACK DIRECTION IS `manual`, NOT `scheduled` (DOGFIX1, 2026-07-27
+    — the F-47 class recurring live at v5.2.1). `fired_via` reaches this
+    helper as a STRING an executing model substituted into a prose
+    placeholder, so the value can be anything: an unsubstituted
+    `'<scheduled|manual>'`, a freeform `'Run Now'` (the aliases cover
+    `run-now`/`run_now`, not the spaced spelling), `''`, `'typed trigger'`.
+    Pre-DOGFIX1 every one of those was truthy-and-not-`manual`, so it fell
+    through to the scheduled branch and fabricated lateness — the exact
+    direction RECEIPT_CONTRACT.md forbids ("**When uncertain, it is
+    manual**"). Now only the two literal scheduled-context values run the
+    math; EVERYTHING else is tier `manual`, `suppressed:
+    "unrecognized_run_mode"`, with the raw string returned as
+    `fired_via_raw` so the fallback is visible rather than swallowed.
+    Asymmetry, restated: a mis-labeled manual costs one missing lateness
+    note; a mis-labeled scheduled REFUSES A SURFACE A HUMAN ASKED FOR.
   - The slot being served must be UNSERVED: the task's newest substrate
     receipt (via the R1 receipt reader — all legacy shapes) is the
     served-slot marker. A slot with a receipt after it is SERVED; there is
@@ -34,7 +49,8 @@ a slot the change itself created. The contract now:
 
 TIER CONTRACT (thresholds tunable in LATENESS_TIERS — one shared constant):
 
-  manual   — fired_via=manual: interactive fire, lateness not applicable.
+  manual   — fired_via=manual, OR any value that does not normalize into
+             SCHEDULED_CONTEXT: interactive fire, lateness not applicable.
              No banner, no degradation, no event.
   exempt   — silent task classes (SILENT_TASKS registry membership, never a
              hardcoded name list): late is fine, they always run in full.
@@ -121,6 +137,14 @@ LATENESS_TIERS = {
 # weeks triggers the better-default-time proposal (cleanup Monday note).
 CHRONIC_WINDOW_WEEKS = 4
 CHRONIC_MIN_LATE_WEEKS = 3
+
+# The ONLY two run modes lateness math may run on — the docstring's
+# "scheduled-context fires" set, now enforced in code rather than asserted in
+# prose (DOGFIX1). Anything outside it is manual by fail-safe, including the
+# unsubstituted prose placeholder. Deliberately NOT derived from
+# receipts.FIRED_VIA: that set contains `manual`, and this one is the
+# complement of it.
+SCHEDULED_CONTEXT = frozenset({"scheduled", "catchup"})
 
 
 def _now_local() -> _dt.datetime:
@@ -210,7 +234,7 @@ def check_lateness(
     workspace_root,
     task_id: str,
     *,
-    fired_via: str = "scheduled",
+    fired_via: str = "manual",
     now: Optional[_dt.datetime] = None,
     emit: bool = True,
 ) -> dict:
@@ -225,11 +249,19 @@ def check_lateness(
         (typed trigger, Run Now, re-run). Manual fires are never late —
         no tier math, no event, no banner (F-47 P1a).
 
+        ONLY the two SCHEDULED_CONTEXT values run the math. Every other
+        input — including an omitted argument, which is why the default is
+        `manual` and not `scheduled` — is treated as manual (DOGFIX1). A
+        caller that means `scheduled` must say so in that exact word; there
+        is no spelling of "I don't know" that degrades a surface.
+
     Returns:
       {task, tier: manual|exempt|none|note|degrade|unknown,
-       fired_via (normalized input), receipt_fired_via (what the fire's
-       closing log_receipt call passes: manual|scheduled|catchup),
-       suppressed (None | "manual_fire" | "slot_already_served" |
+       fired_via (normalized, fail-safed input), fired_via_raw (what the
+       caller actually passed — evidence when the fallback fired),
+       receipt_fired_via (what the fire's closing log_receipt call passes:
+       manual|scheduled|catchup), suppressed (None | "manual_fire" |
+       "unrecognized_run_mode" | "slot_already_served" |
        "slot_created_by_schedule_change"), lateness_minutes,
        scheduled_for (ISO, machine-local), banner (note tier),
        degrade_notice (degrade tier), event_logged (bool)}
@@ -239,11 +271,18 @@ def check_lateness(
     never block the primary output.
     """
     now = now or _now_local()
-    via = normalize_fired_via(fired_via) or "scheduled"
+    normalized = normalize_fired_via(fired_via)
+    # Fail-safe by asymmetry, in code (DOGFIX1). `normalize_fired_via` returns
+    # unknown strings UNCHANGED (only absent/blank comes back None), so a
+    # `via != "manual"` test read every garbage value as scheduled. Test the
+    # positive set instead: recognized-scheduled, or manual.
+    recognized = normalized in SCHEDULED_CONTEXT
+    via = normalized if recognized else "manual"
     out = {
         "task": task_id,
         "tier": "none",
         "fired_via": via,
+        "fired_via_raw": fired_via,
         "receipt_fired_via": "manual" if via == "manual" else "scheduled",
         "suppressed": None,
         "lateness_minutes": 0,
@@ -257,7 +296,13 @@ def check_lateness(
         # P1a: a manual Run-now self-classified as a 356-min-late scheduled
         # fire). No slot math, no event, no narrative.
         out["tier"] = "manual"
-        out["suppressed"] = "manual_fire"
+        # Distinguish a caller that SAID manual from one whose value did not
+        # resolve. Same tier and same behaviour — every orchestrator's
+        # existing `manual` branch handles both with no prose change — but a
+        # reviewer, a test, and the receipt can all see which happened.
+        out["suppressed"] = (
+            "manual_fire" if normalized == "manual" else "unrecognized_run_mode"
+        )
         return out
     if is_silent_task(task_id) or task_id in _SUPERSEDED_SILENT_IDS:
         out["tier"] = "exempt"
@@ -417,6 +462,7 @@ def detect_chronic_lateness(
 
 __all__ = [
     "LATENESS_TIERS",
+    "SCHEDULED_CONTEXT",
     "CHRONIC_WINDOW_WEEKS",
     "CHRONIC_MIN_LATE_WEEKS",
     "check_lateness",
