@@ -119,6 +119,11 @@
         }
       }
     },
+    "language": {
+      "type": "string",
+      "enum": ["en", "es"],
+      "description": "Workspace language, anchor truth — 'es' activates the bilingual overlay (onboarding writes _hq/data/skill_config/language.json via the atomic writer and fills the {{LANGUAGE_PREF}} CLAUDE.md slot) and the language question is never asked; 'en' (or absent) leaves the install byte-identical to English-native. Bilingual, never Spanish-only."
+    },
     "priorities": {
       "type": "array",
       "maxItems": 5,

@@ -1,0 +1,20 @@
+{
+ "version": "5.5.0",
+ "headline": "A late fire now catches up on everything it missed instead of processing only its usual window, pages hold still while you read them, lateness notices name the right time in every timezone, and undo can no longer be taken down by one bad row.",
+ "items": [
+  {
+   "id": "v550_announce_catchup_windows",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Closing the laptop no longer loses work. Until now, a scheduled surface that fired late processed only its usual window — a morning brief looked at the last day, a weekly recap at the last seven — so anything older than that silently fell through the gap. Every catch-up-capable surface now reaches back to its last successful run: Monday picks up the whole weekend, a missed Friday recap is recovered by the next one, and when a large backlog has to be worked in batches, the fire records where it stopped so the next one resumes there instead of abandoning the tail.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v550_announce_reliability_trio",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Three reliability fixes you may notice. Pages hold still: 'show more' now serves the same frozen list page after page, so a row can no longer appear twice or vanish between pages, and if the data genuinely moved on, the refresh says so. Times are told in your clock: lateness notices used to name the wrong wall time wherever the machine and workspace timezones disagreed. And undo is sturdier: one malformed row in the history could previously take down the whole undo listing — it now reads through bad rows harmlessly and refuses new ones at the door. Separately, dashes as punctuation are now rewritten out of every document kind automatically, with the signature sign-off untouched.",
+   "action": "announce_only"
+  }
+ ]
+}

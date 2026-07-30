@@ -39,6 +39,7 @@
 {{FORMAT_PREFS}}
 {{MEETING_PREFS}}
 {{SCHEDULE_PREFS}}
+{{LANGUAGE_PREF}}
 {{PROMPT_RESTRUCTURING}}
 - **Draft posture (queue-on-click):** Show the editable draft first — nothing touches your mail drafts until you click Save draft or Send. On that click, the draft is saved to your mail backend's Drafts (never auto-sent) and the draft record + voice snapshot are written at the same moment. Drafts are never queued on render/compose.
 

@@ -82,9 +82,24 @@ def event_ts(ev: dict) -> str:
 
 
 def event_seq(ev: dict):
-    """The event's seq (identity backbone), or None."""
-    s = ev.get("seq")
-    return s if isinstance(s, (int, float)) and not isinstance(s, bool) else None
+    """The event's seq (identity backbone), or None.
+
+    UNDOGUARD: delegates to the canonical `event_seq.event_seq`. This
+    function predates it and carried DIFFERENT semantics under the SAME name
+    — it dropped a string seq as unreadable and passed floats through
+    un-normalized. Two same-named helpers disagreeing about what a seq is
+    was exactly the drift that lets a fix look complete while a caller keeps
+    the old behavior, so this is now a thin alias rather than a second
+    implementation. Kept as a re-export because callers already import it
+    from here."""
+    try:
+        from event_seq import event_seq as _canonical
+    except ImportError:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from event_seq import event_seq as _canonical
+    return _canonical(ev)
 
 
 def load_events(events_jsonl_path: str | Path) -> list[dict]:

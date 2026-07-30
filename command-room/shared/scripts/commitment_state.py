@@ -1313,6 +1313,8 @@ def supersede_commitment(
     source_skill: str,
     evidence: str = "",
     user_confirmed: bool = False,
+    auto_merge: bool = False,
+    auto_merge_evidence: Optional[dict] = None,
 ) -> dict:
     """THE merge writer (v4.6.0 C4): two open items are the same real-world
     commitment → close the duplicate with a `commitment_superseded` event that
@@ -1349,6 +1351,18 @@ def supersede_commitment(
         through the supersession chain on in-memory copies only; no history
         rewrite, no per-child event. This is why a merge needs no cascade
         guard: the children stay open, just under the survivor.
+
+    AUTOAPPLY §4c — the pending-review floor's carve-out. `auto_merge=True`
+    satisfies the floor in place of `user_confirmed`, and REQUIRES
+    `auto_merge_evidence` (the gate's predicate + score + batch stamps) so
+    it can never be used as a bare override. The doctrine: the floor
+    ("merging IS the adjudication") governs FLAGGED SUSPECTS — a
+    human-ambiguity queue. `commitment_dedup.auto_merge_eligible` fires only
+    where there is no ambiguity left to adjudicate (owner ids equal,
+    counterparty ids overlapping, near-verbatim title, different writers),
+    so there is no human decision being taken away. The evidence lands on
+    the event, which is also what makes the merge undoable: the stamps carry
+    `brain_batch_id` + `brain_change_class` for `brain_undo`.
     """
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
@@ -1373,13 +1387,21 @@ def supersede_commitment(
                 "survivor_id": survivor_cid,
             }
 
-        if _is_pending_review(superseded) and not user_confirmed:
+        if auto_merge and not (isinstance(auto_merge_evidence, dict)
+                               and auto_merge_evidence.get("auto_predicate")):
+            raise ValueError(
+                "auto_merge=True requires auto_merge_evidence carrying an "
+                "auto_predicate — the §4c carve-out records WHY it did not "
+                "ask, or it is a bare override of the pending-review floor"
+            )
+        if _is_pending_review(superseded) and not (user_confirmed or auto_merge):
             raise PendingReviewError(
                 f"commitment {superseded_cid!r} is pending_review — a merge "
                 "adjudicates a suspected duplicate, so it may only happen on "
                 "an explicit user confirmation (pass user_confirmed=True "
                 "from a user-initiated action such as the Merge verb or the "
-                "'merge those two' chat phrase)."
+                "'merge those two' chat phrase), or through the AUTOAPPLY "
+                "§4c gate (auto_merge=True + auto_merge_evidence)."
             )
 
         # Provenance union — survivor's ref first, then the absorbed one(s).
@@ -1404,6 +1426,13 @@ def supersede_commitment(
             data["commitment_seq"] = superseded["seq"]
         if isinstance(survivor.get("seq"), int):
             data["survivor_seq"] = survivor["seq"]
+        if auto_merge:
+            # §7 — the audit trail rides the event, not a vanished chat:
+            # WHICH clause fired, at what score, in which undoable batch.
+            data["auto_merge"] = True
+            for k, v in (auto_merge_evidence or {}).items():
+                if v not in (None, ""):
+                    data[k] = v
 
         ev = {
             "type": "commitment_superseded",
@@ -1669,6 +1698,78 @@ def clear_review_flags(
         from event_gate import append_event
         append_event(events_path, [ev], holder=source_skill)
     return {"status": "cleared", "commitment_id": cid, "event": ev}
+
+
+def flag_duplicate_for_review(
+    workspace_root,
+    commitment_id,
+    *,
+    suspected_duplicate_of: str,
+    reason: str,
+    flagged_by: str,
+    source_skill: str,
+    score=None,
+) -> dict:
+    """THE flag-tier fallback writer (AUTOAPPLY §4c, review F-1/F-3/F-6) —
+    the additive MIRROR of `clear_review_flags`.
+
+    WHY IT EXISTS. The §4c auto-merge gate is evaluated at capture and
+    APPLIED a fire later (the D1 split), so the decision can go stale in
+    between: the survivor gets closed, the stamp ages past the window, or a
+    human reverses the merge. Every one of those cases must land the pair
+    back on the FLAG TIER — a visible question — never a silent skip and
+    never a silent drop, because C4's whole guarantee is that a duplicate
+    always becomes a question. The capture event is on disk and append-only,
+    so `data.pending_review` cannot be edited onto it; this appends a
+    `commitment_updated` carrying `data.review_flags_set: true` and the
+    projector folds `pending_review` / `review_reason` /
+    `suspected_duplicate_of` / `suspected_duplicate_score` onto the item's
+    in-memory copy — exactly the shape `flag_suspected_duplicates` writes at
+    capture, reached through an additive event instead of a rewrite.
+
+    The flag is also self-fencing: `_is_pending_review` is a bar on BOTH
+    sides of the auto-merge gate, so a flagged pair structurally cannot be
+    auto-merged again while the flag stands. Clearing it is the user's call
+    (`clear_review_flags`, the Keep-both verb).
+
+    Same guard set as `clear_review_flags`: id normalization over legacy
+    spellings, loud CommitmentIdError on no match, refuses a CLOSED item
+    ({"status": "not_open"} — a closed item has no question left to ask),
+    scan→append inside the writer lock (R1c). NOT idempotent by itself: the
+    caller short-circuits on the PROJECTED `pending_review` before calling,
+    which is the only reading that sees a previously folded flag.
+    """
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"flag_review:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        data: dict = {
+            "commitment_id": cid,
+            "review_flags_set": True,
+            "pending_review": True,
+            "review_reason": (reason or "looks like a duplicate")[:200],
+            "suspected_duplicate_of": str(suspected_duplicate_of),
+            "flagged_by": flagged_by,
+        }
+        if score is not None:
+            data["suspected_duplicate_score"] = score
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "flagged", "commitment_id": cid,
+            "suspected_duplicate_of": str(suspected_duplicate_of), "event": ev}
 
 
 def mark_partial_received(
@@ -2297,6 +2398,7 @@ __all__ = [
     "reassign_commitment",
     "confirm_commitment_owner",
     "clear_review_flags",
+    "flag_duplicate_for_review",
     "mark_partial_received",
     "split_commitment",
     "reopen_commitment",

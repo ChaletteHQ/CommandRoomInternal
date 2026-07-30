@@ -85,6 +85,7 @@ try:
         _bigrams,
         _commitment_field,
         _commitment_id,
+        _is_pending_review,
         _jaccard,
         _overlap_coefficient,
         _tokenize,
@@ -97,6 +98,7 @@ except ImportError:  # direct-path import (tests, bash one-liners)
         _bigrams,
         _commitment_field,
         _commitment_id,
+        _is_pending_review,
         _jaccard,
         _overlap_coefficient,
         _tokenize,
@@ -121,6 +123,11 @@ DUP_TITLE_STRONG = 0.7
 # signal on either side — e.g. two bare self-owed tasks). Title-only evidence
 # must be near-verbatim before we spend an ask on it.
 DUP_TITLE_UNCORROBORATED = 0.85
+
+# AUTOAPPLY §4c — the AUTO-MERGE bar. Above DUP_TITLE_STRONG by design: this
+# tier does not ask, so "near-verbatim" is the floor, not "strong enough to
+# be worth a question".
+DUP_TITLE_AUTO = 0.9
 
 
 def _person_name_index(workspace_root) -> dict:
@@ -402,6 +409,173 @@ def find_suspected_duplicate(
     return best
 
 
+def auto_merge_eligible(
+    new_data: dict,
+    open_ev: dict,
+    *,
+    name_index: Optional[dict] = None,
+    now_dt: Optional[_dt.datetime] = None,
+    window_days: int = DUP_WINDOW_DAYS,
+) -> Optional[dict]:
+    """AUTOAPPLY §4c — the auto-MERGE gate: `{survivor_id, score, predicate}`
+    when this new capture and `open_ev` are the same real-world commitment
+    beyond adjudication, else None.
+
+    WHY A TIER ABOVE C4 RATHER THAN A RETUNE OF IT. C4 is a ledger-integrity
+    fix: it stops silent duplication by FLAGGING, which by construction ADDS
+    a confirm row. It converted an invisible cost (duplicate items) into a
+    visible one (adjudication rows). This gate sits above it so a duplicate
+    the system is certain about costs ZERO rows instead of one.
+
+    Every bar must hold, and each is strictly tighter than C4's:
+      * window — same DUP_WINDOW_DAYS as the flag tier (14, unchanged);
+      * owner — resolved on BOTH sides and equal. C4 lets a missing owner
+        pass vacuously; the auto tier never does. A vacuous pass is the
+        absence of evidence, and this tier acts on evidence;
+      * counterparty — resolved ids overlapping, or both sides genuinely
+        counterparty-free (self-owed). NAME-token agreement is enough to
+        ASK but never enough to act: raw-spelling drift is exactly the
+        lenient match C4 needs and precision forbids here;
+      * title ≥ DUP_TITLE_AUTO (0.9) after person-name stripping;
+      * DIFFERENT source_refs — cross-writer capture IS the corroboration
+        (two independent systems observed the same real-world ask). Same
+        ref twice is one source seen twice, which corroborates nothing —
+        §2's independence rule, the same rule the §6 fence enforces;
+      * neither side pending_review for any other reason, and the open side
+        has no open sub-items (SUB1 D3 — a merge would move them silently).
+
+    Pure over supplied data — no reads, no writes."""
+    if new_data.get("pending_review") or _is_pending_review(open_ev):
+        return None
+    n_open_subs = (open_ev.get("data") or {}).get("n_subitems_open")
+    if isinstance(n_open_subs, int) and not isinstance(n_open_subs, bool) \
+            and n_open_subs > 0:
+        return None
+    if new_data.get("parent_id") or (open_ev.get("data") or {}).get("parent_id"):
+        return None
+
+    # Reuse the flag tier's structural guards (split/sub-item provenance,
+    # window, owner veto, counterparty veto) — one implementation, so the two
+    # tiers can never disagree about what is even a candidate.
+    base = score_suspected_duplicate(
+        new_data, open_ev, name_index=name_index, now_dt=now_dt,
+        window_days=window_days)
+    if base is None:
+        return None
+
+    new_owner = new_data.get("owner_id") or None
+    open_owner = _commitment_field(open_ev, "owner_id") or None
+    if not (new_owner and open_owner and str(new_owner) == str(open_owner)):
+        return None
+
+    d_open = open_ev.get("data") if isinstance(open_ev.get("data"), dict) else {}
+    new_cp_ids, _ = _counterparty_signal(new_data, name_index or {})
+    open_cp_ids, _ = _counterparty_signal(d_open, name_index or {})
+    if new_cp_ids or open_cp_ids:
+        # Both sides must carry resolved ids AND overlap. One side resolved
+        # and the other name-only is the ASK case, never the act case.
+        if not (new_cp_ids and open_cp_ids and (new_cp_ids & open_cp_ids)):
+            return None
+
+    new_ref = str(new_data.get("source_ref") or "").strip()
+    open_ref = str(d_open.get("source_ref") or
+                   open_ev.get("source_ref") or "").strip()
+    if not new_ref or not open_ref or new_ref == open_ref:
+        return None
+
+    # Re-score at the auto bar. `base["score"]` was computed against the
+    # tier's threshold, not this one.
+    name_toks = _counterparty_signal(new_data, name_index or {})[1] | \
+        _counterparty_signal(d_open, name_index or {})[1]
+    title_toks = _tokenize(_title_of(new_data)) + _tokenize(_title_of(d_open))
+    drop = _expand_name_drop(name_toks, title_toks) if name_toks else set()
+    score = title_similarity(_title_of(new_data), _title_of(d_open),
+                             drop_tokens=drop)
+    if score < DUP_TITLE_AUTO:
+        return None
+
+    return {
+        "survivor_id": _commitment_id(open_ev),
+        "score": round(score, 3),
+        # §7 — one string a later audit reads the REASON off, so "why did you
+        # do that?" is answerable from the substrate, not a vanished chat.
+        "predicate": f"cross_writer_dup:{round(score, 3)}",
+    }
+
+
+def find_auto_merge(
+    new_data: dict,
+    open_commitments: list,
+    *,
+    name_index: Optional[dict] = None,
+    now_dt: Optional[_dt.datetime] = None,
+    window_days: int = DUP_WINDOW_DAYS,
+) -> Optional[dict]:
+    """Best auto-mergeable survivor for one new capture, or None. When two
+    open items both clear the gate the capture is ambiguous about WHICH it
+    duplicates — that is adjudication, so it returns None and the flag tier
+    takes over."""
+    hits = []
+    for open_ev in open_commitments or []:
+        m = auto_merge_eligible(
+            new_data, open_ev, name_index=name_index, now_dt=now_dt,
+            window_days=window_days)
+        if m:
+            hits.append(m)
+    return hits[0] if len(hits) == 1 else None
+
+
+def stamp_is_stale(ev: dict, *, now_dt: Optional[_dt.datetime] = None,
+                   window_days: int = DUP_WINDOW_DAYS) -> bool:
+    """Is this stamped capture's auto-merge DECISION older than the window?
+
+    AUTOAPPLY review F-6. The gate's `DUP_WINDOW_DAYS` bar was evaluated once,
+    at capture; the D1 split means the action happens a fire later. Nothing
+    re-checked it, so a 190-day-old stamp still applied at face value. The
+    stamp rides the capture event, so the decision's age IS the stamped
+    item's capture age. Unparseable capture ts fails SAFE (stale) — the same
+    direction the §6 fence takes on an unreadable timestamp."""
+    if now_dt is None:
+        now_dt = _dt.datetime.now(_dt.timezone.utc)
+    captured = _parse_dt(event_time(ev))
+    if captured is None:
+        return True
+    return (now_dt - captured) > _dt.timedelta(days=window_days)
+
+
+def has_stale_auto_merge_stamp(
+    open_commitments: list,
+    *,
+    now_dt: Optional[_dt.datetime] = None,
+    window_days: int = DUP_WINDOW_DAYS,
+) -> bool:
+    """Is the apply half demonstrably NOT running? (AUTOAPPLY review F-5.)
+
+    True when any OPEN, not-yet-flagged commitment carries an `auto_merge_of`
+    stamp older than the window. A stamp is a decision waiting on
+    `apply_auto_merges`; one that aged past the window is proof the daily
+    fire never came. C4's guarantee is that a duplicate ALWAYS becomes a
+    visible question, and the stamp bypasses the flag tier to buy zero
+    adjudication rows — a trade that only pays if the fire actually runs.
+    When it doesn't, capture falls back to the flag tier so the guarantee
+    holds without the fire.
+
+    Self-healing, and that matters because the stamp can never be erased
+    (append-only): once the fire runs again, `apply_auto_merges` flags every
+    stale stamp for review, and a flagged item is excluded here — so the
+    staleness set drains and the auto tier re-enables on its own. Pending
+    review is the exclusion for exactly that reason."""
+    for ev in open_commitments or []:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if not d.get("auto_merge_of"):
+            continue
+        if _is_pending_review(ev):
+            continue
+        if stamp_is_stale(ev, now_dt=now_dt, window_days=window_days):
+            return True
+    return False
+
+
 def _dedup_enabled() -> bool:
     return os.environ.get("CR_DEDUP_CHECK", "1") != "0"
 
@@ -431,6 +605,15 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
             return events
         name_index = _person_name_index(workspace_root)
         now_dt = _dt.datetime.now(_dt.timezone.utc)
+        # AUTOAPPLY review F-5 — the dead-fire fallback, computed ONCE per
+        # batch off the open set already in hand. A stamp older than the
+        # window that is still sitting unapplied is proof `apply_auto_merges`
+        # is not firing; while that is true, capture stops buying zero
+        # adjudication rows on credit and goes back to ASKING. This is the
+        # site that runs when the daily fire is dead — an apply-time fallback
+        # alone would never execute in exactly the case it is meant to cover.
+        rail_is_dead = has_stale_auto_merge_stamp(
+            open_commitments, now_dt=now_dt)
 
         out = []
         for ev in events:
@@ -438,6 +621,19 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
                 out.append(ev)
                 continue
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            # AUTOAPPLY §4c — the auto tier is evaluated FIRST, above the
+            # flag. A duplicate the gate is certain about is STAMPED for the
+            # merge instead of flagged for a question.
+            auto = None if rail_is_dead else find_auto_merge(
+                data, open_commitments, name_index=name_index, now_dt=now_dt,
+            )
+            if auto is not None and auto["survivor_id"] != data.get("id"):
+                new_data = {**data,
+                            "auto_merge_of": auto["survivor_id"],
+                            "auto_merge_score": auto["score"],
+                            "auto_predicate": auto["predicate"]}
+                out.append({**ev, "data": new_data})
+                continue
             match = find_suspected_duplicate(
                 data, open_commitments, name_index=name_index, now_dt=now_dt,
             )
@@ -464,12 +660,199 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
         return events
 
 
+def apply_auto_merges(workspace_root, *, source_skill: str,
+                      batch_id: Optional[str] = None) -> dict:
+    """AUTOAPPLY §4c — apply every stamped auto-merge. THE detector half.
+
+    WHY THIS IS SPLIT FROM THE CAPTURE HOOK (a deviation from SPEC §4c,
+    which reads "Action: supersede_commitment(newer → older survivor)" in
+    the capture hook itself): `flag_suspected_duplicates` runs INSIDE
+    `atomic_append_jsonl`, BEFORE the batch is written. The newer commitment
+    does not exist on disk yet, and `supersede_commitment` resolves BOTH ids
+    through `_scan_commitment_index` — so the specced call cannot succeed
+    there. It would also put a policy action (propose/apply/resolve on the
+    brain rail) inside a substrate primitive, which is the wrong layer.
+
+    So the GATE is evaluated at capture exactly as specced — pure, no
+    writes — and stamps `data.auto_merge_of` on the new event; this applies
+    it on the next fire. The window between them costs no adjudication row:
+    a stamped capture is NOT flagged pending_review, so it renders as an
+    ordinary open item rather than a question. That is already strictly
+    better than the flag tier's one-row-per-duplicate.
+
+    LB2 auto lifecycle (FB-20): propose(tier="auto") + apply + resolve in
+    the SAME iteration — the auto proposal never rests open. Direction is
+    newer-superseded / older-survives (§11: the older item carries the
+    accumulated context; refs union either way).
+
+    THE STAMP IS A DECISION, NOT A LICENCE (review F-1/F-3/F-6). The split
+    opened a gap between deciding and acting, so this half re-validates the
+    WHOLE gate at apply time, not just the one precondition it started with:
+
+      * the pair was not REVERSED by a human (`undone_auto_merges` — the
+        durable negation; skipped, never re-applied);
+      * the stamped item is not flagged for review (pre-existing);
+      * the SURVIVOR is still open and not itself flagged — "both items open"
+        is a §4c precondition of equal standing, and `supersede_commitment`
+        deliberately allows a CLOSED survivor, which is right for a merge a
+        human confirmed while looking at it and wrong for an unattended stamp
+        applied a fire later (the live ask would be superseded into an
+        abandoned item);
+      * the stamp is still inside `DUP_WINDOW_DAYS`.
+
+    Every one of those failures FALLS BACK TO THE FLAG TIER
+    (`flag_duplicate_for_review`) instead of skipping quietly, so the pair
+    becomes the visible question C4 guarantees. A silent skip leaves the
+    duplicate both invisible AND unmerged — strictly worse than never having
+    had an auto tier. The reversed case is the one exception: the undo
+    already put that question in front of the user, and re-asking after a
+    Keep-both would be nagging.
+
+    Returns {"merged": [...], "skipped": [...], "errors": [...]}. Loud
+    per-item, never aborts the run."""
+    from brain_proposals import propose, resolve_proposal
+    # The negation lives with the module that OWNS the events it reads —
+    # brain_undo writes the brain_change_undone markers and registers the
+    # reverser; "which auto-changes did the user reverse?" is an undo-registry
+    # question, not a dedup one.
+    from brain_undo import undone_auto_merges
+    from commitment_state import flag_duplicate_for_review, supersede_commitment
+
+    ws = Path(workspace_root)
+    events_path = ws / "_hq" / "data" / "events.jsonl"
+    out: dict = {"merged": [], "skipped": [], "errors": []}
+    if not events_path.exists():
+        return out
+    # §7 — ONE batch per RUN, timestamped, matching the efb_/idr_/pbs_
+    # precedents. A per-SKILL constant made every auto-merge that skill ever
+    # applied one undoable batch, so a single `undo` reached back across days
+    # and reversed runs the user never saw (review F-2).
+    batch_id = batch_id or ("amg_" + _dt.datetime.now(_dt.timezone.utc)
+                            .strftime("%Y%m%dT%H%M%SZ"))
+    # The narrating surface needs the ref it is advertising "say undo" for.
+    out["batch_id"] = batch_id
+
+    open_by_id = {}
+    for ev in load_open_commitments(events_path):
+        open_by_id[_commitment_id(ev)] = ev
+    undone = undone_auto_merges(ws)
+    now_dt = _dt.datetime.now(_dt.timezone.utc)
+
+    def _fallback_to_flag(cid, survivor_id, why, score=None) -> None:
+        """Skip AND ask — never a silent skip, never a silent drop."""
+        row = {"commitment_id": cid, "survivor_id": survivor_id, "why": why}
+        try:
+            res = flag_duplicate_for_review(
+                ws, cid, suspected_duplicate_of=survivor_id,
+                reason=f"looks like a duplicate — {why}",
+                flagged_by=source_skill, source_skill=source_skill,
+                score=score)
+            row["flagged"] = res.get("status")
+        except Exception as exc:  # loud per-item, contained per-run
+            row["flagged"] = f"error: {type(exc).__name__}: {exc}"
+        out["skipped"].append(row)
+
+    for cid, ev in list(open_by_id.items()):
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        survivor_id = d.get("auto_merge_of")
+        if not survivor_id:
+            continue
+        score = d.get("auto_merge_score")
+        # F-1 — a human already reversed THIS merge. The stamp cannot be
+        # erased (append-only), so reading the negation here is what makes
+        # the undo stick.
+        if (str(cid), str(survivor_id)) in undone:
+            out["skipped"].append({
+                "commitment_id": cid, "survivor_id": survivor_id,
+                "why": "you reversed this merge — never re-applied "
+                       "automatically"})
+            continue
+        # Re-check at apply time — the stamp is a DECISION, not a licence.
+        # Anything that flagged the item for review since capture wins. This
+        # is also what makes the fallback below idempotent: once a stamp has
+        # fallen back to the flag tier, the next run stops HERE rather than
+        # writing a second flag every day.
+        if _is_pending_review(ev):
+            out["skipped"].append({"commitment_id": cid,
+                                   "why": "flagged for review since capture"})
+            continue
+        # F-3 — the survivor must still be a legal merge target.
+        survivor_ev = open_by_id.get(str(survivor_id))
+        if survivor_ev is None:
+            _fallback_to_flag(cid, survivor_id,
+                              "the item it duplicates was closed after this "
+                              "was captured", score)
+            continue
+        if _is_pending_review(survivor_ev):
+            _fallback_to_flag(cid, survivor_id,
+                              "the item it duplicates is itself flagged for "
+                              "review", score)
+            continue
+        # F-6 — the window bar was evaluated at capture and nowhere else.
+        if stamp_is_stale(ev, now_dt=now_dt):
+            _fallback_to_flag(cid, survivor_id,
+                              f"the match is older than {DUP_WINDOW_DAYS} "
+                              "days and was never applied", score)
+            continue
+        predicate = d.get("auto_predicate") or "cross_writer_dup"
+        try:
+            res = propose(
+                ws,
+                kind="commitment_merge",
+                fingerprint=f"commitment_merge:{cid}:{survivor_id}",
+                evidence=f"{predicate} — same owner, same counterparty, "
+                         f"near-verbatim title, different writers",
+                action_tuples=[{"action": "confirm"}, {"action": "hold"}],
+                tier="auto",
+                change_class="commitment_merge",
+                detector=source_skill,
+                render_line=(f"Merged a duplicate capture of "
+                             f"{(d.get('title') or '')[:80]!r}"),
+                extra={"commitment_id": cid, "survivor_id": survivor_id,
+                       "auto_predicate": predicate},
+            )
+            if res.get("status") != "proposed":
+                out["skipped"].append({"commitment_id": cid,
+                                       "why": res.get("status")})
+                continue
+            merged = supersede_commitment(
+                ws, survivor_id, cid,
+                merged_by=source_skill, source_skill=source_skill,
+                evidence=predicate,
+                auto_merge=True,
+                auto_merge_evidence={
+                    "auto_predicate": predicate,
+                    "auto_merge_score": d.get("auto_merge_score"),
+                    "brain_batch_id": batch_id,
+                    "brain_change_class": "commitment_merge",
+                    "merged_from_writer": d.get("source_ref") or "",
+                },
+            )
+            resolve_proposal(ws, res["proposal_id"], "applied",
+                             resolved_by=source_skill,
+                             source_skill=source_skill)
+            out["merged"].append({"commitment_id": cid,
+                                  "survivor_id": merged.get("survivor_id"),
+                                  "status": merged.get("status"),
+                                  "predicate": predicate})
+        except Exception as exc:  # loud per-item, contained per-run
+            out["errors"].append({"commitment_id": cid,
+                                  "error": f"{type(exc).__name__}: {exc}"})
+    return out
+
+
 __all__ = [
     "DUP_WINDOW_DAYS",
     "DUP_TITLE_STRONG",
     "DUP_TITLE_UNCORROBORATED",
+    "DUP_TITLE_AUTO",
     "title_similarity",
     "score_suspected_duplicate",
     "find_suspected_duplicate",
+    "auto_merge_eligible",
+    "find_auto_merge",
+    "stamp_is_stale",
+    "has_stale_auto_merge_stamp",
+    "apply_auto_merges",
     "flag_suspected_duplicates",
 ]

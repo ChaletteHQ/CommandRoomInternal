@@ -23,8 +23,11 @@ candidate dicts with ready-to-render `render_line`s (Bug #92b — surfaces
 render verbatim, never re-decide inclusion); a separate job entry point does
 the propose() emission + receipt for the `deal-signals` MAINTENANCE_JOBS row.
 
-Won-language markers are IMPORTED from prospect_conversion_detector
-(CONVERSION_MARKERS) — one vocabulary, never forked.
+Won-language markers come from prospect_conversion_detector via its
+``_conversion_markers()`` accessor — one vocabulary, never forked. The
+accessor (not the raw ``CONVERSION_MARKERS`` constant) is the contract:
+it carries the bilingual overlay when a workspace activates one, so the
+won lane here and the conversion lane there always read the same list.
 
 Pure / substrate-only / no connectors. stdlib only.
 """
@@ -42,7 +45,7 @@ if str(_HERE) not in sys.path:
 
 import event_refs  # noqa: E402
 from prospect_conversion_detector import (  # noqa: E402
-    CONVERSION_MARKERS,
+    _conversion_markers,
     _event_org_ids,
     _event_text,
 )
@@ -336,7 +339,7 @@ def detect_deal_signals(workspace_root: str | Path, *,
                         _push("deal_update", oid, proposal_kind="stage",
                               proposed_stage=stage, thread=thread,
                               evidence=f'"{hit}" language', source_ev=ev)
-                won_hit = next((m for m in CONVERSION_MARKERS if m in text), None)
+                won_hit = next((m for m in _conversion_markers() if m in text), None)
                 if won_hit:
                     _push("deal_update", oid, proposal_kind="won",
                           thread=thread,

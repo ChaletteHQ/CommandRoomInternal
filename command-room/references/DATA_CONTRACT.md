@@ -140,10 +140,15 @@ Note: the key is `threads` in v2.2, but thread IDs retain the `project_` prefix 
 }
 ```
 
-**Required:** `id`, `folder_name`, `kind`, `affiliation_id`, `status`, `first_seen`.
+**Required:** `id`, `folder_name` (**key required, value nullable**), `kind`, `affiliation_id`, `status`, `first_seen`.
 `kind` ∈ {`initiative`, `deal`, `advisory`, `investment`, `board`, `relationship`, `theme`, `concern`, `ritual`, `personal`, `other`}.
 `affiliation_id` is the most specific operating org; the tree walk via `parent_org_id` resolves holding context.
-**`folder_name` must match an actual folder on disk** (workspace root, case-sensitive). `cleanup` verifies this every run.
+**`folder_name` must match an actual folder on disk, or be `null`.** Three properties of that match, all load-bearing (SPEC FOLDERGUARD):
+- **Nullable.** `null` means "this thread has no folder on disk" and is the canonical writer's honest answer. `thread_writer.create_thread` resolves the name against the real directory listing and writes `null` on no match — it does **not** guess a slug. A guess is strictly worse than nothing: it looks valid to every reader, and before FOLDERGUARD the next cleanup sweep fabricated the folder to match it. Threads with no filesystem presence (deal and objective threads) legitimately carry `null`.
+- **Nested.** The value is a workspace-relative path, not a root-level basename — `Acme Co/sourcing-bot` above is the doc's own example, and live records bind deeper still.
+- **Case-INsensitive.** The mount is case-insensitive, so the compare is too; the resolver stores the casing the filesystem actually uses (`command room` → `Command Room`). It folds case **only** — never separators, because `acme_widgets` and `Acme Widgets` are genuinely different directories.
+
+`cleanup` verifies this every run (`C9.thread_folder_missing`, non-terminal threads only).
 **`last_activity` is DEPRECATED (v4.5.2, F-54/F-61):** no code maintains it — an unmaintained ingest-era stamp. Never rank or compute staleness from it; derive recency from events at read time via `shared/scripts/thread_activity.py` (zero-event threads may read it as a floor only). Full rule in `ORG_AND_THREAD_MODEL.md`.
 
 ### Org record (nested tree)

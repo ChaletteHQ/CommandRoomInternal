@@ -86,9 +86,10 @@ Read `skills/weekly-recap/SKILL.md`. Execute its Phases 1-6 verbatim against the
 
 **Visual pass note (SPEC OUT2 §3):** the weekly-recap skill's visual pass (render-then-critique of the saved .docx per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass") is PART of the skill's phases and runs here too. Its page-preview PNGs go to a session temp dir only — that render does NOT violate this orchestrator's "no writing rendered chat output to disk" rule (the previews are ephemeral critique input, not output; nothing lands in `_hq/` beyond the canonical .docx and the `visual_gate` audit event). In this sandbox the ladder usually returns `None` — log the skipped event and move on; never install a renderer from a scheduled task.
 
-- **Window:** last 7 days `[now - 7d, now]` in workspace timezone. Same as the skill's default.
+- **Window (SPEC CATCHUP1 F-2):** since the last successful Friday Wrap, floored at the 7-day default and ceilinged at 30 days — the skill's "Window definition" section owns the computation. Call `catchup.catchup_window(<workspace_root>, "friday-wrap", floor_hours=168, cap_days=30, fired_via=lateness["receipt_fired_via"], scheduled_only=True)` and hand its **`start_aware` / `end_aware`** to the skill's Phase 1 instead of `[now - 7d, now]`. A normal weekly fire gets exactly the 7 days it always had; a fire after a missed Friday covers both weeks, because a fixed 7-day window means the skipped week is never recapped and the next fire does not reach back over it. When it returns `extended: true`, the recap headline names the real span (*"the last 12 days"*, never *"this week"*). `fired_via` comes from Phase 2.9 and is never guessed — a human typing "weekly recap" gets the plain 7 days.
+- **Window clock (SPEC CATCHUP1 F-1):** the connector queries get `start_aware` / `end_aware` — the offset-carrying instants — never the naive `start` / `end`. The skill's Phase 1 is documented in workspace TZ; `catchup_window`'s math is machine-local because the scheduler is. Handing a bare naive value across that seam is LATETZ's failure class and is invisible on any machine where the two clocks agree. The skill's "Window definition" section owns the full rule; keep the naive pair for the receipt's `window_start` / `window_end`, which are read back by the next fire's machine-local math.
 - **Grouping mode:** by-project (the skill's default — customer's mental model is project-shaped).
-- **Connector caps:** use the skill's defaults (250 received + 250 sent emails, 200 Slack messages, 100 Drive files, 50 transcripts, all calendar events that occurred).
+- **Connector caps:** use the skill's defaults (250 received + 250 sent emails, 200 Slack messages, 100 Drive files, 50 transcripts, all calendar events that occurred). **These were tuned for 7 days and are unchanged; the window above can be 30.** So the skill's **COVERAGE HONESTY GATE** (its Phase 2, SPEC CATCHUP1 F-2) is in force on every `extended: true` fire: a capped read that comes back at its cap means this fire SAMPLED the span rather than covering it — the headline says so, and the receipt below carries `window_incomplete_before` so the next fire reaches back instead of starting after this one.
 - **scan-for-commitments side effect:** run per the skill's Phase 3. Commitments captured from the week's meetings deepen the recap's commitment counts.
 - **Output surfaces:** inline chat (markdown recap) + saved `.docx` at `_hq/meetings/Weekly_Recap_<YYYY-MM-DD>.docx` per the skill's Phase 5.
 - **Surface-preference filter (Phase 6 Loop 2):** when the recap surfaces per-person/per-project callouts the CEO could act on, drop any the CEO has taught the system to stop surfacing — `from surface_preferences import load_surface_preferences, is_suppressed`; keep a callout only if `not is_suppressed(prefs, "friday-wrap", item_class=<class>, entity_id=<person/project id>)`. Missing store → no-op; the recap's counts and substrate are untouched.
@@ -129,12 +130,25 @@ log_receipt(
     late_tier=lateness["tier"] if lateness["tier"] in ("note", "degrade") else None,
     extra_data={
         "recap_path": "_hq/meetings/Weekly_Recap_<YYYY-MM-DD>.docx",
-        "window_start": "<ISO>", "window_end": "<ISO>",
+        # The window this fire ACTUALLY covered — Phase 3's catchup_window
+        # result verbatim, never a re-derived [now-7d, now]. This receipt is
+        # what the NEXT fire's window starts from. The NAIVE pair: this is
+        # machine-local receipt math, not a connector query (F-1).
+        "window_start": "<the catchup_window `start`>",
+        "window_end": "<the catchup_window `end`>",
+        "window_extended": <the catchup_window `extended` flag>,
+        # SPEC CATCHUP1 F-2 — the coverage gate's output. OMIT THE KEY when
+        # no capped read truncated; that omission is the positive assertion
+        # "everything before this point is handled" and is the only thing
+        # that collapses the next window back to 7 days.
+        "window_incomplete_before": <receipt_window_marker(window, incomplete=<any capped read came back at its cap>)>,
         "events_captured": N, "commitments_found": N,
         "telemetry": {...},
     },
 )
 ```
+
+**The marker is computed, never hand-written** (`from catchup import receipt_window_marker`). It returns the ISO string or `None`, and `None` means drop the key from `extra_data` entirely. The spelling is `catchup.WINDOW_INCOMPLETE_FIELD` and nothing else — an improvised synonym is invisible to the reader that consumes it and silently re-opens the orphaning bug (F-50 P2c). If this fire captured nothing at all and the window it was handed already carried a marker, it is still `incomplete=True`: the marker carries forward rather than being cleared by a fire that never looked.
 
 Note: the weekly-recap skill ALSO appends its own `weekly_recap_run` event per its Phase 6. Both events coexist — the `weekly_recap_run` records the skill's invocation; the `pack_run` records the scheduled-task fire that invoked it. Same pattern as morning-brief / morning-briefing.
 

@@ -114,7 +114,7 @@ python3 shared/scripts/surface_drivers.py my-plate \
     --fired-via "<the Phase 2.9 receipt_fired_via>"
 ```
 
-**`--fired-via` is MANDATORY on the page-1 call — it IS the receipt (FB-7).** Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as `widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON. Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3 guard window never double-receipts.
+**`--fired-via` is MANDATORY on the page-1 call — it IS the receipt (FB-7).** Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as `widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON. Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3 guard window never double-receipts. Pages 2+ also slice the page-set page 1 froze rather than re-reading the substrate (PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE question asked ONCE") — if `CR-PAGINATION` carries `refreshed`, `suppressed`, or `clamped`, SAY it in one line before the rows.
 
 The driver stamps the header from `count_commitments` and enforces the CTS1 parity by construction (the PROMISED + PERSONAL groups come from the SAME partition the count tiles read — no inline `n_promised + n_personal == you_owe` assert to hand-write, no way for the numbers to disagree). Because Phase 3's inline builder is gone, an early-stopping fire can no longer render a group while skipping the receipt (the FB-15 lesson, applied to Surface 2).
 

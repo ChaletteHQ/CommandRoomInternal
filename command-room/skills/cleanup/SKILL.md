@@ -176,6 +176,19 @@ python3 shared/scripts/integrity_check.py <workspace_root> --json
 
 Returns structured findings with severity ERROR / WARN / INFO across ~13 referential checks: missing/malformed ids, unresolved affiliations, org/thread parent cycles, engagement endpoints, person↔org/thread link symmetry, dangling event references (test-residue detector), dead aliases, orphan folders, thread `folder_name` missing on disk, missing PROJECT_BRAIN, and **duplicate event seq**. The checker NEVER fixes — it only reports. Fold its findings in; do not re-derive them by hand.
 
+**Snapshot the findings here — Phase 3z reconciles against them (FOLDERGUARD §2.5).** Keep the Phase 3a result in memory for the rest of the fire:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import integrity_check as ic, phase_order_guard as pog
+from pathlib import Path
+snap = pog.snapshot(ic.run_checks(Path('<workspace_root>')))
+Path('<session_dir>/phase3a_snapshot.json').write_text(json.dumps(snap), encoding='utf-8')
+print('phase 3a snapshot:', len(snap), 'findings')
+"
+```
+
 ### 3a-bis. Lint skill settings (read-only DETECT — settings-layer C4)
 
 ```
@@ -291,16 +304,30 @@ ws = '<workspace_root>'
 _d = json.load(open(ws + '/_hq/data/entities.json'))
 ent = _d['entities'] if isinstance(_d.get('entities'), dict) else _d
 threads = ent.get('threads') or ent.get('projects') or []
-migrated, errors = [], []
+migrated, errors, skipped = [], [], []
 for t in threads:
+    # FOLDERGUARD: terminal threads are not migrated. This loop had NO status
+    # filter at all, so it touched every thread ever created — a wider scope than
+    # the C9 checker, which only inspects non-archived ones. Matches the codebase
+    # terminal pair (deal_state.py:186, objective_state.py:621).
+    if t.get('status') in ('resolved', 'archived'): continue
     bp = r.default_brain_path(ws, t['id'])
-    if not bp: continue
+    # None now also means 'folder_name names no real directory' — do NOT write
+    # there. Writing was what fabricated the folder and then hid the C9 finding.
+    if not bp:
+        skipped.append(t['id']); continue
     try:
-        m.migrate_brain(ws, t['id'], bp, dry_run=False); migrated.append(t['id'])
+        # Count only brains actually CHANGED, never merely visited — migrate_brain
+        # returns {'changed': bool} and is a no-op after the first conversion.
+        # Counting visits is what let a fabricated folder show up in actions_taken[].
+        if m.migrate_brain(ws, t['id'], bp, dry_run=False).get('changed'):
+            migrated.append(t['id'])
     except Exception as e:
         errors.append((t['id'], repr(e)))  # per-thread, surfaced — not silently swallowed
-print('migrated/verified', len(migrated), 'brains; per-thread errors:', len(errors))
+print('migrated/verified', len(migrated), 'brains;', len(skipped),
+      'skipped (no resolvable folder); per-thread errors:', len(errors))
 if errors: print('PER-THREAD-ERRORS:', errors)
+if skipped: print('NO-FOLDER-SKIPPED:', skipped)
 "
 ```
 Two distinct failure modes: a **missing/broken module** is a loud ABORT (the assert-import above) — surface it, never skip Phase 3.5a; a **per-thread** exception is collected and surfaced in the run log but does not abort the sweep. `migrate_brain` **NEVER deletes a hand-written person** — anyone with no events relocates to a "Manually tracked" durable list, never dropped. Record into `actions_taken[]` only the brains it actually changed.
@@ -315,13 +342,22 @@ ws = '<workspace_root>'
 _d = json.load(open(ws + '/_hq/data/entities.json'))
 ent = _d['entities'] if isinstance(_d.get('entities'), dict) else _d
 threads = ent.get('threads') or ent.get('projects') or []
-refreshed = []
+refreshed, skipped = [], []
 for t in threads:
-    if t.get('status') == 'archived': continue
+    # FOLDERGUARD: the filter existed but covered ONE terminal status, so a
+    # thread at 'resolved' rendered straight through. Widened to the codebase
+    # terminal pair (deal_state.py:186, deal_signal_detector.py:210,
+    # objective_state.py:621) — 'active'/'paused'/'scoping' still render.
+    if t.get('status') in ('archived', 'resolved'): continue
     try:
-        r.render_live_state(ws, t['id']); refreshed.append(t['id'])
+        res = r.render_live_state(ws, t['id'])
+        # 'no_brain_path' means the folder does not resolve — skipped, not refreshed.
+        # Count only brains actually rendered, never merely visited.
+        if res.get('status') == 'no_brain_path': skipped.append(t['id'])
+        elif res.get('rendered'): refreshed.append(t['id'])
     except Exception: pass
-print('refreshed', len(refreshed), 'brains')
+print('refreshed', len(refreshed), 'brains;', len(skipped), 'skipped (no resolvable folder)')
+if skipped: print('NO-FOLDER-SKIPPED:', skipped)
 "
 ```
 The render is **dirty-checked** — it only rewrites a block when a thread-tagged event newer than the block's recorded `source_seq` exists, so a quiet workspace is a fast no-op. It **byte-preserves** all hand-written brain content (only the marked Live-State region changes). Record refreshed brains into `actions_taken[]`.
@@ -608,6 +644,27 @@ links = run_objective_link_detector("<WORKSPACE>")   # {"candidates": N, "propos
 ```
 
 The detector consumes the envelope stamps that already exist — it never hooks a capture pipeline or re-reads content, and it reads events **org-scoped only** (masked/personal-lane items can never drive a row). Once-per-link discipline is `propose()`'s own machinery: an open row dedups, a dismissal takes the standard 60-day cooldown, snooze is the shared 7d; a link the CEO already confirmed never re-lists. No Monday-note line for this pass — the proposal IS the surface. Never narrate detector internals or confidence numbers beyond what the row's own text says.
+
+### 3z. Phase-ordering reconcile (FOLDERGUARD §2.5 — the meta-guard, runs LAST)
+
+Every mutating phase has now run. Re-run the checker and compare against the Phase 3a snapshot: **a finding must not disappear unless something claims credit for it.**
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import integrity_check as ic, phase_order_guard as pog
+from pathlib import Path
+before = json.loads(Path('<session_dir>/phase3a_snapshot.json').read_text(encoding='utf-8'))
+after = pog.snapshot(ic.run_checks(Path('<workspace_root>')))
+actions = <actions_taken>   # the list accrued across this fire
+unexplained = pog.reconcile(before, after, actions)
+print(pog.format_report(unexplained) or 'PHASE-ORDER GUARD — clean')
+"
+```
+
+This is the assertion that would have caught the phantom-folder bug in week one. Phase 3a raised `C9.thread_folder_missing`; Phases 3.5a/3.5b then created exactly those folders later in the *same* fire, so the next scan read `C9 = 0` and reported clean — the run concealed its own damage, and the fabricated folders only ever resurfaced as `C10.orphan_folder`, which Phase 3d merely flags. No per-phase assertion can see that; it is only visible across the fire.
+
+**Surface, never auto-fix.** Anything reported here is either a silent self-heal worth naming or a phase overwriting a finding it should have surfaced — both belong in the run record as a plain-English line ("one thing I flagged earlier quietly went away this week — worth a look"), and neither is safe for cleanup to act on unattended. Fold the count into `items_flagged_for_user[]`. A clean result says nothing to the CEO.
 
 ## Phase 4: Monday-Morning Report — the scorecard handshake (no scores)
 

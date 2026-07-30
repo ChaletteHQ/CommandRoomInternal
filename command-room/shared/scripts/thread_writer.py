@@ -219,6 +219,159 @@ def _slugify(s: str) -> str:
     return re.sub(r"_+", "_", s).strip("_") or "thread"
 
 
+# Folders that are never *guessed* as a project thread. Mirrors
+# integrity_check._NON_PROJECT_FOLDERS and its C10/C11 skip rules.
+#
+# SCOPE — this set answers ONE question: "when nothing was named, may this
+# folder be INVENTED as a candidate?" It does NOT answer "may a thread bind
+# here?" Those are different questions and conflating them is a real defect:
+# `integrity_check`'s list exists to decide whether an *unregistered* folder is
+# an orphan, and M's substrate already contains the counterexamples — several
+# live threads are registered against `Command Room` today. So this set (and
+# the depth cap below) gate the GUESSING legs of `resolve_folder_name` only.
+# An explicit `folder_name` is checked against disk and nothing else.
+_NON_PROJECT_FOLDERS = {
+    "_hq", "_archive", "_people", "_exploring", "_unrouted",
+    "Command Room",  # the product's own collateral folder
+}
+
+# How deep to GUESS a project folder. 1 = workspace root, 2 = one level of
+# nesting (`Parent/Child`). This is a bound on invention, not on what exists:
+# live records bind at depth 3 (`_hq/dormant/<name>`), and the explicit leg
+# resolves at any depth because it walks the path it was handed.
+_FOLDER_SEARCH_DEPTH = 2
+
+
+def _candidate_folders(workspace_root: Path, depth: int = _FOLDER_SEARCH_DEPTH) -> list[str]:
+    """Project folders as workspace-relative POSIX paths, root first then nested.
+
+    Nested folders are in scope because `folder_name` is already a relative path
+    in real records, not just a root-level basename (spec H: "the counterpart
+    search must cover nested project folders").
+    """
+    out: list[str] = []
+
+    def walk(d: Path, prefix: str, level: int) -> None:
+        if level > depth:
+            return
+        try:
+            children = sorted(d.iterdir())
+        except OSError:
+            return
+        for c in children:
+            if not c.is_dir() or c.name.startswith("."):
+                continue
+            if c.name in _NON_PROJECT_FOLDERS or c.name.startswith("_"):
+                continue
+            rel = f"{prefix}{c.name}"
+            out.append(rel)
+            walk(c, rel + "/", level + 1)
+
+    walk(workspace_root, "", 1)
+    return out
+
+
+def _fold(s: str) -> str:
+    """Case-fold a folder path for comparison, normalizing the separator only.
+
+    The mount is case-insensitive (spec H3), so the compare must be too — a
+    case-sensitive compare writes `null` for a folder that is really there
+    (slug `roncroft` vs on-disk `Roncroft`). It must NOT go further and fold
+    separators/punctuation away: `acme_widgets` and `Acme Widgets` are two
+    genuinely different directories, and treating them as one is the opposite
+    error — it revives the guess this function exists to kill.
+    """
+    return (s or "").strip().replace("\\", "/").strip("/").lower()
+
+
+def _resolve_on_disk(workspace_root: Path, rel: str) -> str | None:
+    """Walk `rel` segment by segment under the workspace root, recovering casing.
+
+    Answers only "is this a real directory?" — no exclusion set, no depth cap.
+    Returns the workspace-relative POSIX path as the filesystem actually spells
+    it (so `command room` comes back as `Command Room`), or `None` if any
+    segment is not a real directory.
+
+    Each segment is compared through `_fold`, so the H3 contract holds here too:
+    case folds, separators do not.
+    """
+    raw = (rel or "").strip().replace("\\", "/").strip("/")
+    if not raw:
+        return None
+    parts = raw.split("/")
+    # '.' / '..' are navigation, not folder names — a caller that hands us one
+    # is not naming a folder, and honoring it would let a record bind outside
+    # (or above) the workspace root.
+    if any(p in ("", ".", "..") for p in parts):
+        return None
+
+    cur = workspace_root
+    out: list[str] = []
+    for want in parts:
+        target = _fold(want)
+        hit = None
+        try:
+            children = sorted(cur.iterdir())
+        except OSError:
+            return None
+        for c in children:
+            if c.is_dir() and _fold(c.name) == target:
+                hit = c
+                break
+        if hit is None:
+            return None
+        out.append(hit.name)
+        cur = hit
+    return "/".join(out)
+
+
+def resolve_folder_name(workspace_root: str | Path,
+                        canonical_name: str,
+                        folder_name: str | None = None) -> str | None:
+    """Resolve a thread's `folder_name` against directories that actually exist.
+
+    Returns the **real** directory path (original casing preserved) or `None`.
+    Never guesses: `None` is an accepted schema value and an honest one, whereas
+    a slug guess is strictly worse than nothing because it looks valid to every
+    reader and, before FOLDERGUARD, got fabricated into a real folder on the
+    next cleanup sweep.
+
+    Two legs, and they are not the same question:
+
+    * **Explicit** — the caller named a folder. Resolve it against disk and
+      nothing else: any depth, no `_NON_PROJECT_FOLDERS` filter. Those
+      exclusions bound what may be *invented*; applying them here refuses
+      folders that exist and that live threads are already bound to (several
+      bind `Command Room`, three bind under `_hq/`, two of those at depth 3).
+      If it does not resolve, the answer is `None` — never a different folder.
+      Falling through would silently swap a typo'd argument for some other real
+      directory, producing a record that is disk-valid and semantically wrong.
+    * **Guessing** — nothing was named, so a candidate is being invented from
+      the canonical name and then its slug. Invention is exactly where the
+      exclusion set and the depth cap belong.
+
+    Every compare is case-folded (H3).
+    """
+    workspace_root = Path(workspace_root)
+
+    # Any non-empty string counts as "the caller named a folder", including a
+    # garbage one — whitespace-only and `/` are given-and-wrong, not unset, and
+    # falling through on them is the same silent swap as a typo. `None` and `""`
+    # are the two ways every caller says "no folder", so those guess.
+    if folder_name:
+        return _resolve_on_disk(workspace_root, folder_name)
+
+    existing = _candidate_folders(workspace_root)
+    by_fold = {_fold(p): p for p in existing}
+    for candidate in (canonical_name, _slugify(canonical_name)):
+        if not candidate:
+            continue
+        hit = by_fold.get(_fold(candidate))
+        if hit is not None:
+            return hit
+    return None
+
+
 def _threads(data: dict) -> list:
     """Live thread collection. Real data stores under `threads`; the legacy
     schema also names it `projects`. Prefer the one that already has rows."""
@@ -690,7 +843,9 @@ def create_thread(workspace_root: str | Path, *,
     record: dict[str, Any] = {
         "id": thread_id or _next_project_id(threads),
         "canonical_name": canonical_name.strip(),
-        "folder_name": folder_name or _slugify(canonical_name),
+        # FOLDERGUARD: resolved against real directories, never guessed. `None`
+        # when nothing matches — an honest gap the integrity checker can see.
+        "folder_name": resolve_folder_name(workspace_root, canonical_name, folder_name),
         "status": status,
         "first_seen": first_seen or _today(),
     }

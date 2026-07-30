@@ -577,6 +577,23 @@ Hard rules:
   S4). `change_summary` is informational prose describing WHAT changed
   (schedule shifts) and is deliberately NEVER folded into wording. Updates
   that carry none of the folded fields affect no fold.
+- `inbound_reconcile` (REPLYCLOSE, 2026-07) — **writer:**
+  `reconcile_inbound_commitments.reconcile_and_receipt`'s inbound twin,
+  `reconcile_inbound_and_receipt`, which is the ONE orchestrator behind both
+  inbound fires (inbox-triage's Phase 5.5 and the Waiting-On backstop's
+  Phase 2.6). One audit row per fire, always — a 0-scan run writes one too.
+  `data: {kind, status, fired_via, batch_id, inbound_scanned_count, n_closed,
+  n_pending, n_updated, n_partial_receipts, signal_fields, coverage}`.
+  **Named consumer:** `reconcile_inbound_commitments.validate_inbound_reconcile_ran`,
+  which both call sites run as their mandatory self-validation — a narrated
+  "checked your inbox" with no row here is a fire that did not happen.
+  `signal_fields` answers "did the reply checks RUN" (presence of the thread /
+  attachment fields on the fetch, counted separately from their truth) and
+  `coverage` answers "how much of the open set can this rail reach at all"
+  (items with no resolvable owner can never be closed by a reply, and the
+  receipt says so rather than implying full coverage). This is an AUDIT TRACE,
+  not a task receipt: it carries no `task_id`, `receipts.count_runs` never
+  sees it, and the host task still writes its own `pack_run`.
 
 ## Receipt contract (v4.5.2 R1)
 

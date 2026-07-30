@@ -84,6 +84,56 @@ def _reverse_commitment_close(workspace_root, change, *, undone_by, source_skill
     )
 
 
+def _reverse_commitment_merge(workspace_root, change, *, undone_by, source_skill):
+    # AUTOAPPLY §4c — split an auto-merged duplicate back out. Additive: the
+    # supersede event STAYS in history and reopen_commitment appends the
+    # reversing `commitment_reopened`, so the reopened item is its own record
+    # again. The survivor's folded `merged_source_refs` are a harmless
+    # residue — read-side provenance only, and no double-render, because the
+    # reopened item projects from its own commitment event.
+    #
+    # THE UNDO HAS TO STICK (review F-1). Reopening alone was not a reversal:
+    # the reopened item still carries `data.auto_merge_of` — the stamp is on
+    # an append-only capture event and cannot be erased — so the very next
+    # `apply_auto_merges` fire silently re-applied the merge the user had
+    # just reversed. §4a's reverser already answers this shape by minting a
+    # CONFIRM-tier row so "the system can NEVER silently re-auto-link the
+    # same pair"; this is §4c's equivalent, and it lands the pair back on the
+    # FLAG TIER — a visible question — rather than back on the auto rail.
+    # The durable half is `undone_auto_merges` below, read by the applier at
+    # apply time — a review flag is the USER'S to clear ("Keep both"), and
+    # the reversal has to outlive that answer.
+    from commitment_state import flag_duplicate_for_review, reopen_commitment
+
+    cid = change.get("commitment_id")
+    if not cid:
+        raise BrainUndoError(
+            "commitment_merge reversal needs the SUPERSEDED commitment_id "
+            "(the writer stamps it on the supersede event's data)")
+    result = reopen_commitment(
+        workspace_root,
+        cid,
+        reopened_by=undone_by,
+        reason=change.get("reason") or "brain undo — split a merged duplicate",
+        source_skill=source_skill,
+    )
+    survivor_id = change.get("superseded_by") or change.get("survivor_id")
+    if survivor_id:
+        try:
+            flagged = flag_duplicate_for_review(
+                workspace_root, cid,
+                suspected_duplicate_of=str(survivor_id),
+                score=change.get("auto_merge_score"),
+                reason="you reversed the automatic merge — merge these by "
+                       "hand or keep both",
+                flagged_by=undone_by, source_skill=source_skill,
+            )
+            result["review_row"] = flagged.get("status")
+        except Exception as exc:  # loud per-item, contained per-batch
+            result["review_row"] = f"error: {type(exc).__name__}: {exc}"
+    return result
+
+
 def _reverse_chat_dismissal(workspace_root, change, *, undone_by, source_skill):
     from mute_ledger import clear_dismissals
 
@@ -166,8 +216,10 @@ def _reverse_person_link(workspace_root, change, *, undone_by, source_skill):
     # UXR1 D3 — reverse ONE auto-link tombstone: (1) remove the written
     # link (reopen the mention proposal the same_as tombstone closed — the
     # additive person_proposal_reopened marker; the auto path writes NO
-    # alias by construction, gate (a) requires normalized-exact names, so
-    # the record itself is already alias-free), then (2) re-open a
+    # alias, so the record itself is already alias-free. AUTOAPPLY §4a
+    # widened gate (a) to admit email-corroborated links whose spelling
+    # differs, and deliberately did NOT start writing aliases for them —
+    # precisely so this reverser stays COMPLETE), then (2) re-open a
     # CONFIRM-tier person_link proposal carrying the original evidence so
     # the decision comes back to a human — and so the next reconcile run
     # can NEVER silently re-auto-link the same pair (propose(tier="auto")
@@ -235,19 +287,33 @@ def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
     # PID1 D8: a tombstone on a SEQ-LESS proposal carries proposal_fingerprint
     # instead — the reopen marker carries the same key (the reader folds both).
     from event_gate import append_event
+    from event_seq import coerce_seq
 
-    seq = change.get("proposal_seq")
+    raw_seq = change.get("proposal_seq")
     fingerprint = change.get("proposal_fingerprint")
-    if seq is None and not fingerprint:
+    if raw_seq is None and not fingerprint:
         raise BrainUndoError(
             "person_proposal_tombstone reversal needs proposal_seq (or, for "
             "a seq-less proposal, proposal_fingerprint — D8)")
+    # UNDOGUARD: `int(seq)` here raised a bare ValueError/TypeError on a
+    # malformed proposal_seq, which `undo_batch` catches as a per-item error
+    # with an opaque message. Coerce through the one helper and fail with a
+    # sentence that names the field.
+    seq = coerce_seq(raw_seq, context="proposal_seq")
+    if raw_seq is not None and seq is None:
+        if not fingerprint:
+            raise BrainUndoError(
+                f"person_proposal_tombstone reversal got an unreadable "
+                f"proposal_seq {raw_seq!r} ({type(raw_seq).__name__}) and no "
+                "proposal_fingerprint to fall back on — the tombstone is "
+                "malformed and cannot be anchored")
+        raw_seq = None
     data = {
         "reopened_by": undone_by,
         "reason": change.get("reason") or "brain undo — batch reversal",
     }
     if seq is not None:
-        data["proposal_seq"] = int(seq)
+        data["proposal_seq"] = seq
     else:
         data["proposal_fingerprint"] = str(fingerprint)
     append_event(_events_path(workspace_root), [{
@@ -256,7 +322,7 @@ def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
         "data": data,
     }], holder="brain_undo")
     if seq is not None:
-        return {"status": "reopened", "proposal_seq": int(seq)}
+        return {"status": "reopened", "proposal_seq": seq}
     return {"status": "reopened", "proposal_fingerprint": str(fingerprint)}
 
 
@@ -269,6 +335,19 @@ REVERSERS: dict[str, dict] = {
         "reverses_via": "commitment_reopened",
         "description": "reopen a commitment closed on HIGH sent-mail evidence "
                        "(the reconcile-sent shipped precedent)",
+    },
+    # AUTOAPPLY §4c: the auto-merge tier is legal ONLY because this reverser
+    # exists, and it lands in the SAME commit as the AUTO_ALLOWED row (the
+    # step-10 mandate). Splitting is additive — the supersede stays history.
+    "commitment_merge": {
+        "reverse": _reverse_commitment_merge,
+        "reverses_via": "commitment_reopened + a flag-tier "
+                        "commitment_updated (review_flags_set)",
+        "description": "split an auto-merged duplicate back out (the "
+                       "supersede event stays in history; the survivor's "
+                       "folded refs are read-side provenance only); the pair "
+                       "returns to the human as a flag-tier question and is "
+                       "never re-merged automatically",
     },
     "chat_dismissal": {
         "reverse": _reverse_chat_dismissal,
@@ -316,9 +395,10 @@ REVERSERS: dict[str, dict] = {
         "reverse": _reverse_person_link,
         "reverses_via": "person_proposal_reopened + a confirm-tier "
                         "person_link brain_proposal",
-        "description": "unwind an automatic name-mention link (no alias was "
-                       "written — gate (a) requires exact names); the "
-                       "decision returns to the human as a confirm row",
+        "description": "unwind an automatic name-mention link (no alias is "
+                       "ever written on the auto rail, so this reversal is "
+                       "complete); the decision returns to the human as a "
+                       "confirm row",
     },
 }
 
@@ -335,13 +415,28 @@ def has_reverser(change_class: str) -> bool:
 def _changes_for_sent_reconcile(events: list[dict], audit_seq: int) -> list[dict]:
     """The commitment closes narrated by ONE sent_reconcile run: every
     `commitment_resolved` with resolved_by == "sent_reconcile" appended after
-    the PREVIOUS sent_reconcile audit event and before/at this one."""
+    the PREVIOUS sent_reconcile audit event and before/at this one.
+
+    UNDOGUARD: seq is read through `event_seq.event_seq`, never
+    `ev.get("seq") or 0`. One string seq in the live substrate raised
+    TypeError here and denied the ENTIRE listing — the safety net the auto
+    tier rests on, taken down by one row. An event with no readable seq has
+    no position in a half-open `(prev_seq, audit_seq]` window, so it is
+    SKIPPED rather than defaulted to 0 (which silently placed all 1,168
+    seq-less rows outside every window anyway, while pretending otherwise)."""
+    from event_seq import event_seq
+
     prev_seq = 0
     found = False
     for ev in events:
         if ev.get("type") != "sent_reconcile":
             continue
-        seq = ev.get("seq") or 0
+        seq = event_seq(ev)
+        if seq is None:
+            # A seq-less audit event cannot anchor a window. Skip it rather
+            # than let it reset prev_seq to 0 and widen the batch to
+            # everything before it.
+            continue
         if seq == audit_seq:
             found = True
             break
@@ -350,7 +445,9 @@ def _changes_for_sent_reconcile(events: list[dict], audit_seq: int) -> list[dict
         raise BrainUndoError(f"no sent_reconcile audit event at seq {audit_seq}")
     out: list[dict] = []
     for ev in events:
-        seq = ev.get("seq") or 0
+        seq = event_seq(ev)
+        if seq is None:
+            continue
         if not (prev_seq < seq <= audit_seq):
             continue
         if ev.get("type") != "commitment_resolved":
@@ -370,6 +467,8 @@ def _changes_for_sent_reconcile(events: list[dict], audit_seq: int) -> list[dict
 
 
 def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
+    from event_seq import event_seq
+
     out: list[dict] = []
     for ev in events:
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
@@ -378,20 +477,87 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
         cls = data.get("brain_change_class")
         if not cls:
             continue
+        # UNDOGUARD: the ref is minted from the NORMALIZED seq, so it matches
+        # the normalized key `undone_auto_merges` indexes pairs under. A raw
+        # `f"seq:{1957.0}"` would mint "seq:1957.0" and never pair with
+        # "seq:1957" — a silently-wrong sibling of the crash.
         change = {
             "change_class": cls,
-            "change_ref": f"seq:{ev.get('seq')}",
+            "change_ref": f"seq:{event_seq(ev)}",
         }
         for key in ("commitment_id", "dismissal_seq", "person_id", "org_id",
                     "proposal_seq", "proposal_fingerprint",
                     # UXR1 D3 — the person_link reverser's re-propose payload
                     # (stamped on the same_as tombstones at auto-link time).
                     "alias", "link_fingerprint", "link_evidence",
-                    "matched_name"):
+                    "matched_name",
+                    # AUTOAPPLY §4c — the merge reverser needs BOTH sides to
+                    # name the pair it is putting back on the flag tier
+                    # (supersede_commitment stamps superseded_by + the score).
+                    "superseded_by", "auto_merge_score"):
             if data.get(key) is not None:
                 change[key] = data[key]
         out.append(change)
     return out
+
+
+def undone_auto_merges(workspace_root) -> set:
+    """The `(superseded_id, survivor_id)` pairs a human has REVERSED — the
+    durable negation `commitment_dedup.apply_auto_merges` reads before it
+    applies a stamped merge (AUTOAPPLY §4c, review F-1).
+
+    THE DEFECT THIS CLOSES: the auto-merge stamp lives on the capture event
+    and the substrate is append-only, so `_reverse_commitment_merge` cannot
+    erase it. Reopening the item therefore left it in a state where the very
+    next fire re-applied the merge the user had just reversed — an undo that
+    does not survive one fire is not a reversal, and REVERSIBLE is the
+    predicate licensing the auto tier at all. §4a answers its half of this
+    shape by minting a confirm-tier row whose fingerprint blocks a re-auto;
+    the applier reads THIS rather than relying on the same proposal-dedup
+    side effect, because a proposal expires on its TTL and resolves the
+    moment the user answers it, while a reversal has to outlive both.
+
+    Lives here because this module owns the `brain_change_undone` marker
+    `undo_batch` appends after a reverser runs (`data.change_ref ==
+    "seq:<that event's seq>"`, `data.reverser == "commitment_merge"`); it
+    pairs that against the `commitment_superseded` carrying
+    `data.auto_merge` (which names both sides), written by
+    `commitment_state.supersede_commitment` — read-only here.
+
+    PAIR-keyed, never id-keyed: reversing "A merges into B" says nothing
+    about "A merges into C" — a different decision on different evidence.
+    That is also what keeps the negation from over-blocking a fresh pair.
+
+    Read-only."""
+    from event_seq import event_seq
+
+    pair_by_seq: dict = {}
+    markers: list = []
+    for ev in _load_events(workspace_root):
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "commitment_superseded" and d.get("auto_merge"):
+            cid = d.get("commitment_id")
+            survivor = d.get("superseded_by") or d.get("survivor_id")
+            # UNDOGUARD: normalized before it becomes a dict key. This index is
+            # the durable negation that stops a reversed auto-merge being
+            # re-applied on the next fire; a key that fails to match reads as
+            # "never undone" and silently re-merges what the user just split.
+            seq = event_seq(ev)
+            if cid and survivor and seq is not None:
+                pair_by_seq[str(seq)] = (str(cid), str(survivor))
+        elif ev.get("type") == "brain_change_undone" and \
+                d.get("reverser") == "commitment_merge":
+            markers.append(str(d.get("change_ref") or ""))
+    undone: set = set()
+    for ref in markers:
+        if not ref.startswith("seq:"):
+            continue
+        pair = pair_by_seq.get(ref[4:])
+        if pair:
+            undone.add(pair)
+    return undone
 
 
 def resolve_batch(workspace_root, batch_ref: dict) -> List[dict]:
@@ -405,6 +571,110 @@ def resolve_batch(workspace_root, batch_ref: dict) -> List[dict]:
     if kind == "brain_batch":
         return _changes_for_brain_batch(events, str(batch_ref["batch_id"]))
     raise BrainUndoError(f"unknown batch kind: {kind!r}")
+
+
+RECENT_BATCH_LIST_DAYS = 7
+
+
+def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
+                        now_iso: Optional[str] = None) -> List[dict]:
+    """AUTOAPPLY §8 — the batches a bare `undo` can offer in a FRESH chat.
+
+    THE GAP THIS CLOSES: in the moment, and an hour later in the same chat,
+    bare `undo` routes off the narrating surface's own advertised batch ref
+    (D5, unchanged). Next Monday in a new chat there is no narration in
+    context, so `undo` had no route at all — the affordance the auto tier's
+    safety rests on simply vanished with the conversation.
+
+    Returns newest-first `[{batch_ref, kind, label, n_changes, ts}]` over
+    both resolvable shapes: `brain_batch` groupings (any event stamped
+    `data.brain_batch_id` + `data.brain_change_class`) and `sent_reconcile`
+    audits. `days` bounds the LISTING only — reversal legality never
+    expires, because every reverser is additive and therefore always safe;
+    a 7-day window just matches change-feed relevance.
+
+    Read-only. The caller renders the list and calls `undo_batch` with the
+    chosen `batch_ref`."""
+    from event_seq import event_seq
+    from event_time import event_time, parse_ts
+
+    now = parse_ts(now_iso) if now_iso else _now_utc()
+    cutoff = now - _timedelta(days=days) if now else None
+    events = _load_events(workspace_root)
+
+    batches: dict = {}
+    for ev in events:
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        when = parse_ts(event_time(ev))
+        if cutoff is not None and when is not None and when < cutoff:
+            continue
+        bid = data.get("brain_batch_id")
+        if bid and data.get("brain_change_class"):
+            slot = batches.setdefault(
+                str(bid), {"batch_ref": {"kind": "brain_batch",
+                                         "batch_id": str(bid)},
+                           "kind": "brain_batch", "n_changes": 0,
+                           "ts": event_time(ev), "classes": set()})
+            slot["n_changes"] += 1
+            slot["classes"].add(data.get("brain_change_class"))
+            if event_time(ev) > slot["ts"]:
+                slot["ts"] = event_time(ev)
+        elif ev.get("type") == "sent_reconcile":
+            # UNDOGUARD: `int(ev["seq"])` raised ValueError on a non-numeric
+            # string and TypeError on a list/dict. event_seq returns None for
+            # anything unusable and the audit is skipped — one malformed
+            # audit row must never deny the whole `undo` listing.
+            audit_seq = event_seq(ev)
+            if audit_seq is None:
+                continue
+            key = f"sent_reconcile:{audit_seq}"
+            n = len(_changes_for_sent_reconcile(events, audit_seq))
+            if not n:
+                continue
+            batches[key] = {"batch_ref": {"kind": "sent_reconcile",
+                                          "seq": audit_seq},
+                            "kind": "sent_reconcile", "n_changes": n,
+                            "ts": event_time(ev), "classes": {"commitment_close"}}
+
+    out = []
+    for slot in batches.values():
+        classes = sorted(slot.pop("classes"))
+        slot["label"] = _batch_label(classes, slot["n_changes"])
+        out.append(slot)
+    out.sort(key=lambda b: b["ts"], reverse=True)
+    return out
+
+
+# Change class → the phrase a human recognizes. Never the class name itself:
+# the list is read by the person deciding whether to reverse it, and
+# "commitment_merge ×1" is not a thing anyone said or saw happen.
+_CLASS_PHRASES = {
+    "commitment_close": "closed a commitment",
+    "commitment_merge": "merged a duplicate capture",
+    "person_link": "linked a name to an existing contact",
+    "person_org_creation_structured_fact": "added a contact",
+    "entity_fact_structured": "noted a fact",
+    "person_proposal_tombstone": "cleared an identity row",
+    "chat_dismissal": "muted a row",
+}
+
+
+def _batch_label(classes: list, n: int) -> str:
+    phrases = [_CLASS_PHRASES.get(c, c.replace("_", " ")) for c in classes]
+    head = phrases[0] if len(phrases) == 1 else " + ".join(phrases[:3])
+    return f"{head}{'' if n == 1 else f' (×{n})'}"
+
+
+def _now_utc():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+def _timedelta(**kw):
+    from datetime import timedelta
+
+    return timedelta(**kw)
 
 
 def undo_batch(
@@ -468,7 +738,10 @@ def undo_batch(
 
 __all__ = [
     "REVERSERS",
+    "RECENT_BATCH_LIST_DAYS",
     "has_reverser",
+    "recent_auto_batches",
+    "undone_auto_merges",
     "resolve_batch",
     "undo_batch",
     "BrainUndoError",

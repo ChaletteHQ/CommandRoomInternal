@@ -1,0 +1,20 @@
+{
+ "version": "5.6.0",
+ "headline": "The email that is the deliverable now closes the commitment it fulfills, a counterparty's reply now closes what you were waiting on — with the evidence recorded and every closure undoable — and sent-mail reading works the same on every connected email backend.",
+ "items": [
+  {
+   "id": "v560_announce_delivery_closure",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Sending the deliverable now closes the promise. Until now the sent-mail matcher measured how much of a commitment's title reappeared in the email — so 'Here you go' with the deck attached never closed anything, and the emails that simply delivered the thing were exactly the ones that fell through. The matcher now recognizes evidence of delivery: an attachment to the right person carrying completion language closes the item outright, and a message on the commitment's own email thread is matched on that thread alone. Nothing that closed before stops closing — the title-based path is unchanged — and the run receipt now says whether the delivery checks actually ran, so a quiet day and a broken rail no longer look alike.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v560_announce_reply_closure",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "A reply now closes what you were waiting on. When someone you are waiting on replies on the same email thread with completion language or the document you asked for, the item closes on its own, with the evidence recorded on the closure. A reply that arrives outside the thread only raises a confirm question, never a silent close — and your own message can never close your own item. Every automatic closure lands in a batch that 'undo' can list and reverse, so a wrong close is one word away from undone.",
+   "action": "announce_only"
+  }
+ ]
+}

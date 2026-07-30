@@ -84,6 +84,11 @@ from capture_gate import (  # noqa: E402
     resolve_capture_mode,
     workspace_capture_context,
 )
+from connector_adapters.provenance import (  # noqa: E402
+    LEGACY_MAIL_PROVIDER,
+    is_same_artifact,
+    resolve_mail_provider,
+)
 
 _TITLE_DEDUP_CHARS = 60  # scan-for-commitments Step 4: first 60 chars, ci
 
@@ -95,18 +100,22 @@ class SentItemError(ValueError):
     SlackItemError's sibling)."""
 
 
-def sent_source_ref(message_id: str, provider: str = "gmail") -> str:
+def sent_source_ref(message_id: str, provider: Optional[str] = None) -> str:
     """Provenance ref for a sent-mail capture: `<provider>:<message_id>` — the
     spelling COMMITMENT_SCHEMA.md reserves for email artifacts. The message
     id is the connector's canonical per-message id (stable across re-fetch),
     so it is both the dedup anchor and traceable back to the send.
 
-    `provider` defaults to "gmail" (every historical row uses that prefix); a
-    non-Gmail declared backend passes its own provider so new refs are
-    honestly attributed. Dedup is format-proof either way: `already_captured`
-    compares CANONICAL keys (connector_adapters.provenance), not raw strings.
+    `provider` unresolved falls back to `LEGACY_MAIL_PROVIDER` — the anchor
+    every pre-connector-agnostic row on disk already carries, so the two sides
+    of a dedup comparison agree in that state. It is a BACK-COMPAT anchor, not
+    a preference: the callers with a workspace root in hand resolve the
+    declared email backend first (MAILSEAM item 5), so a Superhuman workspace
+    writes `superhuman:<id>` even when the skill forgets to pass one. Dedup is
+    format-proof either way: `already_captured` compares CANONICAL keys
+    (connector_adapters.provenance), not raw strings.
     """
-    p = (provider or "gmail").strip().lower() or "gmail"
+    p = (provider or LEGACY_MAIL_PROVIDER).strip().lower() or LEGACY_MAIL_PROVIDER
     mid = (message_id or "").strip()
     if mid.lower().startswith(p + ":"):
         mid = mid[len(p) + 1:].strip()
@@ -143,7 +152,8 @@ def build_sent_commitment_event(
     pending_review: bool = False,
     review_reason: str = "",
     source_skill: str = "reconcile-sent",
-    provider: str = "gmail",
+    provider: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> dict:
     """One qualifying sent message → one canonical `commitment` event dict,
     with the full capture block enforced in code (Stage-D kind, S2 due-nudge,
@@ -153,11 +163,21 @@ def build_sent_commitment_event(
 
     `provider` (closeout 2026-07-12) — the seam-resolved provider of the mail
     connector the message was read from (DiscoveryResult.platform / the
-    declared email backend's provider tag). Defaults to "gmail" for caller
-    back-compat, but a non-Gmail backend MUST pass its own provider so the
-    `source_ref` is honestly attributed (`superhuman:<id>`, not
-    `gmail:<superhuman-id>`). Dedup is format-proof either way (canonical
-    keys), but provenance honesty is not optional.
+    declared email backend's provider tag). This function is pure, so it
+    cannot resolve one itself: unresolved falls back to `LEGACY_MAIL_PROVIDER`
+    (MAILSEAM item 5). `capture_sent_items` — which HAS the workspace root —
+    resolves the declared backend before calling here, so the honest
+    attribution (`superhuman:<id>`, not `gmail:<superhuman-id>`) no longer
+    depends on a skill remembering to pass the argument. Dedup is format-proof
+    either way (canonical keys), but provenance honesty is not optional.
+
+    `thread_id` (SENTMATCH) — the CONVERSATION this promise was made in.
+    Stamped as `data.thread_ref` (`<provider>:<thread_id>`, the same spelling
+    as `source_ref`) so a LATER send in the same thread can be recognized as
+    the delivery: `source_ref` names a message, and a message id is not a
+    thread id, so without this field the thread prior has nothing to read on a
+    commitment. Optional — omitted → no `thread_ref`, and the prior simply
+    does not fire for that item rather than firing on a guess.
 
     OWNER IS ALWAYS THE USER: this leg exists for the user's own outbound
     promises, so `owner_id` is stamped from `user_person_id` — which MUST be
@@ -198,6 +218,11 @@ def build_sent_commitment_event(
     }
     if no_due:
         data["no_due"] = True
+    _tid = (thread_id or "").strip()
+    if _tid:
+        # Same `<provider>:<id>` spelling as source_ref, via the same helper,
+        # so the two refs canonicalize through one code path.
+        data["thread_ref"] = sent_source_ref(_tid, provider)
     if counterparty_id:
         data["counterparty_id"] = counterparty_id
     if counterparty_name and not counterparty_id:
@@ -254,7 +279,7 @@ def _title_key(title) -> str:
 
 
 def already_captured(workspace_root, message_id: str, title: str,
-                     provider: str = "gmail") -> bool:
+                     provider: Optional[str] = None) -> bool:
     """Step-4 idempotency for the sent leg, codified: True when a commitment
     with the same message identity AND the same title (ci, first 60 chars —
     the scan's documented rule) is already on disk, OR the identity is already
@@ -267,7 +292,14 @@ def already_captured(workspace_root, message_id: str, title: str,
     SAME message reduce to one identity — the old raw byte-compare missed
     both. This keys on the scan's own (identity, title) rule only — the
     restatement match (`capture_gate.matches_open_commitment`) and C4's
-    semantic append-path layer run separately."""
+    semantic append-path layer run separately.
+
+    MAILSEAM item 5: `provider` unresolved is answered by the workspace's
+    DECLARED email backend, and the comparison runs through `is_same_artifact`
+    so EVERY label the same message can be on disk under counts. Both matter
+    together — resolving the provider without widening the comparison would
+    make a Superhuman workspace stop recognizing its own pre-declaration
+    `gmail:` rows and re-capture every one of them."""
     try:
         from events_io import iter_events
     except ImportError:  # pragma: no cover
@@ -275,11 +307,12 @@ def already_captured(workspace_root, message_id: str, title: str,
         from events_io import iter_events
     from connector_adapters.provenance import canonical_dedup_key
 
-    want_key = canonical_dedup_key(sent_source_ref(message_id, provider))
+    provider = resolve_mail_provider(workspace_root, provider)
+    want_id = sent_source_ref(message_id, provider).split(":", 1)[1]
     want_title = _title_key(title)
     for ev in iter_events(workspace_root):
         ev_key = canonical_dedup_key(event=ev)
-        if not ev_key or ev_key != want_key:
+        if not is_same_artifact(ev_key, provider, want_id):
             continue
         etype = ev.get("type")
         if etype in ("commitment_resolved", "thread_resolved"):
@@ -302,7 +335,7 @@ def capture_sent_items(
     opens=None,
     source_skill: str = "reconcile-sent",
     append: bool = True,
-    provider: str = "gmail",
+    provider: Optional[str] = None,
 ) -> dict:
     """Run the full sent-capture pipeline over a batch of SKILL-extracted
     commissives and (when `append=True`) land the survivors in ONE locked
@@ -314,7 +347,8 @@ def capture_sent_items(
        "due" | "no_due": True, "counterparty_id" | "counterparty_name",
        "evidence", "org_id"/"org_name" (the recipient's resolved org, for the
        per-org override), "primary_thread_id", "person_ids",
-       "classification_confidence", "pending_review"/"review_reason"}
+       "classification_confidence", "pending_review"/"review_reason",
+       "thread_id" (SENTMATCH — the mail thread, optional)}
 
     Per item: (1) `already_captured` — a message already on disk is skipped
     (idempotent re-runs); (2) the capture block via
@@ -338,6 +372,12 @@ def capture_sent_items(
     scan folds them into its own single batch + preview).
     """
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    # MAILSEAM item 5 — resolve the provider ONCE for the whole batch, from the
+    # declared email backend when the caller passed none. Every ref this batch
+    # writes and every key it dedups against is then attributed to the same
+    # answer, so half a batch can never land under one label and half under
+    # another.
+    provider = resolve_mail_provider(workspace_root, provider)
     if opens is None:
         from cru_match import load_open_commitments
 
@@ -377,6 +417,9 @@ def capture_sent_items(
                 review_reason=item.get("review_reason") or "",
                 source_skill=source_skill,
                 provider=provider,
+                # SENTMATCH — the conversation the promise was made in, so a
+                # later send in the same thread can be read as its delivery.
+                thread_id=item.get("thread_id"),
             )
         except SentItemError as e:
             errors.append({"title": title, "message_id": mid, "error": str(e)})

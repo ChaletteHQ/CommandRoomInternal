@@ -444,15 +444,56 @@ def _record_org_name(workspace_root, record: dict) -> str:
     return ""
 
 
+def sole_record_for_email(workspace_root, addr: str):
+    """AUTOAPPLY §4a — the ONE non-archived person record carrying `addr`,
+    or None when zero or 2+ do (normalized, case-folded).
+
+    "Exactly one" is the whole strength of the clause: an address on two
+    records is a collision, not an identifier, and must never auto-link.
+    Fail-safe — an unreadable substrate returns None, so the caller asks."""
+    addr = (addr or "").strip().lower()
+    if not addr:
+        return None
+    try:
+        from entities_io import entities_collection
+        from people_writer import get_person_emails
+
+        data = json.loads((Path(workspace_root) / "_hq" / "data" /
+                           "entities.json").read_text(encoding="utf-8"))
+        hits = []
+        for p in entities_collection(data, "people"):
+            if not isinstance(p, dict) or p.get("status") == "archived":
+                continue
+            if addr in {e.strip().lower() for e in get_person_emails(p)}:
+                hits.append(p)
+        return hits[0] if len(hits) == 1 else None
+    except Exception:
+        return None
+
+
 def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
                        email: str | None) -> tuple[bool, str]:
     """(eligible, why) — the UXR1 D3 (a)-(d) gate for ONE merge-propose
     entry whose cluster confidently resolved to `matched`.
 
-      (a) exact normalized full-name match, ≥2 tokens (the existing "a bare
-          'Quinn' is never an exact match" rule stands);
+      (a′) EITHER an exact normalized full-name match of ≥2 tokens, OR the
+          mention carries an email address that exactly matches exactly ONE
+          on-file person's address — and that person is `matched`
+          (AUTOAPPLY §4a, M ruling "act when the evidence is corroborated
+          and the action is reversible"). An id-level address is strictly
+          stronger evidence than a name match, so requiring the name match
+          ON TOP of it was the gate asking a question it already had the
+          answer to: a first-name mention and its full-name record with the
+          same address on both
+          sides. Role/shared-inbox addresses are excluded (they identify a
+          mailbox, not a person), and a lone first name still needs the
+          address — the bare-name case alone is Bug #19 forever;
       (b) exactly ONE on-file candidate for that name — two same-name
-          records are the IDM1 class, NEVER auto;
+          records are the IDM1 class, NEVER auto. THIS is also what keeps
+          (a′)'s email clause honest: a mention named X whose only observed
+          address belongs to record Y (the misattributed quoted-thread
+          sender, second-eyes F2) fails here, because X's same-name
+          candidate set never equals {Y};
       (c) no conflicting signal: the mention's observed email, when present,
           must belong to the record (a role/shared-inbox address is NOT
           corroboration and never auto-links — §0-2's guard applied here);
@@ -465,28 +506,13 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
     renders as a confirm ask — a human decision is the safe floor)."""
     name = (cluster.get("name") or "").strip()
     matched_name = (matched or {}).get("canonical_name") or ""
-    # (a) exact normalized multi-token match
-    if _norm_name(name) != _norm_name(matched_name):
-        return False, "spelling differs from the record — a human decision"
-    if len(_norm_name(name).split()) < 2:
-        return False, "lone first name — never auto (Bug #19)"
     if _NAME_ANNOTATION_RE.search(name):
         return False, "name carries annotation/guess markers — never auto"
-    # (b) exactly one on-file candidate
-    from people_writer import list_same_name_people
-
-    try:
-        candidates = list_same_name_people(workspace_root, name)
-    except Exception:
-        return False, "same-name candidate check unavailable — never auto"
-    ids = {c.get("id") for c in (candidates or []) if c.get("id")}
-    if ids != {matched.get("id")}:
-        return False, (f"{len(ids)} on-file candidates for {name!r} — "
-                       "two same-name records are the IDM1 class, never auto")
-    # (c) no conflicting signal — email. RAW scan, not cluster_observed_email
-    # (that helper deliberately SKIPS role-shaped addresses at capture — the
-    # F1 guard — so relying on it here would auto-link a mention whose only
-    # observed address is a shared inbox; the ruling says that case ASKS).
+    # (c) observed-address scan — hoisted above (a′) because the email clause
+    # reads it. RAW scan, not cluster_observed_email (that helper deliberately
+    # SKIPS role-shaped addresses at capture — the F1 guard — so relying on it
+    # here would auto-link a mention whose only observed address is a shared
+    # inbox; the ruling says that case ASKS).
     observed: list[str] = []
     try:
         from person_backlog_sweep import _observed_email
@@ -507,6 +533,32 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
         if addr.strip().lower() not in record_emails:
             return False, ("observed address does not belong to the record "
                            "— conflicting signal, still asks")
+    # (a′) exact multi-token name match OR id-level email corroboration.
+    exact_name = (_norm_name(name) == _norm_name(matched_name)
+                  and len(_norm_name(name).split()) >= 2)
+    id_level_email = None
+    if not exact_name:
+        for addr in observed:
+            sole = sole_record_for_email(workspace_root, addr)
+            if sole is not None and sole.get("id") == matched.get("id"):
+                id_level_email = addr.strip().lower()
+                break
+    if not exact_name and not id_level_email:
+        if _norm_name(name) != _norm_name(matched_name):
+            return False, ("spelling differs from the record and no address "
+                           "corroborates it — a human decision")
+        return False, "lone first name with no address — never auto (Bug #19)"
+    # (b) exactly one on-file candidate
+    from people_writer import list_same_name_people
+
+    try:
+        candidates = list_same_name_people(workspace_root, name)
+    except Exception:
+        return False, "same-name candidate check unavailable — never auto"
+    ids = {c.get("id") for c in (candidates or []) if c.get("id")}
+    if ids != {matched.get("id")}:
+        return False, (f"{len(ids)} on-file candidates for {name!r} — "
+                       "two same-name records are the IDM1 class, never auto")
     # (c) no conflicting signal — org
     inferred_org = (cluster.get("inferred_org") or "").strip()
     if inferred_org:
@@ -524,6 +576,9 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
         if mid in (s["keep"].get("id"), s["duplicate"].get("id")):
             return False, ("record is in the duplicate-suspect set — "
                            "still asks")
+    if id_level_email:
+        return True, (f"{id_level_email} belongs to exactly one record — "
+                      f"{matched_name!r} (UXR1 D3 gate a'-d, AUTOAPPLY §4a)")
     return True, (f"exact unique clean match to {matched_name!r} "
                   "(UXR1 D3 gate a-d)")
 
@@ -807,7 +862,7 @@ def run_identity_reconcile(
 
     events_path = _events_path(ws)
     results: dict = {"added": [], "needs_confirm": [], "linked": [],
-                     "auto_linked": [],
+                     "auto_linked": [], "already_on_file": [],
                      "merge_rows_proposed": 0, "annotations": [],
                      "annotations_resolved": [], "expired": [], "errors": [],
                      "spilled": {"auto_add": 0, "merge_propose": 0}}
@@ -893,6 +948,11 @@ def run_identity_reconcile(
 
     # ---- MERGE-PROPOSE tier -------------------------------------------------
     merge_cap = int(caps.get("merge_propose", 0))
+    # AUTOAPPLY §4a consequence rule — records linked in THIS run, and the
+    # clusters still open at the end of the loop (the sweep below pairs them).
+    auto_linked_records: dict = {}
+    still_open_clusters: list = [e["cluster"] for e in plan["confirm"]]
+    pending_links: list = []
     for entry in plan["merge_propose"]:
         cluster, matched = entry["cluster"], entry["matched"]
         if exact_email_autolink and entry["exact_email"] and matched:
@@ -932,7 +992,58 @@ def run_identity_reconcile(
             if eligible and _auto_apply_person_link(
                     ws, cluster, matched, entry, why, batch_id,
                     _tombstone, results, source_skill):
+                if matched.get("id"):
+                    auto_linked_records[matched["id"]] = matched
                 continue
+        # NOT proposed yet — the §4a sweep below runs FIRST. Proposing here
+        # would mint a confirm row for a cluster the sweep is about to
+        # resolve, leaving an orphaned ask pointing at a closed proposal.
+        pending_links.append(entry)
+
+    # ---- AUTOAPPLY §4a consequence rule: post-link already_on_file ---------
+    # M's complaint was "duplicates asking to confirm" — the SAME person
+    # rendered as two rows. Where both rows come from ONE cluster the
+    # tombstone fan-out above already collapses them. This closes the other
+    # half: a SEPARATE add cluster (a different captured spelling of the same
+    # person — the typo'd mention gate (b) cannot token-match) that the link
+    # just answered, which would otherwise keep asking to add someone now
+    # demonstrably on file.
+    #
+    # The bar is deliberately the SAME evidence the link itself required — an
+    # id-level address on the record, or an exact normalized full-name match.
+    # No new evidence class is admitted here, so this adds no new risk: it
+    # only stops re-asking a question already answered in this run.
+    swept: set = set()
+    for cluster in still_open_clusters + [e["cluster"] for e in pending_links]:
+        resolved = _post_link_already_on_file(ws, cluster, auto_linked_records)
+        if resolved is None:
+            continue
+        record, why = resolved
+        try:
+            # `same_as` is the shipped resolution for "this mention IS that
+            # record" (PROPOSAL_RESOLUTIONS has no already_on_file member, and
+            # inventing one would be a shared-vocabulary change for a local
+            # need). No alias is passed — see _auto_apply_person_link on why
+            # the auto rail stays alias-free. change_class keeps the
+            # registered person_proposal_tombstone reverser, batch-stamped, so
+            # `undo` reopens these rows with the rest of the batch.
+            _tombstone(cluster, resolution="same_as",
+                       person_id=record.get("id"),
+                       note=f"identity reconcile {batch_id} — {why}",
+                       change_class="person_proposal_tombstone")
+            swept.add(cluster["row_id"])
+            results["already_on_file"].append({
+                "row_id": cluster["row_id"], "name": cluster.get("name"),
+                "person_id": record.get("id"), "why": why})
+        except Exception as exc:  # loud per-item, contained per-batch
+            results["errors"].append({"row_id": cluster["row_id"],
+                                      "error": f"{type(exc).__name__}: {exc}"})
+
+    # ---- deferred confirm rows for everything the sweep left open ----------
+    for entry in pending_links:
+        cluster, matched = entry["cluster"], entry["matched"]
+        if cluster["row_id"] in swept:
+            continue
         if results["merge_rows_proposed"] >= merge_cap:
             results["spilled"]["merge_propose"] += 1
             continue
@@ -1050,6 +1161,57 @@ def run_identity_reconcile(
     return plan
 
 
+def _post_link_already_on_file(ws, cluster: dict, linked: dict):
+    """AUTOAPPLY §4a consequence rule — `(record, why)` when this still-open
+    add cluster is answered by a link applied EARLIER IN THE SAME RUN, else
+    None.
+
+    WHY THIS IS NOT `person_proposal_already_on_file` (a deliberate deviation
+    from SPEC §4a's stated mechanism): that predicate delegates to
+    `confirm_flow.person_name_on_file`, which is confident-matches-only and
+    returns False for a lone first name — the Bug #19 discipline. Loosening
+    it to catch the lone-first-name case would change the answer for every
+    OTHER caller too (the shared queue loader's suppress_on_file, the morning
+    brief, the commitments chat), silently hiding lone-first-name add rows
+    across three surfaces on evidence none of them has seen. The re-ask this
+    rule kills is local to the reconcile run, so the fix is local to it.
+
+    Two bars, both exactly what `auto_link_eligible` already demanded of the
+    link itself — no new evidence class is admitted:
+      * an observed address on the cluster that belongs to exactly ONE on-file
+        record, and that record is the one just linked (role addresses out);
+      * an exact normalized multi-token full-name match to that record.
+    Anything weaker keeps asking. Fail-safe: any error returns None."""
+    if not linked:
+        return None
+    name = (cluster.get("name") or "").strip()
+    if not name or _NAME_ANNOTATION_RE.search(name):
+        return None
+    try:
+        from person_backlog_sweep import _observed_email
+
+        for row in cluster.get("add_rows") or []:
+            probe = dict(row)
+            probe["name"] = name
+            addr = _observed_email(probe)
+            if not addr or is_role_address(addr):
+                continue
+            sole = sole_record_for_email(ws, addr)
+            if sole is not None and sole.get("id") in linked:
+                return linked[sole["id"]], (
+                    f"already on file — {addr.strip().lower()} belongs to the "
+                    "record linked earlier in this run")
+        for pid, record in linked.items():
+            canon = (record or {}).get("canonical_name") or ""
+            if canon and _norm_name(name) == _norm_name(canon) \
+                    and len(_norm_name(name).split()) >= 2:
+                return record, ("already on file — exact name match to the "
+                                "record linked earlier in this run")
+    except Exception:
+        return None
+    return None
+
+
 def _auto_apply_person_link(ws, cluster, matched, entry, why, batch_id,
                             tombstone, results, source_skill) -> bool:
     """UXR1 D3 — auto-apply ONE exact-unique-clean person_link on the LB2
@@ -1057,9 +1219,20 @@ def _auto_apply_person_link(ws, cluster, matched, entry, why, batch_id,
 
     The APPLY is the same_as tombstone fan-out over the cluster's member
     proposals (change_class="person_link", batch-stamped + carrying the
-    reverser's re-propose payload). NO alias is ever written here — gate
-    (a) requires the normalized-exact spelling, so there is nothing to
-    save (the exact-email §0-2 path keeps its own alias behavior).
+    reverser's re-propose payload).
+
+    NO ALIAS IS EVER WRITTEN HERE. Before AUTOAPPLY §4a the reason was that
+    gate (a) required the normalized-exact spelling, so there was nothing to
+    save. Gate (a′) admits an email-corroborated link whose spelling DIFFERS
+    (a first-name mention onto its full-name record), so that reason is
+    gone — but the rule stands
+    on a stronger one: an alias is a SECOND mutation, on the record itself,
+    and the registered `person_link` reverser does not remove it. Writing
+    one would make the auto tier only partly reversible, which §3 forbids
+    outright. The cost is that a future bare-name mention with no address
+    asks again — correct, because without the address that mention really is
+    ambiguous. (The exact-email §0-2 path keeps its own alias behavior: it is
+    reached only when the NAME confidently resolves, a different bar.)
 
     Returns True when the link applied; False on ANY failure or non-
     "proposed" propose status (open confirm row after an undo; the 60d
@@ -1102,7 +1275,14 @@ def _auto_apply_person_link(ws, cluster, matched, entry, why, batch_id,
                   change_class="person_link",
                   extra_data={"link_fingerprint": fingerprint,
                               "link_evidence": evidence,
-                              "matched_name": matched_name})
+                              "matched_name": matched_name,
+                              # §7 — WHICH corroboration clause fired, one
+                              # string, so a later audit reads the reason off
+                              # the event instead of a vanished chat.
+                              "auto_predicate": (
+                                  "id_fact:email_match"
+                                  if "belongs to exactly one record" in why
+                                  else "exact_name:unique_clean")})
         resolve_proposal(ws, res["proposal_id"], "applied",
                          resolved_by=source_skill, source_skill=source_skill)
         results["auto_linked"].append({"row_id": cluster["row_id"],

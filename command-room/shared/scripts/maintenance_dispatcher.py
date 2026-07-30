@@ -43,6 +43,21 @@ reconcile-sent runs FIRST at the 6:45 slot so the 7:00 morning brief reads an
 already-reconciled substrate (Bug #98-v3's original reason for the 6:45
 anchor), and weekly-insights runs AFTER cleanup (synthesis wants a settled
 substrate). Never parallelize the jobs.
+
+PARTITIONED JOBS PROCESS EVERY MISSED PERIOD (CATCHUP1, 2026-07-28)
+-------------------------------------------------------------------
+Due-ness above answers "should this job run"; for most jobs that is the whole
+question, because their work is a current-state pass or a cursor-driven span
+that self-heals whenever it next runs. A `partitioned` job is different: each
+PERIOD is its own deliverable under its own label. Miss the 1st of August and
+the September fire produces August's report — and July's is lost forever,
+because "the previous full calendar month" is measured from `now` and the
+job's due rule (`expected_fires(count=1)`) structurally cannot see that two
+periods went unserved. So a partitioned job's due dict additionally carries
+`periods` — every unserved nominal slot since its last receipt, oldest first
+(`catchup.missed_periods`) — and the registered prompt produces ONE
+deliverable per entry. Non-partitioned jobs are untouched: no `periods` key,
+same dict they have always returned.
 """
 from __future__ import annotations
 
@@ -124,10 +139,15 @@ MAINTENANCE_JOBS: dict[str, dict] = {
                        "people, link/merge-propose the rest for review",
     },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
+    # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled
+    # with its own month. A machine closed across a 1st loses that month
+    # entirely without this — the next fire produces the NEWEST prior month
+    # and the skipped one is never written.
     "monthly-report": {
         "skill": "operator-report + value-receipt",
         "nominal_cron": "0 0 1 * *",
         "description": "monthly operating report + value receipt for the prior month",
+        "partitioned": True,
     },
 }
 
@@ -151,6 +171,9 @@ OPTIONAL_JOBS: dict[str, dict] = {
         "nominal_cron": "0 0 1 * *",
         "description": "monthly KPI scorecard for the prior month (opt-in)",
         "opt_in": True,
+        # Same class as monthly-report (CATCHUP1 F-4): a scorecard IS its
+        # month. One per missed period, never one standing in for several.
+        "partitioned": True,
     },
 }
 
@@ -203,6 +226,14 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
     Returns {"now": iso, "due": [job dicts], "skipped_disabled": [job ids]}.
     Each due dict: {job_id, skill, description, reason, last_receipt (iso|None),
     slot (iso)}.
+
+    A job registered `partitioned` (CATCHUP1) carries two more keys:
+    `periods` — every unserved nominal slot since its last receipt, ISO,
+    OLDEST FIRST, one deliverable owed per entry — and `periods_capped`,
+    True when more periods were missed than `catchup.DEFAULT_PERIOD_CAP` and
+    the oldest were dropped. The list always contains at least the slot the
+    job is due for, so the prompt can iterate `periods` unconditionally for
+    a partitioned job.
     """
     now = now or _now_local()
     if now.tzinfo is not None:
@@ -223,7 +254,7 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
             return None  # already served this slot
         reason = ("no run recorded yet" if last is None else
                   f"last ran {last.isoformat()}, its {slot.isoformat()} slot has passed")
-        return {
+        d = {
             "job_id": job_id,
             "skill": spec["skill"],
             "description": spec["description"],
@@ -231,6 +262,32 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
             "last_receipt": last.isoformat() if last else None,
             "slot": slot.isoformat(),
         }
+        if spec.get("partitioned"):
+            # Each period is its own deliverable — enumerate every one that
+            # went unserved, oldest first. Best-effort like everything the
+            # dispatcher does: if the enumeration fails, fall back to the one
+            # slot the due rule already computed, so a partitioned job never
+            # loses its normal fire to a catch-up failure.
+            try:
+                from catchup import DEFAULT_PERIOD_CAP, missed_periods
+
+                # Ask for one MORE than the cap so `periods_capped` is exact:
+                # a gap of exactly cap periods dropped nothing, and flagging
+                # it would have the prompt report a shortfall on a clean
+                # sweep. Only a cap+1-th period proves something fell off.
+                periods = missed_periods(spec["nominal_cron"], last, now=now,
+                                         cap=DEFAULT_PERIOD_CAP + 1)
+                capped = len(periods) > DEFAULT_PERIOD_CAP
+                if capped:
+                    periods = periods[-DEFAULT_PERIOD_CAP:]
+            except Exception:  # noqa: BLE001 — never crash a fire
+                periods, capped = [], False
+            if not periods:
+                periods = [slot]
+                capped = False
+            d["periods"] = [p.isoformat() for p in periods]
+            d["periods_capped"] = capped
+        return d
 
     due: list[dict] = []
     skipped_disabled: list[str] = []

@@ -81,8 +81,26 @@ all. Orchestrators must not add a cause either.
 
 TIME RULES: all lateness math is MACHINE-local (cron evaluates on the
 machine clock — confirmed live 2026-07-01, machine=Mountain vs workspace=
-Pacific). Workspace TZ is presentation-only: human-facing times in the
-banner render via tz.py when resolvable, machine-local otherwise.
+Pacific), AND SO IS EVERY RENDERED TIME (LATETZ, 2026-07-28). One clock,
+end to end: `expected_fires` returns machine-local naive slots, `_now_local`
+is machine-local naive, `served_slot_markers` normalizes to machine-local
+naive via `_to_local_naive`, and `_human_time` renders that value as-is.
+
+The banner used to be converted into the workspace TZ at render time on the
+theory that "workspace TZ is presentation-only" meant "present in workspace
+TZ". It does not. The governing rule (references/HOW_COMMAND_ROOM_WORKS.md)
+is that CONVERSION HAPPENS ONCE, AT REGISTRATION/CHANGE TIME: change-schedule
+turns the user's requested wall time into machine-local via
+`workspace_time_to_machine()` and stores that in the cron. Converting again
+at render re-expressed the slot in a clock it was never authored in — a no-op
+only where machine tz == workspace tz. That masked it on M's PC and made CI
+red for 8 consecutive pushes ("8:45 AM" rendering as "1:45 AM" on a UTC
+runner; an Asia/Tokyo workspace named the wrong DAY entirely).
+
+Corollary worth knowing before touching this: `tz.to_local()` is for upstream
+CONNECTOR timestamps (Granola / Calendar / Gmail) and assumes a naive input is
+UTC. A cron slot is neither a connector timestamp nor UTC. Never route one
+through it.
 
 TELEMETRY: a `late_fire` event (registered in the Phase 1 vocabulary)
 is appended through the append_event() gate on note/degrade tiers, so
@@ -151,22 +169,43 @@ def _now_local() -> _dt.datetime:
     return _dt.datetime.now()
 
 
-def _human_time(dt_naive_local: _dt.datetime, workspace_root=None) -> str:
-    """Presentation-only rendering: workspace TZ via tz.py when resolvable,
-    machine-local wall time otherwise. Never raises."""
-    aware = dt_naive_local.astimezone()  # attach the machine's tz
-    try:
-        from tz import to_local
+def _human_time(dt_naive_local: _dt.datetime) -> str:
+    """Presentation-only rendering of a MACHINE-local naive datetime — the
+    clock cron evaluates in, and the clock every datetime in this module is
+    already expressed in (`_to_local_naive`). Rendered AS-IS. Never raises.
 
-        local = to_local(aware, workspace_path=workspace_root)
-        if local is not None:
-            aware = local
-    except Exception:
-        pass
-    day = aware.strftime("%A")
-    hour = aware.strftime("%I:%M %p").lstrip("0")
-    if aware.minute == 0:
-        hour = aware.strftime("%I %p").lstrip("0")
+    NO WORKSPACE-TZ CONVERSION HAPPENS HERE, DELIBERATELY (LATETZ, 2026-07-28).
+    This function used to do `dt.astimezone()` (attach the machine zone) and
+    then `tz.to_local(...)` (re-express in the workspace zone). That is a
+    second conversion of a value that was already converted once, and it
+    violates the governing rule in `references/HOW_COMMAND_ROOM_WORKS.md`:
+    **conversion happens ONCE, at registration/change time.** `change-schedule`
+    converts the user's requested wall time into machine-local via
+    `schedule_config.workspace_time_to_machine()` and stores THAT in the cron;
+    by the time a slot reaches this renderer the conversion is already done.
+    Doing it again re-expresses the slot in a clock it was never authored in.
+
+    It was a no-op only where machine tz == workspace tz — which is M's PC and
+    nowhere else. On the UTC CI runner with a `America/Los_Angeles` workspace
+    the 8:45 AM slot rendered as "1:45 AM", and main ran red for 8 consecutive
+    pushes on exactly that assertion. It is not only the hour that moves: a
+    workspace in Asia/Tokyo rendered the same Friday slot as "12:45 AM
+    Saturday", naming the wrong DAY in a customer-visible line.
+
+    `tz.to_local()` is the right helper for what it was built for — upstream
+    CONNECTOR timestamps (Granola / Calendar / Gmail), which arrive in UTC or
+    with a foreign offset and must be pulled into the user's zone. Its own
+    contract assumes a naive input is UTC. A cron slot is not a connector
+    timestamp, and it is not UTC. Do not route one through it.
+    """
+    # Defensive: the module's contract is naive machine-local, but an aware
+    # value from a caller is normalized rather than rendered in a foreign zone.
+    if dt_naive_local.tzinfo is not None:
+        dt_naive_local = dt_naive_local.astimezone().replace(tzinfo=None)
+    day = dt_naive_local.strftime("%A")
+    hour = dt_naive_local.strftime("%I:%M %p").lstrip("0")
+    if dt_naive_local.minute == 0:
+        hour = dt_naive_local.strftime("%I %p").lstrip("0")
     return f"{hour} {day}"
 
 
@@ -358,7 +397,7 @@ def check_lateness(
 
     # Serving a genuinely missed slot — the receipt says catchup.
     out["receipt_fired_via"] = "catchup"
-    when = _human_time(scheduled, workspace_root)
+    when = _human_time(scheduled)
     if lateness < LATENESS_TIERS["degrade"]:
         out["tier"] = "note"
         # Facts only — never assert a cause (F-47/F-50: four fabricated
@@ -368,7 +407,7 @@ def check_lateness(
             f"{when}."
         )
     else:
-        now_day = _human_time(now, workspace_root).split(" ", 2)[-1]
+        now_day = _human_time(now).split(" ", 2)[-1]
         out["tier"] = "degrade"
         out["degrade_notice"] = (
             f"Skipped the full {display} — it was scheduled for {when} and "

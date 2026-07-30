@@ -210,7 +210,8 @@ def append_correction(
 def snapshot_draft(
     workspace_root, *, skill: str, domain: str, recipient_id: Optional[str],
     recipient_email: Optional[str], subject: str, body: str, draft_event_seq,
-    native_draft_id=None, gmail_message_id=None, gmail_draft_id=None,
+    native_draft_id=None, native_message_id=None,
+    gmail_message_id=None, gmail_draft_id=None,
 ) -> None:
     """Append the drafted body to `_hq/voice/draft-snapshots.jsonl` so a
     drafted-vs-sent diff is possible later. Bodies stay OUT of events.jsonl.
@@ -218,7 +219,15 @@ def snapshot_draft(
     FB-plumbing item 5 — the draft id column stores under `native_draft_id`
     (the value was never Gmail-specific). The legacy `gmail_draft_id` kwarg is
     still accepted so existing callers keep working, and it feeds the new
-    column when the new kwarg is absent."""
+    column when the new kwarg is absent.
+
+    MAILSEAM item 5 finishes that rename on the OTHER id: the sent-message id
+    stores under `native_message_id` too. It was never Gmail-specific either —
+    on a Superhuman or Outlook workspace the old column name described the
+    value wrongly while the matching still worked, which is the quiet kind of
+    wrong. Both kwargs and both columns are honored: `gmail_message_id` keeps
+    working for callers, and it is still WRITTEN so snapshot rows stay readable
+    by any older copy of this module (an append-only log is never rewritten)."""
     try:
         from atomic_write import atomic_append_jsonl
         path = _voice_dir(workspace_root) / "draft-snapshots.jsonl"
@@ -228,7 +237,9 @@ def snapshot_draft(
             "recipient_id": recipient_id, "recipient_email": recipient_email,
             "draft_event_seq": draft_event_seq,
             "native_draft_id": native_draft_id or gmail_draft_id,
-            "gmail_message_id": gmail_message_id, "subject": subject, "body": body,
+            "native_message_id": native_message_id or gmail_message_id,
+            "gmail_message_id": native_message_id or gmail_message_id,
+            "subject": subject, "body": body,
         }])
     except Exception:
         pass
@@ -266,7 +277,8 @@ def _load_snapshots(workspace_root) -> List[dict]:
 
 def reconcile_sent_against_snapshots(workspace_root, sent_messages: List[dict]) -> dict:
     """Match each sent message to a draft snapshot, classify the drafted-vs-sent
-    diff, append corrections. Match: exact `gmail_message_id`, else recipient +
+    diff, append corrections. Match: exact native message id (either snapshot
+    column spelling), else recipient +
     normalized subject + sent ts within 7 days of the snapshot. Returns
     `{n_matched, n_corrections, skills: {...}}`. Tolerant of a missing snapshot
     file; never raises."""
@@ -302,7 +314,10 @@ def _match_snapshot(sent: dict, snaps: List[dict]) -> Optional[dict]:
     mid = sent.get("message_id")
     if mid:
         for s in snaps:
-            if s.get("gmail_message_id") and s.get("gmail_message_id") == mid:
+            # Both column spellings — rows written before the rename carry only
+            # the legacy one, and a snapshot log is append-only.
+            snap_mid = s.get("native_message_id") or s.get("gmail_message_id")
+            if snap_mid and snap_mid == mid:
                 return s
     subj = _norm_subject(sent.get("subject", ""))
     sent_dt = _parse_ts(event_time(sent))

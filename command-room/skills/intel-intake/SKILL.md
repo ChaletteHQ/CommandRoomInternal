@@ -240,9 +240,16 @@ After 6a/6b/6c complete, append a single event to `_hq/data/events.jsonl` via `s
 
 Shape:
 
+Do NOT set `seq` yourself. It is auto-stamped as an integer inside the writer
+lock. (This template previously showed `"seq": "<next>"` — a QUOTED
+placeholder — and substituting a number inside those quotes wrote the string
+`"1957"` to the ledger. One such row raised `TypeError` inside a range
+comparison and took `undo` down for the entire workspace. `event_gate` now
+rejects a non-integer seq outright, so a quoted seq here is a hard write
+failure, not a silent one.)
+
 ```json
 {
-  "seq": "<next>",
   "ts": "<ISO-now>",
   "type": "intel_logged",
   "source_skill": "intel-intake",

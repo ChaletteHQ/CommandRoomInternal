@@ -181,7 +181,7 @@ Zapier scope = email `send` + `reply to email` only. NEVER calendar, drive, shee
 Helpers in `shared/scripts/tool_discovery.py`:
 - **`discover_for_category(category, operation, tools, declared=…)` — SERVER-ID-FIRST resolution (connector-agnostic-v1, the primary path).** When a backend is declared for the category (`connector_config.declared_backend(category)`, keyed by MCP server-id), it resolves the operation on THAT server — deterministic, immune to the substring / H-H hazards. When no backend is declared (empty map), it returns None+reason and the caller falls back to the substring helpers below = today's behavior (R4).
 - `discover_calendar_tool()` — native-only, returns matched tool ID or None+reason.
-- `discover_gmail_send_tool()` / `discover_mail_*()` — native mail send/reply/draft/search/thread-fetch across stacks.
+- `discover_gmail_tool(tools, operation)` / `discover_mail_*()` — native mail send/reply/draft/search/thread-fetch. Prefer the `discover_mail_*` family: it spans every stack, and it identifies a UUID-namespaced connector by the capability manifest's fingerprints when the tool ids spell no product name (which is every real connector).
 - `discover_zapier_send_tool(tools, zapier_ids=…)` — the gmail-only dispatch leg; recognizes a UUID-namespaced Zapier server by pinned server-id (`workspace.connectors._zapier_server_ids`) or the `get_configuration_url` signature (R12/H-H), not just the `mcp__zapier_` prefix.
 - `discover_granola_tool()` / `discover_transcript_tool()` — transcript fetch.
 - `repair_backend(server_tool_ids)` — fingerprint re-pair for a reconnected server whose UUID changed (A1b); confirm-with-user before re-pinning (interactive only, R13).
@@ -285,18 +285,22 @@ Per M's Apr 30 ask: *"when we talk gmail or granola or google drive — we need 
 
 Every native connector is addressable through abstracted helpers in `shared/scripts/tool_discovery.py`. Same code paths work for both Google + Microsoft / alt stacks:
 
-| Capability | Google stack | Microsoft / alt stack | Helper |
-|---|---|---|---|
-| Mail send | Gmail (`send_message`) | Outlook (Graph `send_message`) | `discover_mail_send_tool()` |
-| Mail reply (threaded) | Gmail (`send_draft` + threadId) | Outlook (`reply_to_email`) | `discover_mail_reply_tool()` |
-| Mail draft | Gmail (`create_draft`) | Outlook (`create_draft`) | `discover_mail_draft_tool()` |
-| Mail search | Gmail (`search_threads`) | Outlook (`search_messages`) | `discover_mail_search_tool()` |
-| Mail thread fetch | Gmail (`get_thread`) | Outlook (`get_conversation`) | `discover_mail_thread_fetch_tool()` |
-| Calendar | Google Calendar (`google_calendar_*`) | Outlook Calendar (Graph) | `discover_calendar_tool()` (cross-stack) |
-| Transcript | Granola | Fireflies | `discover_transcript_tool()` |
-| File storage | Google Drive | OneDrive | `discover_drive_tool()` |
+| Capability | Google stack | Microsoft / alt stack | Superhuman | Helper |
+|---|---|---|---|---|
+| Mail send | Gmail (`send_message`) | Outlook (Graph `send_message`) | native `send_draft` | `discover_mail_send_tool()` |
+| Mail reply (threaded) | Gmail (`send_draft` + threadId) | Outlook (`reply_to_email`) | native threaded reply | `discover_mail_reply_tool()` |
+| Mail draft | Gmail (`create_draft`) | Outlook (`create_draft`) | `create_or_update_draft` | `discover_mail_draft_tool()` |
+| Mail search | Gmail (`search_threads`) | Outlook (`outlook_email_search`) | `query_email_and_calendar` | `discover_mail_search_tool()` |
+| Mail thread fetch | Gmail (`get_thread`) | Outlook (`get_conversation`) | `get_thread` | `discover_mail_thread_fetch_tool()` |
+| Calendar | Google Calendar (`google_calendar_*`) | Outlook Calendar (Graph) | fronts calendar too | `discover_calendar_tool()` (cross-stack) |
+| Transcript | Granola | Fireflies | — | `discover_transcript_tool()` |
+| File storage | Google Drive | OneDrive | — | `discover_drive_tool()` |
 
-Discovery helpers return `DiscoveryResult.platform` indicating which stack matched (`"gmail"` / `"outlook"` / `"granola"` / `"fireflies"` / `"google_drive"` / `"onedrive"` / `"google_calendar"` / `"outlook_calendar"`).
+Discovery helpers return `DiscoveryResult.platform` indicating which stack matched (`"gmail"` / `"superhuman"` / `"outlook"` / `"granola"` / `"fireflies"` / `"google_drive"` / `"onedrive"` / `"google_calendar"` / `"outlook_calendar"`).
+
+**An operation is not always a tool name.** Search SCOPES — `in_sent`, `unread`, `in_inbox`, `from_me`, `message_id_lookup` — are INTENTS that `connector_adapters/mail.py` compiles into a provider query; no connector ships a tool called `in_sent`. `discover_for_category` recognizes them (`connector_adapters.mail.is_search_intent`) and resolves them to the backend's SEARCH tool. Matching an intent against tool ids returns nothing on every provider, Gmail included, and a caller that reads that as "not connected" silently hands the read back to the model.
+
+**A real connector spells no product name.** Native Gmail is `mcp__f12657a1__search_threads`, Superhuman `mcp__ec5e0bd5__create_or_update_draft` — the UUID carries the identity, not the tool id. The mail helpers therefore fall back from the product-name hints to the capability manifest's FINGERPRINTS (the same data `repair_backend` re-pairs on), so a real workspace resolves at all.
 
 Orchestrators that need stack-specific adapter logic branch on `result.platform`. Orchestrators that don't care just use `result.tool_id`. **Hard-coded references to specific stacks in orchestrator prose are forbidden** — same enforcement model as `CANONICAL_ACTIONS` for action labels.
 

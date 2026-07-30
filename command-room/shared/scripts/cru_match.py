@@ -22,7 +22,10 @@ fulfilled. Five paths:
   score against open commitments where any meeting attendee is the owner.
   HIGH match + completion language → auto-resolve. Schedule-shift language →
   `commitment_updated`. New-ask language → spawn new commitment with
-  `supersedes` link.
+  `supersedes` link. **Circularity-fenced (AUTOAPPLY §6):** callers pass
+  `transcript_source_ref` + `exclude_captured_since` so a transcript can
+  never score against the commitments it (or its same-fire siblings) just
+  created — see `match_transcript_to_commitments`.
 
 - **Path 4 (inbound email)** — for each inbound message, score against open
   commitments where the SENDER is the owner (i.e. the counter-party owes the
@@ -115,6 +118,16 @@ import confidence as _confidence
 # date. History is never rewritten; readers normalize.
 from event_time import event_time
 
+# Bilingual overlay (Spanish beta). Inert for English installs: when no non-en
+# language is active in the workspace, every accessor returns the English
+# default unchanged and accent-folding is a no-op. See shared/scripts/lexicon.py
+# + references/SPANISH_BUILD_PLAN.md. Guarded so a missing module can never
+# change English-native behavior.
+try:
+    import lexicon as _lex
+except Exception:  # pragma: no cover
+    _lex = None
+
 HIGH_CONFIDENCE_THRESHOLD = MATCH_SCORE_AUTO_RESOLVE   # 0.55
 PENDING_REVIEW_THRESHOLD = MATCH_SCORE_PENDING_REVIEW  # 0.30
 
@@ -206,6 +219,14 @@ _PUNCT_RE = re.compile(r"[^\w\s]+")
 _WS_RE = re.compile(r"\s+")
 
 
+def _phrases(key: str, default: tuple) -> tuple:
+    """Merged phrase tuple for a ``cru_match`` phrase-list, or the English
+    default when the bilingual overlay is inactive or absent (production path)."""
+    if _lex is None:
+        return default
+    return _lex.load_lexicon_terms("cru_match", key, default)
+
+
 def _tokenize(text: Optional[str]) -> list[str]:
     """Lowercase, strip punctuation, split on whitespace, drop stop-words and
     single-char tokens. Returns a LIST (preserves order for bigrams) — caller
@@ -219,7 +240,21 @@ def _tokenize(text: Optional[str]) -> list[str]:
     text = text.lower()
     text = _PUNCT_RE.sub(" ", text)
     text = _WS_RE.sub(" ", text).strip()
-    return [w for w in text.split() if len(w) >= 2 and w not in STOPWORDS]
+    if _lex is None:
+        return [w for w in text.split() if len(w) >= 2 and w not in STOPWORDS]
+    # Bilingual overlay: merged stop-words + accent-folding when a non-English
+    # language is active. English-only workspaces get STOPWORDS back verbatim
+    # and fold=False, so the comprehension below is identical to production.
+    stop = _lex.stopwords(STOPWORDS)
+    fold = _lex.accent_fold_enabled()
+    if not fold:
+        return [w for w in text.split() if len(w) >= 2 and w not in stop]
+    out = []
+    for w in text.split():
+        w = _lex.fold_accents(w)
+        if len(w) >= 2 and w not in stop:
+            out.append(w)
+    return out
 
 
 def _bigrams(tokens: list[str]) -> set[tuple[str, str]]:
@@ -350,7 +385,7 @@ def detect_completion_signal(text: Optional[str]) -> bool:
     if not text:
         return False
     lo = text.lower()
-    return any(phrase in lo for phrase in COMPLETION_PHRASES)
+    return any(phrase in lo for phrase in _phrases("completion_phrases", COMPLETION_PHRASES))
 
 
 def detect_schedule_shift_signal(text: Optional[str]) -> bool:
@@ -361,7 +396,7 @@ def detect_schedule_shift_signal(text: Optional[str]) -> bool:
     if not text:
         return False
     lo = text.lower()
-    return any(phrase in lo for phrase in SCHEDULE_SHIFT_PHRASES)
+    return any(phrase in lo for phrase in _phrases("schedule_shift_phrases", SCHEDULE_SHIFT_PHRASES))
 
 
 def detect_new_ask_signal(text: Optional[str]) -> bool:
@@ -372,7 +407,7 @@ def detect_new_ask_signal(text: Optional[str]) -> bool:
     if not text:
         return False
     lo = text.lower()
-    return any(phrase in lo for phrase in NEW_ASK_PHRASES)
+    return any(phrase in lo for phrase in _phrases("new_ask_phrases", NEW_ASK_PHRASES))
 
 
 def detect_scheduling_intent(text: Optional[str]) -> bool:
@@ -386,7 +421,7 @@ def detect_scheduling_intent(text: Optional[str]) -> bool:
     if not text:
         return False
     lo = text.lower()
-    return any(phrase in lo for phrase in SCHEDULING_PHRASES)
+    return any(phrase in lo for phrase in _phrases("scheduling_phrases", SCHEDULING_PHRASES))
 
 
 # -----------------------------------------------------------------------------
@@ -831,6 +866,14 @@ def load_open_commitments(
         clears `pending_review`, `review_reason`, AND the C4
         `suspected_duplicate_of` / `suspected_duplicate_score` flags —
         confirmed distinct, both items stay open.
+      * REVIEW SET (AUTOAPPLY §4c review fix — the additive mirror of the
+        clear above): a `commitment_updated` carrying
+        `data.review_flags_set: true` (commitment_state.
+        flag_duplicate_for_review) STAMPS `pending_review`, `review_reason`
+        and the C4 `suspected_duplicate_of` / `suspected_duplicate_score`.
+        An auto-merge stamp the apply half could not honor (survivor closed,
+        stamp stale, merge reversed) lands the pair back on the flag tier as
+        a visible question instead of vanishing.
       Ordering is append-order-aware ACROSS the reassignment fold: a Mine
       confirm followed by a later unconfirmed reassignment re-stamps
       pending_review (latest adjudication wins), and vice versa.
@@ -930,6 +973,15 @@ def load_open_commitments(
     # review_flags_cleared ("Keep both"). Applied in append order against
     # the reassignment fold — the latest adjudication decides pending_review.
     confirmations: dict[str, dict] = {}
+    # commitment id → latest flag-tier fallback (AUTOAPPLY §4c review fix): a
+    # commitment_updated carrying review_flags_set (commitment_state.
+    # flag_duplicate_for_review). The additive MIRROR of review_flags_cleared
+    # — an auto-merge stamp that could not be honored at apply time (survivor
+    # closed, stamp stale, merge reversed) puts the pair back on the flag tier
+    # as a visible question. Ordered with the other adjudications: latest
+    # wins, so a user's Keep-both after this clears it, and this after a
+    # Keep-both re-asks.
+    review_flag_sets: dict[str, dict] = {}
     # commitment target → latest kind override (Stage D fold: the
     # `commitment_reclassified` marker is ADDITIVE — promote/migrate never
     # delete/recreate; the projector applies the label change read-side).
@@ -1091,6 +1143,18 @@ def load_open_commitments(
                     "seq": ev.get("seq"),
                     "idx": idx,
                 }
+            # AUTOAPPLY §4c review fix — the flag-tier fallback (the additive
+            # mirror of the Keep-both clear above). Keyed on the explicit
+            # boolean flag_duplicate_for_review stamps, so an ordinary update
+            # can never accidentally RAISE a review flag either.
+            if target and d.get("review_flags_set"):
+                review_flag_sets[str(target)] = {
+                    "reason": d.get("review_reason"),
+                    "duplicate_of": d.get("suspected_duplicate_of"),
+                    "score": d.get("suspected_duplicate_score"),
+                    "seq": ev.get("seq"),
+                    "idx": idx,
+                }
         elif et == "commitment_partial_received":
             # MC1 receipt fold: union the delivering counterparty (id and/or
             # free-text name) onto the target. Accumulate — never overwrite;
@@ -1219,9 +1283,25 @@ def load_open_commitments(
         cf = confirmations.get(cid)
         if cf:
             adjudications.append(("confirm", cf))
+        fs = review_flag_sets.get(cid)
+        if fs:
+            adjudications.append(("flagset", fs))
         adjudications.sort(key=lambda pair: pair[1]["idx"])
         for kind, entry in adjudications:
-            if kind == "reassign":
+            if kind == "flagset":
+                # AUTOAPPLY §4c review fix: the auto tier could not honor a
+                # stamp, so the pair goes back to being a QUESTION. Same
+                # shape the capture-time flag tier writes — pending_review +
+                # the C4 duplicate fields — reached additively.
+                patch["pending_review"] = True
+                if entry.get("reason"):
+                    patch["review_reason"] = entry["reason"]
+                if entry.get("duplicate_of"):
+                    patch["suspected_duplicate_of"] = entry["duplicate_of"]
+                if entry.get("score") is not None:
+                    patch["suspected_duplicate_score"] = entry["score"]
+                patch["review_flagged_by_seq"] = entry["seq"]
+            elif kind == "reassign":
                 # An UNCONFIRMED reassignment stamps pending_review (the item
                 # sits in the unconfirmed bucket and never enters chase — no
                 # auto-email on a guessed owner); a confirmed one clears it
@@ -1412,6 +1492,161 @@ def parent_blocks_auto_resolve(ev: dict) -> bool:
     return isinstance(n, int) and not isinstance(n, bool) and n > 0
 
 
+def commitment_source_refs(ev: dict) -> set[str]:
+    """Every source_ref a (projected) commitment can be attributed to.
+
+    AUTOAPPLY §6 — the circularity fence needs to know "did THIS transcript
+    create this item?", and after a C4 merge the answer is spread across two
+    fields: the survivor keeps its own `data.source_ref` while the loader
+    folds the absorbed item's refs into `data.merged_source_refs`. A fence
+    reading only `source_ref` would let a merged-away self-match back
+    through. Both shape locations (`data.<>` and flat top-level) are read,
+    per shared/COMMITMENT_SCHEMA.md's multi-shape contract.
+    """
+    out: set[str] = set()
+    if not isinstance(ev, dict):
+        return out
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    for holder in (d, ev):
+        ref = holder.get("source_ref")
+        if isinstance(ref, str) and ref.strip():
+            out.add(ref.strip())
+        merged = holder.get("merged_source_refs")
+        if isinstance(merged, list):
+            for r in merged:
+                if isinstance(r, str) and r.strip():
+                    out.add(r.strip())
+    return out
+
+
+def commitment_matches_source_ref(ev: dict, own_ref: Optional[str]) -> bool:
+    """RECONFENCE — True when `ev` is attributed to `own_ref`.
+
+    Layer 1 of the circularity fence in the form the SEND paths need. The
+    transcript path can compare `granola:<id>` refs literally because one
+    connector writes them one way; a MESSAGE ref reaches us in several
+    spellings for the same artifact (legacy `gmail:<Id>` at any case, the
+    structured `data.provenance` object, the `gmail_message_id` field
+    channel), so a raw `in` test lets a self-match straight back through.
+
+    Three comparisons, cheapest first:
+      1. raw membership in `commitment_source_refs` (covers `data.source_ref`,
+         the flat variant, AND a C4 merge survivor's `merged_source_refs`);
+      2. the same set compared as CANONICAL dedup keys (R16 — two spellings
+         of one artifact must reduce to one key);
+      3. the event's own canonical key, which additionally reads
+         `data.provenance` and the gmail id-field channel that
+         `commitment_source_refs` does not.
+
+    (3) is what makes this fence STRICTLY STRONGER than the caller-side
+    BUG-3719 self-closure guard in `reconcile_sent_commitments`, and per the
+    F-54 no-resurface-derivation rule it lives HERE so every send-scoring
+    caller inherits it — not just the one caller that happens to have its own
+    guard. `own_ref` falsy → False, so the fence is inert by default.
+
+    ON THE FAIL-OPEN AT THE IMPORT (review F-2): if provenance cannot be
+    imported this degrades to comparison (1) ALONE — raw exact-spelling
+    membership, which has already run above — plus layer 2. It is not
+    unfenced, and it is not layer-2-only. What makes the fail-open SAFE
+    rather than merely tolerable is non-obvious and worth naming: the only
+    wired caller, `reconcile_sent_commitments`, imports `canonical_dedup_key`
+    at MODULE level (line 47), so a broken provenance module fails that import
+    closed and loud long before this branch could be reached. `cru_match`
+    imports it lazily, which is what creates the latent branch — so a FUTURE
+    caller that passes `send_source_ref` without a hard provenance dependency
+    would silently get the weaker comparison. Fix the import, not this line.
+    """
+    ref = (own_ref or "").strip()
+    if not ref or not isinstance(ev, dict):
+        return False
+    refs = commitment_source_refs(ev)
+    if ref in refs:
+        return True
+    try:
+        from connector_adapters.provenance import canonical_dedup_key
+    except Exception:
+        # No provenance module → raw compare above is the whole fence. Fail
+        # OPEN rather than crash the matcher: the caller-side BUG-3719 guard
+        # and the same-fire layer still stand.
+        return False
+    own_key = canonical_dedup_key(source_ref=ref)
+    if not own_key:
+        return False
+    for r in refs:
+        if canonical_dedup_key(source_ref=r) == own_key:
+            return True
+    return canonical_dedup_key(event=ev) == own_key
+
+
+# RECONFENCE F-4 — the "fence itself is unusable" sentinel. Comparing every
+# candidate against the earliest representable instant excludes ALL of them,
+# because layer 2 drops anything captured at-or-after the fire start. That is
+# the maximally-fenced reading, and it is the SAFE one: the run closes and
+# proposes nothing (no writes, and the pass is idempotent so the next fire with
+# a good value does the work), rather than scoring on unfenced.
+_FIRE_START_UNUSABLE = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def _normalize_fire_start(value, param="exclude_captured_since"):
+    """RECONFENCE — normalize a fence's OWN timestamp input.
+
+    Review F-3/F-4. The first cut of this block did two things wrong, and both
+    were failures of the fence rather than of the data it fences:
+
+      F-3 — it type-checked with `hasattr(value, "tzinfo")`, which is True for
+      a NAIVE datetime. The naive value passed through untouched and then hit
+      `captured >= fire_start` against the AWARE datetime `_parse_ts` returns,
+      raising TypeError from inside the candidate loop and taking down the
+      whole matcher. A naive datetime is a legitimate input shape, so it is
+      NORMALIZED here (UTC attached, mirroring `_parse_ts`'s own defensive
+      handling) and can no longer take matching down.
+
+      F-4 — a malformed ISO string or an off-type value (an epoch int) left
+      `fire_start = None`, which SILENTLY disabled layer 2 entirely. That is
+      the AUTOAPPLY F-5 dead-rail shape: a fence present, tested, and inert.
+      It matters here because `fire_start` is LLM-produced at the SKILL.md
+      call site. Such a value now fails SAFE — the same posture layer 2 already
+      documents for an unparseable CANDIDATE ts (exclude, never admit) — and
+      says so loudly on stderr. The fence's own parameter must not fail open
+      when the data it fences fails closed.
+
+    None → None, the documented inert default, which is NOT an error: it is how
+    every pre-RECONFENCE caller asks for no layer 2 at all. An empty string is
+    deliberately NOT treated as None here — a blank where a timestamp belongs
+    is an unfilled template, which is exactly the silent fence-off F-4 is about.
+
+    SHARED BY BOTH FENCED RAILS as of F-10 (SENTMATCH): `match_send_to_commitments`
+    and `match_transcript_to_commitments` both route their layer-2 input through
+    here. The two blocks were byte-identical duplicates and the transcript one
+    still carried the defective variant; editing this function now moves both
+    rails, which is the point.
+
+    EVORDER — also the normalizer for `send_ts` / `inbound_ts` (layer 3), which
+    is why the loud message takes the parameter NAME rather than hardcoding it.
+    Before that, a malformed `send_ts` printed `exclude_captured_since=<value>`
+    and sent whoever grepped for it at the wrong knob entirely.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is None:                      # F-3
+            return value.replace(tzinfo=datetime.timezone.utc)
+        return value
+    if isinstance(value, str):
+        parsed = _parse_ts(value)
+        if parsed is not None:
+            return parsed
+    # F-4: unparseable string, or a type this fence cannot read at all.
+    import sys as _sys
+    print(
+        f"RECONFENCE: {param}={value!r} is not a usable "
+        f"timestamp — failing SAFE (excluding every candidate) rather than "
+        f"scoring unfenced. Pass an ISO-8601 string or a datetime.",
+        file=_sys.stderr,
+    )
+    return _FIRE_START_UNUSABLE
+
+
 def cru_eligible(open_commitments: list[dict]) -> list[dict]:
     """Stage D policy: TASK-kind commitments NEVER enter CRU matching. The
     matchers only make sense with a counterparty — a self-owed task can't be
@@ -1432,6 +1667,213 @@ def cru_eligible(open_commitments: list[dict]) -> list[dict]:
 
 
 # -----------------------------------------------------------------------------
+# SENTMATCH — Path 1 closes on evidence of DELIVERY, not on title echo
+# -----------------------------------------------------------------------------
+#
+# `_overlap_coefficient`'s denominator is `min(|a|, |b|)` and an email body is
+# always the longer side, so the Path-1 score measures exactly one thing: what
+# fraction of the commitment TITLE's own words reappear in the email. Against
+# the title "Send Sam Sample the Q3 pricing deck":
+#
+#   "Hi Sam, here you go. Let me know what you think."  → 0.17, no candidate
+#   "Attaching the Q3 pricing deck as promised."        → 0.60, closes
+#
+# The email that IS the deliverable never closes; the email that merely quotes
+# the title does. Measured on the operator's real substrate (the same shape,
+# scoring 0.20 there): 73 runs scanned 1,372 sent messages and auto-closed 21
+# (1.53%); the median owned title is 8 content words, so five of them must
+# literally reappear before anything closes.
+#
+# THE FIX IS NOT A LOWER THRESHOLD. 0.333 is the measured noise floor and the
+# miss class sits at 0.20 and below, where no threshold reaches without
+# admitting noise with it. The fix is a SECOND basis for closing that does not
+# read the title as evidence at all:
+#
+#   A. DELIVERY EVIDENCE — an attachment rode along, the recipient is a
+#      counterparty of an item this user owes, and the body says it is done.
+#      Promotes only the `no_action` band (score < pending), which IS the
+#      measured miss class; the 0.30-0.55 band keeps FS-11's ambiguity-aware
+#      caller-side promotion and the >= 0.55 title path is byte-unchanged.
+#   B. THREAD PRIOR — the send happened inside the conversation the commitment
+#      was captured from. That is a connector-provided identity link, so a weak
+#      title score on THAT thread is corroboration rather than the evidence.
+#      Promotes `no_action` to `pending_review` only — the close itself still
+#      goes through FS-11's unambiguous-1:1 rule at the caller, so the existing
+#      ambiguity posture is reused rather than re-invented.
+#
+# Both bases run INSIDE the existing candidate loop, AFTER both RECONFENCE
+# layers have already dropped self-referential and same-fire candidates, so
+# fence inheritance is structural rather than re-derived (the F-54 rule).
+
+DELIVERY_BASIS = "delivery_evidence"
+THREAD_BASIS = "thread_prior"
+AMBIGUOUS_DELIVERY_BASIS = "delivery_evidence_ambiguous"
+
+
+def commitment_thread_refs(ev: dict) -> set[str]:
+    """Every THREAD-level ref a (projected) commitment can be attributed to.
+
+    SENTMATCH signal B asks "did this send happen in the conversation this
+    commitment came from?". A commitment's `source_ref` names a MESSAGE
+    (`gmail:<message_id>`, COMMITMENT_SCHEMA § source_ref) — not a thread — so
+    the thread has to come from the id channels that actually carry one:
+
+      - `thread_ref` — the canonical thread key stamped at capture by
+        `sent_capture.build_sent_commitment_event` (SENTMATCH). The
+        provider-neutral channel; the only one a non-Gmail backend fills.
+      - `provenance.thread_native_id` / `gmail_thread_id` — the two spellings
+        `connector_adapters.provenance` already owns for a thread id. Read
+        here so a commitment written by any future call site that uses the
+        shared provenance builder is covered without a second edit.
+
+    Both shape locations (`data.<>` and flat top-level) are read, per
+    COMMITMENT_SCHEMA's multi-shape contract. Values are returned RAW; the
+    caller canonicalizes, so one spelling of a thread never masquerades as a
+    different thread.
+    """
+    out: set[str] = set()
+    if not isinstance(ev, dict):
+        return out
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    for holder in (d, ev):
+        if not isinstance(holder, dict):
+            continue
+        for key in ("thread_ref", "gmail_thread_id"):
+            v = holder.get(key)
+            if isinstance(v, str) and v.strip():
+                out.add(v.strip())
+        prov = holder.get("provenance")
+        if isinstance(prov, dict):
+            v = prov.get("thread_native_id")
+            if isinstance(v, str) and v.strip():
+                provider = prov.get("provider")
+                out.add(f"{provider}:{v.strip()}" if provider else v.strip())
+    return out
+
+
+def commitment_matches_thread_ref(ev: dict, thread_ref: Optional[str]) -> bool:
+    """True when `ev` was captured inside the conversation `thread_ref` names.
+
+    Two channels, both compared as CANONICAL dedup keys (R16 — two spellings
+    of one artifact must reduce to one key, and a raw `in` test lets a
+    differently-cased thread id read as a different thread):
+
+      1. the commitment's own thread refs (`commitment_thread_refs`);
+      2. the commitment's SOURCE refs. This fires when the item was captured
+         from the message that OPENED the thread — on Gmail a thread's id is
+         the id of its first message, so `gmail:<thread>` and the capture's
+         `gmail:<first message>` reduce to the same key. It is a no-op on a
+         backend where the two id spaces are disjoint, which is the correct
+         behavior there: no claim is made, so nothing matches.
+
+    A thread hit is a PRIOR, never a closure on its own — the caller still
+    requires a non-zero title score before the candidate leaves `no_action`.
+    `thread_ref` falsy → False, so signal B is inert by default.
+
+    TRAINFIX (MAILSEAM residual 3): the compare is PROVIDER-LABEL TOLERANT.
+    Both callers now build their key with `primary_artifact_key(provider, …)`
+    rather than a `gmail` literal, so on a Superhuman workspace the key reads
+    `superhuman:<thread>` — while `thread_ref` rows stamped before the backend
+    was declared (and every row `sent_capture` wrote pre-MAILSEAM) carry the
+    legacy `gmail:` anchor. One thread, two labels. A single-key compare would
+    silently stop matching the moment a workspace declares a backend, which is
+    the same shape as the guard MAILSEAM just fixed one function over.
+
+    THE TOLERANCE IS SCOPED TO THE BACK-COMPAT CASE, AND ONLY THAT (review
+    F-1). The provider is taken from the INCOMING key's own prefix, never left
+    unresolved: `is_same_artifact`'s resolved branch matches `{provider}:{id}`
+    OR the legacy `gmail:` anchor, which is precisely and only the population
+    this tolerance exists for. The first cut passed `None`, which matches ANY
+    prefix — and the candidate set is `commitment_thread_refs(ev) |
+    commitment_source_refs(ev)`, whose source-ref half spans granola, session,
+    meeting, gcal, slack and a dozen more. So a `granola:<uuid>` ref would have
+    anchored a mail reply carrying the same native id. That matters HERE more
+    than on the send rail: Path 4's R1 turns a thread hit into `auto_resolve`
+    with no title floor, while Path 1's signal B only ever reaches
+    `pending_review` and additionally requires `score > 0.0`. Measured exposure
+    on the reference substrate was zero (0 cross-provider thread-id collisions;
+    the 4 cross-source native-id collisions were all granola/meeting UUID
+    pairs, none involving a mail id) — so this is a tightening, not a repair,
+    and it closes the class by construction rather than by id-namespace luck.
+
+    THE RESIDUAL TRADE, NAMED (see `is_same_artifact`'s own per-consumer note):
+    within one provider label plus the legacy anchor this is still the
+    OVER-matching direction, and unlike the self-ref fence this consumer can
+    CLOSE rather than merely decline to. What bounds it now: a false positive
+    needs the SAME provider (or the legacy `gmail:` anchor) to mint the
+    identical id under two different threads, and the thread hit is one
+    conjunct among several — the reply must also come from the item's owner,
+    carry completion language or the artifact the item asked for, not be a
+    reschedule, and survive the one-reply-one-delivery ambiguity guard.
+
+    A prefix-less incoming ref keeps the pre-existing permissive comparison
+    (there is no provider to derive). Both live callers build their key with
+    `primary_artifact_key`, which always prefixes, so that branch is
+    unreachable from the send and inbound rails.
+    """
+    ref = (thread_ref or "").strip()
+    if not ref or not isinstance(ev, dict):
+        return False
+    try:
+        from connector_adapters.provenance import (canonical_dedup_key,
+                                                   is_same_artifact)
+    except Exception:
+        # No provenance module → the thread prior cannot be established
+        # honestly, so it does not fire. Fail CLOSED: signal B only ever ADDS
+        # closure power, so its unavailable state must add none.
+        return False
+    own_key = canonical_dedup_key(source_ref=ref)
+    if not own_key:
+        return False
+    # Our own key's two halves. The PROVIDER half is what scopes the
+    # tolerance: handing it to `is_same_artifact` admits that provider's key
+    # and the legacy `gmail:` anchor and nothing else. The NATIVE half — a
+    # bare key is its own native id; a multi-segment key keeps its remaining
+    # segments, so a `slack:<chan>:<ts>` ref never collapses onto a bare id.
+    own_prov = own_key.split(":", 1)[0] if ":" in own_key else None
+    native = own_key.split(":", 1)[-1]
+    for r in commitment_thread_refs(ev) | commitment_source_refs(ev):
+        cand = canonical_dedup_key(source_ref=r)
+        if cand == own_key or is_same_artifact(cand, own_prov, native):
+            return True
+    return False
+
+
+def _delivery_counterparty_hit(d: dict, recipient_set: set,
+                               recipient_name_tokens: set,
+                               party_ids: set, owner_id: str) -> bool:
+    """SENTMATCH signal A's counterparty conjunct — is this send going to the
+    person the item is owed TO?
+
+    DELIBERATELY NARROWER than the candidacy gate that admitted the candidate.
+    That gate has three routes and one of them is the Bug #103 recall
+    fallback: a recipient NAME TOKEN appearing in the commitment TITLE. That
+    route is right for candidacy (it only opens the door; the score still
+    decides) and wrong here, because signal A closes without reading the
+    title — "Send Sam the deck" plus any attachment to any Sam would close it.
+    A name in a title is not a statement about who is owed.
+
+    The two routes that ARE statements about who is owed:
+      - a RESOLVED recipient who is a party to the item and is not its owner.
+        Covers the Stage-E `counterparty_id(s)` receipt (already unioned into
+        `party_ids` by the caller) AND every pre-Stage-E commitment, which
+        carry the counterparty in `person_ids` and nothing else — excluding
+        those would leave the new basis dead on all historic items.
+      - a recipient name token matching a free-text `counterparty_name(s)`
+        receipt — the extractor naming a counterparty it could not resolve.
+        Still an explicit counterparty assertion, unlike the title route.
+    """
+    from commitment_parties import counterparty_names as _cp_names_local
+    if recipient_set & (set(party_ids) - {owner_id}):
+        return True
+    if recipient_name_tokens:
+        for nm in _cp_names_local(d):
+            if recipient_name_tokens & set(_tokenize(nm)):
+                return True
+    return False
+
+
+# -----------------------------------------------------------------------------
 # Path 1 — match an outbound send to open commitments
 # -----------------------------------------------------------------------------
 
@@ -1445,8 +1887,49 @@ def match_send_to_commitments(
     body: Optional[str],
     recipient_names: Optional[Iterable[str]] = None,
     workspace_root=None,
+    send_source_ref: Optional[str] = None,
+    exclude_captured_since=None,
+    has_attachment: bool = False,
+    send_thread_ref: Optional[str] = None,
+    send_ts=None,
+    diagnostics: Optional[dict] = None,
 ) -> list[dict]:
     """Path 1 — score an outbound send against open commitments.
+
+    THE CIRCULARITY FENCE (RECONFENCE — the AUTOAPPLY §6 fence, mirrored onto
+    the send-scoring path; both layers here so every caller inherits them per
+    the F-54 no-resurface-derivation rule):
+
+      1. `send_source_ref` — the ref of the message being scored (e.g.
+         `gmail:<id>`). Any candidate attributed to that same ref is dropped
+         BEFORE scoring, via `commitment_matches_source_ref`, which compares
+         raw refs, canonical dedup keys, AND `merged_source_refs` (a C4 merge
+         survivor keeps its own `source_ref` while the absorbed item's refs
+         move to `merged_source_refs` — so the survivor of a merge that
+         swallowed THIS message's capture resolves to a different key and
+         sails past a single-key check). Self-evidence is not evidence.
+
+      2. `exclude_captured_since` — an ISO timestamp (or datetime) marking
+         the START of this fire. Candidates captured at or after it are
+         same-fire siblings: one orchestrator fire captures in an early phase
+         and scores sent mail in a later one, so the two share an extraction
+         context and are ONE source, not two (AUTOAPPLY §2's independence
+         rule). No ref relationship exists between them, so layer 1 is blind
+         to this case by construction.
+
+    WHY A CAPTURE-TIME FENCE IS SOUND ON A PATH WITH NO COMPLETION GATE:
+    unlike Path 3, sending IS the fulfillment here, so a send genuinely can
+    complete a commitment captured minutes earlier. Layer 2 does not touch
+    that — it excludes only what THIS FIRE wrote; anything predating the fire
+    stays fully matchable. An unparseable capture ts fails SAFE (excluded): a
+    candidate whose age we cannot establish is not independent evidence.
+
+    Both default to None = pre-RECONFENCE behavior, byte-identical, so every
+    existing caller and test is unaffected. Measured basis: the v5.4.0
+    attended dogfood (2026-07-28) saw 3 self-referential proposals on this
+    path, worst case a commitment written at 14:38 questioned at 14:40; on
+    the regression fixture the unfenced path AUTO-CLOSES both self-matches at
+    score 0.8 rather than merely proposing them.
 
     Filters open_commitments to those where:
       - `data.owner_id` == sender_person_id (the user owes this)
@@ -1468,12 +1951,39 @@ def match_send_to_commitments(
     positives down — a name in the title only makes the commitment a candidate;
     the subject/body must still overlap it.
 
+    SENTMATCH — THE TWO NON-TITLE CLOSURE BASES (see the block above this
+    function for the measurement they come from):
+
+    `has_attachment` (signal A) — the connector's attachment flag for THIS
+    message. Absent/False means "no evidence", never "unknown but probably" —
+    a missing signal must not manufacture a closure, so the default leaves
+    signal A dead. Combined with a counterparty receipt and completion
+    language, it promotes a `no_action` candidate straight to auto_resolve:
+    the send IS the fulfillment on this path, and the deliverable rode along.
+
+    `send_thread_ref` (signal B) — the ref of the CONVERSATION this message
+    sits in (`gmail:<thread_id>`, canonicalized by the caller, exactly like
+    `send_source_ref`). A commitment captured inside that thread gets its
+    candidacy floor lowered to "any non-zero title overlap" — the thread id is
+    the evidence, the score is corroboration. It promotes to pending_review
+    only; the close still runs through FS-11's unambiguous-1:1 rule at the
+    caller, so a thread carrying several open items produces confirms, not a
+    burst of closures. None → inert.
+
+    NEITHER basis widens the candidacy gate above (owner + recipient), and
+    NEITHER lowers `_hi` / `_pend`. Both run after both RECONFENCE layers.
+
     Returns a list of `{commitment_id, score, recommendation, title}` dicts,
     sorted by score descending. recommendation is one of:
-      - "auto_resolve" (score >= HIGH_CONFIDENCE_THRESHOLD)
-      - "pending_review" (PENDING_REVIEW_THRESHOLD <= score < HIGH)
+      - "auto_resolve" (score >= HIGH_CONFIDENCE_THRESHOLD, or SENTMATCH
+        signal A on a sub-pending candidate)
+      - "pending_review" (PENDING_REVIEW_THRESHOLD <= score < HIGH, or
+        SENTMATCH signal B on a sub-pending candidate)
       - "no_action" (filtered out — caller can ignore these but they're
         included for diagnostic logging)
+    Rows also carry `close_basis`: "" for the title path, `DELIVERY_BASIS`,
+    `THREAD_BASIS`, or `AMBIGUOUS_DELIVERY_BASIS` (signal A that matched more
+    than one item on one send — downgraded to a confirm).
     """
     if not sender_person_id:
         return []
@@ -1493,7 +2003,38 @@ def match_send_to_commitments(
     query = (subject or "") + " " + (body or "")
     results: list[dict] = []
 
+    # SENTMATCH signal A — the two body-level conjuncts, computed once. A
+    # schedule shift is the explicit NEGATIVE: "attaching the old deck, the
+    # updated one is pushed to Friday" carries an attachment AND completion
+    # language AND is not a delivery. It only blocks the new basis; a title
+    # match at >= 0.55 closes exactly as it did before.
+    has_completion = detect_completion_signal(query)
+    has_schedule_shift = detect_schedule_shift_signal(query)
+    delivery_body_ok = bool(has_attachment) and has_completion and not has_schedule_shift
+
+    # RECONFENCE fence prep. `own_ref` empty / `fire_start` None → the fence
+    # is inert and every pre-RECONFENCE call behaves byte-identically.
+    own_ref = (send_source_ref or "").strip()
+    # F-3/F-4: a naive datetime is normalized (never crashes the loop); an
+    # unusable value fails SAFE and loud instead of silently fencing nothing.
+    fire_start = _normalize_fire_start(exclude_captured_since)
+    # EVORDER — the SEND's own time. Layer 2 fences against the start of this
+    # FIRE, which is a different question: a commitment captured before the
+    # fire but AFTER the message sails past it. `None` → inert.
+    evidence_at = _normalize_fire_start(send_ts, "send_ts")
+
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
+        # Layer 1 — a send can never corroborate a conclusion about an item
+        # it created. Dropped before scoring, so the row is NEVER CREATED
+        # rather than created-then-suppressed.
+        if own_ref and commitment_matches_source_ref(ev, own_ref):
+            continue
+        # Layer 2 — same-fire captures share one extraction context, so they
+        # are one source. An unparseable capture ts fails SAFE (excluded).
+        if fire_start is not None:
+            captured = _parse_ts(event_time(ev))
+            if captured is None or captured >= fire_start:
+                continue
         if _commitment_field(ev, "owner_id") != sender_person_id:
             continue
         _d = ev.get("data") or {}
@@ -1525,6 +2066,56 @@ def match_send_to_commitments(
         )
         if not (recipient_in_pids or recipient_in_title or recipient_in_cp_name):
             continue
+        # Layer 3 (EVORDER) — a send cannot be evidence for a promise that did
+        # not exist when it was sent. Path 5 has carried this guard since
+        # SENTMATCH (`match_calendar_to_commitments`); Paths 1 and 4 never did,
+        # and F-11 measured four false closes on the operator's real substrate
+        # from the gap — including one item still open and overdue days after
+        # it was "closed". Dropped before scoring, like the other two layers.
+        #
+        # PLACEMENT: below the owner and recipient gates, unlike layers 1 and 2
+        # which sit at the top of the loop. Two reasons, and the review that
+        # caught this was right on both. (a) The COUNT has to mean something: up
+        # top it fired once per (message x every open commitment newer than that
+        # message) regardless of owner or recipient, so a single 24h-old send
+        # against the operator's substrate reported ~46 "drops" and a 20-message
+        # fire reported high hundreds — a number that cannot serve as the
+        # negative-control signal the spec asked it to be. (b) It saves a
+        # `fromisoformat` per irrelevant candidate. Fencing power is unchanged:
+        # a candidate the owner or recipient gate already dropped never produced
+        # a row for layer 3 to prevent.
+        #
+        # Asymmetric on purpose, and the absent-vs-malformed split matters on
+        # BOTH sides — this module's own presence-test doctrine ("`False` is the
+        # connector answering, an absent key is the connector never being
+        # asked"):
+        #   * `send_ts` ABSENT (None) → `evidence_at is None` → INERT. A fence
+        #     that cannot judge ordering must not exclude, and a provider that
+        #     carries no send times must not lose closure entirely.
+        #   * `send_ts` PRESENT but unusable → `_normalize_fire_start` fails SAFE
+        #     and LOUD (warns, excludes everything). Someone handed us a value
+        #     and it is junk; for a CLOSURE engine "close nothing" is the
+        #     conservative direction, and silently switching the guard off is the
+        #     exact failure class this release exists to eliminate.
+        #   * strict `>`, not `>=`: capture == send is the "captured from this
+        #     very message" case, which layer 1 already owns by ref.
+        #   * capture time ABSENT → inert for that candidate, NOT excluded. A
+        #     commitment with no capture time cannot exhibit this defect (it
+        #     needs a capture NEWER than the send), and excluding it would
+        #     silently stop closing every ts-less item — a behavior change far
+        #     wider than the bug. Measured: 683/683 real commitment events carry
+        #     a parseable `ts`, so this branch is belt-and-braces, and 10 shipped
+        #     tests assert the ts-less item still closes.
+        #   * capture time PRESENT but unparseable → exclude, mirroring layer 2.
+        if evidence_at is not None:
+            _raw_captured = event_time(ev)
+            if _raw_captured:
+                captured = _parse_ts(_raw_captured)
+                if captured is None or captured > evidence_at:
+                    if isinstance(diagnostics, dict):
+                        diagnostics["stale_evidence_dropped"] = (
+                            diagnostics.get("stale_evidence_dropped", 0) + 1)
+                    continue
         score = score_match(query, title)
         if score >= _hi:
             rec = "auto_resolve"
@@ -1532,6 +2123,28 @@ def match_send_to_commitments(
             rec = "pending_review"
         else:
             rec = "no_action"
+        # SENTMATCH — the two non-title bases, applied ONLY to the `no_action`
+        # band. That band is the measured miss class (the deliverable email
+        # lands at 0.20 and below); everything at or above `_pend` keeps the
+        # behavior it has today, including FS-11's ambiguity-aware promotion
+        # at the caller, so neither basis can silently re-grade an existing
+        # match.
+        basis = ""
+        if rec == "no_action":
+            if delivery_body_ok and _delivery_counterparty_hit(
+                    _d, recipient_set, recipient_name_tokens,
+                    person_ids, sender_person_id):
+                # A deliverable was delivered. A SCHEDULING commitment ("set
+                # up a call with <name>") is not deliverable by attachment —
+                # a booked calendar event closes those (Path 5), so they are
+                # ineligible here rather than closable by any file at all.
+                if not detect_scheduling_intent(title):
+                    rec = "auto_resolve"
+                    basis = DELIVERY_BASIS
+            elif (send_thread_ref and score > 0.0
+                    and commitment_matches_thread_ref(ev, send_thread_ref)):
+                rec = "pending_review"
+                basis = THREAD_BASIS
         if rec == "auto_resolve" and _is_pending_review(ev):
             rec = "pending_review"
         # MC1: a send to ONE counterparty of a MULTI-counterparty commitment
@@ -1567,7 +2180,23 @@ def match_send_to_commitments(
             "primary_thread_id": ev.get("primary_thread_id") or "",
             "matched_counterparty_ids": matched_cp_ids,
             "matched_counterparty_names": matched_cp_names,
+            "close_basis": basis,
         })
+
+    # SENTMATCH — ONE send, ONE delivery. A single attachment cannot be the
+    # evidence for two different deliverables at once, so when signal A puts a
+    # second auto-grade row on the same message the delivery-evidence rows
+    # step down to a confirm. This is FS-11's ruling applied to the new basis
+    # ("only multi-candidate AMBIGUITY stays a confirm proposal"), and it is
+    # the guard that makes signal A's thin conjunction safe: the title path is
+    # never touched by it, so a >= 0.55 match keeps closing.
+    _delivery_rows = [r for r in results if r["close_basis"] == DELIVERY_BASIS]
+    if _delivery_rows and sum(
+            1 for r in results if r["recommendation"] == "auto_resolve") > 1:
+        for r in _delivery_rows:
+            if r["recommendation"] == "auto_resolve":
+                r["recommendation"] = "pending_review"
+                r["close_basis"] = AMBIGUOUS_DELIVERY_BASIS
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
@@ -1584,9 +2213,36 @@ def match_transcript_to_commitments(
     attendee_person_ids: Iterable[str],
     transcript_text: str,
     workspace_root=None,
+    transcript_source_ref: Optional[str] = None,
+    exclude_captured_since=None,
 ) -> list[dict]:
     """Path 3 — score a meeting transcript against open commitments where any
     meeting attendee is the owner.
+
+    THE CIRCULARITY FENCE (AUTOAPPLY §6 — two layers, both here so every
+    caller inherits them per the F-54 no-resurface-derivation rule):
+
+      1. `transcript_source_ref` — the ref of the transcript being scored
+         (e.g. `granola:<id>`). Any candidate attributed to that same ref
+         (`commitment_source_refs`, which covers `data.source_ref` AND a
+         merged survivor's `merged_source_refs`) is dropped BEFORE scoring.
+         A commitment extracted from transcript T title-matches T at ~1.0
+         and carries no completion language — the meeting that CREATED an
+         ask rarely also completes it — so Path 3's own conservative branch
+         emitted `pending_review`: a confirm row born of evidence that
+         corroborates nothing. Self-evidence is not evidence.
+
+      2. `exclude_captured_since` — an ISO timestamp (or datetime) marking
+         the START of this fire. Candidates captured at or after it are
+         same-fire SIBLINGS: meeting A's asks scored against meeting B's
+         transcript five minutes later, in one batch. They share the
+         extraction context, so they are one source, not two (§2's
+         independence rule), and the ref check alone cannot see them.
+
+    Both default to None = pre-AUTOAPPLY behavior, byte-identical, so every
+    existing caller and test is unaffected. Measured basis: 10 of the 14
+    review proposals written in the 2026-07-26 04:25 fire on the reference
+    substrate targeted commitments captured 04:20–04:21 in that same fire.
 
     For each candidate commitment, compute:
       - title-match score against the transcript (Jaccard, see score_match)
@@ -1619,8 +2275,34 @@ def match_transcript_to_commitments(
     has_schedule_shift = detect_schedule_shift_signal(transcript_text)
     has_new_ask = detect_new_ask_signal(transcript_text)
 
+    # §6 fence prep. `own_ref` empty / `fire_start` None → the fence is inert
+    # and every pre-AUTOAPPLY call behaves byte-identically.
+    own_ref = (transcript_source_ref or "").strip()
+    # RECONFENCE F-10 (due once this file was next touched): this rail carried
+    # the raw `hasattr(fire_start, "tzinfo")` variant that RECONFENCE's review
+    # proved defective on the send rail — F-3, a NAIVE datetime passes the type
+    # check untouched and then raises TypeError from inside the candidate loop;
+    # F-4, a malformed string or an off-type value leaves fire_start=None and
+    # SILENTLY disables layer 2. The two blocks were byte-identical, so the
+    # hardening is PORTED here rather than re-derived: one normalizer, one
+    # behavior, both rails.
+    fire_start = _normalize_fire_start(exclude_captured_since)
+
     results: list[dict] = []
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
+        # §6 layer 1 — a transcript can never corroborate a conclusion about
+        # an item it created. Dropped before scoring, so the row is NEVER
+        # CREATED rather than created-then-suppressed.
+        if own_ref and own_ref in commitment_source_refs(ev):
+            continue
+        # §6 layer 2 — same-fire siblings share one extraction context, so
+        # they are one source. An unparseable capture ts fails SAFE (the item
+        # is excluded): a candidate whose age we cannot establish must not be
+        # treated as independent evidence.
+        if fire_start is not None:
+            captured = _parse_ts(event_time(ev))
+            if captured is None or captured >= fire_start:
+                continue
         owner_id = _commitment_field(ev, "owner_id") or ""
         if owner_id not in attendee_set:
             continue
@@ -1677,6 +2359,131 @@ def match_transcript_to_commitments(
 
 
 # -----------------------------------------------------------------------------
+# REPLYCLOSE — a counterparty's reply closes a WAITING-ON item
+# -----------------------------------------------------------------------------
+#
+# M ruled 2026-07-29: yes, a client's reply should close a "waiting on X" item.
+# Before this, nothing on any mail path could. Path 1 is owner-gated to items
+# the USER owes (97 of 351 eligible open items on the reference substrate — 28%
+# — are structurally unreachable from sent mail), and Path 4 below could only
+# reach a waiting-on item through TITLE ECHO: the counterparty's message had to
+# restate the commitment's own words at >= 0.55 before the completion gate even
+# applied. The reply that IS the delivery ("here you go", file attached) scores
+# 0.20 and closes nothing — SENTMATCH's measured defect, pointed the other way.
+#
+# THE TWO BASES ADDED HERE, both applied ONLY to the `no_action` band so the
+# existing title path is byte-unchanged:
+#
+#   R1. THREAD-ANCHORED REPLY -> auto_resolve. The inbound message sits in the
+#       conversation the commitment was captured from, it comes from the person
+#       who OWES the item, and it either says the work is done or carries the
+#       artifact the item asked for. Three independent conjuncts, none of them
+#       the title.
+#   R2. OFF-THREAD REPLY -> pending_review, never more (spec §2.2). The same
+#       evidence without the connector-provided thread link is a proposal: a
+#       title-similarity close on inbound mail is the title-echo trap with the
+#       counterparty holding the pen. A non-zero title overlap is required so a
+#       chatty counterparty does not surface every item they have ever owed.
+#
+# DIRECTION IS LOAD-BEARING (spec §2.3) AND IT IS DERIVED, NEVER STORED.
+# `shared/COMMITMENT_SCHEMA.md` § "Direction": *derived from `owner_id` vs the
+# primary user; storing it would create a second source of truth*, and
+# `surface_split.classify_surface` is THE projector — Waiting On is exactly
+# "owner present AND owner != user". So a reply can only close an item whose
+# OWNER is the person who sent it, and the user's own message is refused at the
+# top of the function rather than filtered per-candidate: on a thread the user
+# replied to last, "the latest message" is the user's, and the pre-REPLYCLOSE
+# owner gate (`owner_id == sender`) matches the user's OWN open items happily.
+# That is the sent path's job, on the sent path's evidence.
+
+REPLY_BASIS = "reply_evidence"
+REPLY_PROPOSED_BASIS = "reply_proposed"
+AMBIGUOUS_REPLY_BASIS = "reply_evidence_ambiguous"
+
+# Artifact nouns that make a commitment title an ASK FOR A DOCUMENT, so an
+# inbound message carrying an attachment is itself the fulfillment shape (spec
+# §2.1) even when the words never reach `COMPLETION_PHRASES`.
+#
+# WHY THIS EXISTS RATHER THAN A WIDER PHRASE LIST. SENTMATCH's review measured
+# the recall ceiling on `COMPLETION_PHRASES` — "Please find attached." is False,
+# and it is plausibly the most common delivery sentence in business email. The
+# ruling was to DEFER widening that list, because it is shared with Path 3's
+# completion gate and reached by Path 4, so one edit changes another rail's
+# auto-close behavior — the one-rail mistake this train exists to kill, run in
+# reverse. This predicate answers the same recall problem on THIS rail only: it
+# reads the COMMITMENT TITLE (a fixed, already-captured string), never the
+# message, so no other path's behavior moves by a byte.
+DELIVERABLE_ARTIFACT_NOUNS = (
+    "deck", "slides", "presentation", "report", "doc", "docs", "document",
+    "contract", "agreement", "invoice", "proposal", "spreadsheet", "statement",
+    "memo", "summary", "draft", "pdf", "file", "files", "budget", "forecast",
+    "quote", "estimate", "scope", "sow", "brief", "roster", "spec",
+    "breakdown", "analysis", "worksheet", "deliverable", "attachment",
+)
+
+
+def detect_deliverable_artifact(title: Optional[str]) -> bool:
+    """True when a commitment TITLE names a document-shaped artifact.
+
+    Token-level, not substring: a substring test would fire `doc` inside
+    `docket` and `spec` inside `specific`. `_tokenize` already lowercases,
+    strips punctuation, and drops stop-words, so this reads the same tokens the
+    scorer does.
+    """
+    if not title:
+        return False
+    nouns = set(_phrases("deliverable_artifact_nouns", DELIVERABLE_ARTIFACT_NOUNS))
+    return bool(nouns & set(_tokenize(title)))
+
+
+def commitment_is_waiting_on(ev: dict, *, user_person_id: Optional[str],
+                             sender_person_id: Optional[str]) -> bool:
+    """REPLYCLOSE's direction predicate — is `ev` a WAITING-ON item that the
+    inbound sender is the OWNER of?
+
+    Re-derived from the underlying commitment fields through the ONE canonical
+    projector (`surface_split.classify_surface`, CTS1 §2.4), never from a
+    rendered row — the dogfood found surface rows carrying no direction at all.
+    That classifier reads `owner_id` through `_commitment_field`'s full alias
+    chain (`owner_id` / `owner_person_id` / `owner`, `data.<>` then flat), so a
+    legacy-shaped commitment is judged by the same rule as a canonical one.
+
+    Two conditions, both required:
+      1. a resolved primary user exists — direction is a COMPARISON, and with
+         no user there is nothing to compare against (`classify_surface`
+         documents its own None degrade as "every owned item lands waiting_on",
+         which is right for a count and catastrophic for a closure);
+      2. the item classifies WAITING ON — owner present, owner != user — and
+         its owner IS the sender.
+
+    Together those imply `sender != user`, so this predicate deliberately does
+    NOT restate that comparison: a check that can never change an answer is not
+    a fence, it is decoration that a mutation test cannot distinguish from a
+    working one. The direction STOP that IS load-bearing lives at the top of
+    `match_inbound_to_commitments`, where it refuses the message outright.
+
+    An UNOWNED item (no resolvable owner) classifies out here, which is the
+    honest answer: no counterparty id means no sender can ever be its owner, so
+    those items cannot participate in reply-matching at all. An UNCONFIRMED one
+    (pending_review) classifies out too — the user has not adjudicated who owns
+    it, and delivery evidence must not answer the second question before the
+    first.
+    """
+    if not user_person_id or not sender_person_id:
+        return False
+    try:
+        from surface_split import SURFACE_WAITING_ON, classify_surface
+    except Exception:
+        # The projector is core-owned and always present; if it somehow is not,
+        # fail CLOSED. This predicate only ever ADDS closure power, so its
+        # unavailable state must add none.
+        return False
+    if classify_surface(ev, user_person_id) != SURFACE_WAITING_ON:
+        return False
+    return (_commitment_field(ev, "owner_id") or "") == sender_person_id
+
+
+# -----------------------------------------------------------------------------
 # Path 4 — match an inbound email to open commitments
 # -----------------------------------------------------------------------------
 
@@ -1688,6 +2495,13 @@ def match_inbound_to_commitments(
     subject: Optional[str],
     body: Optional[str],
     workspace_root=None,
+    user_person_id: Optional[str] = None,
+    inbound_source_ref: Optional[str] = None,
+    exclude_captured_since=None,
+    inbound_thread_ref: Optional[str] = None,
+    has_attachment: bool = False,
+    inbound_ts=None,
+    diagnostics: Optional[dict] = None,
 ) -> list[dict]:
     """Path 4 — score an inbound email against open commitments where the
     SENDER is the owner.
@@ -1721,13 +2535,82 @@ def match_inbound_to_commitments(
     resolution of the sender's own commitment. We compute the flag for
     diagnostics but never resolve/supersede on it.
 
+    THE CIRCULARITY FENCE (REPLYCLOSE — RECONFENCE's two layers, ported onto
+    this rail; both here so every caller inherits them per the F-54
+    no-resurface-derivation rule):
+
+      1. `inbound_source_ref` — the ref of the message being scored (e.g.
+         `gmail:<id>`). Any candidate attributed to that same ref is dropped
+         BEFORE scoring, via `commitment_matches_source_ref` (raw refs,
+         canonical dedup keys, `merged_source_refs`, and the structured
+         provenance / gmail-id channels). This rail needed it MOST: inbox-triage
+         stamps `data.source_ref: gmail:<message_id>` on the commitments it
+         extracts from inbound mail, so the counterparty's own promise
+         ("I'll send the deck Friday") becomes an open item attributed to that
+         message — and a later re-scan of the SAME message title-matches its own
+         capture at ~1.0. The reply that CREATED an item is not the reply that
+         completed it. Self-evidence is not evidence.
+
+      2. `exclude_captured_since` — an ISO timestamp (or datetime) marking the
+         START of this fire. Candidates captured at or after it are same-fire
+         siblings: one inbox fire that extracts commitments in an early phase
+         and scores inbound mail in a later one shares an extraction context, so
+         the two are ONE source, not two (AUTOAPPLY §2's independence rule). No
+         ref relationship exists between them, so layer 1 is blind to this case
+         by construction. An unparseable capture ts fails SAFE (excluded).
+
+    Both default to None = pre-REPLYCLOSE behavior, byte-identical.
+
+    REPLYCLOSE — THE TWO REPLY BASES (see the block above this function):
+
+    `user_person_id` — the primary user. Passing it turns on the DIRECTION
+    check, and the check is a hard stop, not a filter: a message whose sender IS
+    the user returns `[]` immediately. Without it the pre-existing owner gate
+    (`owner_id == sender`) happily matches the user's OWN open items against the
+    user's OWN message, closing a promise the user made as though a counterparty
+    had delivered it. None → the check is inert (pre-REPLYCLOSE behavior) and
+    both new bases stay dead, because direction cannot be established without a
+    user to compare against.
+
+    `inbound_thread_ref` — the ref of the CONVERSATION this message sits in
+    (`gmail:<thread_id>`, canonicalized by the caller exactly like
+    `inbound_source_ref`). A commitment captured inside that thread, replied to
+    by its own owner with completion language or the artifact it asked for,
+    closes outright (basis `REPLY_BASIS`). None → R1 is inert.
+
+    `has_attachment` — the connector's attachment flag for THIS message. Absent
+    / False means "no evidence", never "unknown but probably". Combined with a
+    title that names a document (`detect_deliverable_artifact`), it is the
+    FULFILLMENT SHAPE: the answer to a request for a document is the document.
+
+    NEITHER basis widens the candidacy gate (owner == sender), NEITHER lowers
+    `_hi` / `_pend`, and both run AFTER both fence layers.
+
     Returns list of `{commitment_id, score, recommendation, title, owner_id,
     primary_thread_id, has_completion_signal, has_schedule_shift_signal,
     has_new_ask_signal}` dicts sorted by score descending. `owner_id` is the
     sender (the counter-party) — the caller uses it as `resolved_by` when
-    writing the `commitment_resolved` event.
+    writing the `commitment_resolved` event. Rows also carry `close_basis`: ""
+    for the unchanged title path, `REPLY_BASIS`, `REPLY_PROPOSED_BASIS`, or
+    `AMBIGUOUS_REPLY_BASIS` (one reply that closed more than one item —
+    downgraded to a confirm).
     """
     if not sender_person_id:
+        return []
+
+    # REPLYCLOSE direction check (spec §2.3) — a hard stop BEFORE any scoring.
+    # Only a COUNTERPARTY's reply closes a waiting-on item; the user's own
+    # message on that thread must not. Loud, because a caller that feeds this
+    # path the user's own mail has a bug worth seeing.
+    if user_person_id and sender_person_id == user_person_id:
+        import sys as _sys
+        print(
+            "REPLYCLOSE: match_inbound_to_commitments was handed the primary "
+            "user as the SENDER — an inbound reply path cannot score the "
+            "user's own message. Scoring nothing. (The outbound equivalent is "
+            "match_send_to_commitments.)",
+            file=_sys.stderr,
+        )
         return []
 
     query = (subject or "") + " " + (body or "")
@@ -1739,11 +2622,61 @@ def match_inbound_to_commitments(
     has_schedule_shift = detect_schedule_shift_signal(query)
     has_new_ask = detect_new_ask_signal(query)
 
+    # REPLYCLOSE — the message-level half of both bases, computed once. A
+    # schedule shift is the explicit NEGATIVE: "here you go on the interim
+    # numbers, the final set slips to Friday" carries completion language and is
+    # not a completion. It only ever blocks the NEW bases; the existing
+    # `commitment_updated` branch below still fires on it exactly as before.
+    reply_says_done = has_completion and not has_schedule_shift
+    reply_carries_artifact = bool(has_attachment) and not has_schedule_shift
+
+    # Fence prep. `own_ref` empty / `fire_start` None → the fence is inert and
+    # every pre-REPLYCLOSE call behaves byte-identically. `_normalize_fire_start`
+    # is the shared normalizer both other fenced rails already use (RECONFENCE
+    # F-3/F-4 + F-10): a naive datetime is normalized rather than crashing the
+    # loop, and an unusable value fails SAFE and loud rather than silently
+    # fencing nothing.
+    own_ref = (inbound_source_ref or "").strip()
+    fire_start = _normalize_fire_start(exclude_captured_since)
+    # EVORDER — the REPLY's own time; see the Path 1 twin. `None` → inert.
+    evidence_at = _normalize_fire_start(inbound_ts, "inbound_ts")
+
     results: list[dict] = []
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
+        # Layer 1 — a reply can never corroborate a conclusion about an item it
+        # created. Dropped before scoring, so the row is NEVER CREATED rather
+        # than created-then-suppressed.
+        if own_ref and commitment_matches_source_ref(ev, own_ref):
+            continue
+        # Layer 2 — same-fire captures share one extraction context, so they are
+        # one source. An unparseable capture ts fails SAFE (excluded).
+        if fire_start is not None:
+            captured = _parse_ts(event_time(ev))
+            if captured is None or captured >= fire_start:
+                continue
         owner_id = _commitment_field(ev, "owner_id") or ""
         if owner_id != sender_person_id:
             continue
+        # Layer 3 (EVORDER) — a reply cannot be evidence for a promise that did
+        # not exist when the reply was sent. Exact twin of the Path 1 guard,
+        # same asymmetry: unknown reply time → inert; unknown capture time with
+        # a known reply time → exclude; strict `>` so capture == reply still
+        # closes. No live instance was observed on this rail, but the hole is
+        # structurally identical and leaving one rail unguarded is what let
+        # F-11 hide for a week behind Path 5 already having an ordering check.
+        # Placed below the owner gate for the same two reasons as the Path 1
+        # twin: a meaningful count, and no wasted parse per irrelevant candidate.
+        # Absent capture time → inert, not excluded; see the Path 1 twin for the
+        # full reasoning and the 683/683 measurement behind it.
+        if evidence_at is not None:
+            _raw_captured = event_time(ev)
+            if _raw_captured:
+                captured = _parse_ts(_raw_captured)
+                if captured is None or captured > evidence_at:
+                    if isinstance(diagnostics, dict):
+                        diagnostics["stale_evidence_dropped"] = (
+                            diagnostics.get("stale_evidence_dropped", 0) + 1)
+                    continue
         title = _commitment_field(ev, "title") or ""
         score = score_match(query, title)
 
@@ -1764,6 +2697,45 @@ def match_inbound_to_commitments(
                 recommendation = "pending_review"
             else:
                 recommendation = "no_action"
+
+        # REPLYCLOSE — the two reply bases, applied ONLY to the `no_action`
+        # band. That band is the measured miss class (the reply that IS the
+        # delivery lands at 0.20 and below); everything at or above `_pend`
+        # keeps the grade it has today, so neither basis can silently re-grade
+        # an existing match or move a threshold.
+        basis = ""
+        if recommendation == "no_action" and (reply_says_done
+                                              or reply_carries_artifact):
+            # The fulfillment shape is narrower than "an attachment arrived": an
+            # attachment answers an ask for a DOCUMENT. It does not answer
+            # "set up a call" — a booked calendar event does (Path 5) — and it
+            # does not answer an ask that names no artifact at all.
+            evidence_ok = reply_says_done or (
+                reply_carries_artifact and detect_deliverable_artifact(title))
+            if (evidence_ok
+                    and not detect_scheduling_intent(title)
+                    and commitment_is_waiting_on(
+                        ev, user_person_id=user_person_id,
+                        sender_person_id=sender_person_id)):
+                if inbound_thread_ref and commitment_matches_thread_ref(
+                        ev, inbound_thread_ref):
+                    # R1 — the connector says this reply is IN the conversation
+                    # the item came from. That link is not a similarity score,
+                    # so no title floor applies: requiring one would put the
+                    # title back in the evidence chain, which is the whole
+                    # defect. The one-reply-one-delivery guard below is what
+                    # keeps a busy thread from closing several items at once.
+                    recommendation = "auto_resolve"
+                    basis = REPLY_BASIS
+                elif score > 0.0:
+                    # R2 (spec §2.2) — same evidence, no thread link: PROPOSE,
+                    # never close. Off-thread, all that ties this message to
+                    # this item is title similarity, and closing on that is the
+                    # title-echo trap with the counterparty holding the pen.
+                    # The non-zero floor keeps a chatty counterparty from
+                    # surfacing every item they have ever owed.
+                    recommendation = "pending_review"
+                    basis = REPLY_PROPOSED_BASIS
 
         if recommendation == "auto_resolve" and _is_pending_review(ev):
             recommendation = "pending_review"
@@ -1793,7 +2765,25 @@ def match_inbound_to_commitments(
             "has_new_ask_signal": has_new_ask,
             "matched_counterparty_ids": matched_cp_ids,
             "matched_counterparty_names": [],
+            "close_basis": basis,
         })
+
+    # REPLYCLOSE — ONE reply, ONE delivery. A single "here you go" cannot be the
+    # evidence for two different deliverables at once, so when R1 puts a second
+    # auto-grade row on the same message every reply-evidence row steps down to
+    # a confirm. This is FS-11's own ruling ("only multi-candidate AMBIGUITY
+    # stays a confirm proposal") applied to the new basis, and it is what makes
+    # R1 safe without a title floor: a thread carrying three open items owed by
+    # the same person produces three questions, not three closures. The title
+    # path is never touched by it — a >= 0.55 match with completion language
+    # keeps closing exactly as it did.
+    _reply_rows = [r for r in results if r["close_basis"] == REPLY_BASIS]
+    if _reply_rows and sum(
+            1 for r in results if r["recommendation"] == "auto_resolve") > 1:
+        for r in _reply_rows:
+            if r["recommendation"] == "auto_resolve":
+                r["recommendation"] = "pending_review"
+                r["close_basis"] = AMBIGUOUS_REPLY_BASIS
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
@@ -2199,6 +3189,49 @@ def load_open_review_proposals(
     return out
 
 
+def open_review_proposal_ids(
+    events_jsonl_path: str | Path,
+    *,
+    window_days: int = 7,
+) -> set:
+    """The commitment_ids that ALREADY carry an open review proposal — the
+    disk-side seed for `filter_duplicate_review_targets` (AUTOAPPLY §6).
+
+    Thin projection over `load_open_review_proposals` so the two can never
+    fork on what "open" means (resolved / dismissed / out-of-window all drop
+    in one place)."""
+    return {
+        (ev.get("data") or {}).get("commitment_id")
+        for ev in load_open_review_proposals(
+            events_jsonl_path, window_days=window_days)
+        if (ev.get("data") or {}).get("commitment_id")
+    }
+
+
+def filter_duplicate_review_targets(results: list, *, already_proposed: set) -> list:
+    """ONE open review proposal per commitment (AUTOAPPLY §6 fold-in).
+
+    The reference substrate shows the same commitment proposed TWICE inside a
+    single fire — scores 1.0 and 0.571 — because two transcripts in one batch
+    each matched it and nothing checked. Two rows asking the identical
+    question is precisely the "duplicates asking to confirm" complaint.
+
+    `already_proposed` is MUTATED as targets are accepted, so one set threaded
+    across a fire's transcripts dedups within the fire; seed it from
+    `open_review_proposal_ids()` and the same set also dedups against disk.
+    Order is preserved and the highest-scoring row wins per commitment when
+    the caller passes score-sorted results (every match_* path does).
+    """
+    out: list = []
+    for r in results or []:
+        cid = (r or {}).get("commitment_id")
+        if not cid or cid in already_proposed:
+            continue
+        already_proposed.add(cid)
+        out.append(r)
+    return out
+
+
 __all__ = [
     "HIGH_CONFIDENCE_THRESHOLD",
     "PENDING_REVIEW_THRESHOLD",
@@ -2210,6 +3243,20 @@ __all__ = [
     "detect_scheduling_intent",
     "load_open_commitments",
     "load_open_review_proposals",
+    "open_review_proposal_ids",
+    "filter_duplicate_review_targets",
+    "commitment_source_refs",
+    "commitment_matches_source_ref",
+    "commitment_thread_refs",
+    "commitment_matches_thread_ref",
+    "DELIVERY_BASIS",
+    "THREAD_BASIS",
+    "AMBIGUOUS_DELIVERY_BASIS",
+    "REPLY_BASIS",
+    "REPLY_PROPOSED_BASIS",
+    "AMBIGUOUS_REPLY_BASIS",
+    "detect_deliverable_artifact",
+    "commitment_is_waiting_on",
     "partition_subitems",
     "parent_blocks_auto_resolve",
     "cru_eligible",

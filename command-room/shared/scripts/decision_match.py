@@ -61,6 +61,22 @@ from cru_match import score_match
 # for back-compat — existing callers and __all__ exports keep the old name.
 from confidence import DECISION_MATCH_AUTO_RESOLVE
 
+# Bilingual overlay (Spanish beta) — inert for English installs. See
+# shared/scripts/lexicon.py + references/SPANISH_BUILD_PLAN.md.
+try:
+    import lexicon as _lex
+except Exception:  # pragma: no cover
+    _lex = None
+
+
+def _phrases(key, default):
+    """Merged decision phrase-list, or the English default when the overlay is
+    inactive/absent (production path)."""
+    if _lex is None:
+        return default
+    return _lex.load_lexicon_terms("decision_match", key, default)
+
+
 DECISION_HIGH_CONFIDENCE_THRESHOLD = DECISION_MATCH_AUTO_RESOLVE  # 0.65
 
 
@@ -158,7 +174,7 @@ def detect_completion_signal(text: Optional[str]) -> bool:
     if not text:
         return False
     lo = text.lower()
-    return any(phrase in lo for phrase in DECISION_COMPLETION_PHRASES)
+    return any(phrase in lo for phrase in _phrases("completion_phrases", DECISION_COMPLETION_PHRASES))
 
 
 def detect_reversal_signal(text: Optional[str]) -> bool:
@@ -168,7 +184,7 @@ def detect_reversal_signal(text: Optional[str]) -> bool:
     if not text:
         return False
     lo = text.lower()
-    return any(phrase in lo for phrase in DECISION_REVERSAL_PHRASES)
+    return any(phrase in lo for phrase in _phrases("reversal_phrases", DECISION_REVERSAL_PHRASES))
 
 
 # -----------------------------------------------------------------------------

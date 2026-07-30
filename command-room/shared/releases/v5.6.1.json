@@ -1,0 +1,5 @@
+{
+ "version": "5.6.1",
+ "headline": "An email can no longer close a promise that did not exist when the email was sent. Every automatic closure now checks that the evidence came after the commitment it closes, on both the sent and reply rails, and the run receipt counts what the check refused.",
+ "items": []
+}

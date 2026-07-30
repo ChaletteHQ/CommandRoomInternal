@@ -121,6 +121,119 @@ def canonical_dedup_key(source_ref: Optional[str] = None, *,
     return None
 
 
+# The provenance prefix every pre-connector-agnostic mail row on disk carries.
+# It is a BACK-COMPAT ANCHOR, not a default: a workspace whose mail backend is
+# declared always attributes its own provider. Named rather than inlined so
+# `provider or "gmail"` can never read as a considered choice again — that
+# spelling was a silent mislabel on every non-Gmail backend, and where it sat
+# on an IDENTITY comparison it silently disabled the guard it was part of
+# (MAILSEAM items 4/5).
+LEGACY_MAIL_PROVIDER = "gmail"
+
+
+def resolve_mail_provider(workspace_root=None, provider: Optional[str] = None) -> Optional[str]:
+    """Which provider a mail artifact should be attributed to.
+
+    Order: (1) the provider the caller resolved through discovery — the
+    declared backend's provider tag / `DiscoveryResult.platform`; (2) the
+    workspace's DECLARED email backend, read here so a caller that forgot to
+    pass one still attributes honestly instead of falling to a literal;
+    (3) None — genuinely unknown, and the caller decides whether that is a
+    back-compat write (`LEGACY_MAIL_PROVIDER`) or a refusal. Never raises."""
+    if provider and str(provider).strip():
+        return str(provider).strip().lower()
+    if workspace_root is None:
+        return None
+    try:
+        try:
+            from connector_config import declared_backend
+        except ImportError:
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from connector_config import declared_backend
+        row = declared_backend("email", workspace_root)
+    except Exception:
+        return None
+    p = (row or {}).get("provider")
+    return str(p).strip().lower() if p and str(p).strip() else None
+
+
+def is_same_artifact(candidate_key: Optional[str],
+                     provider: Optional[str] = None,
+                     native_id: Optional[str] = None) -> bool:
+    """Does `candidate_key` (a canonical dedup key read off an event) name the
+    same mail artifact as `provider` + `native_id`?
+
+    Comparing ONE constructed key is only correct while a workspace has always
+    written under one provider label, and that is not the world. Rows written
+    before the backend was declared carry the legacy `gmail:` anchor; rows
+    written after carry the real provider — the same message, two keys. And a
+    PURE matcher (`reconcile_sent`) often has no provider at all, because the
+    caller that could resolve one is a layer up.
+
+    So:
+      - provider RESOLVED → exact match against that provider's key OR the
+        legacy anchor's, covering both sides of a backend switch.
+      - provider UNRESOLVED → the provider half is not evidence, so only the
+        native ids are compared. This is deliberately the OVER-matching
+        direction, and `provider or "gmail"` picked the under-matching side:
+        on a Superhuman backend it built `gmail:<id>` against rows stored as
+        `superhuman:<id>`, matched nothing at all, and turned the guard off
+        without failing anything.
+
+    WHICH WAY OVER-MATCHING FAILS, PER CONSUMER (review F-1 — the first cut of
+    this docstring claimed over-matching "can only ever decline to close",
+    which is true of one consumer and false of the other; both are named here
+    so the tie-break is a judgment rather than an oversight):
+
+      - `reconcile_sent_commitments.reconcile_sent` / the REPLYCLOSE inbound
+        twin — over-match EXCLUDES a commitment from this message's close
+        candidates. Fail-SAFE: at worst a real completion waits for the next
+        fire, and matching is idempotent, so nothing is lost.
+      - `sent_capture.already_captured` — over-match returns True and
+        SUPPRESSES a capture. Fail-UNSAFE in the opposite direction: a promise
+        that is never OPENED, which is the BUG-3719 class the sent-capture
+        rail exists to prevent. Sharpest sub-case: for `commitment_resolved` /
+        `thread_resolved` events there is no title gate, so identity alone
+        returns True immediately.
+
+    The unresolved branch is still the right default, because the *known*
+    failure it replaced was total (a guard matching nothing on any non-Gmail
+    backend) while this one needs a native-id collision across providers to
+    bite. But it is a trade, not a free lunch, and a caller that cannot
+    tolerate a suppressed capture should resolve a provider before asking.
+
+    False when there is no native id: the caller leaves the guard off rather
+    than guess an identity."""
+    nid = _norm(native_id)
+    key = _norm(candidate_key)
+    if not nid or not key:
+        return False
+    if provider and str(provider).strip():
+        return key in (f"{_norm(str(provider))}:{nid}",
+                       f"{_norm(LEGACY_MAIL_PROVIDER)}:{nid}")
+    # Unresolved: compare the native half. A key with no prefix compares whole;
+    # a multi-segment key (`slack:<chan>:<ts>`) keeps its remaining segments, so
+    # it never collapses onto a bare id.
+    return key == nid or key.split(":", 1)[-1] == nid
+
+
+def primary_artifact_key(provider: Optional[str] = None,
+                         native_id: Optional[str] = None) -> Optional[str]:
+    """The ONE key to hand a downstream API that compares a single ref.
+
+    The resolved provider's key when there is one; the legacy anchor when
+    there is not — which is exactly what the writer side produces in that same
+    state, so an unresolved provider degrades the comparison instead of
+    killing it. `artifact_keys` is the richer SET form for callers that can
+    compare against more than one."""
+    nid = _norm(native_id)
+    if not nid:
+        return None
+    return f"{_norm(provider) if provider else _norm(LEGACY_MAIL_PROVIDER)}:{nid}"
+
+
 def normalize_provenance(*, server_id: Optional[str] = None, provider: Optional[str] = None,
                          native_id: Optional[str] = None, address: Optional[str] = None,
                          account_id: Optional[str] = None,
@@ -267,10 +380,14 @@ def resolve_account_id(*, event: Optional[dict] = None, address: Optional[str] =
 
 __all__ = [
     "LEGACY_PREFIXES",
+    "LEGACY_MAIL_PROVIDER",
+    "is_same_artifact",
     "build_email_drafted_provenance",
     "build_email_sent_provenance",
     "canonical_dedup_key",
     "native_draft_id_from_data",
     "normalize_provenance",
+    "primary_artifact_key",
     "resolve_account_id",
+    "resolve_mail_provider",
 ]

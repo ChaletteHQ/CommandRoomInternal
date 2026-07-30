@@ -657,6 +657,10 @@ results = match_send_to_commitments(
     recipient_person_ids=['<recipient person_id 1>', ...],
     subject='<subject of the send>',
     body='<body of the send>',
+    # EVORDER layer 3 — when the message was SENT. A send cannot be evidence for
+    # a promise captured after it. Pass it whenever the send carries a timestamp;
+    # omitting it silently disables the guard.
+    send_ts='<ISO-8601 ts of the send, or omit if the fetch carried none>',
 )
 
 # Stage B (F2): auto-resolves close through THE closure path — legacy-id

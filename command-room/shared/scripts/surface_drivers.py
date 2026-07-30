@@ -1078,23 +1078,78 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
             "status": "written"}
 
 
+_SURFACE_NAME_HINTS = {"commitments": "commitment-triage",
+                       "staff-meeting": "staff-meeting",
+                       "waiting-on": "waiting-on",
+                       "my-plate": "my-plate"}
+
+
+def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
+                        chase_rows, status_rows, personal_cap) -> dict:
+    """Build ONE surface's data view from LIVE substrate. The only place that
+    reads; `run_surface` decides WHEN it is allowed to be called."""
+    if surface == "commitments":
+        return build_commitment_triage_view(ws, now_iso=now_iso)
+    if surface == "staff-meeting":
+        return build_staff_meeting_view(ws, now_iso=now_iso,
+                                        moves_rows=moves_rows)
+    if surface == "waiting-on":
+        return build_waiting_on_view(ws, now_iso=now_iso,
+                                     chase_rows=chase_rows)
+    if surface == "my-plate":
+        return build_my_plate_view(ws, now_iso=now_iso,
+                                   status_rows=status_rows,
+                                   personal_cap=personal_cap)
+    raise SystemExit(
+        f"unknown surface {surface!r} "
+        "(supported: commitments, staff-meeting, waiting-on, my-plate)")
+
+
 def run_surface(surface: str, workspace_root, *, page: int = 1,
-                page_size: int = 15, now_iso: str | None = None,
+                page_size: int | None = None, now_iso: str | None = None,
                 moves_rows: list | None = None,
                 chase_rows: list | None = None,
                 status_rows: list | None = None,
                 personal_cap: int = _MP_PERSONAL_CAP,
-                fired_via: str | None = None) -> dict:
+                fired_via: str | None = None,
+                pageset_ttl_minutes: int | None = None) -> dict:
     """Build the view + render_and_persist ONE page. Returns the transport
     dict (html / pagination / path). The CLI wraps this; tests call it
     directly.
+
+    PAGESNAP — pages 2+ slice a SNAPSHOT, never a fresh read.
+
+    This function used to rebuild the view from live substrate on EVERY call
+    and hand `page` to a slicer that indexed the result. Page 2 was therefore
+    a different query result than page 1, indexed against page 1's ordering:
+    a write landing between the renders shifted every row after it, so the
+    tail of page 1 reappeared atop page 2 (insert) or the rows that should
+    have opened page 2 appeared on NO page at all (delete — silent, and the
+    one that loses user-visible work). Observed live 2026-07-28.
+
+    Now: page 1 builds live and FREEZES the view as the fire's page-set
+    (`page_snapshot`); pages 2+ load that frozen view and slice the same list.
+    Nothing is re-read between pages, so nothing shifts, and the reported
+    total holds steady across the fire.
+
+    A page-set older than `pageset_ttl_minutes` (default
+    page_snapshot.DEFAULT_TTL_MINUTES), or missing/corrupt, is NOT silently
+    re-read — the rebuild is announced on `transport["pagination"]` via
+    `refreshed` / `refresh_reason` / `previous_total` so the surface can say
+    the list changed under it. Rows applied since the snapshot are suppressed
+    from later pages (`suppressed`), so an Apply on page 1 is reflected on
+    page 2 without moving anything else.
 
     `fired_via` (scheduled | manual | catchup — the orchestrator's detected
     run mode, Phase 2.9 `receipt_fired_via`) makes the PAGE-1 invocation
     also write the surface's canonical per-fire receipt inside this same
     call (see _log_fire_receipt; the written/deduped outcome rides back on
     transport["receipt"]). Pages 2+ never receipt; omitting fired_via
-    renders only (legacy callers unchanged)."""
+    renders only (legacy callers unchanged). The snapshot path does NOT touch
+    receipt behavior: the receipt still fires on page 1 only, still counts the
+    live-built view it was always counting."""
+    from page_snapshot import (DEFAULT_TTL_MINUTES, applied_ids_since,
+                               load_pageset, save_pageset)
     from widget_transport import render_and_persist
 
     if fired_via is not None:
@@ -1105,26 +1160,55 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
                 f"got {fired_via!r}")
 
     ws = Path(workspace_root)
-    if surface == "commitments":
-        view = build_commitment_triage_view(ws, now_iso=now_iso)
-        name_hint = "commitment-triage"
-    elif surface == "staff-meeting":
-        view = build_staff_meeting_view(ws, now_iso=now_iso,
-                                        moves_rows=moves_rows)
-        name_hint = "staff-meeting"
-    elif surface == "waiting-on":
-        view = build_waiting_on_view(ws, now_iso=now_iso,
-                                     chase_rows=chase_rows)
-        name_hint = "waiting-on"
-    elif surface == "my-plate":
-        view = build_my_plate_view(ws, now_iso=now_iso,
-                                   status_rows=status_rows,
-                                   personal_cap=personal_cap)
-        name_hint = "my-plate"
-    else:
+    if surface not in _SURFACE_NAME_HINTS:
         raise SystemExit(
             f"unknown surface {surface!r} "
             "(supported: commitments, staff-meeting, waiting-on, my-plate)")
+    name_hint = _SURFACE_NAME_HINTS[surface]
+    page = 1 if page is None else int(page)
+    ttl = (DEFAULT_TTL_MINUTES if pageset_ttl_minutes is None
+           else int(pageset_ttl_minutes))
+
+    view = None
+    suppress_ids: set = set()
+    snap_note: dict = {}
+
+    if page > 1:
+        view, meta = load_pageset(ws, surface, ttl_minutes=ttl,
+                                  now_iso=now_iso)
+        if view is not None:
+            # Rows the user applied since the snapshot froze. Derived from the
+            # substrate's own audit events, so no caller has to remember to
+            # register anything.
+            suppress_ids = applied_ids_since(ws, meta.get("created_at"))
+            snap_note = {"from_snapshot": True,
+                         "snapshot_at": meta.get("created_at")}
+        else:
+            # NOT a silent re-read. Rebuild, start a fresh page-set so the
+            # rest of this sequence is stable again, and SAY it refreshed.
+            snap_note = {"refreshed": True,
+                         "refresh_reason": meta.get("reason")}
+            if meta.get("previous_total") is not None:
+                snap_note["previous_total"] = meta["previous_total"]
+
+    if view is None:
+        view = _build_surface_view(
+            surface, ws, now_iso=now_iso, moves_rows=moves_rows,
+            chase_rows=chase_rows, status_rows=status_rows,
+            personal_cap=personal_cap)
+        live_view = view
+        # Freeze this build as the page-set — on page 1 because that is the
+        # fire's anchor, and on a refreshed page N so pages N+1... are stable
+        # against the same list rather than drifting again.
+        saved = save_pageset(ws, surface, view, now_iso=now_iso)
+        if not saved.get("saved"):
+            # A page-set we could not write is a page-set page 2 will miss and
+            # announce. Never fatal: losing the snapshot must not cost the
+            # user their page.
+            snap_note["snapshot_unavailable"] = True
+    else:
+        live_view = None
+
     transport = render_and_persist(
         data_view=view,
         wrapper="fragment",
@@ -1132,9 +1216,14 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
         name_hint=name_hint,
         page=page,
         page_size=page_size,
+        suppress_ids=suppress_ids or None,
     )
+    if snap_note and transport.get("pagination") is not None:
+        transport["pagination"].update(snap_note)
     if fired_via is not None and page == 1:
-        transport["receipt"] = _log_fire_receipt(ws, surface, view, fired_via)
+        transport["receipt"] = _log_fire_receipt(
+            ws, surface, live_view if live_view is not None else view,
+            fired_via)
     return transport
 
 
@@ -1156,8 +1245,13 @@ def main() -> int:
                          "card as a widget page; manual renders markdown "
                          "lines (t3 FB-9)")
     ap.add_argument("--page", type=int, default=1)
-    ap.add_argument("--page-size", type=int, default=15,
-                    help="requested rows/page ceiling (the byte-fit may lower it)")
+    ap.add_argument("--page-size", type=int, default=None,
+                    help="requested rows/page ceiling (the byte-fit may lower "
+                         "it); default = chat_output_renderer.DEFAULT_PAGE_SIZE")
+    ap.add_argument("--pageset-ttl-minutes", type=int, default=None,
+                    help="how long this fire's page-set stays authoritative "
+                         "before `show more` rebuilds and SAYS it refreshed "
+                         "(default page_snapshot.DEFAULT_TTL_MINUTES)")
     ap.add_argument("--now", default=None, help="ISO now override (tests)")
     ap.add_argument("--moves-json", default=None,
                     help="staff-meeting only: JSON file with the Phase-4 "
@@ -1207,7 +1301,8 @@ def main() -> int:
         args.surface, args.workspace, page=args.page,
         page_size=args.page_size, now_iso=args.now, moves_rows=moves_rows,
         chase_rows=chase_rows, status_rows=status_rows,
-        personal_cap=args.personal_cap, fired_via=args.fired_via)
+        personal_cap=args.personal_cap, fired_via=args.fired_via,
+        pageset_ttl_minutes=args.pageset_ttl_minutes)
 
     pagination = transport.get("pagination") or {}
     print("CR-PAGINATION: " + json.dumps(pagination))

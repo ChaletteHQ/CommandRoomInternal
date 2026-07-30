@@ -117,7 +117,10 @@ def migrate_brain(workspace_root, thread_id, brain_path, *, dry_run: bool = True
         "new_section_preview": new_section.strip(),
     }
     if changed and not dry_run:
-        atomic_write_text(brain_path, new_text)
+        # FOLDERGUARD: a brain never digs its own project folder. The `no_file`
+        # early-return above already means we only get here for a brain that
+        # exists, but the flag keeps that true if this path ever changes.
+        atomic_write_text(brain_path, new_text, create_parents=False)
     return result
 
 

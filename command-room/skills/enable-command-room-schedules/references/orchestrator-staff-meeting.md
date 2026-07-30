@@ -146,7 +146,12 @@ narration) followed by the persisted page's validated bytes between
 `"deduped_refire"` on an RV-3 re-run). **Relay the bytes between the markers
 to `mcp__visualize__show_widget` as `widget_code`, byte-exact.** A `show
 more` reply re-fires the SAME one-command driver with `--page N+1` — pages
-2+ never write a receipt.
+2+ never write a receipt, and they slice the page-set page 1 froze rather
+than re-reading the substrate (PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md`
+§ "A page-set is ONE question asked ONCE"). This is the 2026-07-28 defect
+where page 2 repeated page-1 rows 14/15 and the header moved 18 -> 22 mid
+fire. If `CR-PAGINATION` carries `refreshed`, `suppressed`, or `clamped`,
+SAY it in one line before the rows.
 
 **Idempotent single call (RV-3):** run the driver exactly ONCE per page per fire
 — if you already hold its output for the requested page, relay it; a

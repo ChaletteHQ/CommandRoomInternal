@@ -232,8 +232,8 @@
           "pattern": "^project_[0-9]{3,}$"
         },
         "folder_name": {
-          "type": "string",
-          "description": "Exact folder name under workspace root. Kinds without a filesystem presence may use a logical name."
+          "type": ["string", "null"],
+          "description": "Exact folder name under workspace root (nested 'Parent/Child' allowed). Kinds without a filesystem presence may use a logical name. null when no real directory matches — the canonical writer resolves this against disk and refuses to guess a slug (FOLDERGUARD)."
         },
         "display_name": {
           "type": "string"

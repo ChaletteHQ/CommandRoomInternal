@@ -1,6 +1,6 @@
 ---
 name: workspace-manager
-description: "Master workspace orchestrator, navigator, catch-all thinking partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' (fuzzy nav; also 'go [org] all' / 'go [org] rollup'), 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org', '[name] is now a client', 'archive [project]', 'pull up [name]' / 'status on [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', account & connector management ('what accounts do I have', '[address] is my personal account', 'set my email backend to [connector]'), and vocative address by the workspace AI name (wake-word strips, remainder re-routes). Default handler for loose input naming a tracked entity when no specialist matches. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full trigger table, wake-word shapes, fences: Routing section in body."
+description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' / 'go [org] all' / 'go [org] rollup', 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org', '[name] is now a client', 'archive [project]', 'pull up [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', a bare contextless 'undo' (lists recent automatic changes to reverse), accounts & connectors ('what accounts do I have', '[address] is my personal account', 'set my email backend to [connector]'), and vocative address by the workspace AI name (wake-word strips, rest re-routes). Default handler for loose input naming a tracked entity when nothing else fits. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full triggers and fences: Routing section in body."
 ---
 
 # Workspace Manager — Command Room
@@ -539,6 +539,35 @@ print('OK')
 **Observed-value lane (HIST1 Part 2 — propose, never write).** Two sources feed the SAME confirm rail, and neither ever calls `set_org_money` directly:
 - *Substrate scan:* `org_value_detector.run_org_value_scan(<workspace_root>)` spots account-shaped language + an amount near a tracked client org in recent events and writes capped, cooldown'd `org_money` confirm proposals (money-class rows — they reach the brief's money carve-out and the staff meeting). Cheap and idempotent; fine to run when an org money/rollup context comes up.
 - *QBO, opportunistic:* when a `qbo_*` sales tool is DISCOVERABLE in this session (`tool_discovery` — never assume; QBO absent = silent no-op, no dependency) and M is looking at a client org's money/rollup, you may offer to pull sales-by-customer for that org and, on a figure, propose it via `org_value_detector.propose_org_value(ws, org_id, {'account_value': <figure>, 'source': 'qbo:sales-by-customer', 'as_of': <today>}, evidence='QBO sales-by-customer', source_ref='qbo:sales-by-customer', org_name=<name>)`. The FIGURE IS PROPOSED, NEVER APPLIED — M confirms on the card (apply-choices routes it through `set_org_money(confirmed=True)`). Never annualize, never estimate, never fire without M seeing the number.
+
+### Bare `undo` with nothing narrated in context (AUTOAPPLY §8)
+
+The catch-all owns this by charter. **In the moment, and later in the same chat, do NOT use this handler** — the narrating surface (the brief's CHANGED line, the staff meeting's "what I did on my own", the past-meetings digest) advertises its own batch ref, and bare `undo` routes to `brain_undo.undo_batch` with THAT ref (D5, unchanged). This handler is for the other case: a fresh chat next Monday, where the narration is gone and `undo` had no route at all — the affordance the whole auto tier's safety rests on, vanishing with the conversation.
+
+On a bare `undo` / "undo that" / "reverse that" with no batch in context:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from brain_undo import recent_auto_batches
+print(json.dumps(recent_auto_batches('<workspace_root>')))
+"
+```
+
+- **Empty list** → say so plainly: "Nothing automatic in the last 7 days to reverse." Never invent a candidate, and never reach for a user-made change: this handler reverses what Command Room did on its own, not what M did.
+- **One or more** → render the `label` + a short date, numbered, newest first — *"1. merged a duplicate capture — Jul 27 · 2. linked a name to an existing contact — Jul 27"*. Use the LABEL, never the change-class name: M is deciding whether to reverse something, and `commitment_merge ×1` is not a thing he saw happen. One ordinal (or one click) reverses it:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from brain_undo import undo_batch
+print(json.dumps(undo_batch('<workspace_root>', <the chosen batch_ref dict>, undone_by='<user person_id>', source_skill='workspace-manager')))
+"
+```
+
+- Ack in plain English with what came back ("Reopened it — it's back on your list."). `n_errors > 0` → say which parts did not reverse; never report a clean undo over a partial one.
+- **The 7 days bound the LISTING only.** Reversal legality never expires — every reverser is additive, so reversing an older batch is always safe; the window just matches change-feed relevance. If M names something older, pass its ref through anyway.
 
 ### "new project [Name]" / "new client [Name]"
 

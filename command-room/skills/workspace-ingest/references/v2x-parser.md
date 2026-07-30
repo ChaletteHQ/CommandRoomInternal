@@ -110,9 +110,13 @@ v2.x events.jsonl is append-only. Do NOT rewrite existing event records on disk.
 2. **Validate each event** against the v2.2 events.schema.json. New fields are optional/nullable — historical events should pass cleanly. Any that fail validation get logged with (seq, ts, reason) in INGEST_REPORT.
 
 3. **Emit one boundary event** that the orchestrator will append during Phase 4:
+   Do NOT set `seq` — it is auto-stamped as an integer inside the writer lock,
+   and a QUOTED `"<next>"` placeholder here writes a STRING seq, which
+   `event_gate` now rejects (SPEC UNDOGUARD: one string seq took `undo` down
+   for a whole workspace).
+
    ```json
    {
-     "seq": "<next>",
      "ts": "<ingest_ts>",
      "type": "classification_review",
      "source_skill": "workspace-ingest",

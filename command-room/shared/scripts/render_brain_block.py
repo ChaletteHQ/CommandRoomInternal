@@ -105,7 +105,8 @@ def needs_render(file_path: str | Path, block_id: str, latest_event_seq,
 def render_block(file_path: str | Path, block_id: str, body: str, *,
                  generated_at: str | None = None, source_seq=None,
                  logic_version=None,
-                 create_after_heading: str | None = None) -> dict:
+                 create_after_heading: str | None = None,
+                 create_parents: bool = True) -> dict:
     """Replace the `block_id` region with `body`. Returns
     {'status': 'written'|'unchanged'|'created'|'no_anchor'}.
 
@@ -113,6 +114,9 @@ def render_block(file_path: str | Path, block_id: str, body: str, *,
     `logic_version` (Bug #97) stamps the render-logic version into the start
     marker so a later sweep can re-render when the logic changes, not only when
     new events arrive.
+    `create_parents` (FOLDERGUARD) is passed straight to `atomic_write_text`;
+    default True keeps existing callers, brain writers pass False so a brain
+    write into a missing project folder raises instead of fabricating it.
     """
     p = Path(file_path)
     text = p.read_text(encoding="utf-8") if p.exists() else ""
@@ -127,7 +131,7 @@ def render_block(file_path: str | Path, block_id: str, body: str, *,
         new_text = text[:sm.start()] + block + text[em.end():]
         if new_text == text:
             return {"status": "unchanged"}
-        atomic_write_text(p, new_text)
+        atomic_write_text(p, new_text, create_parents=create_parents)
         return {"status": "written"}
 
     # No (valid) markers present.
@@ -137,11 +141,12 @@ def render_block(file_path: str | Path, block_id: str, body: str, *,
             if line.strip() == create_after_heading.strip():
                 insert = ("" if line.endswith("\n") else "\n") + "\n" + block + "\n"
                 lines.insert(i + 1, insert)
-                atomic_write_text(p, "".join(lines))
+                atomic_write_text(p, "".join(lines), create_parents=create_parents)
                 return {"status": "created"}
         # heading not found — append a fresh block at end
         sep = "" if text.endswith("\n") or text == "" else "\n"
-        atomic_write_text(p, text + sep + "\n" + block + "\n")
+        atomic_write_text(p, text + sep + "\n" + block + "\n",
+                          create_parents=create_parents)
         return {"status": "created"}
 
     return {"status": "no_anchor"}

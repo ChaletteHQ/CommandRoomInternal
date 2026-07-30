@@ -26,6 +26,7 @@
         "commitment",
         "commitment_resolved",
         "sent_reconcile",
+        "inbound_reconcile",
         "brief_state",
         "brief_meta",
         "gate_ran",

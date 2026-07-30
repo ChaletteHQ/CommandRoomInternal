@@ -119,9 +119,34 @@ By-project is default because the customer's mental model is project-shaped (wha
 
 ## Window definition
 
-The "last 7 days" window is `[now - 7d, now]` in workspace timezone (`entities.json` `workspace.user_timezone`). Computed at the start of Phase 1 via `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` (v3.11.1+ — `workspace_path` is REQUIRED). Use the resolved `<window_start>` / `<window_end>` ISO timestamps for every connector query.
+The default window is the last 7 days — `[now - 7d, now]` in workspace timezone (`entities.json` `workspace.user_timezone`), computed at the start of Phase 1 via `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` (v3.11.1+ — `workspace_path` is REQUIRED). Use the resolved `<window_start>` / `<window_end>` ISO timestamps for every connector query.
 
-The user can override with `weekly recap from <date> to <date>` or `recap the last 14 days` — handle these by re-computing the window before Phase 1. Cap at 30 days max — anything longer falls outside passive-capture's intended scope, and the user should run `backfill [N] months on [project]` for a single-project deeper pull.
+**Scheduled fires widen to since-last-run (SPEC CATCHUP1 F-2).** A fixed `[now - 7d, now]` means one missed Friday is a week that never gets recapped — and the NEXT Friday's window does not reach back over it, so the gap is permanent and silent. On the SCHEDULED path (the `friday-wrap` task, `orchestrator-friday-wrap.md`), compute the window from the last successful run instead:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from catchup import catchup_window
+print(json.dumps(catchup_window('<workspace_root>', 'friday-wrap', floor_hours=168, cap_days=30,
+                                fired_via='<the Phase 2.9 receipt_fired_via>', scheduled_only=True)))
+"
+```
+
+`floor_hours=168` is the 7-day default, so a normal weekly fire gets exactly the window it always had; `cap_days=30` matches the 30-day ceiling below. `extended: true` means this recap is covering more than a week — say so in the headline (*"the last 12 days"*, not *"this week"*), because the section counts genuinely span that period. Widening is safe: capture dedups via `source_ref_hash`, so a re-covered day double-counts nothing.
+
+**Which clock those timestamps are in (SPEC CATCHUP1 F-1) — stated once, here, because this skill has two.** The call returns FOUR timestamps. `start` / `end` are **machine-local naive** — the clock the scheduler, `late_fire` and every receipt comparison live in (R8: scheduling math is machine-local and is never "corrected" against the workspace TZ). `start_aware` / `end_aware` are the **same two instants carrying the machine's UTC offset**.
+
+- **Hand `start_aware` / `end_aware` to every connector query.** A connector needs an unambiguous instant, and only the offset-carrying form is one. Use them as `<window_start>` / `<window_end>` for Phase 2.
+- **Never pass the naive `start` / `end` through `to_local()`.** That helper documents naive input as *ASSUMED UTC* (`shared/scripts/tz.py`), so a machine-local naive value handed to it is re-labelled as a different instant and the window slides by the machine's whole UTC offset. That is LATETZ's exact failure class — a value already expressed in one clock converted as though it were expressed in another — and it is **invisible wherever the two clocks agree**, which is every machine where the workspace TZ matches the machine TZ and every UTC CI runner. Agreement is not correctness; it is the bug not showing.
+- **The aware values ARE safe to pass to `to_local()` for display.** An aware input gets converted, not re-labelled, so the headline renders the span in the CEO's timezone without moving it. One conversion, at this boundary, and nowhere else — `catchup.to_connector_iso` is where it happens and it happens once.
+
+On the **on-demand path** no `catchup_window` call happens, so Phase 1 resolves `[now - 7d, now]` through `to_local(...)` exactly as it always did. Nothing about the manual path changes.
+
+**On-demand triggers keep the plain 7-day window.** A human typing "weekly recap" means last week, not five weeks. That is why the call above passes `scheduled_only=True` with the fire's actual run mode — anything that is not a scheduled-context fire (`scheduled` / `catchup`) comes back as the plain floor window, including an omitted or unrecognized value (the DOGFIX1 fail-safe direction). On the on-demand path you may skip the call entirely and use `[now - 7d, now]`.
+
+**A widened window meets caps that were tuned for a narrow one.** Phase 2's per-connector caps were sized for 7 days; this window can be 30. That is the batch-cap trap, and it is fenced by the **COVERAGE HONESTY GATE** in Phase 2 — read it before running a fire that comes back `extended: true`.
+
+The user can override with `weekly recap from <date> to <date>` or `recap the last 14 days` — handle these by re-computing the window before Phase 1; an explicit user window always wins over both the default and any catch-up widening. Cap at 30 days max — anything longer falls outside passive-capture's intended scope, and the user should run `backfill [N] months on [project]` for a single-project deeper pull.
 
 ---
 
@@ -146,34 +171,56 @@ Compute window in workspace timezone.
 
 ---
 
-## Phase 2 — Pull 7 days from every connector (parallel reads, capped)
+## Phase 2 — Pull the resolved window from every connector (parallel reads, capped)
+
+Every connector query below is bounded by the `<window_start>` / `<window_end>` Phase 1 resolved — 7 days by default, wider when the scheduled fire is catching up over a missed Friday (see "Window definition"). Those two values are `catchup_window`'s `start_aware` / `end_aware` on the scheduled path (offset-carrying instants — the naive `start` / `end` never cross into a connector call, per "Window definition"), and the `to_local`-resolved pair on the on-demand path. Never re-derive `now - 7d` inside a connector call: a Phase 1 window that the connector queries ignore is a catch-up that captures nothing.
 
 Run all connector queries in parallel where the MCP layer supports it. Skip any connector whose first call exceeds a 5-second timeout — log silently and footnote at the end of the recap.
+
+**⛔ COVERAGE HONESTY GATE (SPEC CATCHUP1 F-2) — MANDATORY whenever Phase 1 returned `extended: true`.** Every cap below was tuned for a 7-day window: 250 received + 250 sent email, 200 Slack messages, 100 Drive files, 50 transcripts, 30 sessions. A catch-up window is up to 30 days — **4.3× wider against unchanged budgets** — so a capped read can come back full while the span still holds more. Write a receipt on that and the next `catchup_window("friday-wrap")` starts *after* it: the truncated remainder is never captured, permanently, behind a green receipt. That is the same orphaning shape `past-meetings`' batch cap has, on the other surface this window widened.
+
+- **A capped read is TRUNCATED when it comes back at its cap** and the connector does not report the result set complete. Treat at-cap as truncated; the fail-safe direction is to assume more was there.
+- **If ANY capped read truncated, this fire SAMPLED its window — it did not cover it.** Two consequences, both mandatory:
+  1. **The headline says sampled, not covered.** An `extended: true` recap already names the real span (*"the last 12 days"*); when a read truncated it says the span was **sampled** — *"the last 12 days, sampled — the highest-signal items across the span"* — never a bare claim of coverage over a span the budgets could not reach. A headline naming 12 days over counts silently capped at a 7-day budget is a claim/reality mismatch (the F-50 P2a class).
+  2. **Phase 5's receipt carries `window_incomplete_before`**, so the next fire reaches back over the whole span instead of starting after this one. Compute it — never hand-write it:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from catchup import receipt_window_marker
+marker = receipt_window_marker(window, incomplete=any_capped_read_truncated)
+# -> ISO string to put in the receipt's `window_incomplete_before`, or
+#    None, meaning OMIT the key entirely.
+```
+
+- **No `oldest_unhandled` argument here, and that is deliberate.** `past-meetings` passes one because its cap truncates a chronologically sorted list, so the oldest unprocessed meeting is a real resume point. These caps drop the **lowest-ranked** items, scattered across the whole span — there is no contiguous tail, so the only honest resume point is the window's own start. The next fire re-covers the span, which costs nothing: capture dedups on `source_ref_hash`.
+- **Carry the marker forward.** If this fire captured nothing at all (every connector down, budget blown) and the window it was handed already carried a `window_incomplete_before`, pass `incomplete=True` again — the marker clamps back to the window start it was resumed from. A receipt without the field asserts *"everything before this point is handled"*; writing one while a span is outstanding **is** the orphaning bug.
+- **Only a fire where no capped read truncated omits the field.** That receipt is what collapses the window back to the nominal 7 days.
+- **The growth is bounded.** A window that keeps truncating keeps widening until `cap_days=30` clamps it; the per-fire cost does not grow with it, because the caps are what bound the read. The field name is `window_incomplete_before` and nothing else — `shared/scripts/catchup.py` `WINDOW_INCOMPLETE_FIELD` is the one spelling, and an improvised synonym is invisible to the reader (the F-50 P2c class).
 
 **Pull strategy — headers/snippets by default, full bodies only for top signals.** The handoff originally specced "Gmail full bodies for project-tagged threads" — that's too slow on a busy workspace (200+ threads × 2 sec each = 7 min). Default to headers + snippets for the 7-day pull; full bodies fetched only for top 20 threads ranked by signal density (canonical-person involvement + project-tag match + thread length).
 
 ### Mail (Gmail / Outlook — native MCP, never Zapier for read)
 
-- Window: last 7 days inbox + sent
+- Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire) inbox + sent
 - Cap: 250 received + 250 sent (default); ranked by importance (canonical-people involved, project alias match in subject, thread length).
 - Body strategy: headers + snippets for all; top-20 full bodies (those with canonical-people + project-tag).
 - Emit per thread: `type: interaction`, `channel: email`, `direction: inbound|outbound`, `summary: <subject>`, `counterparty_person_ids: [...]`, `primary_thread_id: <resolved project>`, `related_thread_ids: [...]`, `classification_confidence`, `source_ref: "gmail:<thread_id>"`, `source_ref_hash`.
 
 ### Calendar (Google / Outlook)
 
-- Window: last 7 days events that already occurred (start_ts < now).
+- Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire) events that already occurred (start_ts < now).
 - Cap: no cap (typically <200 events / week).
 - Emit per event: `type: meeting`, `data: {title, start_ts, duration_min, attendee_person_ids, source_ref: "gcal:<event_id>"}`.
 
 ### Slack / Teams
 
-- Window: last 7 days. DMs + tracked channels (per `_hq/BUSINESS_CONTEXT.md` or any channel with ≥2 canonical people).
+- Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire). DMs + tracked channels (per `_hq/BUSINESS_CONTEXT.md` or any channel with ≥2 canonical people).
 - Cap: 200 messages total across all channels.
 - Emit per distinct participant-day: `type: interaction`, `channel: slack|teams`.
 
 ### Drive / OneDrive / SharePoint
 
-- Window: last 7 days modified or created.
+- Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire) modified or created.
 - Cap: 100 files.
 - **Names + paths + dates only — NEVER read file content here.**
 - Emit per file: `type: note`, `data: {summary: "doc activity: <title>", source_ref: "drive:<file_id>"}`.
@@ -182,7 +229,7 @@ Run all connector queries in parallel where the MCP layer supports it. Skip any 
 
 Generalize across all detected MCP connectors — no Granola hardcoding. Whichever transcript-source MCPs are wired contribute.
 
-- Window: last 7 days.
+- Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire).
 - Cap: 50 transcripts total across all sources.
 - Body strategy: summaries by default; full text for the top-5 highest-signal (longest duration × canonical-attendee count).
 - Emit per transcript: `type: meeting`, `data: {title, start_ts, duration_min, attendee_person_ids, summary: <first 500 chars>, source_ref: "<connector>:<meeting_id>"}`.
@@ -191,8 +238,8 @@ Generalize across all detected MCP connectors — no Granola hardcoding. Whichev
 
 The connectors above cover meetings and mail, but a lot of the week's real work happens in the CEO's ad-hoc Command Room chats — a decision reasoned out, a commitment made, a deliverable produced. Add that as a recap source so the week reads complete.
 
-- Resolve the session-transcript MCP at runtime by tool-name (the server id is per-install — never hard-code it, same as the meeting-transcript sources above). List the sessions active in the last 7 days and read each transcript.
-- Window: last 7 days. Cap: 30 sessions; summaries only, never raw transcript text.
+- Resolve the session-transcript MCP at runtime by tool-name (the server id is per-install — never hard-code it, same as the meeting-transcript sources above). List the sessions active in the Phase 1 resolved window and read each transcript.
+- Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire). Cap: 30 sessions; summaries only, never raw transcript text.
 - This is the SAME episodic layer the nightly `session-sweep` promotes into the event log (see `references/HOW_COMMAND_ROOM_WORKS.md` → the three-layer memory model). Read the already-recovered `session_sweep_run` history first: anything the sweep already logged is on file — surface it in the recap, don't re-append it. Only genuinely-new items get emitted, deduped via `source_ref_hash` like every other source (`source_ref: "session:<session_id>"`).
 - If no session-transcript MCP is wired, skip this source silently and footnote it — same skip-not-fail posture as every other connector.
 

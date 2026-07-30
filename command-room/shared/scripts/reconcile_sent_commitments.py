@@ -26,10 +26,16 @@ written through `commitment_state.close_commitment` — the single closure path
 
 INPUT SHAPE (sent_messages)
   [{"message_id": str, "ts": iso-str, "recipient_person_ids": [str, ...],
-    "subject": str|None, "body": str|None}, ...]
+    "subject": str|None, "body": str|None,
+    "recipient_names": [str, ...],          # Bug #103 recall fallback
+    "has_attachment": bool,                 # SENTMATCH signal A
+    "thread_id": str|None}, ...]            # SENTMATCH signal B
+Every field past `body` is optional and absent → the behavior that field
+enables simply does not fire (never a guess).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import sys
 from pathlib import Path
 
@@ -42,8 +48,16 @@ from cru_match import (  # noqa: E402
     build_commitment_resolved_event,
     load_open_commitments,
     _commitment_id,
+    DELIVERY_BASIS as _DELIVERY_BASIS,
+    THREAD_BASIS as _THREAD_BASIS,
+    AMBIGUOUS_DELIVERY_BASIS as _AMBIGUOUS_DELIVERY_BASIS,
 )
-from connector_adapters.provenance import canonical_dedup_key  # noqa: E402
+from connector_adapters.provenance import (  # noqa: E402
+    canonical_dedup_key,
+    is_same_artifact,
+    primary_artifact_key,
+    resolve_mail_provider,
+)
 
 
 # FS-11 (M ruling 2026-07-15): auto-close MODERATE-confidence sent-mail matches
@@ -59,6 +73,50 @@ AUTO_CLOSE_MODERATE = True
 REVIEW_PROPOSAL_TTL_DAYS = 14
 
 
+class PrimaryUserUnresolvedError(RuntimeError):
+    """Bug #102 — `resolve_primary_user` came back None/empty.
+
+    The owner gate on every match path is `data.owner_id == user_person_id`.
+    With no user it matches nothing, the run closes zero, and the audit event
+    lands CLEAN with `n_closed: 0` — byte-identical to a healthy run that
+    genuinely had nothing to close. `validate_reconcile_ran` then returns
+    ok=True. That is the dead-rail shape the whole receipt contract exists to
+    make impossible: a fence present, tested, and inert, reporting success.
+
+    (The resolver returns `person_001` at a workspace root and None at `_hq`,
+    so the difference between working and silently dead is which path a caller
+    passed — exactly the failure that must never be quiet.)
+
+    So the orchestrator ABORTS instead: no audit event, no cursor advance, a
+    loud receipt on stderr, and this exception for the caller to surface.
+    """
+
+
+def _empty_signal_fields() -> dict:
+    """The SENTMATCH observability block (review F-4), zeroed.
+
+    `n_fetched` is the denominator; the `*_field_present` counts say whether
+    the FETCH carried the field at all, and the `n_with_*` counts say how many
+    messages actually had one. `n_closed_on_*` closes the loop from field to
+    outcome. All seven read together answer the one question a healthy-looking
+    zero cannot: did the delivery checks RUN, or was there nothing to find?
+
+    EVORDER adds `n_stale_evidence_skipped` — candidates dropped because the
+    message predates the commitment it would have closed. A fence that drops
+    silently is how F-11 stayed invisible for a week, so layer 3 counts.
+    """
+    return {
+        "n_fetched": 0,
+        "n_attachment_field_present": 0,
+        "n_with_attachment": 0,
+        "n_thread_field_present": 0,
+        "n_with_thread_ref": 0,
+        "n_closed_on_delivery": 0,
+        "n_closed_on_thread": 0,
+        "n_stale_evidence_skipped": 0,
+    }
+
+
 def _short_date(ts):
     """'2026-05-31T14:00:00' → '2026-05-31'. Defensive — return '' on junk."""
     if not isinstance(ts, str) or not ts:
@@ -71,7 +129,8 @@ def reconcile_sent(
     sent_messages,
     *,
     user_person_id,
-    provider="gmail",
+    provider=None,
+    exclude_captured_since=None,
 ):
     """Match a batch of outbound Sent messages to open commitments.
 
@@ -84,6 +143,7 @@ def reconcile_sent(
                          receipts: [{counterparty_id, message_id, ts, evidence}],
                          skipped_names: [str]} ],       # HYG1: multi-cp per-person receipts
         "cursor_ts":  str | None,                       # max message ts seen (advance the cursor)
+        "signal_fields": { ... },                       # SENTMATCH F-4: did the fetch carry the fields?
       }
 
     Each commitment appears at most once across auto_close/pending — the
@@ -103,14 +163,58 @@ def reconcile_sent(
     unchanged: the own-message filter runs BEFORE matching, so a receipt is
     never recorded from the message that opened the commitment.
 
+    RECONFENCE (v5.4.x — the AUTOAPPLY §6 fence, mirrored onto this path):
+    each message is now scored with `send_source_ref` set to its own
+    canonical key, and `exclude_captured_since` forwarded from the caller.
+    Layer 1 subsumes and widens the BUG-3719 filter above (that filter is a
+    single-key identity check and cannot see a C4 merge survivor's
+    `merged_source_refs`); layer 2 covers same-fire siblings, which have no
+    ref relationship to the send at all. `exclude_captured_since=None` (the
+    default) leaves this function byte-identical to pre-RECONFENCE.
+
+    SENTMATCH — two non-title closure bases ride the same call, both
+    fed from fields on the message dict and both inert when absent:
+    `has_attachment` (signal A, delivery evidence) and `thread_id` (signal B,
+    the thread prior — canonicalized here against `provider`, the same way the
+    RECONFENCE layer-1 key already is). A message shape without those keys
+    reproduces pre-SENTMATCH behavior byte-for-byte.
+
+    `signal_fields` (review F-4) — the counters that make that inertness
+    VISIBLE. Both fields are a prose-level contract in reconcile-sent's Step 2,
+    so a fetch that silently stops carrying them turns both bases off while the
+    run still writes a healthy audit: zero delivery-closes then reads exactly
+    like "nothing was deliverable". That is the same silent zero the Bug #102
+    abort just closed on the adjacent rail, one level up. PRESENCE is counted
+    separately from TRUTH — a message that genuinely has no attachment is a
+    fact about the mail; a message whose dict never carried the key is a fact
+    about the FETCH, and only the second one means the rail is dead.
+
     Pure: no I/O, no clock. The caller emits the events + persists the cursor.
     """
     if not user_person_id:
-        return {"auto_close": [], "pending": [], "partial": [], "cursor_ts": None}
+        # Bug #102 — the pure matcher keeps its documented safe degrade (an
+        # empty result, no raise) because other callers depend on it, but the
+        # silent part is what made the bug invisible for a release. The
+        # orchestrator below turns this same condition into a hard abort; here
+        # it is at least audible.
+        print(
+            "reconcile_sent: no user_person_id — the owner gate matches "
+            "nothing and this run can only return zero closures. Resolve the "
+            "user with primary_user.resolve_primary_user (Bug #102).",
+            file=sys.stderr,
+        )
+        return {"auto_close": [], "pending": [], "partial": [],
+                "cursor_ts": None, "signal_fields": _empty_signal_fields()}
 
     best: dict[str, dict] = {}      # commitment_id → best proposal so far
     partial_by_cid: dict[str, dict] = {}  # commitment_id → accumulated receipts
     cursor_ts = None
+    signals = _empty_signal_fields()
+    # EVORDER — one dict for the whole run; the matcher increments it per
+    # dropped candidate and we fold the total into the receipt below. Kept
+    # outside the message loop so the count is the run's, not the last
+    # message's.
+    _evorder_diag: dict = {}
 
     for msg in sent_messages or []:
         if not isinstance(msg, dict):
@@ -130,13 +234,41 @@ def reconcile_sent(
         # the guard holds across formats — a legacy `gmail:<Id>` source_ref
         # (any case) and a structured-provenance re-observation of the same
         # message reduce to one key (the old byte-compare missed both).
+        #
+        # MAILSEAM item 4: identity is compared through `is_same_artifact`,
+        # never a single key built from a literal. `provider or "gmail"` here
+        # built `gmail:<id>` against commitments stored as `superhuman:<id>`,
+        # so the guard excluded nothing and a wide catch-up closed the very
+        # promise that message had opened. The predicate matches both labels
+        # when the provider is known (a workspace has rows from before and
+        # after its backend was declared) and matches on the native id when it
+        # is not — this function is pure, so an unresolved provider is normal,
+        # not exceptional.
         mid = str(msg.get("message_id") or "").strip()
-        own_key = canonical_dedup_key(provider=provider or "gmail", native_id=mid) if mid else None
+        own_key = primary_artifact_key(provider, mid)
+        # SENTMATCH signal B — the CONVERSATION key, derived exactly like the
+        # message key above so one thread never reads as two. Both lines moved
+        # off the gmail literal together, as SENTMATCH's build record required.
+        tid = str(msg.get("thread_id") or "").strip()
+        own_thread_key = primary_artifact_key(provider, tid)
+        # Review F-4 — count the FETCH, not just the outcome. `in msg` is the
+        # presence test on purpose: `has_attachment: False` is the connector
+        # answering, an absent key is the connector never being asked.
+        signals["n_fetched"] += 1
+        if "has_attachment" in msg:
+            signals["n_attachment_field_present"] += 1
+        if msg.get("has_attachment"):
+            signals["n_with_attachment"] += 1
+        if "thread_id" in msg:
+            signals["n_thread_field_present"] += 1
+        if own_thread_key:
+            signals["n_with_thread_ref"] += 1
         opens_for_msg = open_commitments
-        if own_key:
+        if mid:
             opens_for_msg = [
                 c for c in open_commitments
-                if canonical_dedup_key(event=c) != own_key
+                if not is_same_artifact(canonical_dedup_key(event=c),
+                                        provider, mid)
             ]
 
         results = match_send_to_commitments(
@@ -145,11 +277,33 @@ def reconcile_sent(
             recipient_person_ids=msg.get("recipient_person_ids") or [],
             subject=msg.get("subject"),
             body=msg.get("body"),
+            # RECONFENCE layer 1 — the ref of the message being scored. The
+            # BUG-3719 filter above is a single-key identity check; this is
+            # the full attribution test (merged_source_refs, alternate
+            # spellings, the structured-provenance and gmail-id channels),
+            # and it lives in cru_match so Path 1's other callers inherit it.
+            send_source_ref=own_key,
+            # RECONFENCE layer 2 — commitments this same fire captured are
+            # not independent evidence for closing themselves. None (the
+            # default) = pre-RECONFENCE behavior, byte-identical.
+            exclude_captured_since=exclude_captured_since,
             # Bug #103 recall fallback: recipient display names + email local-parts
             # so a commitment that names the recipient in its title ("Send Bo a
             # recap") still matches even when the counterparty isn't linked into
             # person_ids or has no email on file.
             recipient_names=msg.get("recipient_names") or [],
+            # SENTMATCH signal A — the connector's attachment flag for THIS
+            # message. Coerced with bool() so a provider that reports an
+            # attachment COUNT or a list still reads correctly, and an absent
+            # key stays False: no evidence is not weak evidence.
+            has_attachment=bool(msg.get("has_attachment")),
+            # SENTMATCH signal B — inert when the fetch carried no thread id.
+            send_thread_ref=own_thread_key,
+            # EVORDER layer 3 — when this message was actually sent. A send
+            # cannot be evidence for a promise captured after it. Absent from
+            # the fetch → the guard is inert, never a guess.
+            send_ts=msg.get("ts"),
+            diagnostics=_evorder_diag,
         )
         for r in results:
             rec = r.get("recommendation")
@@ -195,6 +349,19 @@ def reconcile_sent(
             cid = r.get("commitment_id")
             if not cid:
                 continue
+            # SENTMATCH — the evidence line names the BASIS, because the
+            # change feed is where the user decides whether to `undo`. "matched
+            # your sent message" is true of a title echo and misleading of a
+            # delivery: they should not read the same.
+            basis = r.get("close_basis") or ""
+            if basis == _DELIVERY_BASIS:
+                lede = "you sent the attachment"
+            elif basis == _AMBIGUOUS_DELIVERY_BASIS:
+                lede = "you sent an attachment that fits more than one open item"
+            elif basis == _THREAD_BASIS:
+                lede = "matched your reply on this thread"
+            else:
+                lede = "matched your sent message"
             proposal = {
                 "commitment_id": cid,
                 "score": r.get("score"),
@@ -204,8 +371,9 @@ def reconcile_sent(
                 "message_id": msg.get("message_id") or "",
                 "ts": ts or "",
                 "recommendation": rec,
+                "close_basis": basis,
                 "evidence": (
-                    "matched your sent message"
+                    lede
                     + (f" \"{msg.get('subject')}\"" if msg.get("subject") else "")
                     + (f" ({_short_date(ts)})" if _short_date(ts) else "")
                 ),
@@ -255,8 +423,23 @@ def reconcile_sent(
     pending.sort(key=lambda p: p["score"] or 0, reverse=True)
     partial.sort(key=lambda p: p["score"] or 0, reverse=True)
 
+    # Review F-4 — close the loop from field to outcome. Counted AFTER the
+    # FS-11 promotion so these are the closures that actually happened, not
+    # the matcher's intermediate grades.
+    for p in auto_close:
+        if p.get("close_basis") == _DELIVERY_BASIS:
+            signals["n_closed_on_delivery"] += 1
+        elif p.get("close_basis") == _THREAD_BASIS:
+            signals["n_closed_on_thread"] += 1
+
+    # EVORDER — fold layer 3's drop count into the receipt. A non-zero value is
+    # the fence working, not an error: it says "N candidates were older than
+    # their own evidence and were refused."
+    signals["n_stale_evidence_skipped"] = int(
+        _evorder_diag.get("stale_evidence_dropped", 0))
+
     return {"auto_close": auto_close, "pending": pending, "partial": partial,
-            "cursor_ts": cursor_ts}
+            "cursor_ts": cursor_ts, "signal_fields": signals}
 
 
 def to_resolved_events(closures, *, source_skill, seq_start):
@@ -339,6 +522,84 @@ def _write_cursor(workspace_root, raw, new_cursor, *, source_skill):
     atomic_write_json_locked(_entities_path(workspace_root), raw, holder=source_skill)
 
 
+def _record_blocked_run(workspace_root, events_path, cursor_before, *,
+                        reason, source_skill, fired_via, provider=None) -> dict:
+    """MAILSEAM item 8 — the receipt for a fire whose Sent READ could not run.
+
+    Writes a `sent_reconcile` audit event stamped `status: "blocked"` with the
+    reason, leaves the cursor exactly where it was, and returns a receipt in
+    the same shape as a real run so callers need no new branch. The audit is
+    still written — a blocked fire that leaves NO trace is indistinguishable
+    from a fire that never happened, and the whole point of this event is that
+    a validator can tell those apart. `validate_reconcile_ran` reads the status
+    and refuses it, so a blocked run can never be reported as a clean zero."""
+    from next_seq import next_seq as _next_seq
+    from atomic_write import atomic_append_jsonl as _append
+    from cru_match import _now_iso as _audit_ts
+
+    audit_event = {
+        "seq": _next_seq(str(events_path)),
+        "ts": _audit_ts(),
+        "type": "sent_reconcile",
+        "source_skill": source_skill,
+        "data": {
+            "task_id": "reconcile-sent",
+            "kind": "reconcile-sent",
+            "status": "blocked",
+            "blocked_reason": reason,
+            "fired_via": fired_via,
+            "cursor_from": cursor_before,
+            "cursor_to": cursor_before,   # never advanced over an unread window
+            "sent_scanned_count": 0,
+            "n_closed": 0,
+            "n_pending": 0,
+            "n_partial_receipts": 0,
+            "mail_provider": provider,
+            "signal_fields": _empty_signal_fields(),
+        },
+    }
+    try:
+        from receipts import _machine_name
+
+        _machine = _machine_name()
+        if _machine:
+            audit_event["data"]["machine"] = _machine
+    except Exception:
+        pass
+    _append(events_path, [audit_event])
+
+    summary = (f"Sent-mail reconciliation did not run: {reason}. Nothing was "
+               "read, so nothing was closed or opened, and the cursor stayed "
+               "where it was — the next run picks up the whole window.")
+    print("reconcile-sent BLOCKED: " + reason, file=sys.stderr)
+    return {
+        "ran": False,
+        "blocked": True,
+        "blocked_reason": reason,
+        "cursor_before": cursor_before,
+        "cursor_after": cursor_before,
+        "cursor_advanced": False,
+        "n_fetched": 0,
+        "n_open_before": 0,
+        "n_auto_closed": 0,
+        "n_pending": 0,
+        "events_written": 0,
+        "reviews_written": 0,
+        "resolved": [],
+        "pending": [],
+        "n_partial_receipts": 0,
+        "partial": [],
+        "partial_propose_closure": [],
+        "partial_skipped_names": [],
+        "signal_fields": _empty_signal_fields(),
+        "n_opened": 0,
+        "opened": [],
+        "capture": None,
+        "mail_provider": provider,
+        "summary": summary,
+    }
+
+
 def reconcile_and_receipt(
     workspace_root,
     sent_messages,
@@ -348,7 +609,9 @@ def reconcile_and_receipt(
     outcome_watch_summary=None,
     fired_via="scheduled",
     sent_commitment_items=None,
-    provider="gmail",
+    provider=None,
+    exclude_captured_since=None,
+    fetch_blocked=None,
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -386,23 +649,101 @@ def reconcile_and_receipt(
         "n_opened": int,             # BUG-3719 capture pass (0 when not run)
         "opened":  [ {title, message_id, kind, due, pending_review} ],
         "capture": dict|None,        # full capture_sent_items summary
+        "signal_fields": dict,       # SENTMATCH F-4 — did the delivery checks run?
         "summary": str,              # code-generated line the brief pastes verbatim
       }
+
+    `provider` (MAILSEAM item 4/5) — the provider tag of the mail connector
+    the batch was read from (`DiscoveryResult.platform` / the declared email
+    backend). None is not "Gmail": it means the caller resolved nothing, and
+    this function then reads the workspace's DECLARED email backend rather
+    than falling to a literal. The old `provider="gmail"` default silently
+    mislabelled every ref written on a non-Gmail backend AND built a dedup key
+    that matched no commitment on disk — which turned the BUG-3719 self-closure
+    guard off without failing anything.
+
+    `fetch_blocked` (MAILSEAM item 8) — a plain-English reason the Sent READ
+    could not happen (no mail connector, connector budget exhausted, an
+    unclassified account). Passing it records the run as BLOCKED: the audit
+    event carries `status: "blocked"` + the reason, `validate_reconcile_ran`
+    refuses it, and the summary says what was missing. Without it, a run that
+    never read anything wrote the identical clean `sent_scanned_count: 0`
+    audit as a run that read everything and found nothing — the dead-rail
+    shape this receipt contract exists to make impossible. A blocked run
+    closes nothing, opens nothing, and NEVER advances the cursor.
+
+    `signal_fields` also rides the `sent_reconcile` audit event, and when a
+    fetch carried NEITHER `has_attachment` nor `thread_id` on any message the
+    `summary` says so in plain language. That combination is the difference
+    between "the delivery checks found nothing" and "the delivery checks never
+    ran" — two states that otherwise produce the identical healthy zero.
+
+    `exclude_captured_since` (RECONFENCE) — the ISO timestamp the caller
+    recorded at the START of this fire, before any phase wrote. Commitments
+    captured at or after it are excluded from send scoring: one orchestrator
+    fire that captures in an early phase and reconciles sent mail in a later
+    one would otherwise score a commitment against the very fire that wrote
+    it (the dogfood's 14:38 capture questioned at 14:40). Anything predating
+    the fire stays fully matchable, so a send that genuinely fulfills an
+    earlier promise still closes it. None (the default) = pre-RECONFENCE
+    behavior, byte-identical. Layer 1 needs no wiring here — `reconcile_sent`
+    derives each message's own ref internally.
 
     Idempotent across a day: a re-run fetches only newer Sent mail; an empty
     batch closes nothing and leaves the cursor where it is; a re-extracted
     commissive is skipped by (source_ref, title) + restatement dedup.
+
+    RAISES `PrimaryUserUnresolvedError` when `user_person_id` is falsy (Bug
+    #102). Nothing is read, nothing is written, and no `sent_reconcile` audit
+    event exists for the run — so `validate_reconcile_ran` reports the run as
+    not-having-happened, which is the truth. Before this, the same state wrote
+    a clean `n_closed: 0` audit and advanced the cursor past mail it had never
+    really matched.
     """
+    if not user_person_id:
+        msg = (
+            "reconcile-sent ABORTED: the primary user is unresolved "
+            "(resolve_primary_user returned None/empty). Every owner gate "
+            "would match nothing and this run would write a clean audit "
+            "claiming zero to close. No audit event written, cursor NOT "
+            "advanced. Fix: pass the WORKSPACE ROOT (not _hq) to "
+            "resolve_primary_user, or set workspace.user_person_id in "
+            "entities.json (Bug #102)."
+        )
+        print(msg, file=sys.stderr)
+        raise PrimaryUserUnresolvedError(msg)
+
+    # MAILSEAM: resolve the provider ONCE, here, and use it for every ref this
+    # run compares or writes. An explicit argument wins; otherwise the declared
+    # email backend answers. Unresolved stays unresolved — the identity helpers
+    # degrade honestly, and the receipt says so below.
+    provider = resolve_mail_provider(workspace_root, provider)
+
     cursor_before, raw = _read_cursor(workspace_root)
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+
+    # MAILSEAM item 8 — a read that never happened is not a read that found
+    # nothing. Record the run as blocked and stop: no matching (there is
+    # nothing to match), no capture, and above all no cursor advance, which
+    # would otherwise skip the window forward past mail this run never saw.
+    blocked = str(fetch_blocked or "").strip()
+    if blocked:
+        return _record_blocked_run(
+            workspace_root, events_path, cursor_before,
+            reason=blocked, source_skill=source_skill, fired_via=fired_via,
+            provider=provider,
+        )
+
     opens = load_open_commitments(str(events_path))
     n_open_before = len(opens)
 
     res = reconcile_sent(opens, sent_messages or [], user_person_id=user_person_id,
-                         provider=provider)
+                         provider=provider,
+                         exclude_captured_since=exclude_captured_since)
     auto_close = res["auto_close"]
     pending = res["pending"]
     partial = res.get("partial") or []
+    signal_fields = res.get("signal_fields") or _empty_signal_fields()
 
     # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
     # legacy-id normalization, loud refusal of orphan tombstones, full-set
@@ -618,6 +959,17 @@ def reconcile_and_receipt(
             # HYG1 Item 1 — per-person receipts auto-recorded this run
             # (extend the data dict, no new event type).
             "n_partial_receipts": n_partial_receipts,
+            # MAILSEAM — the provider every ref this run wrote or compared was
+            # attributed to. None means the workspace declares no email
+            # backend; the refs then carry the legacy anchor and the audit
+            # says so rather than the log implying Gmail was verified.
+            "mail_provider": provider,
+            # SENTMATCH review F-4 — did the delivery checks RUN? Folded into
+            # the SAME audit event as the outcome watch (the B6 precedent):
+            # one fire, one verifiable trace, free-form `data`, no schema
+            # change. Without this, "the fix didn't fire" and "nothing was
+            # deliverable" are the same healthy-looking zero.
+            "signal_fields": signal_fields,
         },
     }
     try:
@@ -674,6 +1026,23 @@ def reconcile_and_receipt(
         summary += (
             f" Everyone on {titles} has now received theirs — close it when ready."
         )
+    # SENTMATCH review F-4 — the counters land in the audit for a validator;
+    # this sentence is for the HUMAN reading the receipt, and it goes LAST
+    # because it is a caveat on everything above it. It fires only when the
+    # fetch carried NEITHER field on ANY message: the dead-rail state, where
+    # the delivery checks did not run at all and the zero above therefore
+    # reads as "nothing was deliverable". Plain language, no field names
+    # (Rule 4). A fetch that carried the fields and simply found no
+    # attachments says nothing extra — that is a normal, honest zero.
+    if n_fetched and not (signal_fields["n_attachment_field_present"]
+                          or signal_fields["n_thread_field_present"]):
+        summary += (
+            f" Heads up: none of the {n_fetched} message"
+            f"{'s' if n_fetched != 1 else ''} came through with attachment or"
+            " conversation details, so the checks that spot an already-sent"
+            " deliverable could not run — only the wording of each email was"
+            " compared."
+        )
 
     return {
         "ran": True,
@@ -695,12 +1064,140 @@ def reconcile_and_receipt(
         "partial": partial_recorded,
         "partial_propose_closure": partial_propose_closure,
         "partial_skipped_names": partial_skipped_names,
+        # SENTMATCH review F-4 — the same block written to the audit event, so
+        # a caller can act on it without re-reading events.jsonl.
+        "signal_fields": signal_fields,
         # BUG-3719 capture pass (additive; zeros/None when items not passed).
         "n_opened": n_opened,
         "opened": list(capture["opened"]) if isinstance(capture, dict) else [],
         "capture": capture,
+        # MAILSEAM — what this run attributed its refs to, so a caller can act
+        # on it without re-reading the audit event.
+        "mail_provider": provider,
         "summary": summary,
     }
+
+
+def apply_roster_complete_closes(workspace_root, *, source_skill: str,
+                                 closed_by: str, batch_id=None) -> dict:
+    """AUTOAPPLY §4b — close a multi-counterparty commitment whose ENTIRE
+    roster has delivered, when every contributing receipt is id-level.
+
+    WHAT commitment_state.mark_partial_received IS PROTECTING, and why it is
+    not modified: that writer keeps RECEIPT distinct from CLOSURE — a receipt
+    is informational, and the writer refuses to conflate "the last person's
+    thing arrived" with "the user is done with this item". That posture is
+    correct and the writer is byte-identical after this change. The decision
+    simply does not belong in the writer; it belongs in a detector that can
+    see the evidence behind every receipt.
+
+    What M's ruling narrows: when the projector stamps
+    `all_counterparties_received` AND every contributing
+    `commitment_partial_received` names its counterparty by RESOLVED id and
+    carries connector evidence, the close is CORROBORATED (N independent
+    receipts, §2) and REVERSIBLE (`commitment_close` → `reopen_commitment`,
+    the reverser shipped long before this). One evidence-free receipt in the
+    set — a bare manual claim — and the item renders its confirm row exactly
+    as it does today.
+
+    Untouched by this: MC1 (never whole-close on a single transcript
+    mention), SUB1 D3 (open sub-items block — `close_commitment`'s own guard
+    plus the projection stamp), and the pending_review floor.
+
+    LB2 auto lifecycle (FB-20): propose(tier="auto") + close + resolve in one
+    iteration; no auto proposal ever rests open. Returns
+    {"closed": [...], "skipped": [...], "errors": [...]}."""
+    from brain_proposals import propose, resolve_proposal
+    from commitment_parties import (all_counterparties_received,
+                                    receipts_are_id_level)
+    from commitment_state import close_commitment
+    from cru_match import load_open_commitments, load_events_defensively
+    from cru_match import _commitment_id as _cid
+    from cru_match import parent_blocks_auto_resolve
+
+    # Bug #102, same class as the orchestrator's abort: `closed_by` is the
+    # resolved primary user. Unresolved, this writes real closure events
+    # stamped `resolved_by: None` — irreversible-looking rows attributed to
+    # nobody. The whole point of the resolver is that a caller never guesses,
+    # so an absent answer is a stop, not a value to write.
+    if not closed_by:
+        msg = ("apply_roster_complete_closes ABORTED: closed_by is unresolved "
+               "(Bug #102) — a closure must name who closed it.")
+        print(msg, file=sys.stderr)
+        raise PrimaryUserUnresolvedError(msg)
+
+    ws = Path(workspace_root)
+    events_path = ws / "_hq" / "data" / "events.jsonl"
+    out: dict = {"closed": [], "skipped": [], "errors": []}
+    if not events_path.exists():
+        return out
+    # §7 — ONE batch per RUN, timestamped, matching the efb_/idr_/pbs_
+    # precedents. A per-SKILL constant grouped every roster-complete close
+    # this skill ever applied into ONE undoable batch, so a single `undo`
+    # reached back across days and reopened closes the user never saw
+    # (review F-2); `resolve_batch` applies no time window by design.
+    batch_id = batch_id or ("rcc_" + _dt.datetime.now(_dt.timezone.utc)
+                            .strftime("%Y%m%dT%H%M%SZ"))
+    # The narrating surface needs the ref it is advertising "say undo" for.
+    out["batch_id"] = batch_id
+    events, _skipped = load_events_defensively(events_path)
+
+    for c in load_open_commitments(events_path):
+        d = c.get("data") if isinstance(c.get("data"), dict) else {}
+        cid = _cid(c)
+        if not all_counterparties_received(c):
+            continue
+        if d.get("pending_review"):
+            out["skipped"].append({"commitment_id": cid,
+                                   "why": "pending_review"})
+            continue
+        if parent_blocks_auto_resolve(c):
+            out["skipped"].append({"commitment_id": cid,
+                                   "why": "open sub-items (SUB1 D3)"})
+            continue
+        ok, n = receipts_are_id_level(events, cid,
+                                      commitment_seq=c.get("seq"))
+        if not ok:
+            out["skipped"].append({
+                "commitment_id": cid,
+                "why": f"{n} receipt(s), not all id-level — renders the "
+                       "confirm row unchanged"})
+            continue
+        predicate = f"roster_complete:{n}_receipts"
+        try:
+            res = propose(
+                ws, kind="commitment_review",
+                fingerprint=f"roster_close:{cid}",
+                evidence=f"{predicate} — every counterparty delivered, each "
+                         "receipt id-level",
+                action_tuples=[{"action": "confirm"}, {"action": "hold"}],
+                tier="auto", change_class="commitment_close",
+                detector=source_skill,
+                render_line=(f"Closed {(d.get('title') or '')[:80]!r} — "
+                             "everyone delivered"),
+                extra={"commitment_id": cid, "auto_predicate": predicate},
+            )
+            if res.get("status") != "proposed":
+                out["skipped"].append({"commitment_id": cid,
+                                       "why": res.get("status")})
+                continue
+            closed = close_commitment(
+                ws, cid, resolved_by=closed_by,
+                evidence=predicate, source_skill=source_skill,
+                extra_data={"auto_predicate": predicate,
+                            "brain_batch_id": batch_id,
+                            "brain_change_class": "commitment_close"},
+            )
+            resolve_proposal(ws, res["proposal_id"], "applied",
+                             resolved_by=source_skill,
+                             source_skill=source_skill)
+            out["closed"].append({"commitment_id": cid,
+                                  "status": closed.get("status"),
+                                  "n_receipts": n, "predicate": predicate})
+        except Exception as exc:  # loud per-item, contained per-run
+            out["errors"].append({"commitment_id": cid,
+                                  "error": f"{type(exc).__name__}: {exc}"})
+    return out
 
 
 def validate_reconcile_ran(workspace_root, *, since_cursor=None) -> dict:
@@ -715,6 +1212,12 @@ def validate_reconcile_ran(workspace_root, *, since_cursor=None) -> dict:
     Returns {ok, ran, reason?, cursor_from, cursor_to, sent_scanned_count, n_closed}.
     A 0-scan run is still a valid run (ok=True) — it ran, found nothing; the audit
     event proves the fetch happened.
+
+    MAILSEAM item 8 — EXCEPT when the audit says `status: "blocked"`: the Sent
+    read never happened, so the zero means nothing, and ok=False carries the
+    recorded reason. Without this the blocked audit would be read back as a
+    healthy empty run, which is the exact dead rail the blocked status exists
+    to expose (a clean audit over a skipped read).
     """
     import json
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -735,6 +1238,14 @@ def validate_reconcile_ran(workspace_root, *, since_cursor=None) -> dict:
         return {"ok": False, "ran": False,
                 "reason": "no sent_reconcile audit event — reconciliation did not actually run"}
     d = latest.get("data") or {}
+    if d.get("status") == "blocked":
+        return {"ok": False, "ran": False,
+                "reason": ("the Sent read did not happen — "
+                           + (d.get("blocked_reason") or "recorded as blocked")),
+                "cursor_from": d.get("cursor_from"),
+                "cursor_to": d.get("cursor_to"),
+                "sent_scanned_count": d.get("sent_scanned_count"),
+                "n_closed": d.get("n_closed")}
     if since_cursor is not None and d.get("cursor_from") != since_cursor:
         return {"ok": False, "ran": True,
                 "reason": f"latest audit is from a prior run (cursor_from={d.get('cursor_from')!r} "
@@ -750,7 +1261,8 @@ def validate_reconcile_ran(workspace_root, *, since_cursor=None) -> dict:
 
 
 __all__ = ["reconcile_sent", "to_resolved_events", "reconcile_and_receipt",
-           "validate_reconcile_ran"]
+           "apply_roster_complete_closes", "validate_reconcile_ran",
+           "PrimaryUserUnresolvedError"]
 
 
 if __name__ == "__main__":

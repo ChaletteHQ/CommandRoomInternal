@@ -14,7 +14,7 @@ This applies to FIRST FIRES and to RE-RUNS ("regenerate with real data" / "show 
 
 ### Forbidden — zero tolerance
 
-1. **No HAND-writing the widget HTML or any rendered chat output to disk.** Not to `_hq/scheduled_outputs/`, not to `_hq/insights/`, not to `_hq/staging/`, not anywhere. The widget surface is `show_widget` ONLY. (The ONE sanctioned disk write is the one `widget_transport.render_and_persist` performs itself into `_hq/.system/widgets/` — that file is the validation gate + audit trail; `transport["html"]` is the deliverable relayed as `widget_code`, T2. You never write it by hand and never offer it to the user as a deliverable.)
+1. **No HAND-writing the widget HTML or any rendered chat output to disk.** Not to `_hq/scheduled_outputs/`, not to `_hq/insights/`, not to `_hq/staging/`, not anywhere. The widget surface is `show_widget` ONLY. (The sanctioned disk writes are the ones the transport chain performs ITSELF, both under `_hq/.system/widgets/`: `widget_transport.render_and_persist`'s rendered page — the validation gate + audit trail, with `transport["html"]` as the deliverable relayed as `widget_code`, T2 — and `page_snapshot.save_pageset`'s page-set JSON under `pagesets/`, which is the frozen view pages 2+ slice so `show more` never re-reads live substrate (PAGESNAP). Neither is ever written by hand, and neither is ever offered to the user as a deliverable.)
 
 2. **No narrating what's in the widget.** Phrases like `Regenerated with N items`, `What's in the widget above`, `Total scan results: X persons flagged`, `Files saved to _hq/...`, `Saved the standalone HTML at...`, `5 actionable items` are FORBIDDEN. The user can see the widget. Explaining it duplicates the surface.
 

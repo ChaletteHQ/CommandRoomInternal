@@ -99,6 +99,11 @@ def pre_answers(seed: dict[str, Any]) -> dict[str, Any]:
         out["brain_name"] = client["brain_name_preference"]
     if client.get("seniority"):
         out["seniority"] = client["seniority"]  # drives the primary-affiliation gate
+    if seed.get("language") in ("en", "es"):
+        # Anchor truth for the 1a.v language step: "es" activates the bilingual
+        # overlay without asking; "en" (or absent) leaves the install
+        # byte-identical to English-native. Never inferred — declared only.
+        out["language"] = seed["language"]
     return out
 
 

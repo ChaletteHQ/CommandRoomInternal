@@ -28,6 +28,7 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 
 # Phase 2 — Setup
 
+- **Record the fire start FIRST, before any fetch or write:** `fire_start = datetime.datetime.now(datetime.timezone.utc).isoformat()`. Hold it as `fire_start` — Phase 5.5 passes it. It marks the instant this fire began, so a commitment this same fire extracted cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the Phase-5.5 call: taken later it sits after the extraction phases and fences nothing.
 - Compute today's date.
 - Read entities.json + aliases.json.
 - Read voice calibration (cache once for the session).
@@ -163,7 +164,9 @@ Per `shared/scripts/cru_match.py` Path 4. Sister to past-meetings Phase 4.6 (tra
 
 **This runs over ALL fetched threads from Phase 3 — not just the top-5 priority set.** A delivery email can land below the priority cut yet still resolve a commitment. Run the CRU scan against every inbound thread.
 
-**Conservative — HIGH-confidence + completion-language auto-resolve only.** Path 4 is completion-GATED (unlike outbound Path 1, where the act of sending is itself fulfillment). A high title match alone never auto-resolves; the inbound message must also carry fulfillment language. Borderline matches go to `pending_review` for next Pulse one-click confirm.
+**How a reply closes something (REPLYCLOSE).** Three bases, in the user's terms: (1) their message quotes the item strongly enough AND says it's done — the long-standing behavior, unchanged; (2) **they replied on the thread the item came from** with either "it's done" wording or the document the item asked for — that closes outright; (3) **the same thing off-thread** becomes a confirm, never a close, because off the thread the only link is wording, and wording is what has been missing the real deliveries all along. A reply that fits two open items closes neither — it asks. Every closure stays reversible via `undo`.
+
+**Only THEIR reply counts.** A message from the CEO is refused outright, not filtered per item — on a thread the CEO answered last, "the latest message" is the CEO's, and matching it here would close the CEO's own promises as though a counterparty had delivered them. That is the sent path's job (`reconcile-sent`), on the sent path's evidence.
 
 Skip entirely if:
 - Zero inbound threads fetched this fire (nothing to cross-reference).
@@ -171,86 +174,54 @@ Skip entirely if:
 
 **These skips are exhaustive — the run mode never adds one (v4.5.2 R2).** Scheduled and manual fires BOTH run this scan in full; "autonomous run, no connector fetch" is improvisation (FINDINGS F-47 P1a's class).
 
-Otherwise, for EACH inbound thread, resolve the sender's email to a `person_id` (via entities.json + aliases.json — already loaded in Phase 2; skip the thread if the sender can't be resolved to a known person, since Path 4 pre-filters by owner == sender) and execute via bash:
+Otherwise, build ONE list over ALL fetched threads — for each, resolve the sender's email to a `person_id` (via entities.json + aliases.json, already loaded in Phase 2) and take the latest message's subject, body, conversation id, attachment flag, and **its own ISO-8601 timestamp** (`ts` — the connector's raw value, never a reformatted display date; EVORDER layer 3 reads it). **A thread whose sender does not resolve still goes in the list with `sender_person_id: ''`** — the helper counts it as unresolvable rather than letting it vanish, which is how a whole quiet fire gets explained. Then execute via bash:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
-from cru_match import (
-    load_open_commitments,
-    match_inbound_to_commitments,
-    build_commitment_updated_event,
-    build_pending_review_event,
+from reconcile_inbound_commitments import (
+    reconcile_inbound_and_receipt,
+    validate_inbound_reconcile_ran,
+    PrimaryUserUnresolvedError,
 )
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
-from atomic_write import atomic_append_jsonl
+from primary_user import resolve_primary_user
 
 workspace_root = '<absolute path to the workspace root>'
-events_path = '<absolute path to _hq/data/events.jsonl>'
-opens = load_open_commitments(events_path)
-results = match_inbound_to_commitments(
-    open_commitments=opens,
-    sender_person_id='<resolved sender person_id for THIS thread>',
-    subject='<subject of latest inbound message>',
-    body='<plaintext body of latest inbound message>',
-)
+user_id = resolve_primary_user(workspace_root)   # deterministic — do NOT guess (Bug #102)
 
-# Stage B (F2): auto-resolves close through commitment_state.close_commitment
-# — THE closure path. Matching (Path 4) is unchanged; only the write moved.
-n_resolved = 0
-next_seq = <peek-next-seq>  # for updated/pending events only
-to_append = []
-for r in results:
-    rec = r['recommendation']
-    evidence = f\"Inbound email ({r.get('has_completion_signal') and 'completion language' or r.get('has_schedule_shift_signal') and 'schedule-shift language' or 'title match'}) — Subject: {r['title'][:80]}\"
-    # owner_id IS the sender (the counter-party who owed the user); use it
-    # as resolved_by so the resolution is attributed to whoever delivered.
-    if rec == 'auto_resolve':
-        try:
-            res = close_commitment(
-                workspace_root, r['commitment_id'],
-                resolved_by=r['owner_id'],
-                evidence=evidence,
-                source_skill='inbox',
-            )
-            if res['status'] == 'closed':
-                n_resolved += 1
-        except (CommitmentIdError, PendingReviewError) as e:
-            print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-    elif rec == 'commitment_updated':
-        to_append.append(build_commitment_updated_event(
-            commitment_id=r['commitment_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='inbox',
-            change_summary='Counter-party shifted their own deadline (inbound email)',
-            evidence=evidence,
-            next_seq=next_seq,
-        ))
-        next_seq += 1
-    elif rec == 'pending_review':
-        to_append.append(build_pending_review_event(
-            commitment_id=r['commitment_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='inbox',
-            proposed_resolution='auto_resolve',
-            score=r['score'],
-            evidence=evidence,
-            next_seq=next_seq,
-        ))
-        next_seq += 1
-if to_append:
-    atomic_append_jsonl(events_path, to_append)
-print(f'CRU inbox: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")}')
+# One dict per fetched thread's latest inbound message.
+inbound_messages = <[{'message_id', 'ts', 'sender_person_id', 'subject', 'body',
+                      'thread_id', 'has_attachment'}, ...]>
+
+receipt = reconcile_inbound_and_receipt(
+    workspace_root, inbound_messages,
+    user_person_id=user_id,
+    source_skill='inbox',
+    fired_via='scheduled',            # 'manual' on a chat-phrase fire
+    exclude_captured_since=fire_start, # from the top of this fire — fence layer 2
+    provider='<the seam-resolved provider>',
+)
+print('CRU inbox: closed=%s pending=%s updated=%s batch=%s'
+      % (receipt['n_auto_closed'], receipt['n_pending'],
+         receipt['n_updated'], receipt['batch_id']))
 "
 ```
 
-**The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4/9: `commitment_resolved`, `commitment_updated`, `commitment_review_proposed` event-type names NEVER appear in chat. The user sees the effect on the next Commitments fire — resolved items drop off the OWED TO YOU column. Do NOT narrate "I closed 2 commitments" in the inbox widget or anywhere in this fire.
+`thread_id` and `has_attachment` are what let a reply be recognized as the delivery rather than as words about it; omitting them is safe but leaves those checks inert, and the receipt says so. Never infer `has_attachment` from a body that says "attached" — it is the connector's flag or nothing. **`ts` is the one field where omitting is safe but MALFORMING is not (EVORDER).** Layer 3 refuses to close a commitment captured after the reply arrived. Absent `ts` leaves it inert; a present-but-unparseable `ts` (a display string, or date-only) fails SAFE and LOUD — the pass closes nothing at all and prints `RECONFENCE: inbound_ts=…` on stderr. Pass the connector's raw timestamp through unformatted. `n_stale_evidence_skipped` in the receipt counts what layer 3 refused; non-zero is the fence working, not an error.
+
+**The circularity fence (REPLYCLOSE §3).** Layer 1 needs no argument here — the helper derives each message's own ref internally and drops any commitment attributed to that very message. That matters most on THIS rail: this same skill stamps `data.source_ref: gmail:<message_id>` on the commitments it extracts from inbound mail, so without it the message that created a waiting-on item would be the message that closes it on the next scan. Layer 2 is `exclude_captured_since=fire_start`. Anything captured BEFORE the fire start stays fully matchable, so a reply that genuinely delivers on an earlier promise still closes it.
+
+**Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True. False means this pass did not actually run; append the `pack_run.data.errors[]` entry below and do not treat the zero as clean. Also read `receipt["signal_fields"]`: if messages were scored but neither the conversation nor the attachment field was present on any of them, the reply checks could not run at all and a zero closure count means nothing — `receipt["summary"]` carries a plain-language heads-up in exactly that state.
+
+**An unresolved user ABORTS this pass** — `reconcile_inbound_and_receipt` raises `PrimaryUserUnresolvedError`, writes no audit event, and closes nothing. Do NOT catch it and continue: direction is derived from owner vs the user, so with no user the reply bases are inert and a clean zero would be a lie. Check that the path passed is the WORKSPACE ROOT, not `_hq`.
+
+**The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4/9: `commitment_resolved`, `commitment_updated`, `commitment_review_proposed` event-type names NEVER appear in chat. The user sees the effect on the next Waiting On fire — resolved items drop off. Do NOT narrate "I closed 2 commitments" in the inbox widget or anywhere in this fire.
 
 **Why pre-filter by sender, not recipient:** on outbound (Path 1) the USER is the owner and we resolve what the user owed. On inbound (Path 4) the SENDER is the owner — their email is evidence THEY delivered on what they owed the user. New-ask language ("can you also send X") is intentionally NOT acted on here: that's the counter-party asking the user for something new (inbox-triage's job to spawn a user-owed commitment), not a resolution of the sender's own commitment.
 
-**Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, sender unresolvable, JSON malformed), swallow silently and continue — this is best-effort enrichment and must NEVER block the inbox render. **Append a `pack_run.data.errors[]` entry** (per Phase 7): `{"phase": "5.5_inbound_cru", "reason": "<short>", "detail": "<truncated stderr>", "thread_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
+**Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, JSON malformed), swallow silently and continue — this is best-effort enrichment and must NEVER block the inbox render. **Append a `pack_run.data.errors[]` entry** (per Phase 7): `{"phase": "5.5_inbound_cru", "reason": "<short>", "detail": "<truncated stderr>", "thread_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`. An unresolvable SENDER is not an error — it is a counted outcome in the receipt; do not drop those messages before the call.
 
 **Threshold tuning:** same `HIGH_CONFIDENCE_THRESHOLD = 0.55` / `PENDING_REVIEW_THRESHOLD = 0.30` as the other paths. Conservative for launch; tighten/loosen once Pulse pending-review confirmation telemetry exists.
 

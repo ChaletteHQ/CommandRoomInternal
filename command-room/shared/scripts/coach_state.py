@@ -88,6 +88,7 @@ if str(_HERE) not in sys.path:
 
 from cru_match import load_events_defensively, load_open_commitments  # noqa: E402
 from entities_io import unwrap_entities  # noqa: E402
+from event_seq import event_seq  # noqa: E402
 
 try:  # SYNC1 B1 — route the _hq/data seam through the resolver (dormant today:
     # with no override it returns <root>/_hq/data, byte-identical to the constant).
@@ -611,7 +612,9 @@ def sessions_since(workspace_root, thread_id: str,
             continue
         data = ev.get("data") or {}
         rows.append({
-            "seq": ev.get("seq"),
+            # UNDOGUARD sibling rail: normalized at projection, so the sort
+            # tiebreak below can never compare str to int.
+            "seq": event_seq(ev),
             "date": d.isoformat(),
             "type": ev.get("type"),
             "thread_id": thread_id,
@@ -619,7 +622,11 @@ def sessions_since(workspace_root, thread_id: str,
             "summary": str(data.get("summary") or data.get("title") or "")[:200],
             "person_ids": list(ev.get("person_ids") or []),
         })
-    rows.sort(key=lambda r: (r["date"], r["seq"] or 0))
+    # `or 0` was safe-looking and wrong: it only reached the seq element on a
+    # same-DATE tie, so a string seq crashed the sort intermittently. Zero is
+    # a fine TIEBREAK default (unlike a window bound, where it silently
+    # excluded every seq-less row — see event_seq's module docstring).
+    rows.sort(key=lambda r: (r["date"], r["seq"] if r["seq"] is not None else 0))
     return rows
 
 
@@ -676,7 +683,7 @@ def load_open_arc_items(workspace_root, thread_id: str,
         d = _event_date(c)
         data = c.get("data") or {}
         out.append({
-            "seq": c.get("seq"),
+            "seq": event_seq(c),  # UNDOGUARD sibling rail — see the sort below
             "id": data.get("id"),
             "title": str(data.get("title") or data.get("text")
                          or data.get("summary") or "(unlabeled)")[:200],
@@ -686,7 +693,10 @@ def load_open_arc_items(workspace_root, thread_id: str,
             "due": data.get("due") or data.get("due_date"),
             "person_ids": list(c.get("person_ids") or []),
         })
-    out.sort(key=lambda i: (i["opened"] is None, i["opened"] or "", i["seq"] or 0))
+    # UNDOGUARD sibling rail — same shape as the session sort: the seq element
+    # is only reached when two commitments were opened the same day.
+    out.sort(key=lambda i: (i["opened"] is None, i["opened"] or "",
+                            i["seq"] if i["seq"] is not None else 0))
     return out
 
 

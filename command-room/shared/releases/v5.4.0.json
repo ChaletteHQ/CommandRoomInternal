@@ -1,0 +1,20 @@
+{
+ "version": "5.4.0",
+ "headline": "The system stops asking you about what it already knows: a meeting is no longer checked against the commitments it just created, records that clearly agree merge themselves, and an email address matching exactly one person links itself. Every automatic change is narrated the same day and can be reversed by saying undo.",
+ "items": [
+  {
+   "id": "v540_announce_fewer_confirmations",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "You should have noticeably fewer things waiting on your confirmation. The biggest cause was processing a meeting: every transcript was checked against the commitments that same meeting had just produced, so one clean call could hand you a page of questions that all had the same answer. That comparison is gone. On top of that, two records of the same commitment that clearly agree now merge on their own, an email address that matches exactly one person and conflicts with nothing links itself, and a receipt closes once everyone on it is accounted for, showing you what it based that on. All of it is told to you the same day it happens, and all of it can be reversed. Say undo in any chat and you will get a list of the recent automatic changes to pick from, so you no longer have to be back in the conversation where it happened.",
+   "action": "announce_only"
+  },
+  {
+   "id": "v540_announce_folder_names_resolve",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "A piece of work will never again point at a folder that does not exist. Folder names are now checked against what is actually there, and when nothing matches, the name is simply left blank instead of being filled in with a guess. That guess is what used to put a confident but wrong folder name on a record and send later work looking for a place that was never created. Three things follow from it: the weekly tidy-up no longer creates folders just to satisfy a name it invented, work you have already closed stops reappearing, and anything that drops off a review without someone actually closing it gets flagged to you rather than quietly disappearing.",
+   "action": "announce_only"
+  }
+ ]
+}

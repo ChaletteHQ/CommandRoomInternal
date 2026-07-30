@@ -21,10 +21,15 @@ DESIGN RULES (from the owning spec + Cowork decisions):
   SECONDARY signal — a fresh `lastRunAt` with a stale receipt is its own
   finding (`receipt_gap`: the task fired but wrote nothing — the
   render-without-write class the R10 transcript self-audit chases).
-- **Machine-local time everywhere.** Cowork cron/fireAt evaluate in
-  MACHINE-local time, not workspace TZ (confirmed live 2026-07-01:
-  machine=Mountain, workspace=Pacific). All lateness math here uses the
-  machine clock; workspace TZ is presentation-only (`tz.py`).
+- **Machine-local time everywhere — INCLUDING WHAT IS RENDERED.** Cowork
+  cron/fireAt evaluate in MACHINE-local time, not workspace TZ (confirmed
+  live 2026-07-01: machine=Mountain, workspace=Pacific). All lateness math
+  here uses the machine clock, and so does every string `_human_time`
+  emits. "Workspace TZ is presentation-only" used to be read as "present in
+  workspace TZ" and it is NOT (LATETZ, 2026-07-28): conversion happens ONCE,
+  at registration/change time, so a value arriving here is already converted
+  and a second hop moves it into a clock it was never authored in. `tz.py`
+  is for upstream CONNECTOR timestamps, which is a different problem.
 - **One plain-English sentence per problem, only when something is wrong**
   (Rule 28 posture). `plain_english_lines()` is the single formatter every
   surface uses. Lines state FACTS + the one action — never a fabricated
@@ -295,28 +300,45 @@ def next_fire(cron: str, now: Optional[_dt.datetime] = None) -> Optional[_dt.dat
 
 def _human_time(
     dt_naive: _dt.datetime,
-    workspace_root=None,
     now: Optional[_dt.datetime] = None,
 ) -> str:
     """Presentation-only: 'Wednesday 12:20 AM' when within ~6 days of now
-    (past or future), '(Jul 2) 12:20 AM' beyond that — a bare weekday would
-    be ambiguous across weeks. Workspace TZ via tz.py when resolvable,
-    machine-local wall time otherwise. Never raises."""
-    now = now or _now_local()
-    aware = dt_naive.astimezone() if dt_naive.tzinfo is None else dt_naive
-    try:
-        from tz import to_local
+    (past or future), 'Jul 2, 12:20 AM' beyond that — a bare weekday would
+    be ambiguous across weeks. Renders the MACHINE-local naive value as-is —
+    the watchdog's clock (`late_signals`), and the clock cron evaluates in.
+    Never raises.
 
-        local = to_local(aware, workspace_path=workspace_root)
-        if local is not None:
-            aware = local
-    except Exception:
-        pass
-    clock = aware.strftime("%I:%M %p").lstrip("0")
+    NO WORKSPACE-TZ CONVERSION HAPPENS HERE, DELIBERATELY (LATETZ,
+    2026-07-28). This is the sibling rail of `late_fire._human_time`, and it
+    carried the identical defect: it attached the machine zone with
+    `.astimezone()` and then re-expressed the value in the workspace zone via
+    `tz.to_local()`. Every value reaching it is ALREADY machine-local naive
+    (`_to_local_naive` at the `records()` boundary, then round-tripped through
+    `.isoformat()`), so that second hop moved a slot into a clock it was never
+    authored in — a no-op only where machine tz == workspace tz. See
+    `late_fire._human_time` for the full reasoning and the governing rule
+    ("conversion happens once, at registration/change time").
+
+    Two further bugs died with it, both from the old version keeping the
+    branch decision and the rendered string on DIFFERENT clocks:
+      - `abs(ref - dt_naive)` compared a naive `ref` against `dt_naive`, which
+        the old line 306 left AWARE whenever a caller passed an aware value —
+        a TypeError in a function documented to never raise. Not reachable
+        from today's call sites (they all serialize naive values), but it was
+        one aware caller away.
+      - the ~6-day window was decided on the machine clock while the weekday
+        was rendered on the workspace clock, so near a date boundary the two
+        could disagree — "Wednesday" on a row the window had judged as far.
+    """
+    now = now or _now_local()
+    # ONE clock for both the branch decision and the rendered string.
+    if dt_naive.tzinfo is not None:
+        dt_naive = dt_naive.astimezone().replace(tzinfo=None)
     ref = now if now.tzinfo is None else now.astimezone().replace(tzinfo=None)
+    clock = dt_naive.strftime("%I:%M %p").lstrip("0")
     if abs(ref - dt_naive) < _dt.timedelta(days=6):
-        return f"{aware.strftime('%A')} {clock}"
-    return f"{aware.strftime('%b')} {aware.day}, {clock}"
+        return f"{dt_naive.strftime('%A')} {clock}"
+    return f"{dt_naive.strftime('%b')} {dt_naive.day}, {clock}"
 
 
 def late_signals(workspace_root, task_ids=None) -> dict[str, dict]:
@@ -789,7 +811,7 @@ def check_task_failures(workspace_root, *, now=None, reports=None,
         if newest_receipt is not None and newest_receipt > f["_when"]:
             continue  # ran clean since — history, not a finding
         name = display_by_task.get(tid) or f["display_name"]
-        when_h = _human_time(f["_when"], workspace_root, now=now)
+        when_h = _human_time(f["_when"], now=now)
         lines.append(
             f"{name} hit an error mid-run at {when_h} — its own log says: "
             f"\"{f['detail']}\". Its next scheduled run will show whether it "
@@ -862,13 +884,13 @@ def detect_registry_vantage(workspace_root, task_records, *, now=None) -> Option
         "where Command Room is set up."
     )
     if fresh:
-        when = _human_time(newest_receipt, workspace_root, now=now)
+        when = _human_time(newest_receipt, now=now)
         alive = f"Your tasks look alive: the most recent one ran {when}"
         if machine:
             alive += f" (on {machine})"
         line = f"{opener} {alive}. {closer}"
     elif newest_receipt is not None:
-        when = _human_time(newest_receipt, workspace_root, now=now)
+        when = _human_time(newest_receipt, now=now)
         line = (
             f"{opener} I can't tell from here whether your tasks are still "
             f"running — the most recent recorded run was {when}. {closer}"
@@ -889,15 +911,15 @@ def detect_registry_vantage(workspace_root, task_records, *, now=None) -> Option
     }
 
 
-def _caught_up_line(r: dict, workspace_root=None, now=None) -> str:
+def _caught_up_line(r: dict, now=None) -> str:
     """Dated catch-up render (F-43 P2c's fix): name WHEN it caught up and
     which slot it served — facts only, no cause."""
     name = r["display_name"]
-    fired = _human_time(_dt.datetime.fromisoformat(r["last_fired"]), workspace_root, now=now)
+    fired = _human_time(_dt.datetime.fromisoformat(r["last_fired"]), now=now)
     sched_iso = (r.get("catchup") or {}).get("scheduled_for")
     if sched_iso:
         try:
-            sched = _human_time(_dt.datetime.fromisoformat(sched_iso), workspace_root, now=now)
+            sched = _human_time(_dt.datetime.fromisoformat(sched_iso), now=now)
             return (
                 f"Your {name} caught up {fired} — its {sched} run didn't "
                 f"happen on time. The work is done, just later than scheduled."
@@ -910,13 +932,13 @@ def _caught_up_line(r: dict, workspace_root=None, now=None) -> str:
     )
 
 
-def _first_run_line(r: dict, workspace_root=None, now=None) -> str:
+def _first_run_line(r: dict, now=None) -> str:
     """never_fired render (F-43 P1a's fix): a task with zero receipts has NO
     fire history to speak of — say so, and name the real next fire time."""
     name = r["display_name"]
     if r.get("next_fire"):
         try:
-            nxt = _human_time(_dt.datetime.fromisoformat(r["next_fire"]), workspace_root, now=now)
+            nxt = _human_time(_dt.datetime.fromisoformat(r["next_fire"]), now=now)
             return (
                 f"Your {name} task hasn't had its first run yet — its next "
                 f"scheduled run is {nxt}."
@@ -980,8 +1002,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
             on_schedule.append(r)
 
     lines = plain_english_lines(reports, binding=binding)
-    info_lines = [_caught_up_line(r, workspace_root, now=now) for r in caught_up]
-    info_lines += [_first_run_line(r, workspace_root, now=now) for r in first_run]
+    info_lines = [_caught_up_line(r, now=now) for r in caught_up]
+    info_lines += [_first_run_line(r, now=now) for r in first_run]
 
     # MAINT1 (D8): per-JOB receipt gaps inside a healthy maintenance task —
     # the task fired, a job chronically wrote nothing. Job findings ride the
@@ -1029,7 +1051,7 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
         recency = ""
         if newest:
             when = _human_time(
-                _dt.datetime.fromisoformat(newest["last_fired"]), workspace_root, now=now
+                _dt.datetime.fromisoformat(newest["last_fired"]), now=now
             )
             recency = f", most recently {newest['display_name']} at {when}"
         summary = (

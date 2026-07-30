@@ -45,12 +45,12 @@ The CEO does not need to say "save this." The act of Claude reading it on the CE
 
 See `references/ORG_AND_THREAD_MODEL.md` for the resolution + confidence model. This section shows the event-type-specific fields only.
 
-### Gmail
+### Email (the declared mail backend)
 
 | Trigger | Event emitted |
 |---|---|
-| Sent email from CEO to any canonical person | `type: interaction`, `data: { direction: "outbound", channel: "email", summary: "<subject>", counterparty_person_ids: [...], source_ref: "gmail:<message_id>" }` |
-| Received email from canonical person | `type: interaction`, `data: { direction: "inbound", channel: "email", summary: "<subject>", counterparty_person_ids: [...], source_ref: "gmail:<message_id>" }` |
+| Sent email from CEO to any canonical person | `type: interaction`, `data: { direction: "outbound", channel: "email", summary: "<subject>", counterparty_person_ids: [...], source_ref: "<provider>:<message_id>" }` |
+| Received email from canonical person | `type: interaction`, `data: { direction: "inbound", channel: "email", summary: "<subject>", counterparty_person_ids: [...], source_ref: "<provider>:<message_id>" }` |
 | Email mentioning commitment language ("I'll send by Friday", "owe you") | additional `type: commitment` event, owner inferred from who made the promise |
 
 **Skip (do not capture):**
@@ -230,9 +230,9 @@ Passive capture respects, in this order:
 
 The CEO can disable passive capture for a specific connector by adding to `_hq/PASSIVE_CAPTURE_OPTOUT.md`:
 ```
-gmail: off
+<connector>: off
 ```
-When present, skills skip all Gmail-side capture but still perform connector reads for their primary purpose (e.g., surfacing emails in a briefing). **This per-connector seam is the mechanical precedent the v3.0 two-dial model generalizes to per-account/per-item** — a `write_to_business: off` account is exactly this opt-out, scoped to an account instead of a whole connector.
+(the connector's own name — `gmail`, `superhuman`, `outlook`, `slack`.) When present, skills skip all capture from THAT connector but still perform connector reads for their primary purpose (e.g., surfacing emails in a briefing). **This per-connector seam is the mechanical precedent the v3.0 two-dial model generalizes to per-account/per-item** — a `write_to_business: off` account is exactly this opt-out, scoped to an account instead of a whole connector.
 
 ---
 

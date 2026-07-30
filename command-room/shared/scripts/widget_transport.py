@@ -50,8 +50,8 @@ USAGE
         data_view=data,
         wrapper="fragment",
         persist_dir=workspace_root / "_hq" / ".system" / "widgets",
-        page=1, page_size=10,     # omit page for bounded/small surfaces
-    )
+        page=1,                   # omit page for bounded/small surfaces
+    )                             # page_size defaults to DEFAULT_PAGE_SIZE
     # transport["html"]        — the validated PAGE HTML → show_widget widget_code
     # transport["pagination"]  — {page, total_pages, has_more, total_items}
     # transport["path"]        — disk audit path (Path object)
@@ -140,6 +140,15 @@ def _fit_page_size(data_view: dict, wrapper: str, requested: int) -> int:
     (accepted trade, unchanged from T2.1 — the delivered page itself is never
     re-checked against the budget; the over_budget flag downstream covers the
     floor-size case).
+
+    PAGESNAP correction: "every call over the same data view" was doing more
+    work in that sentence than it could carry. The claim is true of THIS
+    function and always was — but `surface_drivers.run_surface` re-read the
+    substrate on every page, so page 2 was never the same data view, and the
+    effective size could therefore shift BETWEEN pages of one fire (a second,
+    quieter way the page boundary moved under the user). The page-set snapshot
+    is what actually makes the sentence true: pages 2+ now fit against the
+    same frozen view page 1 was fitted against.
     """
     from chat_output_renderer import render_chat_output_widget, paginate_data_view
 
@@ -170,7 +179,8 @@ def render_and_persist(
     persist_dir: str | Path,
     name_hint: Optional[str] = None,
     page: Optional[int] = None,
-    page_size: int = 10,
+    page_size: Optional[int] = None,
+    suppress_ids: Optional[set] = None,
 ) -> dict:
     """Canonical render-validate-persist transport (delivery = widget_code
     relay of transport["html"], T2 — see module docstring).
@@ -192,8 +202,17 @@ def render_and_persist(
       page: 1-indexed page to render. None (default) renders the full view —
         correct for bounded surfaces (the daily ≤5 card, small fires). Any
         unbounded surface (commitments full set, Staff Meeting queue) MUST pass
-        an explicit page and relay one page at a time.
-      page_size: max top-level rows per page (~10 by design).
+        an explicit page and relay one page at a time — and MUST hand the same
+        frozen view for every page of one fire (see `page_snapshot`).
+      page_size: max top-level rows per page (ceiling). None uses
+        DEFAULT_PAGE_SIZE — one value for the whole stack (PAGESNAP).
+      suppress_ids: wire ids (`n`) to drop AFTER slicing — the rows the user
+        already applied in this page-set. Applied post-slice on purpose: the
+        slice indexes the frozen list so nothing shifts, and dropping a row
+        here shortens this one page rather than pulling the next row across
+        the page boundary. `pagination` is left as sliced, so the reported
+        total stays the page-set's total and the header holds steady across
+        the fire.
 
     Returns:
       {
@@ -212,6 +231,7 @@ def render_and_persist(
     """
     # Import here to avoid a circular import at module load time
     from chat_output_renderer import (
+        DEFAULT_PAGE_SIZE,
         render_chat_output_widget,
         validate_rendered_widget,
         paginate_data_view,
@@ -222,9 +242,18 @@ def render_and_persist(
     if page is not None:
         # T2.1: fit rows-per-page to the relay byte budget (RV-1: real rows
         # weigh ~3x the synthetic calibration; requested size is a ceiling).
-        eff_size = _fit_page_size(data_view, wrapper, page_size)
+        eff_size = _fit_page_size(
+            data_view, wrapper,
+            DEFAULT_PAGE_SIZE if page_size is None else page_size)
         view = paginate_data_view(data_view, page=page, page_size=eff_size)
         pagination = view.get("pagination")
+        if suppress_ids:
+            from page_snapshot import suppress_applied
+            view, n_suppressed = suppress_applied(view, set(suppress_ids))
+            if n_suppressed:
+                pagination = dict(pagination or {})
+                pagination["suppressed"] = n_suppressed
+                view["pagination"] = pagination
 
     html = render_chat_output_widget(view, wrapper=wrapper)
     # EW2+T (F-15): the transport IS the one-call canonical path — the wrapper

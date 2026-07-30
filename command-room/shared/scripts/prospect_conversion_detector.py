@@ -40,6 +40,25 @@ if str(_HERE) not in sys.path:
 
 import event_refs  # noqa: E402
 
+# Bilingual overlay (Spanish beta) — inert for English installs. See
+# shared/scripts/lexicon.py + references/SPANISH_BUILD_PLAN.md.
+try:
+    import lexicon as _lex
+except Exception:  # pragma: no cover
+    _lex = None
+
+
+def _conversion_markers():
+    """Merged conversion-marker tuple, or the English default when the overlay
+    is inactive/absent (production path). NOTE: es.json also carries a
+    ``pursuit_only`` list for parity with the design, but the core's
+    ``_PURSUIT_ONLY`` constant is currently unused, so those entries are inert
+    until a future version reconnects that gate."""
+    if _lex is None:
+        return CONVERSION_MARKERS
+    return _lex.load_lexicon_terms("prospect_conversion", "conversion_markers", CONVERSION_MARKERS)
+
+
 # Default look-back for textual signals.
 TEXT_WINDOW_DAYS = 120
 
@@ -94,7 +113,7 @@ def _event_text(ev: dict) -> str:
 def _has_conversion_language(text: str) -> bool:
     if not text:
         return False
-    return any(m in text for m in CONVERSION_MARKERS)
+    return any(m in text for m in _conversion_markers())
 
 
 def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[dict]:
@@ -167,7 +186,7 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
                     refs.add(thread_org[tid])
             for oid in refs & set(prospects):
                 if oid not in text_hit:
-                    snippet = next((m for m in CONVERSION_MARKERS if m in text), "")
+                    snippet = next((m for m in _conversion_markers() if m in text), "")
                     text_hit[oid] = snippet.strip()
 
     candidates: list[dict] = []

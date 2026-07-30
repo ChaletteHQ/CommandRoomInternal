@@ -151,7 +151,7 @@ For each item: per-recipient draft of either a status-update email (YOU OWE) or 
 
 ### 4. past-meetings (cron 9:00 AM weekdays)
 
-Processes meeting transcripts from the last 24 hours. For each transcript:
+Processes meeting transcripts from everything since its last successful run — floored at the nominal 24 hours, ceilinged at 30 days (`shared/scripts/catchup.py` `catchup_window`, SPEC CATCHUP1). A machine closed for three days does not lose those three days of meetings. For each transcript:
 1. Invokes `meeting-notes` silently to extract decisions, commitments, action items.
 2. Invokes `follow-up-ritual` silently to draft per-attendee follow-up emails.
 3. Runs the CRU pass (`cru_match`) to auto-resolve open commitments closed by completion language in the transcript.

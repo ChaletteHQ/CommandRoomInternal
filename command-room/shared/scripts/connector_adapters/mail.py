@@ -52,6 +52,49 @@ _OUTLOOK_OPS = {
     "message_id_lookup": "internetMessageId:{value}",
 }
 
+# Superhuman phrases keyed by the same intent verbs. Superhuman's
+# `query_email_and_calendar` takes a natural-language / structured filter, not
+# operator strings, so the compiled form is the scope stated in the words its
+# own surface uses. Deliberately NOT an invented API field spelling: a wrong
+# field name is the silent kind of wrong (it filters nothing and the run still
+# looks healthy), whereas a scope stated in plain words is something the caller
+# can hand the connector in the connector's terms and cannot lose.
+#
+# Before MAILSEAM, Superhuman fell through to the unknown-provider branch and
+# got its intent dict back verbatim — indistinguishable from "we have never
+# heard of this provider", so the sent scope reached the connector only if the
+# model happened to reconstruct it.
+_SUPERHUMAN_OPS = {
+    "unread": "unread",
+    "in_inbox": "in the inbox",
+    "in_sent": "in sent mail",
+    "from_me": "sent by me",
+    "not_draft": "not a draft",
+    "from": "from {value}",
+    "to": "to {value}",
+    "subject": "with subject {value}",
+    "newer_than": "newer than {value}",
+    "after": "on or after {value}",
+    "message_id_lookup": "with Message-ID header {value}",
+}
+
+# Every verb this module compiles, from the maps themselves — the vocabulary is
+# never restated by hand. `tool_discovery` asks through `is_search_intent`
+# before matching an operation against tool ids: no connector exposes a tool
+# named `in_sent`, so a substring match on an intent verb resolves to nothing on
+# every provider, Gmail included (MAILSEAM §1).
+SEARCH_INTENTS = frozenset(
+    set(_GMAIL_OPS) | set(_OUTLOOK_OPS) | set(_SUPERHUMAN_OPS) | {"any_of"}
+)
+
+
+def is_search_intent(operation) -> bool:
+    """True when `operation` names a search INTENT this module compiles rather
+    than a connector tool. An intent resolves to the provider's SEARCH tool;
+    matching it against tool ids resolves to nothing anywhere."""
+    return isinstance(operation, str) and operation.strip().lower() in SEARCH_INTENTS
+
+
 # Deep-link hosts per provider — used ONLY as a last resort when the connector
 # returns no URL of its own (prefer the returned URL always — A4 + Rule 13).
 _DEEP_LINK = {
@@ -72,7 +115,7 @@ def compile_search(intent: Dict[str, Any], provider: Optional[str]) -> Any:
     """Compile an intent dict → a provider query.
 
     Gmail/Outlook → a single query STRING built from operators. Superhuman →
-    the intent dict passed through (its `query_email_and_calendar` takes a
+    a natural-language scope STRING (its `query_email_and_calendar` takes a
     natural-language / structured filter, not Gmail operators). Unknown
     provider → the intent dict verbatim (agent asks in the connector's terms).
 
@@ -88,15 +131,19 @@ def compile_search(intent: Dict[str, Any], provider: Optional[str]) -> Any:
         return _compile_ops(intent, _GMAIL_OPS)
     if p == "outlook":
         return _compile_ops(intent, _OUTLOOK_OPS)
-    # superhuman + unknown: structured filter, no operator string
+    if p == "superhuman":
+        # Phrases, comma-joined — a filter sentence, not an operator string.
+        return _compile_ops(intent, _SUPERHUMAN_OPS, joiner=", ")
+    # unknown provider only: structured filter, no operator string
     return dict(intent)
 
 
-def _compile_ops(intent: Dict[str, Any], ops: Dict[str, str]) -> str:
+def _compile_ops(intent: Dict[str, Any], ops: Dict[str, str],
+                 joiner: str = " ") -> str:
     parts: List[str] = []
     branches = intent.get("any_of")
     if isinstance(branches, (list, tuple)) and branches:
-        compiled = [c for c in (_compile_ops(b, ops) for b in branches
+        compiled = [c for c in (_compile_ops(b, ops, joiner) for b in branches
                                 if isinstance(b, dict)) if c]
         if len(compiled) == 1:
             parts.append(compiled[0])
@@ -116,7 +163,7 @@ def _compile_ops(intent: Dict[str, Any], ops: Dict[str, str]) -> str:
             # flag-style operator — include only when truthy
             if val:
                 parts.append(tmpl)
-    return " ".join(parts)
+    return joiner.join(parts)
 
 
 def threading_field(provider: Optional[str]) -> Optional[str]:
@@ -139,4 +186,5 @@ def deep_link(provider: Optional[str], native_id: Optional[str],
     return None
 
 
-__all__ = ["compile_search", "threading_field", "deep_link"]
+__all__ = ["compile_search", "threading_field", "deep_link",
+           "SEARCH_INTENTS", "is_search_intent"]

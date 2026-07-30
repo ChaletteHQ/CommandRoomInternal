@@ -85,10 +85,22 @@ def _org_associated_pids(ent: dict, org_id: str) -> set[str]:
 
 
 def default_brain_path(workspace_root: str | Path, thread_id: str) -> Path | None:
-    """Resolve the thread's brain file from its folder_name. None if unknown."""
+    """Resolve the thread's brain file from its folder_name. None if unknown.
+
+    FOLDERGUARD: `None` also when `folder_name` names a directory that is not on
+    disk. A thread record can carry a folder that never existed (a slug guess, a
+    rename that never reached the record), and every writer downstream of here
+    creates its parent tree — so returning a path for a missing folder is what
+    fabricated the folder. Refusing is free: `render_live_state` already treats
+    `None` as `{"status": "no_brain_path", "rendered": False}`, and the missing
+    folder stays visible to `integrity_check` as `C9.thread_folder_missing`
+    instead of being silently papered over.
+    """
     workspace_root = Path(workspace_root)
     folder = _thread(workspace_root, thread_id).get("folder_name")
     if not folder:
+        return None
+    if not (workspace_root / folder).is_dir():
         return None
     return workspace_root / folder / "PROJECT_BRAIN.md"
 
@@ -178,7 +190,8 @@ def render_live_state(workspace_root: str | Path, thread_id: str, *,
     ga = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     r = render_brain_block.render_block(
         path, BLOCK_ID, body, generated_at=ga, source_seq=source_seq,
-        logic_version=LIVE_STATE_LOGIC_VERSION, create_after_heading=anchor)
+        logic_version=LIVE_STATE_LOGIC_VERSION, create_after_heading=anchor,
+        create_parents=False)  # FOLDERGUARD belt-and-braces: a brain never digs its own folder
     r["rendered"] = r["status"] in ("written", "created")
     r["source_seq"] = source_seq
     return r

@@ -168,6 +168,48 @@ def gate_events(
             etype = TYPE_NORMALIZATION[etype]
             ev["type"] = etype
 
+        # 7 (SPEC UNDOGUARD, 2026-07-28). seq must be an INTEGER or absent.
+        #
+        # The read side is now defensive (event_seq.py), but that only
+        # protects workspaces already carrying bad rows — it does not stop
+        # the next one being written. This is the half that closes the
+        # source. It lives HERE, not in intel-intake (the one skill known to
+        # have emitted `seq: "1957"`), because a per-skill fix leaves every
+        # other writer free to repeat it; gate_events is the single choke
+        # point BOTH entries pass through (append_event calls it directly,
+        # atomic_append_jsonl calls it inside its events.jsonl branch).
+        #
+        # Absent/None is legal and normal — it is the documented contract
+        # ("omit seq/ts — they are auto-stamped inside the writer lock"), and
+        # the overwhelming majority of writers do exactly that.
+        #
+        # Unconditional (both strict and non-strict), matching the id-less
+        # closure and reminder-origin rules rather than the burn-in enum
+        # rule: a mistyped seq is a data-integrity defect, not a migration
+        # in progress. Nothing legitimate depends on the old behavior —
+        # atomic_write ALREADY discarded a non-numeric seq and reassigned it,
+        # so a writer passing a string never got the value it asked for. It
+        # just did so SILENTLY, which is how "1957" reached disk with nobody
+        # learning anything. CR_EVENT_GATE=0 remains the documented escape
+        # hatch for replaying a quarantined batch that predates the contract.
+        if "seq" in ev:
+            raw_seq = ev["seq"]
+            if raw_seq is not None and (
+                isinstance(raw_seq, bool) or not isinstance(raw_seq, int)
+            ):
+                raise EventGateError(
+                    f"event {i} carries a non-integer seq {raw_seq!r} of type "
+                    f"{type(raw_seq).__name__} (type={etype!r}, "
+                    f"holder={holder}) — seq is the monotonic human counter "
+                    "every ordering, window and back-reference in the "
+                    "substrate hangs off, and it must be an int. A string "
+                    "seq took `undo` down for an entire workspace (SPEC "
+                    "UNDOGUARD): one bad row raised TypeError inside a range "
+                    "comparison and denied the whole listing. Omit seq "
+                    "entirely (it is auto-stamped inside the writer lock) or "
+                    "pass an int."
+                )
+
         # 6. Schema-enum validation — every family, from day one.
         if not isinstance(etype, str) or not etype:
             msg = f"event {i} has no 'type' (holder={holder})"

@@ -74,6 +74,14 @@ except ImportError:  # pragma: no cover
     from read_alarm import SubstrateReadError, record_read_alarm, remedy_line
 
 
+# Bilingual overlay (Spanish beta) — inert for English installs; accent-folding
+# turns on only when a workspace activates it. See shared/scripts/lexicon.py.
+try:
+    import lexicon as _lex
+except Exception:  # pragma: no cover
+    _lex = None
+
+
 EntityType = Literal["person", "org", "project", "open_proposal"]
 MatchSignal = Literal["exact_alias", "exact_canonical", "fuzzy", "phonetic",
                       "open_proposal"]
@@ -123,8 +131,17 @@ class ResolveResult:
 
 def _normalize(s: str) -> str:
     """Lowercase + collapse whitespace + strip. Use for comparison only;
-    preserve original casing in `matched_string` field."""
-    return re.sub(r"\s+", " ", s.strip().lower()) if s else ""
+    preserve original casing in `matched_string` field.
+
+    Bilingual overlay (Spanish beta): when a workspace activates accent-folding,
+    also strip diacritics so "José"/"Jose" and "Peña"/"Pena" resolve to one
+    entity. Gated + a no-op on ASCII, so English installs are byte-identical."""
+    if not s:
+        return ""
+    out = re.sub(r"\s+", " ", s.strip().lower())
+    if _lex is not None and _lex.accent_fold_enabled():
+        out = _lex.fold_accents(out)
+    return out
 
 
 def _soundex(s: str) -> str:

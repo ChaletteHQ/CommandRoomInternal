@@ -221,7 +221,7 @@ def _render_scaffold(project_display: str, today: str, template_path: Path | Non
     return tpl.replace("{{PROJECT}}", project_display).replace("{{DATE}}", today)
 
 
-def backfill_session_notes(root: str | Path, folder_name: str,
+def backfill_session_notes(root: str | Path, folder_name: str | None,
                            project_display: str | None = None,
                            today: str | None = None,
                            template_path: str | Path | None = None) -> str | None:
@@ -234,6 +234,14 @@ def backfill_session_notes(root: str | Path, folder_name: str,
     The scaffold carries the backfill provenance line so it's obvious the file
     was machine-created and is safe for the next "end session" to fill in."""
     root = Path(root)
+    # `folder_name` is nullable on a thread record since FOLDERGUARD (the writer
+    # emits null rather than guessing), and maintenance-rules.md documents this
+    # call as taking one. `root / None` is a TypeError, not a refusal.
+    # Whitespace-only is rejected explicitly: Windows strips trailing spaces from
+    # a path, so `root / "   "` silently normalizes to the workspace root itself
+    # and the scaffold would land there.
+    if not folder_name or not str(folder_name).strip():
+        return None
     folder = root / folder_name
     if not folder.is_dir():
         return None

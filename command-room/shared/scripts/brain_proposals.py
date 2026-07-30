@@ -135,17 +135,33 @@ AUTO_ALLOWED: dict[str, str] = {
     # UXR1 D3 (M ruling 2026-07-21): the OBVIOUS person_link — a name-mention
     # that exactly matches ONE on-file record with no conflicting signal —
     # auto-applies instead of asking (the system already knows the answer).
-    # Legal ONLY under identity_reconcile's (a)-(d) gate: exact normalized
-    # multi-token full-name match; exactly one on-file candidate (two
-    # same-name records → NEVER auto, the IDM1 class); no conflicting
-    # org/email signal (a role/shared-inbox address is never corroboration);
-    # the pair is not in scan_existing_duplicates' suspect set. Linking is
+    # Legal ONLY under identity_reconcile's (a′)-(d) gate: exact normalized
+    # multi-token full-name match OR an address belonging to exactly ONE
+    # on-file record, and that record is the match (AUTOAPPLY §4a — an
+    # id-level identifier is stronger evidence than a name, so demanding the
+    # name too was asking a question the system had already answered);
+    # exactly one on-file candidate (two same-name records → NEVER auto, the
+    # IDM1 class); no conflicting org/email signal (a role/shared-inbox
+    # address is never corroboration); the pair is not in
+    # scan_existing_duplicates' suspect set. Linking is
     # reversible (the registered brain_undo reverser reopens the mention AND
     # re-opens a confirm-tier row); merging is not — `person_proposal` (add
     # a NEW person) and `person_merge` stay confirm-tier forever. That
     # asymmetry is the whole reason this is safe.
     "person_link": "exact-unique-clean name-mention link to an existing "
         "record (UXR1 D3 gate a-d) — alias-free, tombstone-reversible",
+    # AUTOAPPLY §4c (M ruling: act when corroborated and reversible): two
+    # captures of ONE real-world commitment, agreeing at id level on owner
+    # AND counterparty, near-verbatim in title after name-stripping, from
+    # DIFFERENT writers — the cross-writer capture IS the corroboration.
+    # C4's flag tier detects duplicates by ADDING a confirm row; this tier
+    # sits above it so a duplicate the system is certain about costs zero
+    # rows. Legal only under commitment_dedup.auto_merge_eligible, and only
+    # because the commitment_merge reverser (registered in the same commit)
+    # splits it back out additively.
+    "commitment_merge": "two cross-writer captures of one commitment, "
+        "id-level agreement on owner and counterparty + near-verbatim "
+        "title — supersede-reversible, nothing observable outside",
 }
 
 # The ONLY categories legal on the entity_fact_structured auto class

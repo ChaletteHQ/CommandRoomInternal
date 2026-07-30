@@ -183,6 +183,45 @@ def all_counterparties_received(obj) -> bool:
     return not outstanding_counterparties(obj)
 
 
+def receipts_are_id_level(events, commitment_id, commitment_seq=None):
+    """AUTOAPPLY §4b — `(all_id_level, n_receipts)` over every
+    `commitment_partial_received` contributing to one commitment.
+
+    A receipt is ID-LEVEL when it names WHICH counterparty delivered by
+    RESOLVED id (`data.received_counterparty_id`) AND carries non-empty
+    `data.evidence` — i.e. a connector observed the delivery. A free-text
+    name, or an empty-evidence manual claim, is a person's assertion: fine
+    as a receipt, never sufficient to close on its own.
+
+    This is what turns a completed roster into CORROBORATION: N independent
+    id-level receipts, one per counterparty, each from a connector. Returns
+    `(False, n)` the moment ONE receipt falls short — a single evidence-free
+    claim in the set sends the whole item back to the confirm row, exactly
+    as it renders today."""
+    cid = str(commitment_id or "")
+    n = 0
+    all_ok = True
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        if (ev.get("type") or ev.get("event")) != "commitment_partial_received":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        target = str(d.get("commitment_id") or d.get("target_id")
+                     or ev.get("commitment_id") or "")
+        seq_match = (commitment_seq is not None
+                     and d.get("commitment_seq") == commitment_seq)
+        if target != cid and not seq_match:
+            continue
+        n += 1
+        rid = d.get("received_counterparty_id")
+        evid = d.get("evidence")
+        if not (isinstance(rid, str) and rid.strip()
+                and isinstance(evid, str) and evid.strip()):
+            all_ok = False
+    return (all_ok and n > 0), n
+
+
 def build_counterparty_fields(
     *,
     counterparty_id=None,
@@ -238,5 +277,6 @@ __all__ = [
     "received_from_names",
     "outstanding_counterparties",
     "all_counterparties_received",
+    "receipts_are_id_level",
     "build_counterparty_fields",
 ]

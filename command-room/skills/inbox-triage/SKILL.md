@@ -406,7 +406,7 @@ If no sources were referenced (rare), omit the section.
 
 - **Drafts only, never auto-send.** Non-negotiable.
 - **Never auto-archive anything.** Classify yes — archive no. User does the archiving pass.
-- **Gmail and Outlook are peers (Rule 21 connector parity).** Discover the mail tool via `tool_discovery` and run against whichever is connected — never assume Gmail-only, never refuse to try Outlook. Only if NO mail connector is detected at all, stop early with: "Inbox triage needs your email connected. Connect Gmail or Outlook and run again."
+- **Every mail backend is a peer (Rule 21 connector parity).** Discover the mail tool via `tool_discovery` and run against whichever is connected — Gmail, Superhuman, Outlook — never assume Gmail-only, never refuse to try another. Only if NO mail connector is detected at all, stop early with: "Inbox triage needs your email connected. Connect your mail account and run again."
 - **Respect VIP classification.** If the sender is on `_hq/PEOPLE.md` with a top-tier mark, never drop them into Discard — push them up the ranking even if the body is short.
 - **Never classify based on subject line alone.** Read the body — a two-line subject can be critical, a 400-word body can be noise.
 - **If the CEO's Reply Now drafts conflict with a decision in Decision Needed**, pause on those drafts and flag the dependency ("Can't draft reply to Aria — depends on board decision in item 2").
@@ -432,18 +432,18 @@ The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the stan
 - **Pairs with `morning-briefing`** — inbox-triage output can be embedded as a section of the briefing
 - **Pulls from `_hq/PEOPLE.md`** for VIP ranking (Tier 2 view per `references/SOURCE_OF_TRUTH.md` — fine for static "who is a VIP" tier lookup; not used for "what's outstanding")
 - **Pulls open commitments from `_hq/data/events.jsonl`** via `cru_match.load_open_commitments` (canonical Tier 1 source). NOT from MASTER_TRACKER — see `references/SOURCE_OF_TRUTH.md` overlay rule.
-- **Drafts via Gmail connector** — never direct send
+- **Drafts via the declared mail backend** (seam-resolved, never named here) — never direct send
 - **Voice from `_hq/voice/voice-block-inbox-triage.md` (the customer voice override, per `shared/VOICE_CALIBRATION.md`)** (optional)
 
 ## What It Doesn't Do
 
 - Doesn't auto-send, auto-archive, or auto-delete
-- Doesn't build long-form replies (use `one-pager-composer` or write in Gmail)
+- Doesn't build long-form replies (use `one-pager-composer` or write in your mail client)
 - Doesn't track outbound emails (separate concern)
 
 ## Connected Tools
 
-- **Mail connector** (required — Gmail or Outlook, discovered via `tool_discovery` per Rule 21)
+- **Mail connector** (required — whichever backend is declared; discovered via `tool_discovery` per Rule 21)
 - **PEOPLE.md** — VIP ranking (Tier 2 view; static-tier lookup only)
 - **`_hq/data/events.jsonl`** — open-commitment overlap (Tier 1 source, read via `cru_match.load_open_commitments`)
 - **`_hq/voice/voice-block-inbox-triage.md`** (optional) — customer voice override (per `shared/VOICE_CALIBRATION.md`)

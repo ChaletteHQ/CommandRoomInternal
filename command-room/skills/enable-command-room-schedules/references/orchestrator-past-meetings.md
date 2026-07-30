@@ -58,17 +58,39 @@ Branch on `tier` (this does not weaken the anti-improvisation contract — every
 
 The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
-# Phase 3 — Find unprocessed meetings (last 24h)
+# Phase 3 — Find unprocessed meetings (everything since the last successful run)
 
 **Project status note (v2.10.3+):** Past Meetings processes meetings regardless of project status (active / dormant / archived). If a meeting routes to a dormant project, the processing still runs AND the project auto-revives per ORG_AND_THREAD_MODEL.md re-active detection — a meeting just happened, the project is no longer dormant.
 
-Call Granola MCP for last 24 hours of meetings. For each:
+**Window (SPEC CATCHUP1 F-1) — compute it, never assume 24 hours.** The pre-CATCHUP1 window was a literal "last 24 hours", measured from `now`. A machine closed Monday through Wednesday meant Thursday's fire saw Wednesday→Thursday only: Monday's and Tuesday's meetings were never processed at all — no notes, no commitments, no follow-ups, and nothing said so. The window is the span since this task's last SUCCESSFUL run, floored at the nominal 24 hours and ceilinged at 30 days:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from catchup import catchup_window
+print(json.dumps(catchup_window('<workspace_root>', 'past-meetings', floor_hours=24, cap_days=30)))
+"
+```
+
+Use the returned **`start_aware` and `end_aware`** as the Granola query bounds — verbatim, never re-derived in prose. Those are the same two instants as `start` / `end` carrying the machine's UTC offset, and an offset-carrying timestamp is the only unambiguous thing to hand a connector (SPEC CATCHUP1 F-1; the naive pair is machine-local, which is right for receipt math and wrong at a connector boundary — see `shared/scripts/catchup.py`'s connector-boundary note). `extended: true` means this fire is doing catch-up work; that is the ONE flag you need, and it changes nothing about how meetings are processed (every phase below runs identically). `capped: true` means the gap was longer than 30 days and the span was truncated at the ceiling. Neither is ever narrated to the user; the catch-up is silent, and the meetings simply get processed. If the helper errors it returns the plain 24-hour window with `error` set — proceed on that; catch-up must never block the fire.
+
+Catch-up applies on EVERY fire here, scheduled or manual, because re-processing is idempotent (the `meeting_processed` / `meeting_skipped` gate below) and catching the backlog up is the point of a manual re-run too.
+
+Call Granola MCP for meetings in `[start_aware, end_aware]`. For each:
 - Check events.jsonl for `meeting_processed` event with matching meeting_id → skip if exists.
 - Check `meeting_skipped` event → skip if exists.
 - Filter out personal calls (no business attendees, single 1:1 with non-business contact).
 - Filter out internal-only meetings UNLESS they have decisions worth committing.
 
 Up to 5 unprocessed meetings to process this fire.
+
+**⛔ BATCH-CAP HONESTY GATE (SPEC CATCHUP1 F-1) — MANDATORY.** That cap of 5 and a widened window are a trap together: a window that finds 12 unprocessed meetings processes 5, the fire's receipt lands, and the NEXT window starts after that receipt — silently orphaning the other 7 forever, with a green receipt on the record. So the receipt has to record how far processing ACTUALLY reached, not when the fire happened:
+
+- Sort the unprocessed set OLDEST FIRST and process from the oldest end. The backlog drains in order; the newest meetings are the ones the next fire re-finds, and the next fire is hours away.
+- If ANY meeting inside `[start, end]` is left unprocessed when the fire ends — batch cap hit, transcript fetch failed, Granola timed out mid-batch — Phase 5's receipt MUST carry `window_incomplete_before: "<ISO start time of the OLDEST still-unprocessed meeting>"`. `catchup_window` resumes from that value instead of the receipt time, so nothing is stranded. **Compute the value, never hand-write it:** `from catchup import receipt_window_marker; marker = receipt_window_marker(window, incomplete=True, oldest_unhandled=<the oldest still-unprocessed meeting's start>)` — it clamps into the window and returns `None` when the fire drained it, meaning omit the key. This surface CAN name `oldest_unhandled` because its cap truncates a chronologically sorted list, so the marker advances as the backlog drains; `weekly-recap`'s cannot, and passes None (its own gate explains why).
+- A meeting deliberately excluded (personal, internal-only, `meeting_skipped`) is NOT unprocessed — it is handled. Only meetings this fire still owes work for count.
+- **Carry the marker forward.** If this fire processed nothing (Granola unavailable, zero capacity) and the previous receipt already carried a `window_incomplete_before`, the receipt this fire writes carries the SAME value. A receipt without the marker means "everything before this point is handled" — writing one while a backlog is outstanding is the orphaning bug, restated.
+- Only when the fire drained its entire window does the receipt omit the field.
 
 # Phase 4 — Per-meeting auto-processing
 
@@ -244,6 +266,12 @@ Per `shared/scripts/cru_match.py` Path 3. After per-meeting auto-processing (Pha
 
 **Conservative — HIGH-confidence auto-resolve only.** Borderline matches go to a `pending_review` queue surfaced in the next Pulse fire for one-click confirm.
 
+**⛔ THE CIRCULARITY FENCE (AUTOAPPLY §6) — MANDATORY, and the reason this phase used to manufacture its own noise.** This phase runs AFTER Phase 4 has appended today's extractions, so an unfenced `load_open_commitments()` hands the matcher the asks this very fire just captured. A commitment extracted from transcript T scores ~1.0 against T and carries no completion language, so it lands `pending_review` — Command Room asking "did you already handle this?" about something it wrote down five minutes earlier, from the same meeting. Three things below are load-bearing; none is optional:
+
+- **Record `fire_start`** (UTC ISO) BEFORE Phase 4 appends anything, and pass it as `exclude_captured_since` — that is what excludes same-fire SIBLING matches (meeting A's ask scored against meeting B's transcript in one batch).
+- **Pass `transcript_source_ref`** — THIS meeting's own ref (`granola:<id>`), the ref Phase 4 stamped on its extractions. `cru_match.commitment_source_refs` is what the fence compares against, so a merged survivor's absorbed refs are covered too.
+- **Thread ONE `already_proposed` set across every transcript in the fire**, seeded from `cru_match.open_review_proposal_ids(events_path)` and applied via `cru_match.filter_duplicate_review_targets` — one open review proposal per commitment, on disk and within the fire. Two transcripts in one batch proposing the same commitment (observed live at scores 1.0 and 0.571) is one question rendered twice.
+
 Skip entirely if:
 - No newly-processed meetings this fire (nothing to cross-reference against).
 - Open-commitment count is zero (helper returns `[]`).
@@ -260,21 +288,36 @@ from cru_match import (
     match_transcript_to_commitments,
     build_commitment_updated_event,
     build_pending_review_event,
+    open_review_proposal_ids,
+    filter_duplicate_review_targets,
 )
 from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
 from atomic_write import atomic_append_jsonl
 
 workspace_root = '<absolute path to the workspace root>'
 events_path = '<absolute path to _hq/data/events.jsonl>'
+fire_start = '<UTC ISO recorded BEFORE Phase 4 appended anything>'
+# ONE set for the whole fire — seeded from disk, mutated per transcript.
+already_proposed = open_review_proposal_ids(events_path)
 opens = load_open_commitments(events_path)
 results = match_transcript_to_commitments(
     open_commitments=opens,
     attendee_person_ids=['<resolved attendee person_id 1>', ...],
     transcript_text='<full transcript text for THIS meeting>',
+    # §6 fence — a transcript never scores against what it just created.
+    transcript_source_ref='granola:<THIS meeting id>',
+    exclude_captured_since=fire_start,
 )
 
 # Stage B (F2): auto-resolves close through commitment_state.close_commitment
 # — THE closure path. Matching (Path 3) is unchanged; only the write moved.
+#
+# §6 dedup guard: ONE open review proposal per commitment. The filter MUTATES
+# already_proposed, so the same set carried to the next transcript in this
+# fire suppresses the second ask for a commitment this transcript claimed.
+review_ok = {r['commitment_id'] for r in filter_duplicate_review_targets(
+    [r for r in results if r['recommendation'] in ('pending_review', 'supersede')],
+    already_proposed=already_proposed)}
 n_resolved = 0
 next_seq = <peek-next-seq>  # for updated/pending events only
 to_append = []
@@ -307,7 +350,7 @@ for r in results:
             next_seq=next_seq,
         ))
         next_seq += 1
-    elif rec == 'pending_review':
+    elif rec == 'pending_review' and r['commitment_id'] in review_ok:
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
             primary_thread_id=r['primary_thread_id'],
@@ -318,7 +361,7 @@ for r in results:
             next_seq=next_seq,
         ))
         next_seq += 1
-    elif rec == 'supersede':
+    elif rec == 'supersede' and r['commitment_id'] in review_ok:
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
             primary_thread_id=r['primary_thread_id'],
@@ -435,7 +478,7 @@ Append to events.jsonl:
 - All extracted events (decisions, commitments, follow_ups) — high-conf flagged committed, low-conf flagged pending_review
 - `meeting_processed` per meeting
 - CRU resolution events (Phase 4.6) — already appended in Phase 4.6 itself; mentioned here for completeness of the audit trail
-- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "past-meetings", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=n_meetings, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; telemetry silent per Rule 9
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "past-meetings", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=n_meetings, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "window_start": "<the Phase 3 window start>", "window_end": "<the Phase 3 window end>", "window_incomplete_before": <ISO of the oldest still-unprocessed meeting, per the Phase 3 batch-cap gate — OMIT the key entirely when the fire drained its window>, "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; the field name is `window_incomplete_before` and nothing else (`shared/scripts/catchup.py` `WINDOW_INCOMPLETE_FIELD` is the one spelling — an improvised synonym is invisible to the reader and re-opens the orphaning bug, the F-50 P2c class); telemetry silent per Rule 9
 
 Append to staging_emissions.jsonl per .docx generated. Telemetry writes silently — no chat narration.
 
@@ -468,7 +511,7 @@ See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the f
 
 **v2.13.0 enforcement:** renderer raises `CanonicalActionError` on non-canonical verbs (e.g., `[your call]` is not canonical — use `decide [text]`; `manually` is not canonical — use `add context [text]`; `search emails` was dropped). Raises `LeakDetectedError` on forbidden patterns. Both blocking; fix the data view.
 
-**Empty-state rule (v2.14.19+):** if zero meetings happened in the last 24h (or all of them resolved cleanly with no pending sub-items), DO NOT improvise a "no meetings to process" widget by hand-typing HTML. Build `data_view = {"widget_mode": "all_clear_summary", "header": "Past Meetings — nothing to process", "sub_header": "<weekday>, <date> · <time> check", "counters": [{"label": "Last 24h", "value": n_meetings}, {"label": "Auto-processed", "value": n_auto}, {"label": "Pending review", "value": 0}, {"label": "Skipped", "value": n_skipped}], "summary_line": "All transcripts were either auto-processed cleanly or skipped (internal/personal). Nothing pending your call.", "tracked_items": [], "footer": None}` and pass to `render_chat_output_widget()`. NEVER hand-build the empty-state widget. See `orchestrator-commitments.md` for the full diagnosis (v2.14.18 fresh-install bug).
+**Empty-state rule (v2.14.19+):** if zero meetings happened in the Phase 3 window (or all of them resolved cleanly with no pending sub-items), DO NOT improvise a "no meetings to process" widget by hand-typing HTML. Build `data_view = {"widget_mode": "all_clear_summary", "header": "Past Meetings — nothing to process", "sub_header": "<weekday>, <date> · <time> check", "counters": [{"label": <the window label: "Last 24h" on a normal fire, "Since <weekday>" when Phase 3 returned `extended: true`>, "value": n_meetings}, {"label": "Auto-processed", "value": n_auto}, {"label": "Pending review", "value": 0}, {"label": "Skipped", "value": n_skipped}], "summary_line": "All transcripts were either auto-processed cleanly or skipped (internal/personal). Nothing pending your call.", "tracked_items": [], "footer": None}` and pass to `render_chat_output_widget()`. NEVER hand-build the empty-state widget. The counter label states the window that was actually searched — a widened catch-up window labelled "Last 24h" is a false claim about what was looked at. See `orchestrator-commitments.md` for the full diagnosis (v2.14.18 fresh-install bug).
 
 **Step 1b — Claim audit (v4.6.1 S3, MANDATORY — count from disk before ANY surface speaks; F-50 P2a: this widget + its summary claimed 7 decisions while disk had 6).** Same contract meeting-notes ships (its Step 9a3), same shared primitive:
 
@@ -495,7 +538,9 @@ from widget_transport import render_and_persist
 data_view = {
     "widget_mode": "all_batch_widget",
     "source_skill": "past-meetings",  # W4 (Phase 3) — stamped into every Apply-all tuple as src; apply-choices dispatches on it statelessly (no 60-min fire-marker window)
-    "header": f"Past meetings · last 24h · {n_processed} newly processed, {n_reprocessed} re-processed, {n_skipped} skipped",
+    # Window phrase comes from the Phase 3 result, never a hardcoded "last 24h":
+    # "last 24h" on a normal fire, "since <weekday>" when `extended` is true.
+    "header": f"Past meetings · {window_phrase} · {n_processed} newly processed, {n_reprocessed} re-processed, {n_skipped} skipped",
     "sections": [{"title": None, "count": None, "items": [item_for_meeting(m) for m in meetings]}],
     "quick_read": quick_read,
     "save_confirmation": skipped_summary,    # e.g. "Skipped: Office painting plan, Self-call 'Command room update'"
@@ -778,7 +823,7 @@ For unrecognized → respond in plain English: "Reply with the item index + acti
 
 # What this orchestrator does NOT do
 
-- Does NOT auto-process meetings older than 24h (run `process the last call` manually for older ones).
+- Does NOT auto-process meetings older than the Phase 3 window — which is everything since the last successful run, floored at 24h and ceilinged at 30 days (SPEC CATCHUP1 F-1). For anything older than that ceiling, run `process the last call` manually.
 - Does NOT modify entities.json directly except via people-crm (canonical writer).
 - Does NOT auto-send any follow-up email (drafts always TEXT inline; user picks `send / draft` per item via Inbox or Commitments).
 - Does NOT escalate auto-committed events back to pending_review later (commit is durable; resolution requires explicit M action).

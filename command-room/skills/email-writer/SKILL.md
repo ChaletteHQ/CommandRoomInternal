@@ -1,6 +1,6 @@
 ---
 name: email-writer
-description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro emails. Fires on: 'draft an email to [name] about [topic]', 'email to [name]', 'write an email to the team', 'reply to [name]', 'follow up with [name] about [topic]' (single named follow-up), plus 'tune email-writer'. Reads the calibrated voice block and relationship context; output lands as a Gmail draft or preview per the draft-posture setting — never auto-sent. Does NOT fire on 'follow up on that call' / 'draft follow-ups' (follow-up-ritual — per-attendee pack from a transcript), 'who should I reach out to' (relationship-moves), or intro requests between two contacts (intro-broker). Register table and full trigger family: Routing section in the body."
+description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro emails. Fires on: 'draft an email to [name] about [topic]', 'email to [name]', 'write an email to the team', 'reply to [name]', 'follow up with [name] about [topic]' (single named follow-up), plus 'tune email-writer'. Reads the calibrated voice block and relationship context; output lands as a draft in the declared mail backend or a preview per the draft-posture setting — never auto-sent. Does NOT fire on 'follow up on that call' / 'draft follow-ups' (follow-up-ritual — per-attendee pack from a transcript), 'who should I reach out to' (relationship-moves), or intro requests between two contacts (intro-broker). Register table and full trigger family: Routing section in the body."
 
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default
@@ -69,7 +69,7 @@ Before writing, read `shared/WORKSPACE_API.md`.
 
 ## What It Does
 
-Takes a prompt like "draft an email to Sam about the LOI we discussed" and produces a ready-to-send draft that sounds like the CEO wrote it. The draft surfaces as an editable widget — NOTHING is saved anywhere (no file, no Gmail draft) until the user clicks an action; the click is what creates the Gmail draft or sends it (v3.13.7 lazy model).
+Takes a prompt like "draft an email to Sam about the LOI we discussed" and produces a ready-to-send draft that sounds like the CEO wrote it. The draft surfaces as an editable widget — NOTHING is saved anywhere (no file, no connector draft) until the user clicks an action; the click is what creates the draft in the declared mail backend or sends it (v3.13.7 lazy model).
 
 ## How It Works
 
@@ -77,14 +77,14 @@ Takes a prompt like "draft an email to Sam about the LOI we discussed" and produ
 
 Before doing anything in this skill, internalize this hard rule:
 
-> **You MUST first render an editable widget. Then you stop and wait. The Gmail tool call fires only from apply-choices on the user's `send` / `draft` click (or a deprecated in-flight `edit then send`) — never inline, never preemptively, never as part of generating the draft.**
+> **You MUST first render an editable widget. Then you stop and wait. The mail-backend tool call fires only from apply-choices on the user's `send` / `draft` click (or a deprecated in-flight `edit then send`) — never inline, never preemptively, never as part of generating the draft.**
 
 Translation:
-- `mcp__visualize__show_widget` is the FIRST end-user-visible side effect of this skill. The user sees the editable draft before any Gmail state changes.
+- `mcp__visualize__show_widget` is the FIRST end-user-visible side effect of this skill. The user sees the editable draft before anything changes in their mail client.
 - No mail-backend draft-create / send / Zapier-send call inside this skill's main path. Those fire from `apply-choices` after the user clicks an action.
-- "I'll just create the draft in Gmail so we have it in case the user wants it" is exactly the failure mode v3.13.7 ships to close. Resist it.
+- "I'll just create the draft in their mail client so we have it in case the user wants it" is exactly the failure mode v3.13.7 ships to close. Resist it.
 
-Why this is a hard rule (v3.13.6 → v3.13.7 trust-bomb fix): a paying customer asked "draft email to X" and saw a draft appear in their Gmail without ever approving it. Loss-of-control feeling. Day-1 churn signal. The eager-Gmail-draft model is reversed in v3.13.7 — same widget surface, lazy state change.
+Why this is a hard rule (v3.13.6 → v3.13.7 trust-bomb fix): a paying customer asked "draft email to X" and saw a draft appear in their mail client without ever approving it. Loss-of-control feeling. Day-1 churn signal. The eager-draft model is reversed in v3.13.7 — same widget surface, lazy state change.
 
 If anything below seems to contradict this preamble (older language, a screenshot, a habit from prior versions), the preamble wins.
 
@@ -261,9 +261,9 @@ It hard-fails on any dash used as punctuation (em dash, en dash, spaced hyphen �
 
 The Zapier-threaded send path (§3c, v2.10.7+) sets `In-Reply-To` and `References` headers and is unaffected by subject — but until every workspace wires the Zap, subject synthesis prevents the thread split at the source for ALL paths.
 
-### Phase 4 — Render the editable widget (lazy — NO Gmail state change here)
+### Phase 4 — Render the editable widget (lazy — NO mail-backend state change here)
 
-**v3.13.7+ — Approval-gate enforcement.** The draft surfaces as an editable widget. NO Gmail tool call fires in this phase. The user reviews the widget; their click is what creates the Gmail draft (or sends it). Mirrors the v3.13.0 calendar-writer approval-gate pattern. **Chained invocations run this exact phase** — a draft that arrived as a sub-step of a bigger task renders the same widget through the same transport (EW2+T).
+**v3.13.7+ — Approval-gate enforcement.** The draft surfaces as an editable widget. NO mail-backend tool call fires in this phase. The user reviews the widget; their click is what creates the connector draft (or sends it). Mirrors the v3.13.0 calendar-writer approval-gate pattern. **Chained invocations run this exact phase** — a draft that arrived as a sub-step of a bigger task renders the same widget through the same transport (EW2+T).
 
 This phase is render-only:
 
@@ -271,11 +271,11 @@ This phase is render-only:
 2. **Build the data_view** in the shape below, passing the draft body lines + To / Subject metadata you've assembled in Phases 2-3.5.
 3. **Render + persist** via the widget_code transport (EW2+T, F-15): `widget_transport.render_and_persist(data_view=…, wrapper="fragment", persist_dir=<WORKSPACE>/_hq/.system/widgets, name_hint="email-writer")` — all validators fire inside the call.
 4. **Post** by handing `transport["html"]` to `mcp__visualize__show_widget`. Never hand-compose or post-process the HTML; never post-process `transport["html"]` (`shared/CHAT_ACTION_WIDGET.md` § Transport).
-5. **Stop and wait.** This skill's main path ends with the widget on screen. The user's click hands off to `apply-choices`, which fires the matching Gmail tool lazily per the action semantics below.
+5. **Stop and wait.** This skill's main path ends with the widget on screen. The user's click hands off to `apply-choices`, which fires the matching seam-resolved mail tool lazily per the action semantics below.
 
 This matches the contract scheduled tasks use for email drafts (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1 — lazy draft creation) and means downstream skills that chain through email-writer (intro-broker, follow-up-ritual, thread-resurrection, inbox-triage's reply paths) inherit the editable-widget + approval-gate surface for free.
 
-Pre-v3.13.0, email-writer surfaced drafts as a text block in chat — forcing back-and-forth chat-turn edits to revise the body. v3.13.0 added the widget but kept eager Gmail-draft creation as a back-compat carryover. v3.13.7 reverses the eager model: the widget is now the only end-user-visible side effect; Gmail writes are click-gated through apply-choices. Same widget surface, lazy state change.
+Pre-v3.13.0, email-writer surfaced drafts as a text block in chat — forcing back-and-forth chat-turn edits to revise the body. v3.13.0 added the widget but kept eager connector-draft creation as a back-compat carryover. v3.13.7 reverses the eager model: the widget is now the only end-user-visible side effect; mail-backend writes are click-gated through apply-choices. Same widget surface, lazy state change.
 
 **Mode selection (n=1 vs n>1, v3.14.3+ — surfaced 2026-05-26 from a multi-stage outreach use case):**
 
@@ -385,9 +385,9 @@ print(transport['html'])
 # § Transport). Never hand-compose or post-process the HTML.
 ```
 
-**Action semantics (handled by apply-choices — Gmail tool calls fire HERE, not in Phase 4):**
+**Action semantics (handled by apply-choices — mail-backend tool calls fire HERE, not in Phase 4):**
 
-All three actions land in apply-choices. The Gmail / Zapier tool call is the FIRST place a Gmail state change happens. Email-writer's main path produced only a rendered widget; nothing exists in Gmail yet.
+All three actions land in apply-choices. The seam-resolved mail tool (or the §3c Zapier row on a Gmail backend) is the FIRST place the mail client's state changes. Email-writer's main path produced only a rendered widget; nothing exists in the mail backend yet.
 
 - `1 send` — apply-choices creates the connector draft AND sends it in one motion. Native path: the seam-resolved draft-create tool → the seam-resolved send tool (dispatch per `EMAIL_DRAFT_PROTOCOL.md` §0.5; a declared backend with no send capability degrades per §0.5 pt2). Zapier-threaded send path: `zapier_send.py` with `In-Reply-To` if known (gmail-only dispatch row, §3c). Logs `email_drafted` AND `email_sent` events (the draft is recorded for the substrate even though there's no human-visible draft state between create and send). Body edits happen directly on the card before Apply (FB-10 inline body; the FB-17-retired `edit then send` still dispatches from in-flight widgets as an alias → send, its edited payload honored).
 - `1 draft` — apply-choices creates a connector draft via the seam-resolved draft-create tool. (There is NO Zapier draft path — `zapier_send.py` only sends; with no native mail connector the body stays in the widget and the ack says email isn't connected.) The draft now lives in the declared backend's Drafts for the user to find and send later. Logs `email_drafted` (no `email_sent` yet). Per v2.14.4 canonical-action consolidation, `to drafts` was renamed to `draft` — the action always opens an edit field before saving, so review-then-save is the default semantics.

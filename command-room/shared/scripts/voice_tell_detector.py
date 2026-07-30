@@ -19,15 +19,24 @@ offending lines, wired into:
   2. `brief_writer.make_brief()` PRE-save (before Document() is built) so no
      .docx carrying an exact tell ever reaches disk.
 
-SEVERITY MODEL (SPEC B2 D1)
----------------------------
+SEVERITY MODEL (SPEC B2 D1, amended by FB-16 and SPEC DASHBAN)
+--------------------------------------------------------------
   fail  — exact banned phrases (openers / fillers / preambles / closers).
           One rule per markdown bullet in VOICE_CALIBRATION.md's list.
-  warn  — structural tells (tri-colon, >2 em-dashes per paragraph, hedging
-          stacks, bullets-in-email). These are judgment calls; the markdown
-          itself hedges ("where prose fits"), so they advise, never block.
+          PLUS `dash_as_punctuation` (FB-16): em dash, en dash or spaced
+          hyphen in body prose, one finding per OCCURRENCE, no pile-up
+          allowance. This is a brand-voice hard rule, not a judgment call.
+  warn  — structural tells (tri-colon, hedging stacks, bullets-in-email).
+          These are judgment calls; the markdown itself hedges ("where prose
+          fits"), so they advise, never block.
   pass  — clean.
 Verdict = fail if any fail finding, else warn if any warn finding, else pass.
+
+This block previously listed ">2 em-dashes per paragraph" under `warn`. That
+pile-up warn was REPLACED by the FB-16 per-occurrence fail rule (see
+`_scan_structural`), but the docstring was not updated with it, and the stale
+text went on to mislead a spec author into re-specifying a severity flip that
+had already shipped. Corrected under SPEC DASHBAN §3.2.
 
 CLIENT SAFETY
 -------------
@@ -39,9 +48,13 @@ to never lose content and never fight a calibrated voice:
   - `skip_quoted` ignores line-initial transcript quotes and reply blockquotes
     so a banned phrase the COUNTERPARTY said in a pulled quote never blocks the
     CEO's own save.
-  - The brief_writer wrapper hard-fails ONLY the canonical-voice outbound
-    kinds; everything else is warn-only. And it raises PRE-Document() so a
-    blocked save writes no partial file — the draft is rewritten, never dropped.
+  - The brief_writer wrapper hard-fails the canonical-voice outbound kinds
+    (FAIL_BLOCKING_KINDS) on ANY fail finding; on every other kind only the
+    ALWAYS_BLOCKING_RULES findings block, and the rest stay warn-only. And it
+    raises PRE-Document() so a blocked save writes no partial file — the draft
+    is rewritten, never dropped.
+  - `ban_dashes=False` turns the dash rule off wholesale for a client whose
+    calibrated voice keeps dashes — no finding, and no pre-pass rewrite.
 
 SYNC RULE
 ---------
@@ -80,14 +93,36 @@ class VoiceTellError(RuntimeError):
 
 
 # Brief kinds whose output is canonical CEO voice going OUTBOUND. A fail-
-# severity tell in one of these hard-blocks the save. Every other kind
+# severity tell in one of these hard-blocks the save. On every other kind
 # (call_prep, past_meeting, insights, weekly_*, operator_report, dormant_scan,
-# automation_*, contract_review, stress_test) is warn-only — those are
-# internal-to-user briefs where a quoted tell is legitimate. Single source of
-# truth; brief_writer imports this set.
+# automation_*, contract_review, stress_test) the BANNED-PHRASE fail rules stay
+# warn-only — those are internal-to-user briefs where a quoted tell is
+# legitimate. Single source of truth; brief_writer imports this set.
+#
+# Do NOT widen this set to make a single rule block more broadly. It governs
+# banned-phrase blocking too, so widening it silently changes enforcement for
+# rules nobody ruled on — and `tests/run_voice_gate_override_test.py` pins
+# `VOICE_SKILL_BY_KIND` to exactly this set. Use ALWAYS_BLOCKING_RULES below.
 FAIL_BLOCKING_KINDS = frozenset(
     {"memo", "one_pager", "decision_memo", "board_pack", "followup_pack"}
 )
+
+# SPEC DASHBAN §3.1 — rules that block a save on EVERY brief kind, not just the
+# outbound five. A rule earns a place here by being a brand-voice hard rule
+# rather than a judgment call: it is wrong in an internal brief for the same
+# reason it is wrong in an outbound memo, so kind-scoping it makes no sense.
+#
+# `dash_as_punctuation` is here because M ruled hard-block on every doc type
+# (v5.4.0 dogfood: 847 em dashes across 69 of 82 documents in one week, the
+# bulk of them on kinds this set is the only way to reach). The gate does NOT
+# carry that ban alone — `dash_rewriter` resolves the routine cases before the
+# scan, so what blocks here is the residue a deterministic pass declined to
+# guess at.
+#
+# This is a RULE-scoped escalation, not a kind-scoped one: on a kind outside
+# FAIL_BLOCKING_KINDS, ONLY findings whose rule is in this set block; every
+# other fail finding on that kind stays warn-only exactly as before.
+ALWAYS_BLOCKING_RULES = frozenset({"dash_as_punctuation"})
 
 
 def _phrase_pattern(phrase: str) -> "re.Pattern[str]":
@@ -574,6 +609,7 @@ __all__ = [
     "summarize_findings",
     "VoiceTellError",
     "FAIL_BLOCKING_KINDS",
+    "ALWAYS_BLOCKING_RULES",
     "FAIL_RULE_COUNT",
 ]
 

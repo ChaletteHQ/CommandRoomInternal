@@ -262,7 +262,11 @@ as `widget_code`, byte-exact.** `widget_transport.render_and_persist` (all
 validators + the byte-budget fit + the audit persist into
 `_hq/.system/widgets/`) already ran inside the call — there is nothing else
 to prepare. A `show more` reply re-fires the SAME one-command driver with
-`--page N+1`.
+`--page N+1`, which slices the page-set page 1 froze — not a fresh read
+(PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE question
+asked ONCE"). If `CR-PAGINATION` carries `refreshed`, `suppressed`, or
+`clamped`, SAY it in one line before the rows — those flags exist so the
+system never quietly serves something other than what was asked.
 
 **Idempotent single call (RV-3 — the double-render fix):** run the driver
 exactly ONCE per page per fire. If you already hold the driver's output for

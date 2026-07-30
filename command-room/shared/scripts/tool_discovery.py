@@ -15,7 +15,7 @@ USAGE (from an orchestrator's Phase 2 setup):
 
     from tool_discovery import (
         discover_calendar_tool,
-        discover_gmail_send_tool,
+        discover_gmail_tool,
         discover_zapier_send_tool,
         discover_granola_tool,
     )
@@ -128,11 +128,21 @@ def _is_zapier(tool_id: str, zapier_ids=None) -> bool:
 # a native connector should work the same.
 # ============================================================================
 
-# Mail (send / reply / draft / search) — Gmail OR Outlook
+# Mail (send / reply / draft / search) — Gmail OR Outlook OR Superhuman.
+#
+# These hints only ever fire on a tool id that SPELLS the product
+# (`mcp__abc__gmail_send_message`). A real UUID-namespaced connector does not:
+# native Gmail ships `mcp__f12657a1__search_threads`, Superhuman ships
+# `mcp__ec5e0bd5__create_or_update_draft`, and neither carries a product token
+# anywhere in the id. Every mail helper below therefore falls back to the
+# capability manifest's FINGERPRINTS — the provider is identified by the set of
+# operations its server exposes, which is the only thing a UUID env leaves to
+# match on (MAILSEAM item 2).
 _MAIL_PLATFORM_HINTS = {
     "gmail": ("gmail", "google_mail"),
     "outlook": ("outlook", "microsoft_outlook", "ms_outlook", "office365_mail",
                 "ms_graph_mail", "graph_mail"),
+    "superhuman": ("superhuman",),
 }
 
 # Transcript — Granola OR Fireflies (extensible)
@@ -171,6 +181,85 @@ def _match_platform(tool_id: str, platform_hints: dict) -> Optional[str]:
             if hint in tid:
                 return platform_name
     return None
+
+
+def _capability_manifest():
+    """The capability manifest module, or None when it can't be imported —
+    discovery then keeps hint-only behavior rather than failing."""
+    try:
+        from connector_adapters import capabilities
+        return capabilities
+    except ImportError:
+        try:
+            from pathlib import Path as _P
+            import sys as _sys
+            _sys.path.insert(0, str(_P(__file__).resolve().parent))
+            from connector_adapters import capabilities
+            return capabilities
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _fingerprint_platforms(tools, category: str = "email") -> dict:
+    """`server-id → provider`, resolved from the capability manifest's
+    fingerprints (MAILSEAM item 2).
+
+    The UUID-env answer to `_match_platform`: a server whose tool ids spell no
+    product name is identified by WHICH OPERATIONS it exposes — the same
+    fingerprint data `repair_backend` already re-pairs on, so there is one
+    source of provider identity, not two. Only rows in `category` are eligible
+    and Zapier rows never are: the dispatch leg's tool names contain 'gmail'
+    but it is not a native mail backend (R12/H-H).
+
+    {} when the manifest is unreadable — the caller keeps hint-only behavior.
+    """
+    cap = _capability_manifest()
+    if cap is None:
+        return {}
+    by_server: dict = {}
+    for t in tools:
+        tid = getattr(t, "tool_id", t if isinstance(t, str) else "")
+        sid = _server_id_of(tid)
+        if sid:
+            by_server.setdefault(sid, []).append(tid)
+    out: dict = {}
+    try:
+        rows = cap.providers()
+    except Exception:
+        return {}
+    for sid, ids in by_server.items():
+        try:
+            ranked = cap.match_fingerprint(ids)
+        except Exception:
+            continue
+        for provider, _hits in ranked:
+            row = rows.get(provider) or {}
+            if row.get("is_zapier"):
+                continue
+            if (row.get("category") or "") != category:
+                continue
+            out[sid] = provider
+            break
+    return out
+
+
+def _known_mail_products() -> str:
+    """The mail products the capability manifest actually knows, by their own
+    labels — so the degrade line can never name a product the seam doesn't
+    support or omit one it does (the pre-MAILSEAM text said "Gmail or Outlook"
+    on a build that had shipped Superhuman support)."""
+    cap = _capability_manifest()
+    labels = []
+    if cap is not None:
+        try:
+            for name, row in sorted((cap.providers() or {}).items()):
+                if row.get("category") == "email" and not row.get("is_zapier"):
+                    labels.append(row.get("label") or name)
+        except Exception:
+            labels = []
+    return ", ".join(labels) if labels else "your mail connector"
 
 
 # ============================================================================
@@ -452,32 +541,68 @@ def _discover_mail_tool(
     separately by discover_zapier_send_tool).
     """
     tools_list = list(tools)
-    candidates = 0
+    candidates = len(tools_list)
     # R12/H-H: exclude Zapier servers (pinned + heuristically detected) so a
     # UUID Zapier leg exposing `gmail_send_email` is never matched as native.
     zap_ids = zapier_servers(tools_list)
-    for t in tools_list:
-        candidates += 1
-        if _is_zapier(t.tool_id, zap_ids):
-            continue
-        platform = _match_platform(t.tool_id, _MAIL_PLATFORM_HINTS)
-        if not platform:
-            continue
-        tid_norm = t.tool_id.lower().replace("_", "").replace("-", "")
-        if any(k.replace("_", "") in tid_norm for k in operation_keywords):
-            return DiscoveryResult(
-                tool_id=t.tool_id,
-                candidates_considered=candidates,
-                platform=platform,
-            )
+    # MAILSEAM item 2: the product-name hints miss every real connector, whose
+    # ids are UUID-namespaced. Fingerprints answer for those.
+    fp_platforms = _fingerprint_platforms(tools_list, "email")
+    # Keywords are scanned in PRIORITY order rather than registry order, so a
+    # server exposing both a precise and a broad tool always resolves to the
+    # precise one — which tool you get stops depending on how the connector
+    # happened to list them.
+    for kw in operation_keywords:
+        k = kw.lower().replace("_", "").replace("-", "")
+        for t in tools_list:
+            if _is_zapier(t.tool_id, zap_ids):
+                continue
+            platform = (_match_platform(t.tool_id, _MAIL_PLATFORM_HINTS)
+                        or fp_platforms.get(_server_id_of(t.tool_id)))
+            if not platform:
+                continue
+            tid_norm = t.tool_id.lower().replace("_", "").replace("-", "")
+            if k in tid_norm:
+                return DiscoveryResult(
+                    tool_id=t.tool_id,
+                    candidates_considered=candidates,
+                    platform=platform,
+                )
     return DiscoveryResult(
         tool_id=None,
         reason=(
-            f"No native mail tool found for {operation_label}. Connect Gmail or "
-            "Outlook in Cowork → Settings → Connectors."
+            f"No native mail tool found for {operation_label}. Connect one of "
+            f"{_known_mail_products()} in Cowork → Settings → Connectors."
         ),
         candidates_considered=candidates,
     )
+
+
+# The mail SEARCH vocabulary, in priority order — one list, read by both the
+# search helper and `discover_for_category`'s intent routing, so the two can
+# never disagree about what a search tool looks like.
+_MAIL_SEARCH_KEYWORDS = ("searchthreads", "emailsearch", "searchmessages",
+                         "queryemail", "findmessages", "listthreads")
+
+
+def _is_mail_search_intent(operation) -> bool:
+    """True when `operation` is a search INTENT compiled by
+    `connector_adapters/mail.py` rather than a connector tool name. False when
+    the adapter can't be imported — the seam then keeps its old behavior
+    instead of routing on a guess."""
+    try:
+        from connector_adapters.mail import is_search_intent
+    except ImportError:
+        try:
+            from pathlib import Path as _P
+            import sys as _sys
+            _sys.path.insert(0, str(_P(__file__).resolve().parent))
+            from connector_adapters.mail import is_search_intent
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return is_search_intent(operation)
 
 
 def discover_mail_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
@@ -525,14 +650,23 @@ def discover_mail_draft_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult
 
 
 def discover_mail_search_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
-    """Native Gmail or Outlook search tool.
+    """Native mail search tool across every known provider.
 
-    Gmail: `search_threads` / `search_messages`. Outlook: `search_messages` /
-    `find_messages`. Excludes Zapier.
+    Gmail: `search_threads` / `search_messages`. Outlook: `outlook_email_search`
+    / `search_messages` / `find_messages`. Superhuman: `query_email_and_calendar`
+    (its structured query surface) or `list_threads`. Excludes Zapier.
+
+    This is where every SEARCH INTENT lands — `in_sent`, `unread`,
+    `message_id_lookup` and the rest are scopes compiled into a query by
+    `connector_adapters/mail.py`, not tools, so `discover_for_category` routes
+    them here (MAILSEAM item 1). The keyword list therefore has to cover the
+    providers the seam claims to support: before this it named only the Gmail
+    and Graph spellings, so a Superhuman workspace resolved no search tool at
+    all and the fetch fell back to whatever the model improvised.
     """
     return _discover_mail_tool(
         tools,
-        operation_keywords=["searchthreads", "searchmessages", "findmessages", "search_threads"],
+        operation_keywords=list(_MAIL_SEARCH_KEYWORDS),
         operation_label="search",
     )
 
@@ -746,20 +880,34 @@ def discover_for_category(
     zap = zapier_servers(tools_list, zapier_ids)
     if declared and declared.get("server_id"):
         sid = declared["server_id"]
-        op_norm = operation.lower().replace("_", "")
+        # MAILSEAM item 1 — an operation is not always a tool NAME. `in_sent`,
+        # `unread`, `message_id_lookup` and their siblings are search INTENTS
+        # that `connector_adapters/mail.py` compiles into a provider query.
+        # Substring-matching one against tool ids resolved to None on EVERY
+        # provider, Gmail included (no connector ships a tool called
+        # `in_sent`), so the Sent read silently became something the model
+        # improvised. An intent resolves through the adapter to the provider's
+        # SEARCH tool, which is the thing that can actually run the scope.
+        is_intent = category == "email" and _is_mail_search_intent(operation)
+        op_candidates = (list(_MAIL_SEARCH_KEYWORDS) if is_intent
+                         else [operation.lower().replace("_", "")])
         server_seen = False
         for t in tools_list:
-            if _server_id_of(t.tool_id) != sid:
-                continue
-            server_seen = True
-            if _is_zapier(t.tool_id, zap):
-                continue
-            if op_norm in t.tool_id.lower().replace("_", ""):
-                return DiscoveryResult(
-                    tool_id=t.tool_id,
-                    candidates_considered=len(tools_list),
-                    platform=declared.get("provider"),
-                )
+            if _server_id_of(t.tool_id) == sid:
+                server_seen = True
+                break
+        for op_norm in op_candidates:
+            for t in tools_list:
+                if _server_id_of(t.tool_id) != sid:
+                    continue
+                if _is_zapier(t.tool_id, zap):
+                    continue
+                if op_norm in t.tool_id.lower().replace("_", ""):
+                    return DiscoveryResult(
+                        tool_id=t.tool_id,
+                        candidates_considered=len(tools_list),
+                        platform=declared.get("provider"),
+                    )
         if not server_seen:
             # R13 drift: the declared server-id is ABSENT from the fire-time
             # registry (reconnect rotated the UUID, or the connector is off
@@ -781,8 +929,10 @@ def discover_for_category(
             tool_id=None,
             reason=(
                 f"declared {category} backend (server {sid}, "
-                f"{declared.get('provider')}) exposes no {operation!r} tool — "
-                "capability absent; degrade per RELIABILITY.md."
+                f"{declared.get('provider')}) exposes no "
+                + (f"search tool to run the {operation!r} scope"
+                   if is_intent else f"{operation!r} tool")
+                + " — capability absent; degrade per RELIABILITY.md."
             ),
             candidates_considered=len(tools_list),
         )

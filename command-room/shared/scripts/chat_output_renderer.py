@@ -4573,6 +4573,15 @@ def _compose_widget_js(content_html: str) -> str:
 # render everything — pagination is inert (total_pages == 1, no position line).
 # ============================================================================
 
+# PAGESNAP: ONE page-size default for the whole stack. This was 10 here and 15
+# in `surface_drivers.run_surface`, so a caller that omitted the argument got a
+# different page geometry than one that passed it. 15 wins because it is what
+# every live surface already requests, and because the value is a CEILING, not
+# a promise — `widget_transport._fit_page_size` lowers it to whatever fits the
+# relay byte budget. Import this constant; never re-type the number.
+DEFAULT_PAGE_SIZE = 15
+
+
 def _iter_page_items(sections: list[dict]) -> list[tuple[int, dict]]:
     """Flatten to a list of (section_index, item) in render order, counting
     only top-level items that carry at least one action OR any actionable
@@ -4584,7 +4593,8 @@ def _iter_page_items(sections: list[dict]) -> list[tuple[int, dict]]:
     return flat
 
 
-def paginate_data_view(data: dict, *, page: int, page_size: int = 10) -> dict:
+def paginate_data_view(data: dict, *, page: int,
+                       page_size: int = DEFAULT_PAGE_SIZE) -> dict:
     """Return a shallow copy of `data` sliced to a single page.
 
     Rebuilds `sections` to contain only the top-level items that fall in the
@@ -4593,14 +4603,20 @@ def paginate_data_view(data: dict, *, page: int, page_size: int = 10) -> dict:
 
     Args:
       page: 1-indexed page number.
-      page_size: max top-level items per page (~10 by design).
+      page_size: max top-level items per page (ceiling — see DEFAULT_PAGE_SIZE).
+
+    NOTE (PAGESNAP): this function is a PURE function of the view it is
+    handed. It was never the bug — the bug was that `run_surface` handed it a
+    freshly re-read view on page 2. Callers paginating an unbounded surface
+    must slice a SNAPSHOT (see `page_snapshot`), not a live query.
     """
     sections = data.get("sections", []) or []
     flat = _iter_page_items(sections)
     total_items = len(flat)
     page_size = max(1, int(page_size))
     total_pages = max(1, (total_items + page_size - 1) // page_size)
-    page = max(1, min(int(page), total_pages))
+    requested_page = int(page)
+    page = max(1, min(requested_page, total_pages))
     start = (page - 1) * page_size
     end = start + page_size
     keep_by_section: dict[int, list[dict]] = {}
@@ -4625,6 +4641,16 @@ def paginate_data_view(data: dict, *, page: int, page_size: int = 10) -> dict:
         "has_more": page < total_pages,
         "total_items": total_items,
     }
+    # PAGESNAP: a request past the end is CLAMPED to the last page — never
+    # raised (a benign extra `show more` click must not crash a surface) and
+    # never rendered empty (an empty frame is never data, the same rule the
+    # tile builder enforces). But a silent clamp is the same class of fault as
+    # a silent re-read: the system served something other than what was asked
+    # and said nothing, and the user reads re-served rows as NEW rows. So the
+    # clamp goes ON THE RECORD and the caller can say "that's the end of it".
+    if requested_page != page:
+        sliced["pagination"]["clamped"] = True
+        sliced["pagination"]["requested_page"] = requested_page
     return sliced
 
 

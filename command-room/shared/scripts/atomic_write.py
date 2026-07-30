@@ -68,15 +68,29 @@ from pathlib import Path
 from typing import Any
 
 
-def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8") -> None:
+def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8",
+                      create_parents: bool = True) -> None:
     """Write text to `path` atomically. Guarantees that any concurrent reader
     of `path` sees either the old content or the new content, never a torn
     write or a truncated/partial state.
 
     Implementation: write to a temp sibling, fsync, then os.replace.
+
+    `create_parents` (FOLDERGUARD) decides what happens when the parent
+    directory is missing. Default True preserves every `_hq/` substrate caller,
+    which must self-create. Pass **False** for any path inside a user's project
+    folder: those directories are the CEO's, not ours, and a missing one means
+    the *record* is wrong — a mkdir there fabricates a folder that was never
+    there and makes the bad record look valid to every later reader. False turns
+    that silent corruption into a loud FileNotFoundError.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.parent.is_dir():
+        raise FileNotFoundError(
+            f"refusing to create parent directory for {path} "
+            f"(create_parents=False and {path.parent} does not exist)")
 
     # mkstemp gives us a unique sibling temp file with restrictive perms.
     # We use the same parent directory so os.replace is a same-filesystem rename
@@ -110,13 +124,14 @@ def atomic_write_json(
     data: Any,
     indent: int | None = 2,
     ensure_ascii: bool = False,
+    create_parents: bool = True,
 ) -> None:
     """Atomic JSON write. Wraps atomic_write_text with json.dumps."""
     content = json.dumps(data, indent=indent, ensure_ascii=ensure_ascii)
     if indent is not None:
         # json.dumps doesn't add a trailing newline; add one for tooling sanity.
         content = content + "\n"
-    atomic_write_text(path, content)
+    atomic_write_text(path, content, create_parents=create_parents)
 
 
 class SubstrateRegressionError(Exception):

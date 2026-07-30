@@ -178,7 +178,13 @@ def _latest_stated(objective_events: list[dict], thread_id: str,
         ts = _event_ts(e)
         if ts is None:
             continue
-        key = (ts, e.get("seq") or 0)
+        # UNDOGUARD sibling rail: `e.get("seq") or 0` reached the seq element
+        # only when two objective events shared an exact ts — a rare tie that
+        # made a string seq crash this intermittently rather than always.
+        from event_seq import event_seq
+
+        _s = event_seq(e)
+        key = (ts, _s if _s is not None else 0)
         if best_key is None or key > best_key:
             best, best_key = e, key
     return best

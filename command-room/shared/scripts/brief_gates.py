@@ -224,6 +224,50 @@ VOICE_SKILL_BY_KIND = {
 }
 
 
+def _resolve_ban_dashes_workspace(workspace_root) -> bool:
+    """FB-16's per-client dash opt-out, resolved for a brief kind that has NO
+    mapped composer skill (SPEC DASHBAN §3.1).
+
+    `ban_dashes` is a fact about a CLIENT's calibrated voice, not about a
+    document kind — a CEO who writes with dashes writes with them in a past-
+    meeting brief too. But it is parsed out of the per-skill
+    `_hq/voice/voice-block-<skill>.md` files, and VOICE_SKILL_BY_KIND only maps
+    the five outbound kinds. Before DASHBAN that gap was inert (those five were
+    also the only blocking kinds); now that the dash rule blocks everywhere, an
+    unmapped kind with no route to the override would refuse the save of a
+    client who explicitly opted out.
+
+    So for unmapped kinds: any calibrated voice block in the workspace that
+    says this client keeps dashes turns the rule off. Conservative in the
+    direction that matters — it can only ever RELAX a block, never add one, and
+    it cannot change what the mapped five do (they never reach this function).
+
+    Absent workspace, absent voice dir, or any read error -> True (the product
+    default, dashes banned)."""
+    try:
+        from pathlib import Path as _P
+
+        from voice_corrections import load_voice_block_override  # type: ignore
+
+        vdir = _P(workspace_root) / "_hq" / "voice"
+        if not vdir.is_dir():
+            return True
+        for path in sorted(vdir.glob("voice-block-*.md")):
+            skill = path.name[len("voice-block-"):-len(".md")]
+            if not skill:
+                continue
+            override = load_voice_block_override(workspace_root, skill)
+            if override and not override.get("ban_dashes", True):
+                return False
+    except Exception as exc:
+        print(
+            f"[voice-tell gate] workspace ban_dashes resolution failed "
+            f"({type(exc).__name__}: {exc}) — dash ban stays on",
+            file=sys.stderr,
+        )
+    return True
+
+
 # ---------- Gate registry (SPEC OUT5 — the G16 enumeration surface) ----------
 # The canonical, ordered names of the save-time gates every deliverable backend
 # runs. `run_pre_save_gates` returns the subset of PRE_SAVE_GATES that actually
@@ -501,6 +545,15 @@ def run_pre_save_gates(
             )
         except ImportError:
             check_sections = None  # detector not installed yet — skip the gate.
+        else:
+            # SPEC DASHBAN. Same mid-update tolerance the import above carries:
+            # a workspace whose detector predates DASHBAN has no always-blocking
+            # rules, so it keeps the old kind-scoped behavior instead of
+            # crashing on the import.
+            try:
+                from voice_tell_detector import ALWAYS_BLOCKING_RULES
+            except ImportError:
+                ALWAYS_BLOCKING_RULES = frozenset()
 
         if check_sections is not None:
             gates_ran.append("voice")
@@ -510,6 +563,17 @@ def run_pre_save_gates(
             allow_phrases = None
             ban_dashes = True
             _voice_skill = VOICE_SKILL_BY_KIND.get(brief_kind)
+            if workspace_root and not _voice_skill:
+                # SPEC DASHBAN §3.1 fallout. VOICE_SKILL_BY_KIND is scoped to
+                # the five hard-blocking kinds, because those used to be the
+                # only saves a fail finding could block. The dash rule now
+                # blocks on EVERY kind, so on the other 16 the client's opt-out
+                # had no route to the gate at all: a client with
+                # `ban_dashes=False` would still have had their 5 PM Past
+                # Meetings brief refused. Resolve it workspace-wide for the
+                # unmapped kinds. The mapped five keep their per-skill read
+                # below, byte-for-byte unchanged.
+                ban_dashes = _resolve_ban_dashes_workspace(workspace_root)
             if workspace_root and _voice_skill:
                 try:
                     from voice_corrections import load_voice_block_override  # type: ignore
@@ -530,6 +594,58 @@ def run_pre_save_gates(
                     )
                     allow_phrases, ban_dashes = None, True
 
+            # SPEC DASHBAN §4 — the dash-rewrite PRE-PASS. Runs BEFORE the
+            # scan, and MUTATES `sections` in place, so the rewritten prose is
+            # what both the gate scans AND what the backend renders (both
+            # backends pass this same list and then render from it).
+            #
+            # Why a pre-pass and not enforcement alone: the v5.4.0 dogfood
+            # counted 847 em dashes across 69 of 82 documents in one week.
+            # Blocking every kind without a rewrite path would have turned most
+            # of that into refused saves, and the scheduled surfaces (Past
+            # Meetings at 5 PM, the Friday wrap, inbox triage) save with nobody
+            # watching — a raise there is a failure notice instead of a
+            # document. The pre-pass resolves the routine cases deterministically
+            # so the gate blocks only the residue it declined to guess at.
+            #
+            # Gated on ban_dashes: a client whose calibrated voice keeps dashes
+            # gets neither a rewrite nor a block. Skipped entirely when
+            # voice_gate == "off" (this whole branch is). Under "warn" it still
+            # rewrites — the pre-pass is a content normalizer for a brand-voice
+            # hard rule, and "warn" means "do not block", not "do not comply".
+            if ban_dashes:
+                try:
+                    from dash_rewriter import rewrite_sections as _rewrite_dashes
+                except ImportError:
+                    _rewrite_dashes = None  # not installed yet — gate still runs.
+                if _rewrite_dashes is not None:
+                    try:
+                        _fixed, _residue = _rewrite_dashes(
+                            sections, allow_phrases=allow_phrases
+                        )
+                    except Exception as exc:
+                        # A rewriter bug must never take a save down. The gate
+                        # still runs on the un-rewritten sections and blocks
+                        # loudly if dashes remain — fail closed, not silent.
+                        print(
+                            f"[dash-rewrite] pre-pass failed for {brief_kind} "
+                            f"({type(exc).__name__}: {exc}) — gate runs on "
+                            f"un-rewritten prose",
+                            file=sys.stderr,
+                        )
+                    else:
+                        if _fixed or _residue:
+                            print(
+                                f"[dash-rewrite] {brief_kind}: rewrote {_fixed} "
+                                f"dash(es) as punctuation"
+                                + (
+                                    f"; {_residue} left for the gate "
+                                    f"(ambiguous — needs a human rewrite)"
+                                    if _residue else ""
+                                ),
+                                file=sys.stderr,
+                            )
+
             # FB-16 per-client dash override: forward ban_dashes=False only when
             # the installed detector knows the kwarg — the dash ban and its
             # kwarg land together, so a pre-FB-16 detector has no rule to relax.
@@ -543,14 +659,46 @@ def run_pre_save_gates(
                 **_extra,
             )
             fail_findings = [f for f in result["findings"] if f["severity"] == "fail"]
-            blocking = voice_gate == "default" and brief_kind in FAIL_BLOCKING_KINDS
 
-            if fail_findings and blocking:
+            # SPEC DASHBAN §3.1 — what blocks, and on which kinds.
+            #
+            # THE voice_gate CONJUNCT IS KEPT, DELIBERATELY. A non-"default"
+            # mode still bypasses the dash block. Reasons, on the record:
+            #   - "off" already short-circuits this entire branch above, so the
+            #     conjunct only ever decides "warn".
+            #   - "warn" is the one documented, caller-supplied "report, do not
+            #     block" posture. Making a rule punch through it would leave no
+            #     escape hatch short of "off", which also silences the banned-
+            #     phrase and leak-adjacent reporting — strictly worse.
+            #   - It costs nothing in real coverage: no skill sets voice_gate
+            #     (grep skills/ -> zero hits) and all three production entry
+            #     points default to "default", so every production render
+            #     already blocks. Only tests and deliberate debugging use
+            #     "warn"/"off".
+            #
+            # The KIND scope is what changes. On a FAIL_BLOCKING_KIND every
+            # fail finding blocks, as before. On every other kind ONLY the
+            # ALWAYS_BLOCKING_RULES findings block — banned-phrase findings
+            # stay warn-only there, exactly as they were. That is why this is a
+            # dedicated rule set and not a widened FAIL_BLOCKING_KINDS: the
+            # frozenset governs banned-phrase blocking too, and widening it
+            # would change enforcement for rules M has not ruled on.
+            if voice_gate != "default":
+                blocking_findings: List[dict] = []
+            elif brief_kind in FAIL_BLOCKING_KINDS:
+                blocking_findings = fail_findings
+            else:
+                blocking_findings = [
+                    f for f in fail_findings
+                    if f.get("rule") in ALWAYS_BLOCKING_RULES
+                ]
+
+            if blocking_findings:
                 raise VoiceTellError(
                     f"Voice-tell gate blocked a {brief_kind} save — "
-                    f"{len(fail_findings)} banned phrase(s) must be rewritten "
-                    f"before this document can be written:\n"
-                    + summarize_findings(result["findings"]),
+                    f"{len(blocking_findings)} voice-rule violation(s) must be "
+                    f"rewritten before this document can be written:\n"
+                    + summarize_findings(blocking_findings),
                     findings=result["findings"],
                 )
             if result["findings"]:

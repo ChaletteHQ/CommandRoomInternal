@@ -208,11 +208,21 @@ def classify_outcomes(
 
 
 def _payload(send: dict, outcome: str, latency, reply_message_id) -> dict:
+    # MAILSEAM item 5 — DUAL-WRITE the thread id, the same posture
+    # `connector_adapters.provenance.build_email_sent_provenance` established
+    # for the send event. `gmail_thread_id` is a LEGACY FIELD NAME carrying
+    # whatever the declared backend's native thread id is: on a Superhuman or
+    # Outlook workspace the name has always lied about the value. It stays,
+    # because reader back-compat is forever and history is never rewritten —
+    # but `thread_native_id` ships alongside it so a new reader never has to
+    # spell a provider to ask for a thread.
+    tid = send.get("gmail_thread_id")
     return {
         "sent_event_seq": send.get("sent_event_seq"),
         "draft_ref": send.get("draft_ref"),
         "recipient": send.get("recipient"),
-        "gmail_thread_id": send.get("gmail_thread_id"),
+        "gmail_thread_id": tid,
+        "thread_native_id": tid,
         "outcome": outcome,
         "latency_days": latency,
         "reply_message_id": reply_message_id,

@@ -30,6 +30,7 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 
 # Phase 2 — Setup
 
+- **Record the fire start FIRST, before any read or write:** `fire_start = datetime.datetime.now(datetime.timezone.utc).isoformat()`. Hold it as `fire_start` — Phases 2.5 and 2.6 both pass it. It marks the instant this fire began, so a commitment this same fire captured cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the calls that use it: taken later it sits after the capture phases and fences nothing.
 - Compute today's date in local time.
 - Read entities.json + aliases.json.
 - Read voice calibration (cache once for the session).
@@ -83,6 +84,7 @@ print(f'OPEN_COUNT={len(opens)}')
 Then use the seam-resolved mail-search tool (from Phase 2) to query outbound mail since the last fire — the `{"from_me": true, "after": "YYYY/MM/DD"}` intent (or `{"from_me": true, "newer_than": "Nd"}`), compiled per provider by `connector_adapters/mail.py`; pass-through providers take the structured intent directly.
 
 For each result, fetch the thread/message body via the discovered thread-fetch tool. Extract:
+- the message id (the connector's native id — RECONFENCE layer 1 needs it; a send cannot be evidence about the commitment it created)
 - recipient email(s) → resolve to person_id(s) via `aliases.json` / `entities.json` lookup
 - subject
 - body (last user-authored message in the thread)
@@ -100,11 +102,18 @@ from cru_match import (
     build_pending_review_event,
 )
 from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
+from connector_adapters.provenance import primary_artifact_key, resolve_mail_provider
 from atomic_write import atomic_append_jsonl
 
 workspace_root = '<absolute path to the workspace root>'
 events_path = '<absolute path to _hq/data/events.jsonl>'
 opens = load_open_commitments(events_path)
+
+# MAILSEAM: resolve the mail provider ONCE. An explicit tag from the Phase-2
+# seam wins; otherwise the declared email backend answers. Never a literal —
+# `gmail:<id>` built on a Superhuman backend matches no commitment on disk,
+# which is a fence that stopped fencing without failing anything.
+provider = resolve_mail_provider(workspace_root, '<the seam-resolved provider, or None>')
 
 # Stage B (F2): auto-resolves close through commitment_state.close_commitment
 # — THE closure path. Matching (Path 1) is unchanged; only the write moved.
@@ -119,6 +128,21 @@ for send in <list of sends since window>:
         subject=send['subject'],
         body=send['body'],
         workspace_root=WORKSPACE,   # Phase 6 Loop 4: honor _hq/data/confidence-overrides.json
+        # RECONFENCE layer 1 — the ref of the message being scored. A commitment
+        # attributed to THIS message is dropped before scoring: the send that
+        # captured a promise is not evidence that the promise was kept.
+        send_source_ref=primary_artifact_key(provider, send['message_id']),
+        # RECONFENCE layer 2 — a commitment THIS fire captured is one source
+        # with the send being scored, not two. Phase 2.5 runs in the same fire
+        # as the capture phases, which is where layer 2 bites hardest.
+        exclude_captured_since=fire_start,   # from Phase 2
+        # EVORDER layer 3 — when the message was actually SENT. Layer 2 fences
+        # against the start of this fire, which is a different question: a
+        # commitment captured before the fire but AFTER the send sails past it,
+        # and a send cannot be evidence for a promise that did not exist yet.
+        # REQUIRED whenever the send carries a timestamp — omitting it silently
+        # disables the guard (F-11 measured four false closes from that gap).
+        send_ts=send['ts'],
     )
     for r in results:
         evidence = f\"Sent via native mail client at {send['ts']} — Subject: {send['subject']}\"
@@ -175,104 +199,71 @@ Per `shared/scripts/cru_match.py` Path 4. The inbound mirror of Phase 2.5. Where
 
 This is the daily backstop to the real-time leg in `orchestrator-inbox.md` Phase 5.5. The inbox fire resolves on its own schedule (7 AM weekdays); Phase 2.6 here re-scans inbound mail since the last Commitments fire so deliveries that arrived off-cycle (weekend, after the morning inbox fire, or while inbox was degraded) still close.
 
-**Completion-GATED, same as Phase 5.5.** A high title match alone never auto-resolves — the inbound message must carry fulfillment language. Medium-confidence → `commitment_review_proposed` for next Pulse one-click confirm.
+**How a reply closes something (REPLYCLOSE), same three bases as Phase 5.5:** (1) their message quotes the item strongly enough AND says it's done — unchanged; (2) **they replied on the thread the item came from**, with either "it's done" wording or the document the item asked for — closes outright; (3) **the same thing off-thread** becomes a confirm, never a close. A reply that fits two open items closes neither. Only THEIR reply counts — a message from the CEO is refused outright, because on a thread the CEO answered last "the latest message" is the CEO's, and closing the CEO's own promises on the CEO's own words is the sent path's job.
 
 **Skip entirely if:**
 - No mail search tool was discovered in Phase 2 (degraded — proceed without scan).
 - No open commitments where a counter-party is the owner (OWED-TO-YOU set empty).
 
-Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since the last fire — the `{"in_inbox": true, "after": "YYYY/MM/DD"}` intent (or with `newer_than`), compiled per provider by `connector_adapters/mail.py`; exclude the user's own outbound (drop results where the sender is the user) since inbound is the point of this scan.
+Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since the last fire — the `{"in_inbox": true, "after": "YYYY/MM/DD"}` intent (or with `newer_than`), compiled per provider by `connector_adapters/mail.py`.
 
-For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`; skip if unresolvable), extract subject + body. Then run `match_inbound_to_commitments` per inbound message:
+For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`), and carry the message's **`thread_id`** (the connector's conversation id) and **`has_attachment`** (the connector's attachment flag — never inferred from a body that says "attached"). Those two fields are what let a reply be recognized as the delivery rather than as words about it. **Do NOT pre-filter the CEO's own messages or unresolvable senders out of the list** — the helper refuses the first and counts the second, and both counts are how a quiet fire gets explained instead of reading as a clean zero. Then make ONE call over the whole batch:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
-from cru_match import (
-    load_open_commitments,
-    match_inbound_to_commitments,
-    build_commitment_updated_event,
-    build_pending_review_event,
+from reconcile_inbound_commitments import (
+    reconcile_inbound_and_receipt,
+    validate_inbound_reconcile_ran,
+    PrimaryUserUnresolvedError,
 )
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
-from atomic_write import atomic_append_jsonl
+from primary_user import resolve_primary_user
 
 workspace_root = '<absolute path to the workspace root>'
-events_path = '<absolute path to _hq/data/events.jsonl>'
-opens = load_open_commitments(events_path)
+user_id = resolve_primary_user(workspace_root)   # deterministic — do NOT guess (Bug #102)
 
-# Stage B (F2): auto-resolves close through close_commitment; matching (Path 4)
-# unchanged. commitment_updated / pending events keep their builders.
-n_resolved = 0
-next_seq = <peek-next-seq>  # for updated/pending events only
-to_append = []
-for msg in <list of inbound messages since window>:
-    results = match_inbound_to_commitments(
-        open_commitments=opens,
-        sender_person_id=msg['sender_person_id'],
-        subject=msg['subject'],
-        body=msg['body'],
-        workspace_root=workspace_root,   # Phase 6 Loop 4: honor confidence-overrides.json
-    )
-    for r in results:
-        evidence = f\"Inbound mail received at {msg['ts']} — Subject: {msg['subject']}\"
-        if r['recommendation'] == 'auto_resolve':
-            try:
-                res = close_commitment(
-                    workspace_root, r['commitment_id'],
-                    resolved_by=r['owner_id'],  # the counter-party who delivered
-                    evidence=evidence,
-                    source_skill='commitments',
-                )
-                if res['status'] == 'closed':
-                    n_resolved += 1
-            except (CommitmentIdError, PendingReviewError) as e:
-                print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-        elif r['recommendation'] == 'partial_received':
-            # MC1: an inbound delivery from ONE counterparty of a multi-
-            # counterparty owed-to-you item records that person's receipt only.
-            from commitment_state import mark_partial_received
-            for cp in r.get('matched_counterparty_ids') or []:
-                try:
-                    mark_partial_received(
-                        workspace_root, r['commitment_id'],
-                        received_by=r['owner_id'], source_skill='commitments',
-                        counterparty_id=cp, evidence=evidence,
-                    )
-                except CommitmentIdError as e:
-                    print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-        elif r['recommendation'] == 'commitment_updated':
-            to_append.append(build_commitment_updated_event(
-                commitment_id=r['commitment_id'],
-                primary_thread_id=r['primary_thread_id'],
-                source_skill='commitments',
-                change_summary='Counter-party shifted their own deadline (inbound mail)',
-                evidence=evidence,
-                next_seq=next_seq,
-            ))
-            next_seq += 1
-        elif r['recommendation'] == 'pending_review':
-            to_append.append(build_pending_review_event(
-                commitment_id=r['commitment_id'],
-                primary_thread_id=r['primary_thread_id'],
-                source_skill='commitments',
-                proposed_resolution='auto_resolve',
-                score=r['score'],
-                evidence=evidence,
-                next_seq=next_seq,
-            ))
-            next_seq += 1
-if to_append:
-    atomic_append_jsonl(events_path, to_append)
-print(f'CRU commitments inbound pre-render: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")}')
+# One dict per inbound message in the window. Keep the CEO's own messages and
+# the unresolvable senders IN — they are counted, not silently dropped.
+inbound_messages = <[{'message_id', 'ts', 'sender_person_id', 'subject', 'body',
+                      'thread_id', 'has_attachment'}, ...]>
+
+receipt = reconcile_inbound_and_receipt(
+    workspace_root, inbound_messages,
+    user_person_id=user_id,
+    source_skill='commitments',
+    fired_via='scheduled',              # 'manual' on a chat-phrase / Run Now fire
+    exclude_captured_since=fire_start,  # from Phase 2 — the fence, layer 2
+    provider='<the seam-resolved provider>',
+)
+print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s batch=%s'
+      % (receipt['n_auto_closed'], receipt['n_pending'],
+         receipt['n_updated'], receipt['batch_id']))
 "
 ```
 
+**The circularity fence (REPLYCLOSE §3, plus EVORDER layer 3).** Layer 1 needs no argument — the helper derives each message's own ref internally and drops any commitment attributed to that very message, which is what stops the inbound message that CREATED a waiting-on item from being the message that closes it on a later scan (inbox-triage stamps `data.source_ref: gmail:<message_id>` on exactly those captures). Layer 2 is `exclude_captured_since=fire_start` — commitments this same fire captured are one source with the evidence, not two. Anything captured before the fire start stays fully matchable.
+
+**Layer 3 needs no argument either, but it needs each message's `ts`** — it refuses to close a commitment captured AFTER the reply arrived (the F-11 class: layer 2 fences against the start of THIS FIRE, so an item captured before the fire but after the message sails straight through it). Each `inbound_messages` entry must therefore carry the connector's raw ISO-8601 `ts`, never a reformatted display date. Absent `ts` leaves layer 3 inert, which is safe. A present-but-unparseable `ts` fails SAFE and LOUD: the pass closes nothing at all and prints `RECONFENCE: inbound_ts=…` on stderr. `receipt['signal_fields']['n_stale_evidence_skipped']` counts what layer 3 refused — non-zero is the fence working, not an error.
+
+**Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True, or this pass did not actually run and its zero means nothing. Also read `receipt["signal_fields"]`: messages scored with neither the conversation nor the attachment field present means the reply checks could not run at all; `receipt["summary"]` says so in plain language in exactly that state, and `receipt["coverage"]` reports how many open items have no resolvable owner and therefore can never be closed by any reply.
+
+**An unresolved user ABORTS this pass** (`PrimaryUserUnresolvedError`) — no audit event, nothing closed. Do not catch it and continue: direction is derived from owner vs the user, so with no user every reply basis is inert and a clean zero would be a lie.
+
 **The stdout is for diagnostic logging only.** Same Rule 4/9 silence as Phase 2.5 — CRU event-type names never appear in chat. The user sees the effect via Phase 3's filter: resolved OWED-TO-YOU commitments drop off today's widget.
 
-**Resolution-miss tag (Phase 6 Loop 5, silent).** This leg already reads the inbound reply body, so it's the privacy-correct place to notice a resolution the CRU pass MISSED: when a reply carries "already done / sent last week" language but produced NO `auto_resolve` match, mark it. `from extraction_hints import is_resolution_miss` → if `is_resolution_miss(msg['body'])` and no result recommended `auto_resolve` for that message, append a lightweight marker to the outcome/interaction for that thread with `data.resolution_miss = True` (additive telemetry — never surfaced). insight-generator's Loop 5 pass clusters these into resolution-language hints that cru_match's completion detection reads back. reconcile-sent's outcome watch stays metadata-only; this is where reply text is already in hand.
+**Resolution-miss tag (Phase 6 Loop 5, silent).** This leg already reads the inbound reply body, so it's the privacy-correct place to notice a resolution the CRU pass MISSED: when a reply carries "already done / sent last week" language but produced NO close, mark it. Run it AFTER the Step-above call, off the receipt it returned:
+
+```python
+from extraction_hints import is_resolution_miss
+closed_mids = {r["message_id"] for r in receipt["resolved"] if r.get("message_id")}
+for msg in inbound_messages:
+    if is_resolution_miss(msg.get("body") or "") and msg["message_id"] not in closed_mids:
+        ...  # append data.resolution_miss = True to that thread's outcome/interaction
+```
+
+Additive telemetry — never surfaced. insight-generator's Loop 5 pass clusters these into resolution-language hints that cru_match's completion detection reads back. reconcile-sent's outcome watch stays metadata-only; this is where reply text is already in hand. (`receipt["resolved"]` carries `message_id` on every row precisely so this check needs no second matcher run — a per-message answer from the same pass that produced the closures, not a re-derivation that could disagree with it.)
 
 **De-dup with Phase 5.5:** both legs check `load_open_commitments`, which already excludes anything closed by a prior `commitment_resolved` / `thread_resolved`. If the morning inbox fire (Phase 5.5) already resolved a commitment, it won't be in `opens` here, so Phase 2.6 won't double-write. Idempotent by construction.
 
@@ -373,6 +364,27 @@ print(f'CRU commitments calendar pre-render: resolved={n_resolved} pending={len(
 **De-dup with the calendar-writer real-time leg:** both call `load_open_commitments`, which excludes anything already closed by a prior `commitment_resolved` / `thread_resolved`. If calendar-writer already resolved a commitment when it created the event, it won't be in `opens` here. Idempotent by construction.
 
 **Failure handling:** identical to Phases 2.5/2.6 — swallow silently, continue to Phase 3, append a `pack_run.data.errors[]` entry `{"phase": "2.7_calendar_cru_pre_render", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<UTC ISO — never the local wall clock>"}`.
+
+# Phase 2.8 — Apply stamped auto-merges (AUTOAPPLY §4c)
+
+Per `shared/scripts/commitment_dedup.py`. Capture time evaluates the auto-merge gate and STAMPS `data.auto_merge_of` on a new commitment that is beyond doubt the same real-world item as an open one (owner ids equal, counterparty ids overlapping, near-verbatim title after name-stripping, DIFFERENT writers — the cross-writer capture is the corroboration). It cannot apply the merge there: the capture hook runs inside the append, before the new event exists on disk. This phase is the apply half.
+
+Run BEFORE Phase 3 so the merged duplicate never reaches the widget:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from commitment_dedup import apply_auto_merges
+print(json.dumps(apply_auto_merges('<workspace_root>', source_skill='commitments')))
+"
+```
+
+Each merge runs `propose(tier='auto')` + `supersede_commitment(auto_merge=True)` + `resolve_proposal('applied')` in one pass — the FB-20 lifecycle, so no auto proposal ever rests open. Reversible: the registered `commitment_merge` reverser splits it back out via `commitment_reopened`.
+
+**Narration:** the CHANGED line reports it in the user's language — "merged a duplicate capture of *[title]* — say `undo` to reverse any." Never the event-type name (Rule 4). Zero merges → say nothing.
+
+**Failure handling:** identical to Phases 2.5–2.7 — swallow silently, continue, append a `pack_run.data.errors[]` entry `{"phase": "2.8_auto_merge", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
 # Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
 
@@ -709,7 +721,11 @@ Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as
 `widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is
 the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON.
 Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3
-guard window never double-receipts. The manual `python3 -c` assembly below
+guard window never double-receipts. Pages 2+ also slice the page-set page 1
+froze rather than re-reading the substrate (PAGESNAP; see
+`shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE question asked ONCE") — if
+`CR-PAGINATION` carries `refreshed`, `suppressed`, or `clamped`, SAY it in one
+line before the rows. The manual `python3 -c` assembly below
 remains valid for callers that need to hand-shape sections the driver does not
 build (e.g. the meeting-relevance bucket or the Tue/Thu nudged-no-reply tail);
 those still go through the same `render_and_persist` chokepoint.

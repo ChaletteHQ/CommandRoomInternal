@@ -1,5 +1,143 @@
 # Command Room — Changelog
 
+## v5.6.1 — 2026-07-30 — Evidence that predates the promise cannot close it
+
+Patch: one safety guard on automatic closing, found in attended testing before any client received v5.6.0. No migration.
+
+### The ordering guard
+
+The closing rails never checked that the evidence email was sent *after* the commitment it closes existed. In the wrong order — promise something today, and an unrelated attachment from last week happens to fit the shape — the promise could close itself on evidence that predates it, and reversing the closure did not stick because the stale evidence stayed in range. Both mail rails now refuse any message older than the commitment as closing evidence, the refusal is counted on the run receipt (`n_stale_evidence_skipped`), and the fix was verified live: the exact scenario that produced a false close before the guard produces nothing after it.
+
+### Customer migration impact
+
+None. Existing behavior is unchanged except that a class of wrong closures can no longer happen.
+
+### What's NOT in this ship
+
+The same ordering guard for the meeting-transcript rail (next release, with its own build); the backlog cleanup command.
+
+## v5.6.0 — 2026-07-29 — The email that is the deliverable closes the promise, and their reply closes what you were waiting on
+
+Minor bump: behavior changes you'll notice in commitment closing, no migration.
+
+### Sending the deliverable closes the commitment
+
+The sent-mail matcher used to measure how much of a commitment's title reappeared in the email — so "Here you go" with the deck attached scored too low to ever close anything, and the emails that simply delivered the thing were exactly the ones that fell through (about 1.5% of scanned sent mail auto-closed). The matcher now recognizes evidence of delivery: an attachment to the right person carrying completion language closes the item outright, and a message on the commitment's own thread is matched on that thread alone. The title-based path is byte-unchanged and no global threshold moved — nothing that closed before stops closing.
+
+### Their reply closes what you were waiting on
+
+Until now, no mail path could close a "waiting on" item — you did that by hand. A counterparty's reply on the commitment's own thread, carrying completion language or the document the item asked for, now closes it with the evidence recorded on the closure event. A reply outside the thread only proposes a confirm, never a silent close. Your own message never closes your own item. Every automatic closure lands in a batch that undo can list and reverse.
+
+### The mail read stops assuming Gmail
+
+The sent-mail read now resolves for every connected backend — Gmail, Outlook, Superhuman, and namespaced connector ids — instead of quietly returning nothing off-Gmail. Dedup and self-closure guard keys are built per backend, so a wide catch-up can no longer close the very promise its own message opened. And a read that could not happen writes a loud receipt naming what was missing, instead of a clean audit that looks like a quiet day.
+
+### Rails that can prove they ran
+
+Both reconcile rails now count whether the evidence fields (attachment, thread id) were even present on what the connector returned, and say so plainly when they were not. An unresolvable primary user aborts loudly instead of producing a clean zero-closure audit. The circularity fence that keeps a message from closing the commitment it created is now on every mail rail, inbound included, mutation-proven.
+
+### Files touched
+
+Per client repo: commitment matching (sent path + a new inbound reconcile module), connector discovery and mail adapters, the reconcile and orchestrator instruction prose, one new event type (registered in schema and docs), and the transcript rail's datetime hardening. Test additions remain in the source repo.
+
+### Customer migration impact
+
+None. Nothing to re-register — the inbound leg rides scheduled surfaces that already run.
+
+### What's NOT in this ship
+
+A wider completion-phrase vocabulary (the current list misses phrasings like "Please find attached." — fails toward asking, never toward a wrong close; sized by the new receipt counters, ticketed); two detector events that still label mail signals "gmail" on every backend (schema change, ticketed); the coach vertical. The compiled Superhuman sent-scope query shape is first exercised against the live connector in dogfood.
+
+## v5.5.1 — 2026-07-29 — Spanish is a workspace setting now, and English installs can't tell
+
+Patch: no behavior change for existing workspaces, no migration. This release folds the bilingual (Mexican Spanish) overlay into the core.
+
+### Spanish/bilingual, opt-in at onboarding
+
+A new workspace can turn on a bilingual layer during setup: briefings, notes, and chat in Spanish; outbound email drafts reply in the language of the thread; and the deterministic commitment / decision / prospect matchers read English ∪ Spanish, with accent-aware name resolution (José/Jose resolve to one person). Activation is seed-first and explicitly opt-in — the language question is only asked when the customer's own material is Spanish, and choosing English (or saying nothing) leaves the install byte-for-byte identical to before this release.
+
+### A guard makes the overlay's failure loud
+
+The Spanish layer is designed to fail toward English — so a future change that broke it would have been silent. A new battery guard now proves on every run that the overlay ships, every matcher routes through it, activation actually fires, and the phrase list keeps its false-positive discipline.
+
+### Files touched
+
+Lexicon data + loader (new), guarded hooks in four matcher scripts, the onboarding language step, the workspace template, and one wiring fix so deal-won language and prospect-conversion language always read the same vocabulary.
+
+### Customer migration impact
+
+None. Existing workspaces see no change; nothing to re-register.
+
+### What's NOT in this ship
+
+The sent-mail matcher upgrade, Gmail cleanup, and reply-based closure (SENTMATCH / MAILSEAM / REPLYCLOSE — next cut); native business-Spanish review of the phrase list (pre-GA item).
+
+## v5.5.0 — 2026-07-29 — A late fire catches up on everything it missed, pages hold still, and every time is told in your clock
+
+Minor bump: behavior changes you'll notice plus reliability fixes, no migration.
+
+### A late fire processes everything since its last successful run
+
+Close the laptop for three days and the next morning brief, meeting pass, or weekly recap used to process only its usual window — anything older silently fell through. Every catch-up-capable surface now reaches back to its last successful run: Monday's fire picks up the whole weekend, a missed Friday recap is recovered by the next one, and when a big backlog has to be worked in batches, the receipt records where it stopped so the next fire resumes there instead of abandoning the tail.
+
+### Pages hold still
+
+"Show more" used to re-query live data, so a row could appear on two pages — or worse, fall between them and never appear at all. A page-set is now frozen when page 1 renders: every later page slices the same list, totals stay consistent across pages, and if the data has genuinely moved on, the refresh says so instead of silently serving something different.
+
+### Every time is told in your clock
+
+Lateness notices named the wrong wall time — and sometimes the wrong day — wherever the machine's clock and the workspace's timezone disagreed. The notice now renders the slot in the clock it was authored in, everywhere.
+
+### Sturdier under bad data, quieter under its own writes
+
+- One malformed row in the event log could take down the entire undo listing. Undo now reads defensively — the bad row is visible but harmless — and the write gate refuses malformed numbering at the door.
+- A sent email can no longer close, or raise questions about, the very commitment it created. Same fence the meeting path got in v5.4.0, now on the sent-mail path.
+- Dashes as punctuation are now blocked in every document kind — with an automatic rewrite pass first, so a scheduled brief still saves as a clean document instead of failing at 5 PM with nobody watching. The "— Name" sign-off stays; per-client opt-out stays.
+
+### Files touched
+
+Per client repo: ~40 modifications and additions across lateness rendering, pagination, undo and the event gate, commitment matching, the voice gates, catch-up windows, and the maintenance dispatcher, plus test-fixture hygiene. Test additions remain in the source repo.
+
+### Customer migration impact
+
+No user action. Nothing to re-register — scheduled chats load fresh at fire time.
+
+### What's NOT in this ship
+
+The coach vertical; the sent-mail matcher upgrade (emails that *are* the deliverable closing commitments) and reply-based closure of waiting-on items — both ride the next cut.
+
+## v5.4.0 — 2026-07-27 — The system stops asking you about what it already knows, and a thread never names a folder that isn't there
+
+Minor bump: behavior changes you'll notice plus fixes, no migration. Two things get quieter — the queue of questions waiting on you, and the folder names attached to your work.
+
+### Fewer things to confirm
+
+The confirm queue was doing too much asking, and most of what landed there was not a real question.
+
+- **Processing a meeting no longer asks you about the commitments that same meeting just created.** This was the single largest source of noise: every transcript was scored against the items it had itself produced moments earlier, so one clean call could generate a page of questions that all had the same answer. A meeting is no longer compared against its own output.
+- **Duplicates that clearly agree merge themselves.** When two records of the same commitment corroborate each other, they merge without asking — and the merge can be reversed.
+- **An email address that matches exactly one person links itself.** One unambiguous match with nothing conflicting: it links, and it tells you it did.
+- **A receipt closes once everyone on it is accounted for**, and the close now carries the evidence it was based on instead of just asserting it.
+
+Everything above is narrated the same day it happens, and everything is reversible. Saying **undo** in a fresh chat now lists the recent automatic changes and lets you pick which to reverse — you no longer have to be in the conversation where it happened.
+
+### A thread never names a folder that isn't there
+
+A thread's folder name is now resolved against what actually exists. If nothing matches, the field stays empty rather than being filled with a guess — which is what put confident, wrong folder names on records and sent later work looking for a place that was never there.
+
+- The weekly tidy-up no longer creates folders to satisfy a name it invented.
+- Threads you have already closed stop being re-rendered.
+- An item that disappears from a review without anyone closing it is now flagged instead of quietly vanishing.
+
+### Files touched
+Per client repo: 22 modifications, 1 addition, plus the release files. Commitment matching, deduplication and closure, the identity and proposal paths, thread writing and rendering, the cleanup and reconcile surfaces, and a new phase-ordering check. Test additions remain in the source repo.
+
+### Customer migration impact
+No user action. Nothing to re-register — the changes take effect on the next meeting you process and the next weekly tidy-up.
+
+### What's NOT in this ship
+The coach vertical.
+
 ## v5.3.0 — 2026-07-27 — Ask for it now and it runs, the triage brief arrives as a real document, and every document lands where it belongs
 
 Minor bump: user-visible behavior changes plus fixes, no migration. Unlike the last two patch releases, this one you will notice.
