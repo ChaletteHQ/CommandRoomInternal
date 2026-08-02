@@ -584,6 +584,12 @@ Hard rules:
   Phase 2.6). One audit row per fire, always — a 0-scan run writes one too.
   `data: {kind, status, fired_via, batch_id, inbound_scanned_count, n_closed,
   n_pending, n_updated, n_partial_receipts, signal_fields, coverage}`.
+  `status` is `complete` on a real read and **`blocked`** when the inbound read
+  could not happen at all (TRAINFIX F-4 — the inbound mirror of MAILSEAM item
+  8); a blocked row adds `blocked_reason` in plain language, closes nothing and
+  queues no confirm. Before it, a fire that read NOTHING wrote the same clean
+  `inbound_scanned_count: 0` row as a fire that read everything and found
+  nothing, and the validator passed it.
   **Named consumer:** `reconcile_inbound_commitments.validate_inbound_reconcile_ran`,
   which both call sites run as their mandatory self-validation — a narrated
   "checked your inbox" with no row here is a fire that did not happen.
@@ -594,6 +600,32 @@ Hard rules:
   receipt says so rather than implying full coverage). This is an AUDIT TRACE,
   not a task receipt: it carries no `task_id`, `receipts.count_runs` never
   sees it, and the host task still writes its own `pack_run`.
+- `backlog_sweep` (SWEEPBACK, 2026-07-30) — **writer:**
+  `commitment_backlog_sweep.scan`, the ON-DEMAND historical backlog sweep
+  (`commitment-backlog-sweep` skill; never scheduled, registers no task). ONE
+  audit row per run, ALWAYS — including a dry run, whose row is the only thing
+  that run writes. `data: {kind, status, blocked_reason, dry_run, batch_id,
+  window_start, window_days, age_out_days, mail_provider, item_cap,
+  n_open_total, n_scanned, n_reachable_total, has_more, resume_after,
+  n_auto_closed, n_proposed, n_merge_groups, n_age_out, auto_closed, coverage,
+  signal_fields}`. `status` is `complete` or `blocked` (the historical mail read
+  could not happen), same discipline as both mail rails.
+  **Named consumers:** `commitment_backlog_sweep.validate_sweep_ran`, the
+  ungameable half — a narrated "swept your backlog" with no row here is a sweep
+  that did not happen, and a `blocked` row is refused with its reason; and
+  `commitment_backlog_sweep.last_scan`, which reads `resume_after` off the newest
+  row so a capped run resumes where it stopped instead of re-reading its own head
+  (the CATCHUP1 precedent — the resume point lives on the receipt, not in a side
+  file). `coverage` states the population the sweep could NOT reach and why
+  (items with no counterparty, items with no mail anchor, the thread-anchored
+  count it actually found, the meeting-sourced pile), because a receipt claiming
+  full coverage of the open set would be lying by omission. This is an AUDIT
+  TRACE, not a task receipt: no `task_id`, `receipts.count_runs` never sees it,
+  and there is no host task — the sweep only ever runs because a human asked.
+  The closures a sweep applies are ordinary `commitment_resolved` /
+  `commitment_superseded` rows stamped `brain_batch_id: swb_<UTC>-<8 hex>` +
+  `brain_change_class`, so `undo` lists and reverses a sweep with the reversers
+  that already exist.
 
 ## Receipt contract (v4.5.2 R1)
 

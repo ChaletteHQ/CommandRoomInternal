@@ -121,11 +121,11 @@ Do NOT fire on a fresh workspace (<14 days of events). There's not enough data t
 |---|---|---|
 | Chronological timeline (last 30 days) | events.jsonl filtered by `ts` desc, grouped by day, with type-label + confidence-marker | Pass 1, Pass 4 |
 | Relationship cadence staleness | entities.json people × last `interaction` / `meeting` event per person, compared to expected cadence | Pass 1 |
-| Commitment aging | `cru_match.load_open_commitments` grouped by counterparty + owner, with `(today - due)` days-aged | Pass 2 |
+| Commitment aging | `cru_match.load_open_commitments` → `cru_match.split_pending_review(...)`, **confirmed half only** (INTAKE — an unconfirmed extraction has no age worth reporting; ageing a guess manufactures a problem), grouped by counterparty + owner, with `(today - due)` days-aged | Pass 2 |
 | Dormant threads | entities.json threads × max ts of any event scoped to that thread; dormant if max-ts > 30 days | Pass 5 |
 | Theme recurrence | events.jsonl filtered to `theme`-kind threads, count distinct project mentions in last 14 days | Pass 3 |
 
-After synthesis, write the rendered projections to `_hq/views/TIMELINE.md`, `_hq/views/RELATIONSHIPS.md`, `_hq/views/COMMITMENT_AGING.md`, `_hq/views/DORMANT.md`, `_hq/views/THEMES.md`. **On scheduled fires these writes are MANDATORY — keeping the Tier 2 snapshots fresh is part of the weekly task's job** (an "optional" write on a scheduled fire is how views freeze — the v4.2.0 frozen-views class). On explicit-trigger runs they're optional. Per `references/SOURCE_OF_TRUTH.md` the view files remain Tier 2 snapshots, not the source: the next run regenerates from canonical state, and this skill never reads them as input.
+After synthesis, write the rendered projections to `_hq/views/TIMELINE.md`, `_hq/views/RELATIONSHIPS.md`, `_hq/views/COMMITMENT_AGING.md`, `_hq/views/DORMANT.md`, `_hq/views/THEMES.md`. `COMMITMENT_AGING.md` may carry the queue as ONE labelled pointer line at the foot — mirror the in-code precedent from `render_master_tracker`: *"N unconfirmed — not counted as open commitments above; say `needs your call`"* — never as aged rows. **On scheduled fires these writes are MANDATORY — keeping the Tier 2 snapshots fresh is part of the weekly task's job** (an "optional" write on a scheduled fire is how views freeze — the v4.2.0 frozen-views class). On explicit-trigger runs they're optional. Per `references/SOURCE_OF_TRUTH.md` the view files remain Tier 2 snapshots, not the source: the next run regenerates from canonical state, and this skill never reads them as input.
 
 ---
 

@@ -136,7 +136,7 @@ Optional modifiers:
 2. **Pull unread / flagged email** via the declared mail connector (resolved through the seam per the Writer Contract; empty map = today's behavior).
 3. **Enrich each message.**
    - Sender importance: VIP if in `_hq/PEOPLE.md` with `tier: board|investor|customer|top-vendor`; otherwise rank by historical reply frequency
-   - Project context: existing OPEN commitments tied to the project this email belongs to. **Use `shared/scripts/cru_match.py::load_open_commitments(events.jsonl_path)`** filtered by `primary_thread_id` or by counterparty `person_id` — NOT MASTER_TRACKER (per `references/SOURCE_OF_TRUTH.md`, MASTER_TRACKER is a Tier 2 view and may be stale). `load_open_commitments` is the canonical reader: it handles all 5 commitment-event shape variants and treats both `commitment_resolved` and `thread_resolved` as valid closers, so commitments that fired through the dashboard ✓ done path are correctly filtered out.
+   - Project context: existing OPEN commitments tied to the project this email belongs to. **Use `shared/scripts/cru_match.py::load_open_commitments(events.jsonl_path)`** filtered by `primary_thread_id` or by counterparty `person_id` — NOT MASTER_TRACKER (per `references/SOURCE_OF_TRUTH.md`, MASTER_TRACKER is a Tier 2 view and may be stale). `load_open_commitments` is the canonical reader: it handles all 5 commitment-event shape variants and treats both `commitment_resolved` and `thread_resolved` as valid closers, so commitments that fired through the dashboard ✓ done path are correctly filtered out. **Keep the confirmed half — `cru_match.split_pending_review(opens)[0]` (INTAKE).** The raw reader is deliberately unfiltered, so it still carries UNCONFIRMED extractions; enriching an email with "you already owe them this" off a guess sends the triage decision the wrong way. Those rows belong to the needs-your-call queue (`needs your call`), not to the project context on an inbox card.
    - Urgency signals: deadlines mentioned in the body, explicit "need by…" phrasing
 3.5. **Fetch the full thread BEFORE classifying state (v3.13.0+ MANDATORY — closes the "stalled on you" inversion bug).**
 
@@ -431,7 +431,7 @@ The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the stan
 
 - **Pairs with `morning-briefing`** — inbox-triage output can be embedded as a section of the briefing
 - **Pulls from `_hq/PEOPLE.md`** for VIP ranking (Tier 2 view per `references/SOURCE_OF_TRUTH.md` — fine for static "who is a VIP" tier lookup; not used for "what's outstanding")
-- **Pulls open commitments from `_hq/data/events.jsonl`** via `cru_match.load_open_commitments` (canonical Tier 1 source). NOT from MASTER_TRACKER — see `references/SOURCE_OF_TRUTH.md` overlay rule.
+- **Pulls open commitments from `_hq/data/events.jsonl`** via `cru_match.load_open_commitments`, confirmed half only (`cru_match.split_pending_review(...)` — INTAKE; unconfirmed extractions are needs-your-call queue members, not context for a triage decision). Canonical Tier 1 source. NOT from MASTER_TRACKER — see `references/SOURCE_OF_TRUTH.md` overlay rule.
 - **Drafts via the declared mail backend** (seam-resolved, never named here) — never direct send
 - **Voice from `_hq/voice/voice-block-inbox-triage.md` (the customer voice override, per `shared/VOICE_CALIBRATION.md`)** (optional)
 
@@ -445,7 +445,7 @@ The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the stan
 
 - **Mail connector** (required — whichever backend is declared; discovered via `tool_discovery` per Rule 21)
 - **PEOPLE.md** — VIP ranking (Tier 2 view; static-tier lookup only)
-- **`_hq/data/events.jsonl`** — open-commitment overlap (Tier 1 source, read via `cru_match.load_open_commitments`)
+- **`_hq/data/events.jsonl`** — open-commitment overlap (Tier 1 source, read via `cru_match.load_open_commitments` then `cru_match.split_pending_review(...)`, confirmed half)
 - **`_hq/voice/voice-block-inbox-triage.md`** (optional) — customer voice override (per `shared/VOICE_CALIBRATION.md`)
 - **morning-briefing skill** — embedding target
 

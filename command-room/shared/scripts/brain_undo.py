@@ -124,7 +124,11 @@ def _reverse_commitment_merge(workspace_root, change, *, undone_by, source_skill
                 workspace_root, cid,
                 suspected_duplicate_of=str(survivor_id),
                 score=change.get("auto_merge_score"),
-                reason="you reversed the automatic merge — merge these by "
+                # F-3: NOT "the automatic merge". Nothing in this system merges
+                # on its own — a merge is a button the user pressed — and saying
+                # otherwise on a review surface contradicts the never-auto-merge
+                # pillar to the one reader who just reversed it by hand.
+                reason="you reversed the merge — merge these by "
                        "hand or keep both",
                 flagged_by=undone_by, source_skill=source_skill,
             )

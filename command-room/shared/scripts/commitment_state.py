@@ -129,6 +129,18 @@ def is_overdue(due_value: Optional[str], now_iso: str) -> bool:
     return due < today
 
 
+def _age_in_days(ts_value: Optional[str], now_iso: str):
+    """Whole days between a capture's ts and now, or None when either end is
+    unparseable. Date-granular on purpose: the brief's lane ranks by age band,
+    and an hours-precise age would reorder the list between two fires on the
+    same day for no reason a reader could see."""
+    when = _parse_date(ts_value)
+    today = _parse_date(now_iso)
+    if when is None or today is None:
+        return None
+    return max(0, (today - when).days)
+
+
 def commitment_kind(ev: dict) -> str:
     """Read a commitment event's `data.kind`, defaulting missing/empty to
     `promise` (pre-Phase-1 events carry no kind; they are promises)."""
@@ -234,10 +246,26 @@ def count_commitments(
     directly, via `commitment_counts(workspace_root)`, or via
     `compute_brief_state(...)["counts"]` (which delegates here).
 
+    INTAKE (2026-07-31) — pending_review items are QUEUE MEMBERS, not open
+    commitments. A `data.pending_review` item is an UNCONFIRMED extraction:
+    the extractor guessed, nobody has agreed it is real work, and
+    cru_match._is_pending_review already bars it from auto-close and chase.
+    So it counts in ONE place — `unconfirmed`, the pointer to the
+    needs-your-call queue — and in no other tally here: not `total`, not the
+    direction buckets, not overdue/undated/by_kind, not stuck/blocked.
+    Confirming one (commitment_state.clear_review_flags /
+    confirm_commitment_owner) moves it into the ordinary numbers with no
+    other change; dropping one closes it with resolution=dropped. This is a
+    DELIBERATE repoint of `total`: before it, an extractor could inflate the
+    user's open book by guessing.
+
     Keys:
-      total     — len(open_commitments). The canonical headline every surface
-                  reports (Bug #85 / A85: never you_owe + they_owe, never a
-                  confidence- or staleness-filtered subset).
+      total     — count of NON-pending top-level items: the open book the
+                  user is actually carrying. The canonical headline every
+                  surface reports (Bug #85 / A85: never you_owe + they_owe,
+                  never a confidence- or staleness-filtered subset — the
+                  pending exclusion is the one carve-out, and it has its own
+                  visible counter).
       you_owe   — owner is the primary user (direction: user owes).
       they_owe  — owner is someone else (direction: owed to the user).
       unowned   — no resolvable owner_id (extraction gap; still open, still in
@@ -265,12 +293,18 @@ def count_commitments(
                     unconfirmed — pending_review items, their own line
                       (per the W4b design: unconfirmed items are not owned
                       yet — folding them into a direction is how one day
-                      produced four different open counts);
-                    overdue — same as top-level `overdue` (full open set);
-                    total — same as top-level `total`.
-                  Invariant: you_owe + owed_to_you + unowned + unconfirmed
-                  == total. No surface may re-derive its own buckets or fold
-                  unowned/unconfirmed into a direction.
+                      produced four different open counts). INTAKE: this is
+                      a POINTER count into the needs-your-call queue, NOT a
+                      slice of `total`;
+                    needs_review — alias of `unconfirmed`, for readers that
+                      name the queue rather than the flag;
+                    overdue — same as top-level `overdue` (confirmed set);
+                    total — same as top-level `total` (confirmed set).
+                  Invariant (INTAKE): you_owe + owed_to_you + unowned
+                  == total, and `unconfirmed` sits OUTSIDE that partition
+                  (pre-INTAKE it was the fourth term). No surface may
+                  re-derive its own buckets or fold unowned/unconfirmed into
+                  a direction.
                   v4.6.0 MC2 extends the export (existing keys untouched)
                   with the REAL stuck metric — present ONLY when the caller
                   supplies `movement` (a derive_commitment_movement map) and
@@ -316,25 +350,27 @@ def count_commitments(
     from cru_match import partition_subitems
     top_level, sub_items = partition_subitems(open_commitments)
     you_owe = they_owe = unowned = overdue = undated = 0
-    h_you_owe = h_owed_to_you = h_unowned = unconfirmed = 0
+    unconfirmed = 0
     by_kind: dict[str, int] = {}
+    # INTAKE — a pending_review item is a QUEUE MEMBER, not an open
+    # commitment. It increments `unconfirmed` (the pointer count) and is
+    # skipped from every other tally: direction buckets, overdue, undated,
+    # by_kind, and the stuck/blocked classification input below. An
+    # extractor's guess must not inflate a number the user reads as "how
+    # many promises am I carrying".
+    confirmed_top: list[dict] = []
     for ev in top_level:
+        if _is_pending_review(ev):
+            unconfirmed += 1
+            continue
+        confirmed_top.append(ev)
         owner = _commitment_field(ev, "owner_id")
-        pending = _is_pending_review(ev)
         if owner and user_person_id and owner == user_person_id:
             you_owe += 1
-            if not pending:
-                h_you_owe += 1
         elif owner:
             they_owe += 1
-            if not pending:
-                h_owed_to_you += 1
         else:
             unowned += 1
-            if not pending:
-                h_unowned += 1
-        if pending:
-            unconfirmed += 1
         due = _commitment_field(ev, "due")
         if _parse_date(due) is None:
             undated += 1
@@ -343,11 +379,13 @@ def count_commitments(
         kind = commitment_kind(ev)
         by_kind[kind] = by_kind.get(kind, 0) + 1
     headline = {
-        "total": len(top_level),
-        "you_owe": h_you_owe,
-        "owed_to_you": h_owed_to_you,
-        "unowned": h_unowned,
+        "total": len(confirmed_top),
+        "you_owe": you_owe,
+        "owed_to_you": they_owe,
+        "unowned": unowned,
         "unconfirmed": unconfirmed,
+        # Alias for readers that name the queue rather than the flag.
+        "needs_review": unconfirmed,
         "overdue": overdue,
     }
     if movement is not None and now_iso:
@@ -355,8 +393,11 @@ def count_commitments(
         # (F-54 cross-surface-split rule: no surface computes its own).
         # SUB1: classified over top-level items only — a child never renders
         # as its own stuck row (its activity bubbles to the parent).
+        # INTAKE: classified over the CONFIRMED top-level partition — an
+        # unconfirmed extraction cannot be "stuck"; nobody has agreed it is
+        # work yet.
         from commitment_activity import classify_commitments
-        cls = classify_commitments(top_level, movement, now_iso)
+        cls = classify_commitments(confirmed_top, movement, now_iso)
         headline["stuck"] = len(cls["stuck"])
         headline["blocked"] = len(cls["blocked"])
     # SUB1 D2 — the two ADDITIVE keys, present only when sub-items exist
@@ -377,7 +418,9 @@ def count_commitments(
         # to the pre-SUB1 len(open_commitments)). Both the brief header and
         # the coach MUST report THIS number (Bug #85 + the A85 followup).
         # you_owe + they_owe alone drops ownerless items.
-        "total": len(top_level),
+        # INTAKE: pending_review items are NOT in this total — they are the
+        # needs-your-call queue, counted separately as headline.unconfirmed.
+        "total": len(confirmed_top),
         "you_owe": you_owe,
         "they_owe": they_owe,
         "unowned": unowned,
@@ -633,6 +676,7 @@ def compute_brief_state(
     sent_reconcile_cursor: Optional[str] = None,
     todays_meetings: Optional[Iterable[dict]] = None,
     commitment_movement: Optional[dict] = None,
+    workspace_root=None,
 ) -> dict:
     """Compute the deterministic commitment state for a brief / commitments fire.
 
@@ -666,6 +710,14 @@ def compute_brief_state(
         supplied, counts["headline"] carries the real stuck/blocked numbers.
         compute_and_log_brief_state derives it automatically from the
         workspace; direct callers of THIS pure function pass it themselves.
+      workspace_root: optional workspace path, forwarded to Path 5
+        (`match_calendar_to_commitments`) for F-28 — the roster reader needs
+        the entity graph to see that one person written as BOTH a
+        `counterparty_id` and that person's free-text name is ONE
+        counterparty, not two. Without it Path 5's MC1 downgrade carries a
+        parameter nothing fills (the post-review F-1 dead-rail finding). This
+        function still does no I/O of its own. `None` is byte-identically
+        pre-F-28.
 
     Returns:
       {
@@ -707,6 +759,10 @@ def compute_brief_state(
     you_owe_commitments: list[dict] = [
         ev for ev in top_level_commitments
         if _commitment_field(ev, "owner_id") == user_person_id
+        # INTAKE — an unconfirmed extraction is a queue member, not work the
+        # user owes: it never enters needs_attention and never reaches the
+        # calendar matcher (which could otherwise auto-resolve a guess).
+        and not _is_pending_review(ev)
     ]
 
     # Calendar-action drops: one batch call over all you-owe commitments.
@@ -716,6 +772,10 @@ def compute_brief_state(
             open_commitments=you_owe_commitments,
             user_person_id=user_person_id,
             calendar_events=calendar_events,
+            # F-28 — the entity graph is what tells Path 5's MC1 downgrade that
+            # one person written as an id AND that person's name is one
+            # counterparty. Absent → the raw union, pre-F-28.
+            workspace_root=workspace_root,
         )
         calendar_resolved_ids = {
             r["commitment_id"] for r in cal_results
@@ -749,6 +809,13 @@ def compute_brief_state(
             "thread_id": thread_id,
             "due": due,
             "overdue": is_overdue(due, now_iso),
+            # CAPTUREFLOW §D — the brief's lane ranks due-then-age, so the
+            # capture's own ts has to ride the row. Additive, and deliberately
+            # the RAW ts rather than a derived age: a now-relative number on a
+            # substrate-shaped row is a date bomb (G14's class) the moment
+            # anything goldens or caches it. `cap_needs_attention` derives the
+            # age itself, from this value and its own `now_iso`.
+            "captured_ts": ev.get("ts") or "",
             # When True the brief MUST soften this item (you may have already sent
             # the email that closes it) rather than telling the CEO to redo it.
             "reconcile_stale": reconcile_stale,
@@ -787,6 +854,104 @@ def compute_brief_state(
     }
 
 
+# ---------------------------------------------------------------------------
+# CAPTUREFLOW §D — the morning brief's needs-attention lane, capped
+# ---------------------------------------------------------------------------
+#
+# The lane was unbounded: 72 rows on the audited workspace, in a surface whose
+# whole job is to be readable before coffee. `compute_brief_state` still
+# returns the FULL list — the header counts stay unfiltered (the :299 doctrine:
+# a cap is a render bound, never a silence, and a count that quietly shrinks is
+# its own dishonesty) — and this is the render bound the brief applies on top.
+
+BRIEF_ATTENTION_CAP = 5          # M's ruling, CAPTUREFLOW §0.5 #4
+BRIEF_ROTATION_AGE_DAYS = 14     # nothing older than this can stay unseen
+
+
+def attention_age_days(row: dict, now_iso: str):
+    """A lane row's age in whole days, from its `captured_ts`. None when the
+    row carries no parseable ts — an unknown age sorts last rather than
+    pretending to be brand new, and never rotates."""
+    return _age_in_days(row.get("captured_ts"), now_iso)
+
+
+def _attention_rank(row: dict) -> tuple:
+    """Due-then-age. Dated items lead, earliest due first; undated items
+    follow, oldest capture first; an unknown capture time sorts last inside
+    its band. Pure in the row alone — no clock — so the ORDER of a lane is
+    stable across a day and two fires cannot disagree about it."""
+    due = _parse_date(row.get("due"))
+    captured = _parse_date(row.get("captured_ts"))
+    return (
+        0 if due is not None else 1,
+        due.toordinal() if due is not None else 0,
+        0 if captured is not None else 1,
+        captured.toordinal() if captured is not None else 0,
+        str(row.get("commitment_id") or ""),
+    )
+
+
+def cap_needs_attention(rows, *, cap: int = BRIEF_ATTENTION_CAP,
+                        now_iso: str = "",
+                        rotation_age_days: int = BRIEF_ROTATION_AGE_DAYS
+                        ) -> dict:
+    """Rank the needs-attention lane and bound it at `cap`.
+
+    Returns `{"shown": [...], "n_total": int, "n_more": int,
+              "more_line": str, "rotated_in": str|None}`.
+
+    THE ROTATION RULE — no item can be suppressed forever. Ranking alone would
+    park a low-priority row below the fold permanently: it never ages into the
+    top five because five other things always outrank it, and a lane that
+    silently never shows a real promise is the same defect as no lane at all.
+    So whenever the overflow contains items older than `rotation_age_days`, ONE
+    of them takes the last slot, chosen round-robin by the DATE of the fire
+    (`now_iso`'s ordinal modulo the aged set). Deterministic — the same day
+    yields the same choice, so a re-fire is not a reshuffle — and every aged
+    item comes up within `len(aged)` days.
+
+    No new state: the rotation is a pure function of the day and the current
+    overflow, which is what keeps it honest across machines (a per-machine
+    "last shown" ledger would rotate differently on M's laptop than on his
+    desktop). Pure — no I/O."""
+    ranked = sorted(list(rows or []), key=_attention_rank)
+    cap = max(0, int(cap))
+    n_total = len(ranked)
+    if n_total <= cap:
+        return {"shown": ranked, "n_total": n_total, "n_more": 0,
+                "more_line": "", "rotated_in": None}
+
+    shown = ranked[:cap]
+    overflow = ranked[cap:]
+    rotated_in = None
+    if cap > 0:
+        aged = []
+        for r in overflow:
+            age = attention_age_days(r, now_iso)
+            if isinstance(age, int) and age >= int(rotation_age_days):
+                aged.append(r)
+        if aged:
+            today = _parse_date(now_iso)
+            pick = aged[(today.toordinal() if today else 0) % len(aged)]
+            shown = shown[:cap - 1] + [pick]
+            overflow = [r for r in ranked[cap:] if r is not pick]
+            overflow.insert(0, ranked[cap - 1])
+            rotated_in = str(pick.get("commitment_id") or "")
+
+    n_more = n_total - len(shown)
+    noun = "one" if n_more == 1 else "more"
+    return {
+        "shown": shown,
+        "n_total": n_total,
+        "n_more": n_more,
+        # 'commitment triage' is the registered trigger; a bare "triage" routes
+        # to inbox-triage, which is a different surface entirely.
+        "more_line": (f"…and {n_more} {noun} — say `commitment triage` for "
+                      f"the full list."),
+        "rotated_in": rotated_in,
+    }
+
+
 def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefing", **kwargs):
     """Compute the brief state AND emit a `brief_state` audit event carrying the
     CODE's real numbers (Bug #99).
@@ -819,6 +984,10 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
             )
         except Exception:
             pass
+    # F-28 — this wrapper HOLDS the workspace, so Path 5's roster fix reaches
+    # the brief/commitments fires rather than sitting behind a parameter nothing
+    # fills. `setdefault`, so an explicit caller value still wins.
+    kwargs.setdefault("workspace_root", workspace_root)
     state = compute_brief_state(**kwargs)
     try:
         from pathlib import Path as _Path
@@ -849,20 +1018,18 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
 def latest_brief_state_event(workspace_root) -> dict | None:
     """Return the most recent `brief_state` event's data dict (Bug #99 check), or
     None if the brief never logged one — i.e. it bypassed compute_brief_state."""
-    import json
+    from cru_match import load_events_defensively
     from pathlib import Path as _Path
     p = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     if not p.exists():
         return None
     latest = None
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
+    # EVGUARD — was a hand-rolled loop whose `except Exception` wrapped only
+    # the parse, so a bare-string line reached `e.get()` and raised
+    # AttributeError out of the function (Sub-bug #14b, second half). The
+    # canonical loader skips both malformed shapes; since_ts=None = full history.
+    events, _skipped = load_events_defensively(p, since_ts=None)
+    for e in events:
         if e.get("type") == "brief_state":
             latest = e
     return (latest or {}).get("data") if latest else None
@@ -1315,6 +1482,8 @@ def supersede_commitment(
     user_confirmed: bool = False,
     auto_merge: bool = False,
     auto_merge_evidence: Optional[dict] = None,
+    brain_batch_id: Optional[str] = None,
+    brain_change_class: Optional[str] = None,
 ) -> dict:
     """THE merge writer (v4.6.0 C4): two open items are the same real-world
     commitment → close the duplicate with a `commitment_superseded` event that
@@ -1363,7 +1532,27 @@ def supersede_commitment(
     so there is no human decision being taken away. The evidence lands on
     the event, which is also what makes the merge undoable: the stamps carry
     `brain_batch_id` + `brain_change_class` for `brain_undo`.
+
+    SWEEPBACK — `brain_batch_id` / `brain_change_class` for a USER-CONFIRMED
+    merge. Before this, the undo stamps could only ride the `auto_merge_evidence`
+    dict, which is read ONLY when `auto_merge=True` — so a merge the user
+    approved was unreachable by `brain_undo.undo_batch`, while a merge nobody
+    approved was reversible. The backlog sweep merges only on an explicit
+    approval and must still land in its one `swb_` batch, so the two stamps are
+    now first-class parameters. They travel TOGETHER (one without the other is a
+    ValueError, same rule as `people_writer` / `org_writer`): a `brain_batch_id`
+    with no `brain_change_class` is a row `_changes_for_brain_batch` silently
+    skips, which is an undo handle that looks present and reverses nothing. The
+    class must be one `brain_undo.REVERSERS` knows — pass `"commitment_merge"`,
+    whose reverser reopens the absorbed item and puts the pair back on the flag
+    tier. Both None (the default) = pre-SWEEPBACK behavior, byte-identical.
     """
+    if (brain_batch_id is None) != (brain_change_class is None):
+        raise ValueError(
+            "brain_batch_id and brain_change_class travel together — a batch id "
+            "with no change class is a row brain_undo skips, i.e. an undo handle "
+            "that looks present and reverses nothing"
+        )
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -1433,6 +1622,15 @@ def supersede_commitment(
             for k, v in (auto_merge_evidence or {}).items():
                 if v not in (None, ""):
                     data[k] = v
+        if brain_batch_id is not None:
+            # SWEEPBACK — the undo handle for a merge the USER approved. Set
+            # AFTER the auto_merge fold so an explicit batch id wins over one
+            # that arrived inside `auto_merge_evidence`; the two paths are
+            # mutually exclusive in practice (nothing auto-merges inside a
+            # sweep), and "the explicit argument wins" is the only rule that
+            # cannot surprise a caller.
+            data["brain_batch_id"] = brain_batch_id
+            data["brain_change_class"] = brain_change_class
 
         ev = {
             "type": "commitment_superseded",
@@ -1855,8 +2053,14 @@ def mark_partial_received(
         if _commitment_id(c) == cid:
             projected = c
             break
-    propose_closure = bool(projected is not None and _all_rcv(projected))
-    outstanding = _outstanding(projected) if projected is not None else []
+    # F-28: pass the workspace so the roster reader can collapse one person
+    # written as an id AND that person's name into ONE counterparty — otherwise
+    # the last real receipt never proposes closure and the phantom leg is
+    # reported as still outstanding to the caller that renders the chase.
+    propose_closure = bool(projected is not None
+                           and _all_rcv(projected, workspace_root=workspace_root))
+    outstanding = (_outstanding(projected, workspace_root=workspace_root)
+                   if projected is not None else [])
     return {
         "status": "received",
         "commitment_id": cid,
@@ -2414,6 +2618,10 @@ __all__ = [
     "match_commitments_to_meetings",
     "compute_brief_state",
     "compute_and_log_brief_state",
+    "cap_needs_attention",
+    "attention_age_days",
+    "BRIEF_ATTENTION_CAP",
+    "BRIEF_ROTATION_AGE_DAYS",
     "latest_brief_state_event",
     "normalize_commitment_id",
     "close_commitment",

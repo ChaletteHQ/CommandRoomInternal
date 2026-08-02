@@ -131,6 +131,7 @@ def reconcile_sent(
     user_person_id,
     provider=None,
     exclude_captured_since=None,
+    workspace_root=None,
 ):
     """Match a batch of outbound Sent messages to open commitments.
 
@@ -188,6 +189,17 @@ def reconcile_sent(
     separately from TRUTH — a message that genuinely has no attachment is a
     fact about the mail; a message whose dict never carried the key is a fact
     about the FETCH, and only the second one means the rail is dead.
+
+    `workspace_root` (F-28 post-review F-1) — forwarded to Path 1 so the roster
+    reader can resolve a free-text `counterparty_name` against the entity graph
+    and see that one person written as BOTH an id and that person's name is ONE
+    counterparty. Without it Path 1 carries a parameter nothing fills, which is
+    the AUTOAPPLY F-5 dead-rail shape: the review found this rail scoring the
+    F-28 defect shape as `partial` while the id-only control auto-closed. The
+    function stays PURE in the sense that matters — it does no I/O of its own;
+    it hands the path down to the one reader that reads the entity graph, and
+    only when a caller supplies it. `None` (the default) is byte-identically
+    pre-F-28, so every existing caller and test is unaffected.
 
     Pure: no I/O, no clock. The caller emits the events + persists the cursor.
     """
@@ -304,6 +316,10 @@ def reconcile_sent(
             # the fetch → the guard is inert, never a guess.
             send_ts=msg.get("ts"),
             diagnostics=_evorder_diag,
+            # F-28 — the entity graph is what tells the roster reader that one
+            # person written as an id AND that person's name is one
+            # counterparty, not two. Absent → the raw union, pre-F-28.
+            workspace_root=workspace_root,
         )
         for r in results:
             rec = r.get("recommendation")
@@ -734,12 +750,19 @@ def reconcile_and_receipt(
             provider=provider,
         )
 
-    opens = load_open_commitments(str(events_path))
+    # F-28 — the workspace goes to the projector too, so the MC1 all-received
+    # stamp on the rows this driver matches agrees with the roster reader the
+    # matcher below uses. One workspace, one answer, per fire.
+    opens = load_open_commitments(str(events_path), workspace_root=workspace_root)
     n_open_before = len(opens)
 
     res = reconcile_sent(opens, sent_messages or [], user_person_id=user_person_id,
                          provider=provider,
-                         exclude_captured_since=exclude_captured_since)
+                         exclude_captured_since=exclude_captured_since,
+                         # F-28 — this wrapper HOLDS the workspace and used to
+                         # keep it, leaving Path 1's roster fix unreachable on
+                         # the rail that fires daily.
+                         workspace_root=workspace_root)
     auto_close = res["auto_close"]
     pending = res["pending"]
     partial = res.get("partial") or []
@@ -1142,10 +1165,23 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
     out["batch_id"] = batch_id
     events, _skipped = load_events_defensively(events_path)
 
-    for c in load_open_commitments(events_path):
+    # F-28 post-review (F-2): the workspace goes to the LOADER too, not only to
+    # the predicate below. Otherwise this function's own gate and the projection
+    # stamp the chase surface reads disagree — the closer would close an item
+    # the chase had already rendered invisible, and the skip reason below
+    # ("renders the confirm row unchanged") would be describing a row gated on a
+    # stamp nothing set.
+    for c in load_open_commitments(events_path, workspace_root=ws):
         d = c.get("data") if isinstance(c.get("data"), dict) else {}
         cid = _cid(c)
-        if not all_counterparties_received(c):
+        # F-28: `workspace_root` is what lets the roster reader see that one
+        # person written as an id AND that person's name is ONE counterparty.
+        # Without it, an item whose id leg WAS receipted still showed a phantom
+        # name leg outstanding, so this predicate stayed False forever and the
+        # item sat in purgatory — the id leg receipted, the phantom leg
+        # unreachable (a name-only leg can never receive a receipt by design).
+        # This is the un-sticking seam.
+        if not all_counterparties_received(c, workspace_root=ws):
             continue
         if d.get("pending_review"):
             out["skipped"].append({"commitment_id": cid,
@@ -1219,19 +1255,21 @@ def validate_reconcile_ran(workspace_root, *, since_cursor=None) -> dict:
     healthy empty run, which is the exact dead rail the blocked status exists
     to expose (a clean audit over a skipped read).
     """
-    import json
+    from cru_match import load_events_defensively
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     if not events_path.exists():
         return {"ok": False, "ran": False, "reason": "no events.jsonl"}
     latest = None
-    for line in events_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
+    # EVGUARD — the hand-rolled loop that used to live here wrapped only the
+    # parse in `except Exception`, so a bare-string line reached `e.get()` and
+    # raised AttributeError out of the validator (Sub-bug #14b, second half):
+    # one junk line and the ungameable-reconcile check stopped answering at
+    # all. The canonical loader skips both malformed shapes and is
+    # shard-transparent; since_ts=None = full history.
+    # Kept BYTE-FOR-BYTE parallel with reconcile_inbound_commitments.
+    # validate_inbound_reconcile_ran — the two are copy-clones by design.
+    events, _skipped = load_events_defensively(events_path, since_ts=None)
+    for e in events:
         if e.get("type") == "sent_reconcile":
             latest = e  # append-ordered → keep the last one seen
     if latest is None:
@@ -1279,5 +1317,8 @@ if __name__ == "__main__":
         payload.get("open_commitments") or [],
         payload.get("sent_messages") or [],
         user_person_id=payload.get("user_person_id") or "",
+        # F-28 — a shell caller can supply the workspace so the roster reader
+        # reaches the entity graph here too; absent, the raw union as before.
+        workspace_root=payload.get("workspace_root"),
     )
     print(json.dumps(out, indent=2))

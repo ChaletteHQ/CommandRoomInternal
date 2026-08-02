@@ -16,7 +16,7 @@ Every name-bearing trigger ("move [deal] to [stage]", "mark [deal] won", "new de
 
 ## Writer Contract
 
-- **Reads:** `_hq/data/entities.json` threads/orgs (via `deal_state.list_open_deals` / `list_closed_deals` — defensive, wrapper-aware), events via `deal_state.load_deal_events` + `thread_activity.derive_thread_activity` with `honor_reclassifications=True` (recency — RECL1: corrections move contact activity with the event, so `days_quiet` is honest; NEVER the deprecated `thread.last_activity`), open commitments via `cru_match.load_open_commitments` (the next-step signal), `_hq/data/skill_config/pipeline-tracker.json`.
+- **Reads:** `_hq/data/entities.json` threads/orgs (via `deal_state.list_open_deals` / `list_closed_deals` — defensive, wrapper-aware), events via `deal_state.load_deal_events` + `thread_activity.derive_thread_activity` with `honor_reclassifications=True` (recency — RECL1: corrections move contact activity with the event, so `days_quiet` is honest; NEVER the deprecated `thread.last_activity`), open commitments via `cru_match.load_open_commitments` **routed through `cru_match.split_pending_review(...)` — confirmed half only** (the next-step signal; INTAKE — a pending row marks a deal "has next step" off a guess and masks exactly the rot this skill exists to surface), `_hq/data/skill_config/pipeline-tracker.json`.
 - **Writes — ONLY through `shared/scripts/deal_state.py`,** the single writer of every `deal.*` field and every `deal_*` event (`deal_created` / `deal_updated` / `deal_stage_changed` / `deal_won` / `deal_lost`). It routes through `thread_writer` + `event_gate.append_event` internally. Hand-editing entities.json or hand-appending a deal event is forbidden — that is exactly how engagement labels became a free-text status store.
 - **Next steps are commitments** (D3): "next step: send revised proposal by Fri" is a standard `commitment` event with `primary_thread_id` = the deal thread. It closes ONLY via `commitment_state.close_commitment`. No parallel task concept, no `deal.next_step` field.
 - **Config** via `skill_config_writer` (`save_skill_config` / `get_config` / `wipe_skill_config`).
@@ -101,13 +101,13 @@ import sys, json, datetime
 sys.path.insert(0, 'shared/scripts')
 import deal_state, deal_health, pipeline_math
 from thread_activity import derive_thread_activity
-from cru_match import load_open_commitments
+from cru_match import load_open_commitments, split_pending_review
 ws = '<workspace_root>'
 opens = deal_state.list_open_deals(ws)
 closed = deal_state.list_closed_deals(ws)
 events, skipped = deal_state.load_deal_events(ws)
 activity = derive_thread_activity(ws, honor_reclassifications=True)  # RECL1
-open_cmts = load_open_commitments(ws + '/_hq/data/events.jsonl')
+open_cmts = split_pending_review(load_open_commitments(ws + '/_hq/data/events.jsonl'))[0]  # INTAKE — confirmed half
 next_step_ids = {c.get('primary_thread_id') for c in open_cmts if c.get('primary_thread_id')}
 today = datetime.date.today()
 # rot thresholds from cfg['rot_preset'] (standard/relaxed/aggressive map above)

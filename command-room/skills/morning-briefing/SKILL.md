@@ -13,6 +13,12 @@ The drop logic drifts when re-derived in prose (the v3.14.7 calendar-close bug w
 
 For the open-commitment / overdue-follow-up sections, you MUST call `shared/scripts/cru_match.py::load_open_commitments(events_jsonl_path)` — do NOT hand-roll an events.jsonl scan. The canonical helper handles closure-suppression (v3.11.4 `data.target_id` defensive id-field), malformed-line tolerance (Sub-bug #14b 2-layer defense), and dual-shape confidence values. If `load_events_defensively()` reports `skipped` lines (substrate corruption), surface a soft banner to the user: "A few entries in your activity log look incomplete — I'll tidy those up during this weekend's cleanup." Do NOT silently filter.
 
+**INTAKE (2026-07-31) — what you RENDER is the confirmed half.** `load_open_commitments` is deliberately unfiltered: it is the projection primitive, so it still carries UNCONFIRMED extractions (`data.pending_review`) the extractor merely guessed at. Any list of rows this brief surfaces — Needs Attention, overdue-by-attendee, the team flags — takes `cru_match.split_pending_review(opens)[0]` and renders that half only; the unconfirmed items are needs-your-call queue members and reach the CEO as ONE labelled pointer line, never as rows folded into the day's work. There are exactly TWO exceptions, and neither is a licence to widen the rule.
+
+**Exception 1 — the raw list you hand to the counting API.** `compute_brief_state` / `count_commitments` need the pending rows IN the input, because deriving the `unconfirmed` pointer from them is their job (the two code blocks below say so on the line).
+
+**Exception 2 — the meeting-linked calendar sub-lines (`state["meeting_linked"]`, the F-44 carve-out).** Those rows do NOT come from a list you split: `compute_brief_state` builds `meeting_linked` over the FULL open set deliberately — pending rows included, by design — because an item about a meeting happening today must not be hidden from the CEO walking into that room. They arrive pre-built from the helper and are LABELLED at the point of render (see Today's calendar, below), which is what keeps them asks-to-confirm rather than settled facts. Do not "fix" them here by re-splitting: the split would have to happen inside the helper, and whether it should is an open product-doctrine decision (INTAKE2 build record §10), not something this file may decide. Every OTHER row list in this brief is governed by the rule above, with no third exception.
+
 For any name-bearing follow-up ("brief me on Sam's status"), call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` before grep. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
 ## Skill Boundary (v2.1)
@@ -163,7 +169,7 @@ Check each available connector. Skip gracefully if not connected — never error
 - Pull today's events + tomorrow's first event (this is the **display** fetch for the "Today's calendar" section — narrow on purpose).
 - **Do not reuse this narrow pull for the scheduling-verification gate.** Step 3c-bis needs a *much wider* window (~7 days back through ~30 days forward) to see that a "book/lock/propose time" item is already on the calendar days out. Reusing this today/tomorrow pull there starves the gate — a meeting four days from now looks unbooked and the brief tells the CEO to redo it (Bug #93). Step 3c-bis issues its own wide `list_events`.
 - For each event: title, time, attendees, project association (match against tracker)
-- Flag: meetings with no prep brief, back-to-back blocks, meetings with people who have overdue commitments. The "overdue commitments by attendee" check derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id in <attendee_person_ids>` (per `references/SOURCE_OF_TRUTH.md` — never from PERSON.md commitment tables, which can lag).
+- Flag: meetings with no prep brief, back-to-back blocks, meetings with people who have overdue commitments. The "overdue commitments by attendee" check derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id in <attendee_person_ids>` — **confirmed half only, `cru_match.split_pending_review(opens)[0]`** (per `references/SOURCE_OF_TRUTH.md` — never from PERSON.md commitment tables, which can lag). Flagging a meeting because someone "has overdue commitments" that are really unconfirmed extractions puts a guess between the CEO and the person he is about to sit down with.
 - **The "no prep" flag reads receipts, ONLY receipts (v4.5.2 S1 — F-29):** for each of today's meetings, `from receipts import prep_exists_for_meeting; prep_exists_for_meeting(workspace_root, <calendar event id>)`. The `⚠️ no prep` flag may render ONLY when that returns False. NEVER answer "was this meeting prepped?" from folder globs, filename/slug guesses, or memory — that detector/writer mismatch is how the brief claimed "no prep brief" for a 9:15 call while the prep file AND its fire receipt were both on disk (reproduced 2-for-2 days in the v4.5.1 dogfood). Both prep paths now write a per-brief `prep_brief` receipt via `receipts.log_prep_receipt`; the receipt is the contract. A meeting the calendar gives no id for (rare) gets NO flag rather than a guessed one.
 - **Build the `todays_meetings` input for Step 3d (v4.5.2 C1 — REQUIRED when the calendar is connected):** for each of today's events, resolve attendee emails to person_ids via `entities.json`/`aliases.json` and collect attendee display names PLUS their alias spellings from `aliases.json` — `{"meeting_id": <event id>, "title": <event title>, "attendee_person_ids": [...], "attendee_names": [...]}`. Step 3d passes this to `compute_and_log_brief_state`, which matches open commitments to today's meetings by counterparty OR name-mention in the item's own text (`commitment_state.match_commitments_to_meetings`). **A missing due date must not make a meeting-relevant item invisible** — the F-44 failure was sweep-recovered items about that morning's 9:15 appearing nowhere in the brief because every ranking bucket keyed on `due`.
 
@@ -197,7 +203,7 @@ Scan MASTER_TRACKER.md for:
 
 If `_people/` exists (v3.11.5+ — REQUIRED canonical-source derivation per `references/SOURCE_OF_TRUTH.md`):
 
-The team overdue / dormancy counts MUST derive from `_hq/data/events.jsonl` via `load_open_commitments`, NOT from each PERSON.md file's commitment table. The PERSON.md commitment table is a Tier 2 projection that lags — reading it directly was the v3.11.5 _people/ drift bug (see references/HISTORY.md).
+The team overdue / dormancy counts MUST derive from `_hq/data/events.jsonl` via `load_open_commitments`, NOT from each PERSON.md file's commitment table. The PERSON.md commitment table is a Tier 2 projection that lags — reading it directly was the v3.11.5 _people/ drift bug (see references/HISTORY.md). **Take the confirmed half before you count: `cru_match.split_pending_review(opens)[0]`** — an unconfirmed extraction is not a commitment a team member owes, and letting one through here is how a person gets flagged "3+ overdue" for work nobody agreed to.
 
 Procedure:
 
@@ -266,6 +272,10 @@ from cru_match import _commitment_field, _commitment_confidence, load_open_commi
 
 # load_open_commitments handles the filter logic (status, closed-by-resolved,
 # canonical/legacy shape across all 5 variants) in one call.
+# RAW ON PURPOSE (INTAKE): `opens` here is the input to the counting API, and the
+# pending rows must stay in it — deriving the unconfirmed pointer from them is
+# count_commitments' job. Filter this list and the queue pointer reads zero.
+# Rows you RENDER are routed per the enforcement note above, not read off this list.
 opens = load_open_commitments("<absolute path to _hq/data/events.jsonl>")
 # Per-event field reads:
 owner = _commitment_field(ev, "owner_id")
@@ -279,7 +289,7 @@ Counts come from `commitment_state.compute_brief_state(...).counts` — which is
 - **Unassigned:** `owner_id` null/missing — an extraction gap, but still an open commitment
 - **Overdue:** `due` parses to a past date (re-evaluated at read time). NOT "stuck" — stuck is the movement metric (headline["stuck"], v4.6.0 MC2), a different number.
 
-**Canonical-total parity (v3.18.5+, Bug #85 A85-followup — MANDATORY).** The header total the brief reports MUST equal `counts.total` (= `you_owe + they_owe + unowned` = `len(load_open_commitments(...))`) — the SAME number the coach reports. Do NOT report `you_owe + they_owe` as the total: that silently drops ownerless commitments (the v3.18.4 16-vs-18 split — see references/HISTORY.md § Bug #85). Surface the unassigned items rather than hiding them — in customer copy the word is plain: "2 with no clear owner", never "2 unassigned" (e.g. "13 you owe · 3 they owe · 2 with no clear owner" → 18 total). The coach reports `len(load_open_commitments)`; this reconciliation is what makes the two agree.
+**Canonical-total parity (v3.18.5+, Bug #85 A85-followup — MANDATORY).** The header total the brief reports MUST equal `counts.total` (= `you_owe + they_owe + unowned`) — the SAME number the coach reports. **INTAKE (2026-07-31): `counts.total` is NO LONGER `len(load_open_commitments(...))`, and that length must never be substituted for it.** The raw load is confirmed + unconfirmed; the partition this brief renders is the one `commitment_state.count_commitments` states, verbatim: *"Invariant (INTAKE): you_owe + owed_to_you + unowned == total, and `unconfirmed` sits OUTSIDE that partition."* So the three direction buckets and `total` are the CONFIRMED items (`cru_match.split_pending_review(opens)[0]`), and `unconfirmed` is its own labelled line — the needs-your-call queue pointer — never added into the total, never folded into a direction. Do NOT report `you_owe + they_owe` as the total: that silently drops ownerless commitments (the v3.18.4 16-vs-18 split — see references/HISTORY.md § Bug #85). Surface the unassigned items rather than hiding them — in customer copy the word is plain: "2 with no clear owner", never "2 unassigned" (e.g. "13 you owe · 3 they owe · 2 with no clear owner" → 18 total). The Bug #85 rule is unchanged — never `you_owe + they_owe`, never a confidence- or staleness-filtered subset; the pending exclusion is the one documented carve-out and it carries its own visible counter. Coach and brief agree because both read the counting API, not because either takes a `len()` of the raw load.
 
 **7-day activity stopgap (v3.11.1 — REQUIRED for Needs Attention overdue surfacing).** Commitments accumulate as "open" in events.jsonl because no `commitment_resolved` event fires when the work actually completes (scale of the problem in references/HISTORY.md § Bug #85). Until the full B4 fix lands (meeting-notes / follow-up-ritual emitting `commitment_resolved` + a documented manual close path), the morning-brief "Needs Attention" overdue list MUST filter out commitments whose linked thread has had activity in the last 7 days:
 
@@ -332,7 +342,7 @@ Step 3c (email latest-sender) and Step 3c-bis (calendar) are both final-say drop
 Steps 3b/3c/3c-bis describe the rules; **`compute_brief_state` is the code that applies them.** Do not re-implement the open/overdue counting or the three drops by hand — gather the inputs and call the function. It is the same-inputs-same-output guarantee that stops this logic from drifting fire to fire.
 
 Gather (this is the connector work — only the FETCH is yours, not the decisions):
-- `opens` = `load_open_commitments(events_jsonl_path)` (Step 3b).
+- `opens` = `load_open_commitments(events_jsonl_path)` (Step 3b) — the RAW list, pending rows included. `compute_brief_state` derives the `unconfirmed` pointer from them and keeps them out of every other tally itself; pre-filtering this input is how the queue pointer silently reads zero.
 - `threads` = for each linked thread you expanded in Step 3c, `{thread_id: {"latest_sender_is_user": <bool from the get_thread latest-message From: check>}}`.
 - `calendar_events` = the native-Calendar `list_events` results from Step 3c-bis, each resolved to `{attendee_person_ids, summary, created_ts, accepted_by, calendar_event_id}` (attendee emails → person_ids via `aliases.json`/`entities.json`).
 - `thread_activity` = the CANONICAL derivation over the Step 3b events (C3 — do NOT inline your own max(ts) scan; this is the same helper every other recency surface reads): ONE command — `from thread_activity import ALL_TYPES, derive_from_events` then `thread_activity = {tid: act.ts.isoformat() for tid, act in derive_from_events(events, activity_types=ALL_TYPES, honor_reclassifications=True).items()}`. Renderer "last touched" semantics (every event type counts — the 7-day stopgap's original intent), reclassifications folded (RECL1), related threads credited, legacy ts/thread-id spellings parsed, and the standard 0.40 confidence floor applied — an unconfirmed low-confidence classification no longer silently mutes an overdue item. (C3 migration 2026-07-22, the RECL1 M3 spun-off follow-up; the pre-migration hand-rolled scan counted primary-thread ids only and ignored the floor — the canonical derivation is deliberately the fleet-consistent read.)
@@ -346,6 +356,8 @@ from commitment_state import compute_brief_state  # promoted home (Stage A); bri
 
 from commitment_state import compute_and_log_brief_state
 from primary_user import resolve_primary_user
+# RAW ON PURPOSE (INTAKE) — same reason as Step 3b: the counting API owns the
+# pending partition, so it must receive the pending rows.
 opens = load_open_commitments("<absolute path to _hq/data/events.jsonl>")
 # MUST use compute_and_log_brief_state — NOT a hand-rolled count (Bug #99). It calls
 # compute_brief_state and emits a `brief_state` audit event carrying the CODE's real
@@ -400,7 +412,19 @@ state = compute_and_log_brief_state(
 #     skipped reconcile (Step 3a-bis) can never tell the CEO to redo done work.
 ```
 
-Render `state["counts"]` as the commitments line and `state["needs_attention"]` as the "ball is on you" items. `state["dropped"]` is for diagnostics only — it explains why an item was suppressed (`calendar_action` / `email_reply` / `recent_activity`); never surface it in chat. If you can't fetch a given input (connector down), pass what you have — the function degrades gracefully (a missing `threads`/`calendar_events`/`thread_activity` just means that drop isn't applied; the item surfaces, which is the safe direction).
+**Bound the lane before you render it (CAPTUREFLOW §D, 2026-08-01 — MANDATORY).** `state["needs_attention"]` is the FULL list by design and it is not a render list: on a live workspace it was 72 rows, which is a backlog dump, not a brief. Pass it through the cap:
+
+```python
+from commitment_state import cap_needs_attention
+lane = cap_needs_attention(state["needs_attention"], now_iso="<the fire's ISO now>")
+# lane["shown"]      -> at most 5 rows, ranked due-then-age. Render THESE, in THIS order.
+# lane["more_line"]  -> print verbatim as the section's last line when non-empty.
+# lane["n_total"]    -> the honest full count if you need to say one.
+```
+
+Never re-rank what it hands back and never top the section up from your own Step-3 scan: a 14-day rotation inside the function pins any item that has sat below the fold too long into the visible set, so nothing is suppressed forever, and reordering breaks that. The cap is a RENDER bound and never a silence — `state["counts"]` stays unfiltered and the header numbers still count everything (the :299 doctrine). The scheduled fire gets the same lane pre-capped on `brief_state.needs_attention` from `surface_drivers.build_morning_brief_pack`; this is the same bound on the path you drive yourself, so the two fires agree.
+
+Render `state["counts"]` as the commitments line and `lane["shown"]` as the "ball is on you" items. `state["dropped"]` is for diagnostics only — it explains why an item was suppressed (`calendar_action` / `email_reply` / `recent_activity`); never surface it in chat. If you can't fetch a given input (connector down), pass what you have — the function degrades gracefully (a missing `threads`/`calendar_events`/`thread_activity` just means that drop isn't applied; the item surfaces, which is the safe direction).
 
 ### Step 3e: ONE gated source for EVERY "ball is on you" actionable — including Top 3 moves (v3.18.9+ — MUST-language enforcement gate, Bug #93)
 

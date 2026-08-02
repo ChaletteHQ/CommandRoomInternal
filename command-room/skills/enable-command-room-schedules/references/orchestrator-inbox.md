@@ -202,6 +202,9 @@ receipt = reconcile_inbound_and_receipt(
     fired_via='scheduled',            # 'manual' on a chat-phrase fire
     exclude_captured_since=fire_start, # from the top of this fire — fence layer 2
     provider='<the seam-resolved provider>',
+    # TRAINFIX F-4 — leave None on a real read. Set it to the plain-English
+    # reason when the inbound read could not happen at all (paragraph below).
+    fetch_blocked=None,
 )
 print('CRU inbox: closed=%s pending=%s updated=%s batch=%s'
       % (receipt['n_auto_closed'], receipt['n_pending'],
@@ -216,6 +219,8 @@ print('CRU inbox: closed=%s pending=%s updated=%s batch=%s'
 **Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True. False means this pass did not actually run; append the `pack_run.data.errors[]` entry below and do not treat the zero as clean. Also read `receipt["signal_fields"]`: if messages were scored but neither the conversation nor the attachment field was present on any of them, the reply checks could not run at all and a zero closure count means nothing — `receipt["summary"]` carries a plain-language heads-up in exactly that state.
 
 **An unresolved user ABORTS this pass** — `reconcile_inbound_and_receipt` raises `PrimaryUserUnresolvedError`, writes no audit event, and closes nothing. Do NOT catch it and continue: direction is derived from owner vs the user, so with no user the reply bases are inert and a clean zero would be a lie. Check that the path passed is the WORKSPACE ROOT, not `_hq`.
+
+**If the inbound read cannot happen at all — no mail connector resolves, the connector budget is exhausted, or every account is still unclassified — do NOT call this helper with an empty list and let it write a clean zero (TRAINFIX F-4).** A fire that read nothing and a fire that read everything and found nothing produce the identical `inbound_scanned_count: 0` audit, and the first one is a dead rail wearing the second one's receipt. Call it with `inbound_messages=[]` AND `fetch_blocked="<what was missing, named in plain language>"`: the audit lands stamped blocked with that reason, nothing is closed and no confirm is queued, and `validate_inbound_reconcile_ran` correctly refuses it. Stay silent to the CEO per `shared/RELIABILITY.md` §1 and log the one-line skip — loud in the SUBSTRATE, quiet in the chat. (The sent rail has carried this since MAILSEAM item 8; this rail shipped without it.)
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4/9: `commitment_resolved`, `commitment_updated`, `commitment_review_proposed` event-type names NEVER appear in chat. The user sees the effect on the next Waiting On fire — resolved items drop off. Do NOT narrate "I closed 2 commitments" in the inbox widget or anywhere in this fire.
 

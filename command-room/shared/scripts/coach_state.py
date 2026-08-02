@@ -86,7 +86,11 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from cru_match import load_events_defensively, load_open_commitments  # noqa: E402
+from cru_match import (  # noqa: E402
+    load_events_defensively,
+    load_open_commitments,
+    split_pending_review,
+)
 from entities_io import unwrap_entities  # noqa: E402
 from event_seq import event_seq  # noqa: E402
 
@@ -675,6 +679,9 @@ def load_open_arc_items(workspace_root, thread_id: str,
                                                events=events)
         else:
             open_items = load_open_commitments(_events_path(workspace_root))
+        # INTAKE — unconfirmed extractions are queue members, not the arc the
+        # coach reads back (and not part of its open-commitment headline).
+        open_items, _needs_review = split_pending_review(open_items)
     except Exception:
         return out
     for c in open_items:

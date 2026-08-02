@@ -102,8 +102,35 @@ For each meeting:
 4. **Score each extracted item by confidence** (existing scan-for-commitments / meeting-notes scoring):
    - HIGH confidence (auto-commit): clear owner + clear date + entity in entities.json + confidence ≥ 0.8
    - LOW confidence (surface as pending): ambiguous owner, vague timeline, conflicting info, new entity not in entities.json, sensitive decisions (firing / pricing / contract terms — flag regardless of confidence)
-5. **Auto-commit HIGH confidence items:** Write to events.jsonl as committed (`status: open` for commitments, `committed: true` for decisions).
-6. **Surface LOW confidence items as pending:** Write to events.jsonl with `pending_review: true` flag. Add to chat-turn output as a `⚠ Needs your call` sub-block for that meeting.
+5. **⛔ COMMITMENT ADMISSION GATE (CAPTUREFLOW 2026-08-01) — MANDATORY, and it is CODE now.** Every extracted COMMITMENT goes through `meeting_capture.route_meeting_captures` before anything is appended. Do NOT hand-build commitment dicts here, and do NOT write a commitment on your own confidence score — the helper decides which of four places each item goes, and it is the SAME helper `meeting-notes` calls (one admission path, two legs; see `skills/meeting-notes/SKILL.md` Step 5e for the shape of an `items` entry).
+
+   ```bash
+   SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+   python3 -c "
+   import sys, json; sys.path.insert(0, 'shared/scripts')
+   from meeting_capture import route_meeting_captures
+   from event_gate import append_event
+   routed = route_meeting_captures(
+       <the extracted items for THIS meeting>,
+       workspace_root='<workspace_root>',
+       source_ref='granola:<meeting_id>',
+       transcript_text='<the transcript already loaded in Phase 4 step 1 — never re-fetch>',
+       meeting_date='<YYYY-MM-DD>',
+       org_id='<the meeting resolved org id or None>',
+       org_name='<the meeting resolved org name or None>',
+       primary_thread_id='<resolved or None>',
+       source_skill='past-meetings',
+   )
+   append_event('<workspace_root>/_hq/data/events.jsonl',
+                routed['book'] + routed['review'] + routed['observed'],
+                holder='past-meetings.commitments')
+   print(json.dumps(routed['summary']))
+   "
+   ```
+
+   What the helper enforces, in ONE place, because none of it was enforced anywhere before: the **capture floor** (owner + concrete deliverable + consequence — stated in `meeting-notes/SKILL.md` since Stage D and never enforced, which is why a third of this rail's captures were discussed-only), the **cross-meeting fusion guardrail** (the verbatim check below, in code), and **party-only relevance scoping** (`capture_gate.classify_capture`, whose `party-only` default this rail had never consulted because no meeting writer called the gate). Its four outputs: `book` (ordinary open commitments), `review` (written `pending_review` so they land in the needs-your-call queue and never in the open book — BOTH fusion refusals, marked `data.fusion_unverified`, and below-floor captures, marked `data.floor_gated` with their `FLOOR_*` reason as `review_reason`), `observed` (`commitment_observed` — kept and searchable, no open item, no count, no row), `skipped` (near-empty since the ruling below; never narrated). **M RULING 2026-08-01 — below-floor captures are NEVER silently dropped.** They used to be, and the review measured what that cost: on the audit's own hand-judged sample the floor destroyed a real promise for every junk capture it stopped, with no event, no counter and no row left behind. The floor's verdict is now a routing decision, so a wrong call costs one tap in the queue rather than a lost promise. The dated case routes to the queue too — the observed writer refuses dated/money items, and 'surfaces nowhere' was never an acceptable reading of a rail that says a dated item ALWAYS surfaces. Carry `routed['summary']['n_book'] + n_review` into the `meeting_processed` receipt's `extracted_count` / `pending_review_count`, and pass the whole return as `capture_summary=routed` on that same receipt (step 9) so the gates' own counts persist.
+
+6. **Surface LOW confidence items as pending:** your confidence scoring still applies to everything the helper returns in `book` — an ambiguous owner, a vague timeline, conflicting info, a new entity, or a sensitive category (firing / pricing / contract terms) means you pass that item with `pending_review=True` and a `review_reason` in its kwargs, exactly as the safety inversion requires. DECISIONS (not commitments) keep the write path they already had: `meeting_capture.build_decision_event` + `event_gate.append_event`, `committed: true` on high confidence. Add pending commitments to the chat-turn output as a `⚠ Needs your call` sub-block for that meeting.
 7. **Generate the .docx meeting summary — v2.14.32+ MANDATORY brief_writer flow:**
 
    Replaces the v2.14.0–v2.14.31 "invoke docx skill" step. `shared/scripts/brief_writer.py` produces deterministic, polished output every fire (consistent typography, brand-quiet header, hard-coded clean footer). No agent layout variance.
@@ -178,15 +205,17 @@ For each meeting:
    On success: cache the BRIEF_PATH + BRIEF_URL on the meeting record. Phase 6 Step 3 uses BRIEF_URL as the `artifact_link.url` (inside widget) AND as the Briefs-section link target (below widget). Single source of truth — no path drift.
 8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. Shape: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
 
-9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist.
+9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. Build it with `meeting_capture.build_meeting_processed_event(..., capture_summary=routed)` — passing Phase 4 step 5's `route_meeting_captures` return stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, floor_reasons, skipped_reasons}`, which is the ONLY record anywhere of what the admission gates did. `n_floor_gated` is the share of `n_review` the capture floor routed — a SUBSET of it, never added to it — and `floor_reasons` tallies which `FLOOR_*` condition gated each one; those two are what make the floor's tuning measurable, and without them a mis-tuned floor is undetectable and the acceptance re-measure has nothing to read. None of it goes in the chat card. Counts and reason tallies only — never a title. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist.
 
 **Idempotency note:** if the orchestrator re-fires on a transcript that already has both events, skip the writes (use `source_ref` dedup). Do NOT write a second `meeting` event for the same Granola meeting_id.
 
-**Cross-meeting fusion guardrail (v2.14.19+ — REQUIRED):** before writing any `commitment` or `decision` event extracted from a transcript, validate that the commitment's verbatim phrase (or a 5+ word substring of `data.title` / `data.evidence`) actually appears in the transcript text of the meeting it's being attributed to. If it doesn't, the extraction has crossed meetings — DO NOT write the event. Instead, append a `pending_review` row noting "extracted phrase not in source transcript" and surface in the next Pulse fire for manual review.
+**Cross-meeting fusion guardrail (v2.14.19+ — REQUIRED; MECHANIZED 2026-08-01, CAPTUREFLOW A3):** a commitment's verbatim phrase (a 5+ word normalized substring of `data.evidence`, falling back to `data.title`) must actually appear in the transcript text of the meeting it is being attributed to. If it doesn't, the extraction has crossed meetings and the event is NOT written to the book — it is written `pending_review` with the reason "extracted phrase not in the source transcript", which lands it in the needs-your-call queue.
 
-This guardrail addresses the v2.14.18 fresh-install bug where the extraction layer fused two same-topic meetings (Bowie sample-packets call + Sloan interview, both about EB-5) and wrote a commitment to the wrong source meeting via `data.source_ref`. The diagnosis showed the language `"send me a sample file tomorrow"` was in the Sloan transcript but the commitment was attributed to Bowie's earlier call. A simple substring check on the source transcript would have caught it.
+**For commitments this is no longer your job: `route_meeting_captures` (step 5 above) runs the check** — `meeting_capture.fusion_refusal_reason` is the implementation, and passing the step-1 transcript as `transcript_text` is what arms it. Omitting the transcript leaves the check inert (skip-not-fail), so pass it. For DECISIONS, which keep their own write path, run the same test by eye before appending: same rule, same reason string, same outcome.
 
-Implementation hint: use the Granola transcript text already loaded in Phase 4 (don't re-fetch). Match case-insensitively. If `data.evidence` is set, check that exact string (it should be a verbatim quote from the transcript per the schema). If only `data.title` is set, take a 5+ word substring and fuzzy-match (allow 1-2 word reorderings or paraphrases) — `data.title` is sometimes paraphrased so exact match is too strict.
+This guardrail addresses the v2.14.18 fresh-install bug where the extraction layer fused two same-topic meetings and wrote a commitment to the wrong source meeting via `data.source_ref`; the language in the evidence string was from the OTHER meeting's transcript. It stayed prose with no code and no test until CAPTUREFLOW, and the 2026-08-01 capture-load audit found a live capture whose evidence appears nowhere in its cited transcript — exactly the thing this paragraph says is impossible.
+
+Implementation notes (what the helper does, so a decision check matches it): use the transcript text already loaded in Phase 4 (never re-fetch); match case-insensitively over whitespace/punctuation-normalized text; check `data.evidence` first and `data.title` second; a string shorter than 5 words is not judged at all, because a check that cannot establish absence must not refuse.
 
 # Phase 4.5 — Project narrative + people sync (v2.10.8+)
 
@@ -269,6 +298,8 @@ Per `shared/scripts/cru_match.py` Path 3. After per-meeting auto-processing (Pha
 **⛔ THE CIRCULARITY FENCE (AUTOAPPLY §6) — MANDATORY, and the reason this phase used to manufacture its own noise.** This phase runs AFTER Phase 4 has appended today's extractions, so an unfenced `load_open_commitments()` hands the matcher the asks this very fire just captured. A commitment extracted from transcript T scores ~1.0 against T and carries no completion language, so it lands `pending_review` — Command Room asking "did you already handle this?" about something it wrote down five minutes earlier, from the same meeting. Three things below are load-bearing; none is optional:
 
 - **Record `fire_start`** (UTC ISO) BEFORE Phase 4 appends anything, and pass it as `exclude_captured_since` — that is what excludes same-fire SIBLING matches (meeting A's ask scored against meeting B's transcript in one batch).
+- **Pass `transcript_ts` — THIS meeting's own START time** (EVORDER layer 3, F-27). `fire_start` fences against the start of THIS FIRE, which is a different question: a commitment captured before the fire but AFTER the meeting ended sails straight through it, and then the meeting's transcript closes a promise that did not exist while anyone was talking. Demonstrated by execution: a commitment captured 20:00, a transcript from an 18:00 meeting saying "I sent the revised pricing sheet already, it is done", `fire_start` at 23:00 → `auto_resolve` at 0.75. This is the same value Phase 4 step 8 stamps as the `meeting` event's `ts`. **Pass it with its offset (or in UTC) — never a naive local wall-clock string:** a bare `2026-07-28T18:00:00` is read as UTC, which silently moves the fence by your offset (the CATCHUP1 F-1 connector-boundary class). Omitting `transcript_ts` leaves layer 3 inert, which is safe; a present-but-unparseable value fails SAFE and LOUD — the pass closes nothing at all for that transcript and prints `RECONFENCE: transcript_ts=…` on stderr. Never invent one from the processing clock: "now" is always after every commitment, so a guessed value fences nothing and reads as if it did.
+- **Accumulate `diagnostics` across every transcript in the fire** and carry the total onto Phase 5's receipt as `n_stale_evidence_skipped` — the same key both mail rails already report. Pass ONE dict to every `match_transcript_to_commitments` call (the matcher adds to it, never resets it) and read `diag.get('stale_evidence_dropped', 0)` at the end. A non-zero value is the fence **working**, not an error, and needs no report to the user. A fence that drops silently is how F-11 hid for a week.
 - **Pass `transcript_source_ref`** — THIS meeting's own ref (`granola:<id>`), the ref Phase 4 stamped on its extractions. `cru_match.commitment_source_refs` is what the fence compares against, so a merged survivor's absorbed refs are covered too.
 - **Thread ONE `already_proposed` set across every transcript in the fire**, seeded from `cru_match.open_review_proposal_ids(events_path)` and applied via `cru_match.filter_duplicate_review_targets` — one open review proposal per commitment, on disk and within the fire. Two transcripts in one batch proposing the same commitment (observed live at scores 1.0 and 0.571) is one question rendered twice.
 
@@ -299,6 +330,8 @@ events_path = '<absolute path to _hq/data/events.jsonl>'
 fire_start = '<UTC ISO recorded BEFORE Phase 4 appended anything>'
 # ONE set for the whole fire — seeded from disk, mutated per transcript.
 already_proposed = open_review_proposal_ids(events_path)
+# ONE diagnostics dict for the whole fire — EVORDER layer 3 counts into it.
+cru_diag = {}
 opens = load_open_commitments(events_path)
 results = match_transcript_to_commitments(
     open_commitments=opens,
@@ -307,6 +340,15 @@ results = match_transcript_to_commitments(
     # §6 fence — a transcript never scores against what it just created.
     transcript_source_ref='granola:<THIS meeting id>',
     exclude_captured_since=fire_start,
+    # EVORDER layer 3 — THIS meeting's own START time, offset-carrying or UTC,
+    # exactly as Granola reported it. A meeting cannot be evidence that a
+    # promise captured after it was already kept. Omit only if the metadata
+    # truly carried no start time; never substitute the processing clock.
+    transcript_ts='<THIS meeting start ts, e.g. 2026-07-28T18:00:00Z>',
+    diagnostics=cru_diag,
+    # F-28 — the workspace so the roster reader can tell one person written as
+    # BOTH an id and that person's name apart from two real counterparties.
+    workspace_root=workspace_root,
 )
 
 # Stage B (F2): auto-resolves close through commitment_state.close_commitment
@@ -359,6 +401,15 @@ for r in results:
             score=r['score'],
             evidence=evidence,
             next_seq=next_seq,
+            # WATCHGATE — the matcher's OWN fulfillment finding, carried
+            # rather than discarded. The accept surface screens on it; without
+            # it the only thing separating a bare guess from a bulk confirm is
+            # whether the evidence prose happens to say 'title match'.
+            has_completion_signal=r.get('has_completion_signal'),
+            # WATCHGATE 2.5 — the meeting's own start, the SAME value passed
+            # as transcript_ts above. Lets the accept surface refuse, at apply
+            # time, evidence that predates the promise.
+            evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
         ))
         next_seq += 1
     elif rec == 'supersede' and r['commitment_id'] in review_ok:
@@ -370,13 +421,17 @@ for r in results:
             score=r['score'],
             evidence=evidence,
             next_seq=next_seq,
+            has_completion_signal=r.get('has_completion_signal'),
+            evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
         ))
         next_seq += 1
 if to_append:
     atomic_append_jsonl(events_path, to_append)
-print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")}')
+print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")} stale_evidence_skipped={cru_diag.get(\"stale_evidence_dropped\", 0)}')
 "
 ```
+
+**Carry `stale_evidence_skipped` to Phase 5.** The last number on that stdout line is EVORDER layer 3's refusal count for the whole fire; put it on the fire receipt as `extra_data={"n_stale_evidence_skipped": <that number>, ...}` (the spelling both mail rails use — `reconcile_sent` / `reconcile_inbound` put it in `signal_fields`, and an improvised synonym here is invisible to anyone reading across the three rails). Zero is a legitimate value and is written, not omitted: an absent key reads as "this rail has no fence", which is the state this build ended.
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: `commitment_resolved`, `commitment_updated`, and `commitment_review_proposed` event-type names never appear in chat. The user sees the resolution effect on the next Commitments fire — items disappear from the OWED TO YOU / YOU OWE columns when they're auto-resolved here.
 
@@ -478,7 +533,7 @@ Append to events.jsonl:
 - All extracted events (decisions, commitments, follow_ups) — high-conf flagged committed, low-conf flagged pending_review
 - `meeting_processed` per meeting
 - CRU resolution events (Phase 4.6) — already appended in Phase 4.6 itself; mentioned here for completeness of the audit trail
-- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "past-meetings", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=n_meetings, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "window_start": "<the Phase 3 window start>", "window_end": "<the Phase 3 window end>", "window_incomplete_before": <ISO of the oldest still-unprocessed meeting, per the Phase 3 batch-cap gate — OMIT the key entirely when the fire drained its window>, "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; the field name is `window_incomplete_before` and nothing else (`shared/scripts/catchup.py` `WINDOW_INCOMPLETE_FIELD` is the one spelling — an improvised synonym is invisible to the reader and re-opens the orphaning bug, the F-50 P2c class); telemetry silent per Rule 9
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "past-meetings", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=n_meetings, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "window_start": "<the Phase 3 window start>", "window_end": "<the Phase 3 window end>", "window_incomplete_before": <ISO of the oldest still-unprocessed meeting, per the Phase 3 batch-cap gate — OMIT the key entirely when the fire drained its window>, "n_stale_evidence_skipped": <the Phase 4.6 `cru_diag` total — EVORDER layer 3's refusals across every transcript this fire; write 0 rather than omitting it>, "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; the field name is `window_incomplete_before` and nothing else (`shared/scripts/catchup.py` `WINDOW_INCOMPLETE_FIELD` is the one spelling — an improvised synonym is invisible to the reader and re-opens the orphaning bug, the F-50 P2c class); telemetry silent per Rule 9
 
 Append to staging_emissions.jsonl per .docx generated. Telemetry writes silently — no chat narration.
 

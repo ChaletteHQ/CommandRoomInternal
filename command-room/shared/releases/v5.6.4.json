@@ -1,0 +1,13 @@
+{
+ "version": "5.6.4",
+ "headline": "Your open list only holds what's real now. Unsure meeting extractions wait in a needs-your-call queue grouped by call, every review row shows its evidence, bulk-confirm can't sweep weak guesses, meeting capture rejects clutter at the source, and archiving a project finally sticks.",
+ "items": [
+  {
+   "id": "v564_announce_needs_your_call",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your open-commitment numbers may look smaller today. That's not lost data: items the extractor wasn't sure about no longer count as open. They wait for you, grouped by the call they came from. Say 'needs your call' to see them and clear them in batches — confirm, drop, or 'not mine', one tap each. Your morning brief also now shows the 5 most pressing items instead of everything, and your staff meeting picks up a 'From your meetings' section for the same queue.",
+   "action": "announce_only"
+  }
+ ]
+}

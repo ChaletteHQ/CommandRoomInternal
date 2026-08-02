@@ -170,12 +170,13 @@ Outcome was either a duplicate seq or B's rename silently overwriting A's event 
 
 ### 4. Corrupted file recovery
 
-If events.jsonl, entities.json, or aliases.json fails to parse:
-- Automatically restore from the most recent valid backup at `_hq/backups/[file]_[date].backup` (if exists).
-- Log to `_hq/CONFLICTS.md` with type `corruption-recovery`.
-- Surface to the user: "⚠️ Detected corruption in [file]. Restored from backup of [date]. Any events in the gap may need to be re-captured."
+Two different files, two different mechanisms — they are not interchangeable.
 
-Backups are auto-snapshotted daily by `cleanup`; retained for 14 days.
+**`entities.json` / `aliases.json` (rewritten in place):** `atomic_write.atomic_write_json_locked` re-reads the file after every write and confirms it parses. If it does not, it best-effort restores from the **newest existing backup in the sibling `_hq/data/_backups/` folder** and then raises, so the calling skill knows the write did not land. Log to `_hq/CONFLICTS.md` with type `corruption-recovery` and surface: "⚠️ Detected corruption in [file]. Restored from backup of [date]. Any changes since then may need to be re-captured."
+
+**`events.jsonl` (append-only history):** never restored over — a restore would delete real events. Corruption is healed by `cleanup` Phase 3b, which quarantines only the malformed lines to `_hq/.system/quarantine/` (saved, never deleted), atomically rewrites the file without them, and appends a `corruption_recovery` event.
+
+**What `_hq/data/_backups/` actually contains.** There is no daily snapshotter and no 14-day rotation. That folder is the single backup location (workspace-hygiene rule: the 3 newest of each backed-up file, one place) and it fills from one-off writers — `migrate_persons_v3_13_0.py` before a migration, the end-session MASTER_TRACKER rolling copy (Rule 11), and any deliberate pre-rewrite copy a skill makes. So the restore above is best-effort by construction: with nothing to restore from, the write fails loudly instead of silently half-landing. The primary protection is that atomic writes cannot produce a torn file in the first place — restore is the second line, not the first.
 
 ---
 

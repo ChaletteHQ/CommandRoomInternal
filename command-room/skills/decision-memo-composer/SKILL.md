@@ -52,7 +52,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 **Reads from:** All `events.jsonl` reads come from ONE org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — the decision memo is a shareable .docx artifact): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design.
 - `_hq/data/entities.json` — project context if a project is referenced.
 - `_hq/data/events.jsonl` — `type == "decision"` events on the topic (from the org-scoped load). Surfaces "you already decided X about Y on Z" so the memo doesn't re-litigate settled ground.
-- `_hq/data/events.jsonl` — `type == "commitment"` events to surface current load (affects feasibility of "hire now" / "ship now" options) — filter the org-scoped load, or pass it through the seam: `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here).
+- `_hq/data/events.jsonl` — `type == "commitment"` events to surface current load (affects feasibility of "hire now" / "ship now" options) — filter the org-scoped load, or pass it through the seam: `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here), then keep the confirmed half via `cru_match.split_pending_review(...)` (INTAKE — the memo is a shareable .docx; overstating current load off unconfirmed extractions argues a decision on a guess).
 - `_hq/intel/*.md` — captured intel on the topic (e.g., for a hiring decision, any captured intel on the role / market).
 - `_hq/data/entities.json` people-crm records of trusted-advisor people + their stated opinions on the topic from past 1:1 transcripts (via `transcript-search` invocation if needed).
 - This skill's Voice Block + `shared/VOICE_CALIBRATION.md`.
@@ -200,7 +200,7 @@ Show defaults, let user adjust the criteria list, then ask: "Weight these by imp
 
 In parallel:
 - Pull `decision` events on the topic from events.jsonl — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read. Surface as "Prior decisions on this topic."
-- Pull commitment events to assess current load — same org-scoped rows (or `load_open_commitments(events_path, events=org_events)`).
+- Pull commitment events to assess current load — same org-scoped rows (or `load_open_commitments(events_path, events=org_events)`), confirmed half via `cru_match.split_pending_review(...)` per the Reads contract above.
 - Pull captured intel on the topic from `_hq/intel/`.
 - Identify trusted-advisor people from people-crm (relationship tier 1, role-matched) — search recent meeting transcripts for their stated opinions on the topic.
 

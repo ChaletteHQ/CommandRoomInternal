@@ -169,7 +169,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes
 
 You are the **primary writer** for:
 
-- `_hq/data/entities.json` — project records (create / update / archive). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md.)
+- `_hq/data/entities.json` — project records: create via `thread_writer.create_thread`, update via `thread_writer.update_thread`, **archive via `shared/scripts/thread_archive.py::archive_thread`** (the archive path for archiving a project as a project — record stamp + `status_change` + view regen in one call; see the "archive [project]" handler. A lost deal and an archived objective also land `status: "archived"` on their own threads through `deal_state` / `objective_state`, which own those lifecycles — you do not archive those from here). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md.)
 - `_hq/data/events.jsonl` — append events of type `status_change`, `scope_change`, `commitment`, `commitment_resolved`, `meeting`, `decision` (when captured via end-session review), `briefing`, `note`, `org_proposed` (from Reactive Org Discovery — canonical top-level type per `shared/data-schemas/events.schema.json`, NOT wrapped inside a `note` event), `workspace_setting_changed` (timezone changes), `connector_backend_changed` / `account_classified` / `account_role_changed` / `account_scope_masked` / `account_scope_restored` (connector-agnostic-v1 — the account-map lifecycle, written via the `connector_config.py` setter + `event_gate.append_event`), plus `interaction` / `meeting` / `note` events emitted from passive-capture during Step 2a of "what's going on", Step 3a of "new project", and Step 1a of "end session".
 
   **Commitment closures from the catch-all (Stage B 2026-07 — MANDATORY):** when a loose turn closes a commitment — "mark done", "that's handled", "I sent that", "X is done", or any end-session review confirming an item completed — the write goes through `shared/scripts/commitment_state.py::close_commitment(workspace_root, <id or the user's reference>, resolved_by=<user person_id>, evidence=<what the user said>, source_skill="workspace-manager", user_confirmed=True)`. NEVER hand-build a `commitment_resolved` (or `thread_resolved`-as-commitment-closer) append here: the hand-rolled catch-all writes were the source of the 52 `source_event_seq`-keyed dead-letter closures in the 2026-07-01 audit. close_commitment normalizes legacy id spellings (bare seq, `seq_86`, `event_086`, `commitment_seq_86`), raises `CommitmentIdError` when nothing matches (ask the user which item they meant instead of writing an orphan tombstone — offer `show my list`), and is idempotent over the full resolved-id set. Resolve WHICH commitment the user means via `load_open_commitments` + title match first; pass that commitment's `data.id` (or its seq) to close_commitment — never guess an id.
@@ -230,7 +230,8 @@ The user has context in their head that won't make it into the system unless you
 │   ├── DECISION_LOG.md            # Every major decision + rationale
 │   ├── PEOPLE.md                  # Relationship tracker
 │   ├── BRAND_VOICE.md             # How you sound (if captured)
-│   ├── _backups/                  # Rolling MASTER_TRACKER backups (3 most recent)
+│   ├── data/                      # Canonical substrate (entities.json, events.jsonl, aliases.json)
+│   │   └── _backups/              # THE backup location — substrate + rolling MASTER_TRACKER (3 newest each)
 │   ├── briefings/                 # Daily briefing snapshots
 │   ├── summaries/                 # Weekly/monthly executive summaries
 │   ├── audit-reports/             # Audit history
@@ -735,9 +736,11 @@ Capture and update everything. This is the save button — nothing persists with
 
 **Step 1.5: Backup MASTER_TRACKER (silent)**
 3. Before making any changes to the tracker, create a rolling backup per Rule 11 in references/maintenance-rules.md:
-   - Copy `_hq/MASTER_TRACKER.md` → `_hq/_backups/MASTER_TRACKER_[YYYY-MM-DD_HHMM].md`
-   - Create `_hq/_backups/` if it doesn't exist
-   - Keep only the 3 most recent backups in `_hq/_backups/`; move older ones to `_archive/backups/` (archived, never deleted)
+   - Copy `_hq/MASTER_TRACKER.md` → `_hq/data/_backups/MASTER_TRACKER_[YYYY-MM-DD_HHMM].md`
+   - Create `_hq/data/_backups/` if it doesn't exist
+   - Rotate **only the `MASTER_TRACKER_*.md` files** in `_hq/data/_backups/`: keep the 3 most recent of THOSE, move older ones to `_archive/backups/` (archived, never deleted)
+   - **Never rotate anything else out of that folder.** It is a shared folder — `entities.json` / `aliases.json` backups live there too, and they are the only thing `atomic_write` can restore from after a failed write. "Keep 3 files in the folder" would sweep the substrate's safety net away on every end session. The hygiene rule is the 3 newest **of each backed-up file**, not 3 files total.
+   - **One backup location, not several.** `_hq/data/_backups/` is where `atomic_write` looks when it has to restore a substrate file. Never open a second backup folder — a copy somewhere nothing else reads is not a safety net.
    - Silent — no user notification
 
 **Step 2: Capture session work**
@@ -771,7 +774,9 @@ Each renderer atomic-writes its `_hq/views/*.md` plus the back-compat `_hq/*.md`
 **Step 3: Update team profiles (if `_people/` exists)**
 8. Check if `_people/` folder exists. If it doesn't, skip this step entirely. If it does: read `_people/_team-config.md` for the roster. If `_team-config.md` is missing but PERSON.md files exist, build roster from filenames and create `_team-config.md` with defaults. For each team member mentioned this session: update Interaction Log, check for new/delivered commitments, refresh Cross-Project Presence. Don't prompt about non-roster people during end session — the team skill handles that. See references/workspace-detail.md → "Team Profile Update Procedures" for field-by-field rules.
 
-**This step regenerates the PERSON.md Tier 2 projection from canonical state (per `references/SOURCE_OF_TRUTH.md`).** "New/delivered commitments" derives from `_hq/data/events.jsonl` — scan for `commitment` events emitted this session where the team member is in `person_ids` or `data.owner_id`, plus `commitment_resolved` / `thread_resolved` events that closed any of their open items (via `cru_match.load_open_commitments` diff before/after). The PERSON.md tables are then rewritten to match canonical state; never read from the table and copied back, which would just re-anchor whatever stale state was already there.
+**This step regenerates the PERSON.md Tier 2 projection from canonical state (per `references/SOURCE_OF_TRUTH.md`).** "New/delivered commitments" derives from `_hq/data/events.jsonl` — scan for `commitment` events emitted this session where the team member is in `person_ids` or `data.owner_id`, plus `commitment_resolved` / `thread_resolved` events that closed any of their open items (via `cru_match.load_open_commitments` diff before/after). **That diff stays RAW on BOTH sides** — filtering one side invents closures that never happened, and a pending item that gets confirmed and closed in the same session must still register as delivered.
+
+**The ROWS written into the table are a different question, and the answer is the confirmed half (INTAKE2).** PERSON.md is a user-readable Tier 2 file: an unconfirmed extraction rendered in someone's commitment table reads as work that person holds, which nobody has agreed to. So when rewriting the Active Commitments rows, take `cru_match.split_pending_review(...)[0]`; the raw list is for the closure diff only. Nothing is lost — this step regenerates from canonical state every session, so an item confirmed later simply appears in the next regen. The PERSON.md tables are then rewritten to match canonical state; never read from the table and copied back, which would just re-anchor whatever stale state was already there.
 
 **Step 4: Prompt for missing context**
 10. Ask: "Anything else happen today that didn't come up? Any commitments made outside of Cowork — calls, texts, in-person conversations?"
@@ -857,7 +862,7 @@ If the user opens a new session and the buffer is non-empty (last session didn't
 
 If for any reason the call-prep skill doesn't activate, generate a basic brief by:
 1. Reading the relevant project's SESSION_NOTES and PROJECT_CONTEXT.md
-2. Reading MASTER_TRACKER.md for project status orientation — **orientation only per `references/SOURCE_OF_TRUTH.md`. Override commitments and "Waiting On" status by reading `_hq/data/events.jsonl` directly** (use `shared/scripts/cru_match.py::load_open_commitments` for the canonical open-commitment set; scan recent events for newer activity since the tracker's `<!-- generated-at -->` stamp).
+2. Reading MASTER_TRACKER.md for project status orientation — **orientation only per `references/SOURCE_OF_TRUTH.md`. Override commitments and "Waiting On" status by reading `_hq/data/events.jsonl` directly** (use `shared/scripts/cru_match.py::load_open_commitments` for the canonical open-commitment set, then keep the confirmed half via `cru_match.split_pending_review(...)` — INTAKE: the reader is deliberately unfiltered, and an unconfirmed extraction is not something to walk into a meeting believing; unconfirmed rows are a needs-your-call pointer at most, never brief content. Scan recent events for newer activity since the tracker's `<!-- generated-at -->` stamp).
 3. Reading PEOPLE.md for attendee context (Tier 2 view — static profile data is fine to read directly; "last interaction" timestamps come from events.jsonl)
 4. Checking connected sources (Gmail, Calendar, Slack, Granola) for recent activity — every read emits to events.jsonl per PASSIVE_CAPTURE
 5. Presenting: where we left off, open items, commitments, talking points, questions to ask
@@ -865,9 +870,22 @@ If for any reason the call-prep skill doesn't activate, generate a basic brief b
 
 ### "archive [project]"
 
-1. Move to archive stage in MASTER_TRACKER.md
-2. Add to Recently Archived section with date and reason
-3. Ask: "Any loose ends to capture before archiving?"
+An archive is a **typed substrate write**, not a tracker edit. MASTER_TRACKER.md is a generated view — `render_master_tracker.py` rebuilds it from `entities.json` + `events.jsonl`, and its Recently Archived section renders solely from thread records whose `status` is `archived` (sorted by `archived_at`, showing `archive_reason`). A markdown-only archive is therefore erased by the very next render — end-session Step 2.5 and cleanup Phase 3.5d2 both run the renderer — and the project comes back with its old status. Measured on a real-shape fixture: after the second render the view was byte-identical to the pre-archive one. **Never edit the tracker to archive something, and never hand-edit `entities.json`.**
+
+1. **ENTITY_RESOLVE the name first** (Gate 1 — standard for every name-bearing trigger, per `shared/ENTITY_RESOLVE_PROTOCOL.md`): `entity_resolve.resolve_all(workspace_root, "[Name]")` — the LIST form, never the single-answer `resolve()`. `resolve()` returns one candidate whether or not the name was ambiguous, so calling it here would BE the first-pick this step forbids: two live projects can carry the same name (a migration run once per org) and `resolve()` hands back whichever sorts first. 2+ candidates → one disambiguation question naming the projects, never a first-pick. Nothing resolves (empty list) → say so plainly ("I don't have a project by that name — want me to look under a different spelling?") and write nothing. An archive aimed at the wrong project is unrecoverable by the user's own means — there is no un-archive command.
+2. **Ask the loose-ends question BEFORE the write** and keep the answer: "Any loose ends to capture before archiving?" Capture anything they name as its own commitment / decision / note event first (the archive is not a place to lose an open item), then use their reason for the archive — a short phrase like "engagement wrapped" or "client went quiet". No reason is fine; a made-up one is not.
+3. **Write it through the canonical archive path** — `shared/scripts/thread_archive.py::archive_thread`, the one place a thread reaches `archived`:
+   ```python
+   from thread_archive import archive_thread
+   res = archive_thread(workspace_root, "<resolved thread_id>",
+                        reason="<the CEO's reason, or None>",
+                        source_skill="workspace-manager")
+   ```
+   In one call it: updates the thread record via `thread_writer.update_thread(status="archived", archived_at=<now>, archive_reason=<reason>)` (validated, atomic, emits `thread_updated`); appends ONE `status_change` event through `event_gate.append_event` (`primary_thread_id` = the thread id, `data: {from_status, to_status: "archived", reason}`); and reruns `render_master_tracker.regenerate` so the tracker reflects the archive immediately. The Recently Archived row now comes FROM the substrate and survives every future render.
+4. **Idempotent — an already-archived project is an honest no-op.** `res["status"] == "already_archived"` means nothing was written (no second `status_change`); say so instead of pretending: "That one's already archived — [date], '[reason]'." A `ThreadArchiveError` means the id didn't match; surface it, don't archive something adjacent.
+5. **Confirm in plain language** using `res` — the name, that it's archived, and the reason on file. If `res["view_error"]` is set the substrate write still landed; say the tracker will catch up on the next refresh rather than claiming the archive failed.
+
+Nothing archives itself. There is no staleness rule, decay timer, or dormancy step that flips a project to archived on its own — every archive is a gesture the CEO made.
 
 ### "deep clean" / "maintenance" / "clean up my workspace"
 
@@ -1108,7 +1126,7 @@ MASTER_TRACKER.md is a **regenerated projection** of `_hq/data/entities.json` + 
 | New project/exploring | New row added |
 | Meeting processed | Next actions from meeting, new commitments, people, decision log |
 | Audit run | Staleness flags, integrity issues noted |
-| Archive | Row moved to archive section |
+| Archive | `thread_archive.archive_thread` stamps the record + appends `status_change`; the regen moves the row into Recently Archived |
 | Source check (during briefing) | Surfaces new info but does NOT auto-update tracker — presents to user first |
 
 ### Tracker Format (Essentials)

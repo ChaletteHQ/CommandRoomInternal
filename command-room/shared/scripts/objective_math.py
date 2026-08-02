@@ -592,7 +592,8 @@ def load_objective_inputs(workspace_root) -> dict:
     from pathlib import Path as _Path
 
     import objective_state
-    from cru_match import load_events_defensively, load_open_commitments
+    from cru_match import (load_events_defensively, load_open_commitments,
+                           split_pending_review)
     from thread_activity import apply_reclassifications, derive_from_events
 
     ws = _Path(workspace_root)
@@ -650,7 +651,9 @@ def load_objective_inputs(workspace_root) -> dict:
         patched_by_seq = {e["seq"]: e for e in events
                           if isinstance(e, dict)
                           and isinstance(e.get("seq"), int)}
-        for c in load_open_commitments(events_path) or []:
+        # INTAKE — unconfirmed extractions never seed a suggested move: an
+        # objective's open work is what the user agreed to, not a guess.
+        for c in split_pending_review(load_open_commitments(events_path))[0]:
             if not isinstance(c, dict):
                 continue
             d = c.get("data") or {}

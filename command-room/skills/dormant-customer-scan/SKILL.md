@@ -5,7 +5,7 @@ description: "Surface the customers who have gone quiet relative to their own hi
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-If the scan is invoked with a name-bearing trigger ("dormant scan for [name's customers]"), you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` first to resolve the named scope. For the cadence-break computation, call `shared/scripts/cru_match.py::load_open_commitments` if you need open-commitment cross-reference — do NOT hand-roll an events.jsonl scan. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
+If the scan is invoked with a name-bearing trigger ("dormant scan for [name's customers]"), you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` first to resolve the named scope. For the cadence-break computation, call `shared/scripts/cru_match.py::load_open_commitments` if you need open-commitment cross-reference — do NOT hand-roll an events.jsonl scan — and keep the confirmed half via `cru_match.split_pending_review(...)` (INTAKE: an unconfirmed extraction must not push a customer up or down the cadence ranking). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
 ## Skill Boundary (v2.1)
 

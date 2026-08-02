@@ -49,13 +49,12 @@ regen (superseded / resolved decisions filter out of the active list).
 from __future__ import annotations
 
 import datetime
-import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 # Reuse the scoring + tokenizer infrastructure from cru_match — same engine,
 # different domain.
-from cru_match import score_match
+from cru_match import load_events_defensively, score_match
 
 # v3.5.0+: canonical source in shared/scripts/confidence.py. Aliased here
 # for back-compat — existing callers and __all__ exports keep the old name.
@@ -207,33 +206,31 @@ def load_open_decisions(events_jsonl_path: str | Path) -> list[dict]:
     open_evs: list[dict] = []
     closed_ids: set[str] = set()
 
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            et = ev.get("type") or ev.get("event") or ""
-            d = ev.get("data") or {}
-            if et in ("decision_resolved", "decision_superseded"):
-                did = (
-                    d.get("decision_id")
-                    or d.get("id")
-                    or ev.get("decision_id")
-                    or ev.get("id")
-                )
-                if did:
-                    closed_ids.add(did)
-            elif et == "decision":
-                status = _decision_field(ev, "status") or "active"
-                # Active is the default; legacy decisions sometimes carry
-                # "Active" (title-cased) or no status at all. Treat anything
-                # other than explicit "superseded" / "resolved" string as open.
-                if str(status).lower() not in ("superseded", "resolved"):
-                    open_evs.append(ev)
+    # EVGUARD — the hand-rolled loop that used to live here caught only
+    # JSONDecodeError, so a top-level bare-string line parsed fine and the next
+    # `ev.get()` raised AttributeError out of the loader (Sub-bug #14b, second
+    # half). The canonical reader handles both malformed shapes and is
+    # shard-transparent; since_ts=None = full history.
+    events, _skipped = load_events_defensively(path, since_ts=None)
+    for ev in events:
+        et = ev.get("type") or ev.get("event") or ""
+        d = ev.get("data") or {}
+        if et in ("decision_resolved", "decision_superseded"):
+            did = (
+                d.get("decision_id")
+                or d.get("id")
+                or ev.get("decision_id")
+                or ev.get("id")
+            )
+            if did:
+                closed_ids.add(did)
+        elif et == "decision":
+            status = _decision_field(ev, "status") or "active"
+            # Active is the default; legacy decisions sometimes carry
+            # "Active" (title-cased) or no status at all. Treat anything
+            # other than explicit "superseded" / "resolved" string as open.
+            if str(status).lower() not in ("superseded", "resolved"):
+                open_evs.append(ev)
 
     return [d for d in open_evs if _decision_id(d) not in closed_ids]
 

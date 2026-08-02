@@ -544,7 +544,69 @@ def _cru_commitment_titles(workspace_root) -> dict:
         return {}
 
 
-def _cru_render_line(title: str, evidence: str) -> str:
+def _cru_commitment_capture_ts(workspace_root) -> dict:
+    """commitment_id -> the commitment's own capture ts (WATCHGATE §2.5's
+    `promise_ts`).
+
+    WHEN THE PROMISE WAS MADE is the other half of the apply-moment ordering
+    check, and nothing was supplying it — the check existed but had no input,
+    so it could only ever fire in a test. The projection already knows; this
+    just reads it. Same defensive posture as the title map beside it: any
+    failure yields {} and the ordering check stays inert rather than
+    guessing."""
+    try:
+        from cru_match import load_open_commitments
+        out = {}
+        for ev in load_open_commitments(_events_path(workspace_root)):
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            cid = d.get("id")
+            ts = ev.get("ts") or ev.get("timestamp")
+            if cid and ts:
+                out[cid] = ts
+        return out
+    except Exception:
+        return {}
+
+
+def _watched_ids(workspace_root) -> set:
+    """MUST-FIX-1 — the commitments already parked on watch.
+
+    A parked row must LEAVE this queue. Parking exists to shrink the queue
+    ("weak proposals do NOT sit in the queue by default"); a park that leaves
+    the row exactly where it was shrinks nothing and re-offers the same
+    unprovable guess on the next fire, which is the rubber-stamp pressure the
+    whole design assumes and is trying to reduce.
+
+    Fails OPEN (empty set on any error): showing a parked row again is a
+    redundancy, hiding a row that should be offered is a disappearance."""
+    try:
+        from watch_gate import watched_commitment_ids
+
+        return watched_commitment_ids(workspace_root)
+    except Exception:
+        return set()
+
+
+def _cru_strength(evidence: str, has_completion_signal) -> tuple:
+    """(weak_reason, strength) for a proposal row — §2.1's badge, computed
+    from the SAME vocabulary the fence screens with, so the row a user reads
+    and the decision the fence makes can never disagree.
+
+    Note what is NOT passed: no ordering check. That one belongs at the APPLY
+    moment (§2.5) and would be a different answer here."""
+    try:
+        from watch_gate import evidence_strength, weakness_reason
+
+        reason = weakness_reason(evidence,
+                                 completion_signal=has_completion_signal)
+        return reason, evidence_strength(
+            evidence, completion_signal=has_completion_signal)
+    except Exception:
+        return "", "strong"
+
+
+def _cru_render_line(title: str, evidence: str,
+                     weak_reason: str = "") -> str:
     """FB-19: the row's ASK, in the user's language.
 
     The live 2026-07-16 render was "Housekeeping — matched your sent message
@@ -557,22 +619,65 @@ def _cru_render_line(title: str, evidence: str) -> str:
     closed silently and never reaches a card. So the copy asks; it never
     reports ("I closed X — right?" would claim an action that did not
     happen, and offering to "undo" it would compound the lie).
+
+    §2.1 (WATCHGATE) — the line now carries the row's STRENGTH, in plain
+    language and never as a number. Before this, a row whose entire basis was
+    the commitment's own words echoed back read exactly like a row backed by
+    someone saying they had sent the thing; the user learned the difference
+    only after answering. A weak row says what is missing, up front, so the
+    answer is informed rather than corrected.
     """
     ask = "Did you already handle this?"
     ev = (evidence or "").strip()
+    if weak_reason:
+        return (f"{ask} I can't see proof it got done — {weak_reason}. "
+                f"Close it anyway?")
     return f"{ask} Command Room {ev} — close it?" if ev else f"{ask} — close it?"
 
 
-def _adapt_commitment_reviews(workspace_root) -> list[dict]:
+def _adapt_commitment_reviews(workspace_root, *,
+                              now_iso: Optional[str] = None,
+                              window_now_iso: Optional[str] = None
+                              ) -> list[dict]:
     from cru_match import load_open_review_proposals
 
-    now = _parse_ts(_now_iso())
+    # TWO CLOCKS, both defaulting to the WALL CLOCK — deliberately, and not
+    # to the projector's `now_iso`.
+    #
+    # `now_iso` here is the FS-11 TTL clock; `window_now_iso` anchors the
+    # reader's 7-day history window. Before WATCHGATE this adapter took
+    # neither: both floated on the wall clock even when its caller had asked
+    # for a simulated time, which made the whole adapter unpinnable — a
+    # fixture anchored anywhere but the last few real days returned nothing,
+    # and a suite written against it passed on an empty set, which reads
+    # exactly like passing on a correct one.
+    #
+    # These two parameters make it pinnable WITHOUT changing what any shipped
+    # caller gets: `load_open_proposals` passes neither, so its behavior is
+    # byte-identical to before. That restraint is deliberate — threading the
+    # projector's clock in is arguably more correct, but it changes what a
+    # simulated-time render of a live surface returns, and that is its own
+    # change with its own review, not a side effect of this one. See the
+    # rider in the build record.
+    now_iso = now_iso or _now_iso()
+    now = _parse_ts(now_iso)
     titles = None
+    # MUST-FIX-1: computed ONCE per fire, not per row.
+    watched = _watched_ids(workspace_root)
+    promise_ts = _cru_commitment_capture_ts(workspace_root)
     out = []
-    for ev in load_open_review_proposals(_events_path(workspace_root)):
+    for ev in load_open_review_proposals(_events_path(workspace_root),
+                                         now_iso=window_now_iso):
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         cid = data.get("commitment_id")
         if not cid:
+            continue
+        # MUST-FIX-1 — an item already on watch is not a question. It parked
+        # precisely because nobody could answer it from what was on file, and
+        # re-asking is how a queue grows instead of shrinking. It comes back
+        # by itself, through the expiry pass, only if it still cannot prove
+        # itself — or on demand, via `show watching`.
+        if cid in watched:
             continue
         # FS-11: an un-adjudicated review proposal older than its TTL expires
         # instead of accumulating (default TTL only when the writer stamped one;
@@ -591,7 +696,17 @@ def _adapt_commitment_reviews(workspace_root) -> list[dict]:
             if titles is None:
                 titles = _cru_commitment_titles(workspace_root)
             title = titles.get(cid, "")
-        evidence = data.get("evidence") or "matched an outbound send"
+        # R-3: the RAW evidence, "" when the proposal recorded none. The
+        # default below is a RENDER fallback and must not reach the weakness
+        # screen — substituting prose for a missing record made an
+        # evidence-less proposal read as evidenced, which is the one thing
+        # the screen exists to notice.
+        evidence = (data.get("evidence") or "").strip()
+        render_evidence = evidence or "matched an outbound send"
+        completion = data.get("has_completion_signal")
+        if not isinstance(completion, bool):
+            completion = None
+        weak_reason, strength = _cru_strength(evidence, completion)
         if not title:
             # DROP-EMPTY (FB-19): no title means no honest ask — the row would
             # render as a bare "Housekeeping" shrug, which is the defect this
@@ -609,13 +724,27 @@ def _adapt_commitment_reviews(workspace_root) -> list[dict]:
             "title": title,
             "evidence": evidence,
             "action_tuples": list(_CRU_ACTIONS),
-            "render_line": _cru_render_line(title, evidence),
+            "render_line": _cru_render_line(title, render_evidence,
+                                            weak_reason),
             "opened_at": ev.get("ts") or "",
             "expires_at": "",
             "detector": "reconcile-sent",
             "seq": ev.get("seq"),
             "commitment_id": cid,
             "match_score": data.get("match_score"),
+            # §2.1 — the badge, on the row, before the user answers.
+            "strength": strength,
+            "weak_reason": weak_reason,
+            # The screen inputs the apply step passes straight to
+            # watch_gate.confirm_review_rows, so an executing model never has
+            # to re-derive (or guess at) any of them. `has_completion_signal`
+            # and `evidence_ts` ride the proposal event since WATCHGATE;
+            # `promise_ts` is the commitment's own capture time from the
+            # projection. All three are None on legacy rows, and None is
+            # "not assessed" everywhere downstream.
+            "has_completion_signal": completion,
+            "evidence_ts": data.get("evidence_ts"),
+            "promise_ts": promise_ts.get(cid),
         })
     return out
 
@@ -1564,6 +1693,9 @@ def load_open_proposals(
     events = _load_events(workspace_root)
     items = _open_brain_proposals(events, now=now)
     if include_legacy:
+        # Neither clock is threaded here — see the two-clock note in
+        # _adapt_commitment_reviews. This call is byte-identical to its
+        # pre-WATCHGATE form on purpose.
         items += _adapt_commitment_reviews(workspace_root)
         items += _adapt_person_proposals(workspace_root, events, now=now)
         items += _adapt_org_project_proposals(workspace_root, events, now=now)

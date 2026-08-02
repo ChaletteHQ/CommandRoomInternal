@@ -159,6 +159,100 @@ def _short_date(ts):
     return ts[:10]
 
 
+def _record_blocked_run(workspace_root, events_path, *, reason, source_skill,
+                        fired_via, provider=None, batch_id=None) -> dict:
+    """TRAINFIX F-4 — the receipt for a fire whose INBOUND read could not run.
+
+    THE GATE THIS PAYS. MAILSEAM item 8 gave the SENT rail a loud receipt for a
+    read that never happened; the inbound rail shipped without one. `fetch_blocked`
+    appeared 3x in `reconcile_sent_commitments.py` and 0x here, so an inbound fire
+    with no mail connector, an exhausted connector budget, or an unclassified
+    account wrote the byte-identical CLEAN audit (`inbound_scanned_count: 0`,
+    `n_closed: 0`, `status: "complete"`) that a healthy fire writes when the
+    counterparty simply sent nothing. `validate_inbound_reconcile_ran` then
+    returned ok=True. That is the dead-rail shape the whole receipt contract
+    exists to make impossible, and it was live on one of the two mail rails.
+
+    Deliberately parallel to the sent rail's `_record_blocked_run`, minus the
+    cursor: this rail has none (the module docstring says why — both callers own
+    their own window), so the sentence that matters is "nothing was read, so
+    nothing closed and no confirm was queued" rather than "the cursor stayed
+    where it was". Same three properties otherwise: the audit IS still written
+    (a blocked fire that leaves no trace is indistinguishable from a fire that
+    never happened), it carries `status: "blocked"` + the plain-English reason,
+    and the validator refuses it.
+
+    A blocked run also writes NO `commitment_review_proposed` rows and NO
+    schedule-shift markers, because it never matched anything — the receipt's
+    zeros are honest zeros about a read that did not occur, which is exactly
+    what `status` is for.
+    """
+    from atomic_write import atomic_append_jsonl as _append
+    from cru_match import _now_iso as _audit_ts
+    from next_seq import next_seq as _next_seq
+
+    batch_id = batch_id or ("inr_" + _dt.datetime.now(_dt.timezone.utc)
+                            .strftime("%Y%m%dT%H%M%SZ"))
+    audit_event = {
+        "seq": _next_seq(str(events_path)),
+        "ts": _audit_ts(),
+        "type": "inbound_reconcile",
+        "source_skill": source_skill,
+        "data": {
+            "kind": "reconcile-inbound",
+            "status": "blocked",
+            "blocked_reason": reason,
+            "fired_via": fired_via,
+            "batch_id": batch_id,
+            "inbound_scanned_count": 0,
+            "n_closed": 0,
+            "n_pending": 0,
+            "n_updated": 0,
+            "n_partial_receipts": 0,
+            "mail_provider": provider,
+            "signal_fields": _empty_signal_fields(),
+            "coverage": _empty_coverage(),
+        },
+    }
+    try:
+        from receipts import _machine_name
+
+        _machine = _machine_name()
+        if _machine:
+            audit_event["data"]["machine"] = _machine
+    except Exception:
+        pass
+    _append(events_path, [audit_event])
+
+    summary = (f"The inbound check did not run: {reason}. Nothing was read, so "
+               "nothing you were waiting on was closed and no confirm was "
+               "queued — the next run reads the whole window.")
+    print("reconcile-inbound BLOCKED: " + reason, file=sys.stderr)
+    return {
+        "ran": False,
+        "blocked": True,
+        "blocked_reason": reason,
+        "batch_id": batch_id,
+        "n_fetched": 0,
+        "n_open_before": 0,
+        "n_auto_closed": 0,
+        "n_pending": 0,
+        "n_updated": 0,
+        "events_written": 0,
+        "reviews_written": 0,
+        "resolved": [],
+        "pending": [],
+        "updated": [],
+        "n_partial_receipts": 0,
+        "partial": [],
+        "partial_propose_closure": [],
+        "signal_fields": _empty_signal_fields(),
+        "coverage": _empty_coverage(),
+        "mail_provider": provider,
+        "summary": summary,
+    }
+
+
 def reconcile_inbound(
     open_commitments,
     inbound_messages,
@@ -166,6 +260,7 @@ def reconcile_inbound(
     user_person_id,
     provider=None,
     exclude_captured_since=None,
+    workspace_root=None,
 ):
     """Match a batch of INBOUND messages to open waiting-on commitments.
 
@@ -212,6 +307,15 @@ def reconcile_inbound(
     and inside the matcher, as a hard stop, so a caller that reaches Path 4
     without going through this function still cannot close a waiting-on item
     with the user's own words.
+
+    `workspace_root` (F-28 post-review F-1) — forwarded to Path 4 so the roster
+    reader can resolve a free-text `counterparty_name` against the entity graph
+    and count one person written as BOTH an id and that person's name once.
+    Without it Path 4 carries a parameter nothing fills — the AUTOAPPLY F-5
+    dead-rail shape, and the exact defect the F-28 fix exists to close. This
+    function still does no I/O of its own; it hands the path down to the one
+    reader that reads the entity graph, and only when a caller supplies it.
+    `None` (the default) is byte-identically pre-F-28.
 
     Pure: no I/O, no clock. The caller writes the events.
     """
@@ -329,6 +433,10 @@ def reconcile_inbound(
             # above for the cursor-free window; absent → the guard is inert.
             inbound_ts=ts,
             diagnostics=_evorder_diag,
+            # F-28 — the entity graph is what tells the roster reader that one
+            # person written as an id AND that person's name is one
+            # counterparty, not two. Absent → the raw union, pre-F-28.
+            workspace_root=workspace_root,
         )
         for r in results:
             rec = r.get("recommendation")
@@ -463,6 +571,7 @@ def reconcile_inbound_and_receipt(
     provider=None,
     exclude_captured_since=None,
     batch_id=None,
+    fetch_blocked=None,
 ):
     """Run inbound→commitment reconciliation end-to-end and return a receipt.
 
@@ -496,6 +605,17 @@ def reconcile_inbound_and_receipt(
     `brain_undo.recent_auto_batches` lists and `brain_undo.undo_batch` reverses
     — so a run this rail narrates is reversible by the same `undo` the sent rail
     advertises, with no new reverser and no new batch kind.
+
+    `fetch_blocked` (TRAINFIX F-4 — the inbound mirror of MAILSEAM item 8) — a
+    plain-English reason the INBOUND read could not happen (no mail connector,
+    connector budget exhausted, an unclassified account). Passing it records the
+    run as BLOCKED: the audit event carries `status: "blocked"` + the reason,
+    `validate_inbound_reconcile_ran` refuses it, and the summary says what was
+    missing. Without it, a fire that never read anything wrote the identical
+    clean `inbound_scanned_count: 0` audit as a fire that read everything and
+    found nothing — the dead-rail shape this receipt contract exists to make
+    impossible, and it was live on this rail while the sent rail was covered. A
+    blocked run closes nothing and queues no confirm.
     """
     if not user_person_id:
         msg = (
@@ -518,14 +638,36 @@ def reconcile_inbound_and_receipt(
     provider = resolve_mail_provider(workspace_root, provider)
 
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    opens = load_open_commitments(str(events_path))
+
+    # TRAINFIX F-4 — a read that never happened is not a read that found
+    # nothing. Record the run as blocked and stop: no matching (there is nothing
+    # to match), no closure, no queued confirm. Checked AFTER the Bug #102 abort
+    # and the provider resolve, in the same order as the sent rail — an
+    # unresolved primary user is a worse failure than a blocked read and must
+    # still raise, and the receipt should name the provider it would have read
+    # as even when the read never happened.
+    blocked = str(fetch_blocked or "").strip()
+    if blocked:
+        return _record_blocked_run(
+            workspace_root, events_path, reason=blocked,
+            source_skill=source_skill, fired_via=fired_via, provider=provider,
+            batch_id=batch_id,
+        )
+
+    # F-28 — same reasoning as the sent driver: one workspace per fire, so the
+    # projection's all-received stamp and the roster reader agree.
+    opens = load_open_commitments(str(events_path), workspace_root=workspace_root)
     n_open_before = len(opens)
     coverage = _coverage_for(opens, user_person_id)
 
     res = reconcile_inbound(opens, inbound_messages or [],
                             user_person_id=user_person_id,
                             provider=provider,
-                            exclude_captured_since=exclude_captured_since)
+                            exclude_captured_since=exclude_captured_since,
+                            # F-28 — this wrapper HOLDS the workspace and used
+                            # to keep it, leaving Path 4's roster fix
+                            # unreachable on the rail that fires daily.
+                            workspace_root=workspace_root)
     auto_close = res["auto_close"]
     pending = list(res["pending"])
     updated = res["updated"]
@@ -820,20 +962,29 @@ def validate_inbound_reconcile_ran(workspace_root, *, since_ts=None) -> dict:
 
     A 0-scan run is still a valid run (ok=True): it ran and found nothing, and
     the audit event proves the pass happened.
+
+    TRAINFIX F-4 — EXCEPT when the audit says `status: "blocked"`: the inbound
+    read never happened, so the zero means nothing, and ok=False carries the
+    recorded reason. Without this the blocked audit would be read back as a
+    healthy empty run, which is the exact dead rail the blocked status exists to
+    expose (a clean audit over a skipped read). Mirrors
+    `reconcile_sent_commitments.validate_reconcile_ran`.
     """
-    import json
+    from cru_match import load_events_defensively
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     if not events_path.exists():
         return {"ok": False, "ran": False, "reason": "no events.jsonl"}
     latest = None
-    for line in events_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
+    # EVGUARD — the hand-rolled loop that used to live here wrapped only the
+    # parse in `except Exception`, so a bare-string line reached `e.get()` and
+    # raised AttributeError out of the validator (Sub-bug #14b, second half):
+    # one junk line and the ungameable-reconcile check stopped answering at
+    # all. The canonical loader skips both malformed shapes and is
+    # shard-transparent; since_ts=None = full history.
+    # Kept BYTE-FOR-BYTE parallel with reconcile_sent_commitments.
+    # validate_reconcile_ran — the two are copy-clones by design.
+    events, _skipped = load_events_defensively(events_path, since_ts=None)
+    for e in events:
         if e.get("type") == "inbound_reconcile":
             latest = e  # append-ordered → keep the last one seen
     if latest is None:
@@ -841,6 +992,13 @@ def validate_inbound_reconcile_ran(workspace_root, *, since_ts=None) -> dict:
                 "reason": "no inbound_reconcile audit event — the inbound "
                           "pass did not actually run"}
     d = latest.get("data") or {}
+    if d.get("status") == "blocked":
+        return {"ok": False, "ran": False,
+                "reason": ("the inbound read did not happen — "
+                           + (d.get("blocked_reason") or "recorded as blocked")),
+                "batch_id": d.get("batch_id"),
+                "inbound_scanned_count": d.get("inbound_scanned_count"),
+                "n_closed": d.get("n_closed")}
     if since_ts is not None:
         # Parsed, never string-compared. The audit stamps `...Z` and a caller's
         # `datetime.now(timezone.utc).isoformat()` stamps `...+00:00`; those two

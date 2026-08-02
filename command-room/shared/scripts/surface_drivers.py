@@ -338,7 +338,7 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     from commitment_state import (commitment_kind, count_commitments,
                                   stale_tasks)
     from confirm_flow import select_unconfirmed_escalation, unconfirmed_classes
-    from cru_match import load_open_commitments
+    from cru_match import _is_pending_review, load_open_commitments
     from event_time import event_time
     from primary_user import resolve_primary_user
 
@@ -407,9 +407,19 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
 
     # Age sections, oldest first; escalation-pinned rows excluded (no
     # double-surfacing). SUB1: top-level items only — children render nested.
+    # INTAKE: EVERY pending_review row is excluded here, not just the pinned
+    # ones — an unconfirmed extraction is not an open commitment, so it does
+    # not belong in an age section. The labelled "Unconfirmed" pin block
+    # above is the deliberate exception; the rest are pointed at the
+    # needs-your-call queue by the pointer line below.
     aged: list[tuple[int, dict]] = []
+    n_pending_unpinned = 0
     for ev in top_level:
         cid = _cid(ev)
+        if _is_pending_review(ev):
+            if cid not in esc_ids:
+                n_pending_unpinned += 1
+            continue
         if cid in esc_ids:
             continue
         age = _age_days(ev.get("ts") or "", now_iso)
@@ -520,29 +530,103 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     header = f"Commitment triage — {h['total']} open, oldest first"
     if h.get("subitems_open"):
         header += f" (+{h['subitems_open']} sub-items)"
-    return {
+    view = {
         "source_skill": "commitment-triage",
         "header": header,
         "counters": counters,
         "sections": sections,
     }
+    # INTAKE — the unconfirmed extractions this surface deliberately does NOT
+    # render as rows still get one honest line saying where they went. Only
+    # the ones outside the labelled pin block: those already have rows.
+    # Drop-empty at zero (never "0 unconfirmed" padding).
+    if n_pending_unpinned:
+        noun = ("extraction waiting" if n_pending_unpinned == 1
+                else "extractions waiting")
+        pointer = (f"{n_pending_unpinned} unconfirmed {noun} — say "
+                   f"`needs your call` to clear them.")
+        view["pointer"] = pointer
+        # `quick_read` is the key BOTH renderers (markdown + widget) actually
+        # print; `pointer` is the machine-readable twin the tests pin.
+        view["quick_read"] = pointer
+    return view
+
+
+# WATCHGATE §2.3 — the expiry question's verbs. Canonical ids only: "mark
+# done" is the Done answer, "hold" is Still open (it quiets the row while the
+# item stays open), "drop" lets it go. One tap either way, per §2.3.
+_WATCH_ASK_ACTIONS = ["mark done", "hold", "drop"]
+_WATCH_ASK_SECTION = "STILL OPEN?"
+
+
+def build_watch_ask_rows(ask_rows: list, *, now_iso: str) -> list[dict]:
+    """The expiry questions as card rows — rendered STRENGTH-AWARE per §2.1,
+    because they land on the same surface §2.2 hardens and must not read like
+    the confident rows beside them."""
+    from watch_gate import strength_line
+
+    out: list[dict] = []
+    for i, row in enumerate(ask_rows or [], start=1):
+        watch = row.get("watch") or {}
+        bits = [strength_line(watch.get("reason") or "",
+                              evidence=row.get("evidence") or "")]
+        reasons = (row.get("stakes") or {}).get("reasons") or []
+        if "overdue" in reasons:
+            bits.append("the date has passed")
+        out.append({
+            "n": row["id"], "display_n": i,
+            "name": row.get("title") or "(untitled)",
+            "context_tag": " · ".join(b for b in bits if b),
+            "actions": list(_WATCH_ASK_ACTIONS),
+        })
+    return out
 
 
 def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
-                             moves_rows: list | None = None) -> dict:
+                             moves_rows: list | None = None,
+                             watch_rows: list | None = None) -> dict:
     """The Staff Meeting queue view (orchestrator Phase 3+5, mechanized):
     THE projector + D3 ranking + build_card_view. `moves_rows` (Phase 4's
     email-shaped rows, connector-dependent so built by the orchestrator) are
-    appended as the THIS WEEK'S MOVES section when supplied."""
+    appended as the THIS WEEK'S MOVES section when supplied.
+
+    `watch_rows` (WATCHGATE §2.3) are the expiry questions this fire owes —
+    already routed, capped and ordered by `watch_gate.run_watch_expiry`, which
+    `run_surface` runs before this builds. Supplied rather than derived here
+    for the reason every other write stays out of a view builder: this
+    function reads, `run_surface` decides when writing is allowed."""
     from brain_proposals import (build_card_view, load_open_proposals,
                                  rank_proposals)
 
     queue = rank_proposals(load_open_proposals(
         workspace_root, "staff-meeting", now_iso=now_iso))
-    extra = ([{"title": "THIS WEEK'S MOVES", "items": list(moves_rows)}]
-             if moves_rows else None)
+    extra: list[dict] = []
+    if watch_rows:
+        extra.append({"title": _WATCH_ASK_SECTION,
+                      "count": len(watch_rows),
+                      "items": build_watch_ask_rows(
+                          watch_rows, now_iso=now_iso or _now_iso())})
+    # CAPTUREFLOW §C — the meeting fold. ONE section of the SAME per-meeting
+    # groups the on-demand needs-your-call queue renders, from the SAME
+    # builder (`needs_review_queue.staff_meeting_group_section`), answered
+    # through the SAME confirm/drop fence. Not a new surface, not a new
+    # scheduled task: the staff meeting is already scheduled, so this is a
+    # section, not an appointment. The section carries its own volume guard
+    # (whole calls, oldest first, capped, with the honest totals and a pointer
+    # to the on-demand queue in its title) so it can never dominate the page.
+    # Drop-empty like every other section; any failure degrades to no section
+    # rather than a dead fire.
+    try:
+        from needs_review_queue import staff_meeting_group_section
+        fold = staff_meeting_group_section(workspace_root, now_iso=now_iso)
+        if fold:
+            extra.append(fold)
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write(f"[surface_drivers] meeting fold skipped: {exc}\n")
+    if moves_rows:
+        extra.append({"title": "THIS WEEK'S MOVES", "items": list(moves_rows)})
     return build_card_view(queue, surface="staff-meeting",
-                           extra_sections=extra)
+                           extra_sections=extra or None)
 
 
 def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
@@ -878,6 +962,14 @@ def _last_brief_ts(workspace_root, now_iso: str) -> str:
                     ev = _json.loads(line)
                 except Exception:
                     continue
+                # EVGUARD sibling-rail (joined by the Slot 9 sweep) — a
+                # top-level bare string containing `brief_state` clears the
+                # substring pre-filter above and PARSES, so it used to reach
+                # `.get()`. The AttributeError was swallowed by this function's
+                # outer `except Exception: pass`, and the brief's CHANGED
+                # window silently collapsed to the 36-hour floor.
+                if not isinstance(ev, dict):
+                    continue
                 if ev.get("type") == "brief_state" and ev.get("ts"):
                     newest = ev["ts"]
         if newest:
@@ -973,9 +1065,21 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         user_id = None
     state = compute_and_log_brief_state(
         ws, open_commitments=opens, user_person_id=user_id, now_iso=now_iso)
+    # CAPTUREFLOW §D — the lane is BOUND here, at the render, never at the
+    # derivation: `compute_brief_state` keeps returning the full list and the
+    # `brief_state` audit event keeps counting all of it, so the header counts
+    # stay unfiltered (the :299 doctrine). What the brief PRINTS is the top
+    # N by due-then-age plus one honest pointer line, with the 14-day rotation
+    # so nothing below the fold can go permanently invisible.
+    from commitment_state import cap_needs_attention
+    lane = cap_needs_attention(state.get("needs_attention") or [],
+                               now_iso=now_iso)
     brief_state = {
         "headline": (state.get("counts") or {}).get("headline") or {},
-        "needs_attention": state.get("needs_attention") or [],
+        "needs_attention": lane["shown"],
+        "needs_attention_total": lane["n_total"],
+        "needs_attention_more": lane["n_more"],
+        "needs_attention_more_line": lane["more_line"],
         "reconcile_stale": state.get("reconcile_stale"),
     }
 
@@ -1005,6 +1109,10 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         alarm_lines + changed_lines + ([watchdog] if watchdog else [])
         + money_lines
         + ([queue_pointer["line"]] if queue_pointer["line"] else [])
+        # CAPTUREFLOW §D — the lane's overflow pointer is a text line the
+        # orchestrator prints verbatim, so it is scanned like every other one.
+        + ([brief_state["needs_attention_more_line"]]
+           if brief_state.get("needs_attention_more_line") else [])
     )
     if scannable.strip():
         validate_chat_output(scannable)
@@ -1084,15 +1192,52 @@ _SURFACE_NAME_HINTS = {"commitments": "commitment-triage",
                        "my-plate": "my-plate"}
 
 
+def run_watch_expiry_pass(workspace_root, *, now_iso=None) -> dict:
+    """WATCHGATE MUST-FIX-2 — the scheduled driver for stakes-routed expiry.
+
+    §2.3 makes expiry the TERMINAL behavior of every parked item, §2.4's whole
+    table is "unproven after window", and §2.7's cap is defined "per staff-
+    meeting fire" — a phrase that names an orchestrator, not a pure function.
+    Built but undriven, WATCHING was a one-way door: items parked and were
+    never routed, never assumed, never asked about. §0 forbids exactly that
+    ("never silently stops watching"), so this runs on the staff-meeting fire
+    every workspace already has — no registration, no setup, no connector.
+
+    Defensive by construction: ANY failure returns an empty result and the
+    fire proceeds. An expiry pass that could take the staff meeting down with
+    it would be a worse bug than the one it fixes.
+
+    Returns run_watch_expiry's result, or a zeroed shape on failure.
+    """
+    empty = {"assumed": [], "ask": [], "carried": [], "not_due": [],
+             "results": [], "n_assumed": 0, "n_ask": 0, "n_carried": 0}
+    try:
+        from primary_user import resolve_primary_user
+        from watch_gate import run_watch_expiry
+
+        return run_watch_expiry(
+            workspace_root,
+            resolved_by=resolve_primary_user(workspace_root) or "",
+            source_skill="staff-meeting",
+            now_iso=now_iso,
+        )
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write(f"[surface_drivers] watch expiry pass skipped: "
+                         f"{exc}\n")
+        return empty
+
+
 def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
-                        chase_rows, status_rows, personal_cap) -> dict:
+                        chase_rows, status_rows, personal_cap,
+                        watch_rows=None) -> dict:
     """Build ONE surface's data view from LIVE substrate. The only place that
     reads; `run_surface` decides WHEN it is allowed to be called."""
     if surface == "commitments":
         return build_commitment_triage_view(ws, now_iso=now_iso)
     if surface == "staff-meeting":
         return build_staff_meeting_view(ws, now_iso=now_iso,
-                                        moves_rows=moves_rows)
+                                        moves_rows=moves_rows,
+                                        watch_rows=watch_rows)
     if surface == "waiting-on":
         return build_waiting_on_view(ws, now_iso=now_iso,
                                      chase_rows=chase_rows)
@@ -1192,10 +1337,35 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
                 snap_note["previous_total"] = meta["previous_total"]
 
     if view is None:
+        watch_rows = None
+        if surface == "staff-meeting" and page == 1 and now_iso is None:
+            # WATCHGATE MUST-FIX-2. Three conditions, and each one is load-
+            # bearing:
+            #
+            #   PAGE 1 — pages 2+ read a frozen page-set, and running a WRITE
+            #   pass to serve a paging request would close items the user is
+            #   only scrolling past.
+            #
+            #   view is None — only when a view is actually being built, not
+            #   on a snapshot read.
+            #
+            #   now_iso is None — A SIMULATED CLOCK MAY READ, IT MAY NEVER
+            #   WRITE. This is the only write ever wired into `run_surface`,
+            #   which was all reads before it, and it is the only clock in
+            #   this call that does not float on wall time. Without this
+            #   condition a render at `--now +30d` permanently closes parked
+            #   items whose windows are weeks from expiring and records them
+            #   as assumed-done — measured, not theorised (re-verify N-1).
+            #   `--now` is a shipped CLI flag and this product is full of
+            #   catch-up and backfill flows whose whole idiom is a simulated
+            #   clock; nothing passes one HERE today, which is exactly why
+            #   the guard belongs in code rather than in a comment telling
+            #   the next person not to.
+            watch_rows = run_watch_expiry_pass(ws).get("ask")
         view = _build_surface_view(
             surface, ws, now_iso=now_iso, moves_rows=moves_rows,
             chase_rows=chase_rows, status_rows=status_rows,
-            personal_cap=personal_cap)
+            personal_cap=personal_cap, watch_rows=watch_rows)
         live_view = view
         # Freeze this build as the page-set — on page 1 because that is the
         # fire's anchor, and on a refreshed page N so pages N+1... are stable

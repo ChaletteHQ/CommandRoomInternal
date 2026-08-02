@@ -39,15 +39,33 @@ _OK_STATUSES = frozenset({
     "proposed", "archived", "undone", "reopened", "cleared", "dismissed",
     "snoozed", "sent", "drafted", "registered", "merged", "reassigned",
     "split", "promoted",
+    # WATCHGATE: a weak proposal answered by a bulk gesture is PARKED on
+    # watch rather than closed. That is a write that landed and a row that
+    # has been dealt with — the page-set should stop offering it, exactly as
+    # it stops offering a closed one.
+    "watching",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
     "already_resolved", "already_closed", "already_inactive", "duplicate_open",
     "suppressed_cooldown", "already_merged", "noop",
+    # WATCHGATE: the row was already parked, so this answer wrote nothing.
+    # An honest no-op, not a failure and not a second park.
+    "already_watching",
+    # ARCHFIX: thread_archive.archive_thread on an already-archived thread
+    # writes nothing — no second status_change. Without this row the honest
+    # no-op maps to the unknown-status default ("error"), inflating n_errors
+    # and leaving an archived project still offered in the page-set.
+    "already_archived",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({
     "error", "refused", "failed", "needs_confirm", "blocked", "invalid",
+    # WATCHGATE / BULKGUARD holds: the handler deliberately declined to write
+    # because the row could not be proved. Named explicitly rather than left
+    # to the unknown-status default, so the reason is legible in the source
+    # instead of inferred from a fall-through.
+    "held_weak_evidence", "held_pending_review", "confirmed_open",
 })
 
 

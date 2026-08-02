@@ -151,11 +151,14 @@ This is the flagship command. Output a brief the CEO reads in 60 seconds before 
    import sys
    # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
    sys.path.insert(0, "shared/scripts")
-   from cru_match import load_open_commitments, _commitment_field
+   from cru_match import load_open_commitments, split_pending_review, _commitment_field
 
    opens = load_open_commitments("<absolute path to _hq/data/events.jsonl>")
-   theirs = [c for c in opens if _commitment_field(c, "owner_id") == "<person_id>"]
+   confirmed, _needs_review = split_pending_review(opens)   # INTAKE — confirmed half only
+   theirs = [c for c in confirmed if _commitment_field(c, "owner_id") == "<person_id>"]
    ```
+
+   **`data.pending_review` is NOT true — those are UNCONFIRMED extractions, not open commitments (INTAKE).** `load_open_commitments` is deliberately unfiltered, so the raw result still carries them; `split_pending_review` is the seam every reader that RENDERS goes through. Walking into a 1:1 and telling someone what they owe you, off a promise the extractor guessed at, is the one failure this brief cannot survive. Unconfirmed items belong to the needs-your-call queue (`needs your call`) — at most ONE labelled pointer line here, never rows in the brief.
 
    `load_open_commitments` handles all 5 commitment shape variants and treats both `commitment_resolved` AND `thread_resolved` as closers, so commitments closed via the meeting-notes Step 5e-bis path, the log-resolution dashboard click, or the follow-up-ritual CRU layer are correctly filtered out. The PERSON.md commitment table can lag — regen happens during workspace-manager's end-of-session passes, NOT in real time. Reading the table directly was the v3.11.5 _people/ drift bug.
 
@@ -188,7 +191,8 @@ tiles = build_prep_tiles(
     touch_number=None,                 # 1:1s are recurring; touch # is optional
 )
 timeline = build_relationship_timeline(<prior 1:1s + key interactions as {date,label}>)
-owed = build_owed_table(<their + your matched commitment rows>,
+owed = build_owed_table(<their + your matched commitment rows — CONFIRMED half only,
+                         split_pending_review(...) per Step 2; INTAKE2>,
                         user_person_id="<your person_id>", now_date="<today ISO>")
 
 assembled = assemble_prep_sections(
@@ -236,7 +240,7 @@ Save to `_hq/meetings/` (CONTRACT Rule 27 — never .md), and surface it as the 
 
 ### "what's [name] working on?" / "status on [name]" / "how's [name] doing?"
 
-Cross-project person view. Reads the same data as 1:1 prep but presents it differently — status-focused, not meeting-focused. **Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), commitment state derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id == <person_id>`, NOT from the PERSON.md commitment table** — the table is a Tier 2 projection that lags.
+Cross-project person view. Reads the same data as 1:1 prep but presents it differently — status-focused, not meeting-focused. **Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), commitment state derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id == <person_id>`, NOT from the PERSON.md commitment table** — the table is a Tier 2 projection that lags. **Confirmed half only — `cru_match.split_pending_review(opens)[0]` (INTAKE).** Same seam as 1:1 prep Step 2: an unconfirmed extraction is not something this person is working on, and answering "what's she working on?" with a guess is worse than answering with less.
 
 1. Read `_people/[name].md` for static profile only (role, owns, working style, flags)
 2. Scan all PROJECT_BRAIN.md files for this person
@@ -249,7 +253,7 @@ Cross-project person view. Reads the same data as 1:1 prep but presents it diffe
 Aggregate view across all tracked people.
 
 1. Read `_team-config.md` for roster. **If `_team-config.md` doesn't exist:** check if `_people/` has any PERSON.md files. If yes, create `_team-config.md` with defaults and build roster from existing profiles. If `_people/` doesn't exist or is empty, say: "You haven't set up team tracking yet. Say **'discover my team'** to scan your tools and find your people, or **'add [name] to my team'** to start one by one."
-2. For each person in roster: read PERSON.md for **static profile only** (skip with a warning if file is missing). Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), derive open / overdue commitment counts from `_hq/data/events.jsonl` via `load_open_commitments` grouped by `owner_id` — one pass over events.jsonl is cheaper than reading every PERSON.md table and stays consistent with what morning-brief / Pulse / Commitments dashboard show. Same source for `last interaction date` — max ts of `interaction` events scoped to the person's `person_id`.
+2. For each person in roster: read PERSON.md for **static profile only** (skip with a warning if file is missing). Per `references/SOURCE_OF_TRUTH.md` (v3.11.5+), derive open / overdue commitment counts from `_hq/data/events.jsonl` via `load_open_commitments` grouped by `owner_id` — **confirmed half only, `cru_match.split_pending_review(opens)[0]` (INTAKE); the "Open Commitments" and "Overdue" columns below carry no unconfirmed extractions** — one pass over events.jsonl is cheaper than reading every PERSON.md table and stays consistent with what morning-brief / Pulse / Commitments dashboard show. Same source for `last interaction date` — max ts of `interaction` events scoped to the person's `person_id`.
 3. Present summary table:
 
 ```
@@ -298,7 +302,7 @@ Manual commitment logging. Used when the CEO hears a commitment outside of a pro
 
 Search across canonical source first, then projections for static-profile signal.
 
-1. **Canonical search:** scan `_hq/data/events.jsonl` for `commitment` events whose `data.title` matches `[thing]` (use unigram-overlap scoring per `cru_match.py`). For each match, the `owner_id` is the candidate. Filter to OPEN via `load_open_commitments` — closed commitments shouldn't show as live ownership.
+1. **Canonical search:** scan `_hq/data/events.jsonl` for `commitment` events whose `data.title` matches `[thing]` (use unigram-overlap scoring per `cru_match.py`). For each match, the `owner_id` is the candidate. Filter to OPEN via `load_open_commitments`, then keep the confirmed half via `cru_match.split_pending_review(...)` (INTAKE) — closed commitments shouldn't show as live ownership, and neither should unconfirmed extractions: nobody has agreed that item is theirs, so it cannot answer "who owns this".
 2. **Static-profile search:** scan `_people/` PERSON.md files for `[thing]` in their "owns" field (Tier 2 profile data — fine for static ownership claims like "Aria owns vendor relationships"). Per `references/SOURCE_OF_TRUTH.md`, this is name-and-claim lookup, not state.
 3. Scan PROJECT_BRAIN.md files for `[thing]` in active threads.
 4. Present: who owns it, in which project context, current status. If multiple candidates, surface all with their evidence (canonical commitment vs static-profile claim).

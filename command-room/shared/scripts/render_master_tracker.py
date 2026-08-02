@@ -71,6 +71,7 @@ from thread_activity import ALL_TYPES, derive_from_events  # noqa: E402
 # _commitment_field / _commitment_confidence coerce the 5 shape variants.
 from cru_match import (  # noqa: E402
     load_open_commitments,
+    split_pending_review,
     _commitment_field,
     _commitment_confidence,
 )
@@ -400,7 +401,10 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
         body.append("")
 
     # --- Open Commitments (shape-safe via cru_match) -------------------------
-    open_commitments = load_open_commitments(_events_path(workspace_root))
+    # INTAKE — unconfirmed extractions are queue members, not open
+    # commitments: out of the rows AND out of the headline.
+    open_commitments, needs_review = split_pending_review(
+        load_open_commitments(_events_path(workspace_root)))
     shown = [c for c in open_commitments if _commitment_confidence(c) >= CONFIDENCE_FLOOR]
     provisional = len(open_commitments) - len(shown)
 
@@ -437,6 +441,13 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
             f"> _{provisional} open commitment(s) are on events with "
             f"classification_confidence < 0.40 or pending review — not shown above. "
             f"Run `insight-generator` to review._", "",
+        ]
+    if needs_review:
+        # INTAKE — the excluded queue, named once. Not a commitment count.
+        body += [
+            f"> _Needs your call: {len(needs_review)} unconfirmed "
+            f"extraction(s) — say `needs your call` to confirm or drop them. "
+            f"They are not counted as open commitments above._", "",
         ]
 
     # --- Assemble ------------------------------------------------------------

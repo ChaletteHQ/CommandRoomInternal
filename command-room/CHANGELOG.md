@@ -1,5 +1,90 @@
 # Command Room — Changelog
 
+## v5.6.4 — 2026-08-02 — Your list only holds what's real
+
+Minor-sized release in a patch coat: the whole capture-and-confirm chain got rebuilt so that nothing lands on your open list without either clear evidence or your say-so. No migration steps, nothing destructive, no new scheduled tasks.
+
+### Unconfirmed extractions stop counting as open commitments
+
+When a meeting produces something that *sounds* like a promise but the extractor isn't sure — no clear owner, vague timing, a counterparty it doesn't recognize — that item no longer counts in your open totals, your morning brief, or anything else that says "open." It waits in a new **needs-your-call** queue, grouped by the call it came from, until you confirm, drop, or reassign it with one tap. Confirming makes it an ordinary open commitment; dropping closes it as dropped; nothing is ever deleted. Your existing unconfirmed items are all there already, grouped and waiting — nothing was thrown away in the transition.
+
+### Every review row shows its evidence, and bulk-confirm can't sweep weak guesses
+
+Each row in the confirm queue now renders the quote it rests on and how strong that evidence is. "Confirm all" and group-confirms only take the strong rows; a row with no evidence, or only a title match, is held unless you name it by its own number — and held items go onto a quiet watch that checks for corroboration instead of nagging you. Every row also says in plain words *why* it's asking.
+
+### Meeting capture gets quality gates at the source
+
+Meeting-extracted items now pass through the same gate everything else uses, which was the root cause behind most list clutter. Three checks run before anything is written: the item needs a clear owner and deliverable, it has to be *your* promise or one owed to you (other people's homework from calls you sat in on stays off your book), and the quoted evidence must actually appear in the transcript it cites. Anything that fails routes to the review queue as a labeled guess — never silently discarded — and the meeting receipt records exactly what went where.
+
+### Smaller, in the same spirit
+
+- The morning brief's needs-attention lane shows the 5 most pressing items with an honest "…and K more" line; below-the-fold items rotate up so nothing can stay buried forever. Header counts stay unfiltered.
+- The staff meeting gains a **From your meetings** section so unconfirmed items get cleared where you already work, a few calls at a time.
+- **Archiving a project now sticks.** Archives were written to a generated view, so the next refresh silently brought the project back. An archive is now a real record change with a date and reason, it survives every refresh, and the stalled-projects list's Archive button — which previously did nothing — works.
+- The backup documentation now describes the safety net that actually exists rather than one that didn't.
+
+### Customer migration impact
+
+None to perform. Open-commitment counts may drop the day this lands — that's unconfirmed guesses leaving the totals, not lost data; say "needs your call" to see every one of them. The staff meeting's new section appears on its next scheduled fire.
+
+### What's NOT in this ship
+
+A hide-toggle for gate-rejected review rows (kept visible on purpose while the gates are new). The staff-meeting load reduction (separate release). The inbound-mail capture lane. Deal- and objective-initiated archives don't yet stamp the archive date the Recently Archived list sorts by — known, queued.
+
+## v5.6.3 — 2026-07-31 — The backlog cleanup shows its work
+
+Patch: the commitment cleanup was keeping an honest account of every pass and then not showing it to you. Plus two smaller corrections. No migration, no new commands, nothing scheduled.
+
+### The cleanup now prints the account it was already keeping
+
+Every backlog cleanup works out how far back it looked, how many of your open items it could actually reach by mail, which ones no message can ever settle and why, how much of the pile came from meeting notes instead, and — when your list is long enough that it stopped early — exactly where it stopped and how to pick up from there. It also says, in plain words, when it deliberately ignored a message that arrived *before* the promise it would have closed, so a large number there reads as the safety check working rather than as something broken.
+
+All of that was being worked out correctly and then dropped on its way to the screen. The only runs that showed it were the ones that found nothing at all — so the more a cleanup actually did, the less it told you about how it did it. The account now appears on every run, under the summary and beneath the lists, along with the heading and the one-line summary that were going missing the same way.
+
+### A merge you reversed is not called automatic
+
+Reversing a merge leaves a note asking you to settle the pair by hand or keep both. That note described what you had just undone as "the automatic merge". Nothing merges without a person deciding it, so the word is gone.
+
+### Asking to redo a whole day of meetings points you at the right place
+
+Asking to re-process or regenerate a whole day's meetings was being answered by the single-meeting command, which would work through the entire day without leaving the run receipt that the scheduled pass writes. That phrasing now routes you to the Past Meetings chat and its Run Now button, which is the surface that owns a whole-day pass. Processing one call is unchanged.
+
+### Customer migration impact
+
+None. The cleanup command has not reached any workspace yet, so no one has seen a cleanup without its account attached.
+
+### What's NOT in this ship
+
+The inbound-mail capture lane, still the next train. Two receipt-discipline items found in the same testing pass — a reversed merge leaving provenance behind on the surviving item, and a manually-run morning brief writing no run receipt — are ticketed behind a check on whether either predates this work.
+
+## v5.6.2 — 2026-07-30 — The backlog answers for itself, and a meeting cannot close what came after it
+
+Patch: one new on-demand command, two closing-rail corrections, and a hardening sweep of the event readers. No migration, nothing scheduled, nothing retroactive without you asking.
+
+### Clean up my commitments
+
+A new on-demand command — say "clean up my commitments" — looks backwards through months of mail for promises already kept, something the daily passes (which only ever look forward) could never do. Items with hard delivery or reply evidence close automatically in one undo-listable batch, with the evidence shown; everything less certain comes back as questions: proposals short of the bar, likely duplicates grouped side by side (never auto-merged), and items untouched for weeks batched into one "still real?" decision. A title that merely echoes the deliverable is never grounds for an automatic close on a historical scan. The scan owns its own window — the daily rails' catch-up cursors are untouched, pinned by test — and "show me first" runs the whole thing without writing anything. Never scheduled; it runs only when you ask.
+
+### A meeting's transcript cannot close a commitment captured after the meeting
+
+The transcript rail was the last high-volume closer with no ordering guard: a meeting's "I already sent that" could close a commitment that didn't exist until after the meeting ended. It now carries the same guard as the mail rails, counted on the past-meetings receipt under the same key. Nothing changes for correctly-ordered evidence.
+
+### One person, written two ways, counts as one
+
+A commitment carrying the same counterparty as both an id and a free-text name counted them as two people — so it degraded into per-leg partial tracking where the phantom "second person" could never receive anything, and the item became permanently uncloseable through that path. A name that resolves to an id already on the item is now dropped from the count, on every rail and closer, and items already stuck in that state close on their next evaluation. A name that resolves to a different person, or to nobody, still counts.
+
+### Readers that survive a bad line
+
+One malformed line in an event log could kill seven different readers — and in one case silently disable voice-correction logging with no symptom at all. Every reader on a live surface now routes through the defensive loader or carries its own guard: bad lines are skipped and counted, never crashing the surface and never silently swallowing a write. An inbound mail read that cannot happen now writes a loud receipt naming what was missing, matching the sent rail.
+
+### Customer migration impact
+
+None. The sweep announces itself once after update and does nothing until you run it.
+
+### What's NOT in this ship
+
+The inbound-mail capture lane (what would make reply-close's auto-close population real) — seeded as the next train. The decision-transcript matcher's ordering guard — now the last unguarded matcher, its own ticket.
+
 ## v5.6.1 — 2026-07-30 — Evidence that predates the promise cannot close it
 
 Patch: one safety guard on automatic closing, found in attended testing before any client received v5.6.0. No migration.

@@ -27,6 +27,7 @@
         "commitment_resolved",
         "sent_reconcile",
         "inbound_reconcile",
+        "backlog_sweep",
         "brief_state",
         "brief_meta",
         "gate_ran",

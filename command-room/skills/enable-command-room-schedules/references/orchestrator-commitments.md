@@ -181,6 +181,11 @@ for send in <list of sends since window>:
                 score=r['score'],
                 evidence=evidence,
                 next_seq=next_seq,
+                # WATCHGATE — the matcher's own fulfillment finding + WHEN the
+                # evidence was observed (this send's own timestamp), so the
+                # accept surface screens on the finding rather than on prose.
+                has_completion_signal=r.get('has_completion_signal'),
+                evidence_ts='<this message send ts — the same value as send_ts>',
             ))
             next_seq += 1
 if to_append:
@@ -236,6 +241,9 @@ receipt = reconcile_inbound_and_receipt(
     fired_via='scheduled',              # 'manual' on a chat-phrase / Run Now fire
     exclude_captured_since=fire_start,  # from Phase 2 — the fence, layer 2
     provider='<the seam-resolved provider>',
+    # TRAINFIX F-4 — leave None on a real read. Set it to the plain-English
+    # reason when the inbound read could not happen at all (paragraph below).
+    fetch_blocked=None,
 )
 print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s batch=%s'
       % (receipt['n_auto_closed'], receipt['n_pending'],
@@ -246,6 +254,8 @@ print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s batch
 **The circularity fence (REPLYCLOSE §3, plus EVORDER layer 3).** Layer 1 needs no argument — the helper derives each message's own ref internally and drops any commitment attributed to that very message, which is what stops the inbound message that CREATED a waiting-on item from being the message that closes it on a later scan (inbox-triage stamps `data.source_ref: gmail:<message_id>` on exactly those captures). Layer 2 is `exclude_captured_since=fire_start` — commitments this same fire captured are one source with the evidence, not two. Anything captured before the fire start stays fully matchable.
 
 **Layer 3 needs no argument either, but it needs each message's `ts`** — it refuses to close a commitment captured AFTER the reply arrived (the F-11 class: layer 2 fences against the start of THIS FIRE, so an item captured before the fire but after the message sails straight through it). Each `inbound_messages` entry must therefore carry the connector's raw ISO-8601 `ts`, never a reformatted display date. Absent `ts` leaves layer 3 inert, which is safe. A present-but-unparseable `ts` fails SAFE and LOUD: the pass closes nothing at all and prints `RECONFENCE: inbound_ts=…` on stderr. `receipt['signal_fields']['n_stale_evidence_skipped']` counts what layer 3 refused — non-zero is the fence working, not an error.
+
+**If the inbound read cannot happen at all — no mail connector resolves, the connector budget is exhausted, or every account is still unclassified — do NOT call this helper with an empty list and let it write a clean zero (TRAINFIX F-4).** A fire that read nothing and a fire that read everything and found nothing produce the identical `inbound_scanned_count: 0` audit, and the first is a dead rail wearing the second's receipt. Call it with `inbound_messages=[]` AND `fetch_blocked="<what was missing, in plain language>"`: the audit lands stamped blocked with the reason, nothing closes, no confirm is queued, and `validate_inbound_reconcile_ran` refuses it. Silent to the CEO, loud in the substrate.
 
 **Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True, or this pass did not actually run and its zero means nothing. Also read `receipt["signal_fields"]`: messages scored with neither the conversation nor the attachment field present means the reply checks could not run at all; `receipt["summary"]` says so in plain language in exactly that state, and `receipt["coverage"]` reports how many open items have no resolvable owner and therefore can never be closed by any reply.
 
@@ -309,6 +319,13 @@ results = match_calendar_to_commitments(
     open_commitments=opens,
     user_person_id='<primary user person_id>',
     calendar_events=calendar_events,
+    # F-28 — the workspace, so the roster reader resolves a free-text
+    # counterparty_name against entities.json + aliases. Without it ONE person
+    # recorded as BOTH a counterparty_id and that person's name counts as TWO:
+    # the close is downgraded to per-leg receipts and the phantom name leg can
+    # never receive one, so the item stops closing through Path 5 at all.
+    # `workspace_root` is already bound above.
+    workspace_root=workspace_root,
 )
 
 # Stage B (F2): auto-resolves close through close_commitment; matching (Path 5)
@@ -351,6 +368,8 @@ for r in results:
             score=r['score'],
             evidence=r['evidence'],
             next_seq=next_seq,
+            has_completion_signal=r.get('has_completion_signal'),
+            evidence_ts='<this message send ts — the same value as send_ts>',
         ))
         next_seq += 1
 if to_append:
@@ -577,9 +596,9 @@ If a single owner owes multiple things in the same bucket, merge into ONE chase 
 
 A single commitment can name N counterparties — "send the deck to the board" is owed to three people at once (`data.counterparty_ids` carries the roster; `data.counterparty_id` stays the primary). Do NOT chase or close it as one blob:
 
-1. **Outstanding set:** call `commitment_parties.outstanding_counterparties(commitment)` — the roster minus everyone already received (`data.received_from` / `data.received_from_names`, folded onto the projection by the loader). Render **one row per OUTSTANDING counterparty**, grouped per person exactly like Phase 4's per-recipient grouping (received counterparties simply don't appear — they've delivered). A single-counterparty commitment has exactly one entry, so this reduces to today's behavior with zero change.
+1. **Outstanding set:** call `commitment_parties.outstanding_counterparties(commitment, workspace_root=WORKSPACE)` — the roster minus everyone already received (`data.received_from` / `data.received_from_names`, folded onto the projection by the loader). Render **one row per OUTSTANDING counterparty**, grouped per person exactly like Phase 4's per-recipient grouping (received counterparties simply don't appear — they've delivered). A single-counterparty commitment has exactly one entry, so this reduces to today's behavior with zero change. **`workspace_root` is not optional here (F-28):** without it, one person a writer recorded as BOTH a resolved `counterparty_id` and that same person's free-text `counterparty_name` fans out as TWO rows — and the name row can never be marked received, because a name-only leg gets no receipt by design. That is how an item ends up chased forever after it was already delivered. With the workspace, the roster reader resolves the name against `entities.json` + aliases and collapses the pair into one person.
 2. **Per-person verb:** each fan-out row carries `mark received from [name]` (verb_taxonomy `mark received from [name]` → `commitment_state.mark_partial_received`), with the counterparty id embedded on the row so apply-choices dispatches statelessly. An owed-to-M multi-counterparty item drafts one nudge per outstanding recipient (the owner-me fan-out — one status note per outstanding recipient — lives on My Plate now, CTS1). Never chase a counterparty already in `received_from`.
-3. **Closure PROPOSAL, never auto-close:** when the projection carries `data.all_counterparties_received: true` (every counterparty is in), render a single "everyone's received — close it?" row (the `mark done` / `resolved` verb) INSTEAD of the fan-out. The item stays open until the user clicks; nothing here auto-closes. The CRU pre-render scans (2.5/2.6/2.7) already record per-person receipts rather than whole-closing a multi-counterparty item (`match_*` returns `recommendation: "partial_received"` with `matched_counterparty_ids` — dispatch each through `mark_partial_received`, never `close_commitment`).
+3. **Closure PROPOSAL, never auto-close:** when the projection carries `data.all_counterparties_received: true` (every counterparty is in), render a single "everyone's received — close it?" row (the `mark done` / `resolved` verb) INSTEAD of the fan-out. **This step and step 1 must read the SAME workspace, or they cancel each other out (F-28 post-review F-2).** Steps 1 and 3 are mutually exclusive modes, and they consult different things: step 1 asks `outstanding_counterparties(...)`, step 3 reads a stamp the LOADER wrote. So the projection must come from `load_open_commitments(events_path, workspace_root=WORKSPACE)` — the same `WORKSPACE` step 1 passes. Load it raw and you get the worst of both: step 1 finds nothing outstanding (fixed) while step 3 finds no stamp (unfixed), so a delivered item renders **no row at all** and sits open silently. Noise is a bug; silence on an open item is a worse one. The item stays open until the user clicks; nothing here auto-closes. The CRU pre-render scans (2.5/2.6/2.7) already record per-person receipts rather than whole-closing a multi-counterparty item (`match_*` returns `recommendation: "partial_received"` with `matched_counterparty_ids` — dispatch each through `mark_partial_received`, never `close_commitment`).
 
 # Phase 5 — Apply severity tier (auto-tone by aging — every chase row in this chat)
 

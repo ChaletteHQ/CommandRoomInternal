@@ -731,7 +731,15 @@ Generate a `.docx` at `[WORKSPACE_ROOT]/_hq/cleanup-reports/[YYYY-MM-DD]-cleanup
 
 ## Reliability
 
-Runs as a job inside the `maintenance` scheduled task (Sunday evening slot — CEO reviews Monday AM; a missed Sunday self-heals at the next fire) and implements `shared/RELIABILITY.md`. Point-in-time snapshot (no missed-fire catch-up; runs at next opportunity), runs normally during OOO, 15s per-connector / 60s aggregate timeout budget. This skill is also the backup snapshotter — daily snapshots of data files to `_hq/backups/`; snapshots older than 14 days are moved to `_archive/backups/` (archived, never deleted). Corrupted `entities.json` / `aliases.json` triggers auto-restore from `_hq/backups/[file]_[date].backup`; corrupted `events.jsonl` is healed via the Phase 3b recurring self-heal (quarantine, not restore — append-only).
+Runs as a job inside the `maintenance` scheduled task (Sunday evening slot — CEO reviews Monday AM; a missed Sunday self-heals at the next fire) and implements `shared/RELIABILITY.md`. Point-in-time snapshot (no missed-fire catch-up; runs at next opportunity), runs normally during OOO, 15s per-connector / 60s aggregate timeout budget.
+
+**This skill is NOT a backup snapshotter.** It takes no daily data-file snapshots and rotates none — the safety net for the substrate is `atomic_write`, on every write, not a scheduled copy:
+
+- Every canonical write goes through `shared/scripts/atomic_write.py` — temp sibling + fsync + atomic rename, so no reader (Cowork, another machine, a concurrent skill) ever sees a torn file, plus a cross-process lock on `entities.json` / `aliases.json`.
+- `atomic_write_json_locked` re-reads the file after writing it and, if the result does not parse, **best-effort restores from the newest existing backup in the sibling `_hq/data/_backups/` folder** and raises so the calling skill knows the write did not take. That restore is only as good as what is in that folder — nothing writes it on a schedule; it accumulates from one-off migrations (`migrate_persons_v3_13_0.py`) and the end-session tracker rolling copy. Where a restore is impossible the write simply fails loudly, which is the honest outcome.
+- Corrupted `events.jsonl` is **never restored over** — it is append-only history. It heals via the Phase 3b recurring self-heal, which quarantines just the malformed lines to `_hq/.system/quarantine/` (saved, never deleted), rewrites the file without them atomically, and appends a `corruption_recovery` event.
+
+Cleanup's role here is the Phase 3b self-heal and reporting what it healed — not snapshotting.
 
 ## Gotchas
 

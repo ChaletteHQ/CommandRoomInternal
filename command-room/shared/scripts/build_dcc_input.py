@@ -146,6 +146,10 @@ def _project_matters_fallback(
     # tolerate older flat shape by falling back to top-level keys.
     entities = data["entities"] if isinstance(data.get("entities"), dict) else data
 
+    # EVGUARD sibling-rail (joined by the Slot 9 sweep) — this loop ADMITTED a
+    # bare-string line (it PARSES), and `_project_matters_fallback` then called
+    # `.get()` on it: AttributeError, non-zero exit, and the DCC artifact never
+    # rendered. Non-dict rows are dropped here instead.
     events: list[dict[str, Any]] = []
     if events_path.exists():
         for line in events_path.read_text(encoding="utf-8").splitlines():
@@ -153,9 +157,12 @@ def _project_matters_fallback(
             if not line:
                 continue
             try:
-                events.append(json.loads(line))
+                ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(ev, dict):
+                continue
+            events.append(ev)
 
     # Identify the user
     user_id = ""

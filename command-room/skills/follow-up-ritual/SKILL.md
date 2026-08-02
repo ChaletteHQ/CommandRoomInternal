@@ -234,7 +234,8 @@ From the org-scoped `load_open_commitments(events_path, events=org_events)` resu
 - `type == "commitment"` AND
 - `data.status` (or top-level `status`, for legacy events) is `"open"` or `"overdue"` AND
 - the commitment hasn't been closed by a later `commitment_resolved` / `thread_resolved` event referencing its id (the projection already applies the closer chain) AND
-- `data.owner_id == <attendee_person_id>` OR `data.owner_id == <user_id>` for outbound (you owe this attendee)
+- `data.owner_id == <attendee_person_id>` OR `data.owner_id == <user_id>` for outbound (you owe this attendee) AND
+- `data.pending_review` is NOT true — those are UNCONFIRMED extractions, not open commitments. They belong to the needs-your-call queue (`needs your call`), never to an attendee pack or an outbound draft: telling someone "still open from before" about a promise the extractor merely guessed at is a claim the workspace cannot stand behind. Use `cru_match.split_pending_review(...)` and keep the confirmed half.
 
 Group by attendee. For each attendee with ≥1 open commitment, include a "Still open" subsection in their per-attendee section of the pack:
 

@@ -48,7 +48,15 @@ def _load_events(root: Path) -> list[dict]:
     toward last-activity — the old active-file-only read showed a thread
     whose last touch lives in a shard as dormant. Defensive fallback (the
     documented never-brick posture — render_tree is standalone-runnable
-    like _compute_last_activity's own fallback): active file only, utf-8."""
+    like _compute_last_activity's own fallback): active file only, utf-8.
+
+    EVGUARD sibling-rail (joined by the Slot 9 sweep) — the fallback loop
+    ADMITTED a bare-string line (it PARSES), and `_compute_last_activity`'s own
+    raw fallback then called `.get()` on it. Same admitting-loader class as
+    `integrity_check.load_events`, same three-line guard. Only reachable in the
+    standalone posture (the canonical `events_io.load_all` already drops
+    non-dicts), but the loader is what admits, so the loader is what is fixed:
+    a never-brick fallback that hands a `str` to its caller isn't a fallback."""
     try:
         shared = Path(__file__).resolve().parents[2] / "shared" / "scripts"
         if str(shared) not in sys.path:
@@ -69,9 +77,12 @@ def _load_events(root: Path) -> list[dict]:
                 if not line or line.startswith("#"):
                     continue
                 try:
-                    out.append(json.loads(line))
+                    ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(ev, dict):
+                    continue
+                out.append(ev)
     except OSError:
         return []
     return out

@@ -174,7 +174,17 @@ def append_correction(
     """Append one correction row (VOICE_CALIBRATION schema, exact keys) to
     `_hq/voice/corrections-<skill>.jsonl`. Deduped against the log tail by
     (skill, original, corrected). Returns True if written, False if a duplicate.
-    Never raises."""
+    Never raises.
+
+    EVGUARD (Sub-bug #14b, second half) — the dedupe scan below skips non-dict
+    rows as well as unparseable ones. A top-level bare-string line (`"seq"`)
+    PARSES, so it used to reach `row.get(...)`, raise AttributeError, and get
+    swallowed by this function's outer `except Exception: return False`. The
+    caller read that False as "duplicate", so ONE junk line in the tail-500 of
+    `corrections-<skill>.jsonl` silently killed every future correction append
+    for that skill — the voice-calibration loop died with no symptom anywhere.
+    The outer never-raises contract is intact and deliberate; what was wrong is
+    that a guard-less loop let a data problem reach it."""
     try:
         from atomic_write import atomic_append_jsonl
         path = _voice_dir(workspace_root) / f"corrections-{skill}.jsonl"
@@ -187,6 +197,8 @@ def append_correction(
                 try:
                     row = json.loads(line)
                 except Exception:
+                    continue
+                if not isinstance(row, dict):
                     continue
                 if _fingerprint(skill, row.get("original_draft", ""), row.get("corrected_by_user", "")) == fp:
                     return False
@@ -260,6 +272,14 @@ def _norm_subject(s: str) -> str:
 
 
 def _load_snapshots(workspace_root) -> List[dict]:
+    """Draft snapshots, non-dict rows dropped.
+
+    EVGUARD sibling-rail (joined by the Slot 9 sweep) — this loader ADMITTED a
+    bare-string row, and `_match_snapshot` then called `.get()` on it. The
+    AttributeError was swallowed by `reconcile_sent_against_snapshots`'s
+    never-raises wrapper, which returned `n_matched: 0`: one junk line in
+    draft-snapshots.jsonl silently switched the whole drafted-vs-sent
+    correction detector off. Same silent-drop class as `append_correction`."""
     path = _voice_dir(workspace_root) / "draft-snapshots.jsonl"
     if not path.exists():
         return []
@@ -269,9 +289,12 @@ def _load_snapshots(workspace_root) -> List[dict]:
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            row = json.loads(line)
         except Exception:
             continue
+        if not isinstance(row, dict):
+            continue
+        out.append(row)
     return out
 
 
@@ -343,6 +366,13 @@ def _match_snapshot(sent: dict, snaps: List[dict]) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def load_corrections(workspace_root, skill: Optional[str] = None) -> List[dict]:
+    """Every correction row across the corrections logs (insight-generator
+    Pass 11 batching read).
+
+    EVGUARD (Sub-bug #14b, second half) — non-dict rows are skipped alongside
+    unparseable ones. A top-level bare-string line PARSES, so it used to reach
+    `row.setdefault(...)` and raise AttributeError straight out of this
+    function, taking Pass 11 with it."""
     vd = _voice_dir(workspace_root)
     if not vd.exists():
         return []
@@ -357,6 +387,8 @@ def load_corrections(workspace_root, skill: Optional[str] = None) -> List[dict]:
             try:
                 row = json.loads(line)
             except Exception:
+                continue
+            if not isinstance(row, dict):
                 continue
             row.setdefault("skill", sk)
             rows.append(row)

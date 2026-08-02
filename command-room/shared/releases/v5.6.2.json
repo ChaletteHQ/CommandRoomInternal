@@ -1,0 +1,13 @@
+{
+ "version": "5.6.2",
+ "headline": "One command now looks backwards through months of your mail for promises you already kept, closes the ones the evidence settles, and asks about the rest in a single list.",
+ "items": [
+  {
+   "id": "v562_announce_commitment_backlog_sweep",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Say 'clean up my commitments' once, when you have a minute. The daily passes only ever look at new mail, so anything you delivered before Command Room started watching has been sitting on your open list ever since. This new pass looks backwards through the last six months of your mail instead. Where it finds hard evidence that you already delivered something — you sent the attachment, or the person you were waiting on replied on that same thread with the thing you asked for — it closes the item straight away and shows you exactly what closed and why, with one word to reverse the whole run. Everything less certain than that is a question, not a decision: items that look handled, items that are the same thing written twice, and items nobody has touched in months all come back as a list you answer. If you would rather see the whole thing before anything changes, say 'clean up my commitments, show me first' and it will change nothing at all.",
+   "action": "announce_only"
+  }
+ ]
+}

@@ -227,23 +227,23 @@ This is the manual trigger for comprehensive maintenance. Runs all rules above P
 
 ## Rule 11: MASTER_TRACKER Rolling Backup
 
-**Problem:** MASTER_TRACKER.md is the single source of truth for the entire workspace. A bad edit, accidental overwrite, or corruption can cascade across every skill. There's no recovery without a backup.
+**Problem:** MASTER_TRACKER.md is the workspace's most-read view — the orientation surface every skill and every human glance starts from. It is a *projection* of `_hq/data/entities.json` + `events.jsonl` (canonical state is those files, per `references/SOURCE_OF_TRUTH.md`), so a lost tracker is recoverable by rerunning `render_master_tracker.py`; what a backup preserves is any hand-authored section the renderer does not own, plus a readable snapshot of how things looked before this session touched them.
 
-**Principle: Keep 3 timestamped copies in the live backup folder. Archive anything older — never delete. Simple rolling window.**
+**Principle: Keep 3 timestamped copies in the one backup folder — `_hq/data/_backups/`, the same place `atomic_write` restores substrate files from. Archive anything older — never delete. Simple rolling window.**
 
 **Action (on "end session", BEFORE any tracker updates):**
-1. Check if `[WORKSPACE_ROOT]/_hq/_backups/` exists. Create it if not.
-2. Copy `_hq/MASTER_TRACKER.md` to `_hq/_backups/MASTER_TRACKER_[YYYY-MM-DD_HHMM].md` (24-hour time, e.g., `MASTER_TRACKER_2026-04-14_0930.md`).
-3. List all files in `_hq/_backups/` matching the `MASTER_TRACKER_*.md` pattern.
+1. Check if `[WORKSPACE_ROOT]/_hq/data/_backups/` exists. Create it if not.
+2. Copy `_hq/MASTER_TRACKER.md` to `_hq/data/_backups/MASTER_TRACKER_[YYYY-MM-DD_HHMM].md` (24-hour time, e.g., `MASTER_TRACKER_2026-04-14_0930.md`).
+3. List all files in `_hq/data/_backups/` matching the `MASTER_TRACKER_*.md` pattern.
 4. Sort by filename (which sorts by date since the format is chronological).
-5. If more than 3 backup files exist, move everything except the 3 most recent into `_archive/backups/` (archived, never deleted).
+5. If more than 3 files **match that pattern**, move everything except the 3 most recent MATCHES into `_archive/backups/` (archived, never deleted). Rotation is scoped to `MASTER_TRACKER_*.md` and nothing else: `_hq/data/_backups/` is shared with the `entities.json` / `aliases.json` backups, which are the only thing `atomic_write` can restore a substrate file from. Reading step 5 as "keep 3 files in the folder" would delete the substrate's safety net on every end session — the hygiene rule is the 3 newest **of each backed-up file**, not 3 files total.
 6. No logging to the user unless asked. This is silent infrastructure.
 
 **Why 3 copies live:** Enough to recover from a bad session (today's backup), compare against yesterday, and have one more safety net, all close at hand. Older copies aren't clutter to throw away — they're moved to `_archive/backups/` so the recovery trail is never broken.
 
 **Why before updates, not after:** The backup should capture the state BEFORE this session's changes. If the current session corrupts the tracker, the most recent backup is the clean pre-session state.
 
-**Recovery:** If the user says "restore my tracker" or "my tracker is broken," read the most recent backup from `_hq/_backups/` and offer to replace the current file. Always show the backup date and let the user confirm.
+**Recovery:** If the user says "restore my tracker" or "my tracker is broken," the first move is to **rerun the renderer** (`render_master_tracker.regenerate(workspace_root)`) — the tracker is generated, so a fresh render from canonical substrate beats any copy. Fall back to the most recent backup in `_hq/data/_backups/` only when the substrate itself is the problem; show the backup date and let the user confirm before replacing anything.
 
 **Override:**
 ```

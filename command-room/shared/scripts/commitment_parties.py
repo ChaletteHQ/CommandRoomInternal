@@ -33,16 +33,44 @@ THE MODEL (mirrors the single-field contract exactly)
                            at render time, never from this field, so the
                            roster never double-counts a person.
 
+THE DISJOINTNESS RIDER (F-28, 2026-07-30)
+=========================================
+That last sentence is the CONTRACT, and real writers break it. Observed in a
+live natural experiment: the same person written as BOTH `counterparty_id`
+(resolved) AND `counterparty_name` (the same person's name, free text). The
+raw union counted them as TWO counterparties, so `has_multiple_counterparties`
+went True, MC1 downgraded an outright close to per-leg partial receipts — and
+a name-only leg can NEVER receive one (name-only matches are skipped-and-
+reported by design, precisely so no writer guesses an id from a name token).
+`all_counterparties_received` therefore never became true and the item was
+PERMANENTLY unclosable through that path: purgatory, not a miscount.
+
+So the roster now drops a `counterparty_name` that RESOLVES to an id already
+in the set. Two things make that safe:
+
+  * it needs a `workspace_root` — the entity graph lives on disk, and this
+    module reads no disk of its own. Every roster reader takes an OPTIONAL
+    keyword-only `workspace_root`; omit it and you get the raw union,
+    byte-identical to pre-F-28, so no existing caller changes behavior.
+  * resolution is EXACT ONLY (`entity_resolve.resolve_all(...,
+    min_confidence=1.0)` — alias graph + canonical/alias names). Dropping a
+    leg is the LENIENT direction: it lets an item close. Fuzzy and phonetic
+    matching guess, and a guess that lets something close is the wrong kind of
+    guess. A name that resolves to a DIFFERENT person, or resolves to nothing
+    at all, still counts — that is a genuine second counterparty.
+
 Per-person receipt (MC1): `data.received_from` (resolved ids) and
 `data.received_from_names` (unresolved names) accumulate on the PROJECTION as
 `commitment_partial_received` events land (the loader folds them). A
 commitment auto-proposes closure when every counterparty has delivered
 (`all_counterparties_received`) — PROPOSE, never auto-close.
 
-Pure dict operations, stdlib only, ZERO domain imports — safe to import from
-anywhere (cru_match, commitment_state, the capture writers, the surfaces)
-with no circular-import risk. Accepts EITHER a commitment event dict or its
-`data` payload dict (auto-detected).
+Pure dict operations, stdlib only, ZERO domain imports AT IMPORT TIME — safe
+to import from anywhere (cru_match, commitment_state, the capture writers, the
+surfaces) with no circular-import risk. The F-28 rider's `entity_resolve`
+import is LAZY and inside the one function that needs it, so importing this
+module still pulls in nothing but the stdlib. Accepts EITHER a commitment
+event dict or its `data` payload dict (auto-detected).
 """
 from __future__ import annotations
 
@@ -91,11 +119,76 @@ def counterparty_ids(obj) -> list:
     return out
 
 
-def counterparty_names(obj) -> list:
+# F-28 — resolution memo, keyed by (workspace, entity-graph state, name). The
+# roster readers run once per open commitment per fire, and the ones that
+# matter run inside loops over the whole open set; re-reading entities.json for
+# every (item, name) pair is the kind of cost that gets a guard reverted. The
+# key carries a stat signature of BOTH files the resolver reads, so a fire that
+# writes a new person does not answer from a stale cache. Bounded by the number
+# of distinct names in one process, which is the roster's own size.
+_RESOLVE_CACHE: dict = {}
+
+
+def _entity_graph_signature(workspace_root) -> tuple:
+    """(size, mtime_ns) for entities.json and aliases.json — the cache key's
+    freshness half. A missing file contributes a stable sentinel rather than an
+    error: 'no file' is itself a state worth caching."""
+    from pathlib import Path as _Path
+    sig: list = []
+    base = _Path(workspace_root) / "_hq" / "data"
+    for name in ("entities.json", "aliases.json"):
+        try:
+            st = (base / name).stat()
+            sig.append((st.st_size, st.st_mtime_ns))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
+
+
+def _resolved_entity_ids(name: str, workspace_root) -> frozenset:
+    """Every entity id `name` resolves to EXACTLY (confidence 1.0 — the alias
+    graph and canonical/alias names, never fuzzy or phonetic).
+
+    Exact-only is the whole safety argument (see the module docstring): a hit
+    here DROPS a counterparty leg, which is what lets an item close, so it must
+    be a fact about the entity graph rather than a similarity score.
+
+    Defensive by design: an unreadable or absent entity graph returns the empty
+    set, which means "nothing was matched", which means the name KEEPS its
+    place in the roster. The safe direction on this rail is the higher count —
+    a spurious extra counterparty produces a chase row someone can dismiss; a
+    spuriously dropped one closes a commitment nobody delivered."""
+    key = (str(workspace_root), _entity_graph_signature(workspace_root), name)
+    hit = _RESOLVE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        import entity_resolve
+        out = frozenset(
+            r.entity_id for r in entity_resolve.resolve_all(
+                workspace_root, name, min_confidence=1.0)
+            if r.entity_id
+        )
+    except Exception:
+        # A fresh workspace (no entities.json), a mid-sync unreadable file, a
+        # resolver that raised on a shape it did not expect — none of those are
+        # this module's business, and none may take a roster read down.
+        out = frozenset()
+    _RESOLVE_CACHE[key] = out
+    return out
+
+
+def counterparty_names(obj, *, workspace_root=None) -> list:
     """The ordered union of UNRESOLVED counterparty names (free text, no id):
     legacy scalar `counterparty_name` then `counterparty_names`. [] when
     none. Disjoint from `counterparty_ids` by construction (a resolved
-    counterparty carries an id, not a name)."""
+    counterparty carries an id, not a name).
+
+    F-28 — "by construction" is the contract and writers break it. With a
+    `workspace_root`, a name that resolves EXACTLY to an id already in
+    `counterparty_ids(obj)` is dropped: it is the same person written twice,
+    and counting them separately makes the item unclosable (module docstring).
+    Without one, the raw union — byte-identical to pre-F-28."""
     d = _data(obj)
     out: list = []
     single = d.get("counterparty_name")
@@ -104,7 +197,15 @@ def counterparty_names(obj) -> list:
     for x in _str_list(d.get("counterparty_names")):
         if x not in out:
             out.append(x)
-    return out
+    if workspace_root is None or not out:
+        return out
+    # Only a commitment carrying BOTH shapes can exhibit the defect, so the
+    # entity read never happens for the id-only or name-only majority.
+    ids = set(counterparty_ids(obj))
+    if not ids:
+        return out
+    return [nm for nm in out
+            if not (_resolved_entity_ids(nm, workspace_root) & ids)]
 
 
 def primary_counterparty_id(obj) -> Optional[str]:
@@ -115,33 +216,41 @@ def primary_counterparty_id(obj) -> Optional[str]:
     return ids[0] if ids else None
 
 
-def primary_counterparty_name(obj) -> Optional[str]:
+def primary_counterparty_name(obj, *, workspace_root=None) -> Optional[str]:
     """The FIRST unresolved counterparty name — the single-value degrade for
     name-only commitments."""
-    names = counterparty_names(obj)
+    names = counterparty_names(obj, workspace_root=workspace_root)
     return names[0] if names else None
 
 
-def counterparty_count(obj) -> int:
+def counterparty_count(obj, *, workspace_root=None) -> int:
     """Total counterparties on the commitment (resolved ids + unresolved
-    names)."""
-    return len(counterparty_ids(obj)) + len(counterparty_names(obj))
+    names). With a `workspace_root`, one person written as BOTH an id and that
+    person's name counts ONCE (F-28)."""
+    return (len(counterparty_ids(obj))
+            + len(counterparty_names(obj, workspace_root=workspace_root)))
 
 
-def has_multiple_counterparties(obj) -> bool:
+def has_multiple_counterparties(obj, *, workspace_root=None) -> bool:
     """True iff the commitment names more than one counterparty (the MC1
-    fan-out / per-person-receipt path applies)."""
-    return counterparty_count(obj) > 1
+    fan-out / per-person-receipt path applies).
+
+    THE F-28 SEAM. This predicate is what turns an outright close into per-leg
+    partial receipts, so a double-written single counterparty reaching it as
+    `True` is what made items unclosable. Pass `workspace_root` on any path
+    that can close a commitment."""
+    return counterparty_count(obj, workspace_root=workspace_root) > 1
 
 
-def counterparties(obj) -> list:
+def counterparties(obj, *, workspace_root=None) -> list:
     """The full roster, one entry per counterparty, resolved ids first:
     `[{"id": <pid>, "name": None}, ..., {"id": None, "name": <text>}, ...]`.
-    Disjoint — a person appears once."""
+    Disjoint — a person appears once (with a `workspace_root`, that holds even
+    when a writer wrote the same person as an id AND a name — F-28)."""
     out: list = []
     for cid in counterparty_ids(obj):
         out.append({"id": cid, "name": None})
-    for nm in counterparty_names(obj):
+    for nm in counterparty_names(obj, workspace_root=workspace_root):
         out.append({"id": None, "name": nm})
     return out
 
@@ -158,29 +267,33 @@ def received_from_names(obj) -> list:
     return _str_list(_data(obj).get("received_from_names"))
 
 
-def outstanding_counterparties(obj) -> list:
+def outstanding_counterparties(obj, *, workspace_root=None) -> list:
     """The roster MINUS everyone who has delivered — the chase fan-out set
     (one nudge per entry). Same `{"id", "name"}` shape as `counterparties`.
-    Names are matched case-insensitively."""
+    Names are matched case-insensitively.
+
+    F-28: with a `workspace_root`, a phantom name leg (the same person as an id
+    already in the set) never appears here — which is what un-sticks an item
+    whose id leg was receipted while the phantom stayed outstanding forever."""
     rid = set(received_from_ids(obj))
     rnm = {n.lower() for n in received_from_names(obj)}
     out: list = []
     for cid in counterparty_ids(obj):
         if cid not in rid:
             out.append({"id": cid, "name": None})
-    for nm in counterparty_names(obj):
+    for nm in counterparty_names(obj, workspace_root=workspace_root):
         if nm.lower() not in rnm:
             out.append({"id": None, "name": nm})
     return out
 
 
-def all_counterparties_received(obj) -> bool:
+def all_counterparties_received(obj, *, workspace_root=None) -> bool:
     """True iff the commitment names at least one counterparty AND every one
     of them has delivered — the PROPOSE-closure signal (never an auto-close).
     False for a no-counterparty item (nothing to have received)."""
-    if counterparty_count(obj) == 0:
+    if counterparty_count(obj, workspace_root=workspace_root) == 0:
         return False
-    return not outstanding_counterparties(obj)
+    return not outstanding_counterparties(obj, workspace_root=workspace_root)
 
 
 def receipts_are_id_level(events, commitment_id, commitment_seq=None):

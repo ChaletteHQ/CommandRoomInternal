@@ -144,7 +144,7 @@ Runs in two modes:
 - Tasks that keep bouncing between "blocked" and "in progress"
 - Recurring administrative work (expense reports, timesheets, check-ins)
 
-**Source:** `_hq/data/events.jsonl` (Tier 1 canonical event log per `references/SOURCE_OF_TRUTH.md`) — read commitment events directly via `shared/scripts/cru_match.py::load_open_commitments` for the open set, plus a full scan for historical recurring patterns. Do NOT analyze MASTER_TRACKER.md as the source — it's a Tier 2 projection that regenerates at coarse cadence and would mask the month-over-month repetition signal automation-scanner needs.
+**Source:** `_hq/data/events.jsonl` (Tier 1 canonical event log per `references/SOURCE_OF_TRUTH.md`) — read commitment events directly via `shared/scripts/cru_match.py::load_open_commitments` for the open set — then keep the confirmed half, `cru_match.split_pending_review(...)` (INTAKE: unconfirmed extractions are needs-your-call queue members, and a guess should never seed a suggested automation) — plus a full scan for historical recurring patterns. Do NOT analyze MASTER_TRACKER.md as the source — it's a Tier 2 projection that regenerates at coarse cadence and would mask the month-over-month repetition signal automation-scanner needs.
 
 ### 4. Meeting Notes Patterns
 - Processes described verbally in meetings that aren't in any system yet

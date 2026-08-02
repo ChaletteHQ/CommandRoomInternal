@@ -1,6 +1,6 @@
 ---
 name: meeting-notes
-description: "Process meeting notes from Granola or pasted text into structured artifacts — decisions, action items, SESSION_NOTES + Master Tracker updates. Triggers: 'process meeting', 'process the last call', 'process the call', 'meeting notes', 'meeting notes from', 'analyze this call', 'debrief from', 'log the meeting', 'summarize the call', 'summarize the meeting', 'action items from the meeting', 'action items from the call'. Plus 'tune meeting-notes'. DOES NOT fire on 'follow up', 'draft follow-ups', 'close the loop' — those go to follow-up-ritual. DOES NOT fire on 'prep me for' — that goes to call-prep."
+description: "Process meeting notes from Granola or pasted text into structured artifacts — decisions, action items, SESSION_NOTES + Master Tracker updates. Triggers: 'process meeting', 'process the last call', 'process the call', 'meeting notes', 'meeting notes from', 'analyze this call', 'debrief from', 'log the meeting', 'summarize the call', 'summarize the meeting', 'action items from the meeting', 'action items from the call'. Plus 'tune meeting-notes'. DOES NOT fire on 'follow up', 'draft follow-ups', 'close the loop' — those go to follow-up-ritual. DOES NOT fire on 'prep me for' — that goes to call-prep. DOES NOT fire on a whole-day bulk re-run — 're-process today's meetings', 'reprocess my meetings', 'reprocess todays meetings', 'regenerate past meetings', 'process today's meetings': one call at a time is this skill; a whole day belongs to the Past Meetings scheduled task. Send the user to the Past Meetings chat and its Run Now button."
 ---
 
 ## Skill Boundary (v2.1)
@@ -343,7 +343,43 @@ Only add people who were meaningfully involved in the meeting. Skip generic atte
 
 For **every action item** captured in Step 2's Action Items table, append one `commitment` event to `_hq/data/events.jsonl`. This is the canonical-shape required by `shared/COMMITMENT_SCHEMA.md` — read that file once if you've never written commitment events before, then follow the recipe below for each item.
 
-**Trigger conditions — the capture floor (Stage D 2026-07; all must hold):** the action item has (1) a **clear owner** (an identifiable named person), (2) a **clear deliverable** (a specific artifact or decision, not "circle back"), and (3) a **real consequence** (someone is waiting on it, a date depends on it, or dropping it costs something). Vague action items ("we should think about X", "let's revisit") DO NOT qualify — skip them silently. This is the rule that cut one live workspace's open set 71→33: below-floor items bury real promises. See `COMMITMENT_SCHEMA.md` § "Extraction triggers" for full guidance. **Suppression rules:** if `_hq/config/commitment-rules.md` exists, read it BEFORE writing and skip any item matching a `never-track` pattern the user has taught.
+**⛔ ADMISSION GATE (CAPTUREFLOW 2026-08-01) — MANDATORY, and it is CODE now.** Do NOT hand-build the commitment dicts and append them yourself. Assemble each extracted item as a plain kwargs mapping (the field names in the canonical shape below) and hand the WHOLE list to `meeting_capture.route_meeting_captures` — the one admission helper this skill and the scheduled `past-meetings` orchestrator both call. It runs, in one place: the capture floor (owner + concrete deliverable + consequence), the cross-meeting fusion guardrail (evidence must be findable in the transcript you already loaded), and party-only relevance scoping (`capture_gate.classify_capture`). It hands back events that are ready to append.
+
+Why this replaced the prose recipe: the floor below has been stated here since Stage D and nothing enforced it (a third of sampled meeting captures were discussed-only), the fusion guardrail was prose with no code (a capture whose evidence appears nowhere in its transcript was written unhindered), and `party-only` — the shipped default capture mode — had never been consulted on the meeting path at all, because no meeting writer called the gate. Prose contracts don't hold; code chokepoints do.
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")  # cwd == $PLUGIN_ROOT
+from meeting_capture import route_meeting_captures
+from event_gate import append_event
+
+routed = route_meeting_captures(
+    items,                                  # [{title, kind, due|no_due, owner_id/owner_external,
+                                            #   counterparty_id/counterparty_name, evidence, …}, …]
+    workspace_root="<WORKSPACE>",
+    source_ref="granola:<meeting_id>",
+    transcript_text=transcript,             # the text you ALREADY loaded — never re-fetch
+    meeting_date="<YYYY-MM-DD>",
+    org_id=<the meeting's resolved org id or None>,
+    org_name=<the meeting's resolved org name or None>,
+    primary_thread_id=<resolved or None>,
+    source_skill="meeting-notes",
+)
+append_event("<WORKSPACE>/_hq/data/events.jsonl",
+             routed["book"] + routed["review"] + routed["observed"],
+             holder="meeting-notes.commitments")
+```
+
+- `book` — ordinary open commitments.
+- `review` — written `pending_review`, so they land in the **needs-your-call** queue and never in the open book. TWO kinds arrive here: rows refused by the fusion guardrail (`data.fusion_unverified`), and rows the capture floor gated (`data.floor_gated`, with the `FLOOR_*` reason as their `review_reason`).
+- `observed` — kept on file (searchable, feeds prep) with no open item, no count, no row: third-party↔third-party items under party-only, and below-floor items someone else plainly owes.
+- `skipped` — near-empty since M's 2026-08-01 ruling. Nothing below the floor comes here; what is left is the honest residue (an item the canonical builder refused to construct). Never narrate it.
+- Omitting `transcript_text` leaves only the fusion check inert; the floor and the relevance gate still run.
+
+**M RULING 2026-08-01 — a below-floor capture is NEVER silently dropped.** It used to be. The review measured the floor against a hand-judged sample and found it as likely to be wrong as right when it refuses — it destroyed a real promise for every junk capture it stopped, and the destroyed side left nothing behind to find. So the floor now ROUTES rather than deletes: the item goes to the queue as a `floor_gated` row the user can confirm in one pass. You do not need to do anything differently at extraction — keep applying the floor as your own judgment about what to send — but do NOT drop an item yourself on the grounds that the gate would have dropped it. Hand the helper everything you extracted and let the one code path decide.
+
+Everything below describes the SHAPE of an `items` entry and the classification you owe at extraction. It is input to the helper, not a second write path.
+
+**Trigger conditions — the capture floor (Stage D 2026-07; enforced in code by `meeting_capture.capture_floor_reason`; all must hold):** the action item has (1) a **clear owner** (an identifiable named person), (2) a **clear deliverable** (a specific artifact or decision, not "circle back"), and (3) a **real consequence** (someone is waiting on it, a date depends on it, or dropping it costs something). Vague action items ("we should think about X", "let's revisit") DO NOT qualify. This is the rule that cut one live workspace's open set 71→33: below-floor items bury real promises. **What "does not qualify" means since the 2026-08-01 ruling: it does not reach the open BOOK.** It is not deleted — the helper routes it to the needs-your-call queue as a `floor_gated` row (or to the observed tier when someone else plainly owes it), so a wrong call by a heuristic costs the user one tap, not a lost promise. See `COMMITMENT_SCHEMA.md` § "Extraction triggers" for full guidance. **Suppression rules:** if `_hq/config/commitment-rules.md` exists, read it BEFORE writing and skip any item matching a `never-track` pattern the user has taught.
 
 **Learned extraction hints (Phase 6 Loop 5).** If `_hq/data/extraction-hints.md` exists, read it BEFORE extracting: `from extraction_hints import load_extraction_hints` → the returned lines are few-shot exemplars from documented misses (items the CEO had to log by hand within 24h of a meeting, clustered and approved by insight-generator's Loop 5 pass). Use them as additional positive examples of what SHOULD be captured — they extend the baked-in guidance; they never override the capture floor or a `never-track` rule. Missing file → no change. This is how the extractor improves from its own documented failures.
 
@@ -364,7 +400,7 @@ If you cannot assert high confidence, you MUST set the flag. An ambiguous item w
 
 **Due-date nudge (S2):** every captured commitment proposes a `due` (from meeting language or a sensible default the user can push) OR carries explicit `data.no_due: true`. Undated items surface in the weekly triage, not the aging view — target is < 30% undated.
 
-**Resolve the owner to a person id BEFORE appending.** Use `aliases.json` to canonicalize (e.g., "Mira" → `person_011`). If the owner is the user themselves ("I'll send the deck"), use the user's canonical id (the entity with `is_primary_user: true` or `is_user: true`). If you cannot resolve the owner to a person id, surface a one-line suggestion at the end of the meeting summary — but DO NOT skip the commitment; emit it with `owner_id: ""` and the title still set, so the commitment isn't lost.
+**Resolve the owner to a person id BEFORE appending.** Use `aliases.json` to canonicalize (e.g., "Mira" → `person_011`). If the owner is the user themselves ("I'll send the deck"), use the user's canonical id (the entity with `is_primary_user: true` or `is_user: true`). If you cannot resolve the owner to a person id, surface a one-line suggestion at the end of the meeting summary — but DO NOT skip the commitment; emit it with `owner_id: ""` **and an owner reference the floor can see**, so the commitment isn't lost. Since CAPTUREFLOW the admission gate's first condition is exactly this one, and it is CODE: an item carrying no owner reference of ANY kind is below the floor, so `route_meeting_captures` sends it to the needs-your-call queue as a `floor_gated` row instead of onto the book — recoverable, but a question the user now has to answer that they should not have had to. So always pass one of — `owner_external: "<the name as heard>"` when you heard a name you cannot resolve; `attribution_ambiguous: true` + `attribution_candidates: [...]` when two attendees share the speaker's first name (the guard below); `attribution_unknown: true` when the transcript names no owner at all. Any of the three clears the floor's owner test — the floor grades promise QUALITY, and WHICH human owns it is `gate_commitment_data`'s question, not its. An unresolvable owner is a review item, never a reason to lose the row; `owner_id: ""` on its own is what sends it to the queue instead of the book.
 
 **Speaker-attribution ambiguity guard (v3.2.3+):** before locking in `owner_id` from an alias lookup, check the meeting's attendee list for first-name collisions. If the Granola-tagged speaker name's first name matches MULTIPLE attendees on this call (e.g. "Rio" with both Rio Lange AND Rio Sample present), do NOT auto-pick — emit the commitment with `owner_id: ""`, add `data.attribution_ambiguous: true`, and add `data.attribution_candidates: [person_id_1, person_id_2, ...]`. Then add an explicit line to the meeting summary:
 
@@ -392,6 +428,7 @@ Same guard applies for `decision` events. The bug class this closes: Granola has
     "counterparty_name": "<free-text name — SHOULD set when the counterparty is named in the transcript but resolves to no person record; the matcher matches recipient names against it>",
     "title": "<short verb-phrase, lowercase verb start, no trailing period, ≤120 chars>",
     "kind": "promise" | "task" | "scheduling",
+    "evidence": "<the VERBATIM sentence from the transcript in which the promise was made — REQUIRED on every meeting capture, copied exactly, never paraphrased and never re-typed from memory. Two gates read this field and nothing else: the fusion guardrail proves the capture belongs to THIS transcript by finding a 5+ word run of it in the source text (a paraphrase can fail that check and drop the row into needs-your-call), and BULKGUARD marks an evidence-less row WEAK so it can never be bulk-confirmed. A capture with no evidence is a capture nobody can check.>",
     "due": "YYYY-MM-DD",
     "status": "open" | "overdue",
     "source_event_seq": <seq of the parent meeting event>,
@@ -714,9 +751,12 @@ ev = build_meeting_processed_event(
     extracted_count=<decisions + commitments + proposals written this run>,
     pending_review_count=<how many of those carry data.pending_review>,
     brief_path="<workspace-relative BRIEF_PATH from Step 9a>",
+    capture_summary=routed,                      # the Step 5e route_meeting_captures return
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.receipt")
 ```
+
+`capture_summary` is the ONLY place the admission gates' own numbers reach the substrate: it stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, floor_reasons, skipped_reasons}`. Pass it every time. `n_floor_gated` is the share of `n_review` the capture floor routed (a SUBSET of it, never added to it) and `floor_reasons` says which `FLOOR_*` condition did the gating — together they are how anyone finds out whether the floor is tuned right, which is a question the substrate previously could not answer at all. Counts and reason tallies only — never a title, never its evidence. Nothing here goes in the chat card: the gates' arithmetic is for the receipt, not for the user's morning.
 
 On a deliberate user re-process of an already-processed meeting, still write the receipt but add `data.rerun_note` (the extracted-event dedup in Step 5e prevents double-capture; the second receipt documents the re-run honestly). Check `meeting_capture.already_processed(workspace_root, source_ref)` BEFORE processing to know which case you're in.
 

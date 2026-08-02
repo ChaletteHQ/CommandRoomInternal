@@ -94,7 +94,20 @@ def load_entities(root: Path) -> dict:
 
 
 def load_events(root: Path) -> tuple[list[dict], int]:
-    """Defensively read events.jsonl. Returns (events, skipped_line_count)."""
+    """Defensively read events.jsonl. Returns (events, skipped_line_count).
+
+    EVGUARD (Sub-bug #14b, second half) — a top-level bare-string line
+    (`"seq"`) PARSES, so the old loop counted it as an event and appended it.
+    Nothing crashed here; every downstream reader did (`event_thread_id` et al.
+    call `.get()` on the row). Non-dict rows now count in `skipped` and never
+    enter `events`, so the return value matches its annotation.
+
+    Deliberately does NOT route through `cru_match.load_events_defensively`:
+    this module is dependency-light on purpose (json/sys/pathlib only) because
+    a corruption diagnostic has to run when the other modules are the thing
+    that is broken. The guard is three lines; the import would be a new
+    failure mode.
+    """
     path = root / "_hq" / "data" / "events.jsonl"
     events: list[dict] = []
     skipped = 0
@@ -105,9 +118,14 @@ def load_events(root: Path) -> tuple[list[dict], int]:
         if not line:
             continue
         try:
-            events.append(json.loads(line))
+            ev = json.loads(line)
         except json.JSONDecodeError:
             skipped += 1
+            continue
+        if not isinstance(ev, dict):
+            skipped += 1
+            continue
+        events.append(ev)
     return events, skipped
 
 

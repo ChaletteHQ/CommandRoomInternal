@@ -20,12 +20,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
-    from cru_match import _now_iso, _parse_ts, load_events_defensively, load_open_commitments, _commitment_field
+    from cru_match import _now_iso, _parse_ts, load_events_defensively, load_open_commitments, split_pending_review, _commitment_field
     from event_time import event_time
 except Exception:  # pragma: no cover
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from cru_match import _now_iso, _parse_ts, load_events_defensively, load_open_commitments, _commitment_field  # type: ignore
+    from cru_match import _now_iso, _parse_ts, load_events_defensively, load_open_commitments, split_pending_review, _commitment_field  # type: ignore
     from event_time import event_time  # type: ignore
 
 
@@ -76,7 +76,9 @@ def _load_overdue(workspace_root, now_dt) -> Dict[str, float]:
     """Max overdue-days per person from open commitments past their due date."""
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     out: Dict[str, float] = {}
-    for ev in load_open_commitments(str(events_path)):
+    # INTAKE — an unconfirmed extraction can never make someone "overdue":
+    # it is a queue member, not a promise anyone has agreed to.
+    for ev in split_pending_review(load_open_commitments(str(events_path)))[0]:
         due = _parse_ts(_commitment_field(ev, "due")) if isinstance(_commitment_field(ev, "due"), str) else None
         if due is None or now_dt is None or now_dt <= due:
             continue

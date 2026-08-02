@@ -43,7 +43,11 @@ from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text  # noqa: E402
-from cru_match import load_events_defensively, load_open_commitments  # noqa: E402
+from cru_match import (  # noqa: E402
+    load_events_defensively,
+    load_open_commitments,
+    split_pending_review,
+)
 from event_time import event_time  # noqa: E402
 
 CONFIDENCE_FLOOR = 0.40
@@ -242,7 +246,10 @@ def _open_commitment_count(ws: Path, person_id: str) -> Optional[int]:
     never a raw event grep. None (drop the stat) when the projector can't
     load — never a fabricated zero."""
     try:
-        open_items = load_open_commitments(_events_path(ws))
+        # INTAKE — unconfirmed extractions never count toward a person's
+        # open-item stat: the extractor's guess is not this person's ledger.
+        open_items, _needs_review = split_pending_review(
+            load_open_commitments(_events_path(ws)))
     except Exception:
         return None
     n = 0

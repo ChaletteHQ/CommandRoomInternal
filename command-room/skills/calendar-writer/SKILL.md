@@ -5,7 +5,7 @@ description: "Schedule meetings — find mutual availability, draft the invite w
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
-Before resolving the meeting attendee(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the substrate-aware agenda (open commitments with each attendee), call `shared/scripts/cru_match.py::load_open_commitments` and filter by attendee — do NOT hand-roll an events.jsonl scan — passing the org-scoped rows: `load_open_commitments(events_path, events=org_events)` with `org_events` from `events_io.load_events_org_scoped` (PGUARD2 D2 — the agenda lands in the invite body attendees read). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
+Before resolving the meeting attendee(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. For the substrate-aware agenda (open commitments with each attendee), call `shared/scripts/cru_match.py::load_open_commitments` and filter by attendee — do NOT hand-roll an events.jsonl scan — passing the org-scoped rows: `load_open_commitments(events_path, events=org_events)` with `org_events` from `events_io.load_events_org_scoped` (PGUARD2 D2 — the agenda lands in the invite body attendees read), then keep the confirmed half via `cru_match.split_pending_review(...)` (INTAKE — org scoping is not the pending filter; see the Reads bullet below). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract.
 
 ## Skill Boundary (v2.1)
 
@@ -29,7 +29,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - Calendar MCP — for availability across attendees (your calendar + each attendee's if Calendar MCP exposes free-busy).
 - `_hq/data/entities.json` — attendee email lookup, relationship history, role, org. If the trigger names a person ambiguously ("Bo"), resolves via `aliases.json`.
 - `_hq/data/entities.json` — project context if the meeting topic references a project.
-- `_hq/data/events.jsonl` — `type == "commitment"` events with `status == "open"` involving attendees — via the seam, `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here) — so the agenda can surface what's owed in either direction.
+- `_hq/data/events.jsonl` — `type == "commitment"` events with `status == "open"` involving attendees — via the seam, `load_open_commitments(events_path, events=org_events)` (PGUARD2 D2 — never the no-arg owner form here) — so the agenda can surface what's owed in either direction. **`data.pending_review` is NOT true — those are UNCONFIRMED extractions, not open commitments.** Use `cru_match.split_pending_review(...)` and keep the confirmed half: this agenda lands in the invite body every attendee reads, and putting a guessed promise in front of the person it names is a claim the workspace cannot stand behind. Unconfirmed rows belong to the needs-your-call queue (`needs your call`), never to an invite. (The owner-side auto-close step below reads the RAW list on purpose — closing is a write path, and its own note says why.)
 - `_hq/data/events.jsonl` — `type == "meeting"` events with the same attendees (from the org-scoped load) to detect usual cadence and propose a time that matches their 1:1 rhythm if applicable.
 - `_hq/data/events.jsonl` — `type == "interaction"` events with attendees (from the org-scoped load) to seed the agenda's "since last touch" context.
 
@@ -179,6 +179,12 @@ On dispatch:
    results = match_calendar_to_commitments(
        open_commitments=opens,
        user_person_id="<primary user person_id>",
+       # F-28 — the workspace, so the roster reader resolves a free-text
+       # counterparty_name against entities.json + aliases. Without it ONE
+       # person recorded as BOTH a counterparty_id and that person's name counts
+       # as TWO, the close is downgraded to per-leg receipts, and the phantom
+       # name leg can never receive one — the item stops closing here at all.
+       workspace_root=workspace_root,
        calendar_events=[{
            "attendee_person_ids": attendee_person_ids,
            "summary": agenda_summary or title,

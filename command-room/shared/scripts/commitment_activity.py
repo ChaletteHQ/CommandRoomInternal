@@ -104,6 +104,39 @@ MOVEMENT_EVENT_TYPES = frozenset({
 CHASE_EVENT_TYPES = frozenset({"outreach_sent"})
 
 
+# WATCHGATE R-5 — the keys that make a `commitment_updated` a REAL change to
+# the item: a new date, new wording, a re-owner, an adjudication. A watch
+# mark carries none of them.
+_SUBSTANTIVE_UPDATE_KEYS = (
+    "new_due", "due", "due_date", "new_title", "new_summary",
+    "change_summary", "owner_confirmed", "review_flags_cleared",
+    "review_flags_set", "new_owner_id", "new_counterparty_id",
+)
+
+
+def _is_bookkeeping_update(ev: dict) -> bool:
+    """True for a `commitment_updated` that only PARKS or UN-PARKS a watch.
+
+    Movement means the promise moved. Parking one is the system filing its own
+    note about an item nobody has touched — and `commitment_updated` sits in
+    MOVEMENT_EVENT_TYPES, so without this the act of noticing that an item has
+    gone quiet would reset the 21-day clock that measures how long it has been
+    quiet. A parked item would read as freshly active to every staleness
+    surface, which is the precise opposite of what parking it means.
+
+    Deliberately narrow: an update that ALSO carries a real change (a shifted
+    date, a wording fix, an adjudication) is movement and stays movement, even
+    if a watch marker rides along. Only the pure bookkeeping write is excluded.
+    """
+    if (ev.get("type") or ev.get("event")) != "commitment_updated":
+        return False
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    if not (d.get("watch_set") or d.get("watch_cleared")):
+        return False
+    return not any(d.get(k) not in (None, "", False)
+                   for k in _SUBSTANTIVE_UPDATE_KEYS)
+
+
 class CommitmentMovement(NamedTuple):
     ts: datetime            # UTC-aware (naive stamps taken as UTC — F-15 mix)
     event_type: str         # "commitment" when the floor (capture) is newest
@@ -310,7 +343,7 @@ def derive_commitment_movement(
         {"commitment_resolved", "thread_resolved", "commitment_superseded"})
     for ev in events:
         et = ev.get("type") or ev.get("event") or ""
-        is_movement = et in types
+        is_movement = et in types and not _is_bookkeeping_update(ev)
         is_closure = et in _CHILD_CLOSURE_TYPES
         if not (is_movement or is_closure):
             continue

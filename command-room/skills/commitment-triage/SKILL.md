@@ -1,6 +1,6 @@
 ---
 name: commitment-triage
-description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'clean up my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the post-Apply ack offers one-tap undo. Also available as an opt-in Friday-afternoon scheduled chat via 'change my schedule'. Does NOT fire on 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (actionable subset with chase drafts — this is the full-set housekeeping pass). Action semantics: Routing section in the body."
+description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. Also an opt-in Friday chat via 'change my schedule'. Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts). Action semantics: Routing section in the body."
 ---
 
 # commitment-triage
@@ -57,6 +57,14 @@ counts in one day came from each surface folding buckets its own way —
 unowned and unconfirmed are their own lines everywhere, never folded into
 owed-to-you). `pending_review` rows are the `unconfirmed` bucket; they are
 excluded from you-owe/owed-to-you until confirmed.
+
+**INTAKE (2026-07-31):** `unconfirmed` is now a POINTER count, not a slice of
+`total` — an unconfirmed extraction is a queue member, not an open
+commitment, so it counts in that one tile and nowhere else. This surface
+still pins anything unconfirmed 7+ days in the labelled Unconfirmed block
+below (escalation, never age-buried); every OTHER pending row is out of the
+age sections entirely and belongs to the **needs-your-call** queue. The
+driver adds the one-line pointer for those — relay it, don't re-derive it.
 
 ## Step 2 — Sort + annotate (the full-list layout, delivered by design in pages)
 
@@ -132,7 +140,8 @@ one giant widget. One page's worth of the layout:
   NEVER auto-demote — Bug #103 says most of these are REAL promises whose
   counterparty linking failed; the human attaches or demotes, one tap each.
 - **No size fallback (T2):** the full open set renders by DESIGN as pages of
-  ~10 rows (`page=N`), each relayed as `widget_code` per § Transport; `show
+  up to `chat_output_renderer.DEFAULT_PAGE_SIZE` rows — 15 — (`page=N`), each
+  relayed as `widget_code` per § Transport; `show
   more` re-fires the next page. Never chunk mid-page, never right-size a page
   below its design cap, never drop rows to fit a "transmission ceiling" (those
   ceilings were byte-relay artifacts; a 199-commitment live fire proved the
@@ -350,4 +359,4 @@ not in the daily chats.
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Also runs as an OPT-IN Friday-afternoon scheduled chat (add via `change my schedule` → add commitment-triage; not first-install). Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).
+> Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Also runs as an OPT-IN Friday-afternoon scheduled chat (add via `change my schedule` → add commitment-triage; not first-install). Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).
