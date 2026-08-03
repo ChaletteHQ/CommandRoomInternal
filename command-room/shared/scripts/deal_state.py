@@ -47,6 +47,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import thread_archive  # noqa: E402
 import thread_writer  # noqa: E402
 from thread_writer import (  # noqa: E402
     ALLOWED_DEAL_FIELDS,
@@ -121,9 +122,12 @@ def _find_org(data: dict, org_id: str) -> Optional[dict]:
                  if o.get("id") == org_id), None)
 
 
-def _append(ws: Path, event: dict, source_skill: str) -> None:
+def _append(ws: Path, event, source_skill: str) -> None:
+    """Gated append. Takes one event or a list — a list lands in ONE append, so
+    two events written for the same transition cannot half-land."""
     from event_gate import append_event
-    append_event(_events_path(ws), [event], holder=source_skill)
+    events = [event] if isinstance(event, dict) else list(event)
+    append_event(_events_path(ws), events, holder=source_skill)
 
 
 def _require_deal_thread(thread: Optional[dict], thread_id: str) -> dict:
@@ -535,9 +539,29 @@ def close_deal(
         new_deal.setdefault("currency", "USD")
 
     thread_status = "resolved" if outcome == "won" else "archived"
+    # SPEC RIDERS1 item 2 — the ARCHFIX gap, one object over. This leg has
+    # always landed `status: "archived"` on a lost deal's thread while stamping
+    # neither `archived_at` (MASTER_TRACKER's sort key for Recently Archived,
+    # so the row sorted under "" and fell off the list) nor any timeline event
+    # (measured live: a deal-leg archive wrote the record and nothing else).
+    #
+    # It does NOT route through `thread_archive.archive_thread`: the closed deal
+    # object and the status are ONE atomic record write here, and archiving
+    # first would open a window where the thread is archived with an open deal
+    # still on it. So the stamps are made in the SAME update_thread call, and
+    # the event is built by the shared builder rather than hand-copied.
+    from_status = thread.get("status")
+    fields: dict[str, Any] = {"deal": new_deal, "status": thread_status}
+    archive_reason = None
+    if thread_status == thread_archive.ARCHIVED_STATUS:
+        archive_reason = thread_archive.normalize_reason(
+            f"deal closed lost ({loss_reason})" if loss_reason
+            else "deal closed lost")
+        fields["archived_at"] = thread_archive.archive_stamp()
+        if archive_reason is not None:
+            fields["archive_reason"] = archive_reason
     thread_writer.update_thread(
-        ws, thread_id, deal=new_deal, status=thread_status,
-        source_skill=source_skill)
+        ws, thread_id, source_skill=source_skill, **fields)
 
     ev_data: dict[str, Any] = {"thread_id": thread_id, "org_id": org_id}
     final_value = new_deal.get("value")
@@ -580,7 +604,15 @@ def close_deal(
         "org_ids": [org_id] if org_id and org_id != "personal" else [],
         "data": ev_data,
     }
-    _append(ws, event, source_skill)
+    # Record first, event second (the ARCHFIX order) — and both events in ONE
+    # gated append, so a lost deal cannot end up with its outcome on the
+    # timeline and its archive missing from it.
+    to_append = [event]
+    if thread_status == thread_archive.ARCHIVED_STATUS:
+        to_append.append(thread_archive.build_status_change_event(
+            thread_id, from_status=from_status, reason=archive_reason,
+            source_skill=source_skill))
+    _append(ws, to_append, source_skill)
 
     suggestion = None
     if outcome == "won" and org_is_prospect and not converted:

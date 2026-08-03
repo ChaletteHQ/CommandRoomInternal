@@ -148,8 +148,23 @@ AUTO_ALLOWED: dict[str, str] = {
     # re-opens a confirm-tier row); merging is not — `person_proposal` (add
     # a NEW person) and `person_merge` stay confirm-tier forever. That
     # asymmetry is the whole reason this is safe.
-    "person_link": "exact-unique-clean name-mention link to an existing "
-        "record (UXR1 D3 gate a-d) — alias-free, tombstone-reversible",
+    #
+    # STAFFCUT §3.4 (M ruling 2026-08-02) WIDENED gate (a′) with a third
+    # clause: a spelling that does NOT match exactly may still auto-link when
+    # the mention is CONTEXTUALLY CORROBORATED — a shared non-free-mail email
+    # domain, the same org, or co-occurrence in the same meeting's events. The
+    # ruling's own words are the invariant: "it has to match somehow on
+    # context." NAME SIMILARITY ALONE NEVER AUTO-LINKS, and bars (b), (c) and
+    # (d) are untouched — a widened (a′) still has to clear a single on-file
+    # candidate, no conflicting signal (a role/shared-inbox address is never
+    # corroboration, and a free-mail domain identifies nobody), and no
+    # duplicate suspicion. The fail-safe posture stands: an unverifiable bar
+    # is False, and False means the row asks.
+    "person_link": "name-mention link to an existing record — exact-unique-"
+        "clean, or an id-level address, or a spelling match CORROBORATED BY "
+        "CONTEXT (shared non-free-mail domain / same org / meeting "
+        "co-occurrence), all under the UXR1 D3 gate a'-d — alias-free, "
+        "tombstone-reversible",
     # AUTOAPPLY §4c (M ruling: act when corroborated and reversible): two
     # captures of ONE real-world commitment, agreeing at id level on owner
     # AND counterparty, near-verbatim in title after name-stripping, from
@@ -204,6 +219,33 @@ _SHAPE_RANK = {"money": 0, "identity": 1, "hygiene": 2,
 # system-health (explicit ask) are exempt by omission; weekly-recap consumes
 # roll-up counts, not the card.
 DAILY_DEDUP_SURFACES = frozenset({"morning-brief", "coach"})
+
+# STAFFCUT §3.7 — the ON-DEMAND surface hint. A row carrying it is skipped by
+# every NAMED surface (including staff-meeting, which is otherwise exempt from
+# every filter) and rendered in full for a caller that asks for this surface by
+# name. An UN-NAMED call (`surface=None`, the diagnostic/dedup read) still sees
+# everything — see the filter in `load_open_proposals` for why that one matters.
+# This is a DEMOTION mechanism, not a suppression: the projector still holds
+# the row and its resolution path is unchanged.
+#
+# It is deliberately NARROWER than the LB2 `surface_hint` routing that
+# `select_confirm_card` applies. That filter lives on the daily card only, and
+# the staff meeting's whole contract is that it sees the full set, hint
+# included (config_drift depends on exactly that). So the rule here keys on
+# this ONE sentinel value: nothing else's routing changes, and no count on any
+# other surface moves.
+ON_DEMAND_SURFACE_HINT = "on-demand"
+
+# STAFFCUT §3.7 — the demotion is a CLASS ruling, so it keys on KIND as well as
+# on the hint. Hint-only was the first implementation, and it was incomplete in
+# a way that would have shipped: LB2 migrated the dormancy WRITER onto
+# `propose()`, so a NEW dormancy row is a `bp_` proposal carrying whatever its
+# writer passed — and that writer passes no surface_hint. Demoting the fossil
+# adapter rows alone would have demoted the OLD rows and left every new one on
+# the staff meeting, which is the opposite of the ruling. Keying on kind covers
+# both rails and every row already open on a live workspace, with no event
+# rewriting and no backfill (the append-only discipline).
+ON_DEMAND_KINDS = frozenset({"dormancy"})
 
 # The overflow line teaches the full-queue phrase (R3.4). Rendered verbatim
 # by surfaces when overflow_count > 0.
@@ -1454,6 +1496,28 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
     return out
 
 
+# STAFFCUT D1 — the org/project row's registered wire verbs. Both are already
+# in the apply-choices `cr-brain` dispatch table for these kinds; this list is
+# what finally puts them ON the row. `confirm [type]` takes OPTIONAL input (a
+# typed correction to the inferred name), so no row holds Apply on a missing
+# input (F-17).
+_ORG_PROJECT_ACTIONS = [{"action": "confirm [type]"},
+                        {"action": "not relevant"}]
+
+
+def _org_project_render_line(kind: str, name: str, evidence: str) -> str:
+    """The org/project row's ASK, in the user's language.
+
+    These rows rendered with `render_line: ""`, so `build_card_view` fell back
+    to the raw evidence — a phrase with no question in it. The row now says
+    what a click DOES (a new record on file) and what it rests on, and never
+    invents a source it cannot see (drop-empty on the evidence segment)."""
+    noun = "company" if kind == "org" else "project"
+    ask = f"Add {name} as a {noun} on file?"
+    snippet = _evidence_snippet(evidence)
+    return f"{ask} · {snippet}" if snippet else ask
+
+
 def _adapt_org_project_proposals(workspace_root, events: list[dict],
                                  *, now: Optional[datetime] = None) -> list[dict]:
     """org_proposal / project_proposal are prose-written (no shared selector)
@@ -1525,8 +1589,26 @@ def _adapt_org_project_proposals(workspace_root, events: list[dict],
             "tier": "confirm",
             "fingerprint": f"{family}:{name.lower()}",
             "evidence": data.get("evidence") or data.get("reason") or "",
-            "action_tuples": [],
-            "render_line": "",
+            # STAFFCUT D1 — these rows shipped with `action_tuples: []`
+            # hardcoded, so `_row_actions` returned nothing and they rendered
+            # BUTTONLESS: six permanently unanswerable rows on the audit day,
+            # in direct violation of the orchestrator's own contract ("every
+            # row states its ask and carries verbs, or it does not render").
+            # `propose()` refuses empty tuples at source (_validate_action_
+            # tuples), so only these legacy fossil-reader adapters could
+            # produce one.
+            #
+            # The verbs are NOT new: apply-choices has dispatched
+            # `confirm [type]` / `not relevant` for `kind: org` and
+            # `kind: project` since LB2 — `org` → `org_writer.create_org`
+            # (dedup-first through `find_existing_org`, which is also what
+            # already retires an actioned proposal above) and a decline →
+            # `org_proposal_declined` / `chat_dismissal`. Nothing new is
+            # written; the row simply stops hiding the verbs its own handler
+            # was waiting for.
+            "action_tuples": list(_ORG_PROJECT_ACTIONS),
+            "render_line": _org_project_render_line(
+                kind, name, data.get("evidence") or data.get("reason") or ""),
             "opened_at": ev.get("ts") or "",
             "expires_at": "",
             "detector": "confirm-flow",
@@ -1539,11 +1621,73 @@ def _adapt_org_project_proposals(workspace_root, events: list[dict],
     return out
 
 
+# STAFFCUT §3.7 / D1 — the dormancy row's registered wire verbs, the ones
+# apply-choices has dispatched for `kind: dormancy` since LB1 (the dont-forget
+# orchestrator's status handlers). Like the org rows, these shipped as `[]` and
+# rendered buttonless — a row titled "Housekeeping" with no subject and no way
+# to answer it. Demoting the row to on-demand does not excuse leaving it
+# unanswerable where it DOES render.
+_DORMANCY_ACTIONS = [{"action": "active"}, {"action": "archive"},
+                     {"action": "snooze 14d"}]
+
+
+def _entity_display_names(workspace_root) -> dict:
+    """id -> display name across threads, orgs and people — the dormancy
+    adapter's target map (a dormancy proposal names whichever of the three its
+    writer was looking at). Defensive like its siblings: an unreadable
+    entities.json means no map, and an un-nameable row drops rather than
+    rendering a wire id (RV-5)."""
+    out: dict = {}
+    try:
+        ent_path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(ent_path.read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        for t in (ent.get("threads") or ent.get("projects") or []):
+            nm = (t.get("display_name") or t.get("name") or "").strip()
+            if t.get("id") and nm:
+                out[str(t["id"])] = nm
+        for o in ent.get("orgs") or []:
+            if o.get("id") and (o.get("canonical_name") or "").strip():
+                out.setdefault(str(o["id"]), o["canonical_name"].strip())
+        for p in ent.get("people") or []:
+            if p.get("id") and (p.get("canonical_name") or "").strip():
+                out.setdefault(str(p["id"]), p["canonical_name"].strip())
+    except Exception:
+        return out
+    return out
+
+
+# The row header when the dormancy target no longer resolves to a name. An
+# honest generic beats both a wire id (RV-5) and the nameless "Housekeeping"
+# shape fallback the row used to get.
+_DORMANCY_UNNAMED_TITLE = "Something you were tracking"
+
+
+def _dormancy_render_line(title: str, reason: str) -> str:
+    """The dormancy row's ASK. It rendered as "" before, which
+    `build_card_view` degraded to the bare reason phrase — a statement, not a
+    question, under a nameless "Housekeeping" header."""
+    ask = f"{title} has gone quiet — still active, or archive it?"
+    snippet = _evidence_snippet(reason)
+    return f"{ask} · {snippet}" if snippet else ask
+
+
 def _adapt_dont_forget(workspace_root, events: list[dict],
                        *, now: Optional[datetime]) -> list[dict]:
     """Open dormancy-transition proposals (prose-written by the dont-forget
     orchestrator). A proposal is retired by a later decline (14d cooldown),
-    snooze, or status_change on the same target."""
+    snooze, or status_change on the same target.
+
+    STAFFCUT §3.7 (M ruling 2026-08-02): these rows are DEMOTED TO ON-DEMAND.
+    Whether a quiet client relationship is dormant is a judgment the CEO makes
+    when he asks — not weekly homework on the one surface that is now the only
+    door. The rows are NOT deleted and NOT tombstoned: each carries
+    `surface_hint = ON_DEMAND_SURFACE_HINT`, which `load_open_proposals` honors
+    by rendering it only for a caller that ASKED for the on-demand surface (the
+    dont-forget / dormant-customer-scan lane). The projector still holds them,
+    `include_auto` diagnostics still see them, and nothing about their
+    resolution path changes."""
     latest: dict[str, dict] = {}
 
     def _target(data: dict) -> str:
@@ -1566,6 +1710,7 @@ def _adapt_dont_forget(workspace_root, events: list[dict],
                        "dont_forget_snooze", "status_change"):
             retired.add(tgt)
     out = []
+    names = None  # lazy — most queues carry no dormancy rows at all
     for tgt, ev in latest.items():
         if tgt in retired:
             continue
@@ -1573,6 +1718,16 @@ def _adapt_dont_forget(workspace_root, events: list[dict],
         if now is not None and opened is not None and (now - opened).days > 30:
             continue  # stale prose proposals age out of the queue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if names is None:
+            names = _entity_display_names(workspace_root)
+        # A target that no longer resolves gets an honest generic, NOT a drop
+        # and never its wire id (RV-5). Dropping was the first draft and it was
+        # wrong twice over: it would change what a FOSSIL adapter renders on
+        # substrate where a thread record has since been archived away, and the
+        # row is answerable regardless — `active` / `archive` / `snooze 14d` act
+        # on the target id, which the row still carries verbatim.
+        title = names.get(tgt) or _DORMANCY_UNNAMED_TITLE
+        reason = data.get("reason") or data.get("evidence") or ""
         out.append({
             "id": f"dont_forget:{ev.get('seq')}",
             "source_family": "dont_forget",
@@ -1580,45 +1735,51 @@ def _adapt_dont_forget(workspace_root, events: list[dict],
             "shape": "hygiene",
             "tier": "confirm",
             "fingerprint": f"dont_forget:{tgt}",
-            "evidence": data.get("reason") or data.get("evidence") or "",
-            "action_tuples": [],
-            "render_line": "",
+            "evidence": reason,
+            "action_tuples": list(_DORMANCY_ACTIONS),
+            "render_line": _dormancy_render_line(title, reason),
             "opened_at": ev.get("ts") or "",
             "expires_at": "",
             "detector": "dont-forget",
             "seq": ev.get("seq"),
             "target_id": tgt,
+            "title": title,
+            # §3.7 — on-demand only. See the docstring; this is the whole
+            # demotion, and it is one field rather than a filter in every
+            # surface because `load_open_proposals` is the one chokepoint.
+            "surface_hint": ON_DEMAND_SURFACE_HINT,
         })
     return out
 
 
 def _adapt_schedule_add(workspace_root, registered_task_ids) -> list[dict]:
-    """Later-add schedule proposals — computed live (schedule_proposals owns
-    thresholds + 6-week suppression). Only when the caller can supply the
-    registered set (it comes from the scheduler MCP, not the substrate)."""
-    if registered_task_ids is None:
-        return []
-    from schedule_proposals import propose_later_add_tasks
+    """RETIRED (STAFFCUT §3.6) — later-add schedule proposals no longer feed
+    the confirm queue. Returns [] always.
 
-    out = []
-    for p in propose_later_add_tasks(workspace_root, registered_task_ids):
-        out.append({
-            "id": f"schedule:{p['task']}",
-            "source_family": "schedule_add",
-            "kind": "schedule_add",
-            "shape": "hygiene",
-            "tier": "confirm",
-            "fingerprint": f"schedule:{p['task']}",
-            "evidence": p.get("reason") or "",
-            "action_tuples": [],
-            "render_line": p.get("line") or "",
-            "opened_at": "",
-            "expires_at": "",
-            "detector": "schedule-proposals",
-            "seq": None,
-            "task": p["task"],
-        })
-    return out
+    WHY IT RETIRED, and why retiring it costs nothing:
+      * 0 of 4 proposals ever produced a `schedule_created` event — the row was
+        a pointer, and nobody followed it;
+      * it had no reverser, so it could never move to the auto tier;
+      * registration only ever actually happens through the change-schedule /
+        update-bridge path, which this row never invoked and apply-choices
+        explicitly refuses to invoke;
+      * and the row shipped with `action_tuples: []`, so it rendered
+        BUTTONLESS — one of the three verb-less adapter classes D1 names.
+      * Measured at a2e5e20 before removal: `build_staff_meeting_view` calls
+        `load_open_proposals` WITHOUT `registered_task_ids`, and this adapter
+        returned [] whenever that argument is None — so the staff meeting never
+        actually rendered a schedule_add row anyway. What retires here is a
+        dormant path, not a working one.
+
+    `schedule_proposals.propose_later_add_tasks` and its 6-week suppression are
+    UNTOUCHED (other callers / future use). The `registered_task_ids` parameter
+    stays on `load_open_proposals` / `select_confirm_card` for caller
+    back-compat and is simply no longer consulted for a queue row.
+
+    The function itself is kept, empty, for the same reason the fossil readers
+    are never deleted: something may still import it, and an ImportError is a
+    worse answer than an honest empty list."""
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -1700,7 +1861,25 @@ def load_open_proposals(
         items += _adapt_person_proposals(workspace_root, events, now=now)
         items += _adapt_org_project_proposals(workspace_root, events, now=now)
         items += _adapt_dont_forget(workspace_root, events, now=now)
+        # STAFFCUT §3.6 — `_adapt_schedule_add` is RETIRED and returns []; the
+        # call stays so the retirement is visible where the queue is assembled
+        # rather than only in a docstring, and `registered_task_ids` keeps its
+        # signature for every existing caller.
         items += _adapt_schedule_add(workspace_root, registered_task_ids)
+    # STAFFCUT §3.7 — the on-demand demotion, applied at THE chokepoint so
+    # every NAMED surface inherits it in one move.
+    #
+    # `surface is None` keeps seeing the full set, and that is load-bearing
+    # rather than lenient: the un-named call is the DIAGNOSTIC / dedup read,
+    # and one of its callers is `propose()`'s own cross-rail dedup a few
+    # hundred lines up. Filtering there would let a migrated dormancy writer
+    # re-propose something already open as a legacy row, and the queue would
+    # then show both — the exact trap LB2 §3a's dedup exists to close. It also
+    # matches the posture this function already documents for None.
+    if surface is not None and surface != ON_DEMAND_SURFACE_HINT:
+        items = [i for i in items
+                 if i.get("surface_hint") != ON_DEMAND_SURFACE_HINT
+                 and i.get("kind") not in ON_DEMAND_KINDS]
     # Uniform snooze/decline gate (review F1): a chat_dismissal whose
     # target_id is a projector item id retires that item for the
     # dismissal's TTL — this is what `snooze proposal 7d` and the
@@ -1878,20 +2057,75 @@ def _row_name(item: dict) -> str:
     return _SHAPE_NAME_FALLBACK.get(item.get("shape"), "Needs your eyes")
 
 
+# STAFFCUT — the keys `watch_gate.confirm_review_rows` reads off a review row,
+# embedded in the widget payload so the two dispatch shapes are equivalent. The
+# SAME list `proposal_digests._REVIEW_MEMBER_KEYS` puts on a digest member,
+# minus the two badge fields (`strength` / `weak_reason`): those are what the
+# user already read, not inputs, and apply-choices says not to recompute them.
+_REVIEW_DISPATCH_KEYS = ("commitment_id", "evidence", "match_score",
+                         "has_completion_signal", "evidence_ts", "promise_ts")
+
+# The ONE row family whose widget payload carries those keys. Scoping this was a
+# review finding, not a tidy-up: the embed loop ran for every kind, so an org
+# row's 387-character evidence string travelled in a payload no org handler
+# reads, and a deal row carried a `match_score` that means nothing to a deal.
+# The renderer never serializes `data` into the page, so nothing leaked — but a
+# payload is a trust window, and it should be exactly as wide as the fence that
+# needs it. Only the commitment-review family dispatches THROUGH the fence, so
+# only it gets the fence's inputs.
+_REVIEW_DISPATCH_KINDS = frozenset({"commitment_review"})
+
+
 def _row_target_ids(item: dict) -> dict:
     """The F2 identity rule for card rows: embed every underlying target id
     VERBATIM alongside the proposal id so apply-choices dispatches exactly.
     PID1: cluster rows also embed cluster_seqs / cluster_fingerprints (one
     click adjudicates the whole cluster) and person_link/person_merge rows
-    embed their record ids."""
+    embed their record ids.
+
+    STAFFCUT: a DIGEST row embeds `digest_members` — every grouped member's own
+    id plus the exact dispatch payload its handler reads — so a grouped answer
+    is still N per-id resolutions and a single member can be answered out of
+    the group. Same rule as the PID1 cluster keys above: verbatim, never
+    re-derived at dispatch time.
+
+    THE ONE EXCEPTION to "target ids", named because it is one: a
+    COMMITMENT-REVIEW row also embeds the bulk-accept fence's own INPUTS
+    (`_REVIEW_DISPATCH_KEYS` — evidence, match score, completion signal,
+    timestamps), because that family is the only one that dispatches through the
+    fence, and a dispatcher reading the persisted widget has nowhere else to get
+    them. Without them the fence read "nothing recorded" and PARKED a row whose
+    commitment had real source text behind it. No other kind gets them
+    (`_REVIEW_DISPATCH_KINDS`): a payload is a trust window, and it is kept
+    exactly as wide as the fence requires."""
     data = {"id": item["id"]}
     for k in ("thread_id", "org_id", "person_id", "cluster_seqs",
               "cluster_fingerprints", "keep_id", "duplicate_id",
               # BUG C/D — the resolved possible-match candidate, so the
               # populated `same as [existing]` verb dispatches without a re-type.
-              "match_person_id", "match_name"):
+              "match_person_id", "match_name",
+              # STAFFCUT — the digest row's per-id dispatch payload.
+              "digest_class", "digest_key", "digest_count", "digest_members"):
         if item.get(k):
             data[k] = item[k]
+    # STAFFCUT — a review row's own FENCE INPUTS, verbatim, so a dispatcher
+    # reading the WIDGET (stateless `src` dispatch) is as well-equipped as one
+    # reading the projector. These are exactly the keys apply-choices tells the
+    # dispatcher to copy across, and every one of them is already on the item.
+    #
+    # Without them a rendered card row reached the fence with no evidence, so
+    # `weakness_reason` said "nothing recorded" and PARKED a row whose
+    # commitment had real source text behind it — a hold the user could not
+    # explain and had not earned. The digest MEMBERS carried these from the
+    # start; ordinary rows were the half of the design left unfinished.
+    #
+    # `is not None`, not truthiness: `has_completion_signal: False` is the
+    # signal "we looked and found none", and dropping it as falsy would
+    # downgrade the row to "not assessed" — a weaker screen, silently.
+    if item.get("kind") in _REVIEW_DISPATCH_KINDS:
+        for k in _REVIEW_DISPATCH_KEYS:
+            if item.get(k) is not None:
+                data[k] = item[k]
     return data
 
 
@@ -1901,6 +2135,7 @@ def build_card_view(
     surface: str = "staff-meeting",
     header: Optional[str] = None,
     extra_sections: Optional[list] = None,
+    section_notes: Optional[dict] = None,
 ) -> dict:
     """Build the ready-to-render widget data view for the Living Brain card /
     Staff Meeting queue from a RANKED proposal list (FS-09 / FS-10).
@@ -1911,6 +2146,14 @@ def build_card_view(
     proposal's registered verbs (no invented bulk verbs). Header tiles show the
     per-shape counts. `extra_sections` (e.g. the Staff Meeting "This week's
     moves" rows) append after the queue sections.
+
+    `section_notes` (STAFFCUT §3.1, optional) maps a SHAPE to one honest-totals
+    suffix appended to that section's title — the meeting fold's shipped idiom
+    ("… — showing 8; say `needs your call` for the rest"). It exists because
+    the header count must keep equalling the rows the widget SHOWS (RV-4), so
+    a page that groups or bounds rows has to state the full arithmetic
+    somewhere else. Omitted / empty → byte-identical to the pre-STAFFCUT
+    output.
 
     Returns a dict suitable for `render_and_persist(data_view=...)` /
     `render_chat_output_widget` — `source_skill` is "cr-brain" so the renderer
@@ -1944,10 +2187,11 @@ def build_card_view(
                 "actions": _row_actions(it),
             }
             rows.append(row)
-        sections.append({
-            "title": f"{_SHAPE_SECTION_LABEL[shape]} ({len(rows_in)})",
-            "items": rows,
-        })
+        title = f"{_SHAPE_SECTION_LABEL[shape]} ({len(rows_in)})"
+        note = str((section_notes or {}).get(shape) or "").strip()
+        if note:
+            title = f"{title} — {note}"
+        sections.append({"title": title, "items": rows})
 
     # Drop-empty BEFORE rendering — the tile component refuses a 0-value tile
     # (an empty frame is never data); a shape with no rows just doesn't tile.
@@ -2169,6 +2413,8 @@ __all__ = [
     "MAX_SLOTS_PER_DETECTOR",
     "AUTO_ALLOWED",
     "DAILY_DEDUP_SURFACES",
+    "ON_DEMAND_SURFACE_HINT",
+    "ON_DEMAND_KINDS",
     "OVERFLOW_LINE",
     "BrainProposalError",
     "kind_shape",

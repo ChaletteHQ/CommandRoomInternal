@@ -877,9 +877,20 @@ def reconcile_and_receipt(
     # gone). Deduped against the OPEN proposal set (a still-open proposal for
     # the same commitment is not re-written; confirmed/dismissed ones may be
     # re-proposed by genuinely new sends). Cursor mechanics untouched.
+    #
+    # WATCHGATE N-2 (RIDERS1 item 5): this used to hand-build the event dict.
+    # `cru_match.build_pending_review_event` is THE writer for this type, and it
+    # is the only thing that persists `evidence_ts` — WHEN the evidence was
+    # observed — which the shared bulk-accept fence needs for its apply-moment
+    # ordering check. A hand-built row could not carry it, so every proposal
+    # this rail wrote screened as STRONG by construction: not because the match
+    # was strong, but because the fields that could weaken it were absent.
+    # `title` (FB-19) and the two rail-specific keys ride the same event; the
+    # writer owns the shape, the caller owns its own extras.
     reviews_written = 0
     if pending:
-        from cru_match import load_open_review_proposals
+        from cru_match import (build_pending_review_event,
+                               load_open_review_proposals)
         from event_gate import append_event
         already_proposed = {
             (p.get("data") or {}).get("commitment_id")
@@ -888,30 +899,41 @@ def reconcile_and_receipt(
         for p in pending:
             if p["commitment_id"] in already_proposed:
                 continue
-            append_event(events_path, [{
-                "type": "commitment_review_proposed",
-                "source_skill": source_skill,
-                "primary_thread_id": p.get("primary_thread_id") or "",
-                "data": {
-                    "commitment_id": p["commitment_id"],
-                    "proposed_resolution": "auto_resolve",
-                    "match_score": round(p.get("score") or 0, 3),
-                    "evidence": p.get("evidence") or "matched an outbound send",
-                    # FB-19: the row's own name. Without it the LB1 adapter
-                    # has no title, `_row_name` falls back to the shape label,
-                    # and the card renders a bare "Housekeeping — matched your
-                    # sent message X" with nothing to identify WHAT matched
-                    # (the live 2026-07-16 render). The title is right here in
-                    # hand at write time — dropping it was the whole bug.
-                    "title": p.get("title") or "",
-                    # FS-11: only genuinely ambiguous matches reach here now
-                    # (unambiguous moderate matches auto-closed above). Carry a
-                    # TTL so an un-adjudicated proposal expires instead of
-                    # accumulating; the LB1 review adapter drops expired ones.
-                    "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
-                    "ambiguous": True,
-                },
-            }], holder=source_skill)
+            ev = build_pending_review_event(
+                commitment_id=p["commitment_id"],
+                primary_thread_id=p.get("primary_thread_id") or "",
+                source_skill=source_skill,
+                proposed_resolution="auto_resolve",
+                score=p.get("score") or 0,
+                evidence=p.get("evidence") or "matched an outbound send",
+                # None: the gate auto-stamps seq inside the writer lock.
+                next_seq=None,
+                # FB-19: the row's own name. Without it the LB1 adapter has no
+                # title, `_row_name` falls back to the shape label, and the card
+                # renders a bare shape name with nothing to identify WHAT
+                # matched (the live 2026-07-16 render).
+                title=p.get("title") or "",
+                # The send's own time. A reply/send cannot be evidence for a
+                # promise captured after it, and the fence checks exactly that
+                # at apply time — but only if the timestamp was persisted.
+                evidence_ts=p.get("ts") or None,
+                # NOT ASSESSED, deliberately. `has_completion_signal` is the
+                # matcher's own fulfillment finding, and the SENT matcher
+                # computes none — its analogue is the close_basis, and deriving
+                # a boolean from that here would re-grade every title-band
+                # confirm on this rail. `None` means "the caller could not
+                # judge" and weakens nothing, which is the honest report.
+                has_completion_signal=None,
+            )
+            ev["data"].update({
+                # FS-11: only genuinely ambiguous matches reach here now
+                # (unambiguous moderate matches auto-closed above). Carry a TTL
+                # so an un-adjudicated proposal expires instead of accumulating;
+                # the LB1 review adapter drops expired ones.
+                "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
+                "ambiguous": True,
+            })
+            append_event(events_path, [ev], holder=source_skill)
             reviews_written += 1
 
     # BUG-3719 (v4.6.2): OPEN commitments from the user's own sent commissives

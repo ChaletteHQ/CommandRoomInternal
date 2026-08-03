@@ -594,12 +594,32 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
     already routed, capped and ordered by `watch_gate.run_watch_expiry`, which
     `run_surface` runs before this builds. Supplied rather than derived here
     for the reason every other write stays out of a view builder: this
-    function reads, `run_surface` decides when writing is allowed."""
+    function reads, `run_surface` decides when writing is allowed.
+
+    STAFFCUT — two RENDER-side passes run between the projector and the builder,
+    in this order and never inside the projector:
+
+      1. `proposal_digests.group_into_digests` folds each evidence class into
+         ONE row carrying its members' own dispatch payloads. The audit day's 54
+         sent-match rows rested on 16 distinct evidence lines (34 of them on a
+         single line) — that is 16 decisions asked 54 times.
+      2. `proposal_digests.bound_page` bounds what THIS FIRE renders to about
+         two screens, appended sections included — the meeting fold's shipped
+         volume-guard pattern applied to the queue lane. It bounds the PAGE-SET,
+         never the projector: the queue keeps everything, the ranked front is
+         what shows, and answering the front is what advances the rotation.
+
+    The honest arithmetic (rows rendered vs items represented, and the bound's
+    remainder) rides the section titles via `section_notes` and the D2 receipt
+    via `view["receipt_extra"]`, which `run_surface` pops before rendering."""
     from brain_proposals import (build_card_view, load_open_proposals,
                                  rank_proposals)
+    from proposal_digests import (bound_page, group_into_digests,
+                                  section_notes)
 
-    queue = rank_proposals(load_open_proposals(
-        workspace_root, "staff-meeting", now_iso=now_iso))
+    open_items = load_open_proposals(workspace_root, "staff-meeting",
+                                     now_iso=now_iso)
+    queue = rank_proposals(open_items)
     extra: list[dict] = []
     if watch_rows:
         extra.append({"title": _WATCH_ASK_SECTION,
@@ -625,8 +645,64 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
         sys.stderr.write(f"[surface_drivers] meeting fold skipped: {exc}\n")
     if moves_rows:
         extra.append({"title": "THIS WEEK'S MOVES", "items": list(moves_rows)})
-    return build_card_view(queue, surface="staff-meeting",
-                           extra_sections=extra or None)
+
+    # STAFFCUT §3.2/3.3/3.5 — group, then RE-RANK (a digest inherits its oldest
+    # member's age, so it must be re-placed in the ranked order), then bound.
+    digested, digest_stats = group_into_digests(queue)
+    digested = rank_proposals(digested)
+    n_extra_rows = sum(len(sec.get("items") or []) for sec in extra)
+    shown, bound_stats = bound_page(digested, n_extra_rows=n_extra_rows)
+    view = build_card_view(shown, surface="staff-meeting",
+                           extra_sections=extra or None,
+                           section_notes=section_notes(shown, bound_stats))
+    # D2 — the per-kind + digest arithmetic the fire receipt records. Popped by
+    # `run_surface` before the view reaches the renderer, so nothing new travels
+    # into the widget contract.
+    view["receipt_extra"] = _staff_receipt_extra(open_items, shown,
+                                                 digest_stats, bound_stats,
+                                                 n_extra_rows)
+    return view
+
+
+def _kind_counts(items) -> dict:
+    """kind -> count, in descending count order (stable for reading a receipt
+    by eye). An item with no kind is counted as "unknown" rather than dropped —
+    a receipt that quietly omits rows is the thing D2 exists to fix."""
+    counts: dict[str, int] = {}
+    for it in items or []:
+        key = str((it or {}).get("kind") or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _staff_receipt_extra(open_items, shown, digest_stats, bound_stats,
+                         n_extra_rows: int) -> dict:
+    """STAFFCUT D2 — the staff-meeting receipt's per-kind counts.
+
+    `surface_drivers._log_fire_receipt` wrote only the scalar `surfaced`, so
+    load history could not be measured: the 2026-08-02 audit had to reconstruct
+    23 fires from an upper-bound model because no receipt had ever recorded WHAT
+    was surfaced. This is additive only — the scalar keeps its meaning (rows the
+    widget showed), every existing reader is untouched, and the new keys ride
+    `log_receipt(extra_data=...)`, which already exists for exactly this.
+
+    Both halves of the digest arithmetic are recorded on purpose: a future audit
+    has to be able to tell "the queue shrank" from "the rows were grouped"."""
+    return {
+        "open_by_kind": _kind_counts(open_items),
+        "surfaced_by_kind": _kind_counts(shown),
+        "queue_rows_rendered": len(shown),
+        "queue_items_represented": sum(
+            max(1, int((it or {}).get("digest_count") or 1)) for it in shown),
+        "queue_open_total": len(open_items),
+        "digest_rows": digest_stats.get("digest_rows", 0),
+        "digest_items_grouped": digest_stats.get("grouped_items", 0),
+        "digests_by_class": dict(digest_stats.get("by_class") or {}),
+        "page_bound": {"cap": bound_stats.get("cap"),
+                       "queue_budget": bound_stats.get("budget"),
+                       "extra_section_rows": n_extra_rows,
+                       "held_back": bound_stats.get("dropped", 0)},
+    }
 
 
 def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
@@ -1089,10 +1165,23 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         watchdog = None
 
     # FB-20 — the queue POINTER (not the queue). The brief names no rows and
-    # renders no card; it points at the surface that adjudicates. The count
-    # comes from the staff-meeting projection so the pointer's promise and
-    # what `staff meeting` renders are the same number by construction (an
-    # over-promising count is its own dishonesty — the FS-09 class).
+    # renders no card; it points at the surface that adjudicates.
+    #
+    # WHAT THE COUNT MEANS, precisely, because STAFFCUT changed it. The count is
+    # the OPEN ITEMS on the staff-meeting projection — how many things are
+    # waiting. It is no longer the number of ROWS that surface renders: the
+    # staff meeting now groups items into evidence-class digests and bounds the
+    # page, so on a heavy week it can render ~21 rows against ~100 open items.
+    # "The same number by construction" was true before those two passes existed
+    # and is not true now.
+    #
+    # ITEMS is the honest number for a POINTER, and deliberately so. The brief
+    # sentence is "N things need your eyes" — a promise about the user's
+    # workload, which the queue's own presentation choices must not deflate.
+    # Reporting the row count would understate what is waiting, which is the
+    # FS-09 dishonesty in the other direction; the staff meeting itself then
+    # states its own render arithmetic in its section titles (§3.1), so the two
+    # surfaces disagree about nothing — they are answering different questions.
     from brain_proposals import load_open_proposals, money_prose_lines
     queue = load_open_proposals(ws, "staff-meeting", now_iso=now_iso)
     # Auto-tier items are applied-then-narrated, never adjudicated (LB1
@@ -1162,12 +1251,20 @@ _REFIRE_RECEIPT_GUARD = _dt.timedelta(minutes=15)
 
 
 def _log_fire_receipt(workspace_root, surface: str, view: dict,
-                      fired_via: str) -> dict:
+                      fired_via: str, extra_data: dict | None = None) -> dict:
     """Append the surface's per-fire pack_run receipt via the canonical
     helper (receipts.log_receipt — NEVER hand-rolled JSON). Runs inside
     run_surface's page-1 invocation so the widget render and the receipt
     can never be separated (FB-7: the scheduled staff-meeting fire posted
-    its widget, then the turn ended before the prose receipt step)."""
+    its widget, then the turn ended before the prose receipt step).
+
+    `extra_data` (STAFFCUT D2, optional) rides `log_receipt(extra_data=...)`
+    untouched — the per-kind counts and digest arithmetic the staff meeting now
+    records. ADDITIVE ONLY: `surfaced` keeps its exact meaning (the rows the
+    widget showed), the receipt's contract fields are unchanged, and
+    `log_receipt` already refuses to let extra keys overwrite them. Every
+    existing receipt reader is defensive about unknown keys, and legacy
+    receipts that carry none keep parsing byte-identically."""
     from receipts import iter_receipts, log_receipt, normalize_fired_via
 
     task_id = _SURFACE_TASKS[surface]
@@ -1181,9 +1278,13 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
         if any(r["fired_via"] != "manual" for r in recent):
             return {"task_id": task_id, "fired_via": via,
                     "surfaced": surfaced, "status": "deduped_refire"}
-    log_receipt(workspace_root, task_id, fired_via=via, surfaced=surfaced)
-    return {"task_id": task_id, "fired_via": via, "surfaced": surfaced,
-            "status": "written"}
+    log_receipt(workspace_root, task_id, fired_via=via, surfaced=surfaced,
+                extra_data=extra_data or None)
+    out = {"task_id": task_id, "fired_via": via, "surfaced": surfaced,
+           "status": "written"}
+    if extra_data:
+        out["extra_data"] = dict(extra_data)
+    return out
 
 
 _SURFACE_NAME_HINTS = {"commitments": "commitment-triage",
@@ -1207,10 +1308,20 @@ def run_watch_expiry_pass(workspace_root, *, now_iso=None) -> dict:
     fire proceeds. An expiry pass that could take the staff meeting down with
     it would be a worse bug than the one it fixes.
 
-    Returns run_watch_expiry's result, or a zeroed shape on failure.
+    WATCHGATE N-5: "defensive" used to mean "invisible". A skipped pass wrote
+    one line to STDERR — which nothing on a scheduled fire reads — and returned
+    a zeroed shape indistinguishable from a healthy quiet day, so nobody ever
+    learned that WATCHING had stopped routing. Per-item failures are contained
+    inside `run_watch_expiry` and counted there; both counts ride the fire's
+    RECEIPT (`_log_fire_receipt`'s `extra_data`), which is a record someone can
+    actually read later. Additive: on a healthy pass neither key is written and
+    the receipt is byte-identical to a pre-N-5 one.
+
+    Returns run_watch_expiry's result, or a zeroed shape marked `pass_skipped`.
     """
     empty = {"assumed": [], "ask": [], "carried": [], "not_due": [],
-             "results": [], "n_assumed": 0, "n_ask": 0, "n_carried": 0}
+             "results": [], "n_assumed": 0, "n_ask": 0, "n_carried": 0,
+             "n_failed": 0, "failures": [], "pass_skipped": False}
     try:
         from primary_user import resolve_primary_user
         from watch_gate import run_watch_expiry
@@ -1224,7 +1335,24 @@ def run_watch_expiry_pass(workspace_root, *, now_iso=None) -> dict:
     except Exception as exc:  # pragma: no cover — the fire must survive
         sys.stderr.write(f"[surface_drivers] watch expiry pass skipped: "
                          f"{exc}\n")
-        return empty
+        return dict(empty, pass_skipped=True)
+
+
+def watch_expiry_receipt_extra(pass_result) -> dict:
+    """The expiry pass's health, in receipt keys — {} when it was healthy.
+
+    Split out so the ONE place that builds it is testable without a render, and
+    so a second caller cannot invent its own spelling of the same fact.
+    """
+    out: dict = {}
+    if not isinstance(pass_result, dict):
+        return out
+    n_failed = int(pass_result.get("n_failed") or 0)
+    if n_failed:
+        out["watch_expiry_failed"] = n_failed
+    if pass_result.get("pass_skipped"):
+        out["watch_expiry_skipped"] = True
+    return out
 
 
 def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
@@ -1338,6 +1466,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
 
     if view is None:
         watch_rows = None
+        watch_pass = None
         if surface == "staff-meeting" and page == 1 and now_iso is None:
             # WATCHGATE MUST-FIX-2. Three conditions, and each one is load-
             # bearing:
@@ -1361,12 +1490,26 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
             #   clock; nothing passes one HERE today, which is exactly why
             #   the guard belongs in code rather than in a comment telling
             #   the next person not to.
-            watch_rows = run_watch_expiry_pass(ws).get("ask")
+            watch_pass = run_watch_expiry_pass(ws)
+            watch_rows = watch_pass.get("ask")
         view = _build_surface_view(
             surface, ws, now_iso=now_iso, moves_rows=moves_rows,
             chase_rows=chase_rows, status_rows=status_rows,
             personal_cap=personal_cap, watch_rows=watch_rows)
         live_view = view
+        # STAFFCUT D2 — the builder's receipt arithmetic travels on the view
+        # and is POPPED here, before `save_pageset` freezes it and before the
+        # renderer sees it: the widget data contract gains nothing, the frozen
+        # page-set stays byte-comparable to a pre-STAFFCUT one, and the receipt
+        # still counts the live-built view it was always counting.
+        receipt_extra = view.pop("receipt_extra", None) \
+            if isinstance(view, dict) else None
+        # N-5 — the expiry pass's own health, folded in. Nothing is added on a
+        # healthy pass, so the receipt is unchanged when there is nothing to say.
+        _watch_extra = watch_expiry_receipt_extra(watch_pass)
+        if _watch_extra:
+            receipt_extra = dict(receipt_extra or {})
+            receipt_extra.update(_watch_extra)
         # Freeze this build as the page-set — on page 1 because that is the
         # fire's anchor, and on a refreshed page N so pages N+1... are stable
         # against the same list rather than drifting again.
@@ -1378,6 +1521,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
             snap_note["snapshot_unavailable"] = True
     else:
         live_view = None
+        receipt_extra = None
 
     transport = render_and_persist(
         data_view=view,
@@ -1393,7 +1537,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     if fired_via is not None and page == 1:
         transport["receipt"] = _log_fire_receipt(
             ws, surface, live_view if live_view is not None else view,
-            fired_via)
+            fired_via, extra_data=receipt_extra)
     return transport
 
 

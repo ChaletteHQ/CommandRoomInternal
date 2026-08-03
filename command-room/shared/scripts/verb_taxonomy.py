@@ -477,9 +477,16 @@ VERB_TAXONOMY = (
          ("dont-forget", "cr-brain"), family="review"),
     _row("keep paused", "Keep paused", None, "Already paused — no change.",
          ("dont-forget",), family="review"),
+    # STAFFCUT: `cr-brain` added to the surfaces field. This verb has been
+    # dispatched for `kind: dormancy` rows on the brain rail since LB1, but the
+    # adapter shipped those rows with EMPTY action_tuples, so it never actually
+    # rendered there and the documentation kept describing a dont-forget-only
+    # verb. The row now carries it (`brain_proposals._DORMANCY_ACTIONS`), and
+    # this field is documentation of where a verb appears — recording it changes
+    # no enforcement (nothing validates a verb against its surfaces list).
     _row("archive", "Archive", None,
          "Archive the project outright (skip the dormant step).",
-         ("dont-forget",), family="review"),
+         ("dont-forget", "cr-brain"), family="review"),
     # --- W4b confirm flow — unknown-person rows (v4.6.1) ---------------------
     _row("add person", "Add person", "person_proposal_resolved",
          "Create the contact from the proposal (details inferred; type to "
@@ -616,9 +623,20 @@ VERB_TAXONOMY = (
     # --- LB1 Living Brain card ("Needs your eyes" / Staff Meeting) -----------
     # Generic verbs for brain-family (bp_*) proposal rows. Legacy-family rows
     # on the same card keep their OWN shipped verbs (add person / same as /
-    # proposal not relevant for person rows; confirm / not relevant for CRU
-    # review rows; confirm [type] / active / snooze 14d for dont-forget rows)
-    # — dispatch table in skills/apply-choices/SKILL.md Step 2 `cr-brain`.
+    # proposal not relevant for person rows; confirm / not relevant / hold for
+    # CRU review rows; confirm [type] / not relevant for org and project rows;
+    # active / archive / snooze 14d for dormancy rows) — dispatch table in
+    # skills/apply-choices/SKILL.md Step 2 `cr-brain`.
+    #
+    # STAFFCUT corrected this list twice over. It named `confirm [type] /
+    # active / snooze 14d` as one set for "dont-forget rows", which conflated
+    # two different row kinds and named neither one's real set; and all three of
+    # those kinds shipped with EMPTY action_tuples, so the verbs it described
+    # rendered nowhere. The kinds and their sets are spelled out separately now.
+    # A DIGEST row (STAFFCUT — `n` starts with `digest:`) carries the verbs of
+    # the kind it groups and fans them out per member id; it adds no verb of its
+    # own, because a bulk verb nobody registered is exactly what STOP rule 7
+    # forbids.
     _row("confirm proposal", "Confirm", "brain_proposal_resolved",
          "Apply the proposed change through its standard writer and retire "
          "the proposal.",

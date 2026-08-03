@@ -33,20 +33,29 @@ WHAT THIS MODULE GUARANTEES
     It is NOT the only code that can set `status: "archived"` on a thread, and
     claiming otherwise would be the same kind of false safety claim this
     build's A3 deleted. Two lifecycle CLOSERS also land that status as a
-    side effect of closing their own object, and neither stamps `archived_at`
-    or `archive_reason`:
+    side effect of closing their own object:
       * `deal_state.close_deal(..., "lost")` — a lost deal's thread
         (deal_state.py, `thread_status = "resolved" if outcome == "won" else
         "archived"`). Owner: SPEC PIPE1.
       * `objective_state.archive_objective` — an archived objective's thread
         (objective_state.py `_close`). Owner: SPEC OBJ1.
-    Because they stamp no `archived_at`, MASTER_TRACKER's Recently Archived
-    section sorts them under the empty string and renders their date cell as
-    `—`, so they sink below every properly stamped archive and fall off the
-    top-10 list. That is the same symptom as the bug this module fixes, one
-    object over. Out of ARCHFIX scope by its §0 ruling; do not "fix" it by
-    widening this module — route those closers through it, or give them their
-    own stamps, under their own spec.
+    Until RIDERS1 they stamped no `archived_at` and appended no timeline event
+    at all — measured live: a deal-leg archive wrote the record and NOTHING
+    else. MASTER_TRACKER's Recently Archived section sorts on `archived_at`, so
+    those threads sorted under the empty string, rendered their date cell as
+    `—`, and sank off the top-10 list; the same symptom as the bug this module
+    fixes, one object over.
+    Both legs now stamp `archived_at` (via `archive_stamp`) and `archive_reason`
+    inside their OWN atomic record write, and append the canonical event built
+    by `build_status_change_event` — the shared builder, so the three sites
+    cannot drift. They deliberately do NOT route through `archive_thread`: each
+    leg writes its closed deal/objective object and the status in ONE
+    `update_thread` call, and archiving first would open a window where a thread
+    is archived with an open deal still on it. What they skip on purpose is the
+    VIEW regen — those closers never rendered, and the next scheduled regen
+    (end-session Step 2.5 / cleanup Phase 3.5d2) picks the archive up.
+    Do not "fix" this by widening this module; a THIRD lifecycle closer takes
+    the same two stamps and the same shared builder.
   - NO hand-rolled writes. The record mutation goes through
     `thread_writer.update_thread` (ALLOWED-field check, schema validation,
     atomic locked write, `thread_updated` event) and the timeline event goes
@@ -115,6 +124,18 @@ class ThreadArchiveError(Exception):
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def archive_stamp() -> str:
+    """The `archived_at` value, in ONE shape.
+
+    Public because the two lifecycle closers named in the census above stamp it
+    at their own call sites — they cannot route through `archive_thread` without
+    splitting one atomic record write in two — and `archived_at` is MASTER
+    TRACKER's sort key for Recently Archived. A second spelling of the same
+    timestamp is how a sort key quietly stops sorting.
+    """
+    return _now_iso()
 
 
 def _entities_path(ws: Path) -> Path:
@@ -338,6 +359,7 @@ __all__ = [
     "ARCHIVED_STATUS",
     "REASON_MAX_CHARS",
     "ThreadArchiveError",
+    "archive_stamp",
     "archive_status",
     "archive_thread",
     "build_status_change_event",

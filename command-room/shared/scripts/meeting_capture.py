@@ -401,7 +401,12 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
     COUNTS ONLY — never a title, never an evidence string. Two per-reason
     tallies ride along, both still counts and not content:
 
-      `floor_reasons`   which FLOOR_* condition gated each below-floor item.
+      `floor_reasons`   which FLOOR_* condition gated each below-floor item,
+                        keyed by the STABLE code (`FLOOR_NO_CONSEQUENCE`, …) —
+                        never by the row-copy sentence, which is an author's
+                        wording and not a name. `parse_floor_reasons` is the
+                        reader; it takes the prose-keyed receipts already on
+                        disk too, so no tally loses its history.
                         Since M's 2026-08-01 ruling those items are ROUTED
                         (to the queue, or to observed when someone else
                         plainly owes it) rather than dropped, so this is the
@@ -429,9 +434,13 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
             out[key] = int(summary.get(key) or 0)
     floor_reasons: dict = {}
     for verdict in (routed.get("verdicts") or []):
-        reason = str((verdict or {}).get("floor_reason") or "").strip()
-        if reason:
-            floor_reasons[reason] = floor_reasons.get(reason, 0) + 1
+        v = verdict or {}
+        # `floor_code` when the verdict carries one, the prose when it does not
+        # (a caller holding a pre-fix verdict dict); `floor_reason_code` reads
+        # both and buckets an unrecognised third spelling as `legacy`.
+        code = floor_reason_code(v.get("floor_code") or v.get("floor_reason"))
+        if code:
+            floor_reasons[code] = floor_reasons.get(code, 0) + 1
     if floor_reasons:
         out["floor_reasons"] = floor_reasons
     reasons: dict = {}
@@ -639,6 +648,79 @@ FLOOR_NO_DELIVERABLE = "no concrete deliverable"
 FLOOR_NO_CONSEQUENCE = "nothing depends on it"
 FLOOR_RETOLD = "retold from an earlier conversation, not committed here"
 FLOOR_NOT_ACCEPTED = "discussed, never accepted as a commitment"
+
+# The same five conditions under their STABLE names.
+#
+# The strings above are ROW COPY — a below-floor row's `review_reason` shows one
+# of them to a human, and that is the only reason they are sentences. They were
+# ALSO, until this fix, the key `capture_telemetry` tallied `floor_reasons`
+# under, so a live receipt carried `{"nothing depends on it": 25}`. Benign (a
+# sentence is not a title, and the COUNTS-ONLY contract held) but useless as a
+# tally: the key is a phrase an author may reword for clarity at any time, and
+# the moment one does, every prior receipt's bucket silently splits in two and
+# the per-reason number V1's floor re-tune reads stops adding up. Two names for
+# two jobs — a code to count by, prose to read.
+FLOOR_CODE_NO_OWNER = "FLOOR_NO_OWNER"
+FLOOR_CODE_NO_DELIVERABLE = "FLOOR_NO_DELIVERABLE"
+FLOOR_CODE_NO_CONSEQUENCE = "FLOOR_NO_CONSEQUENCE"
+FLOOR_CODE_RETOLD = "FLOOR_RETOLD"
+FLOOR_CODE_NOT_ACCEPTED = "FLOOR_NOT_ACCEPTED"
+
+# Every key a receipt written from here can carry, plus the one bucket a READER
+# needs for the receipts that already exist.
+FLOOR_CODES = {
+    FLOOR_NO_OWNER: FLOOR_CODE_NO_OWNER,
+    FLOOR_NO_DELIVERABLE: FLOOR_CODE_NO_DELIVERABLE,
+    FLOOR_NO_CONSEQUENCE: FLOOR_CODE_NO_CONSEQUENCE,
+    FLOOR_RETOLD: FLOOR_CODE_RETOLD,
+    FLOOR_NOT_ACCEPTED: FLOOR_CODE_NOT_ACCEPTED,
+}
+FLOOR_CODE_VALUES = frozenset(FLOOR_CODES.values())
+FLOOR_CODE_LEGACY = "legacy"
+
+
+def floor_reason_code(reason) -> str:
+    """The stable code for a floor verdict, from the code OR the prose.
+
+    Accepts either spelling so a caller holding a pre-fix verdict (or a
+    persisted receipt key) resolves to the same bucket. Anything unrecognised
+    is `FLOOR_CODE_LEGACY` — never dropped, never guessed at. "" for no floor
+    verdict at all, so `if code:` reads exactly like `if floor:` did.
+    """
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    if text in FLOOR_CODE_VALUES:
+        return text
+    return FLOOR_CODES.get(text, FLOOR_CODE_LEGACY)
+
+
+def parse_floor_reasons(mapping) -> dict:
+    """A persisted `floor_reasons` tally, re-keyed to codes. THE reader.
+
+    Receipts written before this fix are keyed by prose. Those keys still
+    resolve — `floor_reason_code` reads both spellings — and a key that matches
+    NEITHER (an older wording, a hand-edited receipt) lands in the `legacy`
+    bucket rather than being dropped: the whole point of the tally is that the
+    total adds up, and a silently discarded key is the failure mode that made
+    the mis-tuned floor invisible in the first place. Counts from different
+    keys that map to the same code are summed. Non-integer values contribute 0
+    but still create their bucket, so "this reason occurred" survives even when
+    "how many" does not.
+    """
+    out: dict = {}
+    if not isinstance(mapping, dict):
+        return out
+    for key, value in mapping.items():
+        code = floor_reason_code(key)
+        if not code:
+            continue
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            n = 0
+        out[code] = out.get(code, 0) + n
+    return out
 
 FUSION_REVIEW_REASON = (
     "extracted phrase not in the source transcript — check the source before "
@@ -943,8 +1025,12 @@ def admit_meeting_capture(
     `capture_gate.resolve_capture_mode(root, org_id=…, org_name=…)`.
 
     Returns {"tier": book|review|observed|skip, "reason": str,
-             "floor_reason": str, "fusion_reason": str,
-             "relevance_reason": str}."""
+             "floor_reason": str, "floor_code": str, "fusion_reason": str,
+             "relevance_reason": str}.
+
+    `floor_reason` is the sentence a human reads on the row; `floor_code` is the
+    same verdict's stable name, and it is what a tally is keyed by. Both are ""
+    when the item cleared the floor."""
     data = _probe_data(item)
 
     floor = capture_floor_reason(data)
@@ -969,11 +1055,13 @@ def admit_meeting_capture(
         someone_else_owes = bool(owner and user_id and owner != user_id)
         tier = TIER_OBSERVED if (someone_else_owes and not rail) else TIER_REVIEW
         return {"tier": tier, "reason": floor, "floor_reason": floor,
+                "floor_code": floor_reason_code(floor),
                 "fusion_reason": "", "relevance_reason": ""}
 
     fusion = fusion_refusal_reason(data, transcript_text)
     if fusion:
         return {"tier": TIER_REVIEW, "reason": fusion, "floor_reason": "",
+                "floor_code": "",
                 "fusion_reason": fusion, "relevance_reason": ""}
 
     ctx = capture_context or {}
@@ -994,6 +1082,7 @@ def admit_meeting_capture(
     )
     tier = TIER_BOOK if verdict["tier"] == "open" else TIER_OBSERVED
     return {"tier": tier, "reason": verdict["reason"], "floor_reason": "",
+            "floor_code": "",
             "fusion_reason": "", "relevance_reason": verdict["reason"]}
 
 
@@ -1217,6 +1306,16 @@ __all__ = [
     "FLOOR_NO_CONSEQUENCE",
     "FLOOR_RETOLD",
     "FLOOR_NOT_ACCEPTED",
+    "FLOOR_CODE_NO_OWNER",
+    "FLOOR_CODE_NO_DELIVERABLE",
+    "FLOOR_CODE_NO_CONSEQUENCE",
+    "FLOOR_CODE_RETOLD",
+    "FLOOR_CODE_NOT_ACCEPTED",
+    "FLOOR_CODES",
+    "FLOOR_CODE_VALUES",
+    "FLOOR_CODE_LEGACY",
+    "floor_reason_code",
+    "parse_floor_reasons",
     "FUSION_REVIEW_REASON",
     "FUSION_MIN_WORDS",
     "TIER_BOOK",

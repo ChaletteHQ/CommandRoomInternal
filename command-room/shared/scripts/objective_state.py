@@ -50,6 +50,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import thread_archive  # noqa: E402
 import thread_writer  # noqa: E402
 from thread_writer import (  # noqa: E402
     ALLOWED_OBJECTIVE_BINDING_FIELDS,
@@ -105,9 +106,12 @@ def _find_thread(data: dict, thread_id: str) -> Optional[dict]:
     return next((t for t in _threads(data) if t.get("id") == thread_id), None)
 
 
-def _append(ws: Path, event: dict, source_skill: str) -> None:
+def _append(ws: Path, event, source_skill: str) -> None:
+    """Gated append. Takes one event or a list — a list lands in ONE append, so
+    two events written for the same transition cannot half-land."""
     from event_gate import append_event
-    append_event(_events_path(ws), [event], holder=source_skill)
+    events = [event] if isinstance(event, dict) else list(event)
+    append_event(_events_path(ws), events, holder=source_skill)
 
 
 def _require_objective_thread(thread: Optional[dict], thread_id: str) -> dict:
@@ -546,9 +550,25 @@ def _close(
         new_obj["outcome_note"] = str(outcome_note)[:300]
 
     thread_status = "resolved" if outcome == "completed" else "archived"
+    # SPEC RIDERS1 item 2 — the ARCHFIX gap, one object over. See the twin
+    # comment in `deal_state._close`: this leg landed `status: "archived"` on an
+    # archived objective's thread with no `archived_at` (MASTER_TRACKER's sort
+    # key) and no timeline event. `archive_thread` is not the path — the closed
+    # objective object and the status are ONE atomic record write here — so the
+    # stamps ride that write and the event comes from the shared builder.
+    from_status = thread.get("status")
+    fields: dict[str, Any] = {"objective": new_obj, "status": thread_status}
+    archive_reason = None
+    if thread_status == thread_archive.ARCHIVED_STATUS:
+        # The lifecycle transition itself, never the user's `outcome_note` —
+        # that is free text and `archive_reason` lands in a markdown table cell
+        # on a rendered view.
+        archive_reason = thread_archive.normalize_reason("objective archived")
+        fields["archived_at"] = thread_archive.archive_stamp()
+        if archive_reason is not None:
+            fields["archive_reason"] = archive_reason
     thread_writer.update_thread(
-        ws, thread_id, objective=new_obj, status=thread_status,
-        source_skill=source_skill)
+        ws, thread_id, source_skill=source_skill, **fields)
 
     ev_data: dict[str, Any] = {
         "thread_id": thread_id,
@@ -564,7 +584,15 @@ def _close(
         "primary_thread_id": thread_id,
         "data": ev_data,
     }
-    _append(ws, event, source_skill)
+    # Record first, event second (the ARCHFIX order) — and both events in ONE
+    # gated append, so an archived objective cannot end up with its outcome on
+    # the timeline and its archive missing from it.
+    to_append = [event]
+    if thread_status == thread_archive.ARCHIVED_STATUS:
+        to_append.append(thread_archive.build_status_change_event(
+            thread_id, from_status=from_status, reason=archive_reason,
+            source_skill=source_skill))
+    _append(ws, to_append, source_skill)
     return {"status": "closed", "thread_id": thread_id, "outcome": outcome,
             "event": event}
 

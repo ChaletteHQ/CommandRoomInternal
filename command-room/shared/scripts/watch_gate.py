@@ -411,10 +411,32 @@ def park_in_watch(workspace_root, commitment_id, *, watch: dict,
 
     Returns {"status": "watching"|"already_watching", "commitment_id": ...,
              "event": {...}} — `event` only on an actual write.
+
+    REFUSES AN EMPTY ID, like every other id-bearing writer. This writer took
+    whatever it was handed and stringified it, so a caller that arrived with no
+    id wrote `commitment_updated` with `commitment_id: ""` into an append-only
+    log — permanently, with only a validator warning. It happened for real:
+    a rendered card row reached the batch park leg with its ids only under
+    `data`, and the watch landed on nothing while the actual commitment came
+    back on the next fire. `close_commitment` has always validated its id,
+    which is the only reason the ACCEPT leg never wrote the same shape.
+
+    Raising is the right answer rather than returning a status: every batch
+    caller already wraps this in `except Exception` and reports the row as
+    `not_parked` with the message, so the failure is visible per row and the
+    batch survives.
     """
     from event_gate import append_event
 
-    cid = str(commitment_id)
+    cid = str(commitment_id or "").strip()
+    if not cid:
+        from commitment_state import CommitmentIdError
+
+        raise CommitmentIdError(
+            "park_in_watch got an empty commitment id — a watch has to be "
+            "about something. The caller's row arrived with no id at the top "
+            "level (a rendered card row keeps its ids under `data` — see "
+            "proposal_digests._normalize_candidate).")
     if not force:
         already = (known_watched if known_watched is not None
                    else watched_commitment_ids(workspace_root))
@@ -618,6 +640,57 @@ def expiry_fate(stakes, posture_level: int) -> str:
     return FATE_ASK if level == STAKES_HIGH else FATE_ASSUME
 
 
+def _day_ordinal(now_iso) -> int:
+    """The fire's UTC DATE as an integer, or 0 when unreadable. The rotation
+    below turns on the UTC day and nothing finer, so two fires on the same
+    UTC day agree (a pair straddling UTC midnight may not — harmless for a
+    weekly fixed-time fire)."""
+    ts = _parse(now_iso)
+    return ts.date().toordinal() if ts is not None else 0
+
+
+def rotate_ask(ask, *, cap: int, now_iso: str) -> tuple:
+    """Bound the ask list at `cap` WITHOUT letting the same rows own it forever.
+
+    THE ROTATION RULE (WATCHGATE N-4). Stakes ranking alone made `carried` a
+    promise the code did not keep: this module's own contract says the overflow
+    is what "the next fire asks", but the ordering is stable, so the next fire
+    asked the same five and a lower-stakes watched item could sit past its
+    window indefinitely — never answered, never let go, and never shown. That
+    is §0's "never silently stops watching" arriving by a different road.
+
+    So the LAST slot rotates, round-robin by the DATE of the fire, over the
+    rows from the cap boundary down — `ask[cap - 1:]`. That pool, and not the
+    overflow alone, is the load-bearing detail: rotating only over `ask[cap:]`
+    would permanently displace whatever sits at `cap - 1` and simply move the
+    starvation one row up (measured on the shipped fixture: with a single
+    overflow row, the row at the boundary never surfaced again). Including the
+    boundary row makes the pool a genuine cycle, so every row in it takes the
+    slot once per `len(pool)` days.
+
+    Deterministic — the same day yields the same choice, so a re-fire is not a
+    reshuffle. The top `cap - 1` are still the highest-stakes rows, so a
+    money-shaped question is never the one that steps aside.
+
+    Same doctrine as `commitment_state.cap_needs_attention`: no new state, a
+    pure function of the day and the current list, which is what keeps it honest
+    across machines — a per-machine "last shown" ledger would rotate differently
+    on each of them. `carried` keeps the pool's own order minus the chosen row,
+    so the row nearest the cap is still first in line.
+
+    Returns `(shown, carried)`. Pure — no I/O.
+    """
+    rows = list(ask or [])
+    cap = max(0, int(cap))
+    if cap == 0 or len(rows) <= cap:
+        return rows[:cap], rows[cap:]
+    pool = rows[cap - 1:]
+    pick = pool[_day_ordinal(now_iso) % len(pool)]
+    shown = rows[:cap - 1] + [pick]
+    carried = [r for r in pool if r is not pick]
+    return shown, carried
+
+
 def route_expiry(rows, *, now_iso: str, posture_level: int,
                  ask_cap: int) -> dict:
     """Split watched rows into what happens to them now.
@@ -627,10 +700,12 @@ def route_expiry(rows, *, now_iso: str, posture_level: int,
     Returns {"assume": [...], "ask": [...], "carried": [...],
              "not_due": [...]}. Rows whose window has not run out are
     `not_due` and untouched. Of the due ones, `expiry_fate` decides; the ask
-    list is ordered by stakes and truncated at `ask_cap`, and everything past
-    the cap lands in `carried` — the next fire asks it. Overflow is never
-    dropped: an unanswered question that quietly disappears is the defect
-    this whole module exists to prevent, arriving by a different road.
+    list is ordered by stakes and bounded at `ask_cap` through `rotate_ask`, and
+    everything past the cap lands in `carried` — which the next fire really does
+    ask, because the last slot rotates over the rows from the cap boundary down,
+    by the DATE of the fire. Overflow
+    is never dropped: an unanswered question that quietly disappears is the
+    defect this whole module exists to prevent, arriving by a different road.
     """
     now = _parse(now_iso)
     assume: list[dict] = []
@@ -647,8 +722,8 @@ def route_expiry(rows, *, now_iso: str, posture_level: int,
             ask.append(row)
     ask.sort(key=lambda r: (-int(((r.get("stakes") or {}).get("rank") or 0)),
                             str(r.get("watch_until") or ""), str(r.get("id"))))
-    cap = max(0, int(ask_cap))
-    return {"assume": assume, "ask": ask[:cap], "carried": ask[cap:],
+    shown, carried = rotate_ask(ask, cap=ask_cap, now_iso=now_iso)
+    return {"assume": assume, "ask": shown, "carried": carried,
             "not_due": not_due}
 
 
@@ -937,12 +1012,23 @@ def run_watch_expiry(workspace_root, *, resolved_by: str,
     The ask list is RETURNED, not written — a question is something the user
     answers on a surface, not an event this pass appends. And `carried` needs
     no bookkeeping at all: a carried row is simply still watched and still
-    past its edge, so the next fire routes it again. That is what "never
-    dropped" means here — the overflow is not stored anywhere it could be
-    lost.
+    past its edge, so the next fire routes it again (and `rotate_ask` makes
+    sure it is actually asked). That is what "never dropped" means here — the
+    overflow is not stored anywhere it could be lost.
+
+    FAILURE IS CONTAINED PER ITEM (WATCHGATE N-5). One close that raises used
+    to abort the whole pass, which is the worst possible shape here: the items
+    ahead of it are already CLOSED, and the ask list — the questions those
+    closes were supposed to arrive beside — never reaches the caller at all.
+    Writes without their questions is precisely the silence §0 forbids. So each
+    close is attempted on its own; a failing item is counted, named by its id
+    and its exception CLASS (never a message — an exception's text carries
+    whatever the raiser put in it), and the pass continues.
 
     Returns {"assumed": [...], "ask": [...], "carried": [...], "results": [...],
-             "n_assumed", "n_ask", "n_carried"}.
+             "n_assumed", "n_ask", "n_carried", "n_failed", "failures"}.
+    `n_failed` is additive and 0 on every healthy pass, so a caller that does
+    not read it behaves exactly as it did.
     """
     try:
         from confidence import posture_level as _posture, staffmeeting_ask_cap as _cap
@@ -961,15 +1047,28 @@ def run_watch_expiry(workspace_root, *, resolved_by: str,
     routed = route_expiry(load_watched(ws, now_iso=now), now_iso=now,
                           posture_level=level, ask_cap=cap)
     results: list[dict] = []
+    failures: list[dict] = []
     for row in routed["assume"]:
-        results.append(close_as_assumed(ws, row["id"], resolved_by=resolved_by,
-                                        source_skill=source_skill))
+        rid = str((row or {}).get("id") or "")
+        try:
+            results.append(close_as_assumed(
+                ws, rid, resolved_by=resolved_by, source_skill=source_skill))
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            # The CLASS, never the message. A raiser's text may name the item,
+            # and this value travels onto a persisted receipt (the
+            # skipped_reasons lesson from CAPTUREFLOW's re-verify).
+            failures.append({"id": rid, "error": type(exc).__name__})
+            results.append({"status": "failed", "commitment_id": rid,
+                            "error": type(exc).__name__})
     return {
         "assumed": routed["assume"], "ask": routed["ask"],
         "carried": routed["carried"], "not_due": routed["not_due"],
         "results": results,
+        # n_assumed counts items ATTEMPTED on the assume route; a contained
+        # per-item failure (N-5) is counted in n_failed, not subtracted here.
         "n_assumed": len(routed["assume"]), "n_ask": len(routed["ask"]),
         "n_carried": len(routed["carried"]),
+        "n_failed": len(failures), "failures": failures,
         "posture_level": level, "ask_cap": cap,
     }
 
@@ -1082,7 +1181,7 @@ __all__ = [
     "STAKES_HIGH", "STAKES_LOW", "stakes_context", "stakes_for",
     "POSTURE_HANDLE_IT", "POSTURE_BALANCED", "POSTURE_CHECK_WITH_ME",
     "POSTURE_LEVELS", "POSTURE_NAMES", "FATE_ASK", "FATE_ASSUME",
-    "expiry_fate", "route_expiry",
+    "expiry_fate", "route_expiry", "rotate_ask",
     "dual_evidence", "self_confirm", "close_as_assumed", "run_watch_expiry",
     "load_watched", "confirm_review_rows",
     "build_watching_view", "render_watching_text", "WATCHING_EMPTY_TEXT",

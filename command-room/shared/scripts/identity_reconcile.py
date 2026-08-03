@@ -471,6 +471,323 @@ def sole_record_for_email(workspace_root, addr: str):
         return None
 
 
+# STAFFCUT §3.4 — free-mail domains. A shared free-mail domain identifies
+# NOBODY: two mentions "at gmail.com" have nothing in common, so a free-mail
+# domain is never contextual corroboration.
+#
+# A LITERAL SET WAS NOT ENOUGH, and the gap was not theoretical. An exact-match
+# list missed every localized storefront of the same providers — `yahoo.fr`,
+# `hotmail.es`, `outlook.de`, `live.co.uk`, `protonmail.ch` all corroborated,
+# and this ships to a fleet that includes a Spanish-market instance, so the
+# miss lands on real people. Subdomains missed too: `corp.yahoo.com` and
+# `mail.gmail.com` are as non-identifying as their parents.
+#
+# So the rule is THREE tests, cheapest first (see `is_free_mail_domain`):
+#   1. the literal set below;
+#   2. any PARENT domain in that set — a subdomain of a free host is free;
+#   3. the registrable FIRST LABEL in FREE_MAIL_FIRST_LABELS — `yahoo.<any>` is
+#      Yahoo whichever country's TLD it wears.
+# Test 3 is deliberately conservative in the safe direction: a real company
+# whose domain happens to start with one of those labels loses DOMAIN
+# corroboration and its mentions keep asking. Asking too often is a cost; a
+# wrong auto-link is a defect.
+FREE_MAIL_DOMAINS = frozenset({
+    # Google / Microsoft / Yahoo / Apple / AOL — the exact hosts, with the
+    # first-label rule below covering their ccTLD storefronts.
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
+    "msn.com", "passport.com", "yahoo.com", "ymail.com", "rocketmail.com",
+    "aol.com", "aim.com", "icloud.com", "me.com", "mac.com",
+    # Privacy / independent providers.
+    "proton.me", "protonmail.com", "protonmail.ch", "pm.me", "tutanota.com",
+    # RIDERS1 item 3 — the one host org_writer's retired local list covered that
+    # this set did not. Folded in when the two lists became one, so consolidating
+    # onto the stronger predicate lost no coverage at the weaker one's call site.
+    "duck.com",
+    "tutanota.de", "tuta.io", "hey.com", "fastmail.com", "fastmail.fm",
+    "posteo.de", "mailbox.org", "runbox.com", "hushmail.com", "startmail.com",
+    "zoho.com", "zohomail.com", "mail.com", "email.com", "usa.com",
+    "gmx.com", "gmx.de", "gmx.net", "gmx.at", "gmx.ch", "web.de",
+    "freenet.de", "t-online.de", "arcor.de",
+    # Regional / ISP mail — no first-label rule for these (their labels are
+    # ordinary words), so the ccTLD spellings are listed where they exist.
+    "yandex.com", "yandex.ru", "mail.ru", "inbox.ru", "list.ru", "bk.ru",
+    "rambler.ru", "qq.com", "foxmail.com", "163.com", "126.com", "sina.com",
+    "sohu.com", "naver.com", "hanmail.net", "daum.net", "nate.com",
+    "rediffmail.com", "sify.com",
+    "comcast.net", "verizon.net", "att.net", "sbcglobal.net", "bellsouth.net",
+    "cox.net", "charter.net", "earthlink.net", "juno.com", "netzero.net",
+    "roadrunner.com", "optonline.net", "frontier.com", "windstream.net",
+    "btinternet.com", "sky.com", "virginmedia.com", "talktalk.net",
+    "ntlworld.com", "blueyonder.co.uk",
+    "orange.fr", "wanadoo.fr", "free.fr", "sfr.fr", "laposte.net",
+    "bbox.fr", "numericable.fr", "neuf.fr", "aliceadsl.fr",
+    "libero.it", "virgilio.it", "alice.it", "tin.it", "tiscali.it",
+    "fastwebnet.it", "email.it",
+    "terra.com.br", "uol.com.br", "bol.com.br", "globo.com", "ig.com.br",
+    "prodigy.net.mx", "telefonica.net", "movistar.es", "ono.com",
+    "telefonica.es", "euskaltel.net", "wanadoo.es", "terra.es",
+    "shaw.ca", "rogers.com", "sympatico.ca", "telus.net", "videotron.ca",
+    "bigpond.com", "bigpond.net.au", "optusnet.com.au", "iinet.net.au",
+    "tpg.com.au", "internode.on.net", "xtra.co.nz",
+    "seznam.cz", "centrum.cz", "onet.pl", "wp.pl", "interia.pl", "o2.pl",
+    "abv.bg", "mynet.com", "walla.co.il", "nifty.com", "biglobe.ne.jp",
+    "ocn.ne.jp", "docomo.ne.jp", "ezweb.ne.jp", "softbank.ne.jp",
+})
+
+# Registrable FIRST LABELS of the global providers — the ccTLD-blind test. Only
+# labels that are UNAMBIGUOUSLY a mail provider belong here: `yahoo.fr` and
+# `hotmail.es` are Yahoo and Hotmail, while a label like `mail` or `orange`
+# is an ordinary word that a real company can legitimately own.
+FREE_MAIL_FIRST_LABELS = frozenset({
+    "gmail", "googlemail", "hotmail", "outlook", "live", "msn", "yahoo",
+    "ymail", "aol", "aim", "icloud", "protonmail", "tutanota", "gmx",
+})
+
+
+def is_free_mail_domain(domain) -> bool:
+    """True when `domain` identifies a mail PROVIDER rather than an
+    organisation — so it can never be contextual corroboration (§3.4).
+
+    Three tests: the literal set, any parent domain in it (a subdomain of a
+    free host is free), and the registrable first label among the global
+    providers (ccTLD-blind). Defensive: a malformed value is treated as free,
+    because "we could not read this domain" must not license a link."""
+    dom = str(domain or "").strip().lower().rstrip(".")
+    if not dom or "." not in dom:
+        return True
+    if dom in FREE_MAIL_DOMAINS:
+        return True
+    labels = dom.split(".")
+    # Any PARENT domain in the set: corp.yahoo.com -> yahoo.com.
+    for i in range(1, len(labels) - 1):
+        if ".".join(labels[i:]) in FREE_MAIL_DOMAINS:
+            return True
+    # Any label but the TLD. Checking only the FIRST label missed the two cases
+    # combined — `mx.hotmail.co.uk` is a subdomain of a ccTLD storefront, so
+    # neither the parent-domain test (no `hotmail.co.uk` literal) nor a
+    # first-label test (`mx`) catches it. Excluding the TLD keeps a hypothetical
+    # TLD sharing a provider's name from tripping this. Deliberately
+    # conservative: a company mail subdomain like `outlook.<theirdomain>` loses
+    # DOMAIN corroboration and its mentions keep asking, which is a cost worth
+    # paying against a wrong auto-link.
+    return any(label in FREE_MAIL_FIRST_LABELS for label in labels[:-1])
+
+# The corroboration clause names, one per §3.4 bullet. They ride the gate's
+# `why` string and the tombstone's `auto_predicate`, so a later audit reads WHY
+# a link fired off the event instead of a vanished chat.
+CORROBORATION_EMAIL_DOMAIN = "email_domain"
+CORROBORATION_SAME_ORG = "same_org"
+CORROBORATION_MEETING = "meeting_co_occurrence"
+CORROBORATION_KINDS = (CORROBORATION_EMAIL_DOMAIN, CORROBORATION_SAME_ORG,
+                       CORROBORATION_MEETING)
+
+_EMAIL_IN_TEXT_RE = re.compile(
+    r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _email_domain(addr) -> str:
+    addr = str(addr or "").strip().lower()
+    return addr.rsplit("@", 1)[-1] if "@" in addr else ""
+
+
+def _corroborating_domains(addresses) -> set:
+    """The domains among `addresses` that can corroborate anything: role-shaped
+    local parts and free-mail domains contribute NOTHING. Both exclusions are
+    §3.4's, and both are pinned: a role address identifies a mailbox rather than
+    a person, and a free-mail domain identifies no organisation at all."""
+    out: set = set()
+    for addr in addresses or ():
+        if is_role_address(addr):
+            continue
+        dom = _email_domain(addr)
+        if dom and not is_free_mail_domain(dom):
+            out.add(dom)
+    return out
+
+
+def _mention_domains(cluster: dict) -> set:
+    """Corroborating domains visible in the MENTION's own captured text.
+
+    Deliberately a raw text scan rather than `_observed_email`: that helper
+    answers "which single address attributes to THIS person" (the F-3 rule) and
+    returns nothing when a capture carries several addresses — which is exactly
+    the shape whose DOMAIN is still a real signal. The strong per-address bars
+    are unaffected: gate (c) still refuses any attributable address that does
+    not belong to the record, and it runs BEFORE this."""
+    out: set = set()
+    for row in cluster.get("add_rows") or []:
+        text = f"{row.get('source_ref') or ''} {row.get('evidence') or ''}"
+        out |= _corroborating_domains(_EMAIL_IN_TEXT_RE.findall(text))
+    return out
+
+
+def _record_domains(workspace_root, record: dict) -> set:
+    """Corroborating domains registered against the matched RECORD — its own
+    addresses, plus its org's declared domain / website host when entities.json
+    carries one. Defensive: an unreadable substrate yields what it can, and an
+    empty set simply means this clause cannot fire."""
+    out = _corroborating_domains(_record_emails(record or {}))
+    org_id = ((record or {}).get("primary_org_id")
+              or (record or {}).get("org_id") or "")
+    if not org_id:
+        return out
+    try:
+        data = json.loads((Path(workspace_root) / "_hq" / "data" /
+                           "entities.json").read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        for o in ent.get("orgs") or []:
+            if o.get("id") != org_id:
+                continue
+            raw = []
+            for key in ("domain", "domains", "email_domain", "website", "url"):
+                val = o.get(key)
+                if isinstance(val, str):
+                    raw.append(val)
+                elif isinstance(val, (list, tuple)):
+                    raw.extend(str(v) for v in val)
+            for val in raw:
+                host = str(val).strip().lower()
+                host = host.split("//", 1)[-1].split("/", 1)[0]
+                host = host.split("@", 1)[-1].lstrip("*.")
+                if host.startswith("www."):
+                    host = host[4:]
+                if "." in host and not is_free_mail_domain(host):
+                    out.add(host)
+            break
+    except Exception:
+        return out
+    return out
+
+
+def _meeting_co_occurrence(workspace_root, cluster: dict,
+                           matched: dict) -> str:
+    """The mention and the record appear in the SAME meeting's substrate
+    events — connector-agnostic by construction: it reads `meeting` /
+    `meeting_processed` events through the canonical iterator and matches the
+    mention's own `source_ref`, never a Gmail/Granola-specific path.
+
+    Returns the meeting's title (or "" when it has none but matched), and "" when
+    there is no co-occurrence. Fail-safe: any read error returns "" and the
+    clause simply does not fire."""
+    try:
+        from meeting_capture import _norm_ref_keys
+
+        refs: set = set()
+        for row in cluster.get("add_rows") or []:
+            refs |= _norm_ref_keys(row.get("source_ref"))
+        if not refs:
+            return ""
+        mid = (matched or {}).get("id")
+        emails = {e.strip().lower() for e in _record_emails(matched or {})
+                  if str(e).strip()}
+        from events_io import iter_events
+
+        for ev in iter_events(Path(workspace_root)):
+            if ev.get("type") not in ("meeting", "meeting_processed"):
+                continue
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            keys = (_norm_ref_keys(d.get("source_ref"))
+                    | _norm_ref_keys(d.get("meeting_id")))
+            if not (keys & refs):
+                continue
+            hit = bool(mid and mid in (ev.get("person_ids") or []))
+            if not hit and emails:
+                attendees = {str(a).strip().lower()
+                             for a in (d.get("attendees") or [])}
+                hit = bool(emails & attendees)
+            if hit:
+                return str(d.get("title") or "").strip() or "the same call"
+    except Exception:
+        return ""
+    return ""
+
+
+def _name_related(name: str, matched_name: str) -> bool:
+    """Is the mention's spelling a NAME RELATION of the record's, rather than a
+    coincidence? Normalized token sets, one a non-empty subset of the other.
+
+    Deliberately NOT fuzzy and NOT phonetic. "Bo" against "Bo Sample" is a
+    relation the corroboration clause may act on; a typo ("Skylar" against
+    "Skyler") shares no token and keeps asking, because a misspelling plus a
+    shared office is exactly the pair a human should look at. This is a
+    NECESSARY condition and never a sufficient one — corroboration is what
+    licenses the link, and §3.4's highest-stakes invariant is that name
+    similarity ALONE never auto-links."""
+    a = {t for t in _norm_name(name).split() if len(t) > 1}
+    b = {t for t in _norm_name(matched_name).split() if len(t) > 1}
+    if not a or not b:
+        return False
+    return a <= b or b <= a
+
+
+def link_corroboration(workspace_root, cluster: dict, matched: dict):
+    """(kind, detail) when the mention is contextually corroborated against the
+    matched record, else None — STAFFCUT §3.4 / M ruling 1 (2026-08-02):
+    "it has to match somehow on context."
+
+    A name relation is required FIRST, then at least ONE of the three context
+    clauses. Each clause is a fact about the substrate, not a similarity score:
+
+      email_domain          a non-role address in the mention's own captured
+                            text shares a non-free-mail domain registered to
+                            the record (its addresses or its org's);
+      same_org              the mention's inferred org RESOLVES TO the record's
+                            org — the exact inverse of gate (c)'s contradiction
+                            check, so the two can never disagree;
+      meeting_co_occurrence the mention and the record appear in the same
+                            meeting's events (attendee id or address).
+
+    Order is cheapest-first and decides only WHICH clause is recorded; any one
+    of them licenses the link. Returns None on anything unverifiable, which the
+    caller turns into a confirm row."""
+    name = (cluster.get("name") or "").strip()
+    matched_name = ((matched or {}).get("canonical_name") or "").strip()
+    if not name or not matched_name or not _name_related(name, matched_name):
+        return None
+
+    inferred_org = (cluster.get("inferred_org") or "").strip()
+    if inferred_org:
+        record_org = _record_org_name(workspace_root, matched)
+        if record_org and _norm_name(inferred_org) == _norm_name(record_org):
+            return CORROBORATION_SAME_ORG, record_org
+
+    shared = _mention_domains(cluster) & _record_domains(workspace_root,
+                                                         matched)
+    if shared:
+        return CORROBORATION_EMAIL_DOMAIN, sorted(shared)[0]
+
+    title = _meeting_co_occurrence(workspace_root, cluster, matched)
+    if title:
+        return CORROBORATION_MEETING, title
+    return None
+
+
+# The `auto_predicate` recorded on an auto-link tombstone (§7 — one string
+# naming WHY). Keyed off the gate's own `why` markers so the reason on the event
+# and the reason in the gate can never drift apart.
+_PREDICATE_MARKERS = (
+    ("belongs to exactly one record", "id_fact:email_match"),
+    (f"corroborated by {CORROBORATION_SAME_ORG}",
+     f"context:{CORROBORATION_SAME_ORG}"),
+    (f"corroborated by {CORROBORATION_EMAIL_DOMAIN}",
+     f"context:{CORROBORATION_EMAIL_DOMAIN}"),
+    (f"corroborated by {CORROBORATION_MEETING}",
+     f"context:{CORROBORATION_MEETING}"),
+)
+
+
+def link_auto_predicate(why: str) -> str:
+    """The §7 predicate string for an auto-link, derived from the gate's own
+    reason. Unknown reasons fall back to the exact-name clause, which is the
+    only remaining way the gate can say yes."""
+    text = str(why or "")
+    for marker, predicate in _PREDICATE_MARKERS:
+        if marker in text:
+            return predicate
+    return "exact_name:unique_clean"
+
+
 def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
                        email: str | None) -> tuple[bool, str]:
     """(eligible, why) — the UXR1 D3 (a)-(d) gate for ONE merge-propose
@@ -501,6 +818,21 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
           contradict the record's org;
       (d) the pair is not in scan_existing_duplicates' suspect set (a
           record under duplicate suspicion is not a safe link target).
+
+    STAFFCUT §3.4 (M ruling 2026-08-02) added a THIRD clause to (a′) and
+    changed nothing else: a spelling RELATION (`_name_related`) that the
+    substrate CORROBORATES ON CONTEXT — a shared non-free-mail email domain, the
+    same org, or co-occurrence in the same meeting's events (see
+    `link_corroboration`). 15 of the 33 person rows on the audit day were
+    link-shaped and failed on (a′) alone, at a median answer latency of 43 days;
+    where context says the two are the same person, asking is the wrong default
+    for a change this reversible.
+
+    NAME SIMILARITY ALONE NEVER AUTO-LINKS. That is the highest-stakes
+    invariant in the build, and it is why the clause needs a substrate fact on
+    top of the relation. Bars (b), (c) and (d) are byte-intact: a widened (a′)
+    still has to clear exactly one on-file candidate, no conflicting
+    org/address signal, and no duplicate suspicion.
 
     Fail-safe throughout: any unverifiable bar returns False (the row still
     renders as a confirm ask — a human decision is the safe floor)."""
@@ -533,7 +865,8 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
         if addr.strip().lower() not in record_emails:
             return False, ("observed address does not belong to the record "
                            "— conflicting signal, still asks")
-    # (a′) exact multi-token name match OR id-level email corroboration.
+    # (a′) exact multi-token name match OR id-level email corroboration OR a
+    # name relation that CONTEXT corroborates (STAFFCUT §3.4).
     exact_name = (_norm_name(name) == _norm_name(matched_name)
                   and len(_norm_name(name).split()) >= 2)
     id_level_email = None
@@ -543,10 +876,20 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
             if sole is not None and sole.get("id") == matched.get("id"):
                 id_level_email = addr.strip().lower()
                 break
+    corroboration = None
     if not exact_name and not id_level_email:
+        # The third clause, and the ONLY one M's 2026-08-02 ruling added: a
+        # spelling relation the substrate corroborates on CONTEXT. It runs last
+        # so the two stronger clauses keep reporting their own reasons, and it
+        # can only ever ADD a yes — the bars below ((b), (c)'s org check, (d))
+        # are untouched and every one of them still has to pass.
+        corroboration = link_corroboration(workspace_root, cluster, matched)
+    if not exact_name and not id_level_email and not corroboration:
         if _norm_name(name) != _norm_name(matched_name):
-            return False, ("spelling differs from the record and no address "
-                           "corroborates it — a human decision")
+            return False, ("spelling differs from the record and nothing "
+                           "corroborates it — no id-level address, no shared "
+                           "domain, no shared org, no shared meeting: a human "
+                           "decision")
         return False, "lone first name with no address — never auto (Bug #19)"
     # (b) exactly one on-file candidate
     from people_writer import list_same_name_people
@@ -579,6 +922,11 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
     if id_level_email:
         return True, (f"{id_level_email} belongs to exactly one record — "
                       f"{matched_name!r} (UXR1 D3 gate a'-d, AUTOAPPLY §4a)")
+    if corroboration:
+        kind, detail = corroboration
+        return True, (f"{name!r} matches {matched_name!r} and is corroborated "
+                      f"by {kind} ({detail}) — never name similarity alone "
+                      "(STAFFCUT §3.4, M ruling 2026-08-02; gate b-d unchanged)")
     return True, (f"exact unique clean match to {matched_name!r} "
                   "(UXR1 D3 gate a-d)")
 
@@ -1278,11 +1626,13 @@ def _auto_apply_person_link(ws, cluster, matched, entry, why, batch_id,
                               "matched_name": matched_name,
                               # §7 — WHICH corroboration clause fired, one
                               # string, so a later audit reads the reason off
-                              # the event instead of a vanished chat.
-                              "auto_predicate": (
-                                  "id_fact:email_match"
-                                  if "belongs to exactly one record" in why
-                                  else "exact_name:unique_clean")})
+                              # the event instead of a vanished chat. Derived
+                              # by `link_auto_predicate` from the gate's own
+                              # reason, so the event and the gate cannot drift
+                              # (STAFFCUT added three context clauses; a local
+                              # ternary here would have silently mislabelled
+                              # every one of them as an exact-name link).
+                              "auto_predicate": link_auto_predicate(why)})
         resolve_proposal(ws, res["proposal_id"], "applied",
                          resolved_by=source_skill, source_skill=source_skill)
         results["auto_linked"].append({"row_id": cluster["row_id"],
@@ -1491,7 +1841,16 @@ __all__ = [
     "STEADY_CAPS",
     "BACKFILL_CAPS",
     "ROLE_ADDRESS_LOCAL_PARTS",
+    "FREE_MAIL_DOMAINS",
+    "FREE_MAIL_FIRST_LABELS",
+    "is_free_mail_domain",
+    "CORROBORATION_KINDS",
+    "CORROBORATION_EMAIL_DOMAIN",
+    "CORROBORATION_SAME_ORG",
+    "CORROBORATION_MEETING",
     "is_role_address",
+    "link_corroboration",
+    "link_auto_predicate",
     "cluster_open_proposals",
     "person_queue_view",
     "count_person_rows",

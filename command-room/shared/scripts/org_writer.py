@@ -851,25 +851,6 @@ def repair_org(
     return record
 
 
-# Free-mail / personal-email domains that should NOT trigger auto-attribution.
-# A person with a gmail.com email isn't automatically affiliated with org_gmail.
-FREE_MAIL_DOMAINS = frozenset({
-    "gmail.com", "googlemail.com",
-    "yahoo.com", "ymail.com", "yahoo.co.uk", "yahoo.co.jp", "yahoo.ca",
-    "hotmail.com", "outlook.com", "live.com", "msn.com",
-    "icloud.com", "me.com", "mac.com",
-    "aol.com",
-    "protonmail.com", "proton.me", "pm.me",
-    "fastmail.com", "fastmail.fm",
-    "zoho.com",
-    "qq.com", "163.com", "126.com",
-    "mail.com", "gmx.com", "gmx.de", "gmx.net",
-    "yandex.com", "yandex.ru",
-    "tutanota.com",
-    "duck.com",  # DuckDuckGo email
-})
-
-
 def _extract_domain(email: str) -> str | None:
     """Pull the lowercased domain from an email. None if it doesn't parse."""
     if not isinstance(email, str) or "@" not in email:
@@ -879,10 +860,33 @@ def _extract_domain(email: str) -> str | None:
 
 
 def _is_work_domain(domain: str) -> bool:
-    """True if `domain` looks like a work/org domain (not free-mail)."""
+    """True if `domain` looks like a work/org domain (not free-mail).
+
+    THE free-mail question has ONE answer, and it lives in
+    `identity_reconcile.is_free_mail_domain` (SPEC STAFFCUT §3.4). This module
+    used to carry a second, weaker copy: an exact-match set of ~30 hosts, which
+    missed every localized storefront of the same providers (`yahoo.fr`,
+    `hotmail.es`, `outlook.de`) and every subdomain of them (`corp.yahoo.com`).
+    Two lists meant two verdicts on the same address — and here the verdict
+    drives org AUTO-ATTRIBUTION, so a miss silently attaches a person to an org
+    invented from their personal mail provider. That is not a lint issue; it is
+    the wrong-auto-link defect the shared predicate was written to prevent.
+
+    The shared predicate is deliberately conservative in the safe direction: an
+    unreadable or dotless value reads as free-mail, so "we could not tell" now
+    means "no auto-attribution" instead of "attribute it". Imported lazily
+    because `identity_reconcile` is a large module and this is a leaf helper
+    called in a loop; `sys.modules` makes every call after the first a dict
+    lookup.
+    """
     if not domain:
         return False
-    return domain.lower() not in FREE_MAIL_DOMAINS
+    try:
+        from identity_reconcile import is_free_mail_domain
+    except ImportError:  # pragma: no cover — direct-path import
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from identity_reconcile import is_free_mail_domain
+    return not is_free_mail_domain(domain)
 
 
 def _parse_org_hint(hint: str) -> tuple[str | None, str | None]:

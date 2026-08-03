@@ -303,6 +303,37 @@ def _meeting_group(ev: dict, index: dict) -> tuple:
     return (key, label, date)
 
 
+NOT_FROM_A_MEETING_PHRASE = "items not from a meeting"
+
+
+def source_count_phrase(groups) -> str:
+    """"46 calls", or "46 calls plus items not from a meeting" — THE sentence
+    both surfaces count with (SPEC RIDERS1 item 4).
+
+    The on-demand header and the staff-meeting fold's title were computed
+    separately and disagreed: the header counted only the meeting groups ("46
+    calls") while the fold counted every group including the not-from-a-meeting
+    bucket ("47 calls"). Same queue, same page, two numbers — and the second one
+    was also wrong on its own terms, because that bucket is not a call.
+
+    So the arithmetic is stated ONCE. The full total is always honest: every
+    group is accounted for, calls are counted as calls, and the bucket is NAMED
+    rather than folded into a number it does not belong in. There is exactly one
+    such bucket by construction, which is why it is named and not counted.
+    """
+    rows = list(groups or [])
+    n_calls = sum(1 for g in rows
+                  if (g or {}).get("group_key") not in (None,
+                                                        NOT_FROM_A_MEETING))
+    has_other = any((g or {}).get("group_key") == NOT_FROM_A_MEETING
+                    for g in rows)
+    noun = "call" if n_calls == 1 else "calls"
+    phrase = f"{n_calls} {noun}"
+    if has_other:
+        phrase += f" plus {NOT_FROM_A_MEETING_PHRASE}"
+    return phrase
+
+
 # ---------------------------------------------------------------------------
 # The view (pure read)
 # ---------------------------------------------------------------------------
@@ -422,11 +453,8 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
     total = display_n
     noun = "extraction" if total == 1 else "extractions"
     if by_meeting:
-        n_calls = sum(1 for g in groups if g.get("group_key")
-                      not in (None, NOT_FROM_A_MEETING))
-        call_noun = "call" if n_calls == 1 else "calls"
         header = (f"Needs your call — {total} unconfirmed {noun} "
-                  f"from {n_calls} {call_noun}")
+                  f"from {source_count_phrase(groups)}")
     else:
         header = (f"Needs your call — {total} unconfirmed {noun}, "
                   f"grouped by counterparty")
@@ -1027,7 +1055,6 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
         return None
 
     total_rows = view.get("total") or sum(len(g["items"]) for g in groups)
-    total_groups = len(groups)
 
     shown: list[dict] = []
     n_rows = 0
@@ -1053,9 +1080,12 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
         return None
 
     item_noun = "item" if total_rows == 1 else "items"
-    call_noun = "call" if total_groups == 1 else "calls"
+    # RIDERS1 item 4 — the same phrase the on-demand header uses. This title
+    # used to count `total_groups`, which includes the not-from-a-meeting
+    # bucket, so the fold said "47 calls" beside a header saying "46" for the
+    # same queue — and the bucket is not a call in either sentence.
     title = (f"{STAFF_SECTION_TITLE} ({total_rows} {item_noun}, "
-             f"{total_groups} {call_noun})")
+             f"{source_count_phrase(groups)})")
     if len(items) < total_rows:
         title += (f" — showing {len(items)}; say `needs your call` for the "
                   f"rest")
@@ -1106,6 +1136,8 @@ __all__ = [
     "paginate_groups",
     "render_queue_page",
     "staff_meeting_group_section",
+    "source_count_phrase",
+    "NOT_FROM_A_MEETING_PHRASE",
     "GROUP_MEETING",
     "GROUP_COUNTERPARTY",
     "GROUP_MODES",

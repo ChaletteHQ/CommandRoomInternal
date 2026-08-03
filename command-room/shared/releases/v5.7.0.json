@@ -1,0 +1,13 @@
+{
+ "version": "5.7.0",
+ "headline": "The staff meeting fits on two screens. Questions of one kind arrive as one grouped ask, every row can actually be answered, obvious name matches with real context apply themselves (with undo), and quiet-project questions wait until you ask.",
+ "items": [
+  {
+   "id": "v570_announce_staff_meeting_cut",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Your staff meeting just got much shorter \u2014 typically two screens instead of seven. Nothing was dropped: repeated questions of one kind now arrive as one grouped row with an honest count (answer the group in one tap, or name any single item by its number), section titles always show the full totals, and anything past the page bound rotates up on the next fire. Two behavior changes worth knowing: a name mention that exactly matches someone on file AND shares real context (same mail domain, same organization, or the same meeting) now links itself \u2014 it shows up in the change feed with an undo, and a name alone still asks. And quiet-project questions left the weekly meeting; ask 'stalled projects' when you want them.",
+   "action": "announce_only"
+  }
+ ]
+}

@@ -1,5 +1,47 @@
 # Command Room — Changelog
 
+## v5.7.0 — 2026-08-02 — The staff meeting fits on two screens
+
+Minor release: the weekly staff meeting was growing without a ceiling — on a busy workspace it reached seven screens, and a queue that long teaches you to stop reading it. This release cuts it to about two screens without dropping a single question, fixes rows that could never be answered, and lets the most obvious identity matches handle themselves. A batch of smaller repairs rides along. No migration steps, nothing destructive, no new scheduled tasks.
+
+### Questions of one kind arrive as one grouped ask
+
+The queue's biggest kinds — commitment reviews sharing the same evidence, new names from your calls, unsaved facts — now render as grouped rows: one honest ask carrying its member count, answered in one tap or expanded to any single item by its number. Grouping changes presentation, not consent: every member keeps its own identity, a grouped confirm passes through the same evidence fence as ever (weak items are still held, never swept), and undo reverses a grouped answer exactly as if you had answered each row alone.
+
+### The page finally has a ceiling — with honest arithmetic
+
+One fire renders about two screens, allocated across the money / identity / hygiene lanes rather than truncated top-down. Section titles always carry the FULL open counts, a lane that didn't fit says so by name, and whatever waited rotates to the front of the next fire — nothing can be buried forever. The fire receipt now records per-kind counts, so queue load is measurable over time instead of being re-audited by hand.
+
+### Every row can actually be answered
+
+Organization and project suggestions rendered with no buttons — permanently unanswerable, quietly teaching you to skim past them. They now carry their real verbs through the same dispatch everything else uses. The same repair covered dormancy rows, and the schedule-suggestion rows (never once acted on, and redundant with the schedule-change flow) were retired.
+
+### Obvious name matches apply themselves — context required, undo included
+
+A name mention that exactly matches ONE person on file used to ask you anyway. Now, when the mention also shares real context — the same mail domain (public mail providers never count, in any country's spelling), the same organization, or the same meeting — the link applies itself, shows up in the change feed, and reverses in one tap. A name alone never links, however similar; a shared inbox never counts as identity; any doubt at any step means it asks like before. Record merges still always ask — that one isn't reversible, so it never goes automatic.
+
+### Quiet-project questions wait until you ask
+
+"This project has gone quiet — make it dormant?" left the weekly meeting; it's a judgment call you make when you're thinking about the portfolio, not weekly homework. Ask "stalled projects" and they're all there, unchanged.
+
+### Smaller repairs riding along
+
+- **Deal- and objective-initiated archives now stamp the archive date** the Recently Archived list sorts by, and write the same timeline record as every other archive — closing the "known, queued" item from v5.6.4.
+- **Mail-sourced review rows now carry their evidence to the fence.** Proposals from the inbound-mail rail arrived structurally "strong" no matter how weak the evidence; they now persist what the matcher actually found, so bulk-confirm weighs them like everything else.
+- The watched-items question slot rotates so an over-capacity backlog can't show the same five forever; the highest-stakes questions still surface every time.
+- A failure while checking one watched item no longer abandons the rest of the pass, and the receipt counts what failed.
+- The capture floor's telemetry now tallies under stable codes rather than display sentences, so week-over-week tuning is possible; old receipts still count.
+- The needs-your-call queue and the staff meeting's meetings section now state the same call arithmetic instead of disagreeing by one.
+- One shared answer to "is this a personal mail domain?" everywhere — org auto-attribution no longer treats localized mail providers as company domains.
+
+### Customer migration impact
+
+None to perform. The staff meeting looks different on its next fire: much shorter, with grouped rows and full totals in the titles. Nothing was dropped — expand any group to see every member. If a name link applies itself, the change feed narrates it with an undo. Quiet-project questions moved to "stalled projects" on demand.
+
+### What's NOT in this ship
+
+The hide-toggle for gate-rejected review rows (still visible on purpose). Retirement of the daily Pulse task (next release). Automatic contact records for people you correspond with (specced, next). A settings knob for the page ceiling (it follows the same fixed posture as the meetings section's caps).
+
 ## v5.6.4 — 2026-08-02 — Your list only holds what's real
 
 Minor-sized release in a patch coat: the whole capture-and-confirm chain got rebuilt so that nothing lands on your open list without either clear evidence or your say-so. No migration steps, nothing destructive, no new scheduled tasks.

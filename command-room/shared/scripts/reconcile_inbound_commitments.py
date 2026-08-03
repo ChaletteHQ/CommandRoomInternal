@@ -513,6 +513,12 @@ def reconcile_inbound(
                 "recommendation": rec,
                 "close_basis": basis,
                 "evidence": evidence,
+                # WATCHGATE N-2 — the matcher's OWN fulfillment finding, carried
+                # instead of dropped. `match_inbound_to_commitments` has always
+                # returned it; nothing read it here, so the proposal this rail
+                # persisted could never say whether completion language was
+                # found, and the bulk-accept fence had nothing to weigh.
+                "has_completion_signal": r.get("has_completion_signal"),
             }
             prev = best.get(cid)
             if prev is None:
@@ -769,9 +775,16 @@ def reconcile_inbound_and_receipt(
     # The confirm band MUST NOT evaporate — persist each proposal as a
     # `commitment_review_proposed` so the next Waiting On chat surfaces it for
     # one-click confirm. Deduped against the OPEN proposal set.
+    #
+    # WATCHGATE N-2 (RIDERS1 item 5): through `build_pending_review_event`, THE
+    # writer for this type — the only thing that persists the two fields the
+    # shared bulk-accept fence weighs. Hand-built, this rail's rows were STRONG
+    # by construction: the matcher's completion finding and the reply's own time
+    # were both in hand and neither reached the event.
     reviews_written = 0
     if pending:
-        from cru_match import load_open_review_proposals
+        from cru_match import (build_pending_review_event,
+                               load_open_review_proposals)
         from event_gate import append_event
         already_proposed = {
             (p.get("data") or {}).get("commitment_id")
@@ -780,20 +793,26 @@ def reconcile_inbound_and_receipt(
         for p in pending:
             if p["commitment_id"] in already_proposed:
                 continue
-            append_event(events_path, [{
-                "type": "commitment_review_proposed",
-                "source_skill": source_skill,
-                "primary_thread_id": p.get("primary_thread_id") or "",
-                "data": {
-                    "commitment_id": p["commitment_id"],
-                    "proposed_resolution": "auto_resolve",
-                    "match_score": round(p.get("score") or 0, 3),
-                    "evidence": p.get("evidence") or "matched their reply",
-                    "title": p.get("title") or "",
-                    "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
-                    "ambiguous": p.get("close_basis") == _AMBIGUOUS_REPLY_BASIS,
-                },
-            }], holder=source_skill)
+            ev = build_pending_review_event(
+                commitment_id=p["commitment_id"],
+                primary_thread_id=p.get("primary_thread_id") or "",
+                source_skill=source_skill,
+                proposed_resolution="auto_resolve",
+                score=p.get("score") or 0,
+                evidence=p.get("evidence") or "matched their reply",
+                next_seq=None,   # the gate stamps seq inside the writer lock
+                title=p.get("title") or "",
+                # The reply's own time (EVORDER layer 3's input, now also the
+                # fence's) and the matcher's fulfillment finding. `None` on
+                # either means "not assessed" and weakens nothing.
+                evidence_ts=p.get("ts") or None,
+                has_completion_signal=p.get("has_completion_signal"),
+            )
+            ev["data"].update({
+                "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
+                "ambiguous": p.get("close_basis") == _AMBIGUOUS_REPLY_BASIS,
+            })
+            append_event(events_path, [ev], holder=source_skill)
             reviews_written += 1
 
     # Schedule-shift markers — the counterparty moved their own date. Same
