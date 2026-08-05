@@ -631,8 +631,16 @@ def load_objective_inputs(workspace_root) -> dict:
         for t in (container.get("threads") or container.get("projects") or []):
             if isinstance(t, dict) and t.get("id"):
                 threads_by_id[t["id"]] = t
-        ws_settings = (container.get("workspace")
-                       or data.get("workspace") or {})
+        # TZFIX v5.9.4 (same class as tz.py): merge, don't first-truthy-pick —
+        # a truthy inner block must not shadow a top-level one that still holds
+        # the key. Inner wins on conflict (unchanged precedence; nothing in the
+        # codebase writes `workspace.user_id`, so the two never disagree today).
+        _inner_ws = container.get("workspace")
+        _top_ws = data.get("workspace")
+        ws_settings = {
+            **(_top_ws if isinstance(_top_ws, dict) else {}),
+            **(_inner_ws if isinstance(_inner_ws, dict) else {}),
+        }
         primary_user_id = ws_settings.get("user_id")
         if not primary_user_id:
             for p in container.get("people") or []:

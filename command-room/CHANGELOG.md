@@ -1,5 +1,29 @@
 # Command Room — Changelog
 
+## v5.9.4 — 2026-08-05 — The timezone you set is found wherever it lives
+
+Patch release, one bug class, reported from the field (2026-08-04): a scheduled morning brief errored in the timezone helper — "workspace has no timezone set" — on a workspace whose timezone was set correctly and explicitly. The report arrived with its own root-cause diagnosis, which proved exactly right.
+
+### Root cause
+
+A workspace's settings can live in two places: an older top-level block and a newer nested one, written by different parts of the product over time. The readers tolerated both shapes by taking the first non-empty block they found — but on a workspace that carries BOTH (the nested block holding bookkeeping keys, the top-level one holding the timezone), the first non-empty block was the one WITHOUT the timezone, and the reader gave up there instead of checking the other. A correctly configured workspace failed, and every time-rendering caller failed with it.
+
+### Fix
+
+The readers now merge the two blocks, so a setting present in either is found. Where both declare the same key, the winner is the block that the setting's actual writer maintains — for the timezone that is the top-level block, which is what "set my timezone" writes, so the user's explicit setting always takes effect. The same first-non-empty flaw was found and fixed in two more readers by the same sweep: the connector-configuration reader (where a nested block created for one key could silently empty the declared-connectors map) and an objectives reader (latent, not yet reachable). A test now mirrors the reporting workspace's exact shape and fails if the old behavior ever returns.
+
+### Files touched
+
+`shared/scripts/tz.py` · `shared/scripts/connector_config.py` · `shared/scripts/objective_math.py` · `tests/run_tz_test.py`
+
+### Customer migration impact
+
+None to perform. The fix applies from the next scheduled fire; nothing is rewritten in any workspace file.
+
+### What's NOT in this ship
+
+The deeper cleanup — folding the two settings blocks into one so this class of bug cannot exist — is queued as its own change with proper safety copies. Two settings readers with the reverse mismatch (a writer that goes to the block the reader doesn't check, affecting the coach and Balance configuration on dual-shape workspaces) are queued alongside it.
+
 ## v5.9.3 — 2026-08-05 — A successful "already done" no longer logs itself as an error
 
 Patch release, one bug class, caught during attended release verification (2026-08-05): answering `already done` on a review-queue item worked — the item closed, and the record honestly carried the user's attestation with its when and where. But the audit trail wrote the gesture down as an error.

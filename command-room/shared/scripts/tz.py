@@ -124,8 +124,25 @@ def load_workspace_tz(workspace_path: Union[str, Path, None] = None):
 
     # v2.14.17: tolerate both shapes — newer onboarding writes the workspace block
     # nested under `entities`; older shape had it at top level.
+    # TZFIX v5.9.4: MERGE the two blocks instead of taking the first TRUTHY one.
+    # A live workspace can carry BOTH: the code writers (connector_config.py,
+    # contact_capture.py, reconcile_sent_commitments.py) create the INNER block
+    # for their own keys (connectors / accounts / user_person_id /
+    # sent_reconcile_cursor), while `user_timezone` is only ever written to the
+    # TOP-LEVEL block (command-room-onboarding + workspace-manager's "set my
+    # timezone"; entities.schema.json pins workspace_settings to top level).
+    # The old first-truthy pick let a truthy-but-timezone-less INNER block shadow
+    # the real top-level one, so a correctly configured workspace raised
+    # TZResolutionError and every to_local()/format_local() caller broke.
+    # Top level wins on conflict — it is the block the current writer of
+    # user_timezone maintains, so "set my timezone" always takes effect.
     inner = entities.get("entities") if isinstance(entities.get("entities"), dict) else None
-    workspace = (inner or {}).get("workspace") or entities.get("workspace") or {}
+    inner_ws = (inner or {}).get("workspace")
+    top_ws = entities.get("workspace")
+    workspace = {
+        **(inner_ws if isinstance(inner_ws, dict) else {}),
+        **(top_ws if isinstance(top_ws, dict) else {}),
+    }
     tz_name = workspace.get("user_timezone")
     if not tz_name:
         raise TZResolutionError(

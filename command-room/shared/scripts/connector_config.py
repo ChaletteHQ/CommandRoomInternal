@@ -87,9 +87,21 @@ def workspace_block(workspace_root=None, entities: Optional[dict] = None) -> Dic
     ent = entities if isinstance(entities, dict) else load_entities(workspace_root)
     if not isinstance(ent, dict):
         return {}
+    # TZFIX v5.9.4 (same class as tz.py's load_workspace_tz): MERGE the two
+    # shapes rather than taking the first TRUTHY block. A workspace can carry
+    # both, and an inner block created for one key used to shadow a top-level
+    # block that still held `connectors` / `accounts` — silently emptying the
+    # declared-backend map instead of falling through to the block that has it.
+    # INNER wins on conflict here (the opposite of tz.py, deliberately): the
+    # writer for these keys is `_workspace_container` below, which maintains the
+    # inner block whenever `entities.entities` exists.
     inner = ent.get("entities") if isinstance(ent.get("entities"), dict) else None
-    ws = (inner or {}).get("workspace") or ent.get("workspace") or {}
-    return ws if isinstance(ws, dict) else {}
+    inner_ws = (inner or {}).get("workspace")
+    top_ws = ent.get("workspace")
+    return {
+        **(top_ws if isinstance(top_ws, dict) else {}),
+        **(inner_ws if isinstance(inner_ws, dict) else {}),
+    }
 
 
 # ---------------------------------------------------------------------------
