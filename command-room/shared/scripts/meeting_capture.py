@@ -55,8 +55,33 @@ MEETING_WRITE_TYPES = (
 )
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+    return _clock_now().isoformat()
 
 
 def _norm_ref_keys(ref) -> set:
@@ -174,9 +199,7 @@ def build_meeting_commitment_event(
 
     data["status"] = "open"
     if due_str and parse_iso_date(due_str):
-        if _dt.date.fromisoformat(due_str[:10]) < _dt.datetime.now(
-            _dt.timezone.utc
-        ).date():
+        if _dt.date.fromisoformat(due_str[:10]) < _clock_now().date():
             data["status"] = "overdue"
 
     # Stage E: resolved owner/counterparty ids are person references — the

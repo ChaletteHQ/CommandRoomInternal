@@ -905,6 +905,18 @@ Then log the suppression record via `schedule_proposals.log_proposal(ws, "staff-
 
 Then log the suppression record via `schedule_proposals.log_proposal(ws, "balance")`. An accept ("add balance" or any yes-shaped reply) routes through change-schedule / registration Phase 6 `add`; silence registers nothing.
 
+**Retired-task PROPOSAL (SPEC LIFECYCLE1 §4 — propose the removal, NEVER disable it silently):** on the full-update intent path, run the same FS-16 registered-set readback and quote its verdict. This block is the mirror of the two later-add proposals above, with the gate inverted: it fires only when a task in `schedule_config.RETIRED_TASKS` is quoted-PRESENT in the registered set. On the overwhelming majority of workspaces that set is empty and this whole block is a silent no-op — say nothing about a chat the customer never had.
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
+from schedule_proposals import propose_task_retirements, log_retire_proposal
+offers = propose_task_retirements(WORKSPACE_ROOT, registered_ids=<the quoted readback>)
+```
+
+For each returned offer, surface its `line` VERBATIM (one line, built from the registry so the wording cannot drift between here, change-schedule and system-health), then log the suppression record with `log_retire_proposal(WORKSPACE_ROOT, offer["task"])`. The helper already honors the 6-week window, so a customer who ignored the offer is not asked again next update.
+
+**Never disable it yourself.** The customer's `pause <name>` is what switches it off, routed through change-schedule exactly like every other schedule change. This deliberately does NOT use the MAINT1 `SUPERSEDED_BY` mechanism above — that one disables silently, which is correct for FIVE background tasks the customer never saw and wrong for a chat sitting visibly in their Scheduled list. Silence and a vanished chat are the same posture violation as a chat that registered itself. Silence registers nothing and un-registers nothing; the offer simply goes quiet for 6 weeks.
+
 **Unconditional prompt refresh (Phase 3 / W4):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1 hash-compare against every registered prompt — never skip it because "the tasks look registered." Bootloaders are stamped with the plugin version at registration (Phase 1.B `<PLUGIN_VERSION>` substitution), so after any plugin upgrade the composed bootloader's hash differs from the registered one and the refresh lands automatically; the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) is the detector for prompts this refresh hasn't reached yet. This replaces hoping Rule 16 was obeyed.
 
 The schedule skill creates the chat orchestrators with sensible defaults silently — no calibration questions on first install. Defaults: time zone from entities.json primary user, morning anchor 6:30 AM, work hours 8 AM–6 PM weekdays, per-chat times as documented in `enable-command-room-schedules` Phase 3. Users who want different cadences fire `change my schedule cadence` later for per-task customization.

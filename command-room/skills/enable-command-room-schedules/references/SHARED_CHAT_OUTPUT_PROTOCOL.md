@@ -29,7 +29,7 @@ Anti-pattern (avoid):
 # identity field is source_skill on some / data.task_id or data.kind on others,
 # the artifact path key varies (morning-brief→data.digest_path,
 # friday-wrap→data.recap_path, meeting orchestrators→a saved .docx, and
-# inbox/commitments/pulse render inline with NO saved doc), and "complete" is
+# inbox/commitments/staff-meeting render inline with NO saved doc), and "complete" is
 # data.outcome on some / data.status on inbox. So we read defensively below.
 # (Cleaner future fix: standardize a canonical data.artifact_path on every
 # pack_run write so this reader can stop guessing.)
@@ -100,7 +100,7 @@ The empty-state widget data view shape (`widget_mode: "all_clear_summary"`) alre
 - **cr-past-meetings:** if 0 meetings to process, link to yesterday's Past Meetings recap.
 - **cr-inbox:** if 0 priority threads, explain how many total were scanned + filtered out (and why — bulk / self-replied / etc.).
 - **cr-commitments:** if 0 commitments needing action, explain count of open / closed-yesterday and link to last weekly view.
-- **cr-pulse:** if 0 dormant relationships, summarize: "12 active relationships, all within cadence baseline."
+- **cr-pulse (FOSSIL — the chat is retired, LIFECYCLE1; kept as the shape reference for any surface with a genuinely-empty scan):** if 0 dormant relationships, summarize: "12 active relationships, all within cadence baseline."
 - **cr-friday-wrap:** if a thin week (rare), still produce a synthesis lead + commitment delta — never an empty wrapper.
 
 ---
@@ -270,7 +270,7 @@ Items never run together visually. One blank line between every item, and betwee
 
 ### Rule 5 — Per-item action pills (v2.10.5+ format)
 
-Every orchestrator (Inbox, Commitments, Pulse, Past Meetings, Upcoming Meetings — ALL of them now) renders actions as a per-item **pill line** directly under the item content.
+Every orchestrator (Inbox, Commitments, Staff Meeting, Past Meetings, Upcoming Meetings — ALL of them now) renders actions as a per-item **pill line** directly under the item content.
 
 **Pill format:**
 
@@ -348,7 +348,7 @@ The slug stays only in Upcoming Meetings (where the user types it as the action 
 
 When N items > 2 AND a pattern-clustering signal exists (e.g., "items 1+2 are the same vendor-eval pattern you suppressed last week"), close the chat turn with a brief meta-commentary block. 1-3 sentences, plain English, bot interpreting the items not just listing them.
 
-Example from cracks-watch / Pulse:
+Example from the retired cracks-watch / Pulse chat (shape reference only — LIFECYCLE1):
 > Quick read: items 1 and 2 look like the vendor-eval pattern you've already been suppressing — `1 resolved vendor eval done` and `2 resolved vendor eval done` clear them. Item 3 (Sam) is the highest-signal real crack — silence is likely on your side waiting for the prep materials. Item 5 (Aria) is the most genuinely anomalous cadence break.
 
 The Quick Read is where the bot becomes a coworker, not a list-printer. When a clustering signal isn't present, omit the block entirely — never pad with "all items deserve attention" filler.

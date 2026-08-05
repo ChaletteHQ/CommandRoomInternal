@@ -102,6 +102,31 @@ from atomic_write import atomic_write_json, atomic_write_json_locked, atomic_app
 from entities_io import entities_collection  # noqa: E402
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _enforce_record_scope(workspace_root, *, provenance=None, source_ref=None,
                           account_address=None, holder="people_writer") -> None:
     """The CRM record wall (ACCOUNT_SCOPE §2, review fix 7) — delegate to
@@ -156,7 +181,7 @@ ALLOWED_PERSON_FIELDS = {
     "reports_to_id",       # string | null
     "status",              # "active" | "archived"
     "needs_enrichment",    # bool — provisional record awaiting the people-crm enrichment pull (v3.16+, deep-audit #21). The ON-ENTITY enrichment flag; REPLACES the forbidden pending_review/inferred_from trigger (which this writer strips). people-crm clears it (sets false) after enriching.
-    "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: Pulse "just busy" widens it so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
+    "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: the retired Pulse chat's "just busy" reply widened it (LIFECYCLE1 — read forever, never written again) so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
     "tie",                 # "work" | "personal" | absent (=> work) — SPEC BAL1 D1 partition line. tie=personal people belong to the Balance surface ONLY: Pulse/relationship-moves/team-intel/dormant-scan all skip them. NOT relationship_type (forbidden, org-level).
     "cadence_days",        # number | absent — SPEC BAL1 D1(b). Personal RE-SURFACE interval (date-night / call-Mom cadence), read ONLY by balance.py. Opposite meaning to cadence_override_days (a suppression widener); never fed to dormancy.effective_baseline.
 }
@@ -290,12 +315,12 @@ class MultipleCandidatesError(Exception):
 # ---------- private helpers ----------
 
 def _today_iso() -> str:
-    return datetime.date.today().isoformat()
+    return _clock_now().astimezone().date().isoformat()
 
 
 def _now_iso() -> str:
     # FS-03: UTC-aware, not naive local (the F-15 naive-local-clock bug class).
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    return _clock_now().replace(microsecond=0).isoformat()
 
 
 def _normalize_name(s: str) -> str:

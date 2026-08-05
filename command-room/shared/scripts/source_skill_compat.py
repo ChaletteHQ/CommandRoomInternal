@@ -9,6 +9,10 @@ Pre-v2.14.27 the scheduled orchestrators tagged every event they wrote with a
 `cr-`-prefixed `source_skill` (`cr-inbox`, `cr-commitments`, `cr-past-meetings`,
 `cr-dont-forget`, ...). The taskId rename dropped the prefix, and the writers
 now emit the bare forms (`inbox`, `commitments`, `past-meetings`, `pulse`).
+LIFECYCLE1 (2026-08-02) retired the Pulse CHAT; this table is untouched by that
+and must stay so — normalisation is about READING history, and every mapping
+here still has events on disk behind it. Retiring a surface never retires its
+vocabulary.
 
 The live per-client workspaces already have `events.jsonl` history written with
 the legacy `cr-*` forms.

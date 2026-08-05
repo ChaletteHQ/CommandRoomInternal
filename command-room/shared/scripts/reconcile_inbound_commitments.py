@@ -91,6 +91,31 @@ CHANGE_CLASS = "commitment_close"
 REVIEW_PROPOSAL_TTL_DAYS = 14
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _empty_signal_fields() -> dict:
     """The REPLYCLOSE observability block, zeroed.
 
@@ -191,7 +216,7 @@ def _record_blocked_run(workspace_root, events_path, *, reason, source_skill,
     from cru_match import _now_iso as _audit_ts
     from next_seq import next_seq as _next_seq
 
-    batch_id = batch_id or ("inr_" + _dt.datetime.now(_dt.timezone.utc)
+    batch_id = batch_id or ("inr_" + _clock_now(workspace_root)
                             .strftime("%Y%m%dT%H%M%SZ"))
     audit_event = {
         "seq": _next_seq(str(events_path)),
@@ -683,7 +708,7 @@ def reconcile_inbound_and_receipt(
     # §7 precedent (efb_/idr_/pbs_/rcc_): ONE batch per RUN, timestamped. A
     # per-SKILL constant would group every close this skill ever applied into
     # one undoable batch, so a single `undo` would reach back across days.
-    batch_id = batch_id or ("inr_" + _dt.datetime.now(_dt.timezone.utc)
+    batch_id = batch_id or ("inr_" + _clock_now(workspace_root)
                             .strftime("%Y%m%dT%H%M%SZ"))
 
     events_written = 0
@@ -1020,7 +1045,7 @@ def validate_inbound_reconcile_ran(workspace_root, *, since_ts=None) -> dict:
                 "n_closed": d.get("n_closed")}
     if since_ts is not None:
         # Parsed, never string-compared. The audit stamps `...Z` and a caller's
-        # `datetime.now(timezone.utc).isoformat()` stamps `...+00:00`; those two
+        # `_clock_now().isoformat()` stamps `...+00:00`; those two
         # spellings of the same instant do not order lexicographically, and a
         # validator that silently mis-orders them is worse than no validator.
         from event_time import parse_ts as _parse

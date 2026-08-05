@@ -805,7 +805,17 @@ Each renderer atomic-writes its `_hq/views/*.md` plus the back-compat `_hq/*.md`
 
 **Step 8: Micro-maintenance (silent)**
 14. Run maintenance rules from references/maintenance-rules.md:
-    - **Session notes rollover:** For each project touched, check if SESSION_NOTES exceeds 150 lines. If yes, generate Session History summary, archive older entries per Rule 1.
+    - **Session notes rollover (Rule 1 + Rule 12):** run the canonical function — do NOT hand-execute the split, and do NOT wait to be asked. It is AUTOMATIC; the pre-reshape copy under `_archive/session-notes-pre-rollover/` is the permission.
+
+      ```bash
+      python3 -c "
+      import sys, json; sys.path.insert(0, 'shared/scripts')
+      import cleanup_actions as ca
+      print(json.dumps(ca.rollover_session_notes('<workspace_root>')))
+      "
+      ```
+
+      Same call cleanup Phase 2 item 4 makes — ONE implementation, two callers. It scans the whole workspace, so a project you didn't touch this session is covered too. A `rolled_over` record is worth the one-line mention below; `skipped` is silent; an `aborted` record means the file's structure was one the function won't guess at and it was left **byte-identical** — never hand-reshape it to finish the job.
     - **Brain thread compression:** For each project touched, compress resolved threads older than 30 days to one-liners in Thread History per Rule 2.
     - **Commitment compression:** Check MASTER_TRACKER commitments and person profiles. Compress delivered items older than 60 days to one-liners in Commitment History per Rule 3. Clean tracker archived entries per Rule 8 (CTS1: the quick-task lane is retired — if a legacy "Quick Tasks" section still exists, run the one-time migration in the "quick task:" handler above instead of grooming it).
     - **Interaction log tiered compression:** For each person file updated, apply tiered compression per Rule 7: Tier 1 (0–90 days) full detail, Tier 2 (90 days–6 months) one-line summaries, Tier 3 (6 months–1 year) monthly digests, Tier 4 (1 year+) archive to separate file.
@@ -885,7 +895,14 @@ An archive is a **typed substrate write**, not a tracker edit. MASTER_TRACKER.md
 4. **Idempotent — an already-archived project is an honest no-op.** `res["status"] == "already_archived"` means nothing was written (no second `status_change`); say so instead of pretending: "That one's already archived — [date], '[reason]'." A `ThreadArchiveError` means the id didn't match; surface it, don't archive something adjacent.
 5. **Confirm in plain language** using `res` — the name, that it's archived, and the reason on file. If `res["view_error"]` is set the substrate write still landed; say the tracker will catch up on the next refresh rather than claiming the archive failed.
 
-Nothing archives itself. There is no staleness rule, decay timer, or dormancy step that flips a project to archived on its own — every archive is a gesture the CEO made.
+**Almost nothing archives itself, and the one thing that does is bounded, narrated and reversible (SPEC LIFECYCLE1, 2026-08-02).** There is no decay timer and no staleness rule that can archive a project straight out of `active` — that has never existed and still does not. The single automatic path is the weekly `lifecycle` maintenance job (`shared/scripts/lifecycle_pass.py`), and it archives a thread only after the whole ladder below has been climbed:
+
+1. the project goes quiet past 30 days and the job ASKS — a dormancy question on the on-demand `stalled projects` surface, carrying `active` / `archive` / `snooze 14d`;
+2. that question is left unanswered until its 30-day life runs out (an ANSWER of any kind stops the ladder here — the CEO's decision stands, and a declined question also holds a 60-day cooldown);
+3. only then, and only while that silence is still recent, the project moves `active` → `dormant`;
+4. a further 180 days of quiet ON TOP of that moves `dormant` → `archived`, through `thread_archive.archive_thread` — the same typed write your own `archive [project]` runs, so the record, the `archived_at` stamp and the canonical `status_change` all land exactly as they do for a human archive.
+
+Every step is narrated in the change feed, capped per fire, and reversible: new activity on a dormant or archived thread revives it to `active` at the next weekly pass (and clears the archive stamps with it). What is still true, and is the sentence that matters: **nothing archives a project the CEO was never asked about.**
 
 ### "deep clean" / "maintenance" / "clean up my workspace"
 
@@ -952,9 +969,14 @@ Cap at 36 months. If user asks for more, surface: *"36 months is about as far ba
 
 ### "backfill people"
 
-Re-runs the people-record synthesis pass across whatever's currently in events.jsonl. Same logic Pulse runs weekly, but on demand. Useful when the user has just done a heavy `backfill [N] months` and wants the new signal turned into person-record updates immediately.
+Re-runs the people-record passes across whatever's currently in events.jsonl. Same logic the weekly maintenance jobs run, but on demand. Useful when the user has just done a heavy `backfill [N] months` and wants the new signal turned into person-record updates immediately.
 
-Behavior: invoke the synthesis logic from `orchestrator-dont-forget.md` Phase 5 directly (without firing the full Pulse orchestrator). High-confidence updates auto-apply via people-crm; low-confidence go to a chat-surfaced "Pending review" list with `a/b/c confirm/edit/skip` action set.
+Behavior (LIFECYCLE1 — this used to invoke the retired Pulse orchestrator's Phase 5, which no longer exists; the two jobs below are what absorbed that pass and both are stricter about what may auto-apply):
+
+1. **Identity** — `python3 shared/scripts/identity_reconcile.py --workspace <root> --apply` from the plugin root. Corroborated people auto-add on the existing reversible rail (narrated, batch-undoable); links and merges are propose-only.
+2. **Facts** — `entity_signal_detector.run_entity_scan(...)` for role / company-move / org-news signal about people already on file. Prose signal is ALWAYS confirm-tier; only structured connector metadata in the non-identity categories auto-applies, through the writers that already have reversers.
+
+Do NOT hand-roll a synthesis pass or widen either gate — no new auto-apply class comes out of a backfill.
 
 ### "update [name]" / "refresh [name]"
 

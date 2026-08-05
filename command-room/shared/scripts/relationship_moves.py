@@ -89,6 +89,18 @@ def _load_overdue(workspace_root, now_dt) -> Dict[str, float]:
     return out
 
 
+def _primary_user_id(workspace_root) -> Optional[str]:
+    """The workspace's own CEO, resolved through THE shared seam
+    (`primary_user.resolve_primary_user` — the same one DONE1 attributes
+    attestations with). Defensive: an unresolvable user excludes nobody, which
+    is exactly the pre-LIFECYCLE1 behaviour and never a crash."""
+    try:
+        from primary_user import resolve_primary_user
+        return resolve_primary_user(workspace_root)
+    except Exception:
+        return None
+
+
 def _personal_tie_ids(workspace_root) -> set:
     """person_ids carrying `tie: "personal"` (SPEC BAL1 D1.1(2) backstop).
     Defensive: an unreadable entities.json excludes nobody (the source gate
@@ -178,10 +190,14 @@ def compute_relationship_moves(
     load_open_commitments) — a masked account's history never seeds a move.
 
     BAL1 D1.1(2) — consumer backstop: `tie: "personal"` people NEVER appear
-    here, whatever emitted their signal. The source gate (Pulse Phase 3 skips
-    personal ties before any emit) is the primary defense; this drop at the
-    load/score boundary guards signals that slipped in via another emitter or
-    pre-exist in the log. Personal ties belong to the Balance surface only."""
+    here, whatever emitted their signal. The detectors' own source gates skip
+    personal ties before any emit; this drop at the load/score boundary guards
+    signals that slipped in via another emitter or pre-exist in the log.
+    Personal ties belong to the Balance surface only.
+
+    LIFECYCLE1 §7c — the resolved primary user is dropped at the same
+    boundary: a weekly outreach pack that tells the CEO to reach out to
+    himself is not a ranking bug, it is a candidate-set bug."""
     try:
         import dormancy
         signals = dormancy.load_dormancy_signals(workspace_root)
@@ -193,9 +209,19 @@ def compute_relationship_moves(
 
     personal_ids = _personal_tie_ids(workspace_root)
     excluded = _recently_excluded(workspace_root)
+    # LIFECYCLE1 §7c — the CEO is never a candidate for outreach to himself.
+    # The live 2026-08-03 pack suggested he nudge his own record, tagged
+    # "overdue commitment in play": `_load_overdue` credits overdue days to
+    # every person_id on an open commitment, and the CEO is on most of his
+    # own, so the commitment term alone carried him over score > 0 with no
+    # dormancy signal at all. Excluded at the same load/score boundary as the
+    # personal ties, for the same reason — a candidate set is only as honest
+    # as who it refuses to put in it.
+    self_id = _primary_user_id(workspace_root)
     ranked = [c for c in ranked
               if c["person_id"] not in excluded
               and c["person_id"] not in personal_ids
+              and (self_id is None or c["person_id"] != self_id)
               and c["score"] > 0]
     top = ranked[:top_n]
 

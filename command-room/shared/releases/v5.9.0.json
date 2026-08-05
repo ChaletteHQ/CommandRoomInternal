@@ -1,0 +1,13 @@
+{
+ "version": "5.9.0",
+ "headline": "Contact records create themselves for people you actually correspond with — two-way mail only, structured names only, narrated with undo. Shared inboxes are recognised as mailboxes rather than people across the whole product.",
+ "items": [
+  {
+   "id": "v590_announce_auto_contacts",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Contacts now add themselves for people you demonstrably write to. The bar is strict on purpose: you must have sent that address a direct To/CC message from your declared account (inbound-only never counts — newsletters and vendors never file themselves in), and the name must come from a structured place (their own mail's display name, or a calendared attendee record — never a transcript's guess, never a name reconstructed from the address). New contacts appear in the change feed with an undo, never as another question; a 'who is this?' row already in your queue retires when the new record answers it. Nothing is backfilled — it looks forward from today only. If you'd rather not keep one, say 'undo' — archived, never deleted, and it stays gone.",
+   "action": "announce_only"
+  }
+ ]
+}

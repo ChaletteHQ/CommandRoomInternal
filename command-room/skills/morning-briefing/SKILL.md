@@ -263,7 +263,7 @@ Scan `_hq/data/events.jsonl` for `type: commitment` events that haven't been clo
 
 **Objectives lines (SPEC OBJ1, DRAFT — CONDITIONAL, at most TWO lines, same slot pattern).** A fast substrate-only read: `objective_math.load_objective_inputs` → `compute_objective_health` → `brief_lines(health, max_lines=2, names_by_person_id=<people map>)` — the helper owns line selection and phrasing (line 1: the single worst drifting/at-risk objective WITH its suggested move and the `show my objectives` teach-phrase; line 2: the focus headline). Render its returned lines verbatim, exactly as the prospect nudge renders `render_line` (the helper decided; the surface renders). Zero objectives → the helper returns `[]` → emit nothing. READ-ONLY per FB-20 — these lines surface and suggest, they never ask for input, never render a widget; the weekly touch (Friday Wrap) is where objective asks live, and an objective whose graceful-death ask is pending emits no drift line here (the helper enforces the suppression via the death flag).
 
-**Use the shared shape-aware reader (v3.4.5+ — MANDATORY).** Five distinct commitment-event shapes exist in production workspaces per `shared/COMMITMENT_SCHEMA.md`: canonical (`data.owner_id`), flat-new (top-level `owner_id`), legacy (`owner` no suffix), `owner_person_id`-variant (with `data.state` instead of `data.status`), and pending-review (filtered to Pulse). Direct reads of `data.owner_id` only catch shape #1 — silently drops ~42% of commitments in M's workspace. Always invoke through the helper:
+**Use the shared shape-aware reader (v3.4.5+ — MANDATORY).** Five distinct commitment-event shapes exist in production workspaces per `shared/COMMITMENT_SCHEMA.md`: canonical (`data.owner_id`), flat-new (top-level `owner_id`), legacy (`owner` no suffix), `owner_person_id`-variant (with `data.state` instead of `data.status`), and pending-review (filtered OUT of the morning count — those go to the needs-your-call queue; see the counting note below, which must agree with this line). Direct reads of `data.owner_id` only catch shape #1 — silently drops ~42% of commitments in M's workspace. Always invoke through the helper:
 
 ```python
 import sys
@@ -283,7 +283,7 @@ due   = _commitment_field(ev, "due")
 status = _commitment_field(ev, "status")
 ```
 
-Counts come from `commitment_state.compute_brief_state(...).counts` — which is `commitment_state.count_commitments(...)` verbatim, the one counting API (skip pending-review shape — those go to the Pulse CRU-review surface, not the morning count):
+Counts come from `commitment_state.compute_brief_state(...).counts` — which is `commitment_state.count_commitments(...)` verbatim, the one counting API (skip pending-review shape — those go to the needs-your-call queue (`needs_review_queue` — the on-demand `needs your call` surface and the staff meeting's FROM YOUR MEETINGS fold; the retired Pulse chat's CRU-review section carried this until LIFECYCLE1), not the morning count):
 - **You owe:** `owner_id == <user_id>`
 - **They owe:** `owner_id` non-empty and `!= <user_id>`
 - **Unassigned:** `owner_id` null/missing — an extraction gap, but still an open commitment

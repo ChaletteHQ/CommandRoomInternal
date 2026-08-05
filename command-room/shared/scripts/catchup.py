@@ -134,8 +134,19 @@ DEFAULT_PERIOD_CAP = 12
 
 
 def _now_local() -> _dt.datetime:
-    """Naive machine-local now — the clock cron actually evaluates in."""
-    return _dt.datetime.now()
+    """Naive MACHINE-local now — the clock cron actually evaluates in.
+
+    CLOCK1: the INSTANT is corroborated against the workspace ledger; the
+    ZONE is untouched. A stale clock used to make the catch-up window claim
+    a whole day had not happened yet. Falls back to the raw machine clock if
+    the helper is unavailable.
+    """
+    try:
+        from trusted_now import trusted_now_local_naive
+
+        return trusted_now_local_naive()
+    except Exception:
+        return _dt.datetime.now()
 
 
 def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:

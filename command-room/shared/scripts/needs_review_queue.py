@@ -24,7 +24,16 @@ WHAT THIS MODULE IS
                       numbered so the user can answer in ranges.
   render_text       — that view as the scannable text the skill pastes back.
   confirm_items     — clear the review flags (commitment_state.clear_review_flags).
+  done_items        — DONE1 `already done`: confirm THEN close with
+                      resolution="done", on the user's own attestation. Rides
+                      the same bulk-accept fence plus a stricter gesture bar —
+                      every id must be individually named.
   drop_items        — close with resolution="dropped" (commitment_state.close_commitment).
+  undo_confirm_items / undo_done_items
+                    — UNCONFIRM1: put a confirmed (or Done'd) item back in the
+                      queue carrying its ORIGINAL reason, through
+                      commitment_state.restore_review_flags. Additive; the
+                      confirm and the closure stay in history.
   parse_selection   — "1,3,5-9" / "all" -> display numbers.
 
 CLI (one command, mirroring surface_drivers' dispatch):
@@ -64,7 +73,40 @@ NOT_FROM_A_MEETING = "(not from a meeting)"
 
 # The row verbs on the grouped surface (§B): one tap each. `not mine` is the
 # W4b reassign-or-drop verb, not a third idea.
-QUEUE_ROW_ACTIONS = ["confirm", "drop", "not mine"]
+#
+# DONE1 — `already done` sits beside `confirm` because it IS confirm-plus (the
+# capture was real AND it was fulfilled); the two closures stay on the right.
+# THIS LIST IS THE ONLY DEFINITION of what either queue surface renders: the
+# on-demand widget (`build_queue_data_view`) and the staff-meeting fold
+# (`staff_meeting_group_section`) both read it, so a verb can never appear on
+# one surface and not the other. Its wire ids are validated against
+# `verb_taxonomy` at render time by `chat_output_renderer`, so a verb added
+# here with no taxonomy row fails the render rather than shipping a dead
+# button.
+QUEUE_ROW_ACTIONS = ["confirm", "already done", "drop", "not mine"]
+
+# DONE1 — the wire id of the Done verb, named once so tests and dispatch prose
+# can key on the constant rather than re-typing the token.
+DONE_ACTION = "already done"
+
+# DONE1 — the evidence a Done rests on, and the ONLY thing it may ever rest on.
+# NOT a match, NOT a sent-mail hit, NOT a score: the user's own attestation,
+# stamped with when and where they said it. Fabricating match-shaped evidence
+# for a closure the system did not observe is the exact lie this verb exists to
+# avoid — a Drop was already lying about WHAT happened; a fake evidence line
+# would lie about HOW WE KNOW.
+DONE_ATTESTATION = "you said at review it was already done"
+DONE_CONFIRM_NOTE = ("confirmed from the needs-your-call queue — you said it "
+                     "was already done")
+# The machine-readable half of the same honesty, carried on the closure's
+# extra_data. Nothing in this build consumes it; it exists so no future reader
+# (value receipts, recaps, the backlog sweep) can mistake an attested
+# completion for an evidence-backed one.
+COMPLETION_BASIS_ATTESTATION = "user_attestation"
+
+# UNCONFIRM1 — the note the un-confirm writers stamp, in the user's words.
+UNCONFIRM_NOTE = "you un-confirmed this from the needs-your-call queue"
+UNDO_DONE_REASON = "you undid an 'already done' — the item is open again"
 
 # CAPTUREFLOW §C — the staff-meeting fold's volume guard. Whole groups only,
 # oldest call first, and the section can never dominate the page: at most
@@ -763,6 +805,296 @@ def confirm_group(workspace_root, view: dict, group, *,
                          source_skill=source_skill, confirm_weak_ids=())
 
 
+# The dispatcher that answers a queue row on a SURFACE's behalf. It is not a
+# surface itself (nothing renders as `apply-choices`), which is why it cannot
+# be derived from the verb's `surfaces` tuple and is named here instead.
+DISPATCH_SKILL = "apply-choices"
+
+
+def allowed_done_surfaces() -> frozenset:
+    """Where an `already done` may be attested — DERIVED from the verb's own
+    `verb_taxonomy` row, so the allow-list cannot drift from the table that
+    says where the verb renders, plus the one dispatcher.
+
+    Fail-CLOSED: if the taxonomy cannot be read the set narrows to the two
+    names this module owns, rather than widening to anything."""
+    surfaces: set = set()
+    try:
+        from verb_taxonomy import taxonomy_row
+
+        surfaces = set((taxonomy_row(DONE_ACTION) or {}).get("surfaces") or ())
+    except Exception:  # pragma: no cover — narrow, never widen
+        surfaces = set()
+    return frozenset(surfaces | {SOURCE_SKILL, DISPATCH_SKILL})
+
+
+def _checked_done_surface(source_skill) -> str:
+    """SF-3. `source_skill` is interpolated into the Done's evidence line, so
+    an unvalidated one defeats §2.3's honesty rule with ZERO code change:
+    `source_skill="matched an outbound send, score 0.94, thread ..."` writes
+    exactly the fabricated match evidence this verb refuses to fabricate."""
+    allowed = allowed_done_surfaces()
+    if isinstance(source_skill, str) and source_skill in allowed:
+        return source_skill
+    raise ValueError(
+        f"done_items got source_skill={source_skill!r}, which is not a surface "
+        f"this verb renders on. It goes into the closure's evidence sentence "
+        f"verbatim, so it may only be one of {sorted(allowed)} — the verb's "
+        f"own taxonomy surfaces plus the dispatcher. Never pass free text.")
+
+
+def _checked_now_iso(now_iso) -> str:
+    """SF-2. `now_iso` lands verbatim in `attested_at` and is sliced into the
+    evidence line. A non-string (a dict, a list, a number) wrote a malformed
+    event AND interpolated itself into the sentence — the STAFFCUT round-1
+    class, where a fix turned a silent drop into malformed substrate writes."""
+    if now_iso is None:
+        return _now_iso()
+    if not isinstance(now_iso, str) or not now_iso.strip():
+        raise ValueError(
+            f"done_items got now_iso={now_iso!r} ({type(now_iso).__name__}); "
+            "it is stamped on the closure as `attested_at` and read into the "
+            "evidence sentence, so it must be an ISO timestamp string. Pass "
+            "None to use the clock.")
+    try:
+        from event_time import parse_ts
+
+        if parse_ts(now_iso) is None:
+            raise ValueError("unparseable")
+    except ValueError:
+        raise ValueError(
+            f"done_items could not read now_iso={now_iso!r} as a timestamp. "
+            "An attestation records WHEN the user said it; an unreadable "
+            "stamp is worse than no stamp.")
+    except Exception:  # pragma: no cover — a missing helper must not widen
+        raise ValueError(
+            f"done_items could not validate now_iso={now_iso!r}")
+    return now_iso
+
+
+def done_items(workspace_root, ids, *, resolved_by: str,
+               source_skill: str = SOURCE_SKILL,
+               attested_ids=(), now_iso: str | None = None) -> dict:
+    """`already done` — the user attests they already did this one (DONE1).
+
+    THE PROBLEM THIS FIXES. Until now the queue's only answers were confirm
+    (it's real, carry it) and drop / not mine (close it as let-go). A CEO who
+    keeps a promise off-mail — said it in a hallway, sent it from their phone,
+    handed it over in person — had no honest answer, and `drop` was the one
+    that felt closest. It is not close: `capture_gate._DISMISS_RESOLUTIONS`
+    counts a `dropped` / `not_mine` closure as a DISMISSAL SIGNAL for that
+    counterparty's org, and at enough of them the capture-tuning miner
+    proposes an observed-only override for the whole org. So answering `drop`
+    on kept promises does not merely undercount completions — it accumulates
+    evidence for suppressing that counterparty's captures entirely. A Done
+    writes `resolution="done"`, which is in no dismissal set, so the class
+    stops accruing.
+
+    TWO WRITES, IN THIS ORDER, per accepted id:
+      a. `commitment_state.clear_review_flags` — the capture was real;
+      b. `commitment_state.close_commitment(resolution="done",
+         user_confirmed=True)` — and it was fulfilled.
+
+    Both claims are true and the substrate should carry both, which also makes
+    Done exactly "confirm, then close": it rides the confirm fence unmodified,
+    and every `resolution="done"` closure in history stays uniform (confirmed
+    before closing — no reader has to special-case a closed-but-never-confirmed
+    item). The order is the RECOVERABLE one: if (b) fails after (a), the item
+    is a confirmed OPEN commitment the user can close by ordinary means and the
+    per-item result says so (`confirmed_not_closed`). The reverse order is not
+    recoverable — `clear_review_flags` refuses a closed item, so a failure
+    would strand a closed item that was never confirmed.
+
+    THREE REFUSALS, in this order, and each is reported per item — never
+    written, never silently downgraded to a confirm:
+
+      1. `not_pending` — the id is not a current queue member (idempotent-safe,
+         exactly as `confirm_items` is; re-running the same Done is a no-op
+         with an honest ack, not a second tombstone).
+      2. `held_weak_evidence` — THE shared fence
+         (`watch_gate.screen_bulk_accept`), unchanged and unforked, over the
+         same `{"id", "weak_reason"}` rows `confirm_items` builds.
+      3. `not_individually_named` — the DONE1 gesture bar, caller-side and
+         STRICTER than confirm: EVERY id must appear in `attested_ids`.
+         `already done 7` and `already done 7, 9` work; `already done all`,
+         `already done 1-40` and `already done the vendor call` are refused.
+         A confirm asserts a fact about the workspace's hearing; an
+         attestation asserts a fact about the user's own conduct, and the
+         rubber-stamp failure the fence exists for (six commitments closed in
+         two seconds on title-match evidence) is strictly worse when the claim
+         is "I did these." A range is exactly that gesture's shape. Narrowing
+         is reversible; un-shipping a bulk attestation is not.
+
+    This bar narrows an ALREADY-SCREENED set caller-side. It changes nothing
+    about `screen_bulk_accept`'s contract or its result for any other caller,
+    and there is deliberately no `done_group` twin — naming a call names no row
+    individually (`ids_for_group`), so a group Done could never populate
+    `attested_ids` anyway.
+
+    THE EVIDENCE IS THE ATTESTATION AND NOTHING ELSE (`DONE_ATTESTATION`) —
+    who said it, and when and where. No match, no score, no synthesized
+    sent-mail line. The closure also carries an additive `extra_data` stamp
+    (`completion_basis: "user_attestation"`, `attested_at`,
+    `attested_on_surface`) so no future reader can mistake an attested
+    completion for an evidence-backed one; `close_commitment` never lets
+    extra_data override its canonical keys.
+
+    THE THREE INPUTS THAT REACH THE SUBSTRATE ARE VALIDATED FIRST, LOUDLY,
+    BEFORE ANY WRITE (review SF-2/3/4). Every one of them lands in an event or
+    in the evidence sentence, so an unchecked value is not a caller bug — it is
+    a malformed or dishonest substrate write, the STAFFCUT round-1 class:
+
+      `source_skill` must be a surface this verb actually renders on (derived
+        from its own `verb_taxonomy` row) or the dispatcher that answers on a
+        surface's behalf. It is interpolated into the evidence line, so an
+        unchecked value defeats the honesty rule above with no code change at
+        all — `source_skill="matched an outbound send, score 0.94"` would write
+        exactly the fabricated match evidence this verb refuses to fabricate.
+      `now_iso` must be a parseable timestamp string. It lands verbatim in
+        `attested_at` and is sliced into the evidence line; a dict wrote
+        `"attested_at": {"a": 1}` and interpolated it into the sentence.
+      `resolved_by` must be non-empty. An attestation that says "you said at
+        review" with nobody attributed is not an attestation. (Only here —
+        `drop_items` has the same gap and it is pre-existing and out of scope;
+        widening it belongs to its own change.)
+
+    A bad value raises `ValueError` and NOTHING is written for ANY id in the
+    call — the refusal is atomic, because a half-written batch on a malformed
+    input is worse than the refusal.
+
+    `OpenSubitemsError` / `CommitmentIdError` are handled exactly as
+    `drop_items` handles them — reported per item with the writer's own
+    message, never swallowed, never auto-cascaded.
+
+    Returns {"results": [...], "n_done": int, "n_not_pending": int,
+             "n_held": int, "n_refused": int, "n_failed": int}.
+    """
+    from commitment_state import (CommitmentIdError, OpenSubitemsError,
+                                  clear_review_flags, close_commitment)
+    from writer_lock import events_writer_lock
+
+    source_skill = _checked_done_surface(source_skill)
+    now_iso = _checked_now_iso(now_iso)
+    if not isinstance(resolved_by, str) or not resolved_by.strip():
+        raise ValueError(
+            "done_items needs a resolved_by — an 'already done' is an "
+            "attestation, and an attestation with nobody attributed is not "
+            "one. Pass the primary user's person id (primary_user."
+            "resolve_primary_user); if the workspace has no primary user on "
+            "file, say so instead of closing the item.")
+    pending = _pending_by_id(workspace_root)
+    named = {str(x) for x in (attested_ids or ())}
+    evidence = f"{DONE_ATTESTATION} ({source_skill}, {str(now_iso)[:10]})"
+    stamp = {
+        "completion_basis": COMPLETION_BASIS_ATTESTATION,
+        "attested_at": now_iso,
+        "attested_on_surface": source_skill,
+    }
+
+    # THE fence, over the rows this queue can actually answer — the same call
+    # `confirm_items` makes, with the same row shape and the same override
+    # vocabulary. An id that is not in the queue never reaches the screen.
+    screenable = [cid for cid in (str(c) for c in (ids or []))
+                  if cid in pending]
+    screen = screen_bulk_accept(
+        [{"id": cid, "weak_reason": _weak_reason(pending[cid])}
+         for cid in screenable],
+        individually_named=named,
+    )
+    # Deliberately NOT named `accepted`: `confirm_items` uses that name, and
+    # the WATCHGATE M1b mutation pin anchors on ITS line
+    # (`if cid not in accepted:`) and refuses to run when the anchor matches
+    # more than once. A second identically-worded callsite would silently
+    # disarm that pin — a mutation that cannot be applied is not a fence.
+    # DONE1's own callsite is pinned by run_done1_mutation_test.py's D1.
+    fence_accepted = set(screen["accept"])
+    held_reason = {h["id"]: h["reason"] for h in screen["held"]}
+
+    results: list[dict] = []
+    n_done = n_not_pending = n_held = n_refused = n_failed = 0
+    for cid in ids or []:
+        cid = str(cid)
+        if cid not in pending:
+            results.append({"commitment_id": cid, "status": "not_pending"})
+            n_not_pending += 1
+            continue
+        if cid not in fence_accepted:
+            results.append({"commitment_id": cid,
+                            "status": "held_weak_evidence",
+                            "detail": held_reason.get(cid, "")})
+            n_held += 1
+            continue
+        if cid not in named:
+            results.append({
+                "commitment_id": cid,
+                "status": "not_individually_named",
+                "detail": "say it's done one row at a time — name that row's "
+                          "own number. `all`, a range and a call name nothing "
+                          "individually, and this answer says you did the "
+                          "work.",
+            })
+            n_refused += 1
+            continue
+        # SF-8 — ONE outer lock span over the confirm+close PAIR. Both writers
+        # take the same reentrant lock internally, so this costs a depth
+        # increment and closes the window where another writer could land
+        # between (a) and (b) and see a confirmed-but-unclosed item that was
+        # mid-gesture. The per-item failure contract is unchanged: the `with`
+        # unwinds on either leg's exception and (a) stays on disk, which is the
+        # recoverable half.
+        with events_writer_lock(_events_path(Path(workspace_root)),
+                                holder=f"done_items:{source_skill}"):
+            try:
+                confirmed = clear_review_flags(
+                    workspace_root, cid, cleared_by=resolved_by,
+                    source_skill=source_skill, note=DONE_CONFIRM_NOTE,
+                )
+            except CommitmentIdError as exc:
+                results.append({"commitment_id": cid, "status": "not_found",
+                                "detail": str(exc)})
+                n_failed += 1
+                continue
+            if confirmed.get("status") != "cleared":
+                # Not open any more between the read and the write — report the
+                # writer's own verdict rather than closing something blind.
+                results.append(
+                    {"commitment_id": confirmed.get("commitment_id", cid),
+                     "status": confirmed.get("status")})
+                n_not_pending += 1
+                continue
+            try:
+                res = close_commitment(
+                    workspace_root, cid, resolved_by=resolved_by,
+                    evidence=evidence, source_skill=source_skill,
+                    resolution="done", user_confirmed=True,
+                    extra_data=dict(stamp),
+                )
+            except (CommitmentIdError, OpenSubitemsError) as exc:
+                # (a) landed, (b) did not: the item is a confirmed OPEN
+                # commitment and stays one. Nothing is lost, nothing half-closed.
+                results.append({"commitment_id": cid,
+                                "status": "confirmed_not_closed",
+                                "detail": str(exc)})
+                n_failed += 1
+                continue
+            except Exception as exc:  # pragma: no cover — same recoverable shape
+                results.append({"commitment_id": cid,
+                                "status": "confirmed_not_closed",
+                                "detail": f"{type(exc).__name__}: {exc}"})
+                n_failed += 1
+                continue
+        status = res.get("status")
+        results.append({"commitment_id": res.get("commitment_id", cid),
+                        "status": "done" if status == "closed" else status})
+        if status == "closed":
+            n_done += 1
+        else:
+            n_not_pending += 1
+    return {"results": results, "n_done": n_done,
+            "n_not_pending": n_not_pending, "n_held": n_held,
+            "n_refused": n_refused, "n_failed": n_failed}
+
+
 def not_mine_items(workspace_root, ids, *, resolved_by: str,
                    source_skill: str = SOURCE_SKILL) -> dict:
     """`not mine` — the same closure `drop` writes, with the reason that says
@@ -852,6 +1184,475 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
     return {"results": results, "n_dropped": n_dropped,
             "n_already": n_already, "n_refused": n_refused,
             "n_failed": n_failed}
+
+
+# ---------------------------------------------------------------------------
+# UNCONFIRM1 — the two reversals
+# ---------------------------------------------------------------------------
+#
+# A confirm and a Done are USER GESTURES, and a user gesture the user can't
+# take back is a trap. Before this, the only additive writer that reversed a
+# confirm was `flag_duplicate_for_review` — a duplicate-pair writer — so the
+# live undo on 2026-08-03 went off-label through it with an EMPTY duplicate
+# target: benign in the projection, permanently wrong on disk. These two
+# wrappers route to the purpose-built writer instead, and they are the queue's
+# own mirror of `confirm_items` / `done_items`: same per-item reporting, same
+# refusal-not-exception contract, nothing ever deleted.
+
+# WHAT THIS LIST IS DERIVED FROM (review SF-6 — the audit, not the inventory).
+#
+# The rule: a registered event type belongs here iff it can be appended AFTER a
+# commitment's capture, targets that commitment through the closer/adjudication
+# id chain, and either CHANGES what the projector reports for the item or
+# RECORDS A USER DECISION about it. Anything matching that rule is a later
+# decision, and an undo that steps over a later decision is not an undo.
+#
+# The audit is checkable rather than assertable: `_NON_TOUCH_TYPES` records
+# every commitment-/thread-shaped registered type that was CONSIDERED and
+# excluded, with the reason, and run_done1_test.py [9] asserts the two sets
+# together cover the whole registered scope — so a newly registered type of
+# that shape fails the suite instead of silently becoming invisible to the bar.
+_TOUCH_TYPES = frozenset({
+    "commitment_updated",            # due / wording / owner / review / watch
+    "commitment_reassigned",         # routed to someone else
+    "commitment_resolved",           # closed
+    "commitment_reopened",           # reopened
+    "commitment_superseded",         # merged away
+    "commitment_reclassified",       # became a different kind of item
+    "commitment_partial_received",   # a counterparty delivered
+    "thread_resolved",               # the v2.7.13 batch-close path IS a closer
+    "commitment_review_dismissed",   # the user skipped the review row (the
+                                     # commitment stays open — still a decision)
+    "chat_dismissal",                # muted / snoozed by target_id
+})
+
+# CONSIDERED AND EXCLUDED — with the reason each is not a touch. Keys are
+# registered event types in the commitment/thread scope; the suite pins that
+# `_TOUCH_TYPES | _NON_TOUCH_TYPES` covers that whole scope.
+_NON_TOUCH_TYPES = {
+    "commitment": "the capture itself — it precedes every confirm, and a "
+                  "second capture is a different item",
+    "commitment_observed": "the observed tier is a parallel record, not this "
+                           "item's state",
+    "commitment_noise_proposal": "a proposal about capture tuning; adjudicates "
+                                 "nothing on this item",
+    "commitment_review_proposed": "a proposal — the QUESTION, not an answer",
+    "commitment_to_discuss": "mints a NEW list item pointing back at this one; "
+                             "the projector reports nothing different here",
+    "thread_created": "thread lifecycle, not a commitment adjudication",
+    "thread_updated": "thread lifecycle, not a commitment adjudication",
+    "thread_repaired": "a substrate repair on a thread record",
+    "thread_resurrected": "thread lifecycle, not a commitment adjudication",
+}
+
+
+def _event_targets(ev: dict, cid: str, seq) -> bool:
+    """Does this event reference THAT commitment?
+
+    MIRRORS `commitment_state._closer_target_id` / `_closer_target_seqs` leg
+    for leg, because that pair is what the loader treats as "closes this item"
+    — a scan that sees fewer spellings than the closers write is a bar with
+    holes in it, and the holes are invisible (a missed touch reads exactly like
+    no touch). Three families:
+
+      * the four `data` legs, in the closer chain's own order;
+      * the three TOP-LEVEL legs — `ev["commitment_id"]`, `ev["thread_id"]`,
+        `ev["id"]` — which the closer chain checks and the first draft of this
+        function did not, so a touch spelled only at top level was missed;
+      * the F3 seq aliases, plus every LEGACY ID SPELLING
+        (`86`, `"86"`, `"seq_86"`, `"event_086"`, `"commitment_seq_86"`) that
+        `normalize_commitment_id` resolves — a legacy closure names its target
+        that way and would otherwise compare unequal to the canonical id.
+    """
+    try:
+        from commitment_state import _LEGACY_SEQ_ID_RE
+    except Exception:  # pragma: no cover — never widen on an import failure
+        _LEGACY_SEQ_ID_RE = None
+
+    def _hit(value) -> bool:
+        if isinstance(value, bool) or value is None:
+            return False
+        if isinstance(value, int):
+            # A bare int target is a seq alias (`data.commitment_id: 86`).
+            return seq is not None and value == seq
+        if not isinstance(value, str):
+            return False
+        v = value.strip()
+        if not v:
+            return False
+        if v == cid:
+            return True
+        if seq is None or _LEGACY_SEQ_ID_RE is None:
+            return False
+        m = _LEGACY_SEQ_ID_RE.match(v)
+        return bool(m) and int(m.group(1)) == seq
+
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    for key in ("commitment_id", "thread_id", "id", "target_id"):
+        if _hit(d.get(key)):
+            return True
+    for key in ("commitment_id", "thread_id", "id"):
+        if _hit(ev.get(key)):
+            return True
+    if seq is None:
+        return False
+    for key in ("commitment_seq", "source_event_seq", "target_seq"):
+        sv = d.get(key)
+        if isinstance(sv, bool):
+            continue
+        if isinstance(sv, str) and sv.strip().isdigit():
+            sv = int(sv.strip())
+        if isinstance(sv, int) and sv == seq:
+            return True
+    return False
+
+
+def _touch_phrase(ev: dict) -> str:
+    """What happened to this item after the confirm, in plain words. Never an
+    event type name, never a field name — the refusal is read by the person
+    who just said `undo`."""
+    t = ev.get("type")
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    if t == "commitment_reassigned":
+        return "it was reassigned to someone else after you confirmed it"
+    if t == "commitment_resolved":
+        return "it was closed after you confirmed it"
+    if t == "commitment_reopened":
+        return "it was reopened after you confirmed it"
+    if t == "commitment_superseded":
+        return "it was merged into another item after you confirmed it"
+    if t == "commitment_reclassified":
+        return "it was changed to a different kind of item after you confirmed it"
+    if t == "commitment_partial_received":
+        return "a delivery was recorded against it after you confirmed it"
+    if t == "thread_resolved":
+        return "it was closed from another surface after you confirmed it"
+    if t == "commitment_review_dismissed":
+        return "you skipped its review row after you confirmed it"
+    if t == "chat_dismissal":
+        return "it was muted or snoozed after you confirmed it"
+    if d.get("review_flags_set"):
+        return "it was flagged for review again after you confirmed it"
+    if d.get("watch_set"):
+        return "it was parked on watch after you confirmed it"
+    if d.get("watch_cleared"):
+        return "it was taken off watch after you confirmed it"
+    if d.get("new_title") or d.get("new_summary"):
+        return "its wording was corrected after you confirmed it"
+    if d.get("new_due") or d.get("due") or d.get("due_date"):
+        return "its due date was changed after you confirmed it"
+    if d.get("owner_confirmed"):
+        return "its owner was claimed after you confirmed it"
+    return "it was changed after you confirmed it"
+
+
+def _confirm_touch_map(workspace_root, targets: dict) -> dict:
+    """{cid: {"confirmed": bool, "touch": <plain sentence or "">}} for the
+    THE INDEPENDENT-TOUCH BAR.
+
+    `confirmed` says the item carries a `review_flags_cleared` adjudication at
+    all (nothing to reverse otherwise). `touch` names the FIRST adjudicating or
+    state event appended after the LATEST one — a reassignment, a watch park, a
+    wording fix, a later close by another path.
+
+    Reads through the shard-aware iterator, defensively: a broken log yields an
+    empty map, and an empty map REFUSES every id (`not_confirmed`) rather than
+    waving one through — an undo that cannot see the history must not write.
+    """
+    out = {cid: {"confirmed": False, "touch": ""} for cid in targets}
+    anchor = {cid: -1 for cid in targets}
+    later: dict = {cid: [] for cid in targets}
+    try:
+        from events_io import iter_events
+
+        for idx, ev in enumerate(iter_events(Path(workspace_root))):
+            if not isinstance(ev, dict):
+                continue
+            t = ev.get("type")
+            if t not in _TOUCH_TYPES:
+                continue
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            for cid, seq in targets.items():
+                if not _event_targets(ev, cid, seq):
+                    continue
+                if t == "commitment_updated" and d.get("review_flags_cleared"):
+                    anchor[cid] = idx
+                    out[cid]["confirmed"] = True
+                else:
+                    later[cid].append((idx, ev))
+    except Exception:  # pragma: no cover — a broken log refuses, never writes
+        return {cid: {"confirmed": False, "touch": ""} for cid in targets}
+    for cid in targets:
+        if anchor[cid] < 0:
+            continue
+        for idx, ev in later[cid]:
+            if idx > anchor[cid]:
+                out[cid]["touch"] = _touch_phrase(ev)
+                break
+    return out
+
+
+# The three types the loader honors as CLOSERS (COMMITMENT_SCHEMA: "THE
+# closure path" + the v2.7.13 thread_resolved path + C4 supersession).
+_CLOSER_TYPES = ("commitment_resolved", "thread_resolved",
+                 "commitment_superseded")
+
+
+def _latest_closure_map(workspace_root, targets: dict) -> dict:
+    """{cid: <the LAST closing event that named it>, or None}.
+
+    MF-2's input: `undo_done_items` may only reverse a closure IT wrote, and
+    the only thing on disk that says so is the `completion_basis` stamp
+    `done_items` puts on its `commitment_resolved`. Latest-wins mirrors the
+    projector, so a Done that was reopened and then dropped reads as a drop.
+
+    Defensive like `_confirm_touch_map`: a broken log yields an empty map, and
+    an empty map REFUSES every id rather than reopening something blind."""
+    out: dict = {cid: None for cid in targets}
+    try:
+        from events_io import iter_events
+
+        for ev in iter_events(Path(workspace_root)):
+            if not isinstance(ev, dict) or ev.get("type") not in _CLOSER_TYPES:
+                continue
+            for cid, seq in targets.items():
+                if _event_targets(ev, cid, seq):
+                    out[cid] = ev
+    except Exception:  # pragma: no cover — a broken log refuses, never writes
+        return {cid: None for cid in targets}
+    return out
+
+
+def _resolve_targets(workspace_root, ids) -> tuple:
+    """(index, {raw_id: canonical_id}, {raw_id: error}) — normalize the caller's
+    ids through the SAME resolver the writers use, so a legacy spelling
+    (`seq_86`, `event_086`) reverses exactly what it confirmed."""
+    from commitment_state import (CommitmentIdError, _scan_commitment_index,
+                                  normalize_commitment_id)
+
+    index = _scan_commitment_index(
+        Path(workspace_root) / "_hq" / "data" / "events.jsonl")
+    canon: dict = {}
+    errs: dict = {}
+    for raw in ids or []:
+        raw = str(raw)
+        try:
+            canon[raw] = normalize_commitment_id(raw, index)
+        except CommitmentIdError as exc:
+            errs[raw] = str(exc)
+    return index, canon, errs
+
+
+def undo_confirm_items(workspace_root, ids, *, restored_by: str,
+                       source_skill: str = SOURCE_SKILL) -> dict:
+    """Un-confirm: the item returns to this queue carrying its ORIGINAL reason.
+
+    One `commitment_state.restore_review_flags` per id — the purpose-built
+    writer, NOT `flag_duplicate_for_review` with an empty target. The confirm
+    stays in history; the un-confirm is appended beside it.
+
+    REPORTED, never written:
+      `not_found`          — the id matches no commitment.
+      `not_open`           — the item is closed (a Done? use `undo_done_items`).
+      `already_unconfirmed`— it is already back in the queue; idempotent-safe.
+      `not_confirmed`      — it was never confirmed from here, so there is
+                             nothing to reverse.
+      `touched_since_confirm` — somebody made a later decision about this item
+                             and the refusal NAMES it. An undo that silently
+                             steps over another decision is not an undo.
+
+    Returns {"results": [...], "n_restored", "n_already", "n_refused",
+             "n_failed"}.
+    """
+    from commitment_state import (CommitmentIdError, _currently_closed,
+                                  restore_review_flags)
+
+    index, canon, errs = _resolve_targets(workspace_root, ids)
+    pending = set(_pending_by_id(workspace_root))
+    targets: dict = {}
+    for cid in canon.values():
+        seq = (index["by_id"].get(cid) or {}).get("seq")
+        targets[cid] = seq if isinstance(seq, int) and not isinstance(
+            seq, bool) else None
+    touch = _confirm_touch_map(workspace_root, targets)
+
+    results: list[dict] = []
+    n_restored = n_already = n_refused = n_failed = 0
+    for raw in ids or []:
+        raw = str(raw)
+        if raw in errs:
+            results.append({"commitment_id": raw, "status": "not_found",
+                            "detail": errs[raw]})
+            n_failed += 1
+            continue
+        cid = canon[raw]
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            results.append({
+                "commitment_id": cid, "status": "not_open",
+                "detail": "that one is closed — undoing an 'already done' "
+                          "reopens it first",
+            })
+            n_refused += 1
+            continue
+        if cid in pending:
+            results.append({"commitment_id": cid,
+                            "status": "already_unconfirmed"})
+            n_already += 1
+            continue
+        state = touch.get(cid) or {}
+        if not state.get("confirmed"):
+            results.append({
+                "commitment_id": cid, "status": "not_confirmed",
+                "detail": "nothing to take back — this one was never "
+                          "confirmed from the queue",
+            })
+            n_refused += 1
+            continue
+        if state.get("touch"):
+            results.append({"commitment_id": cid,
+                            "status": "touched_since_confirm",
+                            "detail": state["touch"]})
+            n_refused += 1
+            continue
+        try:
+            res = restore_review_flags(
+                workspace_root, cid, restored_by=restored_by,
+                source_skill=source_skill, note=UNCONFIRM_NOTE,
+            )
+        except CommitmentIdError as exc:  # pragma: no cover — resolved above
+            results.append({"commitment_id": cid, "status": "not_found",
+                            "detail": str(exc)})
+            n_failed += 1
+            continue
+        status = res.get("status")
+        results.append({"commitment_id": res.get("commitment_id", cid),
+                        "status": status})
+        if status == "restored":
+            n_restored += 1
+        else:
+            n_refused += 1
+    return {"results": results, "n_restored": n_restored,
+            "n_already": n_already, "n_refused": n_refused,
+            "n_failed": n_failed}
+
+
+def undo_done_items(workspace_root, ids, *, restored_by: str,
+                    source_skill: str = SOURCE_SKILL) -> dict:
+    """Undo an `already done`: the item reopens AND returns to the queue
+    unconfirmed — never a closed corpse, and never an open CONFIRMED item.
+
+    TWO WRITES, AND THE ORDER IS FORCED:
+      a. `commitment_state.reopen_commitment` — both review-flag writers refuse
+         a closed item, so the reopen must land first;
+      b. `commitment_state.restore_review_flags` — because a bare reopen leaves
+         the Done's own `review_flags_cleared` standing as the latest
+         adjudication, which yields an OPEN, CONFIRMED item: not the queue
+         member the user had before they tapped. That is the closed-corpse
+         blind spot's twin, and it is why this is a two-step.
+
+    IT ONLY REVERSES CLOSURES IT OWNS (review MF-2). The latest closure on the
+    item must carry `data.completion_basis == "user_attestation"` — the stamp
+    `done_items` writes for exactly this purpose. Without that gate this
+    function reopened ANYTHING closed: a `drop`, a reconcile-sent close on
+    HIGH sent-mail evidence, a `mark done` from another surface. Reversing a
+    decision the user never made here, on the strength of an id they typed, is
+    the same class of over-reach the touch bar exists to prevent. A closure
+    that is not an attested Done is REPORTED `not_a_done` and nothing is
+    written.
+
+    IDEMPOTENT (review SF-5), symmetrically with `undo_confirm_items`: an item
+    that is already OPEN **and** back in the queue is `already_undone` — a
+    no-op ack, no second `commitment_reopened`, no second un-confirm marker.
+    (Redundant markers are the 83-duplicate-tombstone class.) An item that is
+    open but still CONFIRMED — reopened by another path — is NOT idempotent-
+    skipped: it still needs the re-flag, which is the spec's ratified
+    `already_open` case.
+
+    A reopen that FAILS aborts that id and reports — the item stays closed and
+    the history stays clean.
+
+    Both the Done's confirm and its closure stay in history. Returns
+    {"results": [...], "n_undone", "n_already", "n_refused", "n_failed"}.
+    """
+    from commitment_state import (_currently_closed, reopen_commitment,
+                                  restore_review_flags)
+    from writer_lock import events_writer_lock
+
+    index, canon, errs = _resolve_targets(workspace_root, ids)
+    pending = set(_pending_by_id(workspace_root))
+    targets: dict = {}
+    for cid in canon.values():
+        seq = (index["by_id"].get(cid) or {}).get("seq")
+        targets[cid] = seq if isinstance(seq, int) and not isinstance(
+            seq, bool) else None
+    closures = _latest_closure_map(workspace_root, targets)
+
+    results: list[dict] = []
+    n_undone = n_already = n_refused = n_failed = 0
+    for raw in ids or []:
+        raw = str(raw)
+        if raw in errs:
+            results.append({"commitment_id": raw, "status": "not_found",
+                            "detail": errs[raw]})
+            n_failed += 1
+            continue
+        cid = canon[raw]
+        target = index["by_id"][cid]
+        is_closed = _currently_closed(index, cid, target.get("seq"))
+        if not is_closed and cid in pending:
+            # SF-5 — already in the state this call produces.
+            results.append({"commitment_id": cid, "status": "already_undone"})
+            n_already += 1
+            continue
+        closure = closures.get(cid)
+        basis = ((closure or {}).get("data") or {}).get("completion_basis")
+        if basis != COMPLETION_BASIS_ATTESTATION:
+            results.append({
+                "commitment_id": cid, "status": "not_a_done",
+                "detail": "that one wasn't closed by an 'already done' — this "
+                          "undo only reverses what you attested to here. A "
+                          "drop or an ordinary close is reopened its own way.",
+            })
+            n_refused += 1
+            continue
+        # SF-8 — ONE outer lock span over the reopen+un-confirm PAIR, so no
+        # other writer can observe the reopened-but-still-confirmed midpoint.
+        with events_writer_lock(_events_path(Path(workspace_root)),
+                                holder=f"undo_done:{source_skill}"):
+            try:
+                reopened = reopen_commitment(
+                    workspace_root, cid, reopened_by=restored_by,
+                    reason=UNDO_DONE_REASON, source_skill=source_skill,
+                )
+            except Exception as exc:
+                # Includes CommitmentIdError. The item stays CLOSED and nothing
+                # else is written for it — a half-undo is worse than none.
+                results.append({"commitment_id": cid, "status": "not_reopened",
+                                "detail": f"{type(exc).__name__}: {exc}"})
+                n_failed += 1
+                continue
+            try:
+                restored = restore_review_flags(
+                    workspace_root, cid, restored_by=restored_by,
+                    source_skill=source_skill, note=UNCONFIRM_NOTE,
+                )
+            except Exception as exc:  # pragma: no cover — reopened above
+                results.append({"commitment_id": cid,
+                                "status": "reopened_only",
+                                "detail": f"{type(exc).__name__}: {exc}"})
+                n_failed += 1
+                continue
+        if restored.get("status") != "restored":
+            results.append({"commitment_id": cid, "status": "reopened_only",
+                            "detail": str(restored.get("status"))})
+            n_failed += 1
+            continue
+        results.append({"commitment_id": cid, "status": "undone",
+                        "reopen": reopened.get("status")})
+        n_undone += 1
+    return {"results": results, "n_undone": n_undone, "n_already": n_already,
+            "n_refused": n_refused, "n_failed": n_failed}
 
 
 # ---------------------------------------------------------------------------
@@ -1045,8 +1846,12 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
     shown WHOLE and is then the only group on the section — a split group
     asks half a question.
 
-    The rows carry the SAME verbs as the on-demand queue and are answered
-    through the SAME `confirm_items` / `drop_items` fence. One write path."""
+    The rows carry the SAME verbs as the on-demand queue — `QUEUE_ROW_ACTIONS`,
+    the one list both render sites read — and are answered through the SAME
+    writers: `confirm_items` / `done_items` (both through
+    `watch_gate.screen_bulk_accept`, the one shared fence) / `drop_items` /
+    `not_mine_items`, and reversed through the same `undo_confirm_items` /
+    `undo_done_items`. One write path, never a per-surface fork."""
     ws = Path(workspace_root)
     view = view if view is not None else build_queue_view(
         ws, now_iso=now_iso, group_by=GROUP_MEETING)
@@ -1130,8 +1935,11 @@ __all__ = [
     "ids_for_group",
     "confirm_items",
     "confirm_group",
+    "done_items",
     "drop_items",
     "not_mine_items",
+    "undo_confirm_items",
+    "undo_done_items",
     "build_queue_data_view",
     "paginate_groups",
     "render_queue_page",
@@ -1142,6 +1950,12 @@ __all__ = [
     "GROUP_COUNTERPARTY",
     "GROUP_MODES",
     "QUEUE_ROW_ACTIONS",
+    "DONE_ACTION",
+    "DONE_ATTESTATION",
+    "DONE_CONFIRM_NOTE",
+    "COMPLETION_BASIS_ATTESTATION",
+    "UNCONFIRM_NOTE",
+    "UNDO_DONE_REASON",
     "STAFF_SECTION_TITLE",
     "STAFF_GROUP_CAP",
     "STAFF_ROW_CAP",

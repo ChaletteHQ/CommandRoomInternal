@@ -29,7 +29,7 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 
 # Phase 2 — Setup
 
-- Today's date.
+- Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` exactly as before (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
 - Read entities.json + aliases.json + voice calibration (cache).
 - Discover Granola MCP tool ID (`mcp__<uuid>__list_meetings` or similar).
 - Discover Gmail MCP IDs (or Outlook equivalents on M365).
@@ -45,9 +45,19 @@ Cowork fires a missed slot at next app launch, hours or days late, and without t
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'past-meetings', fired_via='<scheduled|manual>')))
+print(json.dumps(check_lateness('<workspace_root>', 'past-meetings', fired_via='<scheduled|manual>', env_date='<session date>')))
 "
 ```
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+
+**Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
+
+**The clock verdict comes back as `clock`, and two things follow from it. Neither is optional:**
+
+- **When `clock["notice"]` is set, it is the FIRST line of this fire's output** — above the lateness banner, verbatim, never paraphrased and never dropped. It states that the dates in this surface came from the workspace record rather than this computer's clock. A silent substitution is its own bug: the reader has no other way to know which clock produced what they are looking at.
+- **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
+
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
@@ -144,7 +154,7 @@ For each meeting:
    SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
    python3 -c "
    import sys; sys.path.insert(0,'shared/scripts')
-   from brief_path import get_brief_path, get_brief_artifact_url, ensure_brief_directory
+   from brief_path import get_brief_path, get_brief_artifact_url, ensure_brief_directory, is_session_scoped_path
    import os
    ws = os.environ.get('CR_WORKSPACE_ROOT', '<workspace-root>')   # absolute path to user's Command Room workspace
    ensure_brief_directory(ws)
@@ -152,8 +162,11 @@ For each meeting:
    url = get_brief_artifact_url(path)
    print(f'BRIEF_PATH={path}')
    print(f'BRIEF_URL={url}')
+   print(f'BRIEF_SESSION_SCOPED={is_session_scoped_path(path)}')
    "
    ```
+
+   **If `BRIEF_SESSION_SCOPED=True`** (v5.9.2 — the workspace is a cloud mount, e.g. Google Drive; there is no host-native path and the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine — QMG field reports 2026-07-28 / 2026-07-31): after the brief file is written and synced, look up its web link through the discovered drive tool (per `tool_discovery.discover_drive_tool()` — search the filename under `_hq/meetings/`) and carry that URL forward for Step 4's links via `brief_path.get_brief_opener_url(path, drive_web_url)`. If the lookup finds nothing, proceed with the `computer://` form — `get_brief_opener_url` falls back on its own.
 
    Capture the BRIEF_PATH + BRIEF_URL stdout. Then compose section content from meeting-notes' output and pipe it as JSON to `brief_writer.py` stdin:
 
@@ -245,7 +258,7 @@ The append includes ALL meeting-notes-extracted content, both forwardable and in
 
 **Omit-if-no-signal rule still applies:** if Business Lens has no real signal (uneventful internal sync, nothing changed), omit those sub-sections entirely rather than writing "no risks identified." Empty Business Lens entries train the user to skim past the section.
 
-**4.5b — Real-time people-crm pass.** For each meeting transcript, invoke people-crm with confidence threshold ≥ 0.85 (higher than Pulse's weekly synthesis to avoid false positives at real-time pace). Auto-apply on: new email-signature roles ("CEO at NewCo" mentioned in two or more sources within the transcript), new org affiliations evidenced ≥ 2 sources, normalized name corrections (typo fixes, alternate spellings). Lower-confidence changes (single-source role hints, ambiguous affiliations, unconfirmed email address sightings) get queued to events.jsonl as a `person_update_proposal` event and surface in the next Pulse fire — current behavior preserved. Real-time pass complements weekly synthesis; doesn't replace it.
+**4.5b — Real-time people-crm pass.** For each meeting transcript, invoke people-crm with confidence threshold ≥ 0.85 (higher than the weekly identity/fact passes, to avoid false positives at real-time pace). Auto-apply on: new email-signature roles ("CEO at NewCo" mentioned in two or more sources within the transcript), new org affiliations evidenced ≥ 2 sources, normalized name corrections (typo fixes, alternate spellings). Lower-confidence changes (single-source role hints, ambiguous affiliations, unconfirmed email address sightings) get queued to events.jsonl as a `person_update_proposal` event and surface in the confirm queue — current behavior preserved. Real-time pass complements weekly synthesis; doesn't replace it.
 
 **Person-write canonical path (v3.2+ MANDATORY).** All entity creates and updates in this pass go through `shared/scripts/people_writer.py` — never direct `entities.json` writes. Memorialized failure: `person_063` Rio Sample (2026-04-30) and `person_064` Dustin Sample (2026-04-26 duplicate of `person_004`) were both written here with hand-rolled JSON shapes that drifted from the schema, and the Dustin Sample duplicate slipped past because no dedup ran. The contract:
 
@@ -293,7 +306,7 @@ If < 3 signals, no surface. The meeting still gets its .docx in `_hq/staging/<to
 
 Per `shared/scripts/cru_match.py` Path 3. After per-meeting auto-processing (Phase 4) and project-narrative + people-sync (Phase 4.5) complete, scan each newly-processed transcript against pre-existing open commitments. The premise: a meeting that just discussed a deliverable often resolves, updates, or layers a new ask onto an open commitment — auto-detecting closes the loop without the user manually marking received.
 
-**Conservative — HIGH-confidence auto-resolve only.** Borderline matches go to a `pending_review` queue surfaced in the next Pulse fire for one-click confirm.
+**Conservative — HIGH-confidence auto-resolve only.** Borderline matches go to a `pending_review` queue the confirm surfaces render for one-click confirm.
 
 **⛔ THE CIRCULARITY FENCE (AUTOAPPLY §6) — MANDATORY, and the reason this phase used to manufacture its own noise.** This phase runs AFTER Phase 4 has appended today's extractions, so an unfenced `load_open_commitments()` hands the matcher the asks this very fire just captured. A commitment extracted from transcript T scores ~1.0 against T and carries no completion language, so it lands `pending_review` — Command Room asking "did you already handle this?" about something it wrote down five minutes earlier, from the same meeting. Three things below are load-bearing; none is optional:
 
@@ -368,7 +381,7 @@ for r in results:
     evidence = f\"Past meeting transcript ({r.get('has_completion_signal') and 'completion language' or r.get('has_schedule_shift_signal') and 'schedule-shift language' or r.get('has_new_ask_signal') and 'new-ask language' or 'title match'})\"
     # v2.14.7+: full coverage. HIGH-confidence → auto-resolve (or
     # commitment_updated when schedule-shift signal). MEDIUM and supersede
-    # → pending_review for next Pulse fire to surface as one-click
+    # → pending_review for the confirm queue to surface as one-click
     # confirm/skip.
     if rec == 'auto_resolve':
         try:
@@ -435,7 +448,7 @@ print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_appe
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: `commitment_resolved`, `commitment_updated`, and `commitment_review_proposed` event-type names never appear in chat. The user sees the resolution effect on the next Commitments fire — items disappear from the OWED TO YOU / YOU OWE columns when they're auto-resolved here.
 
-**Threshold tuning:** the helper uses `HIGH_CONFIDENCE_THRESHOLD = 0.55` and `PENDING_REVIEW_THRESHOLD = 0.30`. These are deliberately conservative for v2.14.6 launch. Once telemetry shows real auto-resolve rates and false-positive rates from the next Pulse pending-review confirmations, tighten or loosen.
+**Threshold tuning:** the helper uses `HIGH_CONFIDENCE_THRESHOLD = 0.55` and `PENDING_REVIEW_THRESHOLD = 0.30`. These are deliberately conservative for v2.14.6 launch. Once telemetry shows real auto-resolve rates and false-positive rates from the confirm queue's pending-review confirmations, tighten or loosen.
 
 **Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, transcript empty), swallow silently and continue. Phase 4.6 is best-effort enrichment; the Phase 4 commitment writes already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "4.6_commitment_cru", "reason": "<short>", "detail": "<truncated stderr or exception message>", "meeting_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
@@ -658,15 +671,19 @@ Per CONTRACT.md Rule 3 (v3.13.0+) and M's 2026-05-20 testing #29: `mcp__cowork__
 
 ```python
 from chat_output_renderer import doc_headline_link_h3
-from brief_path import get_brief_artifact_url
+from brief_path import get_brief_opener_url
 
 # After the widget, render one H3 heading link per brief beneath a single
 # Briefs: section header. H3 (not H2) because past-meetings often surfaces
 # several briefs at once; stacked H2s would visually dominate.
+# v5.9.2 — get_brief_opener_url is Drive-aware: on a cloud-mounted workspace
+# (session-scoped path) it returns the file's Drive web link when one was
+# resolved (see the BRIEF_SESSION_SCOPED step above); on a host-native
+# workspace it returns the same computer:// form as before.
 print("**Briefs:**")
 print()
 for brief in briefs:
-    url = get_brief_artifact_url(brief.absolute_path)
+    url = get_brief_opener_url(brief.absolute_path, brief.drive_web_url)
     label = f"Past Meeting Recap — {brief.meeting_title}"
     print(doc_headline_link_h3(label, url))
 ```

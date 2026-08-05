@@ -353,7 +353,7 @@ export CR_WORKSPACE_ROOT="${CR_WORKSPACE_ROOT:-$(find "$SESSION_DIR/mnt" -maxdep
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, os
 sys.path.insert(0, 'shared/scripts')
-from brief_path import get_brief_path, get_brief_artifact_url, ensure_brief_directory
+from brief_path import get_brief_path, get_brief_artifact_url, ensure_brief_directory, is_session_scoped_path
 ws = os.environ['CR_WORKSPACE_ROOT']
 ensure_brief_directory(ws)
 date_iso = os.environ.get('CR_TODAY')  # YYYY-MM-DD in workspace TZ (set on scheduled fires)
@@ -365,8 +365,11 @@ path = get_brief_path(ws, 'weekly_recap', '', date_iso)
 url = get_brief_artifact_url(path)
 print(f'BRIEF_PATH={path}')
 print(f'BRIEF_URL={url}')
+print(f'BRIEF_SESSION_SCOPED={is_session_scoped_path(path)}')
 "
 ```
+
+**If `BRIEF_SESSION_SCOPED=True`** (v5.9.2 — cloud-mounted workspace, e.g. Google Drive: the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine — this exact surface, QMG field report 2026-07-31): after the recap is written and synced, look up its web link via the discovered drive tool (`tool_discovery.discover_drive_tool()`, search the filename under `_hq/meetings/`) and use `brief_path.get_brief_opener_url(path, drive_web_url)` in step 5.C. Lookup failure is non-fatal — the helper falls back to the `computer://` form.
 
 Capture stdout. Then compose section content matching the inline recap and pipe to `brief_writer.py` stdin as JSON:
 
@@ -449,10 +452,13 @@ After the synthesis content and `Sources:` section, render the recap link as an 
 
 ```python
 from chat_output_renderer import doc_headline_link
-from brief_path import get_brief_artifact_url
+from brief_path import get_brief_opener_url
 
 label = f"Weekly Recap — {date_iso}"
-url = get_brief_artifact_url(absolute_docx_path)  # native computer:// form (v3.13.0+)
+# v5.9.2 — Drive-aware: on a cloud-mounted workspace pass the Drive web link
+# resolved in the BRIEF_SESSION_SCOPED step ("" if none was found); on a
+# host-native workspace this returns the same computer:// form as before.
+url = get_brief_opener_url(absolute_docx_path, drive_web_url)
 h2_link = doc_headline_link(label, url)
 # h2_link == "## → **[Weekly Recap — 2026-05-23](computer://...)**"
 # Output as the LAST line of the chat turn.

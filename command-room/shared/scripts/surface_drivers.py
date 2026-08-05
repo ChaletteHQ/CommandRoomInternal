@@ -80,6 +80,31 @@ _TASK_VERBS = ["resolved", "push to [date]", "drop", "promote",
 MONEY_PROSE_CAP = 3
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _pointer_line(count: int) -> str:
     """FB-20's ONE queue-pointer line — the brief's entire adjudication
     affordance now that the card is gone. Drop-empty at zero: a brief with
@@ -177,7 +202,7 @@ _MP_PERSONAL_CAP = 7
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _clock_now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _events_path(ws: Path) -> Path:
@@ -652,9 +677,18 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
     digested = rank_proposals(digested)
     n_extra_rows = sum(len(sec.get("items") or []) for sec in extra)
     shown, bound_stats = bound_page(digested, n_extra_rows=n_extra_rows)
+    # LIFECYCLE1 §7b — the tiles show the HONEST per-shape total, the same
+    # convention the section titles already use, computed from the FULL open
+    # queue (pre-digest, pre-bound) rather than from the page. Grouping and
+    # the page bound go on governing what renders and nothing else.
+    shape_totals: dict = {}
+    for it in open_items:
+        s = (it or {}).get("shape") or "hygiene"
+        shape_totals[s] = shape_totals.get(s, 0) + 1
     view = build_card_view(shown, surface="staff-meeting",
                            extra_sections=extra or None,
-                           section_notes=section_notes(shown, bound_stats))
+                           section_notes=section_notes(shown, bound_stats),
+                           shape_totals=shape_totals)
     # D2 — the per-kind + digest arithmetic the fire receipt records. Popped by
     # `run_surface` before the view reaches the renderer, so nothing new travels
     # into the widget contract.
@@ -1272,7 +1306,7 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
     surfaced = sum(len(sec.get("items") or [])
                    for sec in view.get("sections") or [])
     if via != "manual":
-        now = _dt.datetime.now(_dt.timezone.utc)
+        now = _clock_now(workspace_root)
         recent = iter_receipts(workspace_root, task_ids=[task_id],
                                since=now - _REFIRE_RECEIPT_GUARD)
         if any(r["fired_via"] != "manual" for r in recent):

@@ -20,7 +20,7 @@ every writer calls one helper; every reader goes through one parser.
 ## The rules
 
 1. **One canonical task_id spelling** — the hyphenated registry id
-   (`commitments`, `past-meetings`, `upcoming-meetings`, `pulse`, ...).
+   (`commitments`, `past-meetings`, `upcoming-meetings`, `staff-meeting`, ...).
    Never `cr-` prefixed, never underscored. `normalize_task_id()` is the
    only translation point.
 2. **One lateness field: `late_tier`.** `lateness_tier` and bare `tier` are
@@ -72,7 +72,8 @@ never treat absence as zero-with-certainty.
 | Task | Receipt type(s) | Run-counted type |
 |---|---|---|
 | morning-brief, upcoming-meetings, inbox, commitments, past-meetings, friday-wrap, relationship-moves, commitment-triage, weekly-insights, dormant-scan | `pack_run` | `pack_run` |
-| pulse | `pack_run` + legacy `pulse_run` / `dont_forget_run` | all three |
+| pulse (RETIRED chat — read-only forever, LIFECYCLE1) | `pack_run` + legacy `pulse_run` / `dont_forget_run` | all three |
+| lifecycle (the job that replaced its Phase 4) | `lifecycle_run` | that one |
 | cleanup | `cleanup_run` (legacy `audit_run`) | both |
 | reconcile-sent | `sent_reconcile` | `sent_reconcile` |
 | session-sweep | `session_sweep_run` | `session_sweep_run` |

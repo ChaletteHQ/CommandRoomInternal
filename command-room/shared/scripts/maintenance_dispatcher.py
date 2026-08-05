@@ -138,6 +138,23 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "description": "reconcile person identities: auto-add corroborated "
                        "people, link/merge-propose the rest for review",
     },
+    # LIFECYCLE1 — the project lifecycle pass, same Sunday slot, ordered LAST
+    # of the Sunday group: it reads the settled week AND it reads the expiry
+    # tombstones `cleanup`'s `brain_proposals.expire_stale` sweep writes
+    # earlier in this same fire (an ask that expired unanswered is the
+    # precondition for the active->dormant flip, so running before cleanup
+    # would delay every flip by a week). Entry point:
+    # lifecycle_pass.run_lifecycle_pass(workspace_root, apply=True) — dormancy
+    # asks ride the LB2 confirm rail (on-demand rows, never a scheduled
+    # surface), and the dormant->archived leg goes through
+    # thread_archive.archive_thread, THE archive chokepoint.
+    "lifecycle": {
+        "skill": "project lifecycle pass (shared/scripts/lifecycle_pass.py "
+                 "--apply — dry-run without the flag)",
+        "nominal_cron": "0 17 * * 0",
+        "description": "ask about projects gone quiet; retire and revive the "
+                       "ones the lifecycle rules already decided",
+    },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled
     # with its own month. A machine closed across a 1st loses that month

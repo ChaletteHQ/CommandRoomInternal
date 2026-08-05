@@ -110,16 +110,21 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         # 15 minutes after waiting-on, so its rows read the substrate the
         # waiting-on fire's CRU pre-scans (2.5/2.6/2.7) just reconciled —
         # My Plate itself is a pure substrate read (no connector pre-scans).
-        # Before pulse (9:00). Tunable via change-schedule like any chat.
+        # Tunable via change-schedule like any chat. (It used to be anchored
+        # ahead of the 9:00 Pulse chat, which LIFECYCLE1 retired; the time is
+        # kept so no existing customer's morning moves under them.)
         "cron": "45 8 * * 1-5",
         "label": "8:45 AM weekdays",
         "enabled": True,
     },
-    "pulse": {  # taskId aligned with display name (v2.14.27+); orchestrator filename stays orchestrator-dont-forget.md for events.jsonl source_skill back-compat
-        "cron": "0 9 * * 1-5",
-        "label": "9 AM weekdays",
-        "enabled": True,
-    },
+    # `pulse` is GONE from the default set (LIFECYCLE1, M's ruling 2026-08-02 —
+    # eliminate the chat, fold its real jobs). Same removal shape CTS1 used for
+    # `commitments`: the row leaves DEFAULT_SCHEDULES so nothing offers or
+    # registers it again, the DISPLAY_NAMES row stays for legacy renders, the
+    # receipt vocabulary stays parseable forever, and existing registrations
+    # are retired through the RETIRED_TASKS proposal below — never silently.
+    # The lifecycle work it carried is `maintenance_dispatcher`'s `lifecycle`
+    # job; the dormancy question it asked is `stalled projects`.
     "past-meetings": {
         "cron": "0 17 * * 1-5",
         "label": "5 PM weekdays",
@@ -167,7 +172,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # 5 PM Sundays (output waits Monday AM, an hour before the 6 PM cleanup).
     # NOT first-install — needs accumulated substrate for dormancy baselines, so
     # it registers via change-schedule / Phase 6 add / command-room-update-bridge,
-    # same later-add posture as commitments / pulse.
+    # same later-add posture as commitments.
     "relationship-moves": {
         "cron": "0 17 * * 0",
         "label": "5 PM Sundays",
@@ -259,8 +264,8 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
 # friday-wrap), with inbox deferred to a later Zapier-integration session.
 # M1 brings inbox forward — the Chat 2 substantive education + the Phase 4
 # Run Now ritual establish all 5 in one onboarding pass.
-# The remaining defaults (waiting-on, my-plate, pulse — CTS1 split the old
-# commitments chat into the first two) stay deferred — all benefit from
+# The remaining defaults (waiting-on, my-plate — CTS1 split the old
+# commitments chat into the two) stay deferred — both benefit from
 # accumulated workspace signal before they fire well.
 FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "morning-brief",
@@ -352,7 +357,16 @@ SILENT_TASKS: dict[str, dict] = {
             "matters: without --apply it dry-runs, writes no receipt, and "
             "stays due forever; auto-adds are narrated + batch-undoable, "
             "links/merges are propose-only, its identity_reconcile_run "
-            "receipt is written by the script itself); monthly-report -> for EACH "
+            "receipt is written by the script itself); lifecycle -> run "
+            "`python3 shared/scripts/lifecycle_pass.py --workspace "
+            "<workspace_root> --apply` from the plugin root (LIFECYCLE1 — the "
+            "flag matters exactly as it does for identity-reconcile: without "
+            "--apply it dry-runs, writes no receipt, and stays due forever. "
+            "Dormancy questions ride the confirm rail as ON-DEMAND rows — they "
+            "surface when the CEO says `stalled projects`, never on a "
+            "scheduled surface — and the dormant->archived leg goes through "
+            "the canonical archive path; its lifecycle_run receipt is written "
+            "by the script itself); monthly-report -> for EACH "
             "period in the job's `periods` list (step 2b), the operator report per "
             "skills/operator-report/SKILL.md then the value receipt per "
             "skills/value-receipt/SKILL.md over that period's own calendar month "
@@ -422,6 +436,68 @@ SUPERSEDED_BY: dict[str, list[str]] = {
 }
 
 
+# -----------------------------------------------------------------------------
+# RETIRED_TASKS registry (SPEC LIFECYCLE1, 2026-08-02)
+# -----------------------------------------------------------------------------
+# A task that has been ELIMINATED, not merely deferred. The distinction the
+# whole retirement turns on:
+#
+#   * a LATER-ADD task (`waiting-on`, `staff-meeting`, `balance`…) is absent
+#     because the workspace has not added it YET. system-health says nothing,
+#     change-schedule offers it, the bridge may propose it.
+#   * a RETIRED task is absent because it is GONE. Nothing offers it, nothing
+#     registers it, system-health treats its absence as normal and NEVER flags
+#     it — and a workspace that still has it registered is offered ONE
+#     proposal to switch it off. Never silently: disabling a task the customer
+#     can see in their Scheduled list, without saying so, is the same posture
+#     violation as registering one without asking.
+#
+# Membership is THIS registry, never a name check in prose — the same lesson
+# SILENT_TASKS learned (Bug #82: every hand-written per-task block is a place
+# to forget one). `replacement` is customer-facing plain English naming where
+# the work went, so the retirement line never reads as a feature being taken
+# away.
+RETIRED_TASKS: dict[str, dict] = {
+    "pulse": {
+        "retired_in": "LIFECYCLE1",
+        "reason": (
+            "it fired every weekday morning to say what the morning brief and "
+            "the staff meeting already say"
+        ),
+        "replacement": (
+            "the quiet-project questions it used to raise now wait until you "
+            "ask for them — say 'stalled projects' — and the housekeeping it "
+            "did in the background runs weekly with everything else"
+        ),
+    },
+}
+
+# The 6-week suppression window a retirement proposal honors, mirroring
+# `schedule_proposals.REPROPOSE_SUPPRESSION_WEEKS` for the add direction: an
+# offer the customer ignored is not an offer to repeat next Tuesday.
+RETIRE_SUPPRESSION_WEEKS = 6
+
+
+def is_retired_task(task_id: str) -> bool:
+    """True when `task_id` names an ELIMINATED task. Class membership is the
+    RETIRED_TASKS registry — never a hardcoded name list. system-health treats
+    this class as "retired, quiet": its absence is never a finding."""
+    return task_id in RETIRED_TASKS
+
+
+def retirement_line(task_id: str) -> str:
+    """The ONE customer-facing sentence offering to switch a retired task off.
+    Built from the registry so the wording cannot drift between the bridge,
+    change-schedule and system-health. Empty string for a task that is not
+    retired — callers surface nothing rather than inventing a line."""
+    spec = RETIRED_TASKS.get(task_id)
+    if not spec:
+        return ""
+    name = DISPLAY_NAMES.get(task_id, task_id)
+    return (f"Your {name} chat is retired — {spec['reason']}. Say "
+            f"`pause {name.lower()}` and I'll switch it off; {spec['replacement']}.")
+
+
 def is_silent_task(task_id: str) -> bool:
     """True when `task_id` is a silent (non-chat) background task. Class
     membership is the SILENT_TASKS registry — never a hardcoded name list.
@@ -459,7 +535,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "commitments": "Commitments",  # CTS1 — retired taskId (disabled on migration; row kept for legacy renders of pre-CTS1 receipts/schedules)
     "waiting-on": "Waiting On",  # CTS1 Surface 1 — things people owe the user (the re-scoped daily; owns the unowned/unconfirmed confirm tail)
     "my-plate": "My Plate",      # CTS1 Surface 2 — things the user does (Promised group + Personal group, one chat)
-    "pulse": "Pulse",
+    "pulse": "Pulse",  # LIFECYCLE1 — RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever so pre-retirement receipts and any still-registered task render with a name, never a bare id)
     "past-meetings": "Past Meetings",
     "friday-wrap": "Friday Wrap",  # v3.11.0
     "cleanup": "Cleanup",  # v3.17.0 — silent weekly self-maintenance (not a CEO-facing chat)
@@ -851,6 +927,10 @@ __all__ = [
     "FIRST_INSTALL_TASK_IDS",
     "SILENT_TASKS",
     "SUPERSEDED_BY",
+    "RETIRED_TASKS",
+    "RETIRE_SUPPRESSION_WEEKS",
+    "is_retired_task",
+    "retirement_line",
     "is_silent_task",
     "compose_silent_task_prompt",
     "later_add_task_ids",

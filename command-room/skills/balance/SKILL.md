@@ -7,7 +7,7 @@ description: "The weekly personal white-space surface. Fires on: 'balance check'
 
 One `m_facing` widget, Sunday morning: the coldest personal relationship with at least one genuinely open evening, a pre-drafted reconnect, and the open slots to pin it to. Flagship case: "You and [spouse] — last date night 7 weeks ago. Thu and Sat are open after 6 PM. Want me to book [restaurant]?" The surface exists to protect white space — it notices when the personal side has gone dark and proposes the reconnect.
 
-**The firewall IS the feature.** Everything this skill reads and emits is personal-lane: `tie: "personal"` people, `personal: true` reminders, `balance_nudge_suggested` events. The org-scoped reader (`events_io.load_events_org_scoped`) drops all of it from every org/board/client/external output by design, `personal_leak.is_personal` classifies it, and Pulse's cadence math excludes it. Any reader of this surface that is not `m_facing` gets nothing.
+**The firewall IS the feature.** Everything this skill reads and emits is personal-lane: `tie: "personal"` people, `personal: true` reminders, `balance_nudge_suggested` events. The org-scoped reader (`events_io.load_events_org_scoped`) drops all of it from every org/board/client/external output by design, `personal_leak.is_personal` classifies it, and every dormancy detector's cadence math excludes it at the shared emit gate (`dormancy.emit_dormancy_signal` — LIFECYCLE1 moved that gate out of the retired Pulse chat's prose and into code, so a NEW detector inherits it instead of having to remember it). Any reader of this surface that is not `m_facing` gets nothing.
 
 ## Skill Boundary
 

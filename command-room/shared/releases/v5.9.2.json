@@ -1,0 +1,13 @@
+{
+ "version": "5.9.2",
+ "headline": "Brief links open on Google Drive workspaces — a saved recap no longer answers a click with \"Failed to load local file.\"",
+ "items": [
+  {
+   "id": "v592_announce_drive_aware_brief_links",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "A fix from the field: on a workspace that lives in Google Drive, meeting briefs and weekly recaps saved fine, but clicking their links answered \"Failed to load local file.\" — the link pointed at a place that only exists on this side, never on your machine. Links for Drive-hosted workspaces now open the document in Google Drive itself, where the file actually lives. Workspaces in a regular local folder are untouched — those links keep opening exactly as before. Nothing to do on your side; the change arrives with your next scheduled brief or recap.",
+   "action": "announce_only"
+  }
+ ]
+}

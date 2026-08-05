@@ -78,7 +78,7 @@ Command Room usage — last 7 days
 By scheduled chat:
   Inbox             ran 5x   avg 6.2k words   avg 12 lookups   avg 8 seconds
   Commitments       ran 5x   avg 9.8k words   avg 22 lookups   avg 14 seconds
-  Pulse             ran 5x   avg 4.1k words   avg 8 lookups    avg 6 seconds
+  Staff Meeting     ran 5x   avg 4.1k words   avg 8 lookups    avg 6 seconds
   Past Meetings     ran 5x   avg 18.3k words  avg 35 lookups   avg 24 seconds   ← uses the most
   Upcoming Meetings ran 5x   avg 11.2k words  avg 18 lookups   avg 12 seconds
 

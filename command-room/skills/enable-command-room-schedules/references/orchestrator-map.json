@@ -5,6 +5,7 @@
   "inbox": "orchestrator-inbox.md",
   "waiting-on": "orchestrator-commitments.md",
   "my-plate": "orchestrator-my-plate.md",
+  "_retired": "`pulse` is RETIRED (SPEC LIFECYCLE1, 2026-08-02) — never register it. Its row stays below ONLY so a workspace that registered the chat before the retirement still resolves its bootloader; the file it names is a retirement stub. Membership test: schedule_config.RETIRED_TASKS.",
   "pulse": "orchestrator-dont-forget.md",
   "past-meetings": "orchestrator-past-meetings.md",
   "friday-wrap": "orchestrator-friday-wrap.md",

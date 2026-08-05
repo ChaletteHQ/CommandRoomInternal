@@ -68,6 +68,13 @@ from connector_adapters.provenance import (  # noqa: E402
 # an AUTO_ALLOWED reversible class — the reopen reverser is the safety net).
 AUTO_CLOSE_MODERATE = True
 
+# CONTACT1 round 3 — read from the module that owns the rule so the number in
+# the sentence the CEO reads can never drift from the number the code enforces.
+try:
+    from contact_capture import MAX_DEFER_ATTEMPTS as CONTACT_GIVE_UP_TRIES
+except Exception:  # pragma: no cover — the contact pass is optional
+    CONTACT_GIVE_UP_TRIES = 3
+
 # TTL for the ambiguous confirm proposals that DO stay queued — an unconfirmed
 # commitment_review_proposed older than this expires instead of accumulating.
 REVIEW_PROPOSAL_TTL_DAYS = 14
@@ -90,6 +97,31 @@ class PrimaryUserUnresolvedError(RuntimeError):
     So the orchestrator ABORTS instead: no audit event, no cursor advance, a
     loud receipt on stderr, and this exception for the caller to surface.
     """
+
+
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
 
 
 def _empty_signal_fields() -> dict:
@@ -525,16 +557,37 @@ def _read_cursor(workspace_root):
     return ws.get("sent_reconcile_cursor"), raw
 
 
-def _write_cursor(workspace_root, raw, new_cursor, *, source_skill):
+def _write_cursor(workspace_root, raw, new_cursor, *, source_skill,
+                  contact_cursor=None):
     """Persist workspace.sent_reconcile_cursor, preserving the wrapper shape.
-    Uses the locked JSON writer (concurrent-writer safe)."""
+    Uses the locked JSON writer (concurrent-writer safe).
+
+    CONTACT1: `raw` is RE-READ from disk here rather than trusted from the
+    caller. The contact-capture pass creates PEOPLE in this same file, and a
+    doc snapshotted before those creates would write them straight back out —
+    a silent clobber of the very records the fire just made. `new_cursor=None`
+    leaves the sent cursor untouched, so a fire that advanced only the contact
+    cursor still lands one write.
+
+    `contact_cursor` (also optional) rides the SAME write —
+    `contact_capture.stamp_contact_cursor` sets the key; one fire, one
+    entities.json write, no interleaving."""
     from atomic_write import atomic_write_json_locked
+    # Deliberately ignore the caller's snapshot — see the docstring. The
+    # parameter stays in the signature so every existing call site is
+    # unchanged and the intent stays readable at those sites.
+    _cur, raw = _read_cursor(workspace_root)
     inner = raw["entities"] if isinstance(raw.get("entities"), dict) else raw
     ws = inner.setdefault("workspace", {})
     if not isinstance(ws, dict):
         ws = {}
         inner["workspace"] = ws
-    ws["sent_reconcile_cursor"] = new_cursor
+    if new_cursor is not None:
+        ws["sent_reconcile_cursor"] = new_cursor
+    if contact_cursor is not None:
+        from contact_capture import stamp_contact_cursor
+
+        stamp_contact_cursor(raw, contact_cursor)
     atomic_write_json_locked(_entities_path(workspace_root), raw, holder=source_skill)
 
 
@@ -611,6 +664,13 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
         "n_opened": 0,
         "opened": [],
         "capture": None,
+        # CONTACT1 — a blocked fire read nothing, so it captured no contacts
+        # and moved no contact cursor either. Same shape as a real run so
+        # callers need no new branch.
+        "n_contacts_added": 0,
+        "n_contacts_gave_up": 0,
+        "contacts_added": [],
+        "contacts": None,
         "mail_provider": provider,
         "summary": summary,
     }
@@ -628,6 +688,7 @@ def reconcile_and_receipt(
     provider=None,
     exclude_captured_since=None,
     fetch_blocked=None,
+    contact_capture_items=None,
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -665,6 +726,9 @@ def reconcile_and_receipt(
         "n_opened": int,             # BUG-3719 capture pass (0 when not run)
         "opened":  [ {title, message_id, kind, due, pending_review} ],
         "capture": dict|None,        # full capture_sent_items summary
+        "n_contacts_added": int,     # CONTACT1 pass (0 when not run)
+        "contacts_added": [ {email, name, person_id, message_id, org_id} ],
+        "contacts": dict|None,       # full capture_contacts receipt
         "signal_fields": dict,       # SENTMATCH F-4 — did the delivery checks run?
         "summary": str,              # code-generated line the brief pastes verbatim
       }
@@ -693,6 +757,19 @@ def reconcile_and_receipt(
     `summary` says so in plain language. That combination is the difference
     between "the delivery checks found nothing" and "the delivery checks never
     ran" — two states that otherwise produce the identical healthy zero.
+
+    `contact_capture_items` (SPEC CONTACT1) — contact candidates the skill
+    extracted from the SAME Step-2 fetch: one per (sent message x direct To/CC
+    recipient), shape per `contact_capture.capture_contacts`. When not None,
+    this run also AUTO-CREATES contact records for people the CEO
+    demonstrably corresponds with — through `people_writer.auto_add_person`
+    (FS-11) on the existing `person_org_creation_structured_fact` auto class,
+    behind the two-way + hard-clarity gate, applied-then-narrated with undo.
+    It rides its OWN cursor (`workspace.contact_capture_cursor`), NOT the sent
+    one: reconcile-sent deliberately fetches wide windows regardless of the
+    sent cursor (Bug #101, "catch up my sent mail"), which is safe for
+    idempotent closures and would be a 30-day silent backfill here. None (the
+    default) = pre-CONTACT1 behavior, byte-identical.
 
     `exclude_captured_since` (RECONFENCE) — the ISO timestamp the caller
     recorded at the START of this fire, before any phase wrote. Commitments
@@ -958,12 +1035,50 @@ def reconcile_and_receipt(
             provider=provider,
         )
 
+    # SPEC CONTACT1 — auto contact records for people the CEO actually
+    # corresponds with. Runs AFTER the capture pass and BEFORE the cursor
+    # write, because it is the one phase that writes PEOPLE into
+    # entities.json: the cursor write below re-reads the doc for exactly that
+    # reason. Per-item gate refusals are normal outcomes, not errors; a
+    # malformed item lands loudly in contacts["errors"] and never crashes a
+    # fire whose closes have already landed.
+    contacts = None
+    if contact_capture_items is not None:
+        from contact_capture import capture_contacts
+
+        try:
+            contacts = capture_contacts(
+                workspace_root,
+                contact_capture_items,
+                source_skill=source_skill,
+                # The orchestrator owns the single entities.json write.
+                write_cursor=False,
+            )
+        except Exception as exc:  # a contact pass must never sink a reconcile
+            print(f"contact capture failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            contacts = {"ran": False, "error": f"{type(exc).__name__}: {exc}",
+                        "n_added": 0, "n_needs_confirm": 0, "n_carried": 0,
+                        "n_refused": 0, "n_skipped": 0, "n_errors": 0,
+                        "n_queue_rows_retired": 0, "added": [],
+                        "cursor_from": None, "cursor_to": None}
+
     # Advance the cursor to the newest Sent ts we saw (never backwards).
     cursor_after = cursor_before
     new_ts = res.get("cursor_ts")
+    sent_cursor_write = None
     if new_ts and (cursor_before is None or new_ts > cursor_before):
         cursor_after = new_ts
-        _write_cursor(workspace_root, raw, cursor_after, source_skill=source_skill)
+        sent_cursor_write = cursor_after
+    contact_cursor_write = None
+    if isinstance(contacts, dict) and contacts.get("ran") and \
+            contacts.get("cursor_to") and \
+            contacts.get("cursor_to") != contacts.get("cursor_from"):
+        contact_cursor_write = contacts["cursor_to"]
+    if sent_cursor_write is not None or contact_cursor_write is not None:
+        _write_cursor(workspace_root, raw, sent_cursor_write,
+                      source_skill=source_skill,
+                      contact_cursor=contact_cursor_write)
 
     def _slim(items):
         from event_time import event_time
@@ -1042,6 +1157,33 @@ def reconcile_and_receipt(
         audit_event["data"]["n_capture_merged"] = capture["n_merged"]
         audit_event["data"]["n_capture_observed"] = capture["n_observed"]
         audit_event["data"]["n_capture_errors"] = capture["n_errors"]
+    # CONTACT1 (D2, additive): the contact pass's counts ride the SAME receipt
+    # — one fire, one verifiable trace. Absent fields = a pre-CONTACT1 run or
+    # items not passed. `n_contacts_carried` is here so the cap is HONEST: a
+    # capped fire that reported only what it created would be indistinguishable
+    # from a fire that found nothing more to do.
+    if isinstance(contacts, dict):
+        audit_event["data"]["n_contacts_added"] = contacts.get("n_added", 0)
+        audit_event["data"]["n_contacts_needs_confirm"] = \
+            contacts.get("n_needs_confirm", 0)
+        audit_event["data"]["n_contacts_carried"] = contacts.get("n_carried", 0)
+        audit_event["data"]["n_contacts_refused"] = contacts.get("n_refused", 0)
+        audit_event["data"]["n_contacts_skipped"] = contacts.get("n_skipped", 0)
+        audit_event["data"]["n_contacts_errors"] = contacts.get("n_errors", 0)
+        audit_event["data"]["n_contact_queue_rows_retired"] = \
+            contacts.get("n_queue_rows_retired", 0)
+        audit_event["data"]["contact_cursor_from"] = contacts.get("cursor_from")
+        audit_event["data"]["contact_cursor_to"] = contacts.get("cursor_to")
+        # CONTACT1 round 3 — the two states that were previously invisible
+        # fleet-wide. A RESET is the changelog's own promise ("it resets to
+        # today and adds nobody for that gap"), and a promise nothing records
+        # cannot be checked on a customer's machine. A GIVE-UP means the pass
+        # stopped retrying an address it could not write; without it, three
+        # identical stuck fires and three quiet healthy ones look the same.
+        audit_event["data"]["n_contacts_gave_up"] = contacts.get("n_gave_up", 0)
+        if contacts.get("cursor_reset"):
+            audit_event["data"]["contact_cursor_reset"] = \
+                contacts["cursor_reset"]
     _append(events_path, [audit_event])
 
     if n_fetched == 0:
@@ -1058,6 +1200,31 @@ def reconcile_and_receipt(
     if n_opened:
         summary += (f" Started tracking {n_opened} new "
                     f"promise{'s' if n_opened != 1 else ''} from your sent mail.")
+    n_contacts = contacts.get("n_added", 0) if isinstance(contacts, dict) else 0
+    if n_contacts:
+        summary += (
+            f" Added {n_contacts} "
+            f"{'contact' if n_contacts == 1 else 'contacts'} you've been "
+            f"emailing back and forth with — say `undo` to reverse.")
+        n_carry = contacts.get("n_carried", 0)
+        if n_carry:
+            summary += (
+                f" {n_carry} more are waiting their turn and will be added on "
+                f"the next pass.")
+    # These two say themselves even on a fire that added nobody — which is
+    # exactly the fire they describe. A stall that only shows up in an audit
+    # event is a stall nobody finds.
+    n_gave_up = contacts.get("n_gave_up", 0) if isinstance(contacts, dict) else 0
+    if n_gave_up:
+        summary += (
+            f" {n_gave_up} contact{'s' if n_gave_up != 1 else ''} couldn't be "
+            f"added after {CONTACT_GIVE_UP_TRIES} tries — "
+            f"{'they' if n_gave_up != 1 else 'that person'} will be picked up "
+            f"again on their next message.")
+    if isinstance(contacts, dict) and contacts.get("cursor_reset"):
+        summary += (
+            " Contact-adding started fresh from today — the record of where it "
+            "had reached wasn't usable, so nothing older was read back.")
     if n_partial_receipts:
         summary += (
             f" Noted delivery to {n_partial_receipts} "
@@ -1116,6 +1283,12 @@ def reconcile_and_receipt(
         "n_opened": n_opened,
         "opened": list(capture["opened"]) if isinstance(capture, dict) else [],
         "capture": capture,
+        # CONTACT1 (additive; zeros/None when items not passed).
+        "n_contacts_added": n_contacts,
+        "n_contacts_gave_up": n_gave_up,
+        "contacts_added": list(contacts["added"]) if isinstance(contacts, dict)
+                          and contacts.get("added") else [],
+        "contacts": contacts,
         # MAILSEAM — what this run attributed its refs to, so a caller can act
         # on it without re-reading the audit event.
         "mail_provider": provider,
@@ -1181,7 +1354,7 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
     # this skill ever applied into ONE undoable batch, so a single `undo`
     # reached back across days and reopened closes the user never saw
     # (review F-2); `resolve_batch` applies no time window by design.
-    batch_id = batch_id or ("rcc_" + _dt.datetime.now(_dt.timezone.utc)
+    batch_id = batch_id or ("rcc_" + _clock_now(workspace_root)
                             .strftime("%Y%m%dT%H%M%SZ"))
     # The narrating surface needs the ref it is advertising "say undo" for.
     out["batch_id"] = batch_id

@@ -60,7 +60,7 @@ each source it loads, run the **reconcile pass** before it finishes:
 
 3. **Confidence + dedup are unchanged.** Reuse the orchestrator's thresholds:
    high-confidence auto-applies, low-confidence writes a `pending_review` /
-   `person_proposal` event that the next Pulse fire surfaces. Honor the
+   `person_proposal` event that the confirm queue surfaces (the staff meeting renders it; the Sunday identity-reconcile job clusters it). Honor the
    cross-meeting fusion guardrail and speaker-attribution ambiguity guard from
    `orchestrator-past-meetings.md` — the same transcript text is in hand, so the
    same safety checks apply.
@@ -88,7 +88,7 @@ each source it loads, run the **reconcile pass** before it finishes:
    what changed, without jargon or event-type names (CONTRACT Rule 4):
    *"Two of these meetings weren't in your workspace yet — I've captured them,
    including 1 new person (Quinn Sample). Say `past meetings` or check your next
-   Pulse to review."* If nothing was unprocessed, say nothing.
+   the staff meeting to review."* If nothing was unprocessed, say nothing.
 
 ## Multi-result reads
 

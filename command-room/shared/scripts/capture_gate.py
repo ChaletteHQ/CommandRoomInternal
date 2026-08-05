@@ -163,6 +163,31 @@ class CaptureGateError(ValueError):
     spirit — callers substitute their own class via `error_cls`)."""
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def parse_iso_date(value) -> bool:
     """True iff `value` is a string whose first 10 chars parse as an ISO date."""
     if not isinstance(value, str) or not value.strip():
@@ -379,7 +404,7 @@ def observed_expired(ev, *, promoted_ids=None, now=None) -> bool:
         return False
     if when.tzinfo is None:
         when = when.replace(tzinfo=_dt.timezone.utc)
-    now = now or _dt.datetime.now(_dt.timezone.utc)
+    now = now or _clock_now()
     return (now - when) > _dt.timedelta(days=OBSERVED_EXPIRY_DAYS)
 
 
@@ -1000,9 +1025,9 @@ def promote_observed(
         data["evidence"] = evidence[:200]
     gate_commitment_data(data, subject=f"promoted item {oid or observed_ref}")
     data["status"] = "open"
-    if data.get("due") and _dt.date.fromisoformat(data["due"]) < _dt.datetime.now(
-        _dt.timezone.utc
-    ).date():
+    if (data.get("due")
+            and _dt.date.fromisoformat(data["due"])
+            < _clock_now(workspace_root).date()):
         data["status"] = "overdue"
 
     ev: dict = {

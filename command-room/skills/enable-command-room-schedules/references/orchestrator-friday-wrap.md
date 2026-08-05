@@ -51,7 +51,7 @@ The weekly-recap skill's own idempotency (events.jsonl dedup via `source_ref_has
 
 The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and the orchestrator file path. Continue with:
 
-- Compute today's date in local time (YYYY-MM-DD) via `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)`. **v3.11.1+ contract:** `workspace_path` is REQUIRED on every call. Catch `TZResolutionError` and render the digest header with a "⚠️ Couldn't resolve workspace TZ — times shown as UTC" note rather than aborting.
+- Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)`. **v3.11.1+ contract:** `workspace_path` is REQUIRED on every call. Catch `TZResolutionError` and render the digest header with a "⚠️ Couldn't resolve workspace TZ — times shown as UTC" note rather than aborting.
 - Read `<WORKSPACE>/_hq/data/entities.json`. Capture the primary user (`person` record where `is_primary_user: true`) — first name + email + timezone.
 - Read `<WORKSPACE>/_hq/data/aliases.json` for canonicalization during connector scans.
 - Read `<WORKSPACE>/CLAUDE.md` if it exists (hot cache for people, projects, terms — supplies most quick references without per-file reads).
@@ -67,9 +67,19 @@ Cowork fires a missed slot at next app launch, hours or days late, and without t
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'friday-wrap', fired_via='<scheduled|manual>')))
+print(json.dumps(check_lateness('<workspace_root>', 'friday-wrap', fired_via='<scheduled|manual>', env_date='<session date>')))
 "
 ```
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+
+**Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
+
+**The clock verdict comes back as `clock`, and two things follow from it. Neither is optional:**
+
+- **When `clock["notice"]` is set, it is the FIRST line of this fire's output** — above the lateness banner, verbatim, never paraphrased and never dropped. It states that the dates in this surface came from the workspace record rather than this computer's clock. A silent substitution is its own bug: the reader has no other way to know which clock produced what they are looking at.
+- **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
+
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 

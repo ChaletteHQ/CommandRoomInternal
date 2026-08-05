@@ -35,7 +35,6 @@ Background maintenance (runs quietly, no chat output):
 
 Available, not added yet:
   Commitments         — say `add commitments` when you're ready
-  Pulse               — say `add pulse`
   Relationship Moves  — say `add relationship moves`
   Staff Meeting       — say `add staff meeting`
   Pipeline Digest     — say `add pipeline digest`
@@ -88,9 +87,9 @@ Render the same three groups as read-only mode (Registered / Background maintena
 ```
 What would you like to change? Examples:
   · `set inbox to 8am`            move one task to a new time
-  · `move pulse to noon mondays`  one task, specific day(s)
+  · `move inbox to noon mondays`  one task, specific day(s)
   · `pause past meetings`         temporarily disable one task
-  · `resume pulse`                re-enable a paused task
+  · `resume past meetings`        re-enable a paused task
   · `add relationship moves`      turn on an available task
   · `everything daily`            run weekdays AND weekends for all
   · `back to defaults`            reset everything to shipped defaults
@@ -117,7 +116,7 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 - `<task> mon and fri` / `<task> mondays and fridays` → `1,5`
 
 **Combined time + day:**
-- `move pulse to 8am mondays` → `0 8 * * 1` (after TZ conversion)
+- `move past meetings to 8am mondays` → `0 8 * * 1` (after TZ conversion)
 - `inbox at 7am and 3pm weekdays` → `0 7,15 * * 1-5` (after TZ conversion)
 
 **Enable/disable:**
@@ -126,6 +125,15 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 
 **Add an available task (Phase 3 / R1 — routes through the EXISTING add path):**
 - `add <task>` on a task rendered under "Available, not added" → invoke `enable-command-room-schedules`'s Phase 6 `add` flow for that taskId (it composes the bootloader, registers with the config-merged cron, and updates `workspace_config.json`). This skill does not build a second registration mechanism — the add path stays owned by the registration skill.
+
+**Retired tasks (SPEC LIFECYCLE1) — never offered, never added, always answerable:**
+
+Membership is `schedule_config.RETIRED_TASKS`, never a name you remember. A retired task is not a later-add the customer hasn't got to yet; it is gone.
+
+- **Never render one under "Available, not added yet."** That list is for things worth turning on.
+- **`add <retired task>` / `resume <retired task>` → refuse, warmly, once.** Reply with `schedule_config.retirement_line(task_id)` verbatim (it names why it went and where the work is now) and register nothing. Do not offer a workaround, and do not treat a second ask as a new decision.
+- **`pause <retired task>` works normally** — a workspace that still has it registered must be able to switch it off, and that tap is the whole retirement path. `enabled: false`, same as any pause.
+- **Render a still-registered retired task under "Registered"**, because it IS registered and hiding it would be a lie about the customer's own Scheduled list — with the retirement line under it so the tap is obvious. Nothing here disables it on its own (SPEC LIFECYCLE1 §4: propose, never silent).
 
 **Bulk changes:**
 - `everything daily` — all enabled tasks → `* * *` day fields
@@ -143,7 +151,7 @@ Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both 
 - `waiting on` / `waiting-on` / `commitment chase` / `chase chat` → `waiting-on` (CTS1 Surface 1 — the re-scoped daily)
 - `my plate` / `my-plate` / `plate` → `my-plate` (CTS1 Surface 2)
 - `commitments` / `commits` → the CTS1 pair: ask which of the two split surfaces they mean (`waiting-on` = things people owe them, `my-plate` = their own list) unless the request obviously covers both (e.g. "pause commitments" pauses both). The retired `commitments` taskId itself is disabled — never re-enable or re-anchor it.
-- `pulse` / `dont forget` / `don't forget` → `pulse`
+- `pulse` / `dont forget` / `don't forget` → `pulse` — **RETIRED (LIFECYCLE1, `schedule_config.RETIRED_TASKS`).** Resolve the name so a workspace that still has it registered can `pause pulse`, and NEVER offer, add or resume it: `add pulse` / `resume pulse` get the retirement line from `schedule_config.retirement_line("pulse")` verbatim and nothing else. Retired is not the same as available-not-added — see the retirement rule below.
 - `past meetings` / `past` / `meetings processed` → `past-meetings`
 - `friday wrap` / `friday` / `weekly wrap` / `weekly recap` → `friday-wrap`
 - `maintenance` / `background maintenance` / `background tasks` → `maintenance` (the TASK — moving its time moves every slot; see the MAINT1 rules below)

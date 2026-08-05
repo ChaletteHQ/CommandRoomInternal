@@ -56,7 +56,7 @@ consulted ONLY for threads with zero event history (fresh-ingest record
 stamps), then `first_seen`. A thread with same-day substrate activity is
 structurally incapable of flagging.
 
-Pulse Phase 4 (orchestrator-dont-forget.md) MUST use the same helper with
+The weekly `lifecycle` job (lifecycle_pass.py) MUST use the same helper with
 the same activity_event_types so both surfaces quote the same day-count
 (F-54's 21d-vs-37d cross-surface split).
 
@@ -67,7 +67,7 @@ threshold — substrate-quiet + live-active = not stalled, say why.
 
 This module ships READ-ONLY `detect_stalled_projects()`. The write side
 (`record_stall_state_changes()` — emits `project_stalled_flagged` events on
-state change) lands in v3.14.2 when pulse + weekly-audit get wired in.
+state change) lands in v3.14.2 when cleanup + weekly-audit get wired in.
 (The stalled-projects SKILL's pack_run scan receipt is written by the
 orchestrator via receipts.log_receipt, not from this read-only helper.)
 
@@ -110,7 +110,13 @@ DEFAULT_CONFIG = {
         # "archived" is intentionally absent — archived threads are never flagged
     },
     "activity_event_types": ["meeting", "commitment", "decision", "interaction"],
-    "surface_locations": ["pulse_phase_9", "friday_wrap"],
+    # LIFECYCLE1 — `pulse_phase_9` was the retired Pulse chat's stall
+    # section; the weekly `lifecycle` job is where that work runs now. The
+    # old value stays VALID in the schema enum forever (a config saved
+    # before the rename must not fail validation) — this is only the
+    # default for a config that has not been saved yet. Nothing dispatches
+    # on this list; it records the CEO's stated preference.
+    "surface_locations": ["lifecycle_pass", "friday_wrap"],
 }
 
 # Threshold key per status. Returns None for "never flag" statuses.
@@ -165,7 +171,7 @@ def detect_stalled_projects(workspace_root: str | Path) -> list[StallFlag]:
     # honor_reclassifications (RECL1): user-approved corrections move
     # activity with the event — a thread borrowing misclassified activity
     # flags honestly, a thread whose activity was moved in stops
-    # false-flagging. Pulse Phase 4 shares this call shape (F-54).
+    # false-flagging. lifecycle_pass shares this call shape (F-54).
     activity_types = set(cfg["activity_event_types"])
     last_activity_by_thread = derive_thread_activity(
         workspace_root, activity_types=activity_types,

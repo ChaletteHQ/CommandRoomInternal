@@ -142,7 +142,7 @@ anything) prevented the extractor from attributing correctly.
 
 ## When to NOT use these prompts
 
-- **Production scheduled-task fires.** Don't paste these into a Commitments / Inbox / Pulse chat that fires on cron. Fresh chat or main workspace chat only.
+- **Production scheduled-task fires.** Don't paste these into a Commitments / Inbox / Staff Meeting chat that fires on cron. Fresh chat or main workspace chat only.
 - **As a fix vehicle.** These are read-only diagnostics. The "don't fix anything" instruction is critical. Apply fixes via a separate session after diagnosis.
 - **For code-quality questions.** Use `/simplify` instead — it's the dedicated multi-batch review pattern.
 

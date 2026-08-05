@@ -46,7 +46,7 @@ The registration skill (`enable-command-room-schedules/SKILL.md` Phase 1) reads 
 
 Then passes the substituted body to `create_scheduled_task` / `update_scheduled_task` as the `prompt` parameter.
 
-**Pulse filename alias (debugging note — R5, docs-only):** the `pulse` task's `<ORCHESTRATOR_FILENAME>` is `orchestrator-dont-forget.md`, NOT `orchestrator-pulse.md` (which doesn't exist). That is deliberate, not drift: the filename stays for `events.jsonl` `source_skill` back-compat — see the `pulse` entry comment in `shared/scripts/schedule_config.py` and the top of `orchestrator-dont-forget.md`. Don't "fix" the mapping.
+**Pulse filename alias (debugging note — R5, docs-only; the task itself is RETIRED per LIFECYCLE1 and the file it names is now a retirement stub):** the `pulse` task's `<ORCHESTRATOR_FILENAME>` is `orchestrator-dont-forget.md`, NOT `orchestrator-pulse.md` (which doesn't exist). That is deliberate, not drift: the filename stays for `events.jsonl` `source_skill` back-compat — see the `pulse` entry comment in `shared/scripts/schedule_config.py` and the top of `orchestrator-dont-forget.md`. Don't "fix" the mapping.
 
 **Frontmatter rule:** the bootloader body MUST NOT start with a `---` frontmatter block. Cowork prepends its own frontmatter; user-supplied frontmatter would create a doubling bug (verified live 2026-05-06).
 
@@ -91,9 +91,16 @@ if [ ! -f "$WORKSPACE/_hq/data/events.jsonl" ]; then
     WORKSPACE=""
   fi
 fi
+# CLOCK1 — publish the resolved workspace to every subprocess this fire starts.
+# The clock-corroboration helper needs a workspace to read the ledger from, and
+# the phases that run before the lateness check have no other way to name one:
+# each `python3 -c` is its own process, started from the plugin root, so a
+# helper left to guess finds nothing and silently stamps the raw machine clock.
+export CR_WORKSPACE="$WORKSPACE"
 echo "PLUGIN_ROOT=$PLUGIN_ROOT"
 echo "ORCH=$ORCH"
 echo "WORKSPACE=$WORKSPACE"
+echo "CR_WORKSPACE=$CR_WORKSPACE"
 # Count Command Room candidates we found (clones that match the canonical skill structure).
 # Differentiates "no plugin mounted at all" from "plugin mounted but the orchestrator file
 # isn't where we expect" — the second case is usually Cowork's VHD-cache bug (stale mount).
@@ -149,6 +156,10 @@ If the output is `CONTRACT_FAIL`, post EXACTLY this message in chat and STOP. Do
 - **`scheduled`** — the scheduler started this session with no human message initiating the turn, and you are sure.
 
 **When uncertain, it is `manual`** (`shared/RECEIPT_CONTRACT.md` § Run-mode detection). A mis-labeled manual costs one missing lateness note; a mis-labeled scheduled refuses a surface a human asked for (the live 2026-07-27 report: a Monday morning `my-plate` answered with "Skipped the full My Plate — it was scheduled for 8:45 AM Friday"). Pass the literal word `scheduled` or `manual` — never the placeholder `<scheduled|manual>`, never a description like `Run Now`. Unrecognized values fail safe to `manual` in `check_lateness`, which protects the surface but silently drops lateness detection on a real scheduled fire. Say the word.
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Step 1 exported it, but each `python3 -c` you run is a separate process and shell state does not always survive between tool calls. So prefix them: `CR_WORKSPACE="$WORKSPACE" python3 -c "..."`. This is not decoration. The phases that gather context run BEFORE the lateness check and write to the ledger from those subprocesses; without the variable they cannot find the workspace, cannot cross-check the clock, and stamp whatever the machine says — which on the machine this was built for was two days wrong.
+
+**Pass the session date as well.** Phase 2.9 also takes `env_date` — this session's own date, the `Today's date is YYYY-MM-DD` line in your context. It is how the fire cross-checks this computer's clock against something other than itself. If `check_lateness` comes back with a **clock notice**, that notice is the FIRST line you post, above everything else including the lateness banner: the dates in the surface came from the workspace record rather than the machine, and the reader has no other way to know that.
 
 ## Step 3 — Read the orchestrator and execute it verbatim
 

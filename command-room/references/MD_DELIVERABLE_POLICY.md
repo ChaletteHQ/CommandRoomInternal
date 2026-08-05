@@ -66,7 +66,7 @@ These ALL stay `.md`. The user occasionally opens them but they're working files
 | The user asks for "the brief I'll skim before my meeting" | `.docx` (this is what `call-prep` does) |
 | The user asks for "an update I'll share in the team channel" | `.docx` (or, if it's email/Slack copy, Gmail Draft / Slack draft, not a file at all) |
 | The user asks for "your notes on what we discussed" | `.md` (working notes, context for future sessions) |
-| The skill produces a list Claude will read in pulse synthesis | `.md` |
+| The skill produces a list Claude will read in a later synthesis pass | `.md` |
 | The skill produces a report the user will open in 30 days to review | `.docx` |
 
 When in doubt: ask "would the user open this and want it to look like a Word doc?" If yes, `.docx`. If they'd open it mostly to copy text into something else, or if Claude is the primary reader, `.md`.

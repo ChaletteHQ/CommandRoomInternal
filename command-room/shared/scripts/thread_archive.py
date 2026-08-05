@@ -81,13 +81,38 @@ WHAT IS DELIBERATELY NOT HERE
     `entity_resolve` first (the standard gate for a name-bearing trigger).
     Guessing a thread from a name inside a writer is how the wrong project
     gets archived.
-  - No auto-anything. Nothing in this module decides that a thread SHOULD be
-    archived — no staleness rule, no decay, no dormancy transition. Every call
-    is downstream of a human gesture. (M's ruling 2026-08-01: Pulse-style
-    automatic lifecycle transitions are eliminated.)
-  - No un-archive. Reviving a thread is a separate lifecycle contract with its
-    own questions (which status does it come back to?) and belongs to whoever
-    specs it, not to a side door in the archive writer.
+  - No decision-making. Nothing in THIS module decides that a thread SHOULD be
+    archived — no staleness rule, no decay, no dormancy transition lives here.
+    The caller decides and this module writes.
+
+    Most callers are downstream of a human gesture (workspace-manager's
+    `archive [project]`, the stalled-projects `archive` tap, the dormancy
+    row's `archive` verb). Exactly ONE is not: `lifecycle_pass.py` archives a
+    thread that has been DORMANT and quiet past the 180-day rule in the
+    lifecycle state machine (SPEC LIFECYCLE1, M's ruling 2026-08-02 — eliminate
+    the Pulse chat, fold its real jobs). That rule and its caps live in that
+    module, not here, and it routes through `archive_thread` precisely so the
+    leg gets the `archived_at` stamp and the canonical event Pulse's prose
+    never wrote. (An earlier draft of this docstring read "every call is
+    downstream of a human gesture, Pulse-style automatic lifecycle transitions
+    are eliminated" — accurate the day ARCHFIX shipped, superseded the day the
+    fold landed. A stale doc is a live instruction.)
+  - No un-archive DECISION. Which status a thread comes back to is the caller's
+    lifecycle contract, and `lifecycle_pass` owns it: it writes the revive
+    through `thread_writer.update_thread` + this module's shared
+    `build_thread_status_event`, NOT through a side door here.
+
+    But the two stamps `archive_thread` puts ON a record belong to this module,
+    and so does taking them off. `clear_archive_stamps` below is the writer for
+    that, added in the LIFECYCLE1 fix round because the first cut left them
+    behind: a revived thread still carrying `archived_at` is an ACTIVE project
+    holding an archive date. That is the same sort-key class as the bug this
+    module exists to fix, one step further on — MASTER_TRACKER's Recently
+    Archived section sorts on that field, `archive_status` reported an archive
+    the thread no longer has, and the next real archive would have been
+    indistinguishable from the stale stamp. Whoever sets a stamp owns clearing
+    it; a caller hand-writing `archived_at = None` is exactly the hand-write
+    this module refuses everywhere else.
 
 stdlib only.
 """
@@ -228,10 +253,10 @@ def archive_status(workspace_root, thread_id: str) -> dict:
     }
 
 
-def build_status_change_event(thread_id: str, *, from_status: Optional[str],
-                              reason: Optional[str],
+def build_thread_status_event(thread_id: str, *, from_status: Optional[str],
+                              to_status: str, reason: Optional[str],
                               source_skill: str) -> dict:
-    """The canonical `status_change` envelope for an archive.
+    """The canonical `status_change` envelope for ANY thread transition.
 
     Shape follows the live precedent (the v21 fixture's status_change payload
     and the dont-forget dispatch): the thread id rides the CANONICAL envelope
@@ -240,7 +265,11 @@ def build_status_change_event(thread_id: str, *, from_status: Optional[str],
     omitted on purpose — they are auto-stamped inside the writer lock.
 
     Split out from the writer so a test can assert the shape without writing,
-    and so the two call sites cannot each invent their own payload.
+    and so no call site invents its own payload. `build_status_change_event`
+    below is the archive-shaped alias every pre-LIFECYCLE1 caller uses; the
+    active->dormant and revive legs of `lifecycle_pass` call THIS one, because
+    a shared builder that only ever emits one `to_status` is a shared builder
+    for one transition and an invitation to hand-roll the rest.
     """
     return {
         "type": "status_change",
@@ -248,10 +277,55 @@ def build_status_change_event(thread_id: str, *, from_status: Optional[str],
         "primary_thread_id": thread_id,
         "data": {
             "from_status": from_status,
-            "to_status": ARCHIVED_STATUS,
+            "to_status": to_status,
             "reason": reason,
         },
     }
+
+
+def build_status_change_event(thread_id: str, *, from_status: Optional[str],
+                              reason: Optional[str],
+                              source_skill: str) -> dict:
+    """The canonical `status_change` envelope for an ARCHIVE — the shared
+    builder `deal_state`, `objective_state` and `archive_thread` all use.
+    Delegates to `build_thread_status_event` so there is one payload shape."""
+    return build_thread_status_event(
+        thread_id, from_status=from_status, to_status=ARCHIVED_STATUS,
+        reason=reason, source_skill=source_skill)
+
+
+def clear_archive_stamps(workspace_root, thread_id: str, *,
+                         source_skill: str = "workspace-manager") -> dict:
+    """Take the archive stamps OFF a record — the counterpart of the pair
+    `archive_thread` puts on. Typed write through `thread_writer.update_thread`
+    like everything else here; no direct entities.json edit.
+
+    Call this when a thread LEAVES `archived` for any live status. It does not
+    decide the new status and does not write a `status_change` — the caller's
+    lifecycle contract owns both; this clears the two fields the caller has no
+    business hand-writing.
+
+    Honest no-op when there is nothing to clear (`status: "no_stamps"`, zero
+    record churn, no `thread_updated` event) — the same posture
+    `archive_thread` takes on an already-archived thread, and for the same
+    reason: a write that changed nothing must not look like a write.
+
+    Raises ThreadArchiveError on an unknown thread id.
+    """
+    ws = Path(workspace_root)
+    data = _load_entities(ws)
+    thread = _find_thread(data, thread_id)
+    if thread is None:
+        raise ThreadArchiveError(
+            f"thread not found: {thread_id!r} — resolve the name through "
+            "entity_resolve and pass the matched id.")
+    had = {k: thread.get(k) for k in ("archived_at", "archive_reason")
+           if thread.get(k)}
+    if not had:
+        return {"status": "no_stamps", "thread_id": thread_id, "cleared": {}}
+    thread_writer.update_thread(ws, thread_id, source_skill=source_skill,
+                                archived_at=None, archive_reason=None)
+    return {"status": "cleared", "thread_id": thread_id, "cleared": had}
 
 
 def archive_thread(workspace_root, thread_id: str, *,
@@ -362,7 +436,9 @@ __all__ = [
     "archive_stamp",
     "archive_status",
     "archive_thread",
+    "clear_archive_stamps",
     "build_status_change_event",
+    "build_thread_status_event",
     "normalize_reason",
     "stalled_review_reason",
 ]

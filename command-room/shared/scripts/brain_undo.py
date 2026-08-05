@@ -138,6 +138,91 @@ def _reverse_commitment_merge(workspace_root, change, *, undone_by, source_skill
     return result
 
 
+# UNCONFIRM1 — the queue's two USER-GESTURE reversals.
+#
+# BOTH GO THROUGH THE QUEUE'S OWN WRAPPERS, NOT THE WRITERS (review SF-7).
+# The first draft called `restore_review_flags` / `reopen_commitment` directly,
+# which was a SECOND, WEAKER path to the same state change: on an item somebody
+# had independently reassigned after the confirm, the wrapper returned
+# `touched_since_confirm` while the reverser cheerfully returned `restored`;
+# on an item that was never confirmed at all, the reverser also returned
+# `restored`. "Fences extended, never forked" is a hard constraint, and a
+# reverser that skips the bar the surface enforces is a fork with a registry
+# entry. Every bar — the touch bar, the never-confirmed refusal, MF-2's
+# attested-closure gate, idempotence — now applies identically whichever road
+# the undo arrives by.
+#
+# A REFUSAL IS AN ERROR HERE, not a silent success: `undo_batch` counts a
+# raising reverser as a per-item error and does NOT append the
+# `brain_change_undone` marker, which is exactly right — nothing was reversed.
+# An already-in-that-state result is NOT a refusal and does not raise, matching
+# `_reverse_commitment_merge`'s treatment of `already_open`.
+
+_ALREADY_STATUSES = frozenset({"already_unconfirmed", "already_undone"})
+
+
+def _one_queue_result(out: dict, cid: str, verb: str) -> dict:
+    """Unwrap a one-id queue-wrapper return, raising on a refusal."""
+    results = out.get("results") or []
+    entry = results[0] if results else {}
+    status = entry.get("status")
+    if status in ("restored", "undone") or status in _ALREADY_STATUSES:
+        return {"status": status, "commitment_id": entry.get("commitment_id",
+                                                             cid),
+                "queue_result": out}
+    raise BrainUndoError(
+        f"{verb} reversal refused for {cid!r}: {status} — "
+        f"{entry.get('detail') or 'the queue would not reverse it'}")
+
+
+def _reverse_commitment_confirm(workspace_root, change, *, undone_by,
+                                source_skill):
+    # Additive: the confirm's `commitment_updated` stays in history and
+    # `restore_review_flags` (reached through `undo_confirm_items`) appends the
+    # reversing one, so the item is a queue member again carrying its ORIGINAL
+    # review_reason and its ORIGINAL duplicate link, both read off the capture
+    # event — nothing has to be cached between the two gestures.
+    #
+    # THE WRITER MATTERS. Before this existed, the only additive reverser of a
+    # confirm was `flag_duplicate_for_review`, which requires a
+    # `suspected_duplicate_of`; used as an un-confirm it wrote an empty target,
+    # which the projector ignores and the on-disk history keeps forever as a
+    # duplicate pair that never existed.
+    from needs_review_queue import undo_confirm_items
+
+    cid = change.get("commitment_id")
+    if not cid:
+        raise BrainUndoError(
+            "commitment_confirm reversal needs the commitment_id the confirm "
+            "cleared (needs_review_queue.confirm_items stamps it on the "
+            "commitment_updated event's data)")
+    out = undo_confirm_items(workspace_root, [cid], restored_by=undone_by,
+                             source_skill=source_skill)
+    return _one_queue_result(out, str(cid), "commitment_confirm")
+
+
+def _reverse_commitment_done(workspace_root, change, *, undone_by,
+                             source_skill):
+    # Reverse an `already done` attestation. TWO steps inside the wrapper, and
+    # the order is forced: both review-flag writers refuse a CLOSED item, so
+    # the reopen lands first. And the reopen alone is not the reversal — the
+    # Done wrote a confirm before it closed, so a bare reopen leaves an OPEN,
+    # CONFIRMED item, not the queue member the user had before they tapped.
+    # That is the closed-corpse blind spot's twin, and it is why this mirrors
+    # `_reverse_commitment_merge`'s reopen-then-re-flag shape.
+    from needs_review_queue import undo_done_items
+
+    cid = change.get("commitment_id")
+    if not cid:
+        raise BrainUndoError(
+            "commitment_done reversal needs the commitment_id the Done "
+            "closed (needs_review_queue.done_items stamps it on the "
+            "commitment_resolved event's data)")
+    out = undo_done_items(workspace_root, [cid], restored_by=undone_by,
+                          source_skill=source_skill)
+    return _one_queue_result(out, str(cid), "commitment_done")
+
+
 def _reverse_chat_dismissal(workspace_root, change, *, undone_by, source_skill):
     from mute_ledger import clear_dismissals
 
@@ -352,6 +437,31 @@ REVERSERS: dict[str, dict] = {
                        "folded refs are read-side provenance only); the pair "
                        "returns to the human as a flag-tier question and is "
                        "never re-merged automatically",
+    },
+    # UNCONFIRM1 (2026-08-03) — the two needs-your-call USER GESTURES.
+    #
+    # NEITHER OF THESE MAY EVER JOIN `brain_proposals.AUTO_ALLOWED`, now or
+    # later. Registering a reverser is only ONE half of the auto-tier legality
+    # test (`brain_proposals.propose(tier="auto")` requires membership in
+    # AUTO_ALLOWED *and* a registered reverser); this build does not touch the
+    # other half. Both of these reverse a USER GESTURE, and nothing may make a
+    # user gesture on its own.
+    "commitment_confirm": {
+        "reverse": _reverse_commitment_confirm,
+        "reverses_via": "commitment_updated (review_flags_set)",
+        "description": "un-confirm an unconfirmed extraction the user "
+                       "confirmed — it returns to the needs-your-call queue "
+                       "carrying its original reason; the confirm stays in "
+                       "history",
+    },
+    "commitment_done": {
+        "reverse": _reverse_commitment_done,
+        "reverses_via": "commitment_reopened + a commitment_updated "
+                        "(review_flags_set)",
+        "description": "reverse an 'Already done' attestation — the item "
+                       "reopens AND returns to the queue unconfirmed, never a "
+                       "closed corpse; both the confirm and the closure stay "
+                       "in history",
     },
     "chat_dismissal": {
         "reverse": _reverse_chat_dismissal,
@@ -655,6 +765,11 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
 _CLASS_PHRASES = {
     "commitment_close": "closed a commitment",
     "commitment_merge": "merged a duplicate capture",
+    # UNCONFIRM1 — never written by an auto detector (neither class is in
+    # AUTO_ALLOWED), so these phrases exist for a surface that narrates a
+    # USER's own batch. A class name is not a thing anyone said or saw happen.
+    "commitment_confirm": "confirmed a captured item",
+    "commitment_done": "said a captured item was already done",
     "person_link": "linked a name to an existing contact",
     "person_org_creation_structured_fact": "added a contact",
     "entity_fact_structured": "noted a fact",

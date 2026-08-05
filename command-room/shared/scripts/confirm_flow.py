@@ -113,6 +113,16 @@ PERSON_ORG_KEYS = ("inferred_org", "proposed_org", "inferred_org_name",
                    "proposed_org_name", "proposed_org_canonical_name",
                    "org_hint")
 PERSON_EVIDENCE_KEYS = ("evidence", "signal", "note", "context", "reason")
+# CONTACT1 round 3: the address a proposal carries as a STRUCTURED FIELD, as
+# opposed to one mentioned inside its prose. `person_backlog_sweep
+# ._observed_email` — the shared F-3 attribution reader — scans `evidence` /
+# `source_ref` TEXT, which is the right rule for a captured mention but reads
+# a structured payload as address-less. inbox-triage's promote-queue writes
+# exactly that shape (`data: {name, email, promote_queue: true, ...}`), so a
+# reader asking "does this row name an address?" through the prose scan alone
+# gets "no" for a row whose whole point is the address. Surfaced here rather
+# than re-derived per caller: one loader, one answer.
+PERSON_EMAIL_KEYS = ("email", "observed_email", "address", "email_address")
 
 
 def _first_str(data: dict, keys) -> Optional[str]:
@@ -415,7 +425,7 @@ def load_open_person_proposals(
 
     Returns rows oldest first:
       {seq, type, name, person_id, inferred_role, inferred_org, evidence,
-       review_reason, source_ref, captured_ts}
+       review_reason, source_ref, email, captured_ts}
 
     name / inferred_role / inferred_org / evidence / source_ref are
     COALESCED across the legacy field spellings (PERSON_*_KEYS — FB-8): the
@@ -501,6 +511,13 @@ def load_open_person_proposals(
             "evidence": _first_str(d, PERSON_EVIDENCE_KEYS),
             "review_reason": d.get("review_reason"),
             "source_ref": source_ref,
+            # The row's STRUCTURED address, if it carries one (PERSON_EMAIL_KEYS
+            # — additive; None on the overwhelming majority of rows, which name
+            # an address in prose or not at all). Never a substitute for the F-3
+            # prose attribution: a reader that needs "what address does this row
+            # point at" has to consult BOTH, because the two shapes are written
+            # by different families.
+            "email": _first_str(d, PERSON_EMAIL_KEYS),
             "captured_ts": (ev.get("ts") or ev.get("timestamp") or ""),
             # D8: present ONLY on seq-less rows (None otherwise) — the
             # tombstone key downstream writers pass back.

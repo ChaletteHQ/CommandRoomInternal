@@ -165,8 +165,19 @@ _FIRE_GRACE = _dt.timedelta(minutes=90)  # dispatch jitter + long fires
 
 
 def _now_local() -> _dt.datetime:
-    """Naive machine-local now — the clock cron actually evaluates in."""
-    return _dt.datetime.now()
+    """Naive MACHINE-local now — the clock cron actually evaluates in.
+
+    CLOCK1: the INSTANT is corroborated against the workspace ledger; the
+    ZONE is untouched. Fired-recency math stays machine-local naive, exactly
+    as the R8 doctrine requires. Falls back to the raw machine clock if the
+    helper is unavailable.
+    """
+    try:
+        from trusted_now import trusted_now_local_naive
+
+        return trusted_now_local_naive()
+    except Exception:
+        return _dt.datetime.now()
 
 
 def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:

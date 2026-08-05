@@ -38,7 +38,7 @@ This orchestrator ALWAYS runs when fired — by cron or a manual `balance check`
 
 The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and this orchestrator file path. Continue with:
 
-- Compute today's date in local time via `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
+- Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` exactly as before (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
 - Read `<WORKSPACE>/_hq/data/entities.json` — the `workspace.personal_calendars` config gate FIRST (skills/balance/SKILL.md Step 0: none declared → the honest refusal line is the whole turn, nothing emitted), then the `tie: "personal"` people.
 - Discover the calendar connector for the busy-interval fetch (native MCP — never Zapier for calendar).
 
@@ -52,9 +52,19 @@ Compute the tier via the shared helper (never inline the math), passing the dete
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'balance', fired_via='<scheduled|manual>')))
+print(json.dumps(check_lateness('<workspace_root>', 'balance', fired_via='<scheduled|manual>', env_date='<session date>')))
 "
 ```
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+
+**Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
+
+**The clock verdict comes back as `clock`, and two things follow from it. Neither is optional:**
+
+- **When `clock["notice"]` is set, it is the FIRST line of this fire's output** — above the lateness banner, verbatim, never paraphrased and never dropped. It states that the dates in this surface came from the workspace record rather than this computer's clock. A silent substitution is its own bug: the reader has no other way to know which clock produced what they are looking at.
+- **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
+
 
 Branch on `tier` (every phase below still executes verbatim; the tier only governs what is RENDERED):
 

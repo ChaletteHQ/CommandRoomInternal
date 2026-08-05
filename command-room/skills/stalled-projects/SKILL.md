@@ -15,6 +15,7 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 - **Use `dormant-customer-scan` for:** people-focused cadence breaks (a customer relationship that's gone quiet). Different unit of analysis.
 - **Use `list-active` for:** rendering the whole project roster without filtering by activity.
 - **Use `cleanup` for:** broader workspace hygiene that includes stall as one check among many.
+- **The `lifecycle` maintenance job WRITES; this skill ASKS.** The weekly job (`shared/scripts/lifecycle_pass.py`) proposes the dormancy questions and applies the transitions the lifecycle rules already decided (30-day ask, 60-day dormant after an unanswered ask, 180-day archive, revive on new activity). This skill never flips a status of its own accord — it renders the job's questions and the CEO's tap is what answers them.
 - **Use `pipeline-tracker` for:** deal threads. `kind="deal"` threads are EXCLUDED from this scan by fence (SPEC PIPE1 D7 — `stall_detector.detect_stalled_projects` skips them in code): deal rot is stage-dependent (a negotiation goes stale in 7 days, a lead in 10) and reports through the pipeline surface's per-stage thresholds. One quiet deal must never be double-flagged by both scans.
 - **Use `objectives` for:** standing-objective threads. `kind="objective"` threads are EXCLUDED from this scan by the same in-code fence (SPEC OBJ1, DRAFT): objective drift is binding-dependent (a self-reported objective drifts on missed check-ins, a meeting-reviewed one on undiscussed sessions — not on generic thread quiet) and reports through the objectives surfaces with a suggested move. One drifting objective must never be double-flagged.
 
@@ -22,7 +23,7 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 
 - **Reads from:** `_hq/data/entities.json` (projects), events via `shared/scripts/thread_activity.py::derive_thread_activity` (shard-transparent; top-level `primary_thread_id` + `related_thread_ids` + legacy id spellings, filtered by activity event types from config, `honor_reclassifications=True` — RECL1: user-approved corrections move activity with the event, so day-counts are honest in both directions), `_hq/data/skill_config/stalled-projects.json` (first-run questionnaire answers), and the prior `pack_run` receipt (nag-dedup, below).
 - **NEVER from `thread.last_activity`.** The field is DEPRECATED (v4.5.2, FINDINGS F-54/F-61): the cleanup autopsy proved no code path maintains it — ranking by it reported "43 days quiet" on a project with two same-day meetings. Staleness derives from events at read time; `stall_detector` consults the stored field only for threads with zero event history. See `references/ORG_AND_THREAD_MODEL.md` § last_activity deprecation.
-- **Writes to:** three declared, narrow paths — (1) `_hq/data/skill_config/stalled-projects.json` on first fire, tune, and reset, always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`); (2) a snooze-suppression event (the `snooze 14d` action's `dont_forget_snooze`-style append, dispatched through apply-choices) via `atomic_append_jsonl`; (3) a `pack_run` scan receipt at the end of every Detect fire via `receipts.log_receipt` (v4.5.2 C3 — see "Scan receipt" below). Detection itself persists nothing else — it surfaces flags only. The stall-state write side (emitting `project_stalled_flagged` events on state change) lands in v3.14.2 when Pulse + cleanup integration adds the once-weekly recording call.
+- **Writes to:** three declared, narrow paths — (1) `_hq/data/skill_config/stalled-projects.json` on first fire, tune, and reset, always via `skill_config_writer` (`save_skill_config` / `wipe_skill_config`); (2) a snooze-suppression event (the `snooze 14d` action's `dont_forget_snooze`-style append, dispatched through apply-choices) via `atomic_append_jsonl`; (3) a `pack_run` scan receipt at the end of every Detect fire via `receipts.log_receipt` (v4.5.2 C3 — see "Scan receipt" below). Detection itself persists nothing else — it surfaces flags only. The stall-state write side (emitting `project_stalled_flagged` events on state change) lands in v3.14.2 when the cleanup integration adds the once-weekly recording call.
 - **No raw substrate writes.** Every write above (and the v3.14.2 write side when it ships) goes through the canonical writer helpers — `skill_config_writer` / `atomic_append_jsonl` / `receipts.log_receipt` (per Bug #81 architectural fix). Hand-rolled writes are forbidden.
 
 ## What It Doesn't Do
@@ -123,7 +124,7 @@ which setting that maps to.
 
 ### Live-check gate (v4.5.2 C3 — MUST, before anything renders as quiet)
 
-> **No project may be flagged stalled from substrate-only data. You MUST live-check every flagged candidate against Gmail + Calendar before rendering it, and respect the result.** This is the same enforcement gate dormant-customer-scan and Pulse Step 1b carry (FINDINGS F-57 proved the discipline; F-54 is what shipping without it looks like).
+> **No project may be flagged stalled from substrate-only data. You MUST live-check every flagged candidate against Gmail + Calendar before rendering it, and respect the result.** This is the same enforcement gate dormant-customer-scan carries (FINDINGS F-57 proved the discipline; F-54 is what shipping without it looks like).
 
 For every flag `detect_stalled_projects` returns:
 
@@ -191,7 +192,7 @@ Pre-filling current values is what makes tune feel like "edit settings" rather t
    - ☐ Status changes
 
 3. **Where should stall flags also surface?** (in addition to on-demand here)
-   - ☑ Your Pulse briefing (Tue + Thu mornings)
+   - ☑ The weekly lifecycle pass (the background job that asks about quiet projects)
    - ☑ Friday Wrap weekly summary
    - ☐ Morning brief if any stall detected
    - ☐ cleanup only
@@ -263,7 +264,29 @@ flags = detect_stalled_projects(workspace_root)
 }
 ```
 
-The day-count here and Pulse Phase 4's stale-active day-count come from the SAME derivation (`thread_activity.derive_thread_activity`, same activity-type set) — the two surfaces can never quote different numbers for the same project on the same day (F-54's 21d-vs-37d split).
+The day-count here and the `lifecycle` job's day-count come from the SAME derivation (`thread_activity.derive_thread_activity`, same activity-type set, `honor_reclassifications=True`) — the surface that ASKS and the job that WRITES can never quote different numbers for the same project on the same day (F-54's 21d-vs-37d split, inherited from the Pulse phase this replaced).
+
+### The dormancy questions (SPEC LIFECYCLE1 — THE asking surface, MANDATORY)
+
+**This skill is the ONE place the CEO is asked whether a quiet project has actually gone dormant.** Nothing else asks. Skip this block and the questions have no door at all.
+
+How it got here: the weekly `lifecycle` maintenance job (`shared/scripts/lifecycle_pass.py`) proposes a dormancy question for every active project past 30 days quiet. STAFFCUT §3.7 (M's ruling 2026-08-02) demoted those rows to ON-DEMAND — whether a quiet project is dormant is a judgment the CEO makes when he asks, not weekly homework on the staff meeting — and the retired Pulse chat's REVIEW section used to be where they showed. LIFECYCLE1 moved the asking here, to the surface that already asks about quiet projects, with the same unit of analysis and near-identical verbs.
+
+Read them alongside the stall flags on EVERY Detect fire:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
+from brain_proposals import load_open_proposals
+dormancy_rows = [i for i in load_open_proposals(WORKSPACE_ROOT, "on-demand")
+                 if i.get("kind") == "dormancy"]
+```
+
+- `"on-demand"` is the surface argument and it is load-bearing: a plain `load_open_proposals(ws, "stalled-projects")` returns NONE of these rows (the projector's demotion filter drops the kind for every other named surface). Never work around that filter — pass the hint.
+- **Render each row VERBATIM.** `render_line` is the ask ("<Project> has gone quiet — still active, or archive it?"), `evidence` is the day-count, and `action_tuples` carries the registered verbs — `active` / `archive` / `snooze 14d`. Take them from the row; never invent a verb and never re-word the ask (Bug #92b).
+- **Wire ids embedded verbatim (F2):** each row's `n` is its proposal `id`, so `apply-choices` dispatches it statelessly through the `cr-brain` `kind: dormancy` handlers that have always owned these verbs. You dispatch nothing yourself.
+- **Own section, own honest count** — `QUIET PROJECTS — still active? (N)`, after the stall flags. A dormancy question and a stall flag are different asks: a stall flag says *this needs a touch*, a dormancy question says *should we stop tracking this*. Never merge them into one list.
+- **Drop-empty.** No open rows → no section, no "nothing to review" line.
+- These rows are ALREADY live-checked and already deduped by the projector (snoozes, declines and the shared 60-day cooldown are applied before you see them). Do NOT re-run the stall live-check gate over them, and never re-surface one the projector withheld.
 
 ### Rendering the surface
 
@@ -300,16 +323,18 @@ If the workspace has zero projects (new install, or all archived), the skill res
 
 ## Versioning
 
-This skill ships in v3.14.1. The `stall_detector.py` helper it calls is the canonical detector. v3.14.2 adds the once-weekly recording call (`record_stall_state_changes`) wired into cleanup, plus pulse Phase 9 integration. This skill itself remains the on-demand surface across all v3.14.x releases.
+This skill ships in v3.14.1. The `stall_detector.py` helper it calls is the canonical detector. v3.14.2 adds the once-weekly recording call (`record_stall_state_changes`) wired into cleanup. This skill itself remains the on-demand surface across all v3.14.x releases.
+
+LIFECYCLE1 (2026-08-02): the Pulse chat is retired and this skill inherits the one thing it asked that nothing else did — the dormancy questions (see "The dormancy questions" above). Detection and the retire/revive transitions moved to the weekly `lifecycle` maintenance job, which writes; this skill asks.
 
 v4.5.2 (C3, FINDINGS F-54): staleness now derives from events at read time via `thread_activity.derive_thread_activity` — the deprecated `thread.last_activity` record stamp can never override events. Adds the mandatory live-check gate (`apply_live_check`, F-57 discipline) and the `pack_run` scan receipt with nag-dedup.
 
-RECL1 (2026-07): the derivation honors user-approved reclassifications (`honor_reclassifications=True` in `stall_detector`). Day-counts are now honest in both directions — a thread borrowing misclassified activity may newly flag (correct), and a thread whose activity was moved onto it stops false-flagging. Pulse Phase 4 adopts the same call shape, so the F-54 one-day-count contract holds through corrections.
+RECL1 (2026-07): the derivation honors user-approved reclassifications (`honor_reclassifications=True` in `stall_detector`). Day-counts are now honest in both directions — a thread borrowing misclassified activity may newly flag (correct), and a thread whose activity was moved onto it stops false-flagging. The `lifecycle` job uses the same call shape, so the F-54 one-day-count contract holds through corrections.
 
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Surface every project that has gone quiet — no meetings, commitments, decisions, or real conversations in the configured threshold — so the CEO can decide whether to resurrect, snooze, or archive each one before it falls through the cracks. Reads from the workspace activity timeline + project graph. Use when the CEO says 'show me stalled projects', 'show me stalled', 'what's stalled', 'stalled projects', 'stalled project check', 'what projects are stalled', 'which projects have stalled', 'projects that have gone quiet', 'show me projects that haven't moved', 'project hygiene check', 'show me dead projects', 'what should I prune'. Also handles first-run personalization settings — use when the CEO says 'tune my stall settings', 'tune stalled-projects', 'show stalled-projects settings', 'reset stalled-projects to defaults', 'reconfigure stalled-projects', 'change stalled-projects settings', 'change my stall settings', 'redo stalled-projects setup', 'change stall thresholds', 'show my stall settings', 'what are my stall settings', 'show stalled-projects config', 'reset stall settings'. Runs on demand and is wired into Pulse + Friday Wrap (in subsequent releases). DOES NOT fire on 'who went dark' or 'dormant customers' — that's `dormant-customer-scan`, which is people-focused, not project-focused. DOES NOT fire on 'show me my projects' or 'list active projects' — that's `list-active`, which renders the whole roster without filtering by activity. DOES NOT fire on bare 'cleanup' — that's `cleanup`, which surfaces multiple workspace hygiene checks of which stall is one.
+> Surface every project that has gone quiet — no meetings, commitments, decisions, or real conversations in the configured threshold — so the CEO can decide whether to resurrect, snooze, or archive each one before it falls through the cracks. Reads from the workspace activity timeline + project graph. Use when the CEO says 'show me stalled projects', 'show me stalled', 'what's stalled', 'stalled projects', 'stalled project check', 'what projects are stalled', 'which projects have stalled', 'projects that have gone quiet', 'show me projects that haven't moved', 'project hygiene check', 'show me dead projects', 'what should I prune'. Also handles first-run personalization settings — use when the CEO says 'tune my stall settings', 'tune stalled-projects', 'show stalled-projects settings', 'reset stalled-projects to defaults', 'reconfigure stalled-projects', 'change stalled-projects settings', 'change my stall settings', 'redo stalled-projects setup', 'change stall thresholds', 'show my stall settings', 'what are my stall settings', 'show stalled-projects config', 'reset stall settings'. Runs on demand and is wired into the weekly lifecycle pass + Friday Wrap. DOES NOT fire on 'who went dark' or 'dormant customers' — that's `dormant-customer-scan`, which is people-focused, not project-focused. DOES NOT fire on 'show me my projects' or 'list active projects' — that's `list-active`, which renders the whole roster without filtering by activity. DOES NOT fire on bare 'cleanup' — that's `cleanup`, which surfaces multiple workspace hygiene checks of which stall is one.
 
 > DOES NOT fire on 'which deals are stalling' / 'deal is stalled' (pipeline-tracker, SPEC PIPE1 — this scan excludes deal threads in code, so a quiet deal is never double-flagged).

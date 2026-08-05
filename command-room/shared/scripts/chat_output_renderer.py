@@ -501,7 +501,14 @@ class DataShapeError(ValueError):
 
 
 class PulseRichnessError(DataShapeError):
-    """Raised when a Pulse (cr-dont-forget) person-dormant item is too thin to
+    """FOSSIL VALIDATOR (LIFECYCLE1, 2026-08-02) — the Pulse chat is RETIRED and
+    nothing builds this item shape any more. The validator STAYS: it is keyed on
+    a shape fingerprint, not on a task id, so it costs nothing on surfaces that
+    never emit that shape, and deleting a gate is how a shape quietly comes back
+    thin. Do NOT build a new surface to this contract — `verb_taxonomy` and
+    `CANONICAL_ACTIONS` are the live authority on any card you are rendering.
+
+    Raised when a Pulse (cr-dont-forget) person-dormant item is too thin to
     render usefully. Per M's 2026-05-07 testing on Sam's bare card: *"the
     information was pretty bare and it was bringing up something from a couple
     of weeks ago. there was not a link to the email, the description was very
@@ -2609,10 +2616,14 @@ def _detect_input_type(action: str) -> Optional[str]:
                               (combined edit + disposition for email items).
         'textarea-prepop' — single textarea pre-populated with body. Triggered
                             by bare `edit` (used in non-email contexts).
-        'when-text' — single-line text input for natural-language datetime
-                      ("monday at 2", "tomorrow afternoon", "2026-05-12").
-                      Replaces strict `date` pickers per M's Apr 30 v2.12.4
-                      ask. Triggered by `[date]` / `[when]` / `[time]` brackets.
+        'when-text' — single-line text input. Originally natural-language
+                      datetime ("monday at 2", "tomorrow afternoon",
+                      "2026-05-12") — replaces strict `date` pickers per M's
+                      Apr 30 v2.12.4 ask; triggered by `[date]` / `[when]` /
+                      `[time]` brackets. Also the short-value input for
+                      `[org]` (v2.14.29+) and `[name]` / `[existing]` /
+                      `[stage]` / `[status]` (v5.9.1+) — names and enum picks
+                      are one short line, not paragraph text.
         'datetime' — strict datetime-local picker (legacy, unused by canonical
                      action set; kept for orchestrators that explicitly opt in
                      via `[date+time]` / `[datetime]` bracket).
@@ -2653,6 +2664,20 @@ def _detect_input_type(action: str) -> Optional[str]:
     # 2026-05-06 D3 caught it.
     if "[org]" in a:
         return "when-text"  # reuse the single-line text-input wrapper
+    # v5.9.1 — `[name]` (reassign to / theirs to / mark received from),
+    # `[existing]` (same as), `[stage]` (move to), `[status]` (report) all
+    # fell through to None, so the option was stamped required (F-17) but no
+    # input box ever rendered: Apply held with "Reassign needs a name" and
+    # there was nowhere to type one — the row dead-ended (customer bug
+    # report 2026-08-04, my-plate Reassign; same silent-block family as the
+    # D3 `[org]` and v4.5.2 `add email then send` fixes). Single-line input —
+    # names, stages, and statuses are one short line.
+    if "[name]" in a or "[existing]" in a or "[stage]" in a or "[status]" in a:
+        return "when-text"
+    # v5.9.1 — `[items]` (split into / add subitems) takes a LIST (newlines /
+    # semicolons / ' / ' per commitment_state's parsers) — multi-line.
+    if "[items]" in a:
+        return "textarea"
     # Multi-line free-form (reasons, contexts, edits, decisions, types)
     # v2.14.5+ — `[type]` added for Pulse entity-proposal `confirm [type]`
     # / `edit [type]` so the user can override the inferred relationship_type
@@ -2783,6 +2808,14 @@ def _render_action_option(action: str, item_n, item: Optional[dict] = None,
     is_required = action.lower() in REQUIRED_INPUT_ACTION_IDS
     thing = required_input_thing(action) if is_required else ""
 
+    # v5.9.1 backstop — a required-input action must NEVER render without an
+    # input affordance: F-17 holds Apply on the missing value and the widget
+    # JS has no field to read, so the row dead-ends with no way to comply
+    # (the `[name]` bug class). A placeholder this detector doesn't know yet
+    # gets the single-line default instead of a dead toggle.
+    if input_type is None and is_required:
+        input_type = "when-text"
+
     # Row diet: default attributes are OMITTED (absent dataset keys read as
     # falsy in the JS, and the validator skips type-less options exactly as
     # it skipped attribute-less buttons) — only input-bearing options carry
@@ -2890,12 +2923,19 @@ def _render_action_input_wrapper(
         # Replaces the strict date picker for `[date]` actions per M's Apr 30 ask:
         # "push meeting should be an open field and they can write monday at 2 or
         # tomorrow at 3 etc." Reply handler parses natural language at apply time.
+        # v5.9.1 — when-text also serves non-datetime short values ([name],
+        # [org], [stage], …); the date-flavored placeholder on a name box read
+        # as the wrong field, so non-date/time things name themselves instead.
+        if thing and thing not in ("date", "time"):
+            ph = f"Type the {thing}"
+        else:
+            ph = "e.g. Friday, 5 (days), or a date"
         input_html = (
             f'<div class="cr-action-input" data-input-for-n="{safe_n}" '
             f'data-input-for-action="{safe_action}" '
             f'data-input-type="when-text" style="display:none;">'
             f'<input class="cr-input-field" type="text" '
-            f'placeholder="e.g. Friday, 5 (days), or a date" />'
+            f'placeholder="{_html_mod.escape(ph, quote=True)}" />'
             f"{reason_html}"
             f"</div>"
         )

@@ -177,12 +177,12 @@
         },
         "cadence_override_days": {
           "type": ["number", "null"],
-          "description": "Phase 6 Quick Win B. User-taught cadence baseline in days. Pulse 'just busy' (dont_forget_feedback) widens it via dormancy.record_just_busy so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no override). Optional."
+          "description": "Phase 6 Quick Win B. User-taught cadence baseline in days. The (now RETIRED — SPEC LIFECYCLE1) Pulse chat's 'just busy' reply (dont_forget_feedback) widened it via dormancy.record_just_busy so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no override). Optional."
         },
         "tie": {
           "type": "string",
           "enum": ["work", "personal"],
-          "description": "SPEC BAL1 D1. Work/personal partition line. Absent means WORK (back-compat). tie=personal people are read ONLY by the Balance surface: Pulse Phase 3 skips them before any emit, relationship-moves drops them at the load/score boundary, and the secondary dormancy emitters (team-intelligence, dormant-customer-scan) skip them at their emit gates. NOT `relationship_type` — that name is forbidden (org-level). Optional."
+          "description": "SPEC BAL1 D1. Work/personal partition line. Absent means WORK (back-compat). tie=personal people are read ONLY by the Balance surface: dormancy.emit_dormancy_signal refuses them at the shared emit chokepoint (SPEC LIFECYCLE1 moved that gate out of the retired Pulse chat's prose and into code), relationship-moves drops them at the load/score boundary, and the secondary dormancy emitters (team-intelligence, dormant-customer-scan) skip them at their emit gates. NOT `relationship_type` — that name is forbidden (org-level). Optional."
         },
         "cadence_days": {
           "type": ["number", "null"],

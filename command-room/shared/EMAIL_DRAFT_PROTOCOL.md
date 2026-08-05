@@ -10,7 +10,7 @@ Applies to **every skill that emits a recipient-bound email draft, regardless of
 - `cr-cracks-watch` (re-engagement drafts)
 - `cr-past-meetings` / legacy `cr-meetings-processed` (follow-up drafts)
 - `cr-upcoming-meetings` / legacy `cr-meetings-today` (reschedule drafts on `push SLUG to [date]`)
-- `pulse` (re-engagement nudges)
+- `relationship-moves` (re-engagement nudges — `pulse` carried these until LIFECYCLE1 retired that chat; its historical `email_drafted` events keep their `source_skill` forever)
 
 **On-demand skills (v3.13.0+ — newly required to follow this protocol):**
 - `email-writer` (direct-draft surface)
@@ -252,7 +252,6 @@ These actions across orchestrators ALL use native Calendar MCP, never Zapier:
 | Inbox | `accept` (calendar invite) | native `respond_to_event` / equivalent |
 | Inbox | `propose [time]` (calendar invite) | native: cancel original or send proposed-time email + tentatively create new event |
 | Inbox | `decline [reason]` (calendar invite) | native `respond_to_event` with response: declined |
-| Pulse | `schedule catchup [when]` | native `create_event` (tentative) + email-writer for the request email |
 | Commitments OWED TO YOU | `follow-up call` | native `create_event` (tentative) + email-writer for the invite email |
 | Upcoming Meetings | `push meeting [when]` | native `update_event` to move the existing event + email-writer for the reschedule notice |
 

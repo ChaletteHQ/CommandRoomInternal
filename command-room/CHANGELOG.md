@@ -1,5 +1,111 @@
 # Command Room — Changelog
 
+## v5.9.3 — 2026-08-05 — A successful "already done" no longer logs itself as an error
+
+Patch release, one bug class, caught during attended release verification (2026-08-05): answering `already done` on a review-queue item worked — the item closed, and the record honestly carried the user's attestation with its when and where. But the audit trail wrote the gesture down as an error.
+
+### Root cause
+
+Two vocabularies had drifted apart. The review queue's handler reports a landed "already done" with its own status word — `done` — and the audit layer's classification sets never learned that word. The audit's unknown-status rule is deliberately never-optimistic (a receipt must not claim a write landed when it cannot prove it), so the one unlearned word fell through to "error". The write was fine; the receipt about the write was false. Knock-on effects: the page bookkeeping kept offering the closed row for its snapshot window, and usage counts inherited a phantom error for every "already done" a user ever answered.
+
+### Fix
+
+The audit vocabulary now names every status the review queue's handlers can emit, each classified on the record: the landed closure counts as landed, the honest idempotent no-op counts as a no-op, and every deliberate refusal is an explicit entry instead of a fall-through — because a fall-through is indistinguishable from a word the vocabulary simply never learned, which is exactly how this one hid. A completeness test now reads the queue's own source for status words and fails the build if any status is ever left unclassified, so this drift class is closed rather than patched once.
+
+### Files touched
+
+`shared/scripts/apply_audit.py` · `tests/run_fs18_outcome_coverage_test.py`
+
+### Customer migration impact
+
+None to perform. Audit rows written before this release may carry the false "error" on past "already done" gestures; those rows are receipts, not state — no item was wrongly closed or wrongly left open, and nothing needs replaying.
+
+### What's NOT in this ship
+
+The undo rail's own status words (an undo repeated twice, an undo of something never confirmed) still classify by fall-through today — the same analysis is queued as its own change so this one stays small enough to verify in one gesture.
+
+## v5.9.2 — 2026-08-05 — Brief links open on Google Drive workspaces
+
+Patch release, one bug class, reported from the field twice (2026-07-28 "Past Meeting Briefs failed to load", 2026-07-31 "Failed report" — same customer, same failure): on a workspace hosted in Google Drive, meeting briefs and weekly recaps saved correctly, but every one of their links answered a click with "Failed to load local file."
+
+### The link now points where the file actually is
+
+A brief link has always been a local-file link — correct for a workspace in a regular folder on the customer's machine, where clicking it opens the document directly. But a workspace mounted from Google Drive has no such local file: the path the link carried exists only inside the session that wrote it, so the click could never succeed, no matter how many times "Try again" was pressed. The July 28 report looked fixed the same night because that fire had a second, unrelated failure (briefs not saving at all — cured in v5.5.0); the July 31 recurrence proved the link itself was the survivor.
+
+The fix teaches the link layer the difference. `brief_path` now detects when a saved brief has no machine-local home (`is_session_scoped_path`) and, through the new `get_brief_opener_url`, links the document's own Google Drive web address instead — the file opens in Drive, where it genuinely lives. The scheduled surfaces that customers hit (past meetings, upcoming meetings, the weekly recap) resolve that Drive address right after saving; if the lookup comes up empty the link falls back to the old form rather than disappearing. Workspaces in a regular local folder are byte-for-byte unaffected — the native local-file form validated in the 2026-05-20 testing remains their opener.
+
+### Also in this release: the machine clock is cross-checked before anything is computed from it
+
+Reported from the field (2026-08-03): a scheduled run fired on a machine whose clock had not synced at boot and read two days behind — so an old calendar surfaced as "today," a weekday-morning surface framed itself as a weekday on a Sunday night, and worst of all, wrong timestamps were written into the permanent record. The product now corroborates the machine clock against the newest timestamp already in the workspace (and the session's own date) before computing anything date-relative from it. When the clock is provably behind, the corrected time is used and the output says so in plain words — a substitution is never silent. This corrects WHICH INSTANT it is, never which timezone it is expressed in: all scheduling stays machine-local exactly as before. A healthy clock changes nothing and says nothing.
+
+### Customer migration impact
+
+None to perform. The change applies from the next brief or recap each surface produces; already-posted links are not rewritten. If a machine's clock is ever wrong at boot, scheduled outputs will now say so instead of silently trusting it.
+
+## v5.9.1 — 2026-08-05 — The Reassign box actually appears
+
+Patch release, one bug class, reported from the field (2026-08-04): on My Plate, choosing **Reassign** on a commitment armed the row and Apply correctly held with "Reassign needs a name" — but the box to type the name into never appeared, so the action could not be completed through the list at all.
+
+### Every action that needs something typed now shows the box
+
+The list surfaces knew which actions require a typed value and held Apply until it arrived, but they only knew how to draw the input for some of them (dates, org names, free-text edits). Reassign — and a family of siblings with the same gap: Theirs, Mark received from, Same as, Move stage, Report status, Split, and Add sub-items — demanded a value with nowhere to type it. All of them now render their input: a single line for names, stages, and statuses; a multi-line box for item lists. A backstop closes the class for good: any action marked as requiring input always gets an input box, including ones added in the future that the renderer hasn't been taught about — a dead-end row can no longer ship.
+
+Two small polish items ride along: the typing box now says what it wants ("Type the name") instead of showing date examples under every field, and the Report status hold message names the valid picks (on track / at risk / off track / blocked).
+
+### Customer migration impact
+
+None to perform. Already-rendered pages are unaffected; the fix appears the next time a surface renders.
+
+## v5.9.0 — 2026-08-03 — People you actually write to become contacts on their own
+
+### Contacts for the people you actually write to
+
+The weekday sent-mail pass already walks your Sent folder. It now also notices who you are corresponding with, and adds a contact record for people it can be certain about. Two things have to be true, and both of them are strict. The correspondence has to go **both ways** — you sent this address a direct message, To or CC. Inbound-only never counts, so newsletters, cold outreach and vendors never file themselves into your contacts, and neither does someone who merely sat in a meeting you attended. And the **name has to come from a structured place**: the display name on their own mail, or a calendared attendee record for that same address. A name a transcript put in someone's mouth is never enough, and neither is a name reconstructed from the address itself. Shared inboxes (info@, billing@) never become people. A personal address never attributes a company.
+
+Records appear rather than asking: they land in the change feed with `undo`, never as one more thing to confirm. If someone already on file shares a name, you still get the identity question you get today — now pre-filled with the address that was actually observed, so you can answer it. And when a new record answers an identity row that was already sitting in your queue, that row retires instead of asking forever, which is what this feature is really for: people you demonstrably correspond with were waiting there for weeks.
+
+It only ever looks forward. The pass starts at the moment it first runs and reads nothing older, so a wide "catch up my sent mail" closes commitments across the whole window and creates nobody retroactively. If its own starting point ever ends up unreadable or far behind — a workspace restored from another machine, say — it resets to today, adds nobody for that gap rather than filing months of mail at once, and says so. A per-fire limit keeps a busy week from arriving all at once; the remainder genuinely waits for the next pass, including everyone on a single message with more recipients than the limit. If someone genuinely can't be added, it retries them a few times and then says so plainly rather than quietly holding up everyone behind them — and picks them up again on their next message. A workspace whose mail connector cannot supply sender names simply gets nothing — no errors, no prompts.
+
+Your own accounts are never added as contacts, and shared inboxes — orders@, invoices@, dispatch@, accounting@ and their kin — are recognised as mailboxes rather than people across the whole product, not just here.
+
+### Customer migration impact
+
+None to perform. Nothing is backfilled. If you would rather not have a contact, say `undo` — the record is archived, never deleted, and it does not come back on the next pass.
+
+## v5.8.0 — 2026-08-03 — "Already done" is an answer, and the workspace tidies itself
+
+Minor release, three threads. First: the review queue learns that some promises were kept off-mail — one tap says so honestly, and undo really undoes. Second: the weekly self-maintenance now performs its own filing in code, with a safety copy before every reshape and an honest refusal when a file is too custom to touch. Third: the weekday morning digest chat retires; its few real jobs fold into the weekly rhythm and on-demand surfaces you already use. No migration steps, nothing destructive.
+
+### "Already done" — close a kept promise in one tap
+
+The needs-your-call queue and the staff meeting's meetings section gain a third answer alongside confirm and drop: **already done** — the item was real AND you already handled it. It books the item and closes it as completed in the same gesture, with the record stating plainly that the evidence is your word at review time, stamped with when and where — never a fabricated mail match. This matters more than convenience: answering "drop" on promises you actually kept was quietly teaching the capture system to stop capturing that counterparty, and undercounting your completions in recaps. Guardrails: it's one item at a time — "already done 1-40" is refused, not obeyed, because attesting your own conduct in bulk is exactly the rubber-stamp shape; and a workspace with no primary user on file is asked to set one first, since an attestation with nobody attributed isn't one.
+
+### Undo after a confirm actually un-confirms
+
+Undoing a confirm (or an "already done") now returns the item to the review queue with its original question and, when it was a suspected duplicate, its duplicate link intact — instead of leaving a closed record behind. The reverser is purpose-built and additive: history is never rewritten, and the change feed narrates both directions.
+
+### Session notes file themselves
+
+The weekly tidy-up's oldest promise — roll long session-notes files into dated archives — now runs as code with a receipt, not as a step that could be quietly skipped. Every reshape takes a full safety copy first, archives carry entries under their own year, an index makes old entries findable, and a conservation check refuses to write anything if even one original line would be lost. Files whose structure is too custom to split safely are left byte-identical and counted honestly — one calm line in the Monday note offers "roll over my session notes," an attended pass that fixes the headings with you and then runs the same safe machinery. The posture, stated once and pinned: maintenance writes only reversible, receipted operations, and never asks permission for them.
+
+### A closed laptop is not a broken machine
+
+Scheduled work that runs when the machine wakes up is the designed behavior, not a fault — so the weekly note stops describing caught-up fires as late or asleep. The alarm is reserved for the real problem: a task whose work never arrived at all.
+
+### The morning digest chat retires
+
+The weekday-morning digest asked for attention on a schedule; its real jobs now live where they belong. Quiet-project detection runs weekly inside maintenance: a project only ever becomes dormant after you were asked and the question lapsed unanswered — an answer of any kind stops the ladder, your decision stands — and a long-dormant project archives with the change feed narrating every step, reversibly. The questions themselves wait at "stalled projects," on demand. Intro follow-up checks answer to "check my intros." Re-engagement suggestions already live in relationship moves. Workspaces with the old chat registered get a retirement proposal to approve — nothing is switched off silently, and "pause" phrasing keeps working throughout.
+
+### Staff meeting polish riding along
+
+- A schedule-suggestion row that had been retired kept rendering because a second writer was still minting it — both ends are now stopped, and existing rows age out cleanly.
+- Header tiles now show the same full, honest counts as the section titles — one convention, no more page-count-versus-total confusion.
+- Relationship moves no longer suggest you nudge yourself.
+
+### Customer migration impact
+
+None to perform. If the retired morning chat is registered on your machine, you'll be offered its retirement — approve or ignore, nothing changes silently. Two new phrases are available: "roll over my session notes" (attended filing for files too custom to auto-split) and "check my intros" (on-demand intro follow-up status).
+
 ## v5.7.0 — 2026-08-02 — The staff meeting fits on two screens
 
 Minor release: the weekly staff meeting was growing without a ceiling — on a busy workspace it reached seven screens, and a queue that long teaches you to stop reading it. This release cuts it to about two screens without dropping a single question, fixes rows that could never be answered, and lets the most obvious identity matches handle themselves. A batch of smaller repairs rides along. No migration steps, nothing destructive, no new scheduled tasks.

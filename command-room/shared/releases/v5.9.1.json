@@ -1,0 +1,13 @@
+{
+ "version": "5.9.1",
+ "headline": "Actions that need something typed always show the box to type it in — Reassign asked for a name and gave you nowhere to write one; that whole family is fixed.",
+ "items": [
+  {
+   "id": "v591_announce_required_input_boxes",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "A fix from a field report: choosing Reassign on a My Plate item held Apply with \"Reassign needs a name\" — correctly — but the box to type the name into never appeared, so the action couldn't be completed there at all. That box now appears, and so does the one for every sibling that had the same gap: Theirs, Mark received from, Same as, Move stage, Report status, Split, and Add sub-items. Each typing box now also says what it wants (\"Type the name\") instead of showing date examples. Nothing to do on your side — the fix arrives the next time a list renders.",
+   "action": "announce_only"
+  }
+ ]
+}

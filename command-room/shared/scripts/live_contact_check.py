@@ -6,7 +6,10 @@ WHY THIS EXISTS (v3.13.7+):
 
 Session 22 testing (2026-05-21 → 2026-05-22) surfaced TWO parallel bugs:
 
-- Bug #5 — Pulse Step 1b live-contact check was Gmail-only. The Calendar
+- Bug #5 — the Pulse chat's Step 1b live-contact check was Gmail-only (that
+  chat is RETIRED as of LIFECYCLE1; the bug and this helper long outlived it —
+  every dormancy detector calls it, and the history is why the shape is what
+  it is). The Calendar
   half was specified in the override-event schema (`source: "gmail" | "calendar"`)
   but never wired. Anyone whose contact cadence is meeting-based but NOT
   email-based (board members, recurring 1:1s, executive coaching) hit false
@@ -81,7 +84,9 @@ live_contact_check and respecting its result.
 
 Consumers as of v3.13.7:
   - skills/enable-command-room-schedules/references/orchestrator-dont-forget.md
-    (Pulse Phase 3 Step 1b — Bug #5 Calendar half lands here)
+    (originally the Pulse chat's Phase 3 Step 1b — that chat is RETIRED per
+    LIFECYCLE1; Bug #5's Calendar half lands here and every dormancy detector
+    calls it)
   - skills/dormant-customer-scan/SKILL.md
     (Step 1 — Bug #28 lands here)
 

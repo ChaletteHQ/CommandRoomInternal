@@ -130,6 +130,31 @@ DUP_TITLE_UNCORROBORATED = 0.85
 DUP_TITLE_AUTO = 0.9
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _person_name_index(workspace_root) -> dict:
     """person_id -> set of name tokens (canonical_name + aliases), read
     best-effort from entities.json. Used to expand a resolved counterparty_id
@@ -536,7 +561,7 @@ def stamp_is_stale(ev: dict, *, now_dt: Optional[_dt.datetime] = None,
     item's capture age. Unparseable capture ts fails SAFE (stale) — the same
     direction the §6 fence takes on an unreadable timestamp."""
     if now_dt is None:
-        now_dt = _dt.datetime.now(_dt.timezone.utc)
+        now_dt = _clock_now()
     captured = _parse_dt(event_time(ev))
     if captured is None:
         return True
@@ -604,7 +629,7 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
         if not open_commitments:
             return events
         name_index = _person_name_index(workspace_root)
-        now_dt = _dt.datetime.now(_dt.timezone.utc)
+        now_dt = _clock_now(workspace_root)
         # AUTOAPPLY review F-5 — the dead-fire fallback, computed ONCE per
         # batch off the open set already in hand. A stamp older than the
         # window that is still sitting unapplied is proof `apply_auto_merges`
@@ -727,7 +752,7 @@ def apply_auto_merges(workspace_root, *, source_skill: str,
     # precedents. A per-SKILL constant made every auto-merge that skill ever
     # applied one undoable batch, so a single `undo` reached back across days
     # and reversed runs the user never saw (review F-2).
-    batch_id = batch_id or ("amg_" + _dt.datetime.now(_dt.timezone.utc)
+    batch_id = batch_id or ("amg_" + _clock_now(workspace_root)
                             .strftime("%Y%m%dT%H%M%SZ"))
     # The narrating surface needs the ref it is advertising "say undo" for.
     out["batch_id"] = batch_id
@@ -736,7 +761,7 @@ def apply_auto_merges(workspace_root, *, source_skill: str,
     for ev in load_open_commitments(events_path):
         open_by_id[_commitment_id(ev)] = ev
     undone = undone_auto_merges(ws)
-    now_dt = _dt.datetime.now(_dt.timezone.utc)
+    now_dt = _clock_now(workspace_root)
 
     def _fallback_to_flag(cid, survivor_id, why, score=None) -> None:
         """Skip AND ask — never a silent skip, never a silent drop."""

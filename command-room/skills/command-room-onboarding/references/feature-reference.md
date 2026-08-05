@@ -43,7 +43,7 @@ These happen later via M2/M3/M4 meetings or operator-driven follow-up sessions:
 - **M4 — handoff + custom skill + value retrospective.** Customer becomes autonomous; one custom skill scaffolded for a recurring workflow.
 - **Local file scan:** offered in a follow-up session via `workspace-ingest` (folder-mode).
 - **Project-org-cleanup:** post-meeting customer dictates corrections to org tree / project list / people via mic. Backlog as of 2026-05-23.
-- **Pulse scheduled task:** added in a follow-up session once accumulated workspace signal makes it useful.
+- *(The Pulse scheduled task was retired in LIFECYCLE1 — never offered. Quiet-project questions live on demand under `stalled projects`.)*
 
 ---
 

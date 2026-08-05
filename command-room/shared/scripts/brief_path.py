@@ -162,6 +162,74 @@ def get_brief_artifact_url(absolute_path: str) -> str:
     return "computer:///" + "/".join(encoded_segments)
 
 
+def is_session_scoped_path(absolute_path: str) -> bool:
+    """True when the path lives inside Cowork's per-session sandbox
+    (`/sessions/<id>/...`) — a path that exists only while THAT session is
+    alive and has no host-native equivalent the customer's machine can open.
+
+    v5.9.2 — the QMG field reports (2026-07-28 "Past Meeting Briefs failed to
+    load", 2026-07-31 "Failed report"): a workspace mounted from Google Drive
+    resolves to a session-scoped root, so every `computer://` brief link we
+    emitted pointed at a path the customer's machine could never open —
+    "Failed to load local file." on click, even though the .docx saved fine
+    and was sitting in their Drive. This predicate is how an orchestrator
+    detects that shape BEFORE emitting a link that cannot work.
+
+    A host-native root (Windows `C:\\...`, or a real local folder mount that
+    resolves outside the sandbox) returns False — `computer://` stays the
+    opener there, unchanged.
+
+    >>> is_session_scoped_path("/sessions/abc123/mnt/Command Room/_hq/meetings/x.docx")
+    True
+    >>> is_session_scoped_path("C:/Users/Sample/Command Room/_hq/meetings/x.docx")
+    False
+    >>> is_session_scoped_path("/Users/sample/Command Room/_hq/meetings/x.docx")
+    False
+    >>> is_session_scoped_path("")
+    False
+    """
+    if not absolute_path:
+        return False
+    normalized = absolute_path.replace("\\", "/")
+    return normalized.startswith("/sessions/")
+
+
+def get_brief_opener_url(absolute_path: str, drive_web_url: str = "") -> str:
+    """The URL the deliverable link should actually open — Drive-aware (v5.9.2).
+
+    `computer://` links only work when the path exists on the customer's own
+    machine. For a workspace mounted from Google Drive / OneDrive, the resolved
+    absolute path is session-scoped (see `is_session_scoped_path`) — there is
+    no local file to open, so the `computer://` form is a guaranteed
+    "Failed to load local file." Field-reported twice by QMG (2026-07-28,
+    2026-07-31) before this helper existed.
+
+    Resolution order:
+      1. Session-scoped path + a `drive_web_url` supplied → the Drive web URL
+         (the file IS in their Drive; the browser opens it everywhere).
+      2. Anything else → `get_brief_artifact_url(absolute_path)`, unchanged —
+         host-native paths keep the `computer://` opener that M's 2026-05-20
+         testing validated.
+
+    Orchestrators on a session-scoped workspace root MUST attempt the Drive
+    web-link lookup (search `_hq/meetings/<filename>` via the discovered
+    drive tool per `tool_discovery.discover_drive_tool()`) and pass it here.
+    An empty `drive_web_url` falls back to the `computer://` form rather than
+    dropping the link — a maybe-dead link with a working file card beside it
+    beats no link at all.
+
+    >>> get_brief_opener_url("/sessions/abc/mnt/CR/_hq/meetings/x.docx", "https://docs.google.com/document/d/f1/view")
+    'https://docs.google.com/document/d/f1/view'
+    >>> get_brief_opener_url("C:/Users/Sample/CR/_hq/meetings/x.docx", "https://docs.google.com/document/d/f1/view")
+    'computer://C:\\\\Users\\\\Sample\\\\CR\\\\_hq\\\\meetings\\\\x.docx'
+    >>> get_brief_opener_url("/sessions/abc/mnt/CR/_hq/meetings/x.docx")
+    'computer:///sessions/abc/mnt/CR/_hq/meetings/x.docx'
+    """
+    if drive_web_url and is_session_scoped_path(absolute_path):
+        return drive_web_url
+    return get_brief_artifact_url(absolute_path)
+
+
 def ensure_brief_directory(workspace_root: str) -> str:
     """Create `_hq/meetings/` if missing. Return the absolute directory path.
 
@@ -180,6 +248,8 @@ __all__ = [
     "get_brief_filename",
     "get_brief_path",
     "get_brief_artifact_url",
+    "get_brief_opener_url",
+    "is_session_scoped_path",
     "ensure_brief_directory",
 ]
 

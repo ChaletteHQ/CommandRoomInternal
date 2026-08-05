@@ -26,10 +26,46 @@ The v2.7-v2.10.4 idempotency gate was removed in v2.10.5. This orchestrator ALWA
 
 A `pack_run` event still writes at the end of every fire (for audit trail), but no gate blocks subsequent fires. Re-running is cheap because drafts are TEXT-only until the user persists them per `EMAIL_DRAFT_PROTOCOL.md`.
 
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
+
+**Why this section sits ABOVE Phase 2 despite its number (CLOCK1).** `late_fire.check_lateness` is documented as the call you make at the TOP of a run, and everything below it now depends on that: `fire_start`, every date bucket, and every `ts` the pre-render phases write. The number is kept at 2.9 so the cross-references in the sibling orchestrators still resolve. Run it first; read it here.
+
+
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'inbox', fired_via='<scheduled|manual>', env_date='<session date>')))
+"
+```
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+
+**Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
+
+**The clock verdict comes back as `clock`, and two things follow from it. Neither is optional:**
+
+- **When `clock["notice"]` is set, it is the FIRST line of this fire's output** — above the lateness banner, verbatim, never paraphrased and never dropped. It states that the dates in this surface came from the workspace record rather than this computer's clock. A silent substitution is its own bug: the reader has no other way to know which clock produced what they are looking at.
+- **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
+
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
+
 # Phase 2 — Setup
 
-- **Record the fire start FIRST, before any fetch or write:** `fire_start = datetime.datetime.now(datetime.timezone.utc).isoformat()`. Hold it as `fire_start` — Phase 5.5 passes it. It marks the instant this fire began, so a commitment this same fire extracted cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the Phase-5.5 call: taken later it sits after the extraction phases and fences nothing.
-- Compute today's date.
+- **Record the fire start FIRST, before any fetch or write:** `fire_start = clock["corroborated_now"]` from the Phase 2.9 return, which you ran before this phase (CLOCK1 — never `datetime.now()` here: a fire whose clock is two days behind sets a fence anchored two days in the past, and every commitment extracted in between falls outside it). Hold it as `fire_start` — Phase 5.5 passes it. It marks the instant this fire began, so a commitment this same fire extracted cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the Phase-5.5 call: taken later it sits after the extraction phases and fences nothing.
+- Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` exactly as before (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
 - Read entities.json + aliases.json.
 - Read voice calibration (cache once for the session).
 - **Resolve the mail tools through the seam** — `tool_discovery.discover_for_category("email", "<op>", tools, declared=connector_config.declared_backend("email"))` for the search / draft-create / send / label operations, falling back to `discover_mail_search_tool` / `discover_mail_draft_tool` / `discover_mail_send_tool` when no backend is declared (empty map = today's behavior, R4). Zapier legs are excluded from native discovery automatically (pinned server-ids + signature detection, R12/H-H). Never name a provider tool id directly — Superhuman/UUID servers carry no provider substring. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
@@ -60,29 +96,6 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 
   **No agent improvisation:** the orchestrator does NOT scan Zapier tools itself. The helper is the source of truth. Same enforcement model as `CANONICAL_ACTIONS` for action labels.
 - Read M's primary email from entities.json.
-
-# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
-
-**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
-
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
-
-```bash
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'inbox', fired_via='<scheduled|manual>')))
-"
-```
-
-Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
-
-- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
-- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
-- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
-
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 3 — Fetch unread mail
 
@@ -406,7 +419,7 @@ Why this rule exists: M's testing 2026-05-06 (item #10) flagged that Quick Read 
 
 **Note (v3.1+ — financial-signal override):** the specific Acme Logistics demote case described above is now fixed by the financial-signal override in Phase 4 — QuickBooks-shaped senders no longer get the −20/−15/−10 demotes and surface in the priority list directly. The Quick Read consistency rule still stands; it just no longer fires on this specific example.
 
-If the most interesting overnight signal IS in a noise-filtered thread and you genuinely think the customer should know about it, that's a signal to revisit Phase 4–5's noise filter — not to leak it through Quick Read. File the case in events.jsonl as a `noise_filter_review_needed` event with the thread metadata, and surface in next week's Pulse synthesis. Do NOT smuggle the reference into today's Quick Read.
+If the most interesting overnight signal IS in a noise-filtered thread and you genuinely think the customer should know about it, that's a signal to revisit Phase 4–5's noise filter — not to leak it through Quick Read. File the case in events.jsonl as a `noise_filter_review_needed` event with the thread metadata. **Nothing renders that event today** — it is an audit trail, not a hand-off, and saying otherwise would be the second wrong answer in a row: the retired Pulse chat used to be named here, and the round-1 correction pointed at a weekly pass that does not read it either. File it and move on; if these cases accumulate, the filter is what needs revisiting. Do NOT smuggle the reference into today's Quick Read.
 
 **Step 3 — Post the chat-links section (v2.12.0+):**
 

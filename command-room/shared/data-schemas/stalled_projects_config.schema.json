@@ -38,9 +38,9 @@
           "minItems": 0,
           "items": {
             "type": "string",
-            "enum": ["pulse_phase_9", "friday_wrap", "morning_brief_if_any", "weekly_audit_only"]
+            "enum": ["lifecycle_pass", "pulse_phase_9", "friday_wrap", "morning_brief_if_any", "weekly_audit_only"]
           },
-          "default": ["pulse_phase_9", "friday_wrap"]
+          "default": ["lifecycle_pass", "friday_wrap"]
         }
       },
       "additionalProperties": false

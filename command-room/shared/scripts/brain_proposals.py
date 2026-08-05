@@ -247,6 +247,29 @@ ON_DEMAND_SURFACE_HINT = "on-demand"
 # rewriting and no backfill (the append-only discipline).
 ON_DEMAND_KINDS = frozenset({"dormancy"})
 
+# LIFECYCLE1 §7a — kinds RETIRED at the projector: no NAMED surface renders one
+# any more (staff meeting, morning brief, system-health, the needs-review queue
+# — all of them read through this function).
+#
+# WHY THIS EXISTS AND STAFFCUT §3.6 WAS NOT ENOUGH. STAFFCUT retired
+# `_adapt_schedule_add`, the LEGACY adapter — which the measurement in that
+# function's docstring shows was already returning [] for the staff meeting.
+# What it did not touch was the OTHER rail: LB2 had migrated the schedule_add
+# WRITER onto `propose()`, so `schedule_proposals.log_proposal` kept minting
+# `bp_` rows that arrived through `_open_brain_proposals` and rendered with
+# confirm/dismiss verbs. That is the row M saw on the 2026-08-03 staff meeting
+# ("<a task name> — readiness thresholds met"), one day after the kind was
+# documented as retired. Retiring the adapter and leaving the writer is the
+# same half-fix from the opposite side; the writer stops in
+# `schedule_proposals.log_proposal` and the KIND stops here, so a row already
+# open on a live workspace stops rendering too.
+#
+# NOTHING IS TOMBSTONED AND NOTHING STRANDS. `expire_stale` reads
+# `_open_brain_proposals` directly, not this projector, so every row already
+# open still ages out on its own TTL and lands its `brain_proposal_expired`
+# marker. The kind stays parseable forever; the event vocabulary loses nothing.
+RETIRED_KINDS = frozenset({"schedule_add"})
+
 # The overflow line teaches the full-queue phrase (R3.4). Rendered verbatim
 # by surfaces when overflow_count > 0.
 OVERFLOW_LINE = "{n} more queued — say `staff meeting` to review everything."
@@ -1880,6 +1903,14 @@ def load_open_proposals(
         items = [i for i in items
                  if i.get("surface_hint") != ON_DEMAND_SURFACE_HINT
                  and i.get("kind") not in ON_DEMAND_KINDS]
+    # LIFECYCLE1 §7a — the RETIRED kinds go for EVERY named surface, including
+    # the on-demand one: a demotion says "ask for it and you get it", a
+    # retirement says nobody renders it at all. `surface is None` keeps seeing
+    # them for the same reason the demotion does — that call is the diagnostic
+    # / cross-rail dedup read, and a retired-but-open row must still suppress a
+    # duplicate write and still be visible to an audit.
+    if surface is not None:
+        items = [i for i in items if i.get("kind") not in RETIRED_KINDS]
     # Uniform snooze/decline gate (review F1): a chat_dismissal whose
     # target_id is a projector item id retires that item for the
     # dismissal's TTL — this is what `snooze proposal 7d` and the
@@ -2099,7 +2130,17 @@ def _row_target_ids(item: dict) -> dict:
     (`_REVIEW_DISPATCH_KINDS`): a payload is a trust window, and it is kept
     exactly as wide as the fence requires."""
     data = {"id": item["id"]}
-    for k in ("thread_id", "org_id", "person_id", "cluster_seqs",
+    for k in ("thread_id", "org_id", "person_id",
+              # LIFECYCLE1 fix round — the FOSSIL dormancy adapter's own target
+              # key. `_adapt_dont_forget` has always emitted `target_id` (the
+              # thread/org/person its prose writer was looking at) and this
+              # copy list never carried it, so a rendered fossil dormancy row's
+              # payload was `{"id": ...}` and NOTHING ELSE: the `archive` /
+              # `active` / `snooze 14d` verbs STAFFCUT put back on that row
+              # dispatched on a key the widget did not have. The row was
+              # answerable in the projector and unanswerable on screen.
+              "target_id",
+              "cluster_seqs",
               "cluster_fingerprints", "keep_id", "duplicate_id",
               # BUG C/D — the resolved possible-match candidate, so the
               # populated `same as [existing]` verb dispatches without a re-type.
@@ -2136,6 +2177,7 @@ def build_card_view(
     header: Optional[str] = None,
     extra_sections: Optional[list] = None,
     section_notes: Optional[dict] = None,
+    shape_totals: Optional[dict] = None,
 ) -> dict:
     """Build the ready-to-render widget data view for the Living Brain card /
     Staff Meeting queue from a RANKED proposal list (FS-09 / FS-10).
@@ -2146,6 +2188,12 @@ def build_card_view(
     proposal's registered verbs (no invented bulk verbs). Header tiles show the
     per-shape counts. `extra_sections` (e.g. the Staff Meeting "This week's
     moves" rows) append after the queue sections.
+
+    `shape_totals` (LIFECYCLE1 §7b, optional) maps a SHAPE to the honest total
+    of open items it stands for across the WHOLE queue, not just this page.
+    When supplied it is what the tiles show — one honesty convention with the
+    section titles instead of two on one widget. Omitted → the tiles count the
+    page, byte-identical to the pre-LIFECYCLE1 output.
 
     `section_notes` (STAFFCUT §3.1, optional) maps a SHAPE to one honest-totals
     suffix appended to that section's title — the meeting fold's shipped idiom
@@ -2193,12 +2241,36 @@ def build_card_view(
             title = f"{title} — {note}"
         sections.append({"title": title, "items": rows})
 
-    # Drop-empty BEFORE rendering — the tile component refuses a 0-value tile
-    # (an empty frame is never data); a shape with no rows just doesn't tile.
+    # LIFECYCLE1 §7b — ONE honesty convention on the widget.
+    #
+    # The tiles counted the PAGE (`len(by_shape[s])` — what this fire renders
+    # after grouping and the page bound) while the section titles carried the
+    # FULL counts in their notes. M's 2026-08-03 walk read tiles of 1 / 7 / 6
+    # above titles saying 41 and 18, on the same widget, about the same rows.
+    # Two conventions on one surface is worse than either convention: the
+    # reader cannot tell which number is the truth without knowing which
+    # mechanism produced it.
+    #
+    # Ruling: the tiles adopt the titles' convention — the honest total per
+    # shape, with the page bound continuing to govern only what RENDERS.
+    # `shape_totals` is that total (open ITEMS per shape, digest-expanded),
+    # supplied by the caller that still holds the full queue. Omitted → the
+    # page counts, byte-identical to the pre-LIFECYCLE1 output, because a
+    # caller that has no full queue must not invent one.
+    #
+    # The HEADER count is deliberately NOT touched: RV-4 binds it to the rows
+    # the widget shows, and that off-by-one had its own live bug.
+    totals = shape_totals or {}
     tiles = [
-        {"label": _SHAPE_TILE_LABEL[s], "value": len(by_shape.get(s) or [])}
+        {"label": _SHAPE_TILE_LABEL[s],
+         "value": int(totals.get(s, len(by_shape.get(s) or [])))}
         for s in ("money", "identity", "hygiene", "objective")
-        if by_shape.get(s)
+        # Drop-empty BEFORE rendering — the tile component refuses a 0-value
+        # tile (an empty frame is never data). A shape the page bound cut
+        # ENTIRELY still tiles when the queue holds rows for it: that is the
+        # whole point of the honest total, and `section_notes` already reports
+        # the vanished lane in prose.
+        if by_shape.get(s) or totals.get(s)
     ]
 
     # RV-4 off-by-one: the header count must equal the ROWS THE WIDGET SHOWS —
@@ -2415,6 +2487,7 @@ __all__ = [
     "DAILY_DEDUP_SURFACES",
     "ON_DEMAND_SURFACE_HINT",
     "ON_DEMAND_KINDS",
+    "RETIRED_KINDS",
     "OVERFLOW_LINE",
     "BrainProposalError",
     "kind_shape",

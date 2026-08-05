@@ -60,7 +60,7 @@ Ranks by score (commitment-bearing > project-tagged > high-value-person > generi
 "what's gone quiet that I should restart"
 ```
 
-Runs on-demand. Schedulable weekly as a Pulse companion surface.
+Runs on-demand. Schedulable weekly through `change-schedule`.
 
 ## How It Works
 

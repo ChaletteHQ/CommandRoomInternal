@@ -73,10 +73,78 @@ BACKFILL_CAPS = {"auto_add": 15, "merge_propose": 10}
 # merge-propose row), and a shared role address is never duplicate-suspect
 # evidence between existing records. The pattern list is a constant with a
 # test (the ruling's exact words).
+#
+# CONTACT1 second-eyes 2026-08-03 WIDENED this set and made the match
+# TOKEN-BASED. A survey of realistic shared-inbox local parts found 45 of 55
+# clearing the guard entirely — `orders@`, `invoices@`, `accounting@`,
+# `dispatch@`, `claims@` and their kin were all reading as people.
+#
+# WHAT WIDENING COSTS, said accurately. Most callers use this to WITHHOLD, and
+# for them a wider set is strictly safer: no silent link on an exact email
+# match, no shared inbox corroborating a mention, no auto-created contact from
+# a mailbox. Two callers are NOT in that shape and should be read before
+# widening again:
+#   * `scan_existing_duplicates` uses it to EXCLUDE an address from duplicate
+#     suspicion, so a wider set means fewer duplicate pairs proposed — the
+#     permissive direction, though it only ever costs a proposal the user
+#     could still make by hand.
+#   * CONTACT1's own gate refuses SILENTLY. A person caught here does not
+#     become a question; they simply do not become a contact from mail. That
+#     is the ruled fail-safe posture, not a free lunch.
+#
+# KNOWN FALSE-POSITIVE CLASS, accepted deliberately: a real person whose local
+# part carries a role token — `mark.orders@`, `ana.press@`, an `ap` or `ar`
+# that is somebody's initials — reads as a mailbox. They get no record and no
+# question from this rail; they still arrive through every other identity
+# path. Carving them back out would mean judging a person from an address,
+# which is the inference this whole gate exists to refuse. A person-shaped
+# carve-out is logged as a follow-up, not built here.
+#
+# The size and contents of this set are PINNED by test (the AUTO_ALLOWED
+# pattern): it may not silently shrink OR grow, because both directions change
+# who becomes a contact without anyone deciding to.
 ROLE_ADDRESS_LOCAL_PARTS = frozenset({
+    # -- the original ruling's words, unchanged ---------------------------
     "info", "office", "admin", "support", "hello", "contact", "sales",
     "team", "billing", "accounts", "help", "hr", "careers", "jobs",
     "noreply", "no-reply", "donotreply", "mail", "enquiries", "inquiries",
+    # -- money in and money out -------------------------------------------
+    "accounting", "accountspayable", "accountsreceivable", "payable",
+    "receivable", "invoice", "invoices", "invoicing", "payments", "payment",
+    "remittance", "remittances", "collections", "finance", "payroll",
+    "bookkeeping", "treasury",
+    # The two-letter finance desks. Short enough to be worth stating why they
+    # are safe: `ap` and `ar` are accounts-payable/receivable inboxes, and a
+    # personal local part does not carry either as a whole token.
+    "ap", "ar",
+    # -- selling, buying, and the paperwork between ------------------------
+    "orders", "order", "quotes", "quote", "estimates", "estimating", "bids",
+    "rfp", "rfps", "proposals", "procurement", "purchasing", "vendors",
+    "suppliers", "contracts",
+    # -- service desks -----------------------------------------------------
+    "service", "services", "customerservice", "customercare", "clientservices",
+    "clientservice", "helpdesk", "servicedesk", "care", "claims", "returns",
+    "rma", "warranty", "reception", "frontdesk", "concierge",
+    # -- scheduling and logistics ------------------------------------------
+    "dispatch", "scheduling", "bookings", "reservations", "appointments",
+    "shipping", "receiving", "warehouse", "logistics", "inventory", "parts",
+    "operations",
+    # -- the company talking, not a person ---------------------------------
+    "press", "media", "marketing", "newsletter", "news", "updates",
+    "communications", "events", "rsvp", "webinars", "community", "partners",
+    "partnerships", "affiliates", "referrals", "feedback", "unsubscribe",
+    # -- back office and governance ----------------------------------------
+    "legal", "compliance", "privacy", "security", "safety", "quality",
+    "training", "recruiting", "recruitment", "hiring", "talent",
+    "applications", "membership", "members", "donations", "giving",
+    "volunteer",
+    # -- machine senders ---------------------------------------------------
+    "postmaster", "webmaster", "abuse", "bounce", "bounces", "notification",
+    "notifications", "notify", "alerts", "automated", "mailer", "mailbox",
+    "system", "robot", "noreplies", "reply", "replies",
+    # -- generic catchalls -------------------------------------------------
+    "general", "main", "office365", "staff", "everyone", "all", "group",
+    "distribution", "list", "listserv",
 })
 
 # Second-eyes F4 (2026-07-19, live-proven): a canonical name is letters plus
@@ -100,20 +168,68 @@ _SOURCE_FAMILY_TOKENS = (
 )
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _clock_now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _events_path(ws) -> Path:
     return Path(ws) / "_hq" / "data" / "events.jsonl"
 
 
+_ROLE_TOKEN_SPLIT_RE = re.compile(r"[^a-z]+")
+
+
 def is_role_address(email: str | None) -> bool:
-    """True when the address's local part is role-shaped (shared inbox)."""
+    """True when the address's local part is role-shaped (shared inbox).
+
+    TOKEN-BASED since CONTACT1 second-eyes (2026-08-03), not exact membership.
+    Real shared inboxes are routinely decorated — `orders-us@`, `info.uk@`,
+    `support2@`, `ap_west@` — and an exact-set test read every one of them as a
+    person. The local part is split on everything that is not a letter, and any
+    token landing in `ROLE_ADDRESS_LOCAL_PARTS` marks the address. The
+    undecorated local part is still checked whole first, so a hyphenated member
+    of the set (`no-reply`) keeps matching as itself.
+
+    Sub-addressing is included on purpose: `sales+eu@` is the sales inbox.
+
+    The asymmetry is deliberate and safe. Every caller uses this to WITHHOLD,
+    so a false positive costs a question the human answers, while a false
+    negative costs a silent wrong write — a shared inbox stored as a person's
+    address poisons Tier-1 email resolution permanently."""
     if not email or "@" not in email:
         return False
     local = email.split("@", 1)[0].strip().lower()
-    return local in ROLE_ADDRESS_LOCAL_PARTS
+    if not local:
+        return False
+    if local in ROLE_ADDRESS_LOCAL_PARTS:
+        return True
+    return any(tok in ROLE_ADDRESS_LOCAL_PARTS
+               for tok in _ROLE_TOKEN_SPLIT_RE.split(local) if tok)
 
 
 def _norm_name(s: str | None) -> str:
@@ -1196,7 +1312,7 @@ def run_identity_reconcile(
     caps = dict(caps or STEADY_CAPS)
     now_iso = now_iso or _now_iso()
     plan = plan_reconcile(ws, now_iso=now_iso)
-    batch_id = "idr_" + _dt.datetime.now(_dt.timezone.utc).strftime(
+    batch_id = "idr_" + _clock_now(workspace_root).strftime(
         "%Y%m%dT%H%M%SZ")
     plan["batch_id"] = batch_id
     plan["caps"] = caps

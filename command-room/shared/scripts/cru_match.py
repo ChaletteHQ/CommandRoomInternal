@@ -9,7 +9,7 @@ fulfilled. Five paths:
   the recipient is the counter-party on any open commitment owned by the user
   AND the subject/body matches the commitment title. HIGH match → write
   `commitment_resolved`. MEDIUM match → write `pending_review` event for next
-  Pulse fire to surface for one-click confirm.
+  confirm queue to surface for one-click confirm.
 
 - **Path 2 (bulk Gmail/Outlook scan)** — same logic as Path 1 but run over the
   user's outbound mail since the last fire (default last 7 days). Catches sends
@@ -57,7 +57,7 @@ fulfilled. Five paths:
   legs call the same `match_calendar_to_commitments` helper.
 
 All paths conservative: HIGH-confidence auto-resolve only. Borderline goes to
-pending_review queue surfaced in next Pulse for one-click confirm. Path 5's
+pending_review queue surfaced in the confirm queue for one-click confirm. Path 5's
 high-precision gate is structural: owed-by-user + scheduling-intent title +
 a real calendar event with the named counter-party. A non-scheduling
 commitment ("send the deck") never auto-resolves just because a meeting got
@@ -85,7 +85,7 @@ the title usually carries the signal). No external deps.
 Thresholds (tunable):
   HIGH_CONFIDENCE_THRESHOLD = 0.55  → auto-resolve
   PENDING_REVIEW_THRESHOLD  = 0.30  → flag for one-click confirm in next
-                                       Pulse fire
+                                       confirm queue
   below 0.30                        → no action
 
 Recipient match (Path 1) and attendee match (Path 3) PRE-FILTER the candidate
@@ -130,6 +130,47 @@ except Exception:  # pragma: no cover
 
 HIGH_CONFIDENCE_THRESHOLD = MATCH_SCORE_AUTO_RESOLVE   # 0.55
 PENDING_REVIEW_THRESHOLD = MATCH_SCORE_PENDING_REVIEW  # 0.30
+
+
+def _workspace_from_events_path(events_jsonl_path):
+    """CLOCK1 - the workspace root containing an events.jsonl, or None.
+
+    This module's readers are handed a PATH INSIDE the substrate rather than a
+    root, so there is nothing to thread; the root is derived from the path
+    instead. Defensive: None simply means the clock falls back to the other
+    resolution routes, exactly as it did before.
+    """
+    try:
+        from trusted_now import workspace_root_for_path
+
+        return workspace_root_for_path(events_jsonl_path)
+    except Exception:
+        return None
+
+
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
 
 
 def _match_thresholds(workspace_root=None):
@@ -571,9 +612,9 @@ def event_references_person(ev: dict, person_id: str) -> bool:
     location, across all shape variants per shared/COMMITMENT_SCHEMA.md and
     the audit-derived `_PERSON_ID_FIELDS` table above.
 
-    Used by Pulse Phase 3 cadence detection (v3.5.0+) so dormancy scoring
+    Used by cadence detection (v3.5.0+) so dormancy scoring
     counts interactions across every shape — not just the 6-field inline list
-    Pulse used pre-v3.5.0, which silently missed shape-4 events from
+    the retired Pulse chat used pre-v3.5.0, which silently missed shape-4 events from
     cr-past-meetings and any flat-new / legacy commitment shapes.
 
     The function is shape-agnostic — pass any event dict; it inspects every
@@ -3290,7 +3331,7 @@ def match_calendar_to_commitments(
 
 
 def _now_iso() -> str:
-    return datetime.datetime.utcnow().isoformat() + "Z"
+    return _clock_now().replace(tzinfo=None).isoformat() + "Z"
 
 
 def build_commitment_resolved_event(
@@ -3365,7 +3406,7 @@ def build_pending_review_event(
     has_completion_signal: Optional[bool] = None,
     evidence_ts: Optional[str] = None,
 ) -> dict:
-    """Build a `commitment_review_proposed` event — the next Pulse fire
+    """Build a `commitment_review_proposed` event — the confirm queue
     surfaces these as one-click `confirm / skip` items. Used for MEDIUM-
     confidence matches where auto-resolve is too aggressive.
 
@@ -3437,7 +3478,9 @@ def build_commitment_review_dismissed_event(
 
 
 # -----------------------------------------------------------------------------
-# Open-review-proposal loader (v2.14.7+) — used by Pulse Phase 4g
+# Open-review-proposal loader (v2.14.7+) — used by the confirm-queue adapter
+# (`brain_proposals._adapt_commitment_reviews`; the retired Pulse chat's Phase 4g
+# was the original caller)
 # -----------------------------------------------------------------------------
 
 
@@ -3471,7 +3514,7 @@ def load_open_review_proposals(
     if now_iso:
         _anchor = _parse_ts(now_iso)
     if _anchor is None:
-        _anchor = datetime.datetime.now(datetime.timezone.utc)
+        _anchor = _clock_now(_workspace_from_events_path(events_jsonl_path))
     cutoff_iso = (
         _anchor.replace(tzinfo=None) - datetime.timedelta(days=window_days)
     ).isoformat() + "Z"

@@ -54,7 +54,7 @@ If a CEO types something matching this pattern manually (rare), this skill still
 3. Idempotency + write, per the kind:
    - **For `<kind> == "commitment"` (Stage B, 2026-07):** go straight to the "Manual commitment-close path" section below — `commitment_state.close_commitment()` handles idempotency itself over the FULL resolved-id set (the pre-Stage-B last-200-lines window could re-close anything older than the tail).
    - **For all other kinds:** read the last 200 lines of `_hq/data/events.jsonl` to check for an existing `thread_resolved` event with the same id (idempotency — re-firing the same dismissal must not create duplicates).
-4. If already resolved → respond with a one-line `"already done"` and stop.
+4. If already resolved → respond with a one-line `"that one was already closed"` and stop. (Do NOT reply with the bare string "already done": since DONE1 that is a registered WIRE ID — the needs-your-call queue's `already done` verb — and an ack that reads back as a verb is the F-13 label-collision class.)
 5. If not yet resolved → append events per the kind:
    - **For `<kind> == "commitment"`:** the close_commitment call below (plus the back-compat `thread_resolved`).
    - **For all other kinds:** append a single `thread_resolved` event through the locked writer — `atomic_append_jsonl(events_path, [event], holder="log-resolution")` from `shared/scripts/atomic_write.py`. OMIT `seq` — the gate auto-stamps it inside the lock. Never hand-roll an `open('a')` append or a raw `>>`:
@@ -82,7 +82,7 @@ When the trigger arrives with `<kind>` of `commitment` (or the parsed kind is `c
 
 - **Legacy-id normalization.** The widget embeds the commitment's `data.id` verbatim (per `shared/CHAT_ACTION_WIDGET.md`), but historic artifacts fired bare seqs — `log resolved: 86`, `seq_86`, `event_086`, `commitment_seq_86`. close_commitment resolves ALL of those to the canonical id via seq lookup. (A bare-int closure written as-is was the bare-int dead-letter class: the tombstone `"86"` matched nothing and the item stayed open forever.)
 - **Loud no-match.** If the id matches no commitment, close_commitment raises `CommitmentIdError` — do NOT write anything; respond `"⚠️ Couldn't find that item — it may have been re-captured. Say 'show my list' to see what's open."` No more orphan tombstones.
-- **Full-set idempotency — judged on `commitment_resolved` ONLY.** Already closed (a `commitment_resolved` event anywhere in history, not just the last 200 lines) → the result's `status` field is `already_resolved` → respond `"already done"` and stop (do NOT re-emit `thread_resolved`). A lone pre-existing `thread_resolved` for the same id (legacy artifact wrote it without the canonical closure) does NOT count as already-resolved — close_commitment still runs and backfills the canonical `commitment_resolved` so CRU consumers finally see the closure.
+- **Full-set idempotency — judged on `commitment_resolved` ONLY.** Already closed (a `commitment_resolved` event anywhere in history, not just the last 200 lines) → the result's `status` field is `already_resolved` → respond `"that one was already closed"` and stop (do NOT re-emit `thread_resolved`). A lone pre-existing `thread_resolved` for the same id (legacy artifact wrote it without the canonical closure) does NOT count as already-resolved — close_commitment still runs and backfills the canonical `commitment_resolved` so CRU consumers finally see the closure.
 - **pending_review floor.** The ✓ click IS an explicit user action, so pass `user_confirmed=True`.
 
 Procedure for `<kind> == "commitment"`:
@@ -99,7 +99,7 @@ Procedure for `<kind> == "commitment"`:
        user_confirmed=True,   # explicit ✓ click
    )
    ```
-3. `result["status"] == "already_resolved"` → `"already done"`, stop. `"closed"` → ALSO append the `thread_resolved` event the rest of this skill emits (kept for backwards-compat with v2.7.x consumers that still read `thread_resolved`).
+3. `result["status"] == "already_resolved"` → `"that one was already closed"` (never the bare string "already done" — that is the DONE1 wire id), stop. `"closed"` → ALSO append the `thread_resolved` event the rest of this skill emits (kept for backwards-compat with v2.7.x consumers that still read `thread_resolved`).
 4. One-line confirmation as usual: `"✓ done"`. Silent otherwise.
 
 For all other `<kind>` values (meeting, inbox, priority — note `matter_*` ids infer to `priority` per the Step 2 table) the behavior is unchanged — only `thread_resolved` is written.

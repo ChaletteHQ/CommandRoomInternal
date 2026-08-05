@@ -48,6 +48,31 @@ except Exception:  # pragma: no cover
     _lex = None
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _conversion_markers():
     """Merged conversion-marker tuple, or the English default when the overlay
     is inactive/absent (production path). NOTE: es.json also carries a
@@ -171,7 +196,7 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
             oid = t.get("org") or t.get("org_id") or (t.get("affiliation_ids") or [None])[0]
             if oid:
                 thread_org[t.get("id")] = oid
-        cutoff = (datetime.now(timezone.utc)
+        cutoff = (_clock_now(workspace_root)
                   - timedelta(days=TEXT_WINDOW_DAYS)).strftime("%Y-%m-%d")
         for ev in events:
             ts = str(ev.get("ts") or "")

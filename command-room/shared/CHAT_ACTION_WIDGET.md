@@ -1,6 +1,6 @@
 # Chat Action Widget — All-Batch Surface (v2.10.9+)
 
-> Canonical spec for the action surface across every Command Room scheduled-task skill (Pulse, Commitments, Inbox, Past Meetings, Upcoming Meetings) AND on-demand `meeting-notes` Step 9 OPEN ITEMS section.
+> Canonical spec for the action surface across every Command Room scheduled-task skill (Staff Meeting, Commitments, Inbox, Past Meetings, Upcoming Meetings) AND on-demand `meeting-notes` Step 9 OPEN ITEMS section.
 
 ## Why this exists
 
@@ -326,6 +326,19 @@ in the headline `unconfirmed` bucket. Verb clusters per row class:
 
 **Send-vs-draft clarity (PL 2026-07-02):** wherever `send` and `draft` appear side by side on an email-shaped item, the widget's intro line (or the item's context tag) makes the difference visible in plain words — "**Send** delivers it now · **Draft** saves it to your Drafts to send later." Never assume the customer knows the distinction from the labels alone.
 
+### Needs your call — the unconfirmed-extraction queue (INTAKE; CAPTUREFLOW §C; DONE1 2026-08-03)
+
+Rows are UNCONFIRMED EXTRACTIONS — a capture the extractor was not sure about, a capture whose evidence was not found in its transcript, or one the admission floor gated. `n` = the commitment's `data.id` verbatim. The SAME four verbs render on both places this queue appears — the on-demand `needs your call` widget (`src: "needs-your-call"`, `needs_review_queue.build_queue_data_view`) and the staff meeting's `FROM YOUR MEETINGS` fold (`src: "cr-brain"`, `needs_review_queue.staff_meeting_group_section`) — because both read the ONE `needs_review_queue.QUEUE_ROW_ACTIONS` list. There is no per-surface verb variant and no second write path.
+
+| Action | Display | What it does |
+|---|---|---|
+| `confirm` | Confirm | `needs_review_queue.confirm_items` → `commitment_state.clear_review_flags` — the capture was real; it becomes an ordinary open commitment. Runs THE shared bulk-accept fence (`watch_gate.screen_bulk_accept`): a weak row (no evidence, or title-match-only) is HELD unless the user typed that row's own number. |
+| `already done` | Already done | `needs_review_queue.done_items` → `clear_review_flags` THEN `close_commitment(..., resolution="done", user_confirmed=True)`. The capture was real AND the user already did it off-mail. Evidence is the user's own attestation, never a match or a score; an additive `completion_basis: "user_attestation"` stamp rides `extra_data`. Same fence, plus a STRICTER caller-side bar: **per item only** — every id must be individually named, so `all`, a range and a call phrase write nothing (`not_individually_named`). Deliberately NOT the `resolved` wire id, which a global Step-4 handler would route straight to `close_commitment`, bypassing both. |
+| `drop` | Drop | `needs_review_queue.drop_items` → `close_commitment(..., resolution="dropped", user_confirmed=True)` — the capture should not have been tracked. Note the cost this carries and `already done` does not: a `dropped` closure is a DISMISSAL signal for that counterparty in `capture_gate`'s tuning miner. |
+| `not mine` | Not mine | `needs_review_queue.not_mine_items` — the same closure with the honest reason. When the user NAMES the real owner, route via `commitment_state.reassign_commitment` instead. |
+
+**Undo (UNCONFIRM1 2026-08-03).** A confirm reverses via `needs_review_queue.undo_confirm_items` and an `already done` via `undo_done_items` (reopen THEN un-confirm — a bare reopen leaves an OPEN, CONFIRMED item, which is not what the user had before they tapped). Both write through `commitment_state.restore_review_flags`, the purpose-built un-confirm writer: one additive `commitment_updated` carrying the existing `data.review_flags_set` fold key plus `review_flags_restored` provenance and the item's ORIGINAL `review_reason`, and carrying NO `suspected_duplicate_of`. `flag_duplicate_for_review` is the duplicate-PAIR writer and is never the reverser of a confirm. An un-confirm REFUSES an item that has been independently touched since (`touched_since_confirm`, naming what happened). Never edit or delete prior events.
+
 ### Deliberation extension (Phase 4 2026-07-02 — same pre-authorized set, grown once)
 
 | Action | Display | What it does |
@@ -377,7 +390,9 @@ propose-and-confirm — no code path books, sends, or spends without the click.
 | `snooze 7d` | Snooze (7 days) | Not this week — the tie re-ranks next Sunday (matches the 7-day per-tie dedupe). |
 | `skip` | Snooze (1 day) | 1-day mute. |
 
-### Pulse — person dormancy/pattern-break
+### Pulse — person dormancy/pattern-break — FOSSIL (the chat is RETIRED, LIFECYCLE1)
+
+**The five Pulse sections below describe a surface that no longer renders.** They stay because a widget persisted before the retirement can still be clicked, and `apply-choices` still has to know what each verb meant. Never build a NEW surface from them — `verb_taxonomy` and `CANONICAL_ACTIONS` are the live authority, and the dormancy row's live home is `stalled projects`.
 
 | Action | Display | What it does |
 |---|---|---|
@@ -394,7 +409,7 @@ propose-and-confirm — no code path books, sends, or spends without the click.
 |---|---|---|
 | `prep deep work` | Prep deep work | Generates a context-loaded prompt for revisiting the project (last 14 days of events + last decision + open commitments). For when YOU want to do work on it. |
 | `investigate` | Investigate | Fires `tell me about [project]` — pulls cross-references and surfaces what you might be missing. Read-only. |
-| `mark paused` | Mark paused | Move the project to paused status. Drops out of Pulse alerts. |
+| `mark paused` | Mark paused | Move the project to paused status. Drops out of the stall surface. |
 | `status check` | Status check | Drafts an internal status-check email TO whoever owns the project. For when YOU haven't been driving and want someone else's update. |
 | `snooze [duration]` | *(deprecated)* | Use a fixed-duration snooze verb (`snooze 3d` etc.) — labels state the duration. |
 | `skip` | Snooze (1 day) | 1-day mute. |
@@ -486,9 +501,9 @@ Brain-family rows (deal signals today; every new detector tomorrow):
 
 PID1 merge-propose rows ride this family too: `kind: person_link` ("[name] is already on file — link it?") uses the generic `confirm proposal` / `dismiss proposal` / `snooze proposal 7d` verbs — confirm dispatches the alias link (`add_person_alias`) + a `same_as` tombstone per underlying proposal; dismiss ALSO tombstones the underlying proposals `not_relevant` (the on-file zombies must die permanently). `kind: person_merge` renders `merge person records` / `proposal not relevant` / `snooze proposal 7d`.
 
-Legacy-family rows keep their OWN shipped verbs, exactly as on their home surfaces (the adapters are permanent fossil readers — LB2 migrated the org/project/dormancy/schedule_add writers onto the bp rail, so NEW rows of those kinds arrive as `bp_` rows with the bp verbs; person/commitment_review remain legacy-written): person proposals render `add person` / `same as [existing]` / `proposal not relevant` (W4b) — since PID1 these are identity-CLUSTERED rows (one person = one row; the row embeds `data.cluster_seqs`, and one click adjudicates every underlying proposal); commitment-review rows render `confirm` / `not relevant` (the orchestrator-commitments Phase 3.6 dispatch); dont-forget dormancy rows render `active` / `archive` / `snooze 14d`; entity proposals render `confirm [type]` / `not relevant`; schedule-add rows are RETIRED and no longer emitted (STAFFCUT §3.6 — 0 of 4 ever produced a registration, which only ever happened through the change-schedule add path; a pre-retirement row still in a persisted widget stays a pointer row). Dispatch table: `skills/apply-choices/SKILL.md` Step 2 `cr-brain`.
+Legacy-family rows keep their OWN shipped verbs, exactly as on their home surfaces (the adapters are permanent fossil readers — LB2 migrated the org/project/dormancy/schedule_add writers onto the bp rail, so NEW rows of those kinds arrive as `bp_` rows with the bp verbs; person/commitment_review remain legacy-written): person proposals render `add person` / `same as [existing]` / `proposal not relevant` (W4b) — since PID1 these are identity-CLUSTERED rows (one person = one row; the row embeds `data.cluster_seqs`, and one click adjudicates every underlying proposal); commitment-review rows render `confirm` / `not relevant` (the orchestrator-commitments Phase 3.6 dispatch); dont-forget dormancy rows render `active` / `archive` / `snooze 14d`; entity proposals render `confirm [type]` / `not relevant`; schedule-add rows are RETIRED — no longer emitted AND no longer projected (STAFFCUT §3.6 retired the adapter; LIFECYCLE1 §7a stopped the migrated bp-rail writer and added the kind to `brain_proposals.RETIRED_KINDS`, because a row that is retired at one rail and still written on the other renders anyway — which is what M saw on the 2026-08-03 staff meeting. Rows already open still expire on their own TTL; a pre-retirement row still in a persisted widget stays a pointer row). Dispatch table: `skills/apply-choices/SKILL.md` Step 2 `cr-brain`.
 
-**STAFFCUT (2026-08-02) — three corrections to what those legacy rows actually carried.** The org/project, dormancy and schedule_add adapters shipped `action_tuples: []` hardcoded, so those rows rendered BUTTONLESS — six org rows and one dormancy row on the audit day were permanently unanswerable while their handlers sat registered and unreachable. Org/project rows now carry `confirm [type]` / `not relevant` and dormancy rows carry `active` / `archive` / `snooze 14d` (the same handlers, finally on the row); schedule_add retired. Dormancy rows are also ON-DEMAND now — they carry `surface_hint: "on-demand"`, so no scheduled surface renders one and `load_open_proposals(ws, "on-demand")` is the read.
+**STAFFCUT (2026-08-02) — three corrections to what those legacy rows actually carried.** The org/project, dormancy and schedule_add adapters shipped `action_tuples: []` hardcoded, so those rows rendered BUTTONLESS — six org rows and one dormancy row on the audit day were permanently unanswerable while their handlers sat registered and unreachable. Org/project rows now carry `confirm [type]` / `not relevant` and dormancy rows carry `active` / `archive` / `snooze 14d` (the same handlers, finally on the row); schedule_add retired. Dormancy rows are also ON-DEMAND now — they carry `surface_hint: "on-demand"`, so no scheduled surface renders one and `load_open_proposals(ws, "on-demand")` is the read. Since LIFECYCLE1 the ASKING surface is `stalled projects` (one owner, project-shaped rows on the project-shaped surface) and the WRITER is the weekly `lifecycle` maintenance job.
 
 **DIGEST rows (STAFFCUT).** The staff-meeting driver folds each evidence class into one row whose `n` starts with `digest:`, carrying `data.digest_class` / `data.digest_count` / `data.digest_members`. The members' ids, verbs and dispatch payloads ride the row verbatim — the PID1 `cluster_seqs` contract generalized — so a grouped answer is still N per-id resolutions, a single member can be answered out of the group, and a grouped confirm goes through the SAME shared bulk-accept fence (`proposal_digests.confirm_review_digest` → `watch_gate.confirm_review_rows`). A `digest:` id is never a proposal id and never a dismissal target.
 
@@ -643,8 +658,8 @@ See `chat_output_renderer.py` `_LEAK_PATTERNS` for the full regex set.
 
 ## Open questions (deferred — not v1 blockers)
 
-- **Long sessions:** if M has 20+ items in a Pulse fire and only resolves 5 in this sitting, the other 15 disappear on next fire (because state doesn't persist across refresh). Should the widget offer a "save selections without applying" path? Layer-2 question.
-- **Multi-skill batching:** if M has Commitments + Inbox + Pulse all open in the same chat, three separate widgets exist. Should there be a unified "Apply across all widgets" affordance? Probably not — adds complexity, M can just hit Apply on each.
+- **Long sessions:** if M has 20+ items in one fire and only resolves 5 in this sitting, the other 15 disappear on next fire (because state doesn't persist across refresh). Should the widget offer a "save selections without applying" path? Layer-2 question.
+- **Multi-skill batching:** if M has Commitments + Inbox + Staff Meeting all open in the same chat, three separate widgets exist. Should there be a unified "Apply across all widgets" affordance? Probably not — adds complexity, M can just hit Apply on each.
 - **Heavyweight action ergonomics:** if 5 of 8 selections are `send` (heavyweight), Apply produces 5 sent-email confirmations in one chat turn. That's a lot of output. May want to chunk or summarize. Per-skill to address.
 
 ## See also

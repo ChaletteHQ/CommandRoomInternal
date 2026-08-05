@@ -22,7 +22,8 @@ commitments written. Root cause chain:
      (the realdata-fixture bug class).
   3. `related_thread_ids[]` was never scanned, so cross-referenced activity
      didn't count at all.
-  4. Pulse Phase 4a derived its own `last_event_date` with different rules,
+  4. The retired Pulse chat's Phase 4a derived its own `last_event_date` with
+     different rules,
      so the two surfaces quoted different day-counts for the same project on
      the same day (F-54: 21d vs 37d).
 
@@ -34,7 +35,7 @@ documented `computed_last_activity` confidence rule (VIEW_GENERATION.md:
 `classification_confidence >= 0.40` when present), and reads through
 events_io so rotated shards stay visible.
 
-Consumers (v4.5.2): stall_detector (stalled-projects), pulse Phase 4
+Consumers (v4.5.2): stall_detector (stalled-projects), lifecycle_pass
 (orchestrator-dont-forget.md). HYG1 Item 3 added: entity_resolve recency
 tiebreak, build_workspace_map_input, build_dcc_input. The fossil-readers
 follow-through added the two remaining hand-rolled derivations:
@@ -79,7 +80,7 @@ if str(_HERE) not in sys.path:
 CONFIDENCE_FLOOR = 0.40
 
 # Default "what counts as activity" set — mirrors stall_detector's
-# DEFAULT_CONFIG so the on-demand list and pulse Phase 4 agree out of the
+# DEFAULT_CONFIG so the on-demand list and the lifecycle job agree out of the
 # box. Callers with a saved stalled-projects config pass its
 # activity_event_types instead (BOTH surfaces must pass the same set).
 DEFAULT_ACTIVITY_TYPES = frozenset({"meeting", "commitment", "decision", "interaction"})
@@ -87,7 +88,7 @@ DEFAULT_ACTIVITY_TYPES = frozenset({"meeting", "commitment", "decision", "intera
 # Sentinel: every event type counts. Renderer semantics — MASTER_TRACKER's
 # "Last Activity" column and the list-active tree mean "last touched", so a
 # thread_updated or stage change legitimately bumps them. Day-count surfaces
-# (stalled-projects, pulse) must keep passing a real type set — the F-54
+# (stalled-projects, lifecycle_pass) must keep passing a real type set — the F-54
 # contract is that surfaces quoting a day-count share ONE set. A sentinel
 # object (not the string "all") so it can never be mistaken for an iterable
 # of type names.

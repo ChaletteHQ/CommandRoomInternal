@@ -177,6 +177,72 @@ def _write_seqhw(events_path: Path, max_seq: int) -> None:
 _EPOCH_THRESHOLD = 10**10
 
 
+def _clock1():
+    """The CLOCK1 helper module, or None.
+
+    Lazily imported and fully defensive, with the same sys.path retry the
+    dedup hook above uses: this module sits at the bottom of the import graph
+    and the append gate must keep working even if the clock helper is missing.
+    None everywhere below means "cannot corroborate", which leaves the stamp on
+    the machine clock exactly as it was before CLOCK1.
+    """
+    try:
+        import trusted_now
+
+        return trusted_now
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            import trusted_now
+
+            return trusted_now
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _scan_events_text(path: Path, existing_text: str):
+    """ONE json.loads pass over the ledger text for BOTH facts the writer needs:
+    `(newest_ts_or_None, max_human_counter_seq)`.
+
+    Fused deliberately. The seq scan and the CLOCK1 corroboration read want the
+    same parse of the same bytes, and running them separately measured +36ms on
+    every append against a multi-megabyte ledger — a cost paid on the hot path
+    for no information. Falls back to the seq-only scan if the clock helper is
+    unavailable, so the writer never depends on it.
+    """
+    mod = _clock1()
+    if mod is not None:
+        try:
+            newest, max_seq = mod.scan_jsonl_text(
+                existing_text, epoch_threshold=_EPOCH_THRESHOLD)
+            return newest, max_seq
+        except Exception:
+            pass
+    return None, _file_max_seq(path, existing_text=existing_text)
+
+
+def _clock1_floor_stamp(machine_now, newest_ts, events_path=None) -> dict:
+    """CLOCK1 — the `ts` this append should carry, plus its provenance.
+
+    Returns `{"ts", "ts_source", "machine_ts"}`. When the helper is
+    unavailable, or the ledger does not prove the clock is behind, this is the
+    machine reading with no annotation — byte-identical to pre-CLOCK1 output.
+    `events_path` scopes the anomaly suppression to THIS workspace.
+    """
+    mod = _clock1()
+    plain = {"ts": machine_now, "ts_source": None, "machine_ts": None}
+    if mod is None:
+        return plain
+    try:
+        return mod.floor_stamp(machine_now, newest_ts,
+                               events_path=events_path)
+    except Exception:
+        return plain
+
+
 def _file_max_seq(events_path: str | Path, existing_text: str | None = None) -> int:
     """The maximum human-counter seq on disk in `events_path` (0 when the file
     is absent/empty/all-nano-epoch). Ignores non-dict / non-numeric / nano-epoch
@@ -397,6 +463,20 @@ def atomic_append_jsonl(
     path = Path(path)
     is_events = path.name == "events.jsonl"
 
+    # CLOCK1 — teach the clock helper which workspace this process is working
+    # in. The ~20 writer helpers that pre-stamp their own `ts` do it through
+    # no-argument `_now_iso()` functions that cannot be handed a root without
+    # rewriting every call site, so the seams that DO know the root register it
+    # on the way past. Best-effort and silent: an unregistered workspace simply
+    # means those helpers keep using the machine clock.
+    if is_events:
+        _mod = _clock1()
+        if _mod is not None:
+            try:
+                _mod.register_workspace_from_data_path(path)
+            except Exception:
+                pass
+
     # EVENT GATE (Phase 1 Foundation F1, 2026-07) — the append_event()
     # gatekeeper runs INSIDE this single append path so every event family is
     # gated from day one, caller-agnostic (same doctrine as the auto-stamp
@@ -469,6 +549,7 @@ def atomic_append_jsonl(
     def _read_stamp_write(evs: list[dict[str, Any]]) -> None:
         existing = ""
         existing_max_seq = 0
+        existing_newest_ts = None
         if path.exists():
             existing = path.read_text(encoding=encoding)
             if existing and not existing.endswith("\n"):
@@ -479,7 +560,12 @@ def atomic_append_jsonl(
             # into _file_max_seq (SPEC SYNC1) so the read path + events_freshness
             # share one seq-scan contract.
             if is_events:
-                existing_max_seq = _file_max_seq(path, existing_text=existing)
+                # ONE parse pass, two answers (SPEC SYNC1's seq contract plus
+                # CLOCK1's corroboration input). The newest timestamp in the
+                # ledger is the one thing that can prove the machine clock is
+                # behind, and taking it here costs the writer nothing extra.
+                existing_newest_ts, existing_max_seq = _scan_events_text(
+                    path, existing)
 
         # v3.13.8.3 Bug #74 + #75 — auto-stamp seq + ts for events.jsonl writes.
         # Shallow-copy each event to avoid mutating caller's dicts.
@@ -488,7 +574,16 @@ def atomic_append_jsonl(
             EPOCH_THRESHOLD = _EPOCH_THRESHOLD
             evs = [{**ev} for ev in evs]
             next_seq_val = existing_max_seq + 1
-            now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            # CLOCK1 — a stale machine clock must not stamp the permanent
+            # ledger. `clock_stamp` returns the machine reading unchanged
+            # unless the ledger PROVES the clock is behind, in which case it
+            # returns the newest recorded timestamp as a floor. It writes and
+            # annotates; it never refuses (a raise here would lose every
+            # remaining substrate write the fire owes).
+            clock_stamp = _clock1_floor_stamp(
+                _dt.datetime.now(_dt.timezone.utc), existing_newest_ts,
+                events_path=path)
+            now_iso = clock_stamp["ts"].isoformat()
             for ev in evs:
                 current_seq = ev.get("seq")
                 seq_is_valid_human_counter = (
@@ -516,7 +611,16 @@ def atomic_append_jsonl(
                     next_seq_val += 1
                 current_ts = ev.get("ts")
                 if current_ts is None or not isinstance(current_ts, str) or not current_ts.strip():
+                    # A caller-supplied non-empty `ts` is NEVER touched:
+                    # historic backfills are legal and indistinguishable from
+                    # intent. Only the auto-stamp is corroborated.
                     ev["ts"] = now_iso
+                    if clock_stamp["ts_source"]:
+                        # The contamination trail (CLOCK1 D4), additive so
+                        # every existing reader is unaffected: what the stamp
+                        # came from, and what the machine actually said.
+                        ev["ts_source"] = clock_stamp["ts_source"]
+                        ev["machine_ts"] = clock_stamp["machine_ts"]
 
         new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs)
 

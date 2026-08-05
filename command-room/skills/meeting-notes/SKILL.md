@@ -83,7 +83,7 @@ from skill_config_writer import get_config, save_skill_config, wipe_skill_config
 DEFAULTS = {
     "commitment_capture": "silent",    # silent (auto-capture) | confirm_first
     "verbosity": "standard",           # standard | terse
-    "new_person_handling": "surface",  # surface (suggest now) | batch_to_pulse
+    "new_person_handling": "surface",  # surface (suggest now) | batch_to_review
 }
 cfg = get_config(workspace_root, "meeting-notes", DEFAULTS)
 ```
@@ -91,7 +91,10 @@ cfg = get_config(workspace_root, "meeting-notes", DEFAULTS)
 `commitment_capture=silent` (default) auto-emits commitment events per Step 5e; `confirm_first`
 surfaces them for a one-tap confirm before writing. `verbosity` sets SESSION_NOTES narrative depth.
 `new_person_handling` controls the "I see a new person X — add to team?" suggestion: `surface` now
-(default) vs `batch_to_pulse` (collect into the next Pulse instead of interrupting).
+(default) vs `batch_to_review` (collect into the confirm queue the weekly staff meeting renders,
+instead of interrupting). **`batch_to_pulse` is the legacy spelling of `batch_to_review`** — LIFECYCLE1
+retired the Pulse chat but a config saved before it must keep working, so read the two as the same
+value forever and write only the new one.
 
 **Mode dispatch (4 modes):**
 
@@ -123,7 +126,7 @@ The block renders exactly once ever (`is_configured` gate).
 | "just capture commitments automatically" | `commitment_capture = silent` |
 | "keep notes terse" / "shorter notes" | `verbosity = terse` |
 | "full detail in my notes" | `verbosity = standard` |
-| "batch new-person suggestions to Pulse" / "stop interrupting about new people" | `new_person_handling = batch_to_pulse` |
+| "batch new-person suggestions" / "stop interrupting about new people" | `new_person_handling = batch_to_review` |
 | "surface new people as you find them" | `new_person_handling = surface` |
 
 After applying: `save_skill_config(..., is_reconfigure=True)` + confirm in one line.
@@ -464,7 +467,7 @@ Commitments accumulate as "open" in events.jsonl forever unless something explic
 1. Load all open commitments for this meeting's `primary_thread_id` AND for each attendee `person_id` via `shared/scripts/cru_match.py::load_open_commitments(events_jsonl_path)`. This handles all 5 commitment shape variants (canonical, flat-new, legacy `owner`, `owner_person_id`-variant, pending-review).
 2. For each open commitment, score it against the transcript using the existing CRU helpers (`cru_match.py` Path 3 — same scorer that past-meetings uses for transcript matches). HIGH-confidence completion language ("delivered", "sent it over", "done", "shipped") on a commitment owned by an attendee → auto-resolve. Schedule-shift language ("pushing to next week", "got delayed") → `commitment_updated`, NOT resolved.
 3. For each auto-resolve, close through `commitment_state.close_commitment(workspace_root, <commitment_id>, resolved_by=<attendee_person_id_or_user_id>, evidence=<≤200-char quote-or-paraphrase from transcript>, source_skill="meeting-notes")` — THE closure path (Stage B 2026-07, F2; supersedes the build-and-append procedure). It normalizes legacy ids, refuses no-match ids loudly (`CommitmentIdError` → skip, never write an orphan tombstone), is idempotent over the full resolved-id set, and never auto-resolves a `pending_review` item (`PendingReviewError` → leave it for the review surface). The Path 3 scoring in step 2 is unchanged.
-4. **Conservative auto-resolve only.** MEDIUM-confidence matches → emit `commitment_review_proposed` for next Pulse fire's one-click confirm surface, do NOT auto-close. The user-trust cost of falsely closing a commitment is much higher than the cost of leaving one open for a day.
+4. **Conservative auto-resolve only.** MEDIUM-confidence matches → emit `commitment_review_proposed` for the confirm queue's one-click confirm surface (the staff meeting and `needs your call` render it), do NOT auto-close. The user-trust cost of falsely closing a commitment is much higher than the cost of leaving one open for a day.
 5. **Silent.** Per CONTRACT Rule 24, do NOT narrate "auto-resolved 2 commitments" in the meeting summary. The user sees the result on the next Commitments fire (the resolved item simply doesn't appear).
 6. **Dedup.** Handled by close_commitment itself — it checks the FULL resolved-id set and returns an `already_resolved` result instead of double-writing, so a same-turn race is a true no-op.
 
@@ -522,7 +525,7 @@ Annotations are FULLY SILENT (§0-4 ruling): no chat line, no queue row. The Sun
 
 **Attach what the source carries (PID1 D10 — the FS-19 upstream lever).** When Granola participant metadata, calendar invitees, or mail From-headers carry a LAST NAME or an ADDRESS for a person you are proposing, put them in the proposal (`name` = the fullest spelling observed; the address goes in `evidence`/`source_ref` text verbatim so the F-3 observed-email rules can attribute it). This is what turns future first-name rows into confident-matchable or auto-eligible ones — the parked first-name cooldown is NOT the mechanism (M ruling: it would hide a real new same-first-name person for ~60 days).
 
-3. **Chat surface:** the `new_person_handling` config still governs whether the suggestion interrupts now (`surface`) or batches to Pulse (`batch_to_pulse`) — but that setting governs the CHAT layer only. The event writes in both settings, in both processing modes. Skip generic attendees (notetaker, silent admin) — same "meaningfully involved" floor as Step 5c.
+3. **Chat surface:** the `new_person_handling` config still governs whether the suggestion interrupts now (`surface`) or batches to the confirm queue (`batch_to_review`; legacy spelling `batch_to_pulse` reads the same) — but that setting governs the CHAT layer only. The event writes in both settings, in both processing modes. Skip generic attendees (notetaker, silent admin) — same "meaningfully involved" floor as Step 5c.
 
 **This step never writes person records** — `person_proposal` / `person_update_proposal` events only; people-crm executes the create/update on adjudication via `people_writer` (apply-choices Step 3a).
 

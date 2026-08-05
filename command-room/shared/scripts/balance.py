@@ -267,7 +267,8 @@ def _excluded_ties(events: List[dict], now_dt) -> set:
         elif et == "dont_forget_snooze":
             # Bounded, never forever (second-eyes fix, 2026-07-19): honor
             # data.snooze_until when present; otherwise the dedupe-window
-            # floor. Unbounded exclusion here would let a YEARS-old Pulse
+            # floor. Unbounded exclusion here would let a YEARS-old (and now
+            # unrepeatable — LIFECYCLE1 retired the chat that wrote them)
             # snooze (person_009/person_013 have them on file) permanently
             # mute a tie the moment it is backfilled to personal.
             su = _parse_ts(str(d.get("snooze_until"))) if d.get("snooze_until") else None

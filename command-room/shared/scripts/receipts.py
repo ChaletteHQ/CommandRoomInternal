@@ -103,7 +103,12 @@ CANONICAL_TASK_IDS = frozenset({
     "commitments",   # CTS1 — retired taskId; kept forever so pre-split receipts stay readable (append-only history)
     "waiting-on",    # CTS1 Surface 1 — the re-scoped daily chat (successor of `commitments`; new receipts land here)
     "my-plate",      # CTS1 Surface 2 — the owner-me act-list chat
+    # LIFECYCLE1 — the Pulse CHAT is retired (M's ruling 2026-08-02) and its
+    # taskId is out of DEFAULT_SCHEDULES, but the id stays here FOREVER: three
+    # receipt shapes sit on disk under it (see RECEIPT_TYPES below) and history
+    # is append-only. `pulse` parses forever; it is simply never written again.
     "pulse",
+    "lifecycle",     # LIFECYCLE1 — the project lifecycle pass job inside `maintenance` (the fold that replaced Pulse's Phase 4)
     "past-meetings",
     "friday-wrap",
     "cleanup",
@@ -191,6 +196,10 @@ RECEIPT_TYPES: dict[str, dict] = {
     # Pulse fires have left three shapes on disk: pack_run, pulse_run, and
     # dont_forget_run (F-49's exact miss). All three are pulse receipts.
     "pulse":              {"types": frozenset({"pack_run", "pulse_run", "dont_forget_run"})},
+    # LIFECYCLE1 — the fold that replaced Pulse's Phase 4. Its own job receipt
+    # (the dispatcher's due-ness rule reads it; written by
+    # lifecycle_pass.run_lifecycle_pass, and ONLY on an --apply run).
+    "lifecycle":          {"types": frozenset({"lifecycle_run"})},
     "past-meetings":      {"types": frozenset({"pack_run"})},
     "friday-wrap":        {"types": frozenset({"pack_run"})},
     "relationship-moves": {"types": frozenset({"pack_run"})},

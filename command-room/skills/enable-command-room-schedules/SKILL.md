@@ -47,9 +47,9 @@ Verification mode is the diagnostic version of the install ritual — explicit v
 
 # enable-command-room-schedules (M1, 2026-05-23)
 
-The schedule-setup skill. Configures **8 topic-specific persistent chats** + a one-time **historical backfill** sweep via `mcp__scheduled-tasks__create_scheduled_task`. Each chat = 1 stable taskId = 1 persistent thread in Cowork's Scheduled sidebar section, accumulating turns over time.
+The schedule-setup skill. Configures **7 topic-specific persistent chats** + a one-time **historical backfill** sweep via `mcp__scheduled-tasks__create_scheduled_task`. Each chat = 1 stable taskId = 1 persistent thread in Cowork's Scheduled sidebar section, accumulating turns over time.
 
-**On a fresh-install workspace, only 5 of the 8 fire automatically** — `morning-brief`, `past-meetings`, `inbox`, `upcoming-meetings`, `friday-wrap`. The remaining 3 (`waiting-on`, `my-plate`, `pulse`) get added later via operator-driven follow-up sessions when accumulated workspace signal makes them useful. (CTS1: `waiting-on` + `my-plate` are the split successors of the retired `commitments` chat — an existing customer with `commitments` registered gets both via the Phase 1 migration table, never a fresh-install auto-add.)
+**On a fresh-install workspace, only 5 of the 7 fire automatically** — `morning-brief`, `past-meetings`, `inbox`, `upcoming-meetings`, `friday-wrap`. The remaining 2 (`waiting-on`, `my-plate`) get added later via operator-driven follow-up sessions when accumulated workspace signal makes them useful. (`pulse` was the third until LIFECYCLE1 retired it — see the RETIRED row in `ORCHESTRATOR_MAP`.) (CTS1: `waiting-on` + `my-plate` are the split successors of the retired `commitments` chat — an existing customer with `commitments` registered gets both via the Phase 1 migration table, never a fresh-install auto-add.)
 
 ## Phase 0.5 — Substantive explainer (first-time schedule setup)
 
@@ -216,7 +216,7 @@ For each legacy taskId found in the user's existing schedule, DISABLE it via `up
 | `cr-inbox-pulse` | disable + register | `inbox` |
 | `cr-commitment-nudge` | disable + register | `commitments` (merged) |
 | `cr-commitment-chase` | disable + register | `commitments` (merged) |
-| `cr-cracks-watch` | disable + register | `pulse` |
+| `cr-cracks-watch` | **disable only** (LIFECYCLE1 — `pulse`, its successor, is retired; there is nothing to register) | — |
 | `cr-meetings-processed` | disable + register | `past-meetings` |
 | `cr-refresh-workspace-map` | **disable** (v2.14.25 — task removed from active set; surface "Removed the daily Workspace Map auto-refresh — the ↻ Refresh button on your Workspace Map still works") | (none — task is gone) |
 | `cr-upcoming-meetings` | **disable** (v2.14.27 — taskId rename; old "Cr upcoming meetings" title replaced by clean "Upcoming meetings" via new `upcoming-meetings` taskId) | `upcoming-meetings` |
@@ -248,7 +248,7 @@ ORCHESTRATOR_MAP = {
     "inbox":             "orchestrator-inbox.md",
     "waiting-on":        "orchestrator-commitments.md",  # CTS1 Surface 1 — the re-scoped daily (things people owe the user + the confirm tail). Filename kept for events.jsonl source_skill back-compat (events keep source_skill='commitments' — same pattern as pulse below). NOT first-install; successor of the retired `commitments` taskId (Phase 1 migration table).
     "my-plate":          "orchestrator-my-plate.md",     # CTS1 Surface 2 — the owner-me act-list (Promised + Personal groups, one chat). NOT first-install; registers alongside waiting-on in the commitments migration.
-    "pulse":             "orchestrator-dont-forget.md",   # display: "Pulse - Command Room"; orchestrator filename stays as `orchestrator-dont-forget.md` for events.jsonl source_skill back-compat (events written historically with source_skill='cr-dont-forget' remain valid as append-only history; new events post-v2.14.27 use source_skill='pulse')
+    "pulse":             "orchestrator-dont-forget.md",   # RETIRED (LIFECYCLE1) — NEVER register, NEVER offer, NEVER count as missing. The row stays ONLY so a workspace that registered it before the retirement still resolves its bootloader; the file it points at is a retirement stub that explains itself and stops. `schedule_config.RETIRED_TASKS` is the membership test — never a name you remember. Historical events (source_skill='cr-dont-forget' / 'pulse') stay valid append-only history.
     "past-meetings":     "orchestrator-past-meetings.md",
     "friday-wrap":       "orchestrator-friday-wrap.md",   # NEW v3.11.0. Wraps the weekly-recap skill. Registered on first install. First weekly-rhythm task.
     "relationship-moves": "orchestrator-relationship-moves.md",  # REL1 — weekly Sunday outreach pack. NOT first-install (needs accumulated substrate).
@@ -321,7 +321,7 @@ ORCHESTRATOR_MAP = {
     'inbox': 'orchestrator-inbox.md',
     'waiting-on': 'orchestrator-commitments.md',  # CTS1 — filename kept for source_skill back-compat
     'my-plate': 'orchestrator-my-plate.md',       # CTS1
-    'pulse': 'orchestrator-dont-forget.md',
+    'pulse': 'orchestrator-dont-forget.md',  # RETIRED (LIFECYCLE1) — resolvable, never registered
     'past-meetings': 'orchestrator-past-meetings.md',
     'friday-wrap': 'orchestrator-friday-wrap.md',  # NEW v3.11.0 — weekly recap
     'relationship-moves': 'orchestrator-relationship-moves.md',  # REL1 — weekly Sunday outreach
@@ -458,10 +458,10 @@ from schedule_config import FIRST_INSTALL_TASK_IDS
 
 if FIRST_INSTALL:
     # Fresh workspace per Phase 0.C detection. Register ONLY the 5 M1 first-install tasks.
-    # The remaining later-adds (waiting-on / my-plate / pulse) arrive via operator-driven
-    # follow-up sessions — pulse benefits from accumulated workspace signal; the two CTS1
-    # commitment surfaces land once the customer has been logging meetings for a couple
-    # of weeks (same posture the retired `commitments` chat had).
+    # The remaining later-adds (waiting-on / my-plate) arrive via operator-driven
+    # follow-up sessions — the two CTS1 commitment surfaces land once the customer
+    # has been logging meetings for a couple of weeks (same posture the retired
+    # `commitments` chat had).
     tasks_to_register = {
         tid: fname
         for tid, fname in ORCHESTRATOR_MAP.items()
@@ -469,8 +469,12 @@ if FIRST_INSTALL:
     }
 else:
     # Existing workspace. Re-run / refresh — preserve whatever the customer already has
-    # registered (do NOT auto-disable waiting-on/my-plate/pulse if they're already
-    # running; a still-registered `commitments` migrates per the Phase 1 table)
+    # registered (do NOT auto-disable waiting-on/my-plate if they're already
+    # running; a still-registered `commitments` migrates per the Phase 1 table).
+    # A RETIRED task (schedule_config.RETIRED_TASKS) is likewise never auto-disabled
+    # here — retirement is PROPOSED by the update bridge and executed by the
+    # customer's own `pause`, never by this skill (LIFECYCLE1 §4). It is also never
+    # ADDED: filter it out of target_set so a re-run cannot resurrect it.
     # AND make sure the M1 first-install set lands so pre-M1 customers get inbox added
     # on their next re-run. The union behavior is intentional: we add new defaults but
     # never silently remove what the customer has.
@@ -484,7 +488,8 @@ else:
 The migration semantics:
 - Fresh install (M1) → 5 tasks total (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`).
 - Existing pre-M1 customer who re-runs the skill → gets their existing tasks refreshed PLUS `inbox` added (because it's now in the M1 first-install set). They never lose tasks they had.
-- Customer says `add waiting on` / `add my plate` / `add pulse` in Phase 6 management flow → those taskIds get registered individually (`add commitments` maps to registering BOTH `waiting-on` and `my-plate` — the split successors).
+- Customer says `add waiting on` / `add my plate` in Phase 6 management flow → those taskIds get registered individually (`add commitments` maps to registering BOTH `waiting-on` and `my-plate` — the split successors).
+- Customer says `add pulse` → **refuse**, with `schedule_config.retirement_line("pulse")` verbatim. A retired task is never registered by any path, including an explicit ask (LIFECYCLE1).
 
 Per Phase 1's `ORCHESTRATOR_MAP`, each taskId in `tasks_to_register` goes through one of three paths based on detection:
 
@@ -549,7 +554,9 @@ If `spec["enabled"]` is `False`, skip registration for this task entirely (or up
 - `notifyOnCompletion: true`
 - `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-my-plate.md`.
 
-### Schedule 4 — Pulse
+### Schedule 4 — Pulse — RETIRED (SPEC LIFECYCLE1, 2026-08-02)
+
+**Do not register this task. There is no registration spec here any more, and that absence is the ruling.** `pulse` is in `schedule_config.RETIRED_TASKS` and out of `DEFAULT_SCHEDULES`; the `ORCHESTRATOR_MAP` row survives only so a pre-retirement registration still resolves its bootloader to `references/orchestrator-dont-forget.md`, which is now a retirement stub. Refreshing that prompt on a still-registered task is CORRECT — it is what makes the next fire explain itself instead of replaying the old chat. The historical registration facts follow so an auditor can recognise an existing registration. They are a description of what IS, never an instruction to create one:
 
 - `taskId: "pulse"` (v2.14.27+ — bare taskId aligned with display name; prior cr-dont-forget → migration disabled. Orchestrator filename stays as `orchestrator-dont-forget.md` for events.jsonl source_skill back-compat — historical events with source_skill='cr-dont-forget' remain valid as append-only history; new events post-v2.14.27 use source_skill='pulse'.)
 - `description`: **`"Pulse - Command Room"`** (v2.14.25+ canonical display name)
@@ -613,8 +620,8 @@ REQUIRED_MARKERS = [
 failures = []
 # Iterate over what we INTENDED to register this run (Phase 3's tasks_to_register subset),
 # not the full ORCHESTRATOR_MAP. On first-install runs the deferred tasks
-# (waiting-on/my-plate/pulse and the other later-adds) are intentionally NOT
-# registered — they're not failures.
+# (waiting-on/my-plate and the other later-adds) are intentionally NOT
+# registered — they're not failures. Neither is a RETIRED task, ever.
 for task_id, fname in tasks_to_register.items():
     if task_id not in registered_by_id:
         failures.append(f"{task_id}: not registered")
@@ -672,7 +679,7 @@ for task_id, fname in tasks_to_register.items():
 - `inbox` → `"Inbox - Command Room"`
 - `waiting-on` → `"Waiting On - Command Room"` (CTS1; the retired `commitments` task keeps whatever description it had — it's disabled, never renamed)
 - `my-plate` → `"My Plate - Command Room"` (CTS1)
-- `pulse` → `"Pulse - Command Room"`
+- `pulse` → `"Pulse - Command Room"` (RETIRED — the description is for renders of a task already registered; never create one)
 - `past-meetings` → `"Past Meetings - Command Room"`
 - `friday-wrap` → `"Friday Wrap - Command Room"` (NEW v3.11.0)
 
@@ -776,9 +783,9 @@ just plugged in overnight): System Settings → Displays/Power → prevent
 sleeping when plugged in. If a task ever looks like it "stopped
 working," a sleeping computer is the most common reason — not an error.
 
-2 more daily chats — Commitments and Pulse — will be added in a
-follow-up session once you've been logging meetings for a couple of
-weeks. They work best once there's some history for them to draw on.
+Your Commitments chats will be added in a follow-up session once
+you've been logging meetings for a couple of weeks. They work best
+once there's some history for them to draw on.
 
 To manage anytime: `list my schedules`, `pause [task name]`, or
 `change my schedule` to move any of the times.
@@ -865,7 +872,7 @@ Re-firing this skill detects existing schedules. Surfaces:
 
 > *"Command Room schedules already configured. [N] scheduled chats running. Want to add, change, remove, or reset? (add / change / remove / reset / nothing)"*
 
-(`[N]` is the count of currently-enabled registered taskIds — typically 5 on a fresh M1 install, up to 7 once Commitments and Pulse have been added.)
+(`[N]` is the count of currently-enabled registered taskIds — typically 5 on a fresh M1 install, up to 7 once the Commitments chats have been added.)
 
 - `add` — only useful if a future version adds new chats
 - `change` — list existing, ask which + new cron. THIS is the calibration entry path (v2.9.2+ doesn't ask cadence questions at first install; explicit `change` request opens that conversation).
@@ -886,13 +893,13 @@ The chat-emitting orchestrator prompts live in `references/` (workspace-map refr
 - `orchestrator-inbox.md` (taskId `inbox`)
 - `orchestrator-commitments.md` (taskId `waiting-on`; display "Waiting On" — CTS1: filename kept for backward compat with events.jsonl `source_skill='commitments'` history, same pattern as pulse below)
 - `orchestrator-my-plate.md` (taskId `my-plate`; display "My Plate" — CTS1 Surface 2)
-- `orchestrator-dont-forget.md` (taskId `pulse`; display name "Pulse" — orchestrator filename kept for backward compat with events.jsonl `source_skill='cr-dont-forget'` history)
+- `orchestrator-dont-forget.md` (taskId `pulse` — **RETIRED, LIFECYCLE1**; the file is a retirement stub kept so a pre-retirement registration's bootloader still resolves. Never register it.)
 - `orchestrator-past-meetings.md` (taskId `past-meetings`)
 - `orchestrator-friday-wrap.md` (taskId `friday-wrap`; display "Friday Wrap"; NEW v3.11.0 — wraps the `weekly-recap` skill; first weekly-rhythm scheduled task)
 
 `orchestrator-refresh-workspace-map.md` exists in the references folder as a historical artifact only; it's not in `ORCHESTRATOR_MAP` and never registered.
 
-**There is no `orchestrator-pulse.md` file** — Pulse content lives in `orchestrator-dont-forget.md`. If you find a registered task with `taskId: "cr-pulse"`, that's a v2.14.20 regression — disable it and register `pulse` (the canonical bare taskId; `cr-dont-forget` is itself a legacy variant to disable, not register) per the `ORCHESTRATOR_MAP` in Phase 1.
+**There is no `orchestrator-pulse.md` file**, and since LIFECYCLE1 there is no Pulse chat either. If you find a registered task with `taskId: "cr-pulse"`, `cr-dont-forget`, or the bare `pulse`, do NOT re-register any of them — the class is retired. Disable a legacy `cr-*` variant per the Phase 1 migration table and leave the bare `pulse` alone for the customer's own `pause` (LIFECYCLE1 §4).
 
 Tombstones (back-compat pointers; don't reference directly in new schedules):
 - `orchestrator-meetings-today.md` *(does not exist — file was renamed)*

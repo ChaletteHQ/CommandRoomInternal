@@ -1,6 +1,6 @@
 ---
 name: intro-broker
-description: "Draft introductions between two people you know — voice-calibrated to your past intros, tuned to both sides' context, and logged into the relationship graph. Fires on: 'intro [name] to [name]', 'introduce [name] and [name]', 'draft an intro between [A] and [B]', 'connect [name] with [name]', 'make the intro'. Checks both sides' history, drafts the double-opt-in ask where appropriate, and always lands as a draft for your review — never sends on its own. Does NOT fire on 'draft an email to [name]' (email-writer — single-recipient drafting), 'who do I know at [company]' (people-crm — the search that often precedes an intro), or 'who should I reach out to' (relationship-moves). Intro patterns and logging contract: Routing section in the body."
+description: "Draft introductions between two people you know, and check whether the ones you made landed. Fires on: 'check my intros', 'did my intros land', 'intro follow-ups' (the due 30-day checks), plus 'intro [name] to [name]', 'introduce [name] and [name]', 'draft an intro between [A] and [B]', 'connect [name] with [name]', 'make the intro'. Voice-calibrated to your past intros, tuned to both sides' context, and logged into the relationship graph. Checks both sides' history, drafts the double-opt-in ask where appropriate, and always lands as a draft for your review — never sends on its own. Does NOT fire on 'draft an email to [name]' (email-writer — single-recipient drafting), 'who do I know at [company]' (people-crm — the search that often precedes an intro), or 'who should I reach out to' (relationship-moves). Intro patterns and logging contract: Routing section in the body."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
@@ -19,7 +19,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 
 **Appends to:**
 - `_hq/data/events.jsonl` — event type `intro_made` with TOP-LEVEL `person_ids: [person_a_id, person_b_id]` (canonical Event shape per events.schema.json) plus `data: {person_a_id, person_b_id, draft_style, why_intro_summary, email_drafted_event_seq, scheduled_followup_check_ts}`. The top-level `person_ids` array is what apply-choices reads when the Pulse intro-followup-check resolves to `landed` / `didnt land`; the `data.person_a_id` / `data.person_b_id` scalars are preserved for downstream skills that want explicit A/B roles. v3.13.6+ — pre-v3.13.6 only the scalars were written; the missing top-level array silently severed the relationship-graph closure (apply-choices Step 3c read `parent["person_ids"]` and got `None`).
-- `_hq/data/events.jsonl` — event type `intro_followup_check` scheduled 30 days out (writes a future-dated event Pulse picks up). Carries `{intro_event_seq, scheduled_for, check_question: "did either reply / did the meeting happen"}`. The check event itself does NOT carry person_ids — they live on the parent `intro_made` event (apply-choices Step 3c fetches them via the `intro_event_seq` reference).
+- `_hq/data/events.jsonl` — event type `intro_followup_check` scheduled 30 days out (a future-dated event this skill's `check my intros` mode reads back). Carries `{intro_event_seq, scheduled_for, check_question: "did either reply / did the meeting happen"}`. The check event itself does NOT carry person_ids — they live on the parent `intro_made` event (apply-choices Step 3c fetches them via the `intro_event_seq` reference).
 - `_hq/data/entities.json` — both people's records get a `connections[]` entry pointing at the other's `person_id`, with `connection_source: "intro_made"`, `connection_event_seq`, `connected_ts`. Both records bump `last_touched_at`.
 
 **Append through the locked writer (SPEC GATE1 / A1).** Both events.jsonl appends above MUST go through `atomic_append_jsonl` (NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`) — the helper reserves the seq and writes inside the cross-process writer lock so a concurrent append can't lose an event or duplicate a seq. Omit `seq`/`ts` (auto-stamped); pass `holder="intro-broker"`. See `shared/WORKSPACE_API.md` → Append Protocol §3.
@@ -47,7 +47,7 @@ For an intro request between Person A and Person B, this skill:
 3. Drafts TWO emails — a double-opt-in version (recommended) and a direct-forward version (faster) — so the CEO picks the right intro shape.
 4. Pre-drafts a companion note for the double-opt-in flow (sent after the first recipient says yes).
 5. Logs the intro to the relationship graph so future `people-crm` queries surface "you connected them on [date]" automatically.
-6. Schedules a 30-day follow-up check (Pulse picks up; surfaces "did either reply / did the meeting happen?")
+6. Schedules a 30-day follow-up check, answerable on demand — say `check my intros` (see "Checking intros" below).
 
 ## How to Use
 
@@ -178,6 +178,20 @@ When the double-opt-in path is used (Draft 1 = "ask the first side first"), the 
 3. `intro_followup_check` (30d) now reads BOTH halves: an intro counts as fully made only when the Phase 6 `intro_made` AND this companion `email_sent` both exist. If only A's half is present after 30 days, surface: *"You asked [A] about the intro to [B] but never looped [B] in — want me to finish it?"*
 
 For the Direct-forward path (Draft 2), both sides are connected in one send, so there is no second stage — Phase 6 alone fully records it and `companion_to_intro_event_seq` is not used.
+
+## Checking intros — the due 30-day follow-ups (SPEC LIFECYCLE1)
+
+**Fires on:** `check my intros`, `did my intros land`, `intro follow-ups`.
+
+(`how did that intro go` is deliberately NOT a trigger: it lands on workspace-manager's catch-all, and the trigger suite proved it. A phrase advertised here that routes somewhere else is worse than one that is not advertised at all.)
+
+This skill writes `intro_followup_check` 30 days out; until LIFECYCLE1 the retired Pulse chat was the ONLY surface that ever read one back, so retiring that chat without this mode would have left every check sitting in the log unanswered forever. Same trade M ruled for the dormancy questions: the ask survives, it just waits to be asked for instead of arriving unbidden.
+
+1. Read `events.jsonl`. Take every `intro_followup_check` whose `data.scheduled_for` is on or before today (workspace local time).
+2. Drop any whose `data.intro_event_seq` already has a later `intro_landed` / `intro_didnt_land`, or a `chat_dismissal` referencing this check's seq — the CEO already answered.
+3. Drop, and silently resolve with an `intro_landed`, any where BOTH recipients have an `interaction` event between them dated after the intro: they connected, and asking would be asking about something that visibly worked.
+4. Render what remains, oldest `scheduled_for` first, at most 5 in one sitting. One row per check, both names in the title, the registered verbs `landed` / `didnt land` / `snooze 14d` / `skip` — the same verbs `apply-choices` has always dispatched for this family, taken from the taxonomy, never re-typed.
+5. Nothing due → *"Nothing to check — no intros are past their 30-day mark."* Not an error, not an empty widget.
 
 ## Output Structure (widget)
 

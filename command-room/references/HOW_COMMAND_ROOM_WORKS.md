@@ -64,9 +64,9 @@ The most important file in the workspace. Every consequential thing that happens
 | flat-new | top-level `owner_id`, `title`, `due` | Some legacy writers, untagged scan-for-commitments output |
 | legacy | top-level `owner` (no _id), `owner_display`, `requester_display` | pre-v2.7.15 events |
 | owner_person_id-variant | `data.owner_person_id`, `data.due_date`, `data.state` (not `status`) | cr-past-meetings actively produces this |
-| pending-review | `data.owner_name_proposed` + `data.pending_review: true` | Intentional separate path (Pulse CRU-review queue) |
+| pending-review | `data.owner_name_proposed` + `data.pending_review: true` | Intentional separate path (the CRU-review queue) |
 
-This is why `shared/scripts/cru_match._commitment_field(ev, "<field>")` exists — it's the canonical reader that handles all 5 shapes via an alias chain. Every consumer that reads commitment events MUST go through this helper. v3.5.0+ also has `event_references_person(ev, person_id)` for Pulse's cadence detection (same problem at a different layer).
+This is why `shared/scripts/cru_match._commitment_field(ev, "<field>")` exists — it's the canonical reader that handles all 5 shapes via an alias chain. Every consumer that reads commitment events MUST go through this helper. v3.5.0+ also has `event_references_person(ev, person_id)` for cadence detection (same problem at a different layer).
 
 ### entities.json — the relationship graph
 
@@ -74,7 +74,7 @@ Contains workspace-level state: who's a person you track, what orgs they belong 
 
 Why does this matter? Every surface that mentions a person ("Sloan replied to your Apr 28 thread") goes through entities.json to resolve `person_023 → "Sloan"`. If entities.json drifts (two records for the same person, missing canonical name, wrong org affiliation), the surfaces show garbage like "person_023 replied" or attribute things to the wrong person.
 
-Two safeguards: (1) `people_writer.py` enforces dedup at write time; (2) Pulse's people-layer synthesis pass (Phase 5) catches relationship drift after the fact.
+Two safeguards: (1) `people_writer.py` enforces dedup at write time; (2) the weekly `identity-reconcile` job and `entity_signal_detector` catch drift after the fact (before LIFECYCLE1 this was the retired Pulse chat's Phase 5).
 
 ### aliases.json — name disambiguation
 
@@ -168,16 +168,22 @@ Generates per-meeting prep briefs for today's calendar via `call-prep`. Each mee
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-upcoming-meetings.md`.
 
-### 6. pulse (cron 8:00 AM weekdays) — internally called "dont-forget"
+### 6. pulse — RETIRED (SPEC LIFECYCLE1, M's ruling 2026-08-02)
 
-The pattern-detection layer. Surfaces things the operator would otherwise miss:
-- Person dormancy (someone you usually talk to weekly has gone quiet 18 days)
-- Stale projects (no activity in N days)
-- Pending CRU reviews (medium-confidence auto-resolution proposals)
-- Org-layer drift (vendor became customer; org tier changed)
-- New-entity proposals (a name appeared in N meetings, propose adding to entities.json)
+The weekday pattern-detection chat is **eliminated**. It is out of `DEFAULT_SCHEDULES`, listed in `schedule_config.RETIRED_TASKS`, never offered, and never registered again. A workspace that still has it registered gets ONE offer to switch it off (update bridge → `pause pulse`), never a silent disable; its orchestrator file is a retirement stub so that fire explains itself instead of erroring.
 
-The most sophisticated reactive surface in the product. Phase 3 reference detection is the spec for "did this event mention this person" — v3.5.0+ uses the canonical `event_references_person` helper.
+Where each of its jobs went — none of them was deleted:
+
+| It did | Now |
+|---|---|
+| Person dormancy narrative | the morning brief + `relationship-moves`, which already ranked the same signal |
+| Project lifecycle: propose dormant, flip at 60d, archive at 180d, revive on new activity | the weekly `lifecycle` job (`shared/scripts/lifecycle_pass.py`) inside `maintenance` — the same thresholds in code, with a receipt, and the archive leg through `thread_archive.archive_thread` |
+| Asking whether a quiet project is dormant | `stalled projects`, the on-demand surface (`load_open_proposals(ws, "on-demand")`) |
+| Pending CRU reviews | `brain_proposals._adapt_commitment_reviews` → staff meeting + `needs your call` |
+| Org-layer drift, new-entity proposals | `entity_signal_detector` + the weekly `insight-generator` passes, both stricter about what may auto-apply |
+| Person-record synthesis | the `identity-reconcile` job (identity) + `entity_signal_detector` (role/org facts) |
+
+`event_references_person` — the canonical "did this event mention this person" helper this chat's Phase 3 was the original spec for — is untouched and still the answer for every consumer.
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-dont-forget.md` (filename retains the legacy "dont-forget" name for events.jsonl back-compat).
 
@@ -189,6 +195,8 @@ The most sophisticated reactive surface in the product. Phase 3 reference detect
 - **Workspace TZ is presentation-only** (`shared/scripts/tz.py` `to_local()`): timestamps the CEO reads are rendered in `workspace.user_timezone`; nothing about when tasks fire changes with it.
 - **Conversion happens once, at registration/change time.** When the user asks for a time ("set inbox to 8am"), they mean THEIR timezone — change-schedule converts via `schedule_config.workspace_time_to_machine()` before building the cron, and says so in the confirm diff when the two clocks differ. (The conversion uses the current offset; a fixed cron can't track DST transitions, so a machine/workspace TZ pair that shifts on different dates drifts by the DST hour until the schedule is touched again.)
 - Most installs run machine == workspace timezone and none of this is visible; the rule exists for the ones that don't (travel, remote-desktop machines, VMs).
+
+**A wrong clock is not a timezone problem (CLOCK1, 2026-08-04).** The rule above was written for the zone split; it never contemplated a clock that is simply WRONG. A scheduled fire on a sandbox machine whose clock had not synced at boot read two days behind, and computed an entire surface — and its permanent `ts` stamps — from it. `shared/scripts/trusted_now.py` cross-checks the machine clock against the newest timestamp already recorded in the workspace, and against the session date where a surface can supply one. It corrects **which instant it is**; it never corrects **which zone that instant is expressed in**. Every rule above is unchanged: cron still evaluates machine-local, lateness math is still machine-local naive, the workspace timezone is still presentation-only, conversion still happens once at registration. A builder who reaches for `to_local` while working on clock trust has confused the two problems.
 
 ### 7. friday-wrap (cron 1 PM Fridays — Phase 3/R4 default for new installs; earlier installs registered at 4 PM keep their time) — NEW v3.11.0
 

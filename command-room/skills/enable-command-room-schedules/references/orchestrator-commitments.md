@@ -28,10 +28,46 @@ The v2.7-v2.10.4 idempotency gate was removed in v2.10.5. This orchestrator ALWA
 
 A `pack_run` event still writes at the end of every fire (for audit trail), but no gate blocks subsequent fires. Re-running is cheap because drafts are TEXT-only until the user persists them per `EMAIL_DRAFT_PROTOCOL.md`.
 
+# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
+
+**Why this section sits ABOVE Phase 2 despite its number (CLOCK1).** `late_fire.check_lateness` is documented as the call you make at the TOP of a run, and everything below it now depends on that: `fire_start`, every date bucket, and every `ts` the pre-render phases write. The number is kept at 2.9 so the cross-references in the sibling orchestrators still resolve. Run it first; read it here.
+
+
+**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
+
+Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from late_fire import check_lateness
+print(json.dumps(check_lateness('<workspace_root>', 'waiting-on', fired_via='<scheduled|manual>', env_date='<session date>')))
+"
+```
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+
+**Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
+
+**The clock verdict comes back as `clock`, and two things follow from it. Neither is optional:**
+
+- **When `clock["notice"]` is set, it is the FIRST line of this fire's output** — above the lateness banner, verbatim, never paraphrased and never dropped. It states that the dates in this surface came from the workspace record rather than this computer's clock. A silent substitution is its own bug: the reader has no other way to know which clock produced what they are looking at.
+- **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
+
+
+Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
+
+- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
+- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
+- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
+- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+
+The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
+
 # Phase 2 — Setup
 
-- **Record the fire start FIRST, before any read or write:** `fire_start = datetime.datetime.now(datetime.timezone.utc).isoformat()`. Hold it as `fire_start` — Phases 2.5 and 2.6 both pass it. It marks the instant this fire began, so a commitment this same fire captured cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the calls that use it: taken later it sits after the capture phases and fences nothing.
-- Compute today's date in local time.
+- **Record the fire start FIRST, before any read or write:** `fire_start = clock["corroborated_now"]` from the Phase 2.9 return, which you ran before this phase (CLOCK1 — never `datetime.now()` here: a fire whose clock is two days behind sets a fence anchored two days in the past, and every commitment captured in between falls outside it). Hold it as `fire_start` — Phases 2.5 and 2.6 both pass it. It marks the instant this fire began, so a commitment this same fire captured cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the calls that use it: taken later it sits after the capture phases and fences nothing.
+- Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` exactly as before (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
 - Read entities.json + aliases.json.
 - Read voice calibration (cache once for the session).
 - **Resolve the mail tools through the seam** — `tool_discovery.discover_for_category("email", "<op>", tools, declared=connector_config.declared_backend("email"))` for the search / draft-create / send / label operations, falling back to `discover_mail_search_tool` / `discover_mail_draft_tool` / `discover_mail_send_tool` when no backend is declared (empty map = today's behavior, R4). Zapier legs are excluded from native discovery automatically (pinned server-ids + signature detection, R12/H-H). Never name a provider tool id directly. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
@@ -45,7 +81,7 @@ Per `shared/scripts/cru_match.py` Path 2. Before Phase 3's bucket filter runs, s
 
 Path 2 catches what Path 1 (apply-choices in-Cowork sends) and Path 3 (past-meetings transcripts) can't: standalone sends from native clients that aren't tied to a meeting and didn't go through Cowork.
 
-**Cost:** one bulk mail search per Commitments fire (1-2x/day). Conservative threshold (≥ 0.55) means false positives are rare; medium-confidence matches (0.30 - 0.55) write `commitment_review_proposed` events that the next Pulse fire surfaces for one-click confirm.
+**Cost:** one bulk mail search per Commitments fire (1-2x/day). Conservative threshold (≥ 0.55) means false positives are rare; medium-confidence matches (0.30 - 0.55) write `commitment_review_proposed` events that the confirm queue surfaces for one-click confirm.
 
 **Skip entirely if:**
 - No mail send tool was discovered in Phase 2 (degraded — proceed without scan).
@@ -405,29 +441,6 @@ Each merge runs `propose(tier='auto')` + `supersede_commitment(auto_merge=True)`
 
 **Failure handling:** identical to Phases 2.5–2.7 — swallow silently, continue, append a `pack_run.data.errors[]` entry `{"phase": "2.8_auto_merge", "reason": "<short>", "detail": "<truncated stderr>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
-# Phase 2.9 — Run mode + lateness check (Phase 3 / R4; run-mode gate v4.5.2 R2 — runs BEFORE any surface is rendered)
-
-**Determine the run mode FIRST**, per `shared/RECEIPT_CONTRACT.md` § Run-mode detection: `scheduled` when this session was started by Cowork's scheduler executing this registered prompt (app-launch catch-up deliveries of a missed slot included); `manual` when a human caused the fire — a typed trigger, a Run Now click, a re-run request in an open chat. **When uncertain, it is `manual`**: a mis-labeled manual costs one missing lateness note; a mis-labeled scheduled fabricates lateness history (FINDINGS F-47 P1a — three false late_fire receipts in one afternoon).
-
-Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
-
-```bash
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'waiting-on', fired_via='<scheduled|manual>')))
-"
-```
-
-Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
-
-- **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
-- **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
-- **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
-- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
-
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
-
 # Phase 3 — Find the Waiting On set (3 date buckets, owner ≠ M)
 
 **The surface filter (CTS1 — code, never prose):** after the base filter below, partition the projected open set via `surface_split.partition_surfaces(opens, <M's person_id>)` (`shared/scripts/surface_split.py`) and render rows from `partition["waiting_on"]` plus the confirm tail (`partition["unowned"]` + `partition["unconfirmed"]` ride the "Needs a quick confirm" section below — the §2.4 ruling). `partition["promised"]` and `partition["personal"]` belong to My Plate — NEVER render them here. The partition is TOP-LEVEL only (SUB1 — sub-items are excluded by `partition_subitems` inside it) and classifies on EFFECTIVE kind (§2.2 Option B). The filter trap is encoded in the module: Waiting On is owner PRESENT and ≠ M — a missing owner is unowned, never waiting-on.
@@ -438,7 +451,7 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 2. **flat-new** — `owner_id`, `title`, `due`, `status`, `confidence` at top level; partial `data` may exist holding `evidence` + duplicate `due`.
 3. **legacy** — top-level `owner` (no `_id` suffix), `owner_display`, `requester_display`, `title`, `due`, `status`, `confidence` (pre-v2.7.15 shape per the schema doc).
 4. **owner_person_id-variant** — `data.owner_person_id`, `data.requester_person_id`, `data.title`, `data.due_date` (note: not `due`), `data.state` (note: not `status`), `data.confidence`. Actively produced by cr-past-meetings in some fires.
-5. **pending-review** — `data.owner_name_proposed` + `data.pending_review: true`. Intentionally distinct — these are extraction proposals awaiting user confirmation, not committed commitments. Filtered out of the standard surface; surfaced via the Pulse CRU-review pipeline instead.
+5. **pending-review** — `data.owner_name_proposed` + `data.pending_review: true`. Intentionally distinct — these are extraction proposals awaiting user confirmation, not committed commitments. Filtered out of the standard surface; surfaced through the needs-your-call queue instead (`needs_review_queue` — the on-demand `needs your call` surface and the staff meeting's FROM YOUR MEETINGS fold).
 
 Use `cru_match._commitment_field(ev, "<field>")` for every commitment-field read in this phase. It tries `data.<field>` first (with all known field-name aliases), then top-level `<field>` (same alias chain). The alias table in `cru_match.py` covers `owner_id` ↔ `owner_person_id` ↔ `owner`, `requester_id` ↔ `requester_person_id`, `due` ↔ `due_date`, `status` ↔ `state`, and `confidence` ↔ `classification_confidence`. Reading only `data.<field>` silently drops shape variants 2–4 from view. Sam bug report 2026-05-17 surfaced this for shape 2 (~2/3 of his commitments dropped); M's own workspace audit revealed shapes 3 and 4 are also load-bearing (47 of 113 commitments non-canonical, ~42%).
 
@@ -448,7 +461,7 @@ Read events.jsonl. Apply base filter to every commitment event (every field read
 - **Kind filter (Phase 2 Stage D, re-scoped by CTS1):** OWNER-ME task-kind items never surface here — they are My Plate · Personal rows (the `surface_split` partition already routes them). **Delegated tasks (owner ≠ M, effective kind `task` — CTS1 §2.3) DO render in this chat**: someone else acts next, so they belong on Waiting On — but `cru_match.cru_eligible` excludes task-kind from CRU, so they get NO pre-staged chase draft and NO reconcile: render with the delegated set only (`nudge` + `mark received` + `snooze 3d` + `add to my plate` — WG1-A D-A4: `nudge` is compose-on-CLICK, connector-free at render; the row carries the owner's resolved email as `To:` metadata; when NO email is on file, `nudge` degrades to the `add email then send` recovery verb and the other three verbs stay — mirror `surface_drivers._DELEGATED_VERBS` + its degrade exactly), tagged "(delegated — nudge is manual, I won't auto-chase this)". The header counts from `count_commitments` still include every kind in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
 - **Sub-item filter (SUB1 — REQUIRED):** live sub-items (projected `data.parent_id` naming an open parent) NEVER surface as their own chase rows and NEVER enter the CRU legs — `cru_match.cru_eligible` excludes them in code, same mechanism as the task filter. The PARENT is the commitment of record: its row carries the progress annotation ("2 of 3 sub-items done · next: [step]" — from the loader's `n_subitems_open`/`n_subitems_done`/`next_subitem_due` stamps) and, when the last open child has closed, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Child activity already bubbles into the parent's movement (never render a parent "stuck" while its steps are moving). Orphan children (parent closed — cascade crash window) surface as ordinary top-level rows with "was part of: [parent title]". `data.next_subitem_due` is an annotation/ranking signal ONLY — never the parent's due; a deferred parent stays deferred.
 - `_commitment_confidence(ev) >= confidence.CONFIDENCE_SURFACE_MIN` (== 0.7 as of v3.5.0; canonical constant in `shared/scripts/confidence.py`)
-- `_commitment_field(ev, "status") not in ("pending_review", "proposed")` — filter out shape-5 pending-review events; they surface via Pulse CRU-review, not daily commitments
+- `_commitment_field(ev, "status") not in ("pending_review", "proposed")` — filter out shape-5 pending-review events; they surface through the needs-your-call queue, not daily commitments
 - No subsequent `commitment_resolved` event with matching id (Sam Apr 29 — stale "this is really old" items were resolved-but-still-surfacing because the prior filter only checked `thread_resolved`. Both event types close the commitment; both must filter it out. Mirror `shared/scripts/cru_match.py::load_open_commitments`, which already does both.)
 - No subsequent `thread_resolved` event with matching id
 - No active `chat_dismissal` event with target_id matching this commitment id, where "active" means:

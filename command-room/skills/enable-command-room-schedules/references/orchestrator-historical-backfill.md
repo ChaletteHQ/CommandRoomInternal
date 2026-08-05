@@ -54,7 +54,7 @@ Batch with pageSize 100. Append to events.jsonl in append-only fashion, one even
 {"type":"interaction","ts":"<ISO>","seq":<seq>,"data":{"channel":"email","thread_id":"<id>","subject":"<subject>","participants":["<email>", "..."],"first_message_date":"<date>","last_message_date":"<date>","message_count":<N>,"has_attachments":<bool>,"snippet":"<≤200 char snippet>","source_ref":"<thread_url>","inferred_from":["historical_backfill"]}}
 ```
 
-Resolve `participants` against entities.json. For unrecognized email addresses, append a provisional person record with `inferred_from: ["historical_backfill"]`, `pending_review: true`, `first_seen: <window_end>`. Don't try to enrich now — Pulse's weekly synthesis pass picks up provisional records.
+Resolve `participants` against entities.json. For unrecognized email addresses, append a provisional person record with `inferred_from: ["historical_backfill"]`, `pending_review: true`, `first_seen: <window_end>`. Don't try to enrich now — the weekly `identity-reconcile` maintenance job picks up provisional records (it inherited that pass when LIFECYCLE1 retired the Pulse chat).
 
 ## Calendar (Google Calendar or Outlook Calendar)
 
@@ -167,6 +167,6 @@ Per Rule 9: NO `pack_run seq XYZ logged`, NO entity counts that read like teleme
 
 - Does NOT read message bodies, transcripts, or file content. Metadata only.
 - Does NOT modify existing entities.json records (only appends provisional person/project records).
-- Does NOT auto-promote provisional records to canonical (that's Pulse's weekly synthesis pass for people; cleanup for projects).
+- Does NOT auto-promote provisional records to canonical (that's the weekly identity-reconcile job's synthesis pass for people; cleanup for projects).
 - Does NOT fire follow-on chunks itself — the schedule was set by `enable-command-room-schedules` Phase 4.
 - Does NOT block on user input. Pure background scan.

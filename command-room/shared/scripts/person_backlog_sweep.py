@@ -66,8 +66,33 @@ if str(_HERE) not in sys.path:
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _clock_now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _events_path(ws: Path) -> Path:
@@ -184,7 +209,7 @@ def run_sweep(workspace_root, *, apply: bool = False,
 
     ws = Path(workspace_root)
     plan = plan_sweep(ws, now_iso=now_iso)
-    batch_id = "pbs_" + _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    batch_id = "pbs_" + _clock_now(workspace_root).strftime("%Y%m%dT%H%M%SZ")
     results = {"added": [], "needs_confirm": [], "expired": [], "errors": []}
     if not apply:
         plan["batch_id"] = batch_id

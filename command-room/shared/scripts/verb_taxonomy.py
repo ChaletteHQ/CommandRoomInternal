@@ -80,7 +80,7 @@ VERB_TAXONOMY = (
          family="commitment",
          notes="Display was 'Resolved' on the daily chat and 'Done' on triage "
                "— same event, two names (F-59). 'Done' wins everywhere. On the "
-               "Pulse surface the same click means 'this alert isn't open "
+               "(now-retired) Pulse surface the same click meant 'this alert isn't open "
                "anymore' (14-day suppression, no commitment event)."),
     _row("mark done", "Done", "commitment_resolved",
          "Close a self-commitment as completed.",
@@ -88,6 +88,22 @@ VERB_TAXONOMY = (
          family="commitment",
          notes="Self-commitment twin of `resolved`; scaffold-automation's "
                "deployed-yet check writes automation_deployed instead."),
+    _row("already done", "Already done", "commitment_resolved",
+         "You already did this one — it's confirmed and closed as completed.",
+         ("needs-your-call", "cr-brain"), family="commitment",
+         notes="DONE1. The queue-only twin of `resolved`, and deliberately "
+               "NOT that wire id: apply-choices Step 4 routes `resolved` "
+               "straight to close_commitment, which would close a "
+               "pending_review row without confirming it and without the "
+               "bulk-accept fence. Dispatch: needs_review_queue.done_items — "
+               "clear_review_flags THEN close_commitment(resolution='done'), "
+               "evidence = the user's own attestation, never a match. "
+               "Per-item only: every id must be individually named (see "
+               "done_items). Renders on BOTH queue surfaces from the one "
+               "needs_review_queue.QUEUE_ROW_ACTIONS constant — the "
+               "on-demand widget (source_skill needs-your-call) and the "
+               "staff-meeting FROM YOUR MEETINGS fold (source_skill "
+               "cr-brain, stamped by brain_proposals.build_card_view)."),
     _row("push to [date]", "Later…", "commitment_updated",
          "Deal with it later — type a date or a number of days. Your own "
          "item moves its due date; someone else's just leaves the view "
@@ -811,6 +827,7 @@ _THING_OVERRIDES = {
     "fix wording [text]": "corrected wording",
     "reassign to [name]": "name",
     "theirs to [name]": "name",
+    "report [status]": "status (on track / at risk / off track / blocked)",
     "same as [existing]": "name",
     "split into [items]": "list of items",
     "add subitems [items]": "list of items",

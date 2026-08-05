@@ -31,7 +31,7 @@ THE TWO CONTRACTS
    ONLY place open/overdue/undated/by-direction counts come from. Every
    surface that renders a commitment count — MASTER_TRACKER renderer,
    COMMITMENT_AGING, morning-brief header, coach headline, the Commitments
-   (Pulse) orchestrator, value surfaces — MUST call one of them. The
+   orchestrators, value surfaces — MUST call one of them. The
    acceptance test is tests/run_commitment_state_test.py; it fails when a
    counting surface reads around this module.
 
@@ -1970,6 +1970,129 @@ def flag_duplicate_for_review(
             "suspected_duplicate_of": str(suspected_duplicate_of), "event": ev}
 
 
+# UNCONFIRM1 — the reason an un-confirmed item carries when neither the caller
+# nor the capture event can say why it was ever a question. Honest about what
+# it knows: the user reversed their own answer, so the row is a question again.
+RESTORE_DEFAULT_REVIEW_REASON = "you un-confirmed this — it needs your call again"
+
+
+def restore_review_flags(
+    workspace_root,
+    commitment_id,
+    *,
+    restored_by: str,
+    source_skill: str,
+    review_reason: Optional[str] = None,
+    note: str = "un-confirmed at the user's request",
+) -> dict:
+    """THE un-confirm writer (UNCONFIRM1) — the additive mirror of
+    `clear_review_flags` for a confirm the USER reversed.
+
+    WHY IT EXISTS. `clear_review_flags` is what the needs-your-call queue's
+    `confirm` writes, and until now the only additive writer that reversed
+    that fold was `flag_duplicate_for_review` — which REQUIRES a
+    `suspected_duplicate_of` and is named, documented and schema-described
+    for duplicate PAIRS ("system-written, not user-driven",
+    COMMITMENT_SCHEMA.md). Reversing a confirm through it meant passing an
+    empty target: benign in the projection (the fold stamps the duplicate
+    flag only `if entry.get("duplicate_of")`, and `""` is falsy) and
+    permanently wrong on disk, where the event carries
+    `suspected_duplicate_of: ""` written by a duplicate-named writer and
+    nothing anywhere says a person un-confirmed anything. That residue is
+    what this writer removes. `flag_duplicate_for_review` keeps the duplicate
+    case and is unchanged.
+
+    Appends ONE `commitment_updated` carrying the EXISTING fold key
+    `data.review_flags_set: true` — so there is ZERO reader change: the
+    projector sorts adjudications by append index (`cru_match` — latest
+    wins), and a `review_flags_set` appended after a `review_flags_cleared`
+    puts the item back in `load_needs_review` carrying its reason. It also
+    carries `data.review_flags_restored: true`, which no reader consumes: it
+    is provenance, so a history reader can tell an un-confirm from a
+    duplicate flag without inferring it from an absent key. And it takes NO
+    duplicate target from the caller — there is no such parameter, and
+    refusing to accept one is the point of the writer.
+
+    THE DUPLICATE LINK IS RESTORED, NOT DISCARDED (amendment 2026-08-03,
+    review finding MF-3). The first draft omitted `suspected_duplicate_of`
+    flatly, and that was too broad: `load_needs_review` includes items flagged
+    as suspected duplicates AT CAPTURE, so this queue's `confirm` runs on
+    them, and the confirm fold NULLS the field
+    (`cru_match` — `patch["suspected_duplicate_of"] = None` on `clear_flags`)
+    while the flagset branch only re-stamps it `if entry.get("duplicate_of")`.
+    A flat omission therefore destroyed a real duplicate link permanently, and
+    visibly: the confirm-flow row picks its verb set with
+    `bool(suspected_duplicate_of)`, so the un-confirmed row rendered a context
+    tag still saying "looks like a duplicate" with the Merge verb GONE. An
+    undo must return the item to the state it was in before the gesture. So
+    the writer re-carries `suspected_duplicate_of` AND
+    `suspected_duplicate_score` FROM THE TARGET CAPTURE EVENT, read inside
+    the lock — the same substrate-derived mechanism it uses for
+    `review_reason`. When the capture carries no link, the key is OMITTED
+    ENTIRELY: never `""`, never `None`, never any other falsy placeholder,
+    because a falsy value is exactly the off-label residue this writer exists
+    to remove and it reads as a duplicate pair that never existed.
+
+    `review_reason` resolution: the caller's value when given; otherwise the
+    reason off the TARGET CAPTURE EVENT already in hand inside the lock, so
+    nothing has to be cached between the confirm and the undo and a stale
+    cache cannot invent a reason; otherwise
+    `RESTORE_DEFAULT_REVIEW_REASON`.
+
+    Same guard set as `clear_review_flags` / `flag_duplicate_for_review`: id
+    normalization over legacy spellings, loud CommitmentIdError on no match,
+    refuses a CLOSED item ({"status": "not_open"} — the caller reopens
+    first; see needs_review_queue.undo_done_items), scan→append inside the
+    writer lock (R1c).
+    """
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path,
+                            holder=f"restore_review:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        reason = review_reason
+        if reason is None or not str(reason).strip():
+            # Substrate-derived: the capture's own reason, read inside the
+            # lock off the event this call already resolved.
+            reason = _commitment_field(target, "review_reason") or ""
+        reason = str(reason).strip() or RESTORE_DEFAULT_REVIEW_REASON
+        data: dict = {
+            "commitment_id": cid,
+            "review_flags_set": True,
+            "review_flags_restored": True,
+            "pending_review": True,
+            "review_reason": reason[:200],
+            "unconfirmed_by": restored_by,
+            "note": (note or "")[:200],
+        }
+        # MF-3: restore the capture's OWN duplicate link, or write no key at
+        # all. Substrate-derived and never caller-supplied; a falsy value is
+        # never written, because the flagset fold re-stamps only a truthy one
+        # and a falsy key on disk IS the residue this writer replaces.
+        dup_of = _commitment_field(target, "suspected_duplicate_of")
+        if isinstance(dup_of, str) and dup_of.strip():
+            data["suspected_duplicate_of"] = dup_of.strip()
+            dup_score = _commitment_field(target, "suspected_duplicate_score")
+            if dup_score is not None:
+                data["suspected_duplicate_score"] = dup_score
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "restored", "commitment_id": cid, "event": ev}
+
+
 def mark_partial_received(
     workspace_root,
     commitment_id,
@@ -2603,6 +2726,8 @@ __all__ = [
     "confirm_commitment_owner",
     "clear_review_flags",
     "flag_duplicate_for_review",
+    "restore_review_flags",
+    "RESTORE_DEFAULT_REVIEW_REASON",
     "mark_partial_received",
     "split_commitment",
     "reopen_commitment",

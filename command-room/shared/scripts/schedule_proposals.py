@@ -91,7 +91,18 @@ REPROPOSE_SUPPRESSION_WEEKS = 6
 
 
 def _now_local() -> _dt.datetime:
-    return _dt.datetime.now()
+    """Naive MACHINE-local now.
+
+    CLOCK1: the INSTANT is corroborated against the workspace ledger; the
+    ZONE is untouched. Falls back to the raw machine clock if the helper is
+    unavailable.
+    """
+    try:
+        from trusted_now import trusted_now_local_naive
+
+        return trusted_now_local_naive()
+    except Exception:
+        return _dt.datetime.now()
 
 
 def _entities(workspace_root) -> dict:
@@ -289,19 +300,30 @@ def propose_later_add_tasks(
 
 def log_proposal(workspace_root, task_id: str, *,
                  line: str = "", reason: str = "") -> bool:
-    """Log ONE schedule_add_proposed event for a surfaced proposal (the
-    suppression record) AND — LB2 §3a, the schedule_add writer migration —
-    persist the proposal itself as a `brain_proposal` row through
-    `propose()`, so the offer sits on the ONE rail (staff meeting, TTL,
-    verbs) instead of existing only as a Monday-note line that scrolls away.
+    """Log ONE schedule_add_proposed event for a surfaced proposal — the
+    suppression record, and since LIFECYCLE1 §7a the ONLY thing this writes.
 
     Suppression authority is unchanged and singular: propose_later_add_tasks
     consults THIS module's `schedule_add_proposed` log (6-week window)
-    before any proposal surfaces — the bp row's own dedup/cooldown is a
-    second net, never the primary. The legacy event keeps writing (it is the
-    suppression record + usage-report telemetry, and it was never
-    adapter-read — no double-row risk). Returns False instead of raising —
-    telemetry never blocks the surface."""
+    before any proposal surfaces. Returns False instead of raising —
+    telemetry never blocks the surface.
+
+    THE BP-RAIL WRITE IS GONE (LIFECYCLE1 §7a). LB2 §3a had migrated this
+    writer onto `brain_proposals.propose(kind="schedule_add")` so the offer
+    would sit on the one rail instead of scrolling away in a Monday note.
+    STAFFCUT §3.6 then retired the schedule_add row — measured: 0 of 4
+    proposals ever produced a registration, because registration only ever
+    happens through the change-schedule / update-bridge add path, which the
+    row never invoked and apply-choices explicitly refuses to invoke — but it
+    retired the LEGACY ADAPTER, and this writer kept minting `bp_` rows on the
+    other rail. One of them rendered on M's live staff meeting the next
+    morning, verbs and all. A kind that is retired at the projector and still
+    written is landfill with a TTL, so the write stops here.
+
+    Rows already open on a live workspace are unaffected: the projector stops
+    rendering them (`brain_proposals.RETIRED_KINDS`) and `expire_stale` still
+    ages them out on their own TTL. Nothing is tombstoned early and nothing
+    strands."""
     try:
         from event_gate import append_event
 
@@ -316,28 +338,87 @@ def log_proposal(workspace_root, task_id: str, *,
         )
     except Exception:
         return False
-    # LB2 — the bp-rail write. Best-effort like the event above; the
-    # fingerprint carries the family natural-key convention (schedule:<task>)
-    # so cross-rail dedup against any pre-migration adapter row holds.
-    try:
-        from brain_proposals import propose
+    return True
 
-        propose(
-            workspace_root,
-            kind="schedule_add",
-            tier="confirm",
-            fingerprint=f"schedule:{task_id}",
-            detector="schedule-proposals",
-            evidence=reason or f"readiness thresholds met for {task_id}",
-            action_tuples=[{"action": "confirm proposal"},
-                           {"action": "dismiss proposal"},
-                           {"action": "snooze proposal 7d"}],
-            render_line=line,
-            extra={"task": task_id,
-                   "title": task_id.replace("-", " ").title()},
+
+def propose_task_retirements(workspace_root, registered_ids=None,
+                             now: Optional[_dt.datetime] = None) -> list:
+    """The RETIREMENT direction (SPEC LIFECYCLE1 §4) — the mirror of
+    `propose_later_add_tasks`.
+
+    Returns one dict per still-registered retired task
+    ({task, line, reason}), or [] — which is the answer on the overwhelming
+    majority of workspaces, because a task that was never registered has
+    nothing to retire. That case is the FIRST thing this must get right:
+    Pulse was a later-add, not a first-install chat, so most workspaces never
+    had it, and a retirement flow that says anything at all to them is noise
+    about a feature they never saw.
+
+    PROPOSE, NEVER SILENT. The same posture as every schedule change: the line
+    routes the customer to the EXISTING pause path (`pause <name>`) and this
+    function registers, disables and writes nothing. Silently switching off a
+    task the customer can see in their Scheduled list is the add-without-asking
+    violation with the sign flipped.
+
+    Suppression is symmetric with the add direction: one
+    `schedule_retire_proposed` record per offer (written by
+    `log_retire_proposal`), honored for RETIRE_SUPPRESSION_WEEKS. An offer the
+    customer ignored is not an offer to repeat next week.
+
+    READS ONLY (events.jsonl). Callers surface `line` verbatim, then call
+    `log_retire_proposal()` per surfaced proposal.
+    """
+    from schedule_config import (RETIRE_SUPPRESSION_WEEKS, RETIRED_TASKS,
+                                 retirement_line)
+
+    now = now or _now_local()
+    registered = set(registered_ids or ())
+    candidates = [t for t in RETIRED_TASKS if t in registered]
+    if not candidates:
+        return []
+
+    last_proposed: dict = {}
+    for ev in _iter_events(workspace_root):
+        if ev.get("type") != "schedule_retire_proposed":
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        tid = data.get("taskId")
+        dt = event_dt(ev)
+        if tid and dt:
+            dt = dt.astimezone().replace(tzinfo=None)
+            if tid not in last_proposed or dt > last_proposed[tid]:
+                last_proposed[tid] = dt
+
+    out = []
+    for tid in candidates:
+        prior = last_proposed.get(tid)
+        if prior and (now - prior) < _dt.timedelta(weeks=RETIRE_SUPPRESSION_WEEKS):
+            continue
+        out.append({"task": tid,
+                    "reason": RETIRED_TASKS[tid]["reason"],
+                    "line": retirement_line(tid)})
+    return out
+
+
+def log_retire_proposal(workspace_root, task_id: str) -> bool:
+    """Log ONE `schedule_retire_proposed` suppression record. Additive event
+    type — nothing is removed from the vocabulary and no existing reader
+    changes. Returns False instead of raising: telemetry never blocks the
+    surface that carried the offer."""
+    try:
+        from event_gate import append_event
+
+        append_event(
+            Path(workspace_root) / "_hq" / "data" / "events.jsonl",
+            {
+                "type": "schedule_retire_proposed",
+                "source_skill": "cleanup",
+                "data": {"taskId": task_id},
+            },
+            holder="schedule_proposals",
         )
     except Exception:
-        pass
+        return False
     return True
 
 
@@ -346,4 +427,6 @@ __all__ = [
     "REPROPOSE_SUPPRESSION_WEEKS",
     "propose_later_add_tasks",
     "log_proposal",
+    "propose_task_retirements",
+    "log_retire_proposal",
 ]

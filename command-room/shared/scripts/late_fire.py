@@ -165,8 +165,72 @@ CHRONIC_MIN_LATE_WEEKS = 3
 SCHEDULED_CONTEXT = frozenset({"scheduled", "catchup"})
 
 
-def _now_local() -> _dt.datetime:
-    return _dt.datetime.now()
+def _now_local(workspace_root=None, env_date=None) -> _dt.datetime:
+    """Naive MACHINE-local now — the clock cron actually evaluates in.
+
+    CLOCK1: the INSTANT is corroborated against the workspace ledger before it
+    is returned; the ZONE is untouched, and must stay untouched. This is still
+    machine-local naive, still the only clock lateness math may use, and R8's
+    "never correct a fire time against the workspace TZ" rule is unaffected.
+    Falls back to the raw machine clock if the helper is unavailable.
+    """
+    try:
+        from trusted_now import trusted_now_local_naive
+
+        return trusted_now_local_naive(workspace_root, env_date=env_date)
+    except Exception:
+        return _dt.datetime.now()
+
+
+# CLOCK1 — one `clock_untrusted` telemetry event per PROCESS, not per fire.
+# The consumer is chronic-skew detection (cleanup / insight-generator), which
+# needs to know a machine has a bad clock, not how many times one fire noticed.
+_CLOCK_TELEMETRY_EMITTED: list = [False]
+
+
+def _clock_field(workspace_root, env_date) -> dict:
+    """CLOCK1's verdict, in the compact shape that travels to orchestrators.
+
+    Best-effort in every direction: an unresolvable workspace, an unreadable
+    ledger or a missing helper all produce the trusted-machine answer with no
+    notice, which is byte-identical to pre-CLOCK1 behaviour. Never raises.
+    """
+    fallback = {
+        "untrusted": False, "direction": None, "notice": None, "today": None,
+        "machine_now": None, "corroborated_now": None, "source": "machine",
+        "skew_seconds": 0.0, "anomaly": None,
+    }
+    try:
+        import trusted_now
+
+        trusted_now.register_workspace(workspace_root)
+        report = trusted_now.clock_report(workspace_root, env_date=env_date)
+    except Exception:
+        return fallback
+    if report.get("untrusted") and not _CLOCK_TELEMETRY_EMITTED[0]:
+        _CLOCK_TELEMETRY_EMITTED[0] = True
+        try:
+            from event_gate import append_event
+
+            append_event(
+                Path(workspace_root) / "_hq" / "data" / "events.jsonl",
+                {
+                    "type": "clock_untrusted",
+                    "source_skill": "late_fire",
+                    "data": {
+                        "direction": report.get("direction"),
+                        "source": report.get("source"),
+                        "skew_seconds": report.get("skew_seconds"),
+                        "machine_now": report.get("machine_now"),
+                        "corroborated_now": report.get("corroborated_now"),
+                    },
+                },
+                holder="trusted_now",
+            )
+        except Exception:
+            # Telemetry never blocks a fire (RELIABILITY.md core principle).
+            pass
+    return report
 
 
 def _human_time(dt_naive_local: _dt.datetime) -> str:
@@ -275,6 +339,7 @@ def check_lateness(
     *,
     fired_via: str = "manual",
     now: Optional[_dt.datetime] = None,
+    env_date: Optional[str] = None,
     emit: bool = True,
 ) -> dict:
     """Compute this fire's lateness tier. Call at the top of every chat
@@ -294,6 +359,14 @@ def check_lateness(
         caller that means `scheduled` must say so in that exact word; there
         is no spelling of "I don't know" that degrades a surface.
 
+      env_date: the session's own date ("Today's date is YYYY-MM-DD"), which
+        the orchestrator substitutes from its context. CLOCK1's second
+        corroboration source, and the only one that can catch a clock running
+        FAST. Like `fired_via` it is a model-substituted string, so it can
+        arrive as anything — an unsubstituted placeholder, an empty string, a
+        sentence. Anything unparseable is treated as absent, silently: a
+        garbage session date never moves the clock and never blocks a run.
+
     Returns:
       {task, tier: manual|exempt|none|note|degrade|unknown,
        fired_via (normalized, fail-safed input), fired_via_raw (what the
@@ -303,13 +376,25 @@ def check_lateness(
        "unrecognized_run_mode" | "slot_already_served" |
        "slot_created_by_schedule_change"), lateness_minutes,
        scheduled_for (ISO, machine-local), banner (note tier),
-       degrade_notice (degrade tier), event_logged (bool)}
+       degrade_notice (degrade tier), event_logged (bool),
+       clock (CLOCK1: {untrusted, direction, notice, today, machine_now,
+       corroborated_now, source, skew_seconds, anomaly})}
+
+    `clock` is present on EVERY tier including `manual` — a clock that cannot
+    be trusted is a fact about the run, not about the lateness verdict, and a
+    manual fire renders "today" from it exactly as a scheduled one does. When
+    `clock["notice"]` is set the orchestrator renders it as the FIRST line of
+    output, the same mechanism as the lateness banner.
 
     `unknown` (unparseable cron / no schedule entry) behaves like `none` —
     the fire runs normally; lateness detection is best-effort and must
     never block the primary output.
     """
-    now = now or _now_local()
+    # CLOCK1 — corroborate the clock BEFORE any date-relative math runs on it,
+    # and register the root so every writer that stamps its own `ts` later in
+    # this fire reads the corrected instant too.
+    clock = _clock_field(workspace_root, env_date)
+    now = now or _now_local(workspace_root, env_date)
     normalized = normalize_fired_via(fired_via)
     # Fail-safe by asymmetry, in code (DOGFIX1). `normalize_fired_via` returns
     # unknown strings UNCHANGED (only absent/blank comes back None), so a
@@ -328,6 +413,7 @@ def check_lateness(
         "scheduled_for": None,
         "banner": None,
         "degrade_notice": None,
+        "clock": clock,
         "event_logged": False,
     }
     if via == "manual":

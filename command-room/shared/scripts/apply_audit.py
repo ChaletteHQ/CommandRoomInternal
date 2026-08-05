@@ -44,6 +44,14 @@ _OK_STATUSES = frozenset({
     # has been dealt with — the page-set should stop offering it, exactly as
     # it stops offering a closed one.
     "watching",
+    # DONE1 v5.9.3: `needs_review_queue.done_items` renames its landed closure
+    # from the writer's "closed" to the verb's own word — `{"status": "done"}`
+    # is a commitment_updated + commitment_resolved pair already on disk. It
+    # was the ONE handler status the audit vocabulary never learned, so a
+    # correct `already done` was logged outcome "error", n_errors 1 (caught
+    # live 2026-08-05), and page_snapshot kept offering a row whose write had
+    # landed.
+    "done",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -57,6 +65,14 @@ _NOOP_STATUSES = frozenset({
     # no-op maps to the unknown-status default ("error"), inflating n_errors
     # and leaving an archived project still offered in the page-set.
     "already_archived",
+    # DONE1 v5.9.3: `confirm_items` / `done_items` report an id that is no
+    # longer a queue member as `not_pending` — their own docstrings call it
+    # "idempotent-safe … an honest ack, not a second tombstone". Every branch
+    # that produces it (already confirmed, already closed, never in the queue)
+    # leaves the row OUT of the pending_review set this page-set offers, so
+    # counting it as landed can never hide a row still awaiting this queue's
+    # decision. Nothing was written, so it is a no-op, not an "ok".
+    "not_pending",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({
@@ -66,6 +82,26 @@ _REFUSED_STATUSES = frozenset({
     # to the unknown-status default, so the reason is legible in the source
     # instead of inferred from a fall-through.
     "held_weak_evidence", "held_pending_review", "confirmed_open",
+    # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
+    # vocabulary. "error" is already the right outcome for each, but by
+    # FALL-THROUGH — and a fall-through is indistinguishable from a status the
+    # vocabulary simply never learned (which is exactly how "done" hid). Named
+    # here so the classification is a decision on the record:
+    #   not_individually_named — the DONE1 gesture bar; the row is untouched
+    #     and still owed, so the page-set must keep offering it.
+    #   not_found — the id resolved to no commitment; nothing written.
+    #   confirmed_not_closed — done_items' (a)-landed/(b)-failed half: the item
+    #     is a confirmed OPEN commitment, so the attested close did NOT happen.
+    #   has_subitems — drop_items refusing a parent with open children; the
+    #     queue never cascades silently, so the row stays open.
+    #   not_open — a writer pass-through (clear_review_flags / restore_review_
+    #     flags on a closed item). It reads as a no-op on the confirm rail but
+    #     as a real refusal on the undo rail ("that one is closed — undoing an
+    #     'already done' reopens it first"), where the user still owes an
+    #     action. One string, two meanings: FS-18a says take the
+    #     never-optimistic one.
+    "not_individually_named", "not_found", "confirmed_not_closed",
+    "has_subitems", "not_open",
 })
 
 

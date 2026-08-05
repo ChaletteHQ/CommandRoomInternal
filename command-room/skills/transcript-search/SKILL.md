@@ -21,7 +21,7 @@ commitment that appears in a transcript it just pulled. This closes the gap M hi
 
 **Appends to:**
 - `_hq/data/events.jsonl` — event type `search_performed` with `{query, person_filter, hits_count, top_hit_event_seq, scope_window_days}` for every search the user runs.
-- `_hq/data/events.jsonl` + `_hq/data/entities.json` — via the Step 5.5 reconcile pass, the same `meeting` / `commitment` / `decision` / person-write events the scheduled `cr-past-meetings` orchestrator emits, but ONLY for surfaced transcripts not already in substrate, and ONLY the data layer (no briefs/drafts/widgets). These writes go through `meeting-notes` + `people_writer` — never hand-rolled. Per-search granularity is intentional: aggregated query frequency is an insight signal in its own right. **In-skill use today:** this skill reads its own past `search_performed` events to detect repeat queries and surface the "you've searched this 7 times" hint alongside hits. **Future cross-surface use:** the event is canonical-shape substrate so insight-generator or Pulse can later detect topical obsession patterns ("you keep researching pricing — want a synthesis?"). No cross-surface consumer reads this yet as of v3.12.0.
+- `_hq/data/events.jsonl` + `_hq/data/entities.json` — via the Step 5.5 reconcile pass, the same `meeting` / `commitment` / `decision` / person-write events the scheduled `cr-past-meetings` orchestrator emits, but ONLY for surfaced transcripts not already in substrate, and ONLY the data layer (no briefs/drafts/widgets). These writes go through `meeting-notes` + `people_writer` — never hand-rolled. Per-search granularity is intentional: aggregated query frequency is an insight signal in its own right. **In-skill use today:** this skill reads its own past `search_performed` events to detect repeat queries and surface the "you've searched this 7 times" hint alongside hits. **Future cross-surface use:** the event is canonical-shape substrate so insight-generator can later detect topical obsession patterns ("you keep researching pricing — want a synthesis?"). No cross-surface consumer reads this yet as of v3.12.0.
 
 **Reads from:**
 - Granola / Fireflies / Otter transcript connectors (or `_hq/meetings/*_transcript.md` if synced).
@@ -236,13 +236,13 @@ beyond what the user is looking at):
 
    > *(2 of these meetings weren't in your workspace yet — I've captured them,
    > including 1 new person, Quinn Sample. Say `past meetings` or check your next
-   > Pulse to see what I added.)*
+   > staff meeting to see what I added.)*
 
    If every surfaced transcript was already in substrate, append nothing.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "matched via attendee: person_014 — review what I logged"
-- Good: "from a meeting Aria Sample was in — check your next Pulse to see what I added"
+- Good: "from a meeting Aria Sample was in — check your next staff meeting to see what I added"
 
 If `meeting-notes` errors on a transcript, swallow it silently and continue (the
 search results already stand). No error note is required — transcript-search has no

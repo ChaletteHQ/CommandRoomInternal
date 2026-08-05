@@ -4,6 +4,8 @@
 > They execute silently as part of existing flows — the user never has to run maintenance manually.
 > Thresholds are overridable via CUSTOM_CONFIG.md if it exists.
 
+**Write posture (stated once, applies to every rule below).** Maintenance writes only reversible, receipted operations, and never asks permission for them. Unattended means *nobody is watching*, not *don't touch anything*. Archival moves into `_archive/`, memory rollover and compression (archive-never-delete), the bounded self-heal safe set, view regeneration, receipts and cursor advances are all AUTOMATIC — running one of them is the rule, and deferring it to "say the word and I'll do it" is a contract violation. Preference and skill-config writes, capture drops, and repairs the checks cannot call safe stay ATTENDED: flagged, never mutated. Nothing below changes that split.
+
 ---
 
 ## When Maintenance Runs
@@ -25,13 +27,23 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 
 **Threshold:** When a SESSION_NOTES file exceeds 150 lines (roughly 8-10KB):
 
-**Action (on "end session"):**
-1. Keep the `## Current Status` and `## Active Work Items` sections intact (these are the live state)
-2. Keep the 5 most recent session log entries
-3. Before archiving, generate a `## Session History` summary section in the active file — one line per archived entry: `- [DATE]: [5-word summary of what happened]`. This stays in the active file permanently so the CEO can see at a glance what happened on any date and ask for detail if needed.
-4. Move older full entries to `SESSION_NOTES_[NAME]_archive_[YYYY].md` in the same project folder
-5. Add a reference line at the bottom of active file: `> Full entries archived to SESSION_NOTES_[NAME]_archive_2026.md`
-6. Log in session: "Rolled over session notes for [Project] — [X] older entries archived."
+**Action — call the canonical function. Do not hand-execute this rule.**
+
+```
+cleanup_actions.rollover_session_notes(workspace_root)   # threshold_lines=150, keep_entries=5
+```
+
+ONE implementation, two callers: the weekly `cleanup` fire (Phase 2 item 4) and workspace-manager's "end session" micro-cleanup both go through this call. It is **AUTOMATIC — never deferred to an attended ask.** There is no "say 'roll over my session notes'" step; the pre-reshape byte-copy into `_archive/session-notes-pre-rollover/` is the permission, and it is written before the first byte of any reshape.
+
+What the function does, per file over threshold — the semantics this rule has always specified:
+1. Keeps the `## Current Status` and `## Active Work Items` sections intact (these are the live state), along with every other non-entry section, exactly where they sit
+2. Keeps the 5 most recent session log entries
+3. Writes a `## Session History` summary section in the active file — one line per archived entry, `- [DATE]: [~8-word summary]`, derived deterministically from the entry's own first content line. This stays in the active file permanently so the CEO can see at a glance what happened on any date and ask for detail if needed. (You may rewrite those lines afterwards to read better; execution never waits on it.)
+4. Moves older full entries into `SESSION_NOTES_[NAME]_archive_[YYYY].md` in the same project folder — appended, never overwritten
+5. Adds the reference line at the bottom of the active file: `> Full entries archived to SESSION_NOTES_[NAME]_archive_2026.md`
+6. Returns one record per file it considered. Log the `rolled_over` ones in session: "Rolled over session notes for [Project] — [X] older entries archived," and fold every record into `actions_taken[]`.
+
+**When it refuses, that is the answer.** Before writing anything the function re-derives that every original line survives into kept-or-archived output; if a line would be lost, or the file's structure is one it will not guess at (entries nested under H3, an undated section sitting between dated ones, an out-of-order append), it returns an **aborted** record naming the reason, and leaves the file **byte-identical**. Do not hand-reshape an aborted file to finish the job — a partial reshape of the CEO's memory is worse than no reshape.
 
 **Never delete.** Always archive. The CEO should be able to find old entries if needed.
 
@@ -44,6 +56,8 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 **Problem:** Active Threads table in PROJECT_BRAIN.md accumulates entries. Resolved threads sit indefinitely, adding noise to every "go [project]" briefing.
 
 **Threshold:** Any thread marked "Resolved"/"Closed"/"Done" for more than 30 days:
+
+**AUTOMATIC, never deferred to an attended ask.** This is an archive-never-delete memory operation like Rule 1 — there is nothing to ask permission for, and a fire that skips it silently is the failure mode Rule 1 spent months in. It still compresses by judgment rather than through a helper, so the receipt is the only proof it ran: whenever it moves anything, that lands in `actions_taken[]` on the `cleanup_run` receipt. If receipts show it silently skipping, it gets scripted next — a separate spec, never a fire-time improvisation.
 
 **Action (on "end session"):**
 1. Threads resolved less than 30 days ago: leave in Active Threads table as-is. They might reopen and the context is still relevant.
@@ -66,6 +80,8 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 **Thresholds:**
 - Delivered commitments older than 60 days → compress to one-liner
 - MASTER_TRACKER commitment section exceeds 30 active rows → compress delivered items
+
+**AUTOMATIC, never deferred to an attended ask.** This is an archive-never-delete memory operation like Rule 1 — there is nothing to ask permission for, and a fire that skips it silently is the failure mode Rule 1 spent months in. It still compresses by judgment rather than through a helper, so the receipt is the only proof it ran: whenever it moves anything, that lands in `actions_taken[]` on the `cleanup_run` receipt. If receipts show it silently skipping, it gets scripted next — a separate spec, never a fire-time improvisation.
 
 **Action (on "end session"):**
 1. In MASTER_TRACKER: delivered commitments older than 60 days get compressed from full table rows to one-line entries in a `## Commitment History` section: `- [Person]: [commitment summary] — delivered [date]`. History section grows indefinitely (one line each — cheap).
@@ -127,6 +143,8 @@ Maintenance is NOT a standalone command. It piggybacks on flows that already rea
 **Problem:** Person profiles have interaction logs that archive old entries to "Previous Interactions." Over time, Previous Interactions grows unbounded. Hard-trimming destroys the relationship history that makes the team intelligence skill valuable.
 
 **Principle: Compress progressively, never delete. Recent interactions need detail. Old interactions need existence proof.**
+
+**AUTOMATIC, never deferred to an attended ask.** This is an archive-never-delete memory operation like Rule 1 — there is nothing to ask permission for, and a fire that skips it silently is the failure mode Rule 1 spent months in. It still compresses by judgment rather than through a helper, so the receipt is the only proof it ran: whenever it moves anything, that lands in `actions_taken[]` on the `cleanup_run` receipt. If receipts show it silently skipping, it gets scripted next — a separate spec, never a fire-time improvisation.
 
 **Tiers:**
 
@@ -256,12 +274,15 @@ tracker_backup_count: 5    # default: 3
 
 **Problem:** After session notes roll over (Rule 1), older entries live in archive files that are never loaded during normal operations. When the user asks "what happened with Acme in January?" Claude has to guess which archive file to read.
 
-**Action (during Rule 1 rollover, step 3 — after archiving entries):**
-1. Check if `SESSION_NOTES_[NAME]_index.md` exists in the project folder. Create it if not.
-2. For each entry being archived, append a row to the index:
-   Format: `| [Date] | [Topics/Keywords — 5-8 words] | [Key People mentioned] | [Archive File] |`
-3. The index is append-only. Never rewrite existing rows.
-4. When the user asks a historical question, read the index first to identify which archive file and date range to look at. Only then read the specific archive entries.
+**Action — `cleanup_actions.rollover_session_notes` writes this index itself, as part of the same call.** There is no separate step to run and nothing to hand-write; the rule below documents what that call produces.
+
+1. `SESSION_NOTES_[NAME]_index.md` is created in the project folder if it doesn't exist.
+2. One row is appended per archived entry:
+   Format: `| [Date] | [Topics/Keywords — ~8 words] | [Key People mentioned] | [Archive File] |`
+3. The index is append-only. Existing rows are never rewritten.
+4. **The People column is left blank.** The function derives topics from the entry's own text; it does not infer who was involved, and an honest blank beats attribution a parser invented. Fill it in by hand if it's ever worth it.
+5. Honors `archive_index_enabled` — set it false and the rollover still runs, it just writes no index.
+6. When the user asks a historical question, read the index first to identify which archive file and date range to look at. Only then read the specific archive entries.
 
 **Index format:**
 ```markdown

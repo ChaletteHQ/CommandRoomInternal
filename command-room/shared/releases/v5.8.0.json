@@ -1,0 +1,13 @@
+{
+ "version": "5.8.0",
+ "headline": "\"Already done\" is an answer on the review queue (with an undo that really un-confirms), session notes file themselves with a safety copy and an honest refusal for custom files, and the weekday morning digest chat retires with its jobs folded into the weekly rhythm.",
+ "items": [
+  {
+   "id": "v580_announce_already_done_and_lifecycle",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Three changes worth knowing. First, the review queue has a new answer: 'already done' — the promise was real and you already handled it off-mail. One tap books it and closes it as completed, recorded honestly as your word at review time; it works one item at a time on purpose, and undo returns the item to the queue instead of leaving a closed record. Second, long session-notes files now roll themselves into dated archives during weekly maintenance — always with a full safety copy first, and a file too custom to split safely is left untouched and offered as 'roll over my session notes' instead. Third, the weekday morning digest chat is retiring: quiet-project detection now runs weekly (a project only goes dormant after a question you were asked lapsed unanswered — any answer stops it), the questions wait at 'stalled projects', and intro follow-ups answer to 'check my intros'. If the old chat is registered here you'll be offered its retirement — nothing switches off silently.",
+   "action": "announce_only"
+  }
+ ]
+}

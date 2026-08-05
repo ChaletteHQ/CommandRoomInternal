@@ -70,7 +70,7 @@ CONFIDENCE_AUTOAPPLY_PEOPLE = 0.85
 # Cross-reference match (cru_match.match_send_to_commitments,
 # match_transcript_to_commitments). At or above this score, auto-resolve the
 # matched commitment silently. Below this but >= PENDING, write a
-# commitment_review_proposed event for next Pulse fire to surface for
+# commitment_review_proposed event for the confirm queue to surface for
 # one-click confirm.
 # Used by: cru_match.py HIGH_CONFIDENCE_THRESHOLD.
 MATCH_SCORE_AUTO_RESOLVE = 0.55

@@ -124,7 +124,7 @@ Validate the recommended scheduled tasks are registered. Defaults per `shared/sc
 - [ ] `upcoming-meetings`: scheduled for weekday 6:30 AM.
 - [ ] `past-meetings`: scheduled for weekday 5:00 PM.
 - [ ] `friday-wrap`: scheduled for Friday 4:00 PM (first weekly-rhythm task, added in v3.11.0).
-- [ ] If added in a follow-up session: `inbox` at 7:15 AM, `commitments` at 8:30 AM, `pulse` at 9:00 AM.
+- [ ] If added in a follow-up session: `inbox` at 7:15 AM, `commitments` at 8:30 AM. (`pulse` is RETIRED — LIFECYCLE1; never register it, and never flag its absence.)
 - [ ] `cleanup`: optional — Sunday.
 - [ ] `insight-generator`: optional — Sunday 19:00 (or later).
 

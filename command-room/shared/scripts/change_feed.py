@@ -113,6 +113,15 @@ def changes_since(
             if isinstance(n_open, (int, float)) and n_open > 0:
                 counts["opened_from_sent"] += int(n_open)
                 refs["opened_from_sent"].append(seq)
+            # CONTACT1 — contacts auto-created from the CEO's own sent mail
+            # join the SAME `people_added` line the identity reconciler feeds:
+            # one thing happened ("you have new contacts"), so it reads as one
+            # line with one undo affordance, whichever feeder produced it.
+            # Counted from the RECEIPT of what was written, never a plan.
+            n_contacts = data.get("n_contacts_added") or 0
+            if isinstance(n_contacts, (int, float)) and n_contacts > 0:
+                counts["people_added"] += int(n_contacts)
+                refs["people_added"].append(seq)
         elif etype == "session_sweep_run":
             n = None
             for key in ("events_recovered", "n_recovered", "recovered",

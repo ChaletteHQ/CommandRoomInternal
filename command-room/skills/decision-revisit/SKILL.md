@@ -56,7 +56,7 @@ Rank decisions by score. Surface top 5 in a widget with per-decision context ("w
 "which decisions are stale"
 ```
 
-Runs on-demand. Can also be scheduled (Pulse Phase 5 — operator-led setup).
+Runs on-demand. Can also be scheduled through `change-schedule` (operator-led setup).
 
 ## How It Works
 

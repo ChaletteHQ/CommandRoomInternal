@@ -30,7 +30,7 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 
 # Phase 2 — Setup
 
-- Compute today's date in local time (YYYY-MM-DD).
+- Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` exactly as before (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
 - Create directory if missing: `_hq/staging/<today>/`.
 - Read entities.json + aliases.json.
 - Read M's primary email + first name from entities.json (`is_primary_user: true`).
@@ -46,9 +46,19 @@ Cowork fires a missed slot at next app launch, hours or days late, and without t
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'upcoming-meetings', fired_via='<scheduled|manual>')))
+print(json.dumps(check_lateness('<workspace_root>', 'upcoming-meetings', fired_via='<scheduled|manual>', env_date='<session date>')))
 "
 ```
+
+**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+
+**Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
+
+**The clock verdict comes back as `clock`, and two things follow from it. Neither is optional:**
+
+- **When `clock["notice"]` is set, it is the FIRST line of this fire's output** — above the lateness banner, verbatim, never paraphrased and never dropped. It states that the dates in this surface came from the workspace record rather than this computer's clock. A silent substitution is its own bug: the reader has no other way to know which clock produced what they are looking at.
+- **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
+
 
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
@@ -61,7 +71,7 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 
 # Phase 3 — Fetch today's calendar
 
-**Project status filter (v2.10.3+):** when resolving a meeting to a project (per PROJECT_MAPPING_RULES.md), if the resolved project has `status` in `{dormant, archived}`, still produce the brief BUT auto-revive the project to `active` when the meeting fires (per ORG_AND_THREAD_MODEL.md re-active detection in Pulse Phase 4d). Calendar events on a dormant project are activity signal — the project is no longer dormant.
+**Project status filter (v2.10.3+):** when resolving a meeting to a project (per PROJECT_MAPPING_RULES.md), if the resolved project has `status` in `{dormant, archived}`, still produce the brief BUT auto-revive the project to `active` when the meeting fires (per ORG_AND_THREAD_MODEL.md re-active detection, run by the weekly `lifecycle` job). Calendar events on a dormant project are activity signal — the project is no longer dormant.
 
 Call Calendar MCP for events from NOW forward through the end of the next 24 hours (rolling window). **v2.14.28+ MANDATORY filter — drop already-passed meetings.** Pre-v2.14.28 the spec said "today 12:00 AM through 11:59 PM" which surfaced meetings that had already happened earlier in the day if the customer ran the task manually in the afternoon/evening. Customers found that confusing — "why are you showing me my 9 AM that already happened?" Now: window is `[now, now + 24h]`. If the task fires at the canonical 6:30 AM, this captures all of today's remaining meetings; if M manually fires it at 4 PM, only the meetings still ahead of him surface.
 
@@ -127,7 +137,7 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
    SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
    python3 -c "
    import sys, json; sys.path.insert(0,'shared/scripts')
-   from brief_path import ensure_brief_directory, get_brief_artifact_url
+   from brief_path import ensure_brief_directory, get_brief_artifact_url, is_session_scoped_path
    from prep_pipeline import resolve_prep_brief_path
    import os
    ws = os.environ.get('CR_WORKSPACE_ROOT', '<workspace-root>')
@@ -137,8 +147,11 @@ For each kept meeting the Phase 3.5 gate did not exclude, in time order:
    print(f'BRIEF_SLUG={res[\"slug\"]}')
    print(f'BRIEF_REFRESH={res[\"refresh\"]}')
    print(f'BRIEF_URL={get_brief_artifact_url(res[\"path\"])}')
+   print(f'BRIEF_SESSION_SCOPED={is_session_scoped_path(res[\"path\"])}')
    "
    ```
+
+   **If `BRIEF_SESSION_SCOPED=True`** (v5.9.2 — cloud-mounted workspace, e.g. Google Drive: no host-native path exists, so the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine): after the brief is written and synced, look up its web link via the discovered drive tool (`tool_discovery.discover_drive_tool()`, search the filename under `_hq/meetings/`) and use `brief_path.get_brief_opener_url(path, drive_web_url)` for the Briefs-section links below. Lookup failure is non-fatal — `get_brief_opener_url` falls back to the `computer://` form.
 
    **The slug is a pure function of the MEETING ID** (`prep_pipeline.prep_slug` — readable title prefix + meeting-id hash suffix). NEVER improvise a slug from attendee names: F-29b's duplicate (`acme-bo-sample-session` vs `bo-sample`, one meeting) came from exactly that. If `BRIEF_REFRESH=True`, an earlier brief for this meeting exists at BRIEF_PATH — the regeneration OVERWRITES it in place; a second file for the same meeting is a defect.
 
@@ -315,15 +328,18 @@ Per CONTRACT.md Rule 3 (v3.13.0+) and M's 2026-05-20 testing #29: `mcp__cowork__
 
 ```python
 from chat_output_renderer import doc_headline_link_h3
-from brief_path import get_brief_artifact_url
+from brief_path import get_brief_opener_url
 
 # After the widget post, render one H3 heading link per brief beneath a single
 # Briefs: section header. H3 (not H2) because multi-doc lists — stacked H2s feel
 # heavy when 3+ briefs surface at once.
+# v5.9.2 — get_brief_opener_url is Drive-aware: on a cloud-mounted workspace it
+# returns the file's Drive web link when one was resolved (BRIEF_SESSION_SCOPED
+# step above); on a host-native workspace it returns the computer:// form.
 print("**Briefs:**")
 print()
 for brief in briefs:
-    url = get_brief_artifact_url(brief.absolute_path)
+    url = get_brief_opener_url(brief.absolute_path, brief.drive_web_url)
     label = f"Call Prep — {brief.meeting_title}"
     print(doc_headline_link_h3(label, url))
 ```

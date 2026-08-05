@@ -84,7 +84,7 @@ Allowed insight categories (every output item must fit one of these):
 **Forbidden insight categories (these belong in other skills, not here):**
 
 - ❌ "Your `events.jsonl` has duplicate seqs" / any substrate-integrity observation. → cleanup.
-- ❌ "Pulse hasn't fired in 3 days" / any scheduled-task-health observation. → cleanup.
+- ❌ "The staff meeting hasn't fired in 3 days" / any scheduled-task-health observation. → cleanup.
 - ❌ "The renderer is on v3.12.2" / any version observation. → never.
 - ❌ "Your workspace folder structure has X issues" / any organization observation. → cleanup.
 - ❌ "Schema drift detected on 5 person records" / any validator observation. → cleanup (and even there, translated to plain English).
@@ -518,7 +518,7 @@ Render at most 3 proposals per weekly review (same as Pass 9). If more candidate
 
 Per the v2.10.3 audit decision (M's confirmation: "both"):
 
-- **Daily — Pulse surfaces high-confidence proposals (≥3 strong signals stacked, score ≥10).** Same `a/b/c confirm/edit/skip` action set as the people-record review block. Pulse reads pending org proposals from `_hq/insights/.org_proposal_queue.jsonl` + any from this run that scored ≥10. Daily surfacing makes obvious new orgs (a new client lands hard) get attention same-day rather than waiting for Sunday.
+- **~~Daily — Pulse surfaced high-confidence proposals (score ≥10) same-day.~~ RETIRED (LIFECYCLE1) — the Pulse chat is gone and nothing replaced its same-day peek. This weekly pass is now the only proposer; a high-confidence candidate waits until Sunday, which is the cadence M asked for.** The historical action set was: Same `a/b/c confirm/edit/skip` action set as the people-record review block. Pulse reads pending org proposals from `_hq/insights/.org_proposal_queue.jsonl` + any from this run that scored ≥10. Daily surfacing makes obvious new orgs (a new client lands hard) get attention same-day rather than waiting for Sunday.
 - **Weekly — insight-generator's regular Sunday run renders all remaining ≥7 candidates** in the standard 3-cap review section. Lower-confidence proposals batch here.
 
 Same fingerprint across both surfaces — if surfaced daily and acted on, weekly review skips it (cooldown applies). If surfaced daily and ignored, weekly review will re-surface (with `(unresolved from earlier this week)` tag).
@@ -567,7 +567,7 @@ For `ignore`:
 
 **E. workspace-manager hand-off fails:** rollback, surface in `_hq/CONFLICTS.md`.
 
-**F. Daily surfacing in Pulse conflicts with weekly review:** same fingerprint won't surface in both passes. LB2: Pulse persists a daily-surfaced proposal as a `brain_proposal` row (`kind: org`/`project`, fingerprint `org:<name>`/`project:<name>` — the bp row IS the surfaced-daily mark). insight-generator skips any candidate whose fingerprint has an open bp row, a `brain_proposal_resolved`/`_expired` tombstone, or an active ledger cooldown — plus, for pre-LB2 history, any legacy event still carrying `surfaced_daily: true`.
+**F. Daily surfacing conflicted with weekly review:** MOOT since LIFECYCLE1 (there is no daily pass left), and the guard stays because the substrate still holds rows it wrote. Same fingerprint won't surface in both passes. LB2: the daily pass persisted a surfaced proposal as a `brain_proposal` row (`kind: org`/`project`, fingerprint `org:<name>`/`project:<name>` — the bp row IS the surfaced-daily mark). insight-generator skips any candidate whose fingerprint has an open bp row, a `brain_proposal_resolved`/`_expired` tombstone, or an active ledger cooldown — plus, for pre-LB2 history, any legacy event still carrying `surfaced_daily: true`.
 
 **G. Domain looks like an alias of an existing org:** suppress with -3 penalty AND surface a top-level note: "I see [N] emails to/from [new_domain]. Looks like it might be the same as [existing_org] — want me to link them?" One-line suggestion separate from the proposal table.
 
@@ -627,7 +627,7 @@ All the deterministic work is in `shared/scripts/triage_feedback.py` — this pa
 
 **On dispatch:** `confirm`/`edit` → `suppression_from_proposal(...)` appended to `_hq/data/surface-preferences.json` + a `surface_preference_proposal` `{user_action, fingerprint}` event + `proposal_ledger` row. Decline → cooldown. Same atomic-reject + rollback rules as Pass 13.
 
-**Consumer:** EVERY widget orchestrator (inbox, commitments, pulse, past-meetings, upcoming-meetings, friday-wrap, relationship-moves, morning-brief) calls `is_suppressed(prefs, surface, item_class, entity_id)` to filter items BEFORE rendering — see each orchestrator's pre-render step. A suppression only hides a surfaced prompt; it never changes what's captured in the substrate.
+**Consumer:** EVERY widget orchestrator (inbox, commitments, past-meetings, upcoming-meetings, friday-wrap, relationship-moves, morning-brief, staff-meeting) calls `is_suppressed(prefs, surface, item_class, entity_id)` to filter items BEFORE rendering — see each orchestrator's pre-render step. A suppression only hides a surfaced prompt; it never changes what's captured in the substrate.
 
 ---
 

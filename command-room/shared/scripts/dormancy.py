@@ -15,8 +15,8 @@ failure class this kills):
   - baseline present  → score = gap_days / baseline_days
   - baseline null     → absolute tier: 14-29d→1.8, 30-59d→2.5, >=60d→4.0,
                         <14d→None (too early; no signal)
-The absolute tiers are chosen to sit ON the Pulse ratio thresholds (1.8/2.5)
-so absolute and ratio signals rank together.
+The absolute tiers were chosen to sit ON the ratio thresholds (1.8/2.5) the
+retired Pulse chat used, so absolute and ratio signals rank together.
 
 Project lifecycle (30/60/180) stays in the ORG_AND_THREAD_MODEL state machine —
 `entity_type: "project"` is deliberately NOT a dormancy_signal (the signal
@@ -57,6 +57,27 @@ def normalize_score(gap_days: float, baseline_days: Optional[float]) -> Optional
     return 4.0
 
 
+def _is_personal_tie(workspace_root, person_id) -> bool:
+    """True when this person's record carries `tie: "personal"` (SPEC BAL1 D1).
+    Defensive by design: an unreadable or oddly-shaped entities.json returns
+    False, which is the pre-gate behaviour — the gate must never be the reason
+    a work signal disappears."""
+    if not person_id:
+        return False
+    try:
+        import json
+        p = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        ent = data.get("entities") if isinstance(data.get("entities"), dict) \
+            else data
+        for rec in (ent.get("people") or []):
+            if isinstance(rec, dict) and rec.get("id") == person_id:
+                return rec.get("tie") == "personal"
+    except Exception:
+        return False
+    return False
+
+
 def emit_dormancy_signal(
     workspace_root, entity_id: str, entity_type: str, gap_days: float,
     baseline_days: Optional[float], source_skill: str,
@@ -65,6 +86,25 @@ def emit_dormancy_signal(
     flag point, AFTER its live-check gate (so a signal in the substrate is already
     live-verified). Returns the seq written, or None when there's no signal /
     on any error (never raises into a detector)."""
+    # BAL1 D1.1(1) — THE personal-tie source gate, now in CODE.
+    #
+    # It used to live as prose in the Pulse orchestrator's Phase 3: "skip every
+    # person whose record carries tie: personal BEFORE any computation or
+    # emit". LIFECYCLE1 retired that chat, and a gate whose only home is a file
+    # you can delete is a gate with a deletion date. Every emitter routes
+    # through this function, so this is the chokepoint the prose was describing
+    # — and a NEW emitter now inherits the gate instead of having to remember
+    # a paragraph. The per-skill skips (dormant-customer-scan,
+    # team-intelligence) and the consumer backstop in relationship_moves are
+    # unchanged; defence in depth, not a replacement.
+    #
+    # A spouse or parent going quiet is not a work signal, and the moment a
+    # personal tie's dormancy enters the substrate it flows into
+    # relationship-moves and the weekly WORK-outreach pack. Absent `tie` means
+    # work (back-compat); only the explicit `personal` value skips. Defensive:
+    # an unreadable entities.json blocks nobody, exactly as before.
+    if entity_type == "person" and _is_personal_tie(workspace_root, entity_id):
+        return None
     score = normalize_score(gap_days, baseline_days)
     if score is None:
         return None
@@ -173,7 +213,7 @@ def cadence_override_days(person_record: dict) -> Optional[float]:
 def effective_baseline(
     computed_baseline: Optional[float], override_days: Optional[float]
 ) -> Optional[float]:
-    """The baseline Pulse should actually use: the wider of the computed cadence
+    """The baseline a dormancy detector should actually use: the wider of the computed cadence
     and the user-taught override. Widening (max) is the whole point — "just busy"
     means the real cadence is longer than the last few interactions implied.
     Pure; None-safe."""
@@ -183,6 +223,23 @@ def effective_baseline(
 
 def record_just_busy(
     workspace_root, person_id: str, observed_gap_days: float,
+    # FOSSIL default (LIFECYCLE1): the only surface that ever called this was
+    # the retired Pulse chat's "just busy" reply, so the default names it
+    # honestly. A NEW caller passes its own id — never inherit this one.
+    #
+    # ⚠ THIS FUNCTION CURRENTLY HAS NO LIVE CALLER, and that is a known,
+    # RULED-ON loss rather than an oversight (LIFECYCLE1 fix round, SF-5).
+    # The dormancy row's shipped verbs are `active` / `archive` / `snooze 14d`
+    # — there is no "just busy" among them — so nothing widens
+    # `cadence_override_days` any more and the Quick-Win-B cadence-teaching
+    # loop is INERT: the CEO can no longer tell the system "this gap is normal
+    # for this person" and have the model of that relationship move. The
+    # reader half still works (`effective_baseline` honours any override
+    # already on a record), so nothing already taught is lost.
+    # Re-homing the verb is deliberately OUT OF SCOPE here — it belongs with a
+    # ruling on the weekly moves batch, which is where a "just busy" answer
+    # would now naturally live. Do not quietly re-point this at a surface to
+    # make the orphan go away; that decision is not this module's to make.
     *, source_skill: str = "pulse",
 ) -> Optional[float]:
     """Widen a person's persisted cadence baseline after a "just busy" reply.

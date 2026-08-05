@@ -1,6 +1,6 @@
 # ⛔ STOP CONTRACT (v3.5.0+ canonical location; was inlined in each orchestrator pre-v3.5.0)
 
-**Every widget orchestrator (commitments, inbox, past-meetings, upcoming-meetings, pulse) MUST read + obey this file as the first action of every fire.** Morning-brief is the markdown-mode exception — it carries an adapted version inline because its surface isn't a widget.
+**Every widget orchestrator (commitments, inbox, past-meetings, upcoming-meetings, staff-meeting) MUST read + obey this file as the first action of every fire.** Morning-brief is the markdown-mode exception — it carries an adapted version inline because its surface isn't a widget.
 
 This file consolidates prose that was duplicated across 5 orchestrators pre-v3.5.0 — when v2.14.x extensions landed, the same block had to be patched 5x and drift was inevitable. Extracted here so future amendments edit one file.
 

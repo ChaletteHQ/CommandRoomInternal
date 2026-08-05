@@ -231,6 +231,16 @@
     "required": [["batch_id"]],
     "properties": {"batch_id": "string", "n_auto_added": "number", "n_linked": "number", "n_merge_proposed": "number", "n_clustered": "number", "n_annotations": "number", "n_annotations_resolved": "number", "n_expired": "number", "n_kept_open": "number", "n_errors": "number", "caps": "object", "spilled": "object", "people_added": "array", "annotations_resolved": "array"}
   },
+  "schedule_retire_proposed": {
+    "description": "The suppression record for ONE offer to switch off a RETIRED scheduled task (SPEC LIFECYCLE1 §4 — the mirror of schedule_add_proposed, for the retirement direction). WRITTEN ONLY via schedule_proposals.log_retire_proposal after the offer was surfaced. Retirement is PROPOSE-NEVER-SILENT: this event records that the customer was asked, so schedule_proposals.propose_task_retirements suppresses the same offer for RETIRE_SUPPRESSION_WEEKS. It records an OFFER, never a disable — nothing in the system disables a registered task on its own.",
+    "required": [["taskId"]],
+    "properties": {"taskId": "string"}
+  },
+  "lifecycle_run": {
+    "description": "ONE receipt per project-lifecycle pass (SPEC LIFECYCLE1 — the `lifecycle` job inside the `maintenance` task, the fold that replaced Pulse's Phase 4 when the Pulse chat was eliminated). WRITTEN ONLY via receipts.log_receipt from lifecycle_pass.run_lifecycle_pass(apply=True) — a dry run writes nothing, so the job stays due. Triple duty: the dispatcher's due-ness signal, this job's own success validator (MAINT1: a job vouches for itself, never the dispatcher), and the audit trail for silent lifecycle transitions. revived / proposed / went_dormant / archived count what was ACTUALLY written, never the plan; spilled records the per-class cap overflow, which stays due and drains at the next weekly fire (narrated, never silently dropped).",
+    "required": [["considered"]],
+    "properties": {"considered": "number", "revived": "number", "proposed": "number", "went_dormant": "number", "archived": "number", "spilled": "object", "errors": "array"}
+  },
   "entity_fact_retracted": {
     "description": "Retracts a previously observed fact (SPEC HIST1 D3/S1). WRITTEN ONLY by the brain_undo entity_fact_structured reverser (Part 2 — landed with the AUTO_ALLOWED entry in one commit). Facts are append-only with no status to flip, so undo APPENDS this event; render_person_history / render_org_history suppress the fact whose seq retracts_seq references. target_id is the person_id or org_id the fact was about. source_ref is synthesized (undo:<skill>:<change_ref>) — never null.",
     "required": [["target_id"], ["retracts_seq"], ["source_ref"]],

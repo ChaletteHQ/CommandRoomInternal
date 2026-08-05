@@ -40,6 +40,8 @@ Every regenerated brief, memo, or other document produced by an action MUST surf
 
 This format is produced by `shared/scripts/brief_path.py` `get_brief_artifact_url()`. The path is hidden behind the link label — never appears as visible text per Rule 4.
 
+**Cloud-mounted workspaces (v5.9.2+ — Drive-aware opener):** a `computer://` link only opens a file that exists on the customer's own machine. A workspace mounted from Google Drive / OneDrive resolves to a **session-scoped** root (`/sessions/<id>/...` — `brief_path.is_session_scoped_path()` is the test), so a `computer://` link there is a guaranteed "Failed to load local file." on click even though the deliverable saved fine (QMG field reports, 2026-07-28 and 2026-07-31). On a session-scoped workspace root, after saving the deliverable, look up the saved file's web link through the discovered drive tool (`tool_discovery.discover_drive_tool()` — search `_hq/meetings/<filename>` or the deliverable's own folder) and build the link via `brief_path.get_brief_opener_url(absolute_path, drive_web_url)` — the Drive web URL becomes the opener. If the lookup fails, `get_brief_opener_url` falls back to the `computer://` form; pair it with the file card so the customer still has a working way in. Host-native roots (Windows drive letter, real local folder) are unaffected — `get_brief_opener_url` returns the same `computer://` form as before.
+
 **Scope boundary:** the H2 format is for **generated deliverables a skill just produced** (`.docx`/`.pdf`/`.xlsx`/`.pptx`). Source citations stay plain. Links inside in-widget HTML stay unpainted.
 
 **Placement (v3.13.0+ — bottom of chat, not interspliced):** per M's 2026-05-20 feedback #6d / #9 / #11, deliverable links MUST land at the bottom of the chat turn, not interspliced through the body where they get lost between paragraphs. The chat turn shape: synthesis content (recap, takeaways, action items, etc.) → blank line → `Sources:` section (if any) → blank line → H2 deliverable link(s). The link is the LAST thing the user sees. Pair with the H2 styling so it pops.
@@ -87,7 +89,7 @@ Rule 4 above is the LEAK-PREVENTION half (specific tokens that must never appear
 | "Critical: substrate file fails to parse" | "Quick fix needed — one of your files needs a small repair. I can do it now." |
 | "Tier 2 view is stale by 9 days" | "The decision log hasn't refreshed in a few days — I'll catch it up." |
 | "Workspace health: 90/180 (50%)" | DROP THE SCORE. Or: "Your workspace is mostly current; here are 3 small things worth touching." |
-| "Pulse Phase 3 fired with 5 dormancy candidates" | "Found 5 people you haven't talked to in a while." |
+| "The dormancy scan fired with 5 candidates" | "Found 5 people you haven't talked to in a while." |
 | "76 of 83 person records carry legacy schema drift" | "Most of your people records were saved in an older format — I'm updating them to the current shape." |
 | "Renderer pipeline emitted full HTML document" | (silent — never surface; this is implementation) |
 | "atomic-write-locked + post-write parse check" | (silent — never surface) |
@@ -127,7 +129,6 @@ Pre-v3.13.6 skills referred to scheduled tasks inconsistently: "scheduled task" 
   - **Past Meetings** (rolling, post-meeting) — produced by `orchestrator-past-meetings`
   - **Inbox Triage** (daily, weekday morning) — produced by `inbox-triage` via `orchestrator-inbox`
   - **Commitments** (daily, weekday morning) — produced by `orchestrator-commitments`
-  - **Pulse** (weekly, Friday morning) — produced by `orchestrator-dont-forget`
   - **Friday Wrap** (weekly, Friday afternoon) — produced by `weekly-recap` via `orchestrator-friday-wrap`
 - **Lowercase + Title Case mixing** is fine in context: "your scheduled tasks (Morning Brief, Friday Wrap, …) all use the same widget pattern." Both forms appear in the same sentence — concept lowercase, specific instance Title Case.
 
@@ -255,7 +256,7 @@ Fix is always at the orchestrator level — populate the data view consistently 
 
 ## Rule 20 — Action label clarity: no surprise inputs (v2.14.1+)
 
-If two surfaces use the SAME display label, they MUST behave the same way. Per Bo's Apr 30 testing: clicking "Resolved" surprised him with a textarea on Pulse but was a clean state-change on Commitments. Same label, different mechanic = bad UX.
+If two surfaces use the SAME display label, they MUST behave the same way. Per Bo's Apr 30 testing: clicking "Resolved" surprised him with a textarea on the (since-retired) Pulse chat but was a clean state-change on Commitments. Same label, different mechanic = bad UX.
 
 v2.14.1 unified `resolved` to plain state-change everywhere (no input affordance). If a future surface needs a "with reason" variant, it gets a DIFFERENT verb (e.g., `mark in touch [reason]`), not the same verb with surprise input.
 
@@ -306,7 +307,9 @@ Orchestrators that need stack-specific adapter logic branch on `result.platform`
 
 Zapier remains EXCLUDED from all native helpers (Calendar HARD SCOPE Rule 8 still holds; Zapier-mail is a separate path via `discover_zapier_send_tool` per `EMAIL_DRAFT_PROTOCOL.md` §3c). Native helpers are for native connectors only.
 
-## Rule 23 — Trailing finish-cluster on Pulse review-shaped items (v2.14.5+)
+## Rule 23 — Trailing finish-cluster on review-shaped items (v2.14.5+) — FOSSIL
+
+**RETIRED IN PLACE (LIFECYCLE1, 2026-08-02).** The Pulse chat this rule governed is eliminated, so nothing renders these item shapes any more. The rule stays written down because persisted widgets from before the retirement still dispatch these verbs, and a reader who meets one needs to know what it meant. **Do NOT apply this rule to a new surface** — the review families it describes were consolidated by MLK1 and v2.14.38 well before the retirement, and `verb_taxonomy` plus `CANONICAL_ACTIONS` are the live authority on any verb you are about to render.
 
 Per M's preview-cycle feedback: the type-specific actions ARE intentionally different across Pulse item types (person uses `Resolved`, project uses `Mark paused`, REVIEW uses `Confirm` / `Edit`, dormant transition uses `Active` / `Keep paused` / `Archive`, entity proposal uses `Confirm [type]` / `Edit [type]`) — flattening them loses information.
 
@@ -352,7 +355,7 @@ The reasoning: chat is for in-the-moment-actionable surfaces. CRU resolutions ar
 
 **Threshold model (v2.14.7 — full coverage):**
 - Score ≥ 0.55: auto-resolve immediately (or `commitment_updated` if schedule-shift signal present). Silent.
-- Score 0.30 - 0.55: write `commitment_review_proposed` event. Pulse Phase 4g surfaces these in the next fire as one-click `confirm` / `skip` items (sub-namespace `r1/r2/...`). User-facing question names the commitment + describes the evidence; user confirms it as fulfillment OR rejects it.
+- Score 0.30 - 0.55: write `commitment_review_proposed` event. The confirm queue surfaces these as one-click `confirm` / `skip` items — `brain_proposals._adapt_commitment_reviews` projects them onto the staff meeting and the `needs your call` queue (before LIFECYCLE1 the retired Pulse chat's Phase 4g did it, sub-namespace `r1/r2/...`). User-facing question names the commitment + describes the evidence; user confirms it as fulfillment OR rejects it.
 - Score < 0.30: no action.
 
 **Three CRU paths active:**
@@ -474,7 +477,7 @@ Honest classification of every rule above: **ENFORCED** = a test or a runtime va
 | 20 | No surprise inputs behind labels | GUIDANCE | Input-bearing action set is documented in `CHAT_ACTION_WIDGET.md`; the canonical-action validator (Rule 5) covers the verb set, but placeholder/input pairing is convention. |
 | 21 | Native connector parity | ENFORCED | `tool_discovery` + the `discover_*` helper tests |
 | 22 | Plugin-root discovery deterministic | GUIDANCE | The bash preamble is a copy-paste convention; no test asserts every orchestrator uses it. |
-| 23 | Trailing finish-cluster on Pulse | GUIDANCE | Surface-specific convention. |
+| 23 | Trailing finish-cluster (FOSSIL) | GUIDANCE | Surface-specific convention for a retired surface (LIFECYCLE1); never applied to a new one. |
 | 24 | CRU layer is silent | GUIDANCE | Convention; the reconcile audit event (Bug #98-v3) is the closest structural backstop. |
 | 25 | Path output uses runtime `$WORKSPACE` | ENFORCED | `run_no_hardcoded_drive` guard + leak scanner |
 | 26 | No real customer/partner names | ENFORCED | `run_no_real_customer_names_test` (named-pattern + structural email-domain allowlist) |

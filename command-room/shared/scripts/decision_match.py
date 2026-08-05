@@ -26,7 +26,7 @@ higher-stakes; a false-positive auto-resolution loses real history.
 
 (No medium-confidence "pending_review" path yet. If telemetry shows the
 0.65 threshold misses too many real closures, we'll add it and surface
-the proposals in Pulse.)
+the proposals on the staff meeting.)
 
 RECOMMENDATION TYPES
 ====================

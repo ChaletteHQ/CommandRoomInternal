@@ -16,7 +16,7 @@ module turns those repeats into a durable, workspace-side suppression:
 
   STORE (workspace-side)
     _hq/data/surface-preferences.json — per-person / per-project / per-class
-    suppression rules. EVERY widget orchestrator (inbox, commitments, pulse,
+    suppression rules. EVERY widget orchestrator (inbox, commitments, staff-meeting,
     past-meetings, upcoming-meetings, friday-wrap, relationship-moves,
     morning-brief) calls is_suppressed() to filter items BEFORE rendering.
 
@@ -61,6 +61,10 @@ _SKILL_TO_SURFACE = {
     "cr-inbox": "inbox",
     "commitments": "commitments",
     "cr-commitments": "commitments",
+    # FOSSIL rows (LIFECYCLE1 retired the Pulse chat). Kept forever: a stored
+    # preference the CEO taught the system through that surface must keep
+    # matching, and a suppression that silently stops applying is a surface
+    # re-nagging about something already dismissed.
     "pulse": "pulse",
     "dont-forget": "pulse",
     "cr-dont-forget": "pulse",
@@ -99,6 +103,9 @@ def normalize_dismissal(ev: dict) -> Optional[dict]:
     ts = event_time(ev)
 
     # dont_forget_feedback: a Pulse "expected" / "just busy" reply on a person.
+    # FOSSIL reader (LIFECYCLE1) — nothing writes this event any more, and the
+    # "pulse" default below is CORRECT precisely because every event of this
+    # type on disk came from that surface. Never re-point it at a live one.
     if etype == "dont_forget_feedback":
         entity_id = data.get("person_id") or ev.get("primary_thread_id")
         surface = data.get("surface") or "pulse"

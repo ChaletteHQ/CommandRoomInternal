@@ -80,7 +80,8 @@ Render fewer when fewer qualify — NEVER pad with sub-threshold candidates (pad
 - Does not detect dormancy itself — it consumes the normalized `dormancy_signal` events the detectors emit.
 - Does not auto-send — `send` is always a user click.
 - Does not pad to 3 — it surfaces only real candidates.
-- Does not double-surface someone already emailed/suggested this week (7-day dedupe) or snoozed/dismissed in Pulse.
+- Does not suggest the CEO reach out to HIMSELF. The resolved primary user is dropped from the candidate set in code (`relationship_moves.compute_relationship_moves`, LIFECYCLE1 §7c) — the overdue-commitment term alone used to carry his own record over the threshold, and the 2026-08-03 pack duly told him to nudge himself. If you ever see the CEO's own name in this pack, that is a defect to report, never a row to render.
+- Does not double-surface someone already emailed/suggested this week (7-day dedupe) or snoozed/dismissed anywhere — including a `dont_forget_snooze` written by the retired Pulse chat, which `_recently_excluded` still honours as fossil history.
 
 ## Routing (full trigger corpus)
 

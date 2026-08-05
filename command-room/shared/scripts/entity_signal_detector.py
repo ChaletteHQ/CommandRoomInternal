@@ -128,6 +128,31 @@ CONFIRM_TUPLES = [
 ]
 
 
+def _clock_now(workspace_root=None):
+    """CLOCK1 - the corroborated UTC instant this module stamps from.
+
+    Swaps the CLOCK SOURCE only: every window, cutoff, threshold and output
+    format around it is unchanged. A machine clock that has not synced used to
+    write its own wrong reading straight into the permanent record; this reads
+    the same clock, cross-checked against the newest timestamp the workspace
+    already holds. Falls back to the raw machine clock if the helper is
+    unavailable, so a stamp can never fail for want of corroboration.
+
+    `workspace_root` is threaded in wherever the calling function already
+    has one, because a helper that has to GUESS which workspace it is in
+    guesses wrong exactly when it matters: a fire's early phases run in
+    their own subprocesses, before anything has registered a root.
+    """
+    try:
+        from trusted_now import trusted_now_utc
+
+        return trusted_now_utc(workspace_root)
+    except Exception:
+        import datetime as _clock_dt
+
+        return _clock_dt.datetime.now(_clock_dt.timezone.utc)
+
+
 def _entities(workspace_root: Path) -> dict:
     p = workspace_root / "_hq" / "data" / "entities.json"
     d = json.loads(p.read_text(encoding="utf-8"))
@@ -219,7 +244,7 @@ def detect_entity_signals(workspace_root: str | Path) -> list[dict]:
         return []
 
     events = _load_events(workspace_root)
-    cutoff = (_dt.datetime.now(_dt.timezone.utc)
+    cutoff = (_clock_now(workspace_root)
               - _dt.timedelta(days=TEXT_WINDOW_DAYS)).strftime("%Y-%m-%d")
 
     candidates: list[dict] = []
@@ -438,7 +463,7 @@ def apply_structured_facts(
     from people_writer import AUTO_FACT_CATEGORIES, record_person_fact
 
     workspace_root = Path(workspace_root)
-    batch_id = "efb_" + _dt.datetime.now(_dt.timezone.utc).strftime(
+    batch_id = "efb_" + _clock_now(workspace_root).strftime(
         "%Y%m%dT%H%M%SZ")
     existing = _existing_fact_keys(workspace_root)
     applied: list[dict] = []
