@@ -181,9 +181,30 @@ def render_and_persist(
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     suppress_ids: Optional[set] = None,
+    target: str = "cowork_html",
 ) -> dict:
     """Canonical render-validate-persist transport (delivery = widget_code
     relay of transport["html"], T2 — see module docstring).
+
+    SPEC_SLACK1 C-1 — `target` selects the render surface INSIDE the one
+    canonical call (never a downstream post-processor):
+
+      - "cowork_html" (DEFAULT): today's behavior, byte-identical — the code
+        path below is untouched when target is defaulted.
+      - "slack": emits Block Kit JSON + a mrkdwn fallback from the SAME
+        data_view through the SAME gate stack (canonical-action / data-shape /
+        pulse-richness / send-class gates, the leak scan extended over the
+        Block Kit text render, the structural block contract), paginated to
+        the slack budget (~50 blocks / ~3k chars — surface_profiles.json),
+        and persists the audit file identically. Returns
+        {"blocks", "text", "pagination", "path", "file_uri"} — the listener
+        posts `blocks` (shared/CHAT_ACTION_WIDGET.md § Transport; the button
+        round-trip contract is references/SLACK_BUTTON_BRIDGE_SPEC.md).
+
+    Mute/dismissal filters and cross-surface dedup run UPSTREAM in the data
+    view build (projectors/orchestrators) exactly as for cowork — both targets
+    consume the identical, already-filtered view; nothing about the slack
+    target bypasses them.
 
     Renders the widget via `chat_output_renderer.render_chat_output_widget`
     (all validators fire), runs `validate_rendered_widget`, writes the
@@ -229,6 +250,19 @@ def render_and_persist(
       WidgetFeedbackContractError from the built-in `validate_rendered_widget`
       pass — the transport runs it so callers can't skip it.
     """
+    if target == "slack":
+        return _render_and_persist_slack(
+            data_view=data_view,
+            persist_dir=persist_dir,
+            name_hint=name_hint,
+            page=page,
+            page_size=page_size,
+            suppress_ids=suppress_ids,
+        )
+    if target != "cowork_html":
+        raise ValueError(
+            f"unknown render target {target!r} — 'cowork_html' or 'slack'")
+
     # Import here to avoid a circular import at module load time
     from chat_output_renderer import (
         DEFAULT_PAGE_SIZE,
@@ -287,6 +321,153 @@ def render_and_persist(
         "html": html,
         "file_uri": file_uri,
         "path": out_path,
+    }
+    if pagination is not None:
+        result["pagination"] = pagination
+    return result
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomic write for the slack audit payload (same temp+rename discipline
+    as the HTML writer; no BOM — the payload is JSON, not a browser file)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    os.replace(str(tmp), str(path))
+
+
+def _fit_page_size_slack(data_view: dict, requested: int, profile: dict) -> int:
+    """Slack analog of `_fit_page_size`: the LARGEST page_size whose PAGE-1
+    emission fits the slack budgets (block count from the profile; a fixed
+    reserve covers header/footer/context chrome). Same binary search, same
+    page-1-as-anchor determinism, same floor-size over-budget flagging
+    downstream."""
+    import json as _json
+
+    from chat_output_renderer import paginate_data_view
+    from slack_render import emit_slack_payload
+
+    block_budget = int(profile.get("block_budget", 50))
+    char_budget = int(profile.get("char_budget", 3000))
+
+    def _fits(size: int) -> bool:
+        probe = paginate_data_view(data_view, page=1, page_size=size)
+        payload = emit_slack_payload(probe, profile)
+        if len(payload["blocks"]) > block_budget:
+            return False
+        # char weight: the largest single text object must fit, and the
+        # fallback digest must fit the ~3k message-text budget.
+        return len(payload.get("text", "")) <= char_budget
+
+    hi = max(_MIN_PAGE_SIZE, int(requested))
+    lo = _MIN_PAGE_SIZE
+    if _fits(hi):
+        return hi
+    if not _fits(lo):
+        return lo
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if _fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def _render_and_persist_slack(
+    *,
+    data_view: dict,
+    persist_dir: str | Path,
+    name_hint: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+    suppress_ids: Optional[set] = None,
+) -> dict:
+    """The slack target (SPEC_SLACK1 C-1). Same shape as the cowork path:
+    gates → paginate → emit → leak scan + structural contract → persist →
+    return. Raises exactly like the cowork path (CanonicalActionError,
+    DataShapeError, LeakDetectedError, SlackBlockContractError) — a payload
+    that fails a gate is reported, never degraded (FS-08)."""
+    import json as _json
+
+    from chat_output_renderer import (
+        DEFAULT_PAGE_SIZE,
+        paginate_data_view,
+        validate_chat_output,
+        validate_data_view,
+    )
+    from slack_render import (
+        blocks_text_render,
+        emit_slack_payload,
+        validate_slack_payload,
+    )
+    from surface_context import load_profile
+
+    profile = load_profile("slack", skill=data_view.get("source_skill"))
+
+    # Gate 1 family — the SAME pre-render validators the cowork path runs
+    # inside render_chat_output_widget (canonical actions, data shape, pulse
+    # richness, send-class emails, voice-tell backstop).
+    validate_data_view(data_view)
+
+    pagination = None
+    view = data_view
+    if page is not None:
+        eff_size = _fit_page_size_slack(
+            data_view,
+            int(profile.get("rows_per_page", DEFAULT_PAGE_SIZE)) if page_size is None else int(page_size),
+            profile,
+        )
+        view = paginate_data_view(data_view, page=page, page_size=eff_size)
+        pagination = view.get("pagination")
+        if suppress_ids:
+            from page_snapshot import suppress_applied
+            view, n_suppressed = suppress_applied(view, set(suppress_ids))
+            if n_suppressed:
+                pagination = dict(pagination or {})
+                pagination["suppressed"] = n_suppressed
+                view["pagination"] = pagination
+
+    payload = emit_slack_payload(view, profile)
+
+    # Gate 2 — the leak scan, extended over the Block Kit text render (C-1).
+    # Same scanner, same blocking semantics as the cowork HTML path; the
+    # PGUARD1 org-surface personal scan rides the same `surface` tag.
+    validate_chat_output(
+        blocks_text_render(payload),
+        surface=data_view.get("surface"),
+    )
+
+    # Gate 3 — the structural block contract (the validate_rendered_widget
+    # analog): budgets, block shapes, platform limits.
+    validate_slack_payload(
+        payload,
+        block_budget=int(profile.get("block_budget", 50)),
+        char_budget=int(profile.get("char_budget", 3000)),
+    )
+
+    if pagination is not None and len(payload["blocks"]) > int(profile.get("block_budget", 50)):
+        pagination["over_budget"] = True
+
+    persist_dir = Path(persist_dir)
+    ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S-%fZ")
+    surface = name_hint or data_view.get("surface") or "widget"
+    page_tag = f"_p{pagination['page']}of{pagination['total_pages']}" if pagination else ""
+    filename = f"{_safe_filename(surface)}{page_tag}_{ts}.slack.json"
+    out_path = persist_dir / filename
+
+    audit = {"blocks": payload["blocks"], "text": payload["text"]}
+    if pagination is not None:
+        audit["pagination"] = pagination
+    _atomic_write_text(out_path, _json.dumps(audit, ensure_ascii=False, indent=1))
+
+    file_uri = "file:///" + str(out_path.resolve()).replace(os.sep, "/").lstrip("/")
+
+    result = {
+        "blocks": payload["blocks"],
+        "text": payload["text"],
+        "path": out_path,
+        "file_uri": file_uri,
     }
     if pagination is not None:
         result["pagination"] = pagination

@@ -117,7 +117,7 @@ Why the helper exists: `path.write_text(...)` on Windows + Drive for Desktop is 
 1. Bump `version` to N+1.
 2. Set `last_updated` to current ISO datetime.
 3. Set `last_writer` to your skill name.
-4. Call `atomic_write_json(path, data)` from inside a `python3 -c` body that's already cd'd into `$PLUGIN_ROOT` (use the canonical CONTRACT.md Rule 22 preamble: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT" && python3 -c "..."`):
+4. Call `atomic_write_json(path, data)` from inside a `python3 -c` body that's already cd'd into `$PLUGIN_ROOT` (use the canonical CONTRACT.md Rule 22 preamble: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT" && python3 -c "..."`):
    ```python
    import sys
    sys.path.insert(0, "shared/scripts")

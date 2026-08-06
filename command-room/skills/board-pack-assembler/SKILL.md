@@ -1,5 +1,6 @@
 ---
 name: board-pack-assembler
+surfaces: both
 description: "Assemble a multi-page board pack .docx from the workspace's own signal — KPIs vs targets, period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials via QuickBooks where connected. Fires on: 'build the board pack', 'prep the board pack', 'assemble the board pack', 'board pack for [date]', 'board package', 'build board deck', 'generate this month's board update'. Reads the full reporting period's events, the decision log, entity status, and prior packs for format consistency. Does NOT fire on 'board update' as a short memo (memo-writer), 'monthly recap' (weekly-recap), 'investor update' (memo-writer), or 'prep me for the board meeting' (call-prep — the meeting brief, not the pack). Section spec and data sources: Routing section in the body."
 voice_block_last_refreshed: 2026-05-19
 calibration_level: default
@@ -88,7 +89,7 @@ Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
 # SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -228,7 +229,7 @@ Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structur
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 printf '%s' "$SECTION_TEXT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
 ```
 

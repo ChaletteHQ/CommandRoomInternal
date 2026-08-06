@@ -1,5 +1,6 @@
 ---
 name: stalled-projects
+surfaces: both
 description: "Surface every project that has gone quiet — no meetings, commitments, or decisions within the threshold — so the CEO can resurrect, snooze, or archive each with one tap. Fires on: 'stalled projects', 'what's stalled', 'which projects went quiet', 'stale projects', 'what's gathering dust', plus 'tune stalled-projects'. Renders a widget with draft re-engagement / status check / keep paused / snooze / archive actions dispatched through the standard path; suppressions learned from repeated dismissals are honored. Does NOT fire on 'who went dark' / 'dormant customers' (dormant-customer-scan — people, not projects), 'warm threads to revive' (thread-resurrection — conversations), or 'list projects' (list-active). Thresholds, scoring, and fences: Routing section in the body."
 ---
 
@@ -240,7 +241,7 @@ else:
 
 ```python
 import sys
-# Rule 22: run from $PLUGIN_ROOT (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+# Rule 22: run from $PLUGIN_ROOT (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from stall_detector import detect_stalled_projects, apply_live_check
 

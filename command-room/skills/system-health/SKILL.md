@@ -1,5 +1,6 @@
 ---
 name: system-health
+surfaces: both
 description: "On-demand scheduled-task health check AND the system's self-report. Fires on: 'health check', 'is everything running', 'system health', 'are my tasks running', 'did my tasks run', 'why didn't my [task] run', 'what did you change', 'what's waiting on me', 'staff meeting', 'run our staff meeting' (the full Staff Meeting surface — pending-proposal queue + change feed, same as the weekly chat). Reads run receipts, scheduler records, the proposal queue, and the change feed; answers in plain English what's running, what changed, and what's waiting on you. Health check is read-only — names the fix, never registers or edits. Does NOT fire on 'weekly cleanup' / 'maintenance' (cleanup), 'set up command room schedules' (registration), 'change my schedule' / 'add staff meeting' (change-schedule), 'usage report' (usage-report), 'prep me for [meeting]' (call-prep), or 'process the meeting' (meeting-notes). Full corpus + Staff Meeting contract: Routing section in the body."
 ---
 
@@ -25,7 +26,7 @@ The health check (Steps 1–3) and the self-report read (Step 4) are read-only �
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 import task_watchdog as tw

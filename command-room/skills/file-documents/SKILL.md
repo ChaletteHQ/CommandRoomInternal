@@ -1,5 +1,6 @@
 ---
 name: file-documents
+surfaces: both
 description: "Copy deliverable documents — employee files, 1:1 notes, contracts, meeting transcripts, decks, PDFs — from a source folder into your workspace's project folders, so the workspace becomes your filing system. Fires on: 'scan my desktop', 'scan my files', 'organize my downloads', 'sort my downloads', 'sort these into projects', 'file these documents'. Preview-and-confirm mapping (document to project) before any copy; originals never deleted; unmatched files flagged for your call, never guessed. Does NOT fire on 'ingest my chatgpt export' / 'import context' (ingest-context — data extraction, not file filing) or 'ingest this folder' (workspace-ingest — the combined pipeline). Mapping rules and preview format: Routing section in the body."
 ---
 

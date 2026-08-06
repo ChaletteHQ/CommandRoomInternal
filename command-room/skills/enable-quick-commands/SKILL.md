@@ -1,5 +1,7 @@
 ---
 name: enable-quick-commands
+surfaces: cowork
+slack_fallback: "Quick-command buttons are a desktop sidebar feature — from Slack, just type what you need (for example 'morning briefing')."
 description: "Install or rebuild the Quick Commands Live Artifact — curated cheat sheet of Command Room trigger phrases organized into 10 categories (Daily Loop · Workspace · People · Drafts · Meetings · Memory · Strategy · Ingest · Reporting · Maintenance). Pinned to the Cowork sidebar as a Layer 1 default. Helps users discover deeper capabilities — every row is clickable, fires the trigger phrase into chat. Static reference (rebuilds on plugin update or `rebuild quick commands`, NOT auto-refreshed on a cron). Triggers: `install quick commands`, `enable quick commands`, `rebuild quick commands`. Also called silently by `command-room-update-bridge`."
 ---
 
@@ -17,7 +19,7 @@ Several phases touch workspace files (`_hq/data/events.jsonl` in Phases 2 and 6,
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 ```
 
@@ -46,7 +48,7 @@ Read the last 200 lines of `_hq/data/events.jsonl`. If `{"type":"artifact_instal
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 
 python3 "$PLUGIN_ROOT/shared/scripts/render_artifact.py" \

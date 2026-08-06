@@ -1,5 +1,6 @@
 ---
 name: usage-report
+surfaces: both
 description: "Shows a plain-English breakdown of where your scheduled-task usage goes — which threads cost the most to run, which connectors get called the most, how long each fire takes. Triggers: `usage report`, `command room usage`, `where does the spend go`, `show me task costs`, `token usage`, `how expensive are my scheduled tasks`. Read-only — surfaces the picture, doesn't change anything. DOES NOT fire on 'where am I wasting time' / 'what can be automated' (automation-scanner — time-cost of manual work, not task-run usage). DOES NOT fire on money-spend questions ('what did we spend this month' — QuickBooks / the financial tools)."
 ---
 
@@ -34,7 +35,7 @@ Wrap the Python invocation in the canonical CONTRACT.md Rule 22 discovery preamb
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && WORKSPACE="$WORKSPACE" python3 -c "..."
 ```

@@ -1,5 +1,6 @@
 ---
 name: scan-for-commitments
+surfaces: both
 description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate `type: commitment` events in `_hq/data/events.jsonl`. Use when meetings/emails are on file but no commitment events exist. Idempotent — re-runs skip already-extracted commitments via (source_ref, title) dedup. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (just opens the commitments-tracker artifact)."
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: thread-resurrection
+surfaces: both
 description: "Surface conversations — email threads, Slack threads, meeting follow-ups — that went silent but carried high-value context worth reviving. Fires on: 'thread resurrection', 'warm threads to revive', 'dead threads worth reviving', 'what conversations went quiet', 'threads I dropped'. Ranks by value signals (deal language, decision proximity, seniority, thread depth) against silence duration, and offers one-tap revival drafts in the CEO's voice. Different from dormant-customer-scan, which finds dormant PEOPLE — this finds dormant CONVERSATIONS; a person can be active while a thread died. Does NOT fire on 'who went dark' (dormant-customer-scan), 'who should I reach out to' (relationship-moves), or 'follow up with [name]' (follow-up-ritual / email-writer). Ranking signals and fences: Routing section in the body."
 ---
 
@@ -148,7 +149,7 @@ data_view = {
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json

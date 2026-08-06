@@ -1,5 +1,6 @@
 ---
 name: follow-up-ritual
+surfaces: both
 description: "Meeting transcript or recording → 60-second close-the-loop pack: summary, per-attendee action items, personalized follow-up email drafts ready to send. Triggers: 'follow up on that call', 'follow up on the meeting', 'follow up the meeting', 'follow up on the call', 'process the call and draft follow-ups', 'close the loop', 'close the loop on', 'follow-up ritual', 'draft follow-ups', 'draft follow ups', 'send follow-ups from my last call'. Plus 'tune follow-up-ritual'. Owns meeting-context `follow up` phrasing — meeting-notes does not fire on these. DOES NOT fire on 'follow up with [name] about [topic]' with no meeting in context (email-writer — a plain outbound draft; same for dormant-customer-scan and thread-resurrection hand-offs)."
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default
@@ -76,7 +77,7 @@ config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -170,7 +171,7 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
 
      ```bash
      SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-     PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+     PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
      printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
      ```
 

@@ -378,6 +378,41 @@ def run_checks(root: Path) -> list[Finding]:
             findings.append(Finding("C9.thread_folder_missing", WARN,
                 f"thread '{t.get('id')}' folder_name '{fn}' not found on disk (moved/renamed/archived without record update?)",
                 str(t.get("id"))))
+    # C9b — thread carries NO folder_name at all (HONEST1).
+    #
+    # C9 above guards on `fn and fn not in ("", None)`, so an EMPTY folder_name is
+    # skipped by it entirely — and that is precisely what v5.4.0's resolver now
+    # produces: `thread_writer` resolves the folder against what is on disk and
+    # leaves the field empty when nothing matches, rather than filling it with a
+    # slug guess. Honest, but invisible. FOLDERGUARD's own docstring assumed C9
+    # would catch it; C9 cannot. Without this check the empty case has no home in
+    # the checker at all, and a thread can sit unrenderable forever with the
+    # weekly report showing clean.
+    #
+    # Uses the codebase terminal PAIR ('resolved','archived') rather than C9's
+    # archived-only filter — a resolved deal legitimately never gets a folder, and
+    # flagging it forever after close is noise. C9's narrower filter is left as-is
+    # deliberately: widening it would change existing finding counts, which is a
+    # separate decision from adding a new check.
+    #
+    # Kind filter: deal and objective threads have NO folder by design —
+    # `deal_state.create_deal` and `objective_state.create_objective` never set
+    # folder_name, and neither kind owns a project folder to record. Flagging
+    # them fires on every open deal and every objective in the workspace with
+    # advice ("record the folder it belongs to") that has nothing to point at,
+    # which turns the Monday note into weekly noise. Only kinds that DO get a
+    # folder are checked.
+    FOLDERLESS_KINDS = ("deal", "objective")
+    for t in threads:
+        if (t.get("status") or "active") in ("resolved", "archived"):
+            continue
+        if (t.get("kind") or "") in FOLDERLESS_KINDS:
+            continue
+        if not t.get("folder_name"):
+            findings.append(Finding("C9b.thread_folder_unset", WARN,
+                f"thread '{t.get('id')}' has no folder_name — nothing can resolve its "
+                f"project folder, so its brain can never render (record the folder it belongs to)",
+                str(t.get("id"))))
     # C10 / C11 / C11b — folder <-> thread reconciliation (orphan folder, missing
     # brain, missing session notes). Shared with scan_project_structure() so the
     # weekly cleanup Phase 1 and the deep-clean integrity pass agree exactly.

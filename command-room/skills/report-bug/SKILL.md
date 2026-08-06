@@ -1,5 +1,6 @@
 ---
 name: report-bug
+surfaces: both
 description: "Diagnose a Command Room misfire end-to-end and either self-fix it or draft a fully-diagnosed support email to the maintainer. Fires on: 'report bug', 'report a bug', 'this isn't working', 'something's wrong', 'it broke', 'something is off', 'this is broken', 'why isn't this working', 'report this', 'send this to support'. Auto-collects version, last skill fired, workspace state, and active connectors; pattern-matches known issues (about half of reports self-fix in-session); otherwise drafts the pre-diagnosed Gmail to the support address for your review and send — never auto-sent. Does NOT fire on conversational frustration without report-it intent, or how-does-this-work questions (the relevant skill answers those). Diagnostic flow and known-issue patterns: Routing section in the body."
 ---
 

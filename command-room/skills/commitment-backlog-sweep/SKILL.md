@@ -1,5 +1,6 @@
 ---
 name: commitment-backlog-sweep
+surfaces: both
 description: "One pass over the whole OPEN commitment backlog, using months of mail history the daily passes never look at again. Fires on: 'clean up my commitments', 'sweep my backlog', 'commitment backlog', 'backlog sweep', 'commitment amnesty'. Closes only what historical delivery evidence settles (each with its evidence and one-word undo), then asks about the rest in ONE digest: looks handled, written twice, gone quiet for months. Add `show me first` for a preview that changes nothing. On demand only — never scheduled, registers nothing. DOES NOT fire on 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — the full-set widget, no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent — the daily forward pass), or 'scan for commitments' (extraction backfill). Windows, caps and rails: Routing section in the body."
 ---
 
@@ -63,7 +64,7 @@ snippet from it — the cwd never persists and `shared/scripts` only resolves fr
 the plugin root:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 ```
 
 ### Step 1 — settings, and the window

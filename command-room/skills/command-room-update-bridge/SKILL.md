@@ -1,5 +1,7 @@
 ---
 name: command-room-update-bridge
+surfaces: cowork
+slack_fallback: "Updates apply on desktop — open Cowork and run the update there; Slack picks up the new version automatically."
 description: "Applies product updates to this workspace: default dashboards, release notes, and pending workspace-file migrations — additively, archive-never-delete. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Idempotent — re-runs are safe; detects which defaults are already installed and which release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room — opt-in add-ons menu), 'rebuild [artifact]' (the owning enable-* skill), or 'restart onboarding' (command-room-onboarding). Migration mechanics and manifest contract: Routing section in the body."
 ---
 
@@ -53,7 +55,7 @@ It is **conservative by design.** It does not modify existing data, does not run
 
 Read three things:
 
-1. **Current plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field (e.g., `"2.7.8"`). Resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 discovery preamble at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)`.
+1. **Current plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field (e.g., `"2.7.8"`). Resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 discovery preamble at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"`.
 
 2. **Last installed version** from the most recent `plugin_update` event in `_hq/data/events.jsonl`. If none exists, infer from the most recent `onboarding_checkpoint` event with `status: "complete"` — its `last_writer` carries the version that ran onboarding (e.g., `"command-room-onboarding"` from v2.7.4 ran a pre-checkpoint version of the build phase). If neither exists, treat installed version as "unknown legacy" and assume all v2.7.9 defaults are missing.
 
@@ -284,7 +286,7 @@ Detection logic per migration:
 - **Adjudication gate runs FIRST — mechanized, keyed on migration id, NEVER on marker phrases (FB-5, T3).** Before any marker/validator check, run the durable adjudication lookup ONCE for the full candidate id list:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
 python3 shared/scripts/migration_adjudication.py "$WORKSPACE" <migration_id_1> <migration_id_2> ...
 ```
 
@@ -307,7 +309,7 @@ python3 shared/scripts/migration_adjudication.py "$WORKSPACE" <migration_id_1> <
 - For `only_if` gated migrations: check the user's last `plugin_update` event's `from_version` against the gate. Skip if version is at or above the threshold. **Compare versions numerically via `release_remediation_selector.version_lt(from_version, threshold)` — NOT a string compare (v3.18.9+).** A lexical compare wrongly skips a `2.9.0` client for a `< 2.10.3` gate (`"2.9.0" > "2.10.3"` as strings) and a `2.14.2` client for a `< 2.14.12` gate — the exact "solid for all clients" hole the manifest selector closes, same fix here:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from release_remediation_selector import version_lt; print(version_lt('<from_version>', '<threshold>'))"
 # prints True  -> from_version is below the threshold -> the only_if gate PASSES (migration applies)
 ```
@@ -415,7 +417,7 @@ Do NOT invent variants (`orgs-map-v2`, `quick-commands-canonical`, etc.) — the
 
 > *"You may have older dashboards in your sidebar from earlier versions — feel free to unpin them. Their content now lives in the scheduled chats (including the new Friday Wrap weekly recap)."*
 
-**Path resolution.** `$PLUGIN_ROOT` is the absolute install path of this plugin on the user's machine — the directory containing `skills/`, `shared/`, etc. `$WORKSPACE` is the user's workspace folder (the directory containing `_hq/data/`). Both are resolved deterministically per CONTRACT.md Rule 22 at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')`. Never improvise a placeholder. Never hardcode a folder name. If discovery returns empty for either path, that's a hard fail — surface it, log `artifact_install_failed` with reason `"plugin_root_unresolvable"` or `"workspace_unresolvable"`, and STOP. Do NOT fall back to writing HTML inline.
+**Path resolution.** `$PLUGIN_ROOT` is the absolute install path of this plugin on the user's machine — the directory containing `skills/`, `shared/`, etc. `$WORKSPACE` is the user's workspace folder (the directory containing `_hq/data/`). Both are resolved deterministically per CONTRACT.md Rule 22 at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')`. Never improvise a placeholder. Never hardcode a folder name. If discovery returns empty for either path, that's a hard fail — surface it, log `artifact_install_failed` with reason `"plugin_root_unresolvable"` or `"workspace_unresolvable"`, and STOP. Do NOT fall back to writing HTML inline.
 
 Both enable-* skills have built-in idempotency: if their artifact is already installed (existing `artifact_installed` event), they skip silently. So calling on a partial-install state is safe.
 
@@ -481,7 +483,7 @@ Run it automatically whenever the update proceeds (independent of which dashboar
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
@@ -1021,7 +1023,7 @@ Determine `last_applied_version` from the most recent `plugin_update` event in e
 **Select the pending manifests via the deterministic helper — do NOT compare versions by hand (v3.18.9+, "solid for all clients" hardening).** The selection is "every manifest with version `> last_applied AND <= current`, ascending". You MUST get this from `shared/scripts/release_remediation_selector.py`, NOT by string-filtering or string-sorting the filenames yourself. Version strings are NOT lexically ordered: `"3.10.0" < "3.9.1"` as strings, so a hand-rolled filter `v > "3.9.1"` silently drops every 3.10–3.18 manifest — a client on an old single-digit-minor version (the retired `commandroom2122–2177` installs) would miss every remediation across that range. The helper parses each version into a tuple of ints and compares tuples, which also handles 4-part versions (`3.13.8.1`) and any future double-digit minor/patch. Call it:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 shared/scripts/release_remediation_selector.py shared/releases "<last_applied_version>" "<current_plugin_version>"
 ```
 
@@ -1030,7 +1032,7 @@ It prints a JSON array `[{"version", "path", "headline", "n_items"}, ...]` alrea
 For each manifest, for each item, run the detector via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json, importlib
 sys.path.insert(0, 'shared/scripts')
@@ -1047,7 +1049,7 @@ Skip items whose detector returns `{"applies": False}`. For items returning `{"a
 - **action: `auto_apply` (v3.14.4+)** — invoke the action module's function via bash python (same plugin-root resolution as the detector), passing `(events_jsonl_path, workspace_root, detector_context)`. Handle the result per the auto_apply contract in Step 4.8b. See `references/RELEASE_MANIFEST.md` "Action contract" for the full schema.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json, importlib
 sys.path.insert(0, 'shared/scripts')

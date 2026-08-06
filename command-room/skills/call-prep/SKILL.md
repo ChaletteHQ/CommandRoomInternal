@@ -1,5 +1,6 @@
 ---
 name: call-prep
+surfaces: both
 description: "Walk into a specific meeting already prepped. Fires on: 'prep me for my 2pm' (any time), 'prep me for the [name] call', 'quick prep me for my 3pm', 'prep the call', 'prep me for the board meeting', 'get me ready for [meeting]', '1:1 brief for [name]', 'meeting prep', plus 'tune call-prep'. Synthesizes calendar, email, Slack, meeting transcripts, and open commitments for every attendee into one scannable brief saved to the meetings folder and linked in chat — with learned per-meeting-type section weights applied. Does NOT fire on 'brief me on today' (morning-briefing — all meetings, summary only), 'process the call' (meeting-notes — post-meeting), 'prep for 1:1 with [direct report]' (team-intelligence), or speaking-engagement prep (memo-writer position paper). Full trigger list and section spec: Routing section in the body."
 ---
 
@@ -80,7 +81,7 @@ offered. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 

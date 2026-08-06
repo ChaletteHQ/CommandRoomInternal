@@ -237,7 +237,8 @@ def build_tree(
             display_name=proj.get("display_name") or proj.get("canonical_name") or proj.get("name") or pid,
             status=status,
             kind=proj.get("kind", "initiative"),
-            affiliation_id=proj.get("affiliation_id"),
+            # org_id is canonical (ENTITY1); affiliation_id read as legacy alias.
+            affiliation_id=proj.get("org_id") or proj.get("affiliation_id"),
             parent_thread_id=proj.get("parent_thread_id"),
             # Zero-event floor (C3 deprecation carve-out): stored stamp,
             # then first_seen — the chain every other surface uses. Never

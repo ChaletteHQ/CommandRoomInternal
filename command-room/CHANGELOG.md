@@ -1,5 +1,29 @@
 # Command Room — Changelog
 
+## v5.10.0 — 2026-08-05 — The workspace stops drifting from the truth, in four places
+
+Minor release, four independent improvements with one theme: places where the workspace could quietly disagree with reality now either stay correct on their own or say plainly that something is wrong.
+
+### Your always-on workspace file keeps its facts current — and cannot be edited silently
+
+The file your workspace reads at the start of every session carries two new self-maintaining sections: a one-line-per-organization register and a one-line-per-workstream register, drawn directly from your workspace's own records. When a prospect converts to a client or a new organization is added, the file catches up on the next pass — no hand-editing, and the sections are marked so you can tell them apart from your own writing, which is never touched (preserved byte-for-byte; there is a test that proves it). On a workspace with an unusually large register, the list stays readable: the organizations you work with closely stay as lines and the long tail collapses into honest counts. And in the other direction: any maintenance pass that rewrites this file must now report every removed line verbatim — rewording is allowed, silent deletion is not, and a line that looks like one of your operating rules must be restored or the edit refused with a reason.
+
+### Projects stop vanishing from the master view
+
+Records can link a project to its organization under two field spellings, and the master tracker only understood one of them — so an organization and all of its projects could disappear from the big-picture view while it reported "0" as if that were fine. The tracker now understands both, and if it ever again finds itself about to draw a view that drops an organization your projects clearly reference, it refuses to write the wrong view and says so instead. New records must name their organization (or be explicitly marked personal), and a second open deal can no longer be created for the same organization by accident — you are offered the existing one instead.
+
+### The weekly cleanup report stops swallowing its own failures
+
+One part of the Monday self-maintenance note discarded errors silently and reported two different problems ("this project never had a folder recorded" vs "the recorded folder is missing on disk") as one. Both are fixed, and a new check finds a broken state nothing could see before. Expect the first Monday note after this update to look longer than usual: it is reporting things that have been quietly broken for a while, not things this update broke. Deals and personal objectives are exempt from the new check — they never have folders by design.
+
+### Editing a reply draft can never silently break the email thread
+
+Editing a reply draft could cause the mail system to quietly rebuild it as a brand-new conversation — so the "reply" would reach your counterparty disconnected from the thread they wrote you on. Edits to a reply draft are now always a fresh, properly-threaded draft, and every reply draft is verified after creation to still be attached to the right conversation — with a loud, specific error if it is not.
+
+### Customer migration impact
+
+None to perform. The two new sections appear in your workspace file automatically on the next maintenance or workspace pass — appended at the end, marked as generated, your own text untouched. If your first Monday note after updating lists more findings than usual, that is the report becoming honest, not a regression.
+
 ## v5.9.4 — 2026-08-05 — The timezone you set is found wherever it lives
 
 Patch release, one bug class, reported from the field (2026-08-04): a scheduled morning brief errored in the timezone helper — "workspace has no timezone set" — on a workspace whose timezone was set correctly and explicitly. The report arrived with its own root-cause diagnosis, which proved exactly right.

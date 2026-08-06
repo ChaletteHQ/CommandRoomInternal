@@ -67,7 +67,7 @@ Carry the returned `receipt_fired_via` into the Phase 8 receipt — never guess 
 The driver returns / the CLI persists a data view with `source_skill: "commitments"`, the four count tiles, a `↗ PROMISED — someone's waiting` section (your `status_rows` first, then the counterparty-unresolved fixup rows), and a capped `PERSONAL — your own list` section with the `+N more — say 'show my plate'` footer. To read it directly (for the reply-handling paths):
 
 ```python
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 import sys; sys.path.insert(0, "shared/scripts")
 from surface_drivers import build_my_plate_view
 view = build_my_plate_view(WORKSPACE, now_iso=NOW, status_rows=STATUS_ROWS, personal_cap=PERSONAL_CAP)

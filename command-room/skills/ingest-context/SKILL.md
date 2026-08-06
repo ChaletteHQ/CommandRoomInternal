@@ -1,5 +1,6 @@
 ---
 name: ingest-context
+surfaces: both
 description: "Extract people, projects, decisions, and memories from a structured or loose source — a prior Command Room install, a ChatGPT export, custom markdown notes, or a folder of mixed files — and add them to this workspace's data layer with preview-and-confirm. Fires on: 'ingest my chatgpt export', 'import my old workspace', 'ingest these notes', 'bring in context from [source]', 'migrate from my previous setup'. Dedupes against existing entities, never overwrites confirmed data, snapshots before writing. Does NOT fire on 'ingest folder [path]' / 'scan my desktop' (workspace-ingest — the two-layer pipeline including file copying; this is the context-extraction intent), or 'sort these into projects' (file-documents). Source adapters and merge rules: Routing section in the body."
 ---
 

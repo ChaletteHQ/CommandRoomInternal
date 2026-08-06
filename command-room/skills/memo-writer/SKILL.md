@@ -1,5 +1,6 @@
 ---
 name: memo-writer
+surfaces: both
 description: "Draft internal memos, decision docs, scope docs, strategy notes, position papers, and recurring board or investor updates in the CEO's voice — structured, directive, written to persuade or align. Fires on: 'memo on [topic]', 'decision doc for [topic]', 'scope doc for [topic]', 'strategy memo about [topic]', 'write up our thinking on [topic]', 'position paper on [topic]', 'board update', 'investor update', 'commitment forensics', plus 'tune memo-writer' and 'customize memo-writer'. Output is a voice-calibrated .docx with a mandatory ask/close block. Does NOT fire on 'decision memo on X' (decision-memo-composer — weighted tradeoff between options), 'one-pager' (one-pager-composer), 'build the board pack' (board-pack-assembler), or email drafting (email-writer). Full trigger family and memo-type table: Routing section in the body."
 
 voice_block_last_refreshed: 2026-04-21
@@ -64,7 +65,7 @@ offered. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -177,7 +178,7 @@ Rewrite what fails, re-check once, then continue. Also apply the universal banne
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
 ```
 

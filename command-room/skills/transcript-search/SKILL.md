@@ -1,5 +1,6 @@
 ---
 name: transcript-search
+surfaces: both
 description: "Search across all meeting transcripts for mentions of a topic, project, keyword, or non-attendee person. Returns meeting hits with date, attendees, and a snippet showing the topic in context. Triggers: 'what did anyone say about [topic]', 'what did [person] say about [topic]', 'meetings about [topic]', 'transcript search [topic]', 'where was [topic] discussed', 'find meetings on [topic]', 'search transcripts for [topic]'. Cross-meeting topic-based search — different from people-crm's `tell me about [person]` which scopes to where the person was an attendee."
 ---
 
@@ -66,7 +67,7 @@ If the topic is ambiguous or empty (e.g., `"transcript search"` with no topic), 
 ### Step 1 — Discover the transcript connector
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -107,7 +108,7 @@ Session 22 (Phase 2E test) verified that Cowork called Granola NL and got correc
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 python3 -c "
@@ -142,7 +143,7 @@ For each candidate meeting (literal-token OR entity-expanded — see Step 2.5):
 5. Extract a snippet: find the first sentence/phrase in the transcript that contains the topic words (or the highest-density region if no exact phrase match). ~2 lines max. For attendee-matched results with no literal hit, surface the first 2 lines of the attendee's first significant utterance as the snippet.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')

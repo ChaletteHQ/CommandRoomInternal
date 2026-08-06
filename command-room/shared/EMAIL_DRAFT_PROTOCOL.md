@@ -177,7 +177,7 @@ If multiple tools match, prefer exact slug match over fuzzy match. If still ambi
 2. **Extract the latest message ID** via the canonical helper — never agent-improvise this step:
 
     ```bash
-    SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+    SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
     python3 -c "
     import sys, json
     sys.path.insert(0, 'shared/scripts')
@@ -256,6 +256,16 @@ These actions across orchestrators ALL use native Calendar MCP, never Zapier:
 | Upcoming Meetings | `push meeting [when]` | native `update_event` to move the existing event + email-writer for the reschedule notice |
 
 Email-writer drafts that come out of these handlers DO go through Zapier on send (via §3c) — that's still email. The CALENDAR side of the handler stays native.
+
+## 3d. Reply drafts are never patched in place (DRAFTTHREAD1, 2026-07-29)
+
+The draft-update operation has no reply-to parameter (its full parameter set is recipient/subject/body-shaped only), so "editing" a reply draft through it rebuilds the message without its `In-Reply-To` / `References` headers — the backend silently moves the draft to a NEW thread, the tool reports success, and the `Re:` subject makes the orphan invisible in the drafts list. Observed 2026-07-29: a voice-correction edit landed the draft in a different thread than its conversation. The lazy-draft model (§1 — one create at click time with final content) never anticipated create-then-patch, and nothing forbade it. Now something does:
+
+1. **Any content change to a reply draft is a fresh create** carrying the reply-to reference (the resolved draft tool's reply-to intent). Never the update operation — on ANY backend, for ANY reply draft.
+2. **Assert the threading took.** After creating any reply draft, run `shared/scripts/draft_threading.py::assert_reply_threaded(created_draft, <conversation thread id>)`. Passing the reply-to id is not proof it survived; the assertion catches every variant of this failure including connector-side regressions. On `ReplyDraftDetachedError`: do NOT present the draft as threaded — tell the user, naming both thread ids, and recreate. When the create response carries no thread id (`verified: False`), say the threading could not be verified rather than presenting the draft as threaded.
+3. **The superseded draft cannot be deleted from here** — the backend exposes no delete-draft operation. Create the correctly-threaded replacement, then tell the user which stale draft to delete by hand (subject + recipient). Never leave two drafts silently.
+
+Upstream connector asks (batched with MAILTRUST1's short-read ask, same connector): reply-to on the update operation, and a delete-draft tool. Until both land, 1–3 above are the honest behavior.
 
 ## 4. `N skip` semantics under lazy creation
 

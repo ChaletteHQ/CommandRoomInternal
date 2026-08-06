@@ -71,7 +71,7 @@ THREAD_ID_RE = re.compile(r"^project_[a-z0-9_]+$")
 
 ALLOWED_THREAD_FIELDS = {
     "id", "canonical_name", "display_name", "folder_name", "status", "stage",
-    "affiliation_id", "org_id", "parent_thread_id", "spawned_from_thread_id",
+    "org_id", "parent_thread_id", "spawned_from_thread_id",
     "cross_refs", "kind", "project_class", "owner_person_id",
     "stakeholder_person_ids", "last_activity", "next_step", "success_criteria",
     "first_seen", "session_count", "dormancy_reviewed_at", "archived_at",
@@ -92,6 +92,12 @@ REQUIRED_THREAD_FIELDS = {"id", "status"}
 # tries to write one. Do not add to this map to make a new field "work" — add
 # a canonical field to ALLOWED_THREAD_FIELDS (and the schema) instead.
 LEGACY_THREAD_FIELDS = {
+    "affiliation_id": (
+        "(ENTITY1: `org_id` is the canonical thread→org field — the majority "
+        "spelling in the fleet and the one the people-side writers use. "
+        "affiliation_id is tolerated on records that already carry it and "
+        "still read as an alias everywhere, but new writes land org_id; "
+        "create_thread(affiliation_id=...) normalises to org_id for you)"),
     "is_primary_focus": (
         "(an ORG field — every reader takes it off an org record, never a "
         "thread; the live values are inconsistent across sibling threads of "
@@ -173,6 +179,40 @@ VALID_STATUSES = {
     "active", "dormant", "paused", "blocked", "archived",
     "exploring", "scoping", "resolved",
 }
+
+# ENTITY1 §4a: a project belongs to an org, and "deliberately unaffiliated"
+# must stay distinguishable from "never set". The sentinel is the SAME one the
+# integrity checker and the entities schema already treat as legitimate
+# (`personal`, per PR_honest1-residuals §"Not done here") — do not invent a
+# second convention.
+UNAFFILIATED_ORG_ID = "personal"
+
+
+class DuplicateDealError(ValueError):
+    """A second non-archived `kind: deal` thread under the same org (ENTITY1
+    §4c). The writer proposes a merge instead of writing a twin — `existing`
+    carries the record already holding the engagement. `cleanup` handles the
+    after-the-fact case with an archive_reason; this is the write-time half of
+    the same notion of "same engagement" (same org, live deal)."""
+
+    def __init__(self, existing: dict, proposed_name: str):
+        self.existing = existing
+        super().__init__(
+            f"a non-archived deal already exists under org "
+            f"{thread_org_id(existing)!r}: {existing.get('id')} "
+            f"({existing.get('canonical_name') or existing.get('display_name')}). "
+            f"Proposing a merge instead of writing {proposed_name!r} as a twin — "
+            f"fold this into the existing thread (update_thread / deal_state), "
+            f"or archive it first if the old engagement genuinely ended. "
+            f"skip_dedup=True overrides when these really are two engagements."
+        )
+
+
+def thread_org_id(t: dict) -> str | None:
+    """Canonical read-side thread→org resolution (ENTITY1 §4b): `org_id`
+    first, then the legacy `affiliation_id` alias still present on records
+    that predate the collapse."""
+    return t.get("org_id") or t.get("affiliation_id")
 
 # Legacy → canonical guidance surfaced in validation errors. These are dropped
 # by _coerce: each one is a MISNAMING of a field that lives elsewhere, so the
@@ -851,8 +891,29 @@ def create_thread(workspace_root: str | Path, *,
     """Create a new thread record. Dedups by folder_name → canonical_name,
     validates against the schema, writes through the wrapper-aware collection
     (so it lands where readers look), and emits a `thread_created` event.
+
+    ENTITY1: `org_id` is required — a project belongs to an org. Pass
+    UNAFFILIATED_ORG_ID ("personal") explicitly for a deliberately
+    unaffiliated thread; omitting the field is refused so "never set" cannot
+    masquerade as a choice. `affiliation_id` is accepted as a legacy alias and
+    normalised to `org_id` on write.
     """
     workspace_root = Path(workspace_root)
+
+    # ENTITY1 §4b: one relationship, one field name.
+    if affiliation_id and org_id and affiliation_id != org_id:
+        raise ValueError(
+            f"affiliation_id={affiliation_id!r} and org_id={org_id!r} name "
+            f"different orgs for one thread — affiliation_id is an alias of "
+            f"org_id; pass org_id alone.")
+    org_id = org_id or affiliation_id
+
+    # ENTITY1 §4a: refuse creation with no org reference.
+    if not org_id:
+        raise ValueError(
+            "create_thread requires org_id — a project belongs to an org. "
+            "Pass the owning org's id, or UNAFFILIATED_ORG_ID ('personal') "
+            "explicitly if this thread is deliberately unaffiliated.")
 
     if not skip_dedup:
         existing = find_existing_thread(workspace_root, folder_name=folder_name,
@@ -865,6 +926,21 @@ def create_thread(workspace_root: str | Path, *,
     data = _load_entities(workspace_root)
     threads = _threads(data)
 
+    # ENTITY1 §4c: a second OPEN deal under one org is a twin engagement —
+    # propose a merge, don't write it. Closed deals (won/lost — outcome set,
+    # thread resolved/archived) never block: a new deal after a closed one is
+    # repeat business, not a duplicate.
+    if kind == "deal" and org_id != UNAFFILIATED_ORG_ID and not skip_dedup:
+        twin = next(
+            (t for t in threads
+             if isinstance(t, dict) and t.get("kind") == "deal"
+             and t.get("status") not in ("archived", "resolved")
+             and not (t.get("deal") or {}).get("outcome")
+             and thread_org_id(t) == org_id),
+            None)
+        if twin is not None:
+            raise DuplicateDealError(twin, canonical_name)
+
     record: dict[str, Any] = {
         "id": thread_id or _next_project_id(threads),
         "canonical_name": canonical_name.strip(),
@@ -875,8 +951,7 @@ def create_thread(workspace_root: str | Path, *,
         "first_seen": first_seen or _today(),
     }
     if kind:                    record["kind"] = kind
-    if affiliation_id:          record["affiliation_id"] = affiliation_id
-    if org_id:                  record["org_id"] = org_id
+    record["org_id"] = org_id   # required above; affiliation_id already folded in
     if owner_person_id:         record["owner_person_id"] = owner_person_id
     if stakeholder_person_ids:  record["stakeholder_person_ids"] = list(stakeholder_person_ids)
     if parent_thread_id:        record["parent_thread_id"] = parent_thread_id

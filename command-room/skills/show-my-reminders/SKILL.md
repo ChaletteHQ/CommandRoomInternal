@@ -1,5 +1,6 @@
 ---
 name: show-my-reminders
+surfaces: both
 description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Does NOT fire on 'show my list' / 'my list' / 'add to my list' (show-my-list, the discuss-later queue), 'remind me to revisit' (decision-revisit), 'remind me what' retrieval (decision-log), or 'balance check' / 'my white space' / 'plan a date night' (balance — proactive + relationship-aware, not a reminder dump; it READS personal reminders but never manages them)."
 ---
 
@@ -43,7 +44,7 @@ Discover the plugin root first (CONTRACT Rule 22) and run python FROM
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 ```

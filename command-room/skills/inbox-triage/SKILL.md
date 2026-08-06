@@ -1,5 +1,6 @@
 ---
 name: inbox-triage
+surfaces: both
 description: "Morning inbox pass: reads overnight email, classifies into Reply Now / Decision Needed / FYI / Discard / Deep Read. Surfaces the 3–5 that matter, drafts replies for 2–3. Triggers: 'triage my inbox', 'inbox triage', 'what's in my inbox', 'process my inbox', 'go through my email', 'email triage', 'morning email pass'. Owns all 'inbox' + deep-email phrasing. Plus 'tune inbox-triage'. Does NOT fire on bare 'morning briefing' or 'brief me' — those go to morning-briefing for the daily digest."
 ---
 
@@ -57,7 +58,7 @@ changes. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -165,7 +166,7 @@ Optional modifiers:
 
      ```bash
      SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-     PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+     PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
      printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
      ```
 
@@ -353,7 +354,7 @@ data_view = {
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json

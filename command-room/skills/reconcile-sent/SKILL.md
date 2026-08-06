@@ -1,5 +1,6 @@
 ---
 name: reconcile-sent
+surfaces: both
 description: "Silent scheduled maintenance task (3x weekdays) with four write jobs: close commitments the CEO completed by emailing outside the product's draft path; open a commitment when a sent reply carries an untracked promise; watch earlier sends for outcomes (replied / no reply / bounced); persist mid-confidence matches for one-click confirm in the next Waiting On chat. Runs as the first job inside the maintenance background task (MAINT1) — no widget, no chat surface. Manual fire: 'reconcile my sent mail'. Honors pending-review flags (never auto-resolves); reconciliation only, whatever task carries it. Does NOT fire on 'follow up' phrasings (follow-up-ritual / email-writer) or 'scan for commitments' (scan-for-commitments — historic bulk extraction). Matching paths and cursor mechanics: Routing section in the body."
 ---
 
@@ -59,7 +60,7 @@ validator reads back**, never a narration:
 **Before any python snippet below (Rule 22):** resolve the plugin root and run every snippet from it — the cwd never persists and `shared/scripts` only resolves from the plugin root:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 ```
 
 1. **Determine the fetch window — and look BACK far enough to clear stranded backlog (Bug #101).** Read `workspace.sent_reconcile_cursor` from `entities.json` and hold it as `cursor_before` (you'll validate against it). **The cursor is NOT automatically trustworthy as a fetch floor:** a pre-v3.18.12 version could leave the cursor sitting ahead of mail it never actually reconciled (it claimed "reconciled up to here" while doing nothing), which strands every earlier sent message — a fetch floored at the cursor would never see it. So choose the fetch floor by mode:

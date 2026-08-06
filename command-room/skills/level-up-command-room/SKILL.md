@@ -1,5 +1,7 @@
 ---
 name: level-up-command-room
+surfaces: cowork
+slack_fallback: "Add-on setup runs on desktop — open Cowork and ask to level up Command Room there."
 description: "Umbrella menu for optional Layer 2 sidebar dashboards. No Layer 2 dashboards are currently shipped — the Commitment Cockpit was retired and folded into the Commitments scheduled chat. This skill remains the canonical entry point so the trigger phrases keep working and future Layer 2 additions have a home. Triggers: 'level up command room', 'level up my command room', 'show me dashboards', 'what dashboards can I install', 'show me what I can enable', 'add more dashboards', 'level me up'. DOES NOT fire on individual 'enable [X]' phrases (those route directly to the matching enable-* skill when one exists), 'rebuild [artifact]' (refresh, not enable), 'install command room' (that's command-room-onboarding)."
 ---
 

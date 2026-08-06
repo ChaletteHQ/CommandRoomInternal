@@ -1,5 +1,7 @@
 ---
 name: command-room-onboarding
+surfaces: cowork
+slack_fallback: "Setup runs on desktop — open Cowork to onboard Command Room; once set up, just talk to me here."
 description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that names the AI operator, scans every connected source, builds the workspace data layer, calibrates the writing voice from sent mail, and proves the system back before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately). Full phase map and fences: Routing section in the body."
 ---
 
@@ -397,7 +399,7 @@ onboarding rather than at first email-writer fire:
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config
 posture = item4_action if item4_action in ("show_first", "auto_queue") else "show_first"

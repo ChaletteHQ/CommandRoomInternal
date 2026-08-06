@@ -522,9 +522,14 @@ Card-wide contract: ranking money > identity > hygiene then age; max 2 slots per
 
 Every surface has 5–8 buttons because each one corresponds to a different real decision. Pre-v2.11.x the typed-number row exposed all of them as text; v2.11.x widget made them clickable; v2.12.x consolidates redundant variants (`edit firmer`/`edit softer` removed; `edit` + disposition combined; `keep` standardized to `skip`). The set is now near-minimal — every button is a meaningfully different action.
 
-## Transport — how the widget reaches the screen (T2 delivery rework, Bug #67)
+## Transport — how the widget reaches the screen (T2 delivery rework, Bug #67; surface-branched SLACK1 C-2)
 
-**THE posting path for every row-list / all-batch widget: render+validate+persist one page, then relay that page's validated bytes as `show_widget`'s `widget_code`.**
+**The transport branches on the RUNTIME SURFACE (`surface_context.current_surface()` — `SURFACE` env var; absent ≡ cowork), ONCE, here.** Every widget skill reads this one section, so all of them inherit both surfaces without per-skill edits:
+
+- **cowork (default — everything below this table of contents through the pagination-flags table is the cowork path, unchanged):** `render_and_persist(...)` → relay `transport["html"]` byte-exact as `show_widget`'s `widget_code`. Byte-identical to pre-SLACK1 behavior.
+- **slack:** `render_and_persist(..., target="slack")` → the SAME call returns `{blocks, text, pagination, path}` instead of `html`. Hand `blocks` + `text` to the listener's post path (the Slack bot posts them via `chat.postMessage`; you never compose Block Kit by hand, exactly as you never compose widget HTML by hand). Button clicks come back as the IDENTICAL `apply choices: [...]` wire string, composed by the listener per `references/SLACK_BUTTON_BRIDGE_SPEC.md` — `apply-choices` is unchanged. Deliverable files ride `files.upload` into the thread (C-4); `computer://` links never appear on Slack. Pagination semantics, the three flags you must SAY, PAGESNAP, zero-manipulation, and FS-08 no-silent-fallback all apply to the slack path VERBATIM — `blocks` are relayed to the listener exactly as returned, never trimmed, never reshaped.
+
+**THE posting path for every row-list / all-batch widget (cowork): render+validate+persist one page, then relay that page's validated bytes as `show_widget`'s `widget_code`.**
 
 **One-command drivers (T2.2 — the ~30-command prep killer):** the two big
 row-list surfaces have dedicated drivers in
@@ -538,7 +543,7 @@ per page per fire, never re-run for a page already in hand (RV-3
 double-render). Surfaces without a driver use the direct call below.
 
 ```python
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 import sys; sys.path.insert(0, "shared/scripts")
 from widget_transport import render_and_persist
 transport = render_and_persist(
@@ -575,6 +580,25 @@ Absent flags mean the page came straight off the frozen page-set (`from_snapshot
 **No silent fallback (FS-08).** After a clean `render_and_persist` call you MUST call `show_widget` with `transport["html"]`. If — and only if — `show_widget` itself errors or is unavailable, you MUST SAY SO in plain English and STOP: surface the error string verbatim (or `(Widget surface unavailable — re-fire when the visualize MCP is reachable.)`). Never improvise a hand-built widget, a compact freelance render, a custom wire prefix, or a chat-listed substitute; never narrate that the widget "couldn't transmit," "hit a payload limit," "was too large," or "validated but…" — none of those conditions exist on this path, and inventing one is the FS-08 silent-improvisation failure. A mandated call that cannot execute is reported, never worked around quietly.
 
 **Chat carries zero widget bytes (F-09):** no fragment of widget HTML — style blocks, `::view-transition-group` preludes, tags, minified CSS — ever appears in chat *text*. The bytes travel only as the `widget_code` parameter; if a CSS-looking prelude would precede the render in the chat transcript, that is a leak, and the leak scanner flags the echo.
+
+### Slack surface (SLACK1 C-1/C-2) — same call, `target="slack"`
+
+```python
+# Rule 22 preamble first (identical to cowork), then:
+import sys; sys.path.insert(0, "shared/scripts")
+from widget_transport import render_and_persist
+transport = render_and_persist(
+    data_view=data_view,
+    persist_dir="<WORKSPACE>/_hq/.system/widgets",
+    name_hint="<surface id>",
+    page=1,                       # unbounded views paginate exactly as on cowork
+    target="slack",
+)
+# Deliver: hand transport["blocks"] (Block Kit) + transport["text"] (mrkdwn
+# fallback) to the listener's post path, VERBATIM. The listener posts them.
+```
+
+Everything the cowork path guarantees holds here, produced by the SAME gate stack inside the one call: canonical-action / data-shape / pulse-richness / send-class validators, the leak scan (run over the Block Kit text render), and the structural block contract (`slack_render.validate_slack_payload` — ≤50 blocks, per-block platform limits; the `validate_rendered_widget` analog). The audit file persists identically (`<surface>_pN.slack.json` next to the HTML audits). Pagination is re-budgeted for Slack (`shared/config/surface_profiles.json` — ~50 blocks / ~3k chars; `rows_per_page` is the slack page ceiling) and the page-fit search anchors on page 1 exactly like the cowork byte-budget fit. Native 2026 blocks are preferred where the data is shaped for them (data_table for non-interactive tabular views, data_visualization for `chart` specs, §10.4); interactive row-lists render section + button/select rows whose element `value`s carry the `{"n","action","src"}` wire tuples. If the transport raises, SAY SO and STOP — the FS-08 rule is surface-independent: never improvise blocks, never fall back to a plain-text row list.
 
 ## Posting contract — what the orchestrator MUST do, MUST NOT do (v2.11.3+)
 

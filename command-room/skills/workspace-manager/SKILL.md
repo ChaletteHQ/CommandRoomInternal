@@ -1,5 +1,6 @@
 ---
 name: workspace-manager
+surfaces: both
 description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' / 'go [org] all' / 'go [org] rollup', 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org', '[name] is now a client', 'archive [project]', 'pull up [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', a bare contextless 'undo' (lists recent automatic changes to reverse), accounts & connectors ('what accounts do I have', '[address] is my personal account', 'set my email backend to [connector]'), and vocative address by the workspace AI name (wake-word strips, rest re-routes). Default handler for loose input naming a tracked entity when nothing else fits. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full triggers and fences: Routing section in body."
 ---
 
@@ -13,7 +14,7 @@ description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'l
 
 Before responding to any session-start trigger (`let's work`, `lets work`, `what's going on`, `workspace status`, `I'm here`, `catch me up`), silently run the version-mismatch check:
 
-1. Resolve the plugin root via the canonical discovery preamble (`SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)` per CONTRACT.md Rule 22), then read the plugin's current version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field.
+1. Resolve the plugin root via the canonical discovery preamble (`SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"` per CONTRACT.md Rule 22), then read the plugin's current version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field.
 2. Read the most recent `plugin_update` event from `_hq/data/events.jsonl` → `to_version` field.
 3. If no `plugin_update` event exists, infer the installed version from the most recent `onboarding_checkpoint` event with `status: "complete"` (its `last_writer` carries plugin version context).
 4. **Compare.** If current plugin version > last installed version, append ONE line at the END of the session-start response (after the briefing or status, not before — don't bury the lede):
@@ -451,7 +452,7 @@ All findings written to events.jsonl as `interaction` / `meeting` / `note` / `fi
 **Live State refresh — runs on EVERY `go [project]`, cold OR cached (v3.16+, brain-substrate-drift fix).** After resolving the project (and after the deep-load on first open), run the deterministic renderer so the brain's People + Status reflect current substrate instead of a frozen hand-copy:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 shared/scripts/render_thread_live_state.py "<workspace_root>" "<thread_id>"
 ```
 
@@ -464,7 +465,7 @@ It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-S
 **Entity history on `go` (SPEC HIST1 D7).** When the resolver's match is a PERSON (`go Sam Sample` — ENTITY_RESOLVE gated exactly like every name-bearing turn), render/refresh the durable person history and surface the compiled block instead of the thread shape:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 shared/scripts/render_person_history.py "<workspace_root>" "<person_id>"
 ```
 
@@ -524,7 +525,7 @@ This skill's description is frozen at its budget cap, so there is NO dedicated q
 3. On yes (or the unambiguous case), write through the ONE sanctioned writer — never a hand edit:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys; sys.path.insert(0, 'shared/scripts')
 from org_writer import set_org_money
@@ -548,7 +549,7 @@ The catch-all owns this by charter. **In the moment, and later in the same chat,
 On a bare `undo` / "undo that" / "reverse that" with no batch in context:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from brain_undo import recent_auto_batches
@@ -590,7 +591,7 @@ Only proceed with creation if no match is found.
 1. **Scan connectors** — silently check Gmail (60 days), Calendar, Slack, Granola, Drive for anything related to `[Name]`. Skip unavailable connectors. See references/workspace-detail.md → "Source Check Procedures."
 2. **Present findings** — if context found: "Here's what I already know about [Name]: [summary]. What's right, wrong, missing?" If nothing found: standard discovery questions (What is this? Who? Stage? First action?). Ask only for gaps.
 3. **Create pre-loaded project:**
-   - **Create the thread record via the typed writer — do NOT hand-edit entities.json.** Call `shared/scripts/thread_writer.py::create_thread(workspace_root, canonical_name="[Name]", status="active", affiliation_id=<org_id per fuzzy-router — primary-focus org by default, CEO confirms if ambiguous>, owner_person_id=<if known>, kind=<if known>, source_skill="workspace-manager")`. It reserves a non-colliding `project_*` id, validates against the schema, writes through the wrapper-aware collection so the record lands where every reader looks, dedups, and emits a `thread_created` event. (Replaces the old hand-rolled id reservation; note the org link is `affiliation_id`, not `parent_org_id` — that's an org→org field. See deep-audit #6 / references/BRAIN_FILE_CONTRACT.md.)
+   - **Create the thread record via the typed writer — do NOT hand-edit entities.json.** Call `shared/scripts/thread_writer.py::create_thread(workspace_root, canonical_name="[Name]", status="active", org_id=<org id per fuzzy-router — primary-focus org by default, CEO confirms if ambiguous>, owner_person_id=<if known>, kind=<if known>, source_skill="workspace-manager")`. It reserves a non-colliding `project_*` id, validates against the schema, writes through the wrapper-aware collection so the record lands where every reader looks, dedups, and emits a `thread_created` event. (Replaces the old hand-rolled id reservation; note the org link is `org_id` — the canonical thread→org field per ENTITY1, superseding the legacy `affiliation_id` spelling — and NOT `parent_org_id`, which is an org→org field. `org_id` is REQUIRED: for a genuinely unaffiliated thread pass the sentinel `org_id="personal"` explicitly rather than omitting it. See deep-audit #6 / references/BRAIN_FILE_CONTRACT.md.)
    - Folder: `[WORKSPACE_ROOT]/[Name]/`
    - PROJECT_CONTEXT.md — seeded with real context, not placeholders
    - SESSION_NOTES_[NAME].md — initial status
@@ -644,7 +645,7 @@ Same shape as `new vendor` but with `relationship_type: prospect` defaulted. Use
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 sys.path.insert(0, os.path.join(os.getcwd(), 'shared', 'scripts'))
@@ -680,7 +681,7 @@ Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 sys.path.insert(0, os.path.join(os.getcwd(), 'shared', 'scripts'))
@@ -797,11 +798,11 @@ Each renderer atomic-writes its `_hq/views/*.md` plus the back-compat `_hq/*.md`
 
 **Step 7: CLAUDE.md hot cache refresh (if exists)**
 13. If `CLAUDE.md` exists in workspace root:
+    - **Org + workstream sections are GENERATED (CLAUDEMD1):** run `python3 shared/scripts/render_claude_md.py <workspace_root>` — it redraws the `LIVE-STATE:orgs` / `LIVE-STATE:workstreams` blocks from entities.json and never touches hand-authored prose outside the markers. Never hand-edit inside those blocks; the next render overwrites you. (This is why pipeline-tracker converting a prospect to client now reaches the always-on file — the substrate is the source, the block is a view.)
     - Check if any new people came up this session that aren't in the People table → add (cap at 20, drop least recent if needed)
-    - Check if any projects changed status (new Active, moved to Archive) → update Projects table
     - Check if any new shorthand/terms were used → add to Terms table
     - If no changes needed, skip silently. If changes made, note: "Updated your quick-reference file."
-    - Do NOT rewrite the whole file — surgical edits only to keep the diff small.
+    - Do NOT rewrite the whole file — surgical edits only to keep the diff small. **Any hand-section edit binds to the cleanup Rule 12 guard:** snapshot before, run `claude_md_guard.report(before, after)` after, and surface removed lines verbatim (rule-language lines are restored or the edit refused).
 
 **Step 8: Micro-maintenance (silent)**
 14. Run maintenance rules from references/maintenance-rules.md:

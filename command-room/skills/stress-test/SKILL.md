@@ -1,5 +1,6 @@
 ---
 name: stress-test
+surfaces: both
 description: "Systematically map every path a plan, decision, or launch could fail — then reverse each failure mode into a structural safeguard. Fires on: 'stress test this plan', 'what could go wrong', 'pre-mortem' / 'pre-mortem on [topic]', 'poke holes in this', 'red team this', 'inversion pass on [plan]'. Munger-style inversion over the plan's own claims plus workspace evidence where entities are named; output is the failure-mode map with safeguards, chat-first with optional .docx. Does NOT fire on 'convene the board' (boardroom — multi-perspective deliberation; this is single-lens failure mapping), 'decision memo' (decision-memo-composer — this chains FROM it as the inversion pass), or 'review this contract' (contract-review). Method and output shape: Routing section in the body."
 ---
 
@@ -28,7 +29,7 @@ customization layer (the knobs suffice). Read config through `get_config` — ne
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
 # SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 

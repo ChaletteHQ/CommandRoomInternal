@@ -1,5 +1,6 @@
 ---
 name: team-intelligence
+surfaces: both
 description: "Never walk into a 1:1 cold again — the team layer: who owns what, who's overloaded, what each person delivered, and a prep brief per direct report. Fires on: 'my team', 'team status', 'prep for 1:1 with [name]' / 'prep me for my 1:1 with [name]', 'who owns [project/deliverable]', 'who's overloaded', 'what has [name] delivered this quarter', 'log commitment for [name]', 'discover my team'. Builds and maintains per-person delivery records from meetings, commitments, and threads. Does NOT fire on 'prep me for the [external] call' / 'prep me for my 2pm' (call-prep — external meeting brief), 'who is [name]' (people-crm — relationship record), or 'who should I reach out to' (relationship-moves). Team model and 1:1 brief spec: Routing section in the body."
 ---
 
@@ -149,7 +150,7 @@ This is the flagship command. Output a brief the CEO reads in 60 seconds before 
 
    ```python
    import sys
-   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
    sys.path.insert(0, "shared/scripts")
    from cru_match import load_open_commitments, split_pending_review, _commitment_field
 

@@ -1,5 +1,6 @@
 ---
 name: objectives
+surfaces: both
 description: "Standing objectives on the workspace itself — a small set of CEO-level priorities too big to mark done in a day, each tracked through the path the CEO picks (reviewed in a recurring meeting / self-reported in one weekly touch / read from linked work activity), status derived from the workspace's own record. Fires on: 'objectives', 'show my objectives', 'my objectives', 'objectives review', 'new objective', 'add an objective', 'objective: [statement]', 'complete objective [name]', 'archive objective [name]', 'rebind' ('rebind [objective name]'), 'objectives: [statuses]' (the weekly reply), plus 'tune objectives'. Proposes candidates from the workspace at first run. Does NOT fire on 'what should I focus on' (command-room-coach), 'stalled projects' (stalled-projects), 'pipeline'/'deals' (pipeline-tracker), 'log decision' (decision-log). No key results, no scoring — plain-English objectives. Full trigger family and fences: Routing section in the body."
 ---
 
@@ -34,7 +35,7 @@ Show-then-tune (STT), all three decisions. Read config through `get_config` — 
 
 ```python
 # Rule 22 preamble first: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -76,7 +77,7 @@ cfg = get_config(workspace_root, "objectives", DEFAULTS)
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, datetime
 sys.path.insert(0, 'shared/scripts')
@@ -119,7 +120,7 @@ Zero open objectives + `cold_start_proposals` on → the cold start (below). Zer
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')

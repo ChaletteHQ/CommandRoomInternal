@@ -240,6 +240,7 @@ def create_objective(
     horizon: Optional[str] = None,
     anchor_thread_id: Optional[str] = None,
     milestones: Optional[list] = None,
+    org_id: Optional[str] = None,
     source_skill: str = "objectives",
 ) -> dict:
     """Open a standing objective: ALWAYS a new kind='objective' thread
@@ -278,10 +279,15 @@ def create_objective(
             for m in milestones
         ]
 
+    # Objectives are the operator's own goals — deliberately unaffiliated by
+    # default (they link work via anchor_thread_id, not an org). The sentinel
+    # is passed EXPLICITLY per ENTITY1 §4a so this reads as a choice, not an
+    # omission; callers with an org-scoped objective pass org_id.
     thread = thread_writer.create_thread(
         ws,
         canonical_name=(name or statement).strip(),
         kind="objective",
+        org_id=org_id or thread_writer.UNAFFILIATED_ORG_ID,
         owner_person_id=owner_person_id,
         objective=obj,
         source_skill=source_skill,

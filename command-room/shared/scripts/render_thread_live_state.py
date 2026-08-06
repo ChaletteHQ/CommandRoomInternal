@@ -84,25 +84,46 @@ def _org_associated_pids(ent: dict, org_id: str) -> set[str]:
     return out
 
 
-def default_brain_path(workspace_root: str | Path, thread_id: str) -> Path | None:
-    """Resolve the thread's brain file from its folder_name. None if unknown.
+def resolve_brain_path(workspace_root: str | Path, thread_id: str) -> tuple[Path | None, str]:
+    """Resolve the thread's brain file. Returns `(path, reason)`.
 
-    FOLDERGUARD: `None` also when `folder_name` names a directory that is not on
-    disk. A thread record can carry a folder that never existed (a slug guess, a
-    rename that never reached the record), and every writer downstream of here
-    creates its parent tree — so returning a path for a missing folder is what
-    fabricated the folder. Refusing is free: `render_live_state` already treats
-    `None` as `{"status": "no_brain_path", "rendered": False}`, and the missing
-    folder stays visible to `integrity_check` as `C9.thread_folder_missing`
-    instead of being silently papered over.
+    `reason` is `"ok"`, or the status the caller should report:
+
+    * `"no_brain_path"`  — the record names no folder at all (field empty/absent).
+    * `"no_project_folder"` — the record names a folder that is not on disk.
+
+    These are DIFFERENT REPAIR CASES and collapsing them loses the distinction the
+    repair needs: an empty field wants the folder name recorded, while a name
+    pointing nowhere wants the folder located or the record corrected. FOLDERGUARD
+    (v5.4.0) correctly stopped returning a path for a missing folder — every writer
+    downstream creates its parent tree, so returning one is what fabricated the
+    folder — but it reported both cases as `no_brain_path`.
+
+    Note the FOLDERGUARD docstring's claim that a missing folder "stays visible to
+    integrity_check as C9.thread_folder_missing" holds ONLY for the
+    `no_project_folder` case. C9 guards on `if fn and fn not in ("", None)`
+    (integrity_check.py), so the `no_brain_path` case — an EMPTY folder_name, which
+    is exactly what the v5.4.0 resolver now produces when nothing matches on disk —
+    is skipped by C9 entirely and is visible nowhere. That is why the two statuses
+    have to be told apart here: one of them has no other reporting path at all.
     """
     workspace_root = Path(workspace_root)
     folder = _thread(workspace_root, thread_id).get("folder_name")
     if not folder:
-        return None
+        return None, "no_brain_path"
     if not (workspace_root / folder).is_dir():
-        return None
-    return workspace_root / folder / "PROJECT_BRAIN.md"
+        return None, "no_project_folder"
+    return workspace_root / folder / "PROJECT_BRAIN.md", "ok"
+
+
+def default_brain_path(workspace_root: str | Path, thread_id: str) -> Path | None:
+    """Resolve the thread's brain file from its folder_name. None if unresolvable.
+
+    Back-compatible wrapper over `resolve_brain_path` — every existing caller that
+    only needs the path keeps working unchanged. Use `resolve_brain_path` when you
+    need to report WHY resolution failed.
+    """
+    return resolve_brain_path(workspace_root, thread_id)[0]
 
 
 def format_live_state(workspace_root: str | Path, thread_id: str):
@@ -177,9 +198,15 @@ def render_live_state(workspace_root: str | Path, thread_id: str, *,
     """Dirty-check then render the Live State block. Returns the render_block
     status plus {'rendered': bool, 'source_seq': int|None}."""
     workspace_root = Path(workspace_root)
-    path = Path(brain_path) if brain_path else default_brain_path(workspace_root, thread_id)
+    if brain_path:
+        path, reason = Path(brain_path), "ok"
+    else:
+        path, reason = resolve_brain_path(workspace_root, thread_id)
     if path is None:
-        return {"status": "no_brain_path", "rendered": False, "source_seq": None}
+        # `reason` distinguishes an empty folder_name from one naming a directory
+        # that is not on disk — different repair cases, and the empty case has no
+        # other reporting path (integrity_check's C9 skips it). See resolve_brain_path.
+        return {"status": reason, "rendered": False, "source_seq": None}
 
     body, source_seq = format_live_state(workspace_root, thread_id)
     if not force and not render_brain_block.needs_render(

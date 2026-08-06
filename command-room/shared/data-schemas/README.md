@@ -39,7 +39,7 @@ No reserved ids in v2.2. Slugs are connector-inferred during onboarding (email d
 
 ### Thread (project) affiliation
 
-Every thread MUST link to its org via `affiliation_id` and should resolve to the **most specific** level (operating > holding). See `references/ORG_AND_THREAD_MODEL.md` for the full spec including threads that span multiple orgs (use `related_thread_ids[]` at the event level, not a forced duplicate thread).
+Every thread MUST link to its org via `org_id` — the canonical thread→org field (ENTITY1); `affiliation_id` is the legacy alias, still read as a fallback on records that carry it but never newly written (the writer normalises it to `org_id`). The link should resolve to the **most specific** level (operating > holding). See `references/ORG_AND_THREAD_MODEL.md` for the full spec including threads that span multiple orgs (use `related_thread_ids[]` at the event level, not a forced duplicate thread).
 
 ### Person.primary_org_id + affiliation_ids[]
 

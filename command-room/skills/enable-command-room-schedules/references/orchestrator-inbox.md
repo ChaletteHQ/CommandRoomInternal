@@ -73,7 +73,7 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 - **Discover Zapier-threaded-send tool — v2.14.0+ MANDATORY helper-based:**
 
   ```bash
-  SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+  SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
   python3 -c "
   import sys; sys.path.insert(0,'shared/scripts')
   from tool_discovery import discover_zapier_send_tool, ToolDescriptor
@@ -190,7 +190,7 @@ Skip entirely if:
 Otherwise, build ONE list over ALL fetched threads — for each, resolve the sender's email to a `person_id` (via entities.json + aliases.json, already loaded in Phase 2) and take the latest message's subject, body, conversation id, attachment flag, and **its own ISO-8601 timestamp** (`ts` — the connector's raw value, never a reformatted display date; EVORDER layer 3 reads it). **A thread whose sender does not resolve still goes in the list with `sender_person_id: ''`** — the helper counts it as unresolvable rather than letting it vanish, which is how a whole quiet fire gets explained. Then execute via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -323,7 +323,7 @@ You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-writ
 **Step 1 — verify renderer imports (FIRST action of Phase 8, before anything else):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; from chat_output_renderer import validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; print('OK')"
 ```
 

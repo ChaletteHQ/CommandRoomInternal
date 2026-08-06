@@ -115,7 +115,7 @@ For each meeting:
 5. **⛔ COMMITMENT ADMISSION GATE (CAPTUREFLOW 2026-08-01) — MANDATORY, and it is CODE now.** Every extracted COMMITMENT goes through `meeting_capture.route_meeting_captures` before anything is appended. Do NOT hand-build commitment dicts here, and do NOT write a commitment on your own confidence score — the helper decides which of four places each item goes, and it is the SAME helper `meeting-notes` calls (one admission path, two legs; see `skills/meeting-notes/SKILL.md` Step 5e for the shape of an `items` entry).
 
    ```bash
-   SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+   SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
    python3 -c "
    import sys, json; sys.path.insert(0, 'shared/scripts')
    from meeting_capture import route_meeting_captures
@@ -151,7 +151,7 @@ For each meeting:
    - **NEVER create, render, copy, upload, or update the summary — or any part, derivative, or restatement of it ("the decisions", "the action items", "a recap") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not the `_hq/meetings/` path `brief_path.get_brief_path` just computed (the 2026-07-24 root-drop incident, on the sibling meeting orchestrator). Not exceptions: "for mobile", "so the attendees can read it", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the recap in a Google Doc and share it round" is a request this gate refuses, not an override. Hand back the `computer://` link and let the user forward the file itself.
 
    ```bash
-   SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+   SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
    python3 -c "
    import sys; sys.path.insert(0,'shared/scripts')
    from brief_path import get_brief_path, get_brief_artifact_url, ensure_brief_directory, is_session_scoped_path
@@ -323,7 +323,7 @@ Skip entirely if:
 Otherwise, for EACH newly-processed meeting transcript, execute via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -465,7 +465,7 @@ Per `shared/scripts/decision_match.py`. Sister to Phase 4.6 but scoped to decisi
 Otherwise, for each newly-processed transcript, execute:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -563,7 +563,7 @@ You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-writ
 **Step 1 — verify renderer imports (FIRST action of Phase 6, before anything else):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; from chat_output_renderer import validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; from brief_path import get_brief_path, get_brief_artifact_url; print('OK')"
 ```
 

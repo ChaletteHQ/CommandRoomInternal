@@ -1,5 +1,6 @@
 ---
 name: boardroom
+surfaces: both
 description: "Put one subject — a plan, deal, hire, or pricing change — to a board of independent perspectives and get back the conflict map: where the seats disagree and why. Fires on: 'convene the board on [subject]', 'boardroom', 'what would my board say about [subject]', 'run this by the board', 'board review of [subject]', 'C-suite take on [subject]', 'quick board take'; setup via 'configure my board', 'set up my board', 'show my board'. Each seat is its own subagent reading its own workspace slice, blind to the others; seats are archetypes or imported Advisor Profiles. Does NOT fire on 'stress test' / 'pre-mortem' (stress-test — single-lens failure mapping), 'decision memo' (decision-memo-composer), 'build the board pack' (board-pack-assembler), or 'forge my advisor profile' (advisor-export). Seat model and fences: Routing section in the body."
 ---
 

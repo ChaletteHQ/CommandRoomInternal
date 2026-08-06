@@ -1,5 +1,6 @@
 ---
 name: decision-log
+surfaces: both
 description: "Turn every decision the CEO makes — in meetings, Slack threads, or ad-hoc thinking — into a searchable log with who decided, when, why, and what changed. Fires on: 'we decided [X]' / 'we decided to go with [X]' / 'let's go with option [X]' (logging), 'log decision', 'what did we decide' / 'what did we decide about [topic]' (retrieval), 'decision history', 'why did we choose [X]', 'show me the decision log', plus 'tune decision-log'. Writes decision events and regenerates the decision-log view; tags extraction misses when a manual log follows a processed meeting. Does NOT fire on 'decision memo on [topic]' (decision-memo-composer — multi-option tradeoff), 'revisit the [topic] decision' (decision-revisit), or 'what should I decide' (advisory, not logging). Event shapes and retrieval grammar: Routing section in the body."
 ---
 
@@ -20,7 +21,7 @@ description: "Turn every decision the CEO makes — in meetings, Slack threads, 
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 python3 -c "
@@ -53,7 +54,7 @@ After the append, regenerate the view:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 python3 -c "
@@ -91,7 +92,7 @@ offered. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 

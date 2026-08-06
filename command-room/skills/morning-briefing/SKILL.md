@@ -1,5 +1,6 @@
 ---
 name: morning-briefing
+surfaces: both
 description: "Proactive daily digest — calendar, important email summary, overdue follow-ups, urgent items. Triggers: 'morning briefing', 'daily briefing', 'brief me' (bare, or 'brief me on today'), 'what do I need to know today', 'start my day'. Plus 'tune morning-briefing' and 'customize morning-briefing'. DOES NOT fire on 'triage my inbox', 'process my inbox', 'what's in my inbox' — those go to inbox-triage for a deep classification + drafts pass. DOES NOT fire on 'brief me on the' / 'brief me about' (a topic brief — any subject that isn't today — workspace-manager loads the project and answers; one-pager-composer writes it up)."
 ---
 
@@ -91,7 +92,7 @@ one-tap changes. Nothing here blocks the digest (CONTRACT Rule 17). Read config 
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -513,11 +514,11 @@ Format the output as a structured, scannable digest. Skip any section that has n
 
 **Relationship-grouped thread layout (v2.2):** Active threads render in groups derived from the org tree, not a fixed home/side split. Authoritative rules — read these in order before rendering:
 
-1. Every thread's `affiliation_id` resolves to an `org` record in `entities.json`. Use the **most specific** level available — `org_acme_restaurant`, not the holding `org_acme_co` — so threads appear under the operating unit they belong to.
+1. Every thread's `org_id` resolves to an `org` record in `entities.json` (`org_id` is the canonical thread→org field per ENTITY1; `affiliation_id` is a legacy alias still present on older records — read it as a fallback, never write it). Use the **most specific** level available — `org_acme_restaurant`, not the holding `org_acme_co` — so threads appear under the operating unit they belong to.
 2. Groups in the briefing are defined by `org.is_primary_focus`:
    - **Primary focus orgs** render prominently and in full detail. There can be **more than one** (a portfolio / holding-co operator may have 2–4). Render them in the order of `last_interaction` (most recent first), with holding orgs rendering as a parent header with operating children nested beneath.
    - **Non-primary orgs** (`is_primary_focus: false`) roll up into a single OTHER ORGS section, grouped by `relationship_type` (board / advisory / investment / client / portfolio_company / beneficiary / partner / other) and collapsed by default.
-   - Threads with `affiliation_id: "personal"` are hidden unless the user explicitly asks for them.
+   - Threads with `org_id: "personal"` (or the legacy `affiliation_id: "personal"`) are hidden unless the user explicitly asks for them.
 3. Section headers use `canonical_name` directly — no hardcoded labels like "HOME ORG" or "SIDE". If the workspace has exactly one primary focus org, that org's name becomes the top section; if multiple, each renders as its own top section.
 4. Nested rendering: when a primary focus org has children (scope=holding with operating children), render the holding as a section header and list each operating child as a subheader with its threads underneath. If a holding has ≥4 operating children, collapse the least-recently-active ones into "+ N more" with a show-all option.
 5. `relationship_type` badges appear inline next to each thread's org label when non-obvious (e.g., `[board]`, `[advisory]`, `[investment]`). For threads where the CEO has `relationship_type: "operating"`, no badge is rendered — that's the default assumption for primary focus.

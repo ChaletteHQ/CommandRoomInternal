@@ -1,5 +1,7 @@
 ---
 name: enable-workspace-map
+surfaces: cowork
+slack_fallback: "The workspace map is a desktop sidebar feature — from Slack, ask 'list active projects' for the same tree as text."
 description: "Install or refresh the Workspace Map sidebar artifact — a stripped-down navigation tree of orgs + projects pinned to the Cowork sidebar. Manual `↻ Refresh` button on the artifact triggers an ad-hoc rebuild (no scheduled auto-refresh). Triggers: 'install workspace map', 'enable workspace map', 're-install workspace map', 'rebuild workspace map'. Legacy aliases (backward compat for users with the artifact already pinned): 'install orgs map', 'enable orgs map', 'rebuild orgs map' (the artifact id remains `orgs-map`). Also called silently by `command-room-update-bridge` (initial install). Idempotent: if already installed, regenerates with current data."
 ---
 
@@ -30,7 +32,7 @@ Read the last 200 lines of `_hq/data/events.jsonl`. If `{"type":"artifact_instal
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 
 # 1. Project entities + events into input.json (shared projector — all 3 split artifacts use it)

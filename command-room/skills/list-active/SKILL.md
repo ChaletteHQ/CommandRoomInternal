@@ -1,5 +1,6 @@
 ---
 name: list-active
+surfaces: both
 description: "Zero-interaction list of all projects in the workspace — the org tree with canonical names, aliases, and last-activity dates. Triggers: 'list projects', 'list active projects', 'list all projects', 'active projects', 'project list', 'review my projects', 'show projects', 'show me projects', 'what projects', 'what projects do I have', 'show archived', 'roster', 'project roster'. DOES NOT fire on 'what's going on' or 'workspace status' (full daily briefing — workspace-manager) or 'lets work' (silent load — workspace-manager) or 'new project' (project creation — workspace-manager)."
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: scaffold-automation
+surfaces: both
 description: "Generate real working artifacts — Zapier zap config, Python script skeleton, n8n flow JSON, or a setup recipe — for an automation opportunity automation-scanner surfaced (or one the CEO names). Fires on: 'scaffold that automation', 'build the automation for [opportunity]', 'set up that zap', 'generate the script for [task]', 'make the automation recipe'. Output is deploy-ready scaffolding with a setup checklist, saved to the matching project; deployment itself stays with the CEO (mark it deployed when live). Does NOT fire on 'what can be automated' / 'automation scan' (automation-scanner — the detection and ranking this consumes), or 'schedule a meeting' (calendar-writer). Artifact types and recipe format: Routing section in the body."
 ---
 

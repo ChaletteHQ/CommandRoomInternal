@@ -1,5 +1,6 @@
 ---
 name: insight-generator
+surfaces: both
 description: "Weekly synthesis pass that surfaces patterns the CEO wouldn't compute themselves and runs the product's learning reviews. Fires on: 'weekly insights', 'run insights', 'generate insights', 'what am I missing', 'synthesize the week', 'what should I pay attention to', 'cross-project patterns', 'what's drifting', 'show me the insight report', 'review project proposals' / 'new project proposals', 'review classifications', and as the maintenance task's Sunday insights job. Produces the analytical views (timeline, relationships, commitment aging, dormancy, themes) plus batched confirm/edit/skip proposals from the learning passes. Does NOT fire on 'list projects' (list-active) or coaching asks like 'what should I focus on' (command-room-coach). Pass-by-pass detail and fences: Routing section in the body."
 ---
 

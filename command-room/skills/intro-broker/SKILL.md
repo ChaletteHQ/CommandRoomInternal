@@ -1,5 +1,6 @@
 ---
 name: intro-broker
+surfaces: both
 description: "Draft introductions between two people you know, and check whether the ones you made landed. Fires on: 'check my intros', 'did my intros land', 'intro follow-ups' (the due 30-day checks), plus 'intro [name] to [name]', 'introduce [name] and [name]', 'draft an intro between [A] and [B]', 'connect [name] with [name]', 'make the intro'. Voice-calibrated to your past intros, tuned to both sides' context, and logged into the relationship graph. Checks both sides' history, drafts the double-opt-in ask where appropriate, and always lands as a draft for your review — never sends on its own. Does NOT fire on 'draft an email to [name]' (email-writer — single-recipient drafting), 'who do I know at [company]' (people-crm — the search that often precedes an intro), or 'who should I reach out to' (relationship-moves). Intro patterns and logging contract: Routing section in the body."
 ---
 
@@ -103,7 +104,7 @@ Voice-calibrated via past intros (Phase 3) + this skill's Voice Block fallback.
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
 ```
 

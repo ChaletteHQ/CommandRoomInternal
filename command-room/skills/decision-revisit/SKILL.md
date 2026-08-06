@@ -1,5 +1,6 @@
 ---
 name: decision-revisit
+surfaces: both
 description: "Surface past decisions worth re-examining — because time has passed, new contradictory signal arrived, or the original rationale's named conditions no longer hold. Fires on: 'revisit the [topic] decision', 'what decisions should I revisit', 'decisions to revisit', 'decision audit', 'is the [topic] decision still right'. Each surfaced decision carries the original context, what changed since, and one-tap actions: revisit now (chains into decision-memo-composer pre-filled), still valid, replace it, snooze. Does NOT fire on 'what did we decide' / 'decision history' (decision-log — retrieval), 'decision memo on [topic]' (decision-memo-composer — a NEW tradeoff), or 'we decided X' (decision-log — logging). Detection signals and action wiring: Routing section in the body."
 ---
 

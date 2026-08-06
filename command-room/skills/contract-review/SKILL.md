@@ -1,5 +1,6 @@
 ---
 name: contract-review
+surfaces: both
 description: "Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Fires on: 'review this contract', 'review this NDA', 'redline this contract / NDA / MSA', 'contract review', 'check this contract', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Counterparty- and history-aware: repeated carve-out pushes from the same counterparty get noted as a pattern; every review is logged with parties and deviation classes. Does NOT fire on 'write a contract' (out of scope — Command Room reviews, never drafts contracts), legal-advice questions (out of scope), or e-signature sending (the connected signing tool). Deviation taxonomy and standard-terms contract: Routing section in the body."
 ---
 
@@ -127,7 +128,7 @@ Extract:
 
   ```python
   import sys
-  # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+  # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
   sys.path.insert(0, "shared/scripts")
   from entity_resolve import resolve_all
   matches = resolve_all(workspace_root, counterparty_name_from_contract)

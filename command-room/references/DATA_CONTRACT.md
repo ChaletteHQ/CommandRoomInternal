@@ -120,7 +120,7 @@ Note: the key is `threads` in v2.2, but thread IDs retain the `project_` prefix 
   "folder_name": "Acme Co/sourcing-bot",
   "display_name": "Sourcing Bot Rollout",
   "kind": "initiative",
-  "affiliation_id": "org_acme_restaurant",
+  "org_id": "org_acme_restaurant",
   "parent_thread_id": null,
   "spawned_from_thread_id": null,
   "cross_refs": [],
@@ -140,9 +140,9 @@ Note: the key is `threads` in v2.2, but thread IDs retain the `project_` prefix 
 }
 ```
 
-**Required:** `id`, `folder_name` (**key required, value nullable**), `kind`, `affiliation_id`, `status`, `first_seen`.
+**Required:** `id`, `folder_name` (**key required, value nullable**), `kind`, `org_id`, `status`, `first_seen`.
 `kind` ∈ {`initiative`, `deal`, `advisory`, `investment`, `board`, `relationship`, `theme`, `concern`, `ritual`, `personal`, `other`}.
-`affiliation_id` is the most specific operating org; the tree walk via `parent_org_id` resolves holding context.
+`org_id` is the canonical thread→org field (ENTITY1) and names the most specific operating org; the tree walk via `parent_org_id` resolves holding context. `thread_writer.create_thread` REQUIRES it — pass the sentinel `personal` explicitly for a deliberately unaffiliated thread, so "never set" stays distinguishable from a choice. **`affiliation_id` is the legacy alias:** tolerated on records that already carry it and read as a fallback (`thread_writer.thread_org_id` reads `org_id` first, then `affiliation_id`), normalised to `org_id` on write, and rejected with guidance when named in an update. Never newly written.
 **`folder_name` must match an actual folder on disk, or be `null`.** Three properties of that match, all load-bearing (SPEC FOLDERGUARD):
 - **Nullable.** `null` means "this thread has no folder on disk" and is the canonical writer's honest answer. `thread_writer.create_thread` resolves the name against the real directory listing and writes `null` on no match — it does **not** guess a slug. A guess is strictly worse than nothing: it looks valid to every reader, and before FOLDERGUARD the next cleanup sweep fabricated the folder to match it. Threads with no filesystem presence (deal and objective threads) legitimately carry `null`.
 - **Nested.** The value is a workspace-relative path, not a root-level basename — `Acme Co/sourcing-bot` above is the doc's own example, and live records bind deeper still.

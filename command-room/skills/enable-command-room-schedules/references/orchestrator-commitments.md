@@ -92,7 +92,7 @@ Path 2 catches what Path 1 (apply-choices in-Cowork sends) and Path 3 (past-meet
 Otherwise, execute via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -128,7 +128,7 @@ For each result, fetch the thread/message body via the discovered thread-fetch t
 Then run `match_send_to_commitments` per send:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -251,7 +251,7 @@ Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since th
 For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`), and carry the message's **`thread_id`** (the connector's conversation id) and **`has_attachment`** (the connector's attachment flag — never inferred from a body that says "attached"). Those two fields are what let a reply be recognized as the delivery rather than as words about it. **Do NOT pre-filter the CEO's own messages or unresolvable senders out of the list** — the helper refuses the first and counts the second, and both counts are how a quiet fire gets explained instead of reading as a clean zero. Then make ONE call over the whole batch:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -330,7 +330,7 @@ This is the daily backstop to the real-time leg in `calendar-writer` (which reso
 Otherwise, use the discovered Calendar tool to list events **created or updated since the last fire** (the created/updated window compiled via `connector_adapters.calendar.compile_window(start, end, provider)`; include events whose start is in the recent past or near future — a just-booked future meeting is the common case). For each event, resolve every attendee email → `person_id` (via `aliases.json` / `entities.json`; drop unresolvable attendees), capture the event `summary`, the `created`/`updated` ts, the `calendar_event_id`, and the set of attendee person_ids accepted per `connector_adapters.calendar.is_accepted(attendee, provider)`. Then run `match_calendar_to_commitments` once over the whole event set:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -427,7 +427,7 @@ Per `shared/scripts/commitment_dedup.py`. Capture time evaluates the auto-merge 
 Run BEFORE Phase 3 so the merged duplicate never reaches the widget:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from commitment_dedup import apply_auto_merges
@@ -665,7 +665,7 @@ You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-writ
 **Step 1 — verify renderer imports (FIRST action of Phase 9):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, validate_rendered_widget, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; print('OK')"
 ```
 

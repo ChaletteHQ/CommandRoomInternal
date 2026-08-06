@@ -1,0 +1,23 @@
+{
+  "docs": "SPEC_SLACK1 §10.3 — mobile/Slack presentation knobs, read by shared/scripts/surface_context.py and the slack emitter (slack_render.py). This file is one of the THREE legal homes for Slack presentation (the others: a skill's `surfaces:` frontmatter and an optional `## Slack surface` block in a SKILL.md — guard G24 enforces the boundary). Retune mobile presentation by editing values here and shipping through the normal push → plugin-update ritual; no code changes. The cowork surface takes NO knobs from this file by design — desktop rendering is the untouched default and structurally cannot be changed from here.",
+  "slack": {
+    "default": {
+      "block_budget": 50,
+      "char_budget": 3000,
+      "rows_per_page": 8,
+      "column_collapse": ["sources", "annotations"],
+      "chart_mode": "native",
+      "table_mode": "native",
+      "verbosity": "compact",
+      "body_preview_lines": 3
+    },
+    "per_skill": {
+      "commitment-triage": { "rows_per_page": 6 },
+      "chart-on-demand": { "chart_mode": "native" },
+      "morning-briefing": { "verbosity": "compact", "body_preview_lines": 2 }
+    }
+  },
+  "cowork": {
+    "default": {}
+  }
+}

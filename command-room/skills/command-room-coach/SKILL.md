@@ -1,5 +1,6 @@
 ---
 name: command-room-coach
+surfaces: both
 description: "The customer's permanent home chat with their named AI — the mirror-insights-outputs surface that shows what the system knows, what it noticed, and what it can produce next. Fires on: 'show me what's next', 'what should I focus on this week / this month', 'show me around', 'what can you do for me', 'coach me', 'command room coach', 'prove it', and the same phrases addressed to the AI by name. Renders three beats: Mirror (what it knows from the customer's own data), Insights (2-3 computed observations), Outputs (3-5 ready-to-produce deliverables from the catalog, each about a specific named entity), closing with 'which one do you want to go after first?'. Does NOT fire on 'set up command room' (command-room-onboarding), 'weekly insights' (insight-generator), or workspace lifecycle commands like 'let's work' (workspace-manager). Beat structure and deliverable catalog: Routing section in the body."
 ---
 

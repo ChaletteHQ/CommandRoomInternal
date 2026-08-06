@@ -1,5 +1,6 @@
 ---
 name: needs-your-call
+surfaces: both
 description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Shows them grouped by the call it came from, numbered, oldest first, so you can answer in batches: 'confirm 1-40', 'drop 41-50', 'confirm that call'. Confirming turns one into an ordinary open commitment; dropping closes it as dropped and nothing is ever deleted. Nothing is confirmed or dropped until you name it — there is no auto-clear. Also fires on 'show watching' / 'what are you watching' / 'what's on watch' — the read-only list of items being checked on quietly, each still answerable by name. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage owns the full open set), 'show my list' (show-my-list), or 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep)."
 ---
 
@@ -124,7 +125,7 @@ Discover the plugin root first (CONTRACT Rule 22) and run FROM `$PLUGIN_ROOT`:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 python3 shared/scripts/needs_review_queue.py view "$WORKSPACE"

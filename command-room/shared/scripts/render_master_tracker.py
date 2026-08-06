@@ -169,10 +169,11 @@ def _name_index(view: dict) -> dict[str, str]:
 
 
 def _thread_org_id(t: dict) -> str | None:
-    """Thread → org link. Canonical field is `affiliation_id` (per
-    morning-briefing Step 4 rule 1); fall back to the people-style fields for
-    shape-defensiveness."""
-    return t.get("affiliation_id") or t.get("primary_org_id") or (
+    """Thread → org link. Canonical field is `org_id` (ENTITY1 — the majority
+    field in the fleet; `affiliation_id` is a legacy alias normalised to
+    `org_id` on write, still read here for records that predate the collapse);
+    then the people-style fields for shape-defensiveness."""
+    return t.get("org_id") or t.get("affiliation_id") or t.get("primary_org_id") or (
         (t.get("affiliation_ids") or [None])[0]
     )
 
@@ -358,6 +359,29 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
             section.append(f"- **{o.get('canonical_name') or o.get('id')}** — {n} active, last activity {la}")
         section.append("")
         other += section
+    # Untyped / off-enum bucket (ENTITY1 §3): the enum is advisory by design,
+    # so an org whose relationship_type is off-enum (or absent) must still
+    # render — silent invisibility is the defect, not the free-text value.
+    untyped = sorted(
+        [o for o in orgs
+         if not o.get("is_primary_focus")
+         and o.get("relationship_type") not in REL_TYPE_ORDER
+         and active_threads_for(descendant_ids(o.get("id", "")))],
+        key=lambda o: org_recency(o.get("id", "")),
+        reverse=True,
+    )
+    if untyped:
+        section = ["### Untyped / needs attention", ""]
+        for o in untyped:
+            n = len(active_threads_for(descendant_ids(o.get("id", ""))))
+            la = org_recency(o.get("id", "")) or "—"
+            rt = o.get("relationship_type")
+            label = f" (relationship_type: `{rt}`)" if rt else " (no relationship_type)"
+            section.append(
+                f"- **{o.get('canonical_name') or o.get('id')}**{label} — "
+                f"{n} active, last activity {la}")
+        section.append("")
+        other += section
     if other:
         body += ["## Other Orgs", ""] + other
 
@@ -453,6 +477,36 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
     # --- Assemble ------------------------------------------------------------
     now_iso = datetime.datetime.now().replace(microsecond=0).isoformat()
     primary_count = sum(1 for o in primary if active_threads_for(descendant_ids(o.get("id", ""))))
+
+    # Fail-loud guard (ENTITY1 §2): if active threads point at a primary-focus
+    # org by ANY known field spelling but the resolver attributed none of them,
+    # the view is silently wrong — an empty primary section is indistinguishable
+    # from "nothing going on there". Raise instead of emitting it. (This is how
+    # the reference workspace rendered its primary org and all eight projects
+    # nowhere: records carried `org_id` alone and the chain couldn't see it.)
+    if primary and primary_count == 0:
+        primary_subtree_ids: set[str] = set()
+        for o in primary:
+            primary_subtree_ids |= descendant_ids(o.get("id", ""))
+        raw_refs = {
+            ref
+            for t in threads
+            if t.get("status") not in ("archived",) + _PAUSED_BLOCKED
+            for ref in (
+                t.get("org_id"), t.get("affiliation_id"), t.get("primary_org_id"),
+                (t.get("affiliation_ids") or [None])[0],
+            )
+            if ref
+        }
+        missed = raw_refs & primary_subtree_ids
+        if missed:
+            raise RuntimeError(
+                "MASTER_TRACKER render would silently drop the primary-focus "
+                f"org(s): active threads reference {sorted(missed)} but the "
+                "org-link resolver attributed none of them (primary_orgs would "
+                "be 0). Refusing to write a wrong view — check "
+                "_thread_org_id's field chain against the thread records."
+            )
     active_thread_count = len([
         t for t in threads
         if t.get("status") not in ("archived",) + _PAUSED_BLOCKED

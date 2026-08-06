@@ -1,5 +1,6 @@
 ---
 name: intel-intake
+surfaces: both
 description: "Turn any link, article, video, or pasted content into structured intel connected to specific named entities in the CEO's workspace — people, projects, dormant customers, open commitments — not abstract summaries. Fires on: 'break down this youtube video', 'what can I do with this article', 'process this link', 'intel from this', 'what does this mean for [project/us]', or pasting a URL with an ask attached. Extracts the claims, maps each to affected workspace entities, files the intel with provenance, and proposes concrete next actions. Does NOT fire on 'research [topic]' (research — outbound multi-source investigation; this processes a source the CEO supplies), or bare pasted links with no ask (asks one clarifying question first). Extraction shape and entity mapping: Routing section in the body."
 ---
 

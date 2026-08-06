@@ -1,5 +1,6 @@
 ---
 name: pipeline-tracker
+surfaces: both
 description: "Deal tracking on the workspace itself — capture a deal, watch the pipeline, move deals through lead / qualified / proposal_sent / negotiating, keep a dated next step on each, flag rot, close won or lost with a reason. Fires on: 'pipeline', 'show my pipeline', 'pipeline review', 'deals' (plural), 'show my deals', 'new deal', 'what deals are closing', '[Name] signed', 'closed the deal with [name]', 'we won the [deal]', 'we lost the [deal]', 'mark [deal] won / lost', 'move [deal] to [stage]', 'sent the proposal', 'deal is stalled', 'revenue in play', plus 'tune pipeline-tracker'. Ranked report with tiles and one-tap actions; an explicit win on a prospect org converts them to a client in the same turn. Does NOT fire on 'new prospect' / 'is now a client' (workspace-manager) or 'who went dark' (dormant-customer-scan); never claims bare singular deal. Full trigger family and fences: Routing section in the body."
 ---
 
@@ -33,7 +34,7 @@ Show-then-tune (STT), all three decisions. Read config through `get_config` — 
 
 ```python
 # Rule 22 preamble first: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -95,7 +96,7 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-render + one-
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, datetime
 sys.path.insert(0, 'shared/scripts')
@@ -148,7 +149,7 @@ Zero open deals: *"No open deals tracked yet. Say 'new deal [name] with [org]' t
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -161,6 +162,13 @@ print('DEAL_CREATED ' + t['id'] + ' stage=' + t['deal']['stage'])
 ```
 
    The `DEAL_CREATED` line is the proof (thread + `deal_created` event through the gate). The org record is NOT touched — a new deal on a prospect changes nothing about the org.
+3b. **The org already has an open deal (ENTITY1 §4c) — propose, never traceback.** The block above raises `thread_writer.DuplicateDealError` when a non-archived, un-closed deal thread already hangs off that org. Catch it. The exception carries `.existing` (the live deal thread — `id`, `canonical_name`, and its nested `deal` object with `stage` / `value`); NEVER print the exception text or a Python traceback to the user (Output guard below). Say what already exists and offer the two real moves:
+
+   > *"Acme Co already has an open deal — **Acme pilot**, proposal sent, $40K. Want this folded into that one, or are these genuinely two separate engagements?"*
+
+   - **Fold in** (the default, and what most repeat asks mean) → don't create anything. Apply the new details to the existing thread: value / expected close / source via `deal_state.update_deal(ws, <existing id>, value=…, expected_close=…)`, a stage move via `deal_state.set_stage`, a stated next step as a commitment on `.existing['id']`. Ack as an update, not a create: *"✓ Folded into Acme pilot — value now $40K."*
+   - **Two engagements** (explicit user confirmation only — a second product line, a separate region, a genuinely parallel pursuit) → re-run the block with `skip_dedup=True` added to the `create_deal(...)` call. That flag belongs to the user's answer; never set it to make the error go away, and never retry with it automatically.
+   - If the existing deal actually ended and nobody closed it, the close verbs are the fix — `mark [deal] won` / `mark [deal] lost — [reason]` — then open the new one. A closed deal never blocks (repeat business is not a duplicate).
 4. Ack in plain English: *"✓ Acme pilot opened — lead stage, $40K. Give it a next step? ('revised proposal by Friday' works.)"* A stated next step becomes a commitment on the new thread.
 
 ### "move [deal] to [stage]"

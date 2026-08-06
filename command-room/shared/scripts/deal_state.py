@@ -216,6 +216,7 @@ def create_deal(
     source: Optional[str] = None,
     owner_person_id: Optional[str] = None,
     source_skill: str = "pipeline-tracker",
+    skip_dedup: bool = False,
 ) -> dict:
     """Open a new deal: a kind='deal' thread carrying the nested deal object,
     plus a `deal_created` event. The org must already exist (create it via
@@ -224,6 +225,12 @@ def create_deal(
 
     `value` is the user's stated number or None — NEVER an estimate; ranges
     are out of v1 scope (store None + a note in `source`).
+
+    Raises `thread_writer.DuplicateDealError` when the org already carries an
+    open deal (ENTITY1 §4c) — the exception's `.existing` is that thread, so
+    the caller can offer a merge. `skip_dedup=True` is the deliberate
+    two-engagements override and is passed through to the writer; it belongs
+    to the user's explicit confirmation, never to a retry loop.
     """
     ws = Path(workspace_root)
     _validate_stage(stage)
@@ -254,10 +261,11 @@ def create_deal(
         ws,
         canonical_name=name,
         kind="deal",
-        affiliation_id=org_id,
+        org_id=org_id,
         owner_person_id=owner_person_id,
         deal=deal,
         source_skill=source_skill,
+        skip_dedup=skip_dedup,
     )
 
     ev_data: dict[str, Any] = {

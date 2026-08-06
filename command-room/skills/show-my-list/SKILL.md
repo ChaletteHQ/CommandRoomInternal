@@ -1,5 +1,6 @@
 ---
 name: show-my-list
+surfaces: both
 description: "The retired discuss-later list, drain-only — renders whatever is still open read-only so each item can be cleared or dropped; nothing adds to it anymore (new items go to My Plate or a contact note). Triggers: 'show my list', 'whats on my list', 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list'. Also hosts the mute ledger (see Routing). Does NOT fire on 'show my reminders' / 'my reminders' / 'remind me about' (show-my-reminders — the date-pinned reminder lane)."
 ---
 
@@ -17,7 +18,7 @@ Per CONTRACT.md Rule 22, every multi-step bash invocation uses dynamic discovery
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json

@@ -1,5 +1,6 @@
 ---
 name: workspace-ingest
+surfaces: both
 description: "Underlying two-layer ingest pipeline: extract context (people, projects, decisions, memories) from a source AND optionally copy the source's actual documents into workspace project folders. Fires on: 'ingest this folder' / 'ingest folder [path]', 'ingest [source] into my workspace', 'bootstrap my workspace from [source]'. Preview-and-confirm before any write; AUGMENT mode on workspaces with existing data (dedupe makes re-runs no-ops); undo is snapshot-based and only removes what its own log recorded as created. Routes: pure context extraction lands in ingest-context behavior; pure file filing lands in file-documents behavior; this skill runs the combined pipeline. Does NOT fire on 'scan my desktop' / 'sort my downloads' alone (file-documents). Mode table, undo contract, and safety rails: Routing section in the body."
 template_version: 2.0.0
 ---

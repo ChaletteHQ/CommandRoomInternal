@@ -141,7 +141,7 @@ data_view = {
 
 # 2. Renderer produces the chat string (deterministic Python)
 # (Wrap in CONTRACT.md Rule 22 preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-#  PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT")
+#  PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT")
 import sys
 sys.path.insert(0, "shared/scripts")
 from chat_output_renderer import render_chat_output

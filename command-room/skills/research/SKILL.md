@@ -1,5 +1,6 @@
 ---
 name: research
+surfaces: both
 description: "Produce a verified, cited research brief on any company, person, market, or topic — multi-source, adversarially checked — then fold the findings into the CEO's workspace so they compound. Fires on: 'research [company/person/topic]', 'deep dive on [topic]', 'what's the story on [company]', 'look into [topic]', 'recent sentiment on [topic]' / 'last 30 days on [topic]' (recency mode). Owns ALL research intents — including any ask the generic built-in deep-research skill could take. It is workspace-blind: no entity framing, no Tavily/Vibe Prospecting enrichment, findings not saved. Any 'research', 'deep dive on', 'look into', 'background on' phrasing routes HERE. Output: cited brief saved to the project folder, key facts folded into workspace records. Does NOT fire on 'prep me for [meeting]' (call-prep), 'who is [name]' (people-crm), or 'break down this article' (intel-intake — the CEO already has the source). Mode table and citation rules: Routing section in the body."
 ---
 

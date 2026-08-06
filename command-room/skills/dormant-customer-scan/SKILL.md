@@ -1,5 +1,6 @@
 ---
 name: dormant-customer-scan
+surfaces: both
 description: "Surface the customers who have gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Fires on: 'which customers have gone dark', 'who went dark', 'dormant customer scan', 'who hasn't replied in a while', 'quiet customers', plus 'tune dormant-customer-scan'. Computes per-relationship cadence baselines in code, ranks by cooling severity with evidence, and offers one-tap re-engagement drafts; honors learned suppressions and per-person cadence overrides. Does NOT fire on 'who should I reach out to this week' (relationship-moves — the ranked action pack that CONSUMES this detection), 'warm threads to revive' (thread-resurrection — thread-level), 'draft an email to [name]' (email-writer), or 'balance check' / 'my white space' (balance — personal ties are never customers; this scan skips them at its emit gate). Detection math and fences: Routing section in the body."
 ---
 
@@ -40,7 +41,7 @@ offered. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -129,7 +130,7 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
 
    ```bash
    SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-   PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
    cd "$PLUGIN_ROOT"
    python3 -c "
    import sys

@@ -1,0 +1,13 @@
+{
+ "version": "5.10.0",
+ "headline": "The workspace stops drifting from the truth — self-updating registers in your always-on file, no more vanishing projects, an honest Monday note, and reply drafts that keep their thread.",
+ "items": [
+  {
+   "id": "v5100_announce_registers_and_honest_note",
+   "detector_module": "release_detectors.always",
+   "detector_function": "always_applies",
+   "prompt_template": "Two things you will actually notice after this update, both intentional. First: your workspace's always-on file gains two generated sections — a register of your organizations and one of your workstreams, drawn from your own records and kept current automatically from now on. They are clearly marked as generated; your own writing in that file is never touched. Don't edit inside the marked blocks — the next refresh redraws them. Second: your next Monday self-maintenance note may list more findings than usual. That is the report becoming honest — it now surfaces problems it previously discarded silently, including some that have existed for a while. It is reporting old breakage, not new breakage. Also in this release: projects can no longer silently vanish from the master tracker view, and editing a reply draft can no longer detach it from its email thread.",
+   "action": "announce_only"
+  }
+ ]
+}

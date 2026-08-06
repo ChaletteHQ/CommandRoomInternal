@@ -1,5 +1,6 @@
 ---
 name: session-sweep
+surfaces: both
 description: "Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. Reads sessions active since the last sweep, extracts only what never became a logged item, and records each through the standard write path with dedup. Renders nothing. Runs nightly in the maintenance task; manual: 'run session sweep', 'sweep my chats', 'sweep my sessions'. Does NOT fire on 'process the last call' (meeting-notes — MEETING transcripts), 'reconcile my sent mail' (reconcile-sent — Gmail), or 'backfill my history' / 'sweep the last 60 days' (session-backfill — the one-time supervised catch-up). Extraction rules and dedup contract: Routing section in the body."
 ---
 
@@ -54,7 +55,7 @@ Success is a substrate artifact a validator reads back, never a narration:
 **Before any python snippet below (Rule 22):** resolve the plugin root and run every snippet from it — the cwd never persists and `shared/scripts` only resolves from the plugin root:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 ```
 
 1. **Determine the window.** Read the last sweep's timestamp — it is the cursor for "sessions active since we last swept":

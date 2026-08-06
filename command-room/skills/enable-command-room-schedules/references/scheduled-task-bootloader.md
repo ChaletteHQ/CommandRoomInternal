@@ -69,7 +69,13 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 # whatever plugin was mounted last — broke when any other Cowork plugin was the most recent mount.
 PLUGIN_ROOT=""
 ORCH=""
-for d in $(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null); do
+# Headless-first (SLACK1 C-5): Claude Code (the VM/Slack surface) sets CLAUDE_PLUGIN_ROOT
+# natively and the Cowork .remote-plugins shape does not exist there.
+if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ -f "$CLAUDE_PLUGIN_ROOT/skills/enable-command-room-schedules/references/<ORCHESTRATOR_FILENAME>" ]; then
+  PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+  ORCH="$PLUGIN_ROOT/skills/enable-command-room-schedules/references/<ORCHESTRATOR_FILENAME>"
+fi
+[ -z "$PLUGIN_ROOT" ] && for d in $(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null); do
   candidate="${d%/}/skills/enable-command-room-schedules/references/<ORCHESTRATOR_FILENAME>"
   if [ -f "$candidate" ]; then
     PLUGIN_ROOT="${d%/}"

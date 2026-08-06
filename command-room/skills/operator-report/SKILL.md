@@ -1,5 +1,6 @@
 ---
 name: operator-report
+surfaces: both
 description: "Generates the CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered unasked, and a conservative time-absorbed estimate, every number computed in code. Fires on: 'operator report', 'show me the value', 'portfolio velocity', 'monthly operating report', plus 'tune operator-report' and 'customize operator-report'. Output: chat summary plus forwardable .docx with trend context. Does NOT fire on 'weekly recap' / 'what happened this month' (weekly-recap — events digest, not lift accounting), 'value receipt' (value-receipt — the forwardable ROI receipt), or 'usage report' (usage-report — cost/volume telemetry). Full trigger list and section spec: Routing section in the body."
 ---
 
@@ -65,7 +66,7 @@ above: this is the enumerated **length** knob (a FRP1 config value); free-form s
 
 ```python
 # Rule 22 preamble REQUIRED (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); cd "$PLUGIN_ROOT")
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT")
 import sys; sys.path.insert(0, "shared/scripts")
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -297,7 +298,7 @@ The "Next period's projection" line is mandatory — it's what makes the report 
 
 ```python
 import sys
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 sys.path.insert(0, "shared/scripts")
 from chat_output_renderer import doc_headline_link
 from brief_path import get_brief_artifact_url

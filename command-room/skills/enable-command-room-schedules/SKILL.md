@@ -1,5 +1,7 @@
 ---
 name: enable-command-room-schedules
+surfaces: cowork
+slack_fallback: "Scheduled chats are registered from desktop Cowork — ask there; your Slack briefs are scheduled server-side and fire on their own."
 description: "Sets up Command Room's scheduled chats and silent background tasks — registration is the writer of record for the schedule config. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats', and silently from the update bridge. Registers the daily action chats, the weekly surfaces, and one maintenance task carrying the SILENT_TASKS jobs, each loading its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'show my schedule' / 'pause [chat]' (change-schedule — the user-facing mutator). Registration mechanics, task set, and verify mode: Routing section in the body."
 ---
 
@@ -11,7 +13,7 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
 
 **What changed in Phase 3 (P0.3):** the old flow checked markers where they no longer live and classified every HEALTHY install as "unknown / very old" (see references/HISTORY.md § Phase 3 / P0.3). Verification now checks each layer where that layer actually lives (bootloaders intentionally don't carry the OUTPUT CONTRACT marker; the contract lives in the on-disk orchestrator files the bootloader reads at fire time):
 
-1. **Read the installed plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` (resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 preamble: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)`).
+1. **Read the installed plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` (resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 preamble: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"`).
 2. Call `mcp__scheduled-tasks__list_scheduled_tasks`. The Command Room set is every registered taskId that appears in `ORCHESTRATOR_MAP` (the chats) or the `SILENT_TASKS` registry (the background tasks) — bare taskIds, up to the full DEFAULT_SCHEDULES set (currently 10). Do NOT filter on a `cr-` prefix (retired v2.14.27; matches zero tasks on a current install).
 3. **Chat tasks — verify the registered prompt is a canonical bootloader:** check the same `REQUIRED_MARKERS` Phase 3.5 uses (`# Scheduled task bootloader`, `Resolve the plugin path`, `Read the orchestrator and execute it verbatim`, `Anti-improvisation contract`) plus correct `<TASK_ID>`/orchestrator-filename substitution and no leading frontmatter. A prompt missing the markers is a stub or a pre-bootloader pin → "refresh needed".
 4. **Chat tasks — read the registration version stamp:** parse `plugin-version:` from the registered prompt (stamped at registration, Phase 3/W4). Stamp == installed version → current. Stamp older → "registered under vX — refresh will land on the next `set up command room schedules` run". No stamp → "pre-stamp registration (older than Phase 3)" — informational, not a failure, because fire behavior always comes from the freshly-resolved plugin.
@@ -282,7 +284,7 @@ The bootloader assumes the orchestrator files exist on disk and contain the OUTP
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import json
 from pathlib import Path
@@ -424,7 +426,7 @@ If much-older v2.8.x tasks present (`cr-refresh-*`, `cr-daily-morning-pack`, `cr
 Read the per-workspace schedule configuration via the `schedule_config` helper. The helper merges defaults with any overrides stored in entities.json `workspace.schedule_config`:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')

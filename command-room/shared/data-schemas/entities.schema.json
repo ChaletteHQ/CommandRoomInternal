@@ -255,11 +255,12 @@
         "affiliation_id": {
           "type": ["string", "null"],
           "pattern": "^(org_[a-z0-9_]+|personal)$",
-          "description": "The org this thread belongs to (most specific level, e.g. org_acme_restaurant rather than the holding org_acme_co). Use 'personal' for threads with no org affiliation."
+          "description": "DEPRECATED alias of org_id (ENTITY1). Tolerated on records that already carry it and read as a fallback; never newly written — the writer normalises it to org_id."
         },
         "org_id": {
           "type": ["string", "null"],
-          "description": "DEPRECATED. Use affiliation_id."
+          "pattern": "^(org_[a-z0-9_]+|personal)$",
+          "description": "The org this thread belongs to (most specific level, e.g. org_acme_restaurant rather than the holding org_acme_co) — the canonical thread→org field (ENTITY1). Required at creation: 'personal' EXPLICITLY for a deliberately unaffiliated thread, so 'never set' stays distinguishable from a choice."
         },
         "parent_thread_id": {
           "type": ["string", "null"],

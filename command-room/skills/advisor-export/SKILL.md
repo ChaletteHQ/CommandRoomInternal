@@ -1,5 +1,6 @@
 ---
 name: advisor-export
+surfaces: both
 description: "Distill a person into a portable Advisor Profile — a structured read of how they think, decide, and argue — that a boardroom seat can use as a real 'guest director'. Fires on: 'forge my advisor profile', 'export my advisor profile', 'create my board persona' (high-fidelity, from your own history, shareable), 'model [name] as an advisor', 'add [name] as an advisor' (local read of a colleague from your transcripts — flagged as your read, never shareable out), 'import advisor profile', 'load advisor profile', 'show my guest bench', 'who's on my guest bench'. Does NOT fire on 'convene the board' / 'configure my board' (boardroom — the seats), 'add [name] to my contacts' / 'who is [name]' (people-crm), or 'draft an email as [name]' (email-writer). Fidelity tiers and file contract: Routing section in the body."
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: automation-scanner
+surfaces: both
 description: "Find the low-hanging automation wins hiding in the CEO's own workspace and rank by time-saved-vs-build-effort. Use when the CEO says 'what can be automated', 'automation scan', 'automation audit', 'show me automations', 'where am I wasting time', 'where am I leaking time', 'hidden time cost', 'what should I automate first'. Produces a ranked list with scope notes and suggested build approach (the recurring-meeting 'hidden time-cost' report is coach deliverable-catalog 2.5, rendered by this scan). DOES NOT fire on 'set up [specific tool]' (that's implementation, not scanning) or 'build me a [workflow]' (that's a design/build request — this skill identifies opportunities, doesn't build them)."
 ---
 
@@ -43,7 +44,7 @@ customization layer (the knobs suffice). Read config through `get_config` — ne
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
 # SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 

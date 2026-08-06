@@ -1,5 +1,6 @@
 ---
 name: email-writer
+surfaces: both
 description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro emails. Fires on: 'draft an email to [name] about [topic]', 'email to [name]', 'write an email to the team', 'reply to [name]', 'follow up with [name] about [topic]' (single named follow-up), plus 'tune email-writer'. Reads the calibrated voice block and relationship context; output lands as a draft in the declared mail backend or a preview per the draft-posture setting — never auto-sent. Does NOT fire on 'follow up on that call' / 'draft follow-ups' (follow-up-ritual — per-attendee pack from a transcript), 'who should I reach out to' (relationship-moves), or intro requests between two contacts (intro-broker). Register table and full trigger family: Routing section in the body."
 
 voice_block_last_refreshed: 2026-04-21
@@ -96,7 +97,7 @@ Always read config through `get_config` — never read the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -229,7 +230,7 @@ Rewrite what fails each pass, re-check once, then return.
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
 ```
 
@@ -250,6 +251,8 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until the detector exit
    - If body is too thin to synthesize from (one-liner, attachment-only, etc.), use `Re: Following up` as a last-resort fallback. Better than bare `Re:`.
 
 This rule applies to all reply paths — `N send`, `N draft`, on-demand reply drafts. Synthesizing a subject ALSO improves Gmail's threading reliability for any send path that doesn't set `In-Reply-To` (the §3a fallback case in EMAIL_DRAFT_PROTOCOL), because the synthesized subject gives Gmail's subject-normalization fallback something to anchor to.
+
+**DRAFTTHREAD1 — reply drafts are never patched in place (`shared/EMAIL_DRAFT_PROTOCOL.md` §3d, mandatory on every reply path this skill owns).** Any content change to a reply draft — a voice correction, a re-edit after the widget click already created the connector draft, anything — is a FRESH create carrying the reply-to reference, never the draft-update operation: that operation has no reply-to parameter, so it rebuilds the message without its threading headers and the backend silently moves the draft to a new thread while reporting success. After every reply-draft create, assert the threading took via `shared/scripts/draft_threading.py::assert_reply_threaded(created_draft, <conversation thread id>)` and surface a detachment loudly (both ids). A re-create supersedes the earlier connector draft — name it (subject + recipient) for hand deletion; the connector exposes no delete-draft tool.
 
 **Subject voice gate (v4.6.1 S3 — MANDATORY, bash-gated like the body gate).** Every subject — synthesized here, fresh-composed, or carried through on a new outbound — runs the subject gate before the draft renders:
 
@@ -368,7 +371,7 @@ Each draft's `N send` lands in apply-choices the same way the n=1 case does — 
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json

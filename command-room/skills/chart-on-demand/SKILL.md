@@ -1,5 +1,6 @@
 ---
 name: chart-on-demand
+surfaces: both
 description: "Render one workspace-derived chart on demand — a trend, comparison, composition, or delta walk computed by the workspace's own helpers and drawn by the shared chart engine, never invented. Fires on: 'chart revenue by client', 'chart my', 'chart the', 'graph the pipeline', 'graph my', 'show me a trend', 'trend of', 'plot', 'visualize', plus 'tune chart-on-demand'. Loose names resolve through the entity ladder before any series is built; an ask the numbers can't answer gets an honest list of what IS chartable — no interpolation, no invented numbers, the chart page states its source. Does NOT fire on 'chart of accounts' (finance vocabulary, not a chart ask), 'build the board pack' (board-pack-assembler), 'operator report' (operator-report), 'value receipt' (value-receipt), or market/industry research like 'trends in' an industry (research)."
 ---
 
@@ -82,7 +83,7 @@ every code block below runs with cwd = `$PLUGIN_ROOT` (that is what makes the
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "..."
 ```

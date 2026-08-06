@@ -1,5 +1,6 @@
 ---
 name: meeting-notes
+surfaces: both
 description: "Process meeting notes from Granola or pasted text into structured artifacts — decisions, action items, SESSION_NOTES + Master Tracker updates. Triggers: 'process meeting', 'process the last call', 'process the call', 'meeting notes', 'meeting notes from', 'analyze this call', 'debrief from', 'log the meeting', 'summarize the call', 'summarize the meeting', 'action items from the meeting', 'action items from the call'. Plus 'tune meeting-notes'. DOES NOT fire on 'follow up', 'draft follow-ups', 'close the loop' — those go to follow-up-ritual. DOES NOT fire on 'prep me for' — that goes to call-prep. DOES NOT fire on a whole-day bulk re-run — 're-process today's meetings', 'reprocess my meetings', 'reprocess todays meetings', 'regenerate past meetings', 'process today's meetings': one call at a time is this skill; a whole day belongs to the Past Meetings scheduled task. Send the user to the Past Meetings chat and its Run Now button."
 ---
 
@@ -76,7 +77,7 @@ changes are offered. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -789,7 +790,7 @@ Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N co
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; print('OK')"
 ```

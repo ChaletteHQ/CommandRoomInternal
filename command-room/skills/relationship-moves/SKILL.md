@@ -1,5 +1,6 @@
 ---
 name: relationship-moves
+surfaces: both
 description: "The weekly proactive outreach surface: the top 3 people worth reaching out to THIS week, each with last touch, an evidence-cited why-now, and a pre-drafted opener in the CEO's voice. Fires on: 'relationship moves', 'who should I reach out to' / 'who should I reach out to this week', 'weekly outreach'. Ranks on a code-computed blend of dormancy, live-thread leverage, and overdue commitments; runs as an optional Sunday-evening scheduled task (added via 'change my schedule', not first-install). Does NOT fire on 'who went dark' (dormant-customer-scan — raw detection this skill consumes), 'warm threads to revive' (thread-resurrection), 'follow up with [name]' (follow-up-ritual), or 'balance check' / 'my white space' / 'plan a date night' (balance — PERSONAL ties; the tie field partitions the entity set, so a spouse or parent never appears here). The line: scans DETECT; this RANKS and hands you drafts. Ranking math and dedupe rules: Routing section in the body."
 ---
 
@@ -32,7 +33,7 @@ Resolve the workspace per `shared/CONTRACT.md` Rule 22. Then, per candidate, you
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "..."
 ```

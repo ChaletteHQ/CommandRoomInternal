@@ -1,5 +1,6 @@
 ---
 name: people-crm
+surfaces: both
 description: "Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]', 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Owns person facts: 'remember [fact] about [name]' ('remember Sam prefers Signal'), 'note that [name] [fact]' — appends a sourced fact to their history. Builds and reads per-person records from email, meetings, and notes. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export). Record shape and resolution rules: Routing section in the body."
 ---
 
@@ -31,7 +32,7 @@ description: "Never walk into a meeting or dinner wondering who-is-this-again. T
 Before any person-write step in this skill or its callers, execute:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from people_writer import create_person, update_person, find_existing_person, merge_person_into, DuplicatePersonError; print('OK')"
 ```
 
@@ -251,7 +252,7 @@ An explicit user statement of one atomic fact about a person ("remember Sam pref
 2. **Write through the ONE fact writer** (Rule 22 discovery preamble required, then):
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys; sys.path.insert(0, 'shared/scripts')
 from people_writer import record_person_fact

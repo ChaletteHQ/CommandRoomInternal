@@ -164,7 +164,33 @@ def doc_headline_link(label: str, url: str) -> str:
     """
     # Implementation: support an optional `level` kwarg via signature update.
     # Kept positional for back-compat with the common single-doc case.
+    #
+    # SPEC_SLACK1 C-4 — surface-aware: on the slack surface there is no
+    # Cowork chat renderer and `computer://` URLs are dead, so the headline
+    # degrades to a plain bold line WITHOUT the URL; the file itself is
+    # delivered into the thread via the listener's `files.upload` (heavy-docs
+    # posture: Slack triggers the build, reading happens at a desk). The
+    # cowork return is byte-identical to pre-SLACK1.
+    if _current_surface() == "slack":
+        return _slack_doc_headline(label)
     return _doc_headline_link_impl(label, url, level=2)
+
+
+def _current_surface() -> str:
+    """The active render surface via surface_context (SLACK1 B-3). Import
+    tolerance mirrors turn_backstop — a partial plugin update must not brick
+    every doc link; absent module ≡ cowork (today's behavior)."""
+    try:
+        from surface_context import current_surface
+        return current_surface()
+    except ImportError:
+        return "cowork"
+
+
+def _slack_doc_headline(label: str) -> str:
+    """C-4: the slack form of a generated-deliverable headline — plain bold
+    mrkdwn, NO URL (the listener uploads the file into the thread)."""
+    return f"→ *{label}*"
 
 
 def _doc_headline_link_impl(label: str, url: str, level: int = 2) -> str:
@@ -179,7 +205,10 @@ def doc_headline_link_h3(label: str, url: str) -> str:
     """H3 variant for multi-document lists (e.g. upcoming-meetings surfacing
     several briefs). The single-doc case uses `doc_headline_link()` (H2);
     multi-doc uses this so the headings don't visually dominate the surface.
+    Surface-aware exactly like `doc_headline_link` (SLACK1 C-4).
     """
+    if _current_surface() == "slack":
+        return _slack_doc_headline(label)
     return _doc_headline_link_impl(label, url, level=3)
 
 
@@ -1454,14 +1483,29 @@ def _resolve_workspace_prefix():
 
 
 def _resolve_plugin_root():
-    """Resolve the installed plugin's absolute path per CONTRACT.md Rule 22.
+    """Resolve the installed plugin's absolute path per CONTRACT.md Rule 22
+    (SPEC_SLACK1 C-5 — headless-aware, content-addressed).
 
-    Discovery: $CLAUDE_CODE_TMPDIR → strip trailing `/tmp` → look at
-    `<session>/mnt/.remote-plugins/plugin_*/` and return the first match.
+    Discovery order:
+      1. `$CLAUDE_PLUGIN_ROOT` — Claude Code provides it natively; on the
+         headless VM the Cowork sandbox shape below does not exist at all
+         (this was a silent contributor to the VM doc-render failures).
+      2. Cowork sandbox shape: $CLAUDE_CODE_TMPDIR → strip trailing `/tmp` →
+         `<session>/mnt/.remote-plugins/plugin_*/` — CONTENT-ADDRESSED: the
+         match must contain `shared/scripts/chat_output_renderer.py`, so a
+         second installed plugin (a client add-on pack) can never win the
+         positional coin flip the old `head -1`-style first-match had
+         (the multi-plugin plugin-root gotcha, 2026-07-24).
 
-    Returns None when CLAUDE_CODE_TMPDIR is not set or the .remote-plugins
-    directory doesn't exist.
+    Returns None when neither resolves.
     """
+    env_root = _os_mod.environ.get("CLAUDE_PLUGIN_ROOT")
+    if env_root:
+        try:
+            if _Path_mod(env_root).is_dir():
+                return env_root
+        except OSError:
+            pass
     tmpdir = _os_mod.environ.get("CLAUDE_CODE_TMPDIR")
     if not tmpdir:
         return None
@@ -1472,9 +1516,18 @@ def _resolve_plugin_root():
     try:
         if not remote.is_dir():
             return None
-        for child in remote.iterdir():
-            if child.is_dir() and child.name.startswith("plugin_"):
+        fallback = None
+        for child in sorted(remote.iterdir()):
+            if not (child.is_dir() and child.name.startswith("plugin_")):
+                continue
+            if (child / "shared" / "scripts" / "chat_output_renderer.py").is_file():
                 return str(child)
+            if fallback is None:
+                fallback = str(child)
+        # No candidate carries the core marker (never true for a real CR
+        # install) — keep the old first-match behavior rather than None so a
+        # weird layout still gets a trusted-prefix for the path scanner.
+        return fallback
     except (OSError, PermissionError):
         return None
     return None
@@ -1865,6 +1918,37 @@ _ONBOARDING_SETUP_CSS = """
 .cr-onboarding-context { font-size: 12px; color: #8C7A65; margin: 4px 0 8px 28px; line-height: 1.4; font-style: italic; }
 .cr-onboarding-footer-note { font-size: 12px; color: #8C7A65; font-style: italic; margin: 8px 0 12px; padding: 0 4px; }
 """
+
+
+def validate_data_view(data: dict) -> None:
+    """Run the pre-render gate family over a data view WITHOUT rendering HTML
+    (SPEC_SLACK1 C-1 — the slack target runs the SAME gate stack).
+
+    Mirrors render_chat_output_widget's gates 1–1e exactly, in order:
+    canonical-action validator, data-shape validator, Pulse-richness
+    validator, send-class email-address validator, and the non-blocking
+    voice-tell backstop. The special widget modes (`all_clear_summary`,
+    `onboarding_setup`) return early exactly as the HTML path does — those
+    modes carry no action rows for the gates to check.
+
+    Raises: CanonicalActionError, DataShapeError, PulseRichnessError — the
+    same exceptions, so callers on any surface handle one vocabulary.
+    """
+    widget_mode = data.get("widget_mode", "all_batch_widget")
+    if widget_mode in ("all_clear_summary", "onboarding_setup"):
+        return
+    _validate_canonical_actions(data)
+    _validate_data_shape(data)
+    _validate_pulse_richness(data)
+    _validate_send_class_email_addresses(data)
+    try:
+        from turn_backstop import scan_data_view_for_tells
+        scan_data_view_for_tells(data, source_skill=data.get("source_skill"))
+    except Exception:
+        # Best-effort by design — the backstop must never break a render
+        # (same tolerance as the HTML path; the hard voice gate lives in
+        # make_brief for the .docx surface).
+        pass
 
 
 def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:

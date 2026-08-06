@@ -262,19 +262,24 @@ v2.14.1 unified `resolved` to plain state-change everywhere (no input affordance
 
 Same rule applies generally: action labels must do what their verb implies, with no surprise inputs. Brackets `[input]` in the action_id signal that the widget will expose an input on click — and that's the ONLY signal users have. Don't violate it.
 
-## Rule 22 — Plugin-root discovery is deterministic, not agent-improvised (v2.14.3+)
+## Rule 22 — Plugin-root discovery is deterministic, not agent-improvised (v2.14.3+; SLACK1 C-5 headless-aware)
 
-Per Cowork's confirmed sandbox model: each `mcp__workspace__bash` call is independent (no cwd carryover, no env carryover). There is NO env var like `CR_PLUGIN_ROOT`. Session IDs are non-stable across reinstalls.
+Per Cowork's confirmed sandbox model: each `mcp__workspace__bash` call is independent (no cwd carryover, no env carryover). Session IDs are non-stable across reinstalls.
 
 **The agent must NEVER guess at the plugin root.** It uses this exact discovery pattern at the start of every multi-step bash invocation:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "..."
 ```
 
-`CLAUDE_CODE_TMPDIR` is the only Cowork-set env var we rely on; from it the session directory derives, and the plugin's installed copy is the first match in `.remote-plugins/`. **v2.14.26+ canonical `WORKSPACE` resolution:** `WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')` — discovers the user's workspace folder dynamically by finding any mounted folder containing `_hq/`. Replaces the pre-v2.14.26 hardcoded `WORKSPACE="$SESSION_DIR/mnt/Command Room/Command Room"` which assumed a specific folder name + nested layout that was inaccurate for most installs (the doubled-Command-Room path was a phantom level — Cowork mounts the connected folder directly, not as a subfolder of itself). The Cowork diagnostic 2026-05-06 confirmed the actual layout is `mnt/<connected-folder-basename>/_hq/`, not `mnt/<basename>/<basename>/_hq/`. **Do NOT hardcode any specific folder name** — workspace discovery works regardless of what the customer named their folder.
+Two-stage resolution (SLACK1 C-5, 2026-08-06):
+
+1. **`$CLAUDE_PLUGIN_ROOT` wins when set.** Claude Code (the headless VM / Slack surface) provides it natively; the Cowork sandbox shape below **does not exist there** — pre-C-5 the preamble resolved to nothing on the VM, which silently killed every shared-script call (a contributor to the headless doc-render failures).
+2. **Cowork fallback is CONTENT-ADDRESSED, not positional.** The glob requires the candidate to contain `shared/scripts/chat_output_renderer.py` (a core-plugin marker no add-on pack carries). The old `ls -d plugin_* | head -1` first-match was a coin flip the moment a second plugin (a client add-on) was installed — land on the add-on and every `shared/scripts/*.py` path is missing, so the fire dies. The positional form is BANNED; guard G1 fails the build if it reappears.
+
+`CLAUDE_CODE_TMPDIR` is the only Cowork-set env var we rely on; from it the session directory derives. (The scheduled-task bootloader keeps its own loop form — it content-addresses on its orchestrator filename and counts candidates for diagnostics — with the same `$CLAUDE_PLUGIN_ROOT`-first stage.) **v2.14.26+ canonical `WORKSPACE` resolution:** `WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')` — discovers the user's workspace folder dynamically by finding any mounted folder containing `_hq/`. Replaces the pre-v2.14.26 hardcoded `WORKSPACE="$SESSION_DIR/mnt/Command Room/Command Room"` which assumed a specific folder name + nested layout that was inaccurate for most installs (the doubled-Command-Room path was a phantom level — Cowork mounts the connected folder directly, not as a subfolder of itself). The Cowork diagnostic 2026-05-06 confirmed the actual layout is `mnt/<connected-folder-basename>/_hq/`, not `mnt/<basename>/<basename>/_hq/`. **Do NOT hardcode any specific folder name** — workspace discovery works regardless of what the customer named their folder.
 
 The PLACEHOLDER forms `cd "<plugin-root>"` and `[PLUGIN_ROOT]` are no longer allowed in any orchestrator or skill. v2.14.3 began the sweep; v2.14.15 finished it after a /simplify pass found regressions across 9+ files (workspace-manager, command-room-update-bridge, enable-command-room-schedules + 5 orchestrator references, enable-orgs-map, enable-quick-commands, meeting-notes, usage-report, shared/WORKSPACE_API.md). New skills must use the discovery pattern from day one. Run `grep -rn "<plugin-root>\\|\\[PLUGIN_ROOT\\]" skills/ shared/` before every release; non-empty result outside `CHANGELOG.md` and this file is a release blocker.
 
@@ -298,6 +303,8 @@ Every native connector is addressable through abstracted helpers in `shared/scri
 | File storage | Google Drive | OneDrive | — | `discover_drive_tool()` |
 
 Discovery helpers return `DiscoveryResult.platform` indicating which stack matched (`"gmail"` / `"superhuman"` / `"outlook"` / `"granola"` / `"fireflies"` / `"google_drive"` / `"onedrive"` / `"google_calendar"` / `"outlook_calendar"`).
+
+**Mail draft — reply drafts are NEVER patched in place (DRAFTTHREAD1, 2026-07-29).** The draft-update operation on the primary mail backend carries no reply-to parameter, so patching a reply draft rebuilds the message WITHOUT its `In-Reply-To` / `References` headers and the backend silently reassigns it to a new thread — the tool returns the draft id as if it succeeded, and the `Re:` subject hides the detachment in the drafts list. Any content change to a reply draft is therefore a **fresh create carrying the reply-to reference**, followed by `shared/scripts/draft_threading.py::assert_reply_threaded(created_draft, conversation_thread_id)` — passing the reply-to id is not proof the threading survived, and the assertion is what turns a silent orphan into a loud error. The backend exposes no delete-draft operation, so a re-create leaves the superseded draft behind: NAME it to the user for hand deletion, never leave two drafts silently. (Do not re-add the patch path as an optimisation — this paragraph is why it was removed. Full mechanism: `EMAIL_DRAFT_PROTOCOL.md` §3d. Upstream connector asks — reply-to on the update operation + a delete-draft tool — are filed with MAILTRUST1's short-read ask.)
 
 **An operation is not always a tool name.** Search SCOPES — `in_sent`, `unread`, `in_inbox`, `from_me`, `message_id_lookup` — are INTENTS that `connector_adapters/mail.py` compiles into a provider query; no connector ships a tool called `in_sent`. `discover_for_category` recognizes them (`connector_adapters.mail.is_search_intent`) and resolves them to the backend's SEARCH tool. Matching an intent against tool ids returns nothing on every provider, Gmail included, and a caller that reads that as "not connected" silently hands the read back to the model.
 

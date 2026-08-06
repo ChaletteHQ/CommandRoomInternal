@@ -1,5 +1,6 @@
 ---
 name: calendar-writer
+surfaces: both
 description: "Schedule meetings — find mutual availability, draft the invite with a context-aware agenda (open commitments with each attendee plus recent project context), create the calendar event, and optionally auto-arrange call prep before it. Fires on: 'schedule a [length] with [name]', 'set up a 30-min with [name]', 'book time with [name]', 'find time with [name]', 'book a meeting with [name]', 'put [name] on the calendar', 'block 90 min for [topic]', 'set up lunch with [name]', 'put it on my calendar'. Does NOT fire on 'cancel my meeting' or 'reschedule' (out of current scope — new invites only), 'prep me for [meeting]' (call-prep), or 'process meeting' (meeting-notes). Availability rules and agenda sourcing: Routing section in the body."
 ---
 
@@ -164,7 +165,7 @@ On dispatch:
 
    ```python
    import sys
-   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
    sys.path.insert(0, "shared/scripts")
    from cru_match import load_open_commitments, match_calendar_to_commitments, build_pending_review_event
    from commitment_state import close_commitment, CommitmentIdError, PendingReviewError

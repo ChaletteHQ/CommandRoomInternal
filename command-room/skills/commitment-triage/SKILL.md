@@ -1,5 +1,6 @@
 ---
 name: commitment-triage
+surfaces: both
 description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. Also an opt-in Friday chat via 'change my schedule'. Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts). Action semantics: Routing section in the body."
 ---
 
@@ -27,7 +28,7 @@ It also appends suppression rules to `_hq/config/commitment-rules.md`
 ## Step 1 — Load the projected open set
 
 ```python
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 import sys; sys.path.insert(0, "shared/scripts")
 from cru_match import load_open_commitments
 from commitment_activity import derive_commitment_movement
@@ -258,7 +259,7 @@ canonical helpers internally; those steps above remain the normative spec of
 what the view contains, never a to-do list of separate commands):
 
 ```bash
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1))
+# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 python3 shared/scripts/surface_drivers.py commitments \
     --workspace "<WORKSPACE>" --page 1
 ```

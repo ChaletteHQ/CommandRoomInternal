@@ -1,5 +1,6 @@
 ---
 name: cleanup
+surfaces: both
 description: "Weekly self-maintenance. Tidies the workspace without the CEO's attention — runs Sunday night, auto-fixes what's safe, repairs damaged records, leaves a short Monday note only if something needs eyes. Triggers on 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean' (the full pass), 'roll over my session notes' (Step 0b) — and 'maintenance', 'run my maintenance', 'run maintenance now' (the background-maintenance manual fire — run what's due or report nothing due; Step 0, NOT a cleanup pass). (Bare 'clean up [a thing]' — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired phrases 'weekly audit', 'system review', 'scan everything'. DOES NOT fire on 'weekly recap' / 'what happened this week' (that's weekly-recap), 'level up command room' (opt-in add-ons), or 'health check' / 'system health' / 'is everything running' (that's system-health — the scheduled-task watchdog)."
 ---
 
@@ -197,6 +198,8 @@ print('pruned', len(pruned), 'stale read-alarm sidecars')
 "
 ```
 
+12. **CLAUDE.md edit guard** (CLAUDEMD1 Defect B): ANY pass in this skill that rewrites or compresses `CLAUDE.md` — including "tidy the quick-reference file" style compression — must snapshot the file text BEFORE editing and run `shared/scripts/claude_md_guard.py::report(before, after)` after. When `ok` is false, surface **every line in `removed` verbatim** in the session output and the Monday note — by content, never as a count ("removed 3 lines" is the bug, not the report). For each line in `removed_rules` (imperative operating instructions — the draft-posture class that was silently deleted 2026-07-29): restore it verbatim, or refuse the compression for that section and say why. Compression may reword; it may not drop. A backup on disk is recovery, not disclosure — writing one does not satisfy this rule. Generated `LIVE-STATE` blocks are machine-owned (render_claude_md redraws them) and are outside this guard by construction; regenerate them via `shared/scripts/render_claude_md.py` instead of editing them.
+
 These rules are non-destructive by design — **nothing is ever deleted, with the ONE ruled exception of Rule 11's stale read-alarm sidecars (derived machine telemetry, LB2 D5).** Memory is compressed/archived in place; caches and >1h-stale locks are MOVED into `_archive/` (never a user's folders or files). Record each action taken into `actions_taken[]` for the `cleanup_run` event.
 
 ## Phase 3: Substrate Integrity (detect → remediate)
@@ -314,7 +317,7 @@ Convert each project's hand-written People table into the generated Live State b
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null | head -1 | sed 's:/$::')
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 root = os.getcwd()
@@ -369,15 +372,28 @@ Two distinct failure modes: a **missing/broken module** is a loud ABORT (the ass
 
 ### 3.5b — Re-render every active thread's Live State (dirty-checked, cheap)
 ```bash
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-import render_thread_live_state as r
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+cd "$PLUGIN_ROOT" && python3 -c "
+import sys, json, os
+root = os.getcwd()
+# Absolute sys.path + assert-import, matching Phase 3.5a. The relative
+# sys.path.insert this replaced could silently fail to import at fire time, and
+# an honest render count printed from a block that never ran is not honesty.
+sys.path.insert(0, os.path.join(root, 'shared', 'scripts'))
+try:
+    import render_thread_live_state as r
+except ImportError as e:
+    raise SystemExit('ABORT Phase 3.5b — could not import render_thread_live_state from '
+                     + os.path.join(root, 'shared', 'scripts') + ': ' + repr(e)
+                     + '. The plugin install is incomplete; this is a REAL error to '
+                     'surface, NOT a missing-feature skip.')
 ws = '<workspace_root>'
 # Shape-defensive read (Bug #84-followup) — flat OR wrapped entities.json.
 _d = json.load(open(ws + '/_hq/data/entities.json'))
 ent = _d['entities'] if isinstance(_d.get('entities'), dict) else _d
 threads = ent.get('threads') or ent.get('projects') or []
-refreshed, skipped = [], []
+refreshed, unlinked, missing_folder, errors = [], [], [], []
 for t in threads:
     # FOLDERGUARD: the filter existed but covered ONE terminal status, so a
     # thread at 'resolved' rendered straight through. Widened to the codebase
@@ -386,16 +402,34 @@ for t in threads:
     if t.get('status') in ('archived', 'resolved'): continue
     try:
         res = r.render_live_state(ws, t['id'])
-        # 'no_brain_path' means the folder does not resolve — skipped, not refreshed.
-        # Count only brains actually rendered, never merely visited.
-        if res.get('status') == 'no_brain_path': skipped.append(t['id'])
+        # Count only brains actually rendered, never merely visited. The two
+        # refusals are DIFFERENT REPAIR CASES and are reported apart:
+        #   'no_brain_path'     -> the record names no folder at all. Note C9 in
+        #                          integrity_check SKIPS an empty folder_name, so
+        #                          this line is the only place it is ever visible.
+        #   'no_project_folder' -> names a folder that is not on disk (C9 sees it).
+        st = res.get('status')
+        if st == 'no_brain_path': unlinked.append(t['id'])
+        elif st == 'no_project_folder': missing_folder.append(t['id'])
         elif res.get('rendered'): refreshed.append(t['id'])
-    except Exception: pass
-print('refreshed', len(refreshed), 'brains;', len(skipped), 'skipped (no resolvable folder)')
-if skipped: print('NO-FOLDER-SKIPPED:', skipped)
+    except Exception as e:
+        errors.append((t['id'], repr(e)))  # per-thread, surfaced — never swallowed
+print('refreshed', len(refreshed), 'brains;', len(unlinked), 'not linked to a folder;',
+      len(missing_folder), 'folder missing; per-thread errors:', len(errors))
+if unlinked: print('UNLINKED:', unlinked)
+if missing_folder: print('FOLDER-MISSING:', missing_folder)
+if errors: print('PER-THREAD-ERRORS:', errors)
 "
 ```
 The render is **dirty-checked** — it only rewrites a block when a thread-tagged event newer than the block's recorded `source_seq` exists, so a quiet workspace is a fast no-op. It **byte-preserves** all hand-written brain content (only the marked Live-State region changes). Record refreshed brains into `actions_taken[]`.
+
+**Reporting rule (HONEST1).** A quiet workspace stays quiet: `unchanged` on every thread is the designed answer, not a finding, and produces no Monday-note line.
+
+**The integrity checker owns the Monday-note line for both refusals, not this block.** `unlinked` is reported by `C9b.thread_folder_unset` and `missing_folder` by `C9.thread_folder_missing`, both already folded into the note via Phase 1's `run_checks`. The counts printed above stay in the **run record** as diagnostics — do NOT also write them into the Monday note, or the same threads get reported twice by two paths. One owner per fact. (Deal and objective threads are exempt from `C9b` by design — neither kind owns a project folder, so an `unlinked` result for one of them is the expected answer, not a finding: it stays in the run record and never reaches the note.)
+
+`errors` is different and DOES belong here: a per-thread exception is a real failure the checker never sees, so surface its count in the run record and flag it if non-zero.
+
+When the note renders those findings, the line must carry the fix rather than the diagnosis, and must never expose a status name, finding id or thread id to the CEO (CONTRACT Rule 28) — e.g. *"N of your projects aren't linked to their folders yet, so their status pages can't update — say `reconcile projects` and I'll match them up."* Replacing a comfortable fiction with an accurate dead end is not the goal.
 
 ### 3.5c — Regenerate the People registry (`_hq/views/PEOPLE.md`)
 The people directory is a generated view that drifts when no code re-fires it (it had no renderer until v3.17.1, and stale-drifted from 95 people in the substrate down to a 69-person view). Regenerate it deterministically from the substrate every run:

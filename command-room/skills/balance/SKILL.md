@@ -1,5 +1,6 @@
 ---
 name: balance
+surfaces: both
 description: "The weekly personal white-space surface. Fires on: 'balance check', 'how's my white space', 'my white space', 'am I making time for family', 'plan a date night', plus 'tune balance'. Reads the personal lane ONLY — personal ties, personal reminders, open evenings on the declared personal/family calendars cross-checked against business busy — and surfaces the most-starved personal relationship with a pre-drafted reconnect pinned to a real open evening. Renders owner-only; nothing it emits reaches an org, board, or client surface — the firewall is the feature. Propose-and-confirm only: never books, sends, or spends without a click. Optional Sunday-morning task (later-add); no personal calendar connected → honest refusal, never all-clear. Does NOT fire on 'who should I reach out to' / 'weekly outreach' (relationship-moves — WORK ties), 'who went dark' (dormant-customer-scan), or 'show my reminders' (show-my-reminders). Fences: Routing section in the body."
 ---
 
@@ -34,7 +35,7 @@ Config surface (all under `workspace` in `entities.json`, set via workspace-mana
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 ```

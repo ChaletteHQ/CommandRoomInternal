@@ -1,5 +1,6 @@
 ---
 name: one-pager-composer
+surfaces: both
 description: "Turn any topic, question, or pile of notes into a polished one-page executive brief in under 60 seconds. Fires on: 'one-pager on [topic]', 'make me a one-pager', 'one page summary of [topic]', 'I need a one-pager on [topic]', 'throw together a one-pager for [audience]', plus 'tune one-pager-composer'. Pulls evidence from the workspace when the topic names tracked entities, renders in the CEO's voice to the one-page discipline, output .docx routed to the matching project folder. Does NOT fire on 'memo on [topic]' (memo-writer — multi-page, directive), 'board pack' (board-pack-assembler), or 'research [topic]' (research — verified cited brief; the one-pager can consume its output). Section discipline and voice rules: Routing section in the body."
 
 voice_block_last_refreshed: 2026-04-21
@@ -45,7 +46,7 @@ Every one-pager draft:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
 ```
 
@@ -89,7 +90,7 @@ offered. Read config through `get_config` — never the raw file.
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
 # silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* | head -1); then run python FROM $PLUGIN_ROOT:
+# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 

@@ -1,5 +1,6 @@
 ---
 name: apply-choices
+surfaces: both
 description: "Handles the Apply button on Command Room widgets — you never need to type this. Receives the consolidated 'apply choices: [...]' message a widget sends when the user clicks Apply (the daily chat surfaces, review widgets, onboarding setup), carries out each selected action through its owning skill (closures via the single closure path, drafts via email-writer, feedback into the capture stores), and posts ONE consolidated plain-English acknowledgment. Fires ONLY on the exact 'apply choices: ' prefix followed by a JSON array — never on natural language. Every action carries its source id, so no session state is needed. Action registry and per-surface handlers: Routing section in the body."
 ---
 
@@ -166,6 +167,8 @@ For each entry in the parsed array, route to the corresponding handler in the so
 | `edit [type]`, `edit [change]` | string | Free-text override of the inferred type / change. |
 | `confirm` on entity proposal `[e1/e2]` | string (optional) | Free-text corrections to inferred entity details. Empty = accept inferred values. |
 
+**DRAFTTHREAD1 — reply drafts on the `draft` / `edit then send` paths (mandatory, `shared/EMAIL_DRAFT_PROTOCOL.md` §3d).** When the item is a REPLY (it carries a conversation/thread reference): the click-time connector draft is ALWAYS a fresh create carrying the reply-to reference — never the draft-update operation, on any backend; a re-edit of an already-created reply draft is ALSO a fresh create (the update operation drops the reply headers and the backend silently rethreads the draft). After every reply-draft create, run `shared/scripts/draft_threading.py::assert_reply_threaded(created_draft, <conversation thread id>)` — on `ReplyDraftDetachedError` the ack must say the draft detached (both thread ids), never present it as threaded. When a re-create supersedes an earlier connector draft, the ack NAMES the stale draft (subject + recipient) for hand deletion — the connector has no delete-draft tool; never leave two drafts silently.
+
 **Specific-name variants route through the generic handlers.** Actions like `add as person to <Specific Org>` and `add as new org <Specific Name>` are NOT separate handlers — they dispatch through the same generic `add as person to <Org Name>` / `add as new org <Org Name>` handler above, with the specific name extracted from the action verb itself (per Rule 5 specific-name patterns) and passed as the resolved target. Do not look for a per-name handler; parse the name out of the label and call the generic path.
 
 If a choice has an action that expects an `input` but none is present, handle it by HOW the verb reached you:
@@ -199,7 +202,7 @@ The two real-world failure classes this gate prevents — **wrong field names** 
 **Dispatch flow** (any apply-time handler that ends in a person create/update):
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from people_writer import create_person, update_person, find_existing_person, DuplicatePersonError, MultipleCandidatesError; print('OK')"
 ```
 
@@ -540,7 +543,7 @@ Per M's Apr 30 ask: *"You can host all of those in the same widget."* All draft-
 Before producing the consolidated response, you MUST execute:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError; print('OK')"
 ```
 
@@ -652,7 +655,7 @@ Skip entirely if any of:
 Otherwise, per send, execute via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT=$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_* 2>/dev/null | head -1); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
