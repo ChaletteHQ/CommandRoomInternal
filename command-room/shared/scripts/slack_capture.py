@@ -48,6 +48,13 @@ honest line and the rest of the scan proceeds. Nothing in this module ever
 calls the network. stdlib only.
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import datetime as _dt
 import re
@@ -312,11 +319,12 @@ def build_slack_commitment_event(
         counterparty_ids=counterparty_ids, counterparty_names=counterparty_names,
     ))
     if evidence:
-        data["evidence"] = evidence[:200]
+        data["evidence"] = clip(evidence)
     if channel:
         data["channel"] = channel
-    if urgency:
-        data["urgency"] = urgency
+    # BUG-8330 item 16 — `data.urgency` RETIRED from the write (see
+    # meeting_capture's twin note): written twice, read by nothing. The
+    # parameter stays for caller compat; guard G29 owns the class.
     if pending_review:
         data["pending_review"] = True
         if review_reason:

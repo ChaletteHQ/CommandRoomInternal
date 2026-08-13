@@ -58,8 +58,9 @@ class DiscoveryResult:
 
     `platform` (v2.14.2+) names the stack that matched — `"gmail"` /
     `"outlook"` / `"granola"` / `"fireflies"` / `"google_drive"` / `"onedrive"`
-    / `"google_calendar"` / `"outlook_calendar"`. Lets orchestrators branch on
-    platform without re-parsing the tool_id. None when no match.
+    / `"m365_sharepoint"` / `"google_calendar"` / `"outlook_calendar"`. Lets
+    orchestrators branch on platform without re-parsing the tool_id. None when
+    no match.
     """
     tool_id: Optional[str] = None
     reason: str = ""
@@ -151,11 +152,44 @@ _TRANSCRIPT_PLATFORM_HINTS = {
     "fireflies": ("fireflies", "fireflies_ai", "firefliesai"),
 }
 
-# Drive / file storage — Google Drive OR OneDrive
+# Drive / file storage — Google Drive OR OneDrive OR Microsoft 365 / SharePoint
+#
+# BUG-8538 (bug_received seq 8538): the Microsoft 365 connector's file surface
+# spells "sharepoint" in its OPERATION name, not "onedrive" — the real captured
+# connector (2026-07-11 connector-agnostic audit) ships
+# `mcp__<uuid>__sharepoint_search`. The pre-v5.11.1 map matched only
+# `google_drive/…` and `onedrive/…`, so a workspace on the M365/SharePoint
+# stack could never resolve a web link for its briefs: the session-scoped
+# branch fell through to the `computer://` form, a guaranteed dead link on a
+# cloud-mounted workspace.
 _DRIVE_PLATFORM_HINTS = {
     "google_drive": ("google_drive", "googledrive", "gdrive"),
     "onedrive": ("onedrive", "one_drive", "ms_onedrive"),
+    # Tokens are FILE-SCOPED on purpose (review of PR #51, finding 1):
+    # server-level tokens like `m365`/`microsoft365` were proposed in the
+    # spec but failed verification — on a server whose id spells them, they
+    # mis-bind NON-drive tools (`mcp__m365__outlook_email_search`) as the
+    # drive tool, and only `sharepoint` is backed by the captured real
+    # connector (`sharepoint_search`). `ms_files`/`graph_files` stay: they
+    # contain the file token, so they cannot match a mail/calendar/chat op.
+    "m365_sharepoint": ("sharepoint", "share_point", "ms_files",
+                        "graph_files"),
 }
+
+# The Microsoft cloud-drive spellings are ONE family: a workspace synced
+# through "OneDrive - <org>" is served by the same Microsoft 365 connector
+# whose tool spells "sharepoint". Preference matching (below) compares
+# families, never raw platform keys, so an inferred `onedrive` host prefers a
+# `m365_sharepoint` tool and vice versa.
+_DRIVE_PLATFORM_FAMILIES = {
+    "google_drive": "google",
+    "onedrive": "microsoft",
+    "m365_sharepoint": "microsoft",
+}
+
+
+def _drive_family(platform: Optional[str]) -> Optional[str]:
+    return _DRIVE_PLATFORM_FAMILIES.get(platform or "")
 
 # Calendar — Google Calendar OR Outlook Calendar (Graph)
 _CALENDAR_PLATFORM_HINTS = {
@@ -164,10 +198,19 @@ _CALENDAR_PLATFORM_HINTS = {
                          "graph_calendar", "office365_calendar"),
 }
 
-# Team chat — Slack today (v4.6.0 MC3); the map shape leaves room for Teams
-# parity later without touching call sites (same Rule 21 posture as the rest).
+# Team chat — Slack OR Microsoft Teams (CHATSCAN1 took the parity slot MC3
+# left open, without touching a single call site, exactly as intended).
+#
+# Same caveat as the mail hints above: these substrings only ever fire on a
+# tool id that SPELLS the product, and a real UUID-namespaced connector does
+# not. The Microsoft 365 connector ships `mcp__<uuid>__teams_list_chats` and
+# `mcp__<uuid>__chat_message_search` — no product token anywhere — so Teams is
+# identified by the capability manifest's FINGERPRINTS, via
+# `discover_chat_tool` below. Leaving it hint-only would have meant a Teams
+# workspace silently having no chat backend at all.
 _CHAT_PLATFORM_HINTS = {
     "slack": ("slack",),
+    "ms365_teams": ("msteams", "ms_teams", "microsoft_teams", "teams_"),
 }
 
 
@@ -797,24 +840,191 @@ def discover_slack_tool(
 
 
 # ============================================================================
-# Drive / file storage — Google Drive OR OneDrive (v2.14.2+)
+# Chat — the PROVIDER-AGNOSTIC resolver (SPEC CHATSCAN1 §2A)
 # ============================================================================
+
+
+def discover_chat_tool(
+    tools: Iterable[ToolDescriptor],
+    operation: str = "read_channel",
+    declared: Optional[dict] = None,
+    zapier_ids=None,
+) -> DiscoveryResult:
+    """Resolve a chat READ tool without knowing, or caring, which chat product
+    the workspace runs.
+
+    `discover_slack_tool` above stays exactly as it was — the capture leg
+    calls it and its contract is unchanged — but it can only ever find Slack,
+    which would have made every Teams workspace look like a workspace with no
+    chat at all. This is the resolver the closure and context legs use.
+
+    Order, mirroring the mail seam:
+      1. DECLARED backend, server-id first (`discover_for_category`). This is
+         the deterministic path and the only one immune to substring hazards.
+      2. FINGERPRINT match against the capability manifest's `chat` rows — the
+         answer for a UUID-namespaced connector whose tool ids spell no
+         product name, which is what every real Microsoft 365 connector is.
+      3. Product-name substring hints, which is what the pre-CHATSCAN1 Slack
+         path did and still covers a connector that spells itself.
+
+    `tool_id=None` means the workspace HAS no chat backend for this operation.
+    Per the connector-down doctrine the calling leg then does not exist for
+    this fire: no error, no mention to the user — and a receipt, written by
+    the leg, so the silence is still provable.
+    """
+    tools_list = list(tools)
+
+    if declared and declared.get("server_id"):
+        res = discover_for_category("chat", operation, tools_list,
+                                    declared=declared, zapier_ids=zapier_ids)
+        if res.tool_id:
+            return res
+        # A declared backend that cannot serve THIS operation is a capability
+        # gap, not a reason to go looking for some other product's tool: a
+        # workspace that declared one chat backend must never be silently read
+        # through another.
+        return res
+
+    zap = zapier_servers(tools_list, zapier_ids)
+    op_norm = operation.lower().replace("_", "")
+    eligible = [t for t in tools_list if not _is_zapier(t.tool_id, zap)]
+
+    by_provider = _fingerprint_platforms(eligible, category="chat")
+    if by_provider:
+        soft = None
+        for t in eligible:
+            sid = _server_id_of(t.tool_id)
+            provider = by_provider.get(sid) if sid else None
+            if not provider:
+                continue
+            if op_norm in t.tool_id.lower().replace("_", ""):
+                return DiscoveryResult(tool_id=t.tool_id,
+                                       candidates_considered=len(tools_list),
+                                       platform=provider)
+            if soft is None:
+                soft = (t, provider)
+        if soft is not None:
+            return DiscoveryResult(
+                tool_id=soft[0].tool_id,
+                reason=(f"matched the declared chat backend by capability "
+                        f"fingerprint but operation hint {operation!r} is not "
+                        f"in the tool ID"),
+                candidates_considered=len(tools_list),
+                platform=soft[1],
+            )
+
+    soft_hint = None
+    for t in eligible:
+        platform = _match_platform(t.tool_id, _CHAT_PLATFORM_HINTS)
+        if not platform:
+            continue
+        if op_norm in t.tool_id.lower().replace("_", ""):
+            return DiscoveryResult(tool_id=t.tool_id,
+                                   candidates_considered=len(tools_list),
+                                   platform=platform)
+        if soft_hint is None:
+            soft_hint = (t, platform)
+    if soft_hint is not None:
+        return DiscoveryResult(
+            tool_id=soft_hint[0].tool_id,
+            reason=(f"matched a chat tool but operation hint {operation!r} is "
+                    f"not in the tool ID"),
+            candidates_considered=len(tools_list),
+            platform=soft_hint[1],
+        )
+
+    return DiscoveryResult(
+        tool_id=None,
+        reason="No chat backend is connected in this workspace.",
+        candidates_considered=len(tools_list),
+    )
+
+
+# ============================================================================
+# Drive / file storage — Google Drive OR OneDrive OR M365/SharePoint
+# (v2.14.2+; M365/SharePoint + workspace-host preference v5.11.1, BUG-8538)
+# ============================================================================
+
+# Path markers that identify which cloud platform HOSTS a workspace folder.
+# Checked against the workspace root, normalized to forward slashes, lowered,
+# with a trailing slash appended — so a root that ENDS at the marker folder
+# (".../Google Drive/My Drive") still matches. SharePoint is checked before
+# OneDrive: a synced SharePoint library path can carry both spellings, and
+# the more specific product wins.
+_WORKSPACE_DRIVE_MARKERS = (
+    ("m365_sharepoint", ("sharepoint",)),
+    ("onedrive", ("onedrive", "one drive", "one_drive")),
+    ("google_drive", ("google drive/", "googledrive/", "google_drive/",
+                      "gdrive/", "my drive/", "shared drives/")),
+)
+
+
+def infer_workspace_drive_platform(workspace_root) -> Optional[str]:
+    """Which drive platform hosts the WORKSPACE, read from its root path —
+    `"google_drive"` / `"onedrive"` / `"m365_sharepoint"` / None (BUG-8538).
+
+    When a customer has more than one drive connected (the reporting workspace
+    had Google Drive AND Microsoft 365), first-match discovery can bind the
+    platform that does NOT host the workspace and search it for a file that
+    lives in the other — an empty lookup even where the hints all match. The
+    decision has to come from the workspace mount, not tool order: pass this
+    result as `discover_drive_tool(..., prefer_platform=...)`.
+
+    None means the root carries no marker (a Cowork session-scoped mount
+    `/sessions/<id>/mnt/<name>` usually doesn't) — the caller then keeps
+    first-match behavior and should try the OTHER connected drive platform
+    when the first lookup finds nothing.
+
+    >>> infer_workspace_drive_platform("C:/Users/Sample/OneDrive - Stone Industries/Command Room")
+    'onedrive'
+    >>> infer_workspace_drive_platform("C:/Users/Sample/Google Drive/My Drive/Command Room")
+    'google_drive'
+    >>> infer_workspace_drive_platform("/sessions/abc/mnt/Command Room") is None
+    True
+    """
+    root = str(workspace_root or "").replace("\\", "/").lower().rstrip("/")
+    if not root:
+        return None
+    root += "/"
+    for platform, markers in _WORKSPACE_DRIVE_MARKERS:
+        if any(m in root for m in markers):
+            return platform
+    return None
 
 
 def discover_drive_tool(
     tools: Iterable[ToolDescriptor],
     operation: str = "search_files",
+    prefer_platform: Optional[str] = None,
 ) -> DiscoveryResult:
-    """Discover a file-storage tool across Google Drive OR OneDrive.
+    """Discover a file-storage tool across Google Drive, OneDrive, or the
+    Microsoft 365 / SharePoint connector (whose file surface spells
+    `sharepoint`, e.g. `sharepoint_search` — BUG-8538).
 
     Used by skills that need to read/write client docs (intel-intake,
-    workspace-ingest, memo-writer, etc.). Operation hints:
-    `search_files`, `download_file`, `upload_file`, `list_recent`, etc.
+    workspace-ingest, memo-writer, etc.) and by the session-scoped brief
+    opener lookup. Operation hints: `search_files`, `search`,
+    `download_file`, `upload_file`, `list_recent`, etc.
+
+    `prefer_platform` (v5.11.1) is the platform hosting the WORKSPACE —
+    normally `infer_workspace_drive_platform(workspace_root)`. When more than
+    one drive platform is connected, first-match returns whichever tool the
+    registry happens to list first, which can bind the drive that does not
+    hold the workspace's files. With a preference set, matching compares
+    platform FAMILIES (`onedrive` and `m365_sharepoint` are both the
+    Microsoft family), and a soft match on the preferred family outranks an
+    exact operation match on the wrong family — the wrong family's drive
+    cannot host the workspace file at all. Without it (None), behavior is
+    exactly the pre-v5.11.1 first-match.
     """
     tools_list = list(tools)
     candidates = 0
     soft_match: Optional[ToolDescriptor] = None
     soft_platform: Optional[str] = None
+    first_exact: Optional[tuple] = None
+    preferred_exact: Optional[tuple] = None
+    preferred_soft: Optional[tuple] = None
+    prefer_family = _drive_family(prefer_platform)
     op_norm = operation.lower().replace("_", "")
 
     for t in tools_list:
@@ -824,14 +1034,46 @@ def discover_drive_tool(
             continue
         tid_norm = t.tool_id.lower().replace("_", "")
         if op_norm in tid_norm:
-            return DiscoveryResult(
-                tool_id=t.tool_id,
-                candidates_considered=candidates,
-                platform=platform,
-            )
-        if soft_match is None:
-            soft_match = t
-            soft_platform = platform
+            if prefer_family is None:
+                return DiscoveryResult(
+                    tool_id=t.tool_id,
+                    candidates_considered=candidates,
+                    platform=platform,
+                )
+            if first_exact is None:
+                first_exact = (t, platform)
+            if preferred_exact is None and _drive_family(platform) == prefer_family:
+                preferred_exact = (t, platform)
+        else:
+            if soft_match is None:
+                soft_match = t
+                soft_platform = platform
+            if preferred_soft is None and _drive_family(platform) == prefer_family:
+                preferred_soft = (t, platform)
+
+    if preferred_exact is not None:
+        return DiscoveryResult(
+            tool_id=preferred_exact[0].tool_id,
+            candidates_considered=candidates,
+            platform=preferred_exact[1],
+        )
+    if preferred_soft is not None:
+        return DiscoveryResult(
+            tool_id=preferred_soft[0].tool_id,
+            reason=(f"matched the workspace-hosting drive family but operation "
+                    f"hint {operation!r} not in tool ID"),
+            candidates_considered=candidates,
+            platform=preferred_soft[1],
+        )
+    if first_exact is not None:
+        return DiscoveryResult(
+            tool_id=first_exact[0].tool_id,
+            reason=(f"preferred drive platform {prefer_platform!r} exposes no "
+                    f"matching tool — matched {first_exact[1]!r} instead; its "
+                    "drive may not hold the workspace's files"),
+            candidates_considered=candidates,
+            platform=first_exact[1],
+        )
 
     if soft_match is not None:
         return DiscoveryResult(
@@ -844,8 +1086,9 @@ def discover_drive_tool(
     return DiscoveryResult(
         tool_id=None,
         reason=(
-            "No drive/file-storage MCP tool found. Connect Google Drive or OneDrive "
-            "in Cowork → Settings → Connectors."
+            "No drive/file-storage MCP tool found. Connect Google Drive, "
+            "OneDrive, or Microsoft 365 / SharePoint in Cowork → Settings → "
+            "Connectors."
         ),
         candidates_considered=candidates,
     )
@@ -1028,6 +1271,8 @@ __all__ = [
     "discover_mail_thread_fetch_tool",
     "discover_transcript_tool",
     "discover_drive_tool",
+    # v5.11.1 BUG-8538 — workspace-host preference for multi-drive workspaces
+    "infer_workspace_drive_platform",
     # v4.6.0 MC3 — Slack commitment-capture leg
     "discover_slack_tool",
 ]

@@ -470,8 +470,8 @@ When ANY skill (workspace-manager during "new project," meeting-notes when a new
 
 2. **Calendar (90-day pull, past + 14 days future):**
    - Search events by attendee email.
-   - For each past event: emit `meeting` event with `status: occurred`, attendee list resolved.
-   - For each future event: emit `meeting` event with `status: scheduled`.
+   - For each past event: emit `meeting` event with `status: occurred`, built via `meeting_capture.build_meeting_event()` (BUG-8244 canonical binding: top-level `person_ids` = attendees resolved, `data.attendees` = every invitee EMAIL verbatim, `data.attendees_external` = unmatched names).
+   - For each future event: emit `meeting` event with `status: scheduled`, same builder and binding.
    - Backfill `meeting_count_90d`, infer `typical_meeting_cadence` (weekly/biweekly/monthly/one-off).
 
 3. **Granola (90-day pull):**

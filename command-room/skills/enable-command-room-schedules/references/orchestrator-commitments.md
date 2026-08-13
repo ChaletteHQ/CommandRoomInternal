@@ -154,7 +154,8 @@ provider = resolve_mail_provider(workspace_root, '<the seam-resolved provider, o
 # Stage B (F2): auto-resolves close through commitment_state.close_commitment
 # — THE closure path. Matching (Path 1) is unchanged; only the write moved.
 n_resolved = 0
-next_seq = <peek-next-seq>  # for pending events only
+# NO seq peek (BUG-8330 item 7): pass next_seq=None below — the appender
+# allocates seq inside the writer lock; a peeked value is racy.
 to_append = []
 for send in <list of sends since window>:
     results = match_send_to_commitments(
@@ -216,14 +217,13 @@ for send in <list of sends since window>:
                 proposed_resolution='auto_resolve',
                 score=r['score'],
                 evidence=evidence,
-                next_seq=next_seq,
+                next_seq=None,  # appender stamps in-lock
                 # WATCHGATE — the matcher's own fulfillment finding + WHEN the
                 # evidence was observed (this send's own timestamp), so the
                 # accept surface screens on the finding rather than on prose.
                 has_completion_signal=r.get('has_completion_signal'),
                 evidence_ts='<this message send ts — the same value as send_ts>',
             ))
-            next_seq += 1
 if to_append:
     atomic_append_jsonl(events_path, to_append)
 print(f'CRU commitments pre-render: resolved={n_resolved} pending={len(to_append)}')
@@ -367,7 +367,8 @@ results = match_calendar_to_commitments(
 # Stage B (F2): auto-resolves close through close_commitment; matching (Path 5)
 # unchanged. Pending events keep their builder.
 n_resolved = 0
-next_seq = <peek-next-seq>  # for pending events only
+# NO seq peek (BUG-8330 item 7): pass next_seq=None below — the appender
+# allocates seq inside the writer lock; a peeked value is racy.
 to_append = []
 for r in results:
     if r['recommendation'] == 'auto_resolve':
@@ -403,11 +404,10 @@ for r in results:
             proposed_resolution='auto_resolve',
             score=r['score'],
             evidence=r['evidence'],
-            next_seq=next_seq,
+            next_seq=None,  # appender stamps in-lock
             has_completion_signal=r.get('has_completion_signal'),
             evidence_ts='<this message send ts — the same value as send_ts>',
         ))
-        next_seq += 1
 if to_append:
     atomic_append_jsonl(events_path, to_append)
 print(f'CRU commitments calendar pre-render: resolved={n_resolved} pending={len(to_append)}')
@@ -460,7 +460,7 @@ For the confidence threshold specifically, use `cru_match._commitment_confidence
 Read events.jsonl. Apply base filter to every commitment event (every field read uses `_commitment_field`; confidence read uses `_commitment_confidence`):
 - **Kind filter (Phase 2 Stage D, re-scoped by CTS1):** OWNER-ME task-kind items never surface here — they are My Plate · Personal rows (the `surface_split` partition already routes them). **Delegated tasks (owner ≠ M, effective kind `task` — CTS1 §2.3) DO render in this chat**: someone else acts next, so they belong on Waiting On — but `cru_match.cru_eligible` excludes task-kind from CRU, so they get NO pre-staged chase draft and NO reconcile: render with the delegated set only (`nudge` + `mark received` + `snooze 3d` + `add to my plate` — WG1-A D-A4: `nudge` is compose-on-CLICK, connector-free at render; the row carries the owner's resolved email as `To:` metadata; when NO email is on file, `nudge` degrades to the `add email then send` recovery verb and the other three verbs stay — mirror `surface_drivers._DELEGATED_VERBS` + its degrade exactly), tagged "(delegated — nudge is manual, I won't auto-chase this)". The header counts from `count_commitments` still include every kind in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
 - **Sub-item filter (SUB1 — REQUIRED):** live sub-items (projected `data.parent_id` naming an open parent) NEVER surface as their own chase rows and NEVER enter the CRU legs — `cru_match.cru_eligible` excludes them in code, same mechanism as the task filter. The PARENT is the commitment of record: its row carries the progress annotation ("2 of 3 sub-items done · next: [step]" — from the loader's `n_subitems_open`/`n_subitems_done`/`next_subitem_due` stamps) and, when the last open child has closed, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Child activity already bubbles into the parent's movement (never render a parent "stuck" while its steps are moving). Orphan children (parent closed — cascade crash window) surface as ordinary top-level rows with "was part of: [parent title]". `data.next_subitem_due` is an annotation/ranking signal ONLY — never the parent's due; a deferred parent stays deferred.
-- `_commitment_confidence(ev) >= confidence.CONFIDENCE_SURFACE_MIN` (== 0.7 as of v3.5.0; canonical constant in `shared/scripts/confidence.py`)
+- **Confidence floor — enforced IN CODE, not here (BUG-8330 item 6).** `surface_drivers.build_waiting_on_view` applies `cru_match.passes_surface_floor` (floor = `confidence.surface_min(workspace_root)` — 0.7 shipped, moved by the workspace's calibration override) to the ROW set before partition. Missing confidence is UNSCORED and passes — never apply `_commitment_confidence(ev) >= floor` by hand; that helper's missing→0.0 default silently drops every unscored capture. The header stays full-set; the driver appends "(N low-confidence not shown)" and records `n_filtered_by_confidence` on the fire receipt.
 - `_commitment_field(ev, "status") not in ("pending_review", "proposed")` — filter out shape-5 pending-review events; they surface through the needs-your-call queue, not daily commitments
 - No subsequent `commitment_resolved` event with matching id (Sam Apr 29 — stale "this is really old" items were resolved-but-still-surfacing because the prior filter only checked `thread_resolved`. Both event types close the commitment; both must filter it out. Mirror `shared/scripts/cru_match.py::load_open_commitments`, which already does both.)
 - No subsequent `thread_resolved` event with matching id

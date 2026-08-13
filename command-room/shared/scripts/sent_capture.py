@@ -65,6 +65,13 @@ scan-for-commitments' outbound/Sent pass (the historical backfill path,
 stdlib only; nothing here calls the network.
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import datetime as _dt
 import sys
@@ -228,7 +235,7 @@ def build_sent_commitment_event(
     if counterparty_name and not counterparty_id:
         data["counterparty_name"] = counterparty_name
     if evidence:
-        data["evidence"] = evidence[:200]
+        data["evidence"] = clip(evidence)
     if pending_review:
         data["pending_review"] = True
         if review_reason:

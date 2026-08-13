@@ -102,8 +102,9 @@ def validate_pack(pack: dict) -> list[str]:
 
 def _emit(workspace_root: Path, event_type: str, data: dict) -> None:
     events_path = _events_path(workspace_root)
+    # No hand-stamped seq (BUG-8330 item 7) — the appender allocates inside
+    # the writer lock; a pre-computed value is racy by construction.
     event = {
-        "seq": next_seq(events_path),
         "ts": datetime.now(timezone.utc).isoformat(),
         "type": event_type,
         "source_skill": SOURCE_SKILL,
@@ -160,12 +161,18 @@ def export_advisor(workspace_root: str | Path, pack: dict) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(dest, pack)
 
+    # WALKFIX1 Item C — persisted workspace-relative. `artifact_path` was
+    # already a POINTER_FIELDS key, but membership in that tuple is not a
+    # mechanism: it only means the guard-tier sweep reads the key. The
+    # conversion has to happen at the writer, and here it did not.
+    from workspace_paths import to_workspace_relative
+
     _emit(workspace_root, "advisor_profile_exported", {
         "display_name": name,
         "role": pack["profile"].get("role"),
         "fidelity": "self",
         "shareable": True,
-        "artifact_path": str(dest),
+        "artifact_path": to_workspace_relative(str(dest), workspace_root),
     })
     return dest
 

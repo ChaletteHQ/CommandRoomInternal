@@ -152,15 +152,28 @@ def digest_class(item: dict):
 def digest_key(item: dict):
     """The grouping key inside a class, or None when the item does not digest.
 
-    For review rows the key IS THE EVIDENCE. Rows whose capture recorded no
-    evidence group together under one honest key: "no evidence recorded" is an
-    evidence class too, and it is the one the shared fence holds in bulk.
+    For review rows the key is the EVIDENCE plus counterparty/thread
+    AGREEMENT (BUG-8330 item 9): two rows share a digest only when they rest
+    on the same evidence line AND concern the same counterparty and thread —
+    unrelated promises that merely echoed the same sentence stop bucketing.
+
+    Rows whose capture recorded NO evidence never digest (also item 9): the
+    old "(no evidence recorded)" key grouped every evidence-less row
+    workspace-wide into one bucket whose single affirmative answered them
+    all. No evidence is precisely the state that deserves a per-row look;
+    each renders as its own row with its own verbs.
     """
     cls = digest_class(item)
     if cls is None:
         return None
     if cls == CLASS_REVIEW:
-        return f"{cls}|{_norm(item.get('evidence')) or '(no evidence recorded)'}"
+        ev_text = _norm(item.get("evidence"))
+        if not ev_text:
+            return None
+        cp = _norm(item.get("counterparty_id")
+                   or item.get("counterparty_name"))
+        th = _norm(item.get("primary_thread_id") or item.get("thread_id"))
+        return f"{cls}|{ev_text}|cp={cp}|th={th}"
     # The identity and fact lanes group by CLASS, not by text: 18 unrelated
     # names are one "who are these people" question, and 3 unadjudicated facts
     # are one "worth saving?" question. Splitting either by text would just
@@ -242,7 +255,16 @@ def _review_digest(key: str, members: list, items: list) -> dict:
         "title": f"{n} {noun} matched to the same message",
         "render_line": line,
         "shape": "hygiene",
-        "action_tuples": [{"action": "confirm"}, {"action": "not relevant"},
+        # BUG-8330 item 9 — the person-lane precedent applied here: the
+        # digest's AFFIRMATIVE EXPANDS ("show these" re-renders the members
+        # as their own rows, each with its own Close it) instead of a single
+        # "Close it" that closed every member. No bulk close verb survives
+        # on this row; a member's close is that member's own click. The
+        # group verbs that remain are the cheap-to-undo pair (dismiss/hold).
+        # Legacy persisted widgets still carrying `confirm` on a digest id
+        # keep dispatching through confirm_review_digest unchanged.
+        "action_tuples": [{"action": "show these"},
+                          {"action": "not relevant"},
                           {"action": "hold"}],
         "evidence": evidence,
         "weak_reason": weak,

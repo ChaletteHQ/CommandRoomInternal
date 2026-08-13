@@ -111,13 +111,20 @@ def _entities(workspace_root: Path) -> dict:
     return d["entities"] if isinstance(d.get("entities"), dict) else d
 
 
-def detect_org_value_signals(workspace_root: str | Path) -> list[dict]:
+def detect_org_value_signals(workspace_root: str | Path,
+                             *, stats: dict | None = None) -> list[dict]:
     """Return observed org-value candidates, each as:
         {org_id, org_name, proposed_money: {account_value|mrr: N,
          source, as_of}, evidence, fingerprint, render_line}
     Detection only — never writes, never estimates. One candidate per org
     per run (first qualifying event wins). Empty list when nothing
-    qualifies."""
+    qualifies.
+
+    `stats`, when a dict, is filled by the org-scoped read with
+    `personal_withheld` / `personal_withheld_by_tie` (BUG-8330 FX-5). An
+    absent key means the personal layer did not run — never read it as zero.
+    `run_org_value_scan` carries the result onto its run report; this is the
+    second of the two in-tree call sites that measure the drop."""
     workspace_root = Path(workspace_root)
     ent = _entities(workspace_root)
     orgs = ent.get("orgs") or []
@@ -142,7 +149,7 @@ def detect_org_value_signals(workspace_root: str | Path) -> list[dict]:
     # ORG-SCOPED read (PGUARD1 D1): the account mask + personal-lane drop
     # apply by design — masked history never drives a money proposal.
     from events_io import load_events_org_scoped
-    events, _skipped = load_events_org_scoped(workspace_root)
+    events, _skipped = load_events_org_scoped(workspace_root, stats=stats)
     cutoff = (_clock_now(workspace_root)
               - _dt.timedelta(days=TEXT_WINDOW_DAYS)).strftime("%Y-%m-%d")
     today = _clock_now(workspace_root).strftime("%Y-%m-%d")
@@ -248,8 +255,14 @@ def run_org_value_scan(
 ) -> dict:
     """Detect → propose each candidate (tier=confirm; ledger cooldown +
     open-dedup inside propose()). Capped per run, overflow counted.
-    Returns {n_candidates, n_proposed, n_suppressed, n_capped}."""
-    candidates = detect_org_value_signals(workspace_root)
+    Returns {n_candidates, n_proposed, n_suppressed, n_capped} plus
+    `personal_withheld` / `personal_withheld_by_tie` when the org-scoped read
+    measured them (BUG-8330 FX-5 — a run report that cannot say how many rows
+    it never saw is the invisible-collapse shape item 6 closed elsewhere).
+    Those two keys are ABSENT, not zero, when the personal layer did not
+    run."""
+    org_stats: dict = {}
+    candidates = detect_org_value_signals(workspace_root, stats=org_stats)
     n_proposed = n_suppressed = n_capped = 0
     for c in candidates:
         if n_proposed >= MAX_PROPOSALS_PER_RUN:
@@ -264,8 +277,12 @@ def run_org_value_scan(
             n_proposed += 1
         else:
             n_suppressed += 1
-    return {"n_candidates": len(candidates), "n_proposed": n_proposed,
-            "n_suppressed": n_suppressed, "n_capped": n_capped}
+    report = {"n_candidates": len(candidates), "n_proposed": n_proposed,
+              "n_suppressed": n_suppressed, "n_capped": n_capped}
+    for _k in ("personal_withheld", "personal_withheld_by_tie"):
+        if _k in org_stats:
+            report[_k] = org_stats[_k]
+    return report
 
 
 __all__ = [

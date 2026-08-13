@@ -176,6 +176,17 @@ def _write_seqhw(events_path: Path, max_seq: int) -> None:
 # one place so the "ignore ≥1e10" contract can never drift between them.
 _EPOCH_THRESHOLD = 10**10
 
+# BUG-8330 item 8 — bound on an explicit caller-supplied seq ABOVE the
+# ledger's max. The honor-explicit branch accepted anything < 10^10, so one
+# hand-stamped `"seq": 999999` relocated the whole allocation ceiling (both
+# allocators are max+1, and the .seqhw sidecar then locks the jump in — a
+# real ledger now allocates above 1,000,000). One rotation window is 10k;
+# a legitimate explicit seq never leads the ledger by anywhere near that.
+# Beyond the gap the seq is REASSIGNED like a stale one, with loud stderr.
+# Already-relocated ledgers: shared/scripts/repair_seq_relocation.py
+# (supervised one-shot remap).
+SEQ_GAP_MAX = 1000
+
 
 def _clock1():
     """The CLOCK1 helper module, or None.
@@ -387,12 +398,19 @@ def atomic_append_jsonl(
     events: list[dict[str, Any]] | dict[str, Any],
     encoding: str = "utf-8",
     holder: str = "atomic_append_jsonl",
-) -> None:
+) -> list[dict[str, Any]]:
     """Append one or more JSON-line records to a JSONL file atomically.
 
     Reads the existing file (if any), constructs the full new content, and
     writes it via atomic_write_text. This is more expensive than O_APPEND but
     guarantees no concurrent reader sees a partial line.
+
+    RETURNS the written event copies AS STAMPED (BUG-8330 item 7) — for
+    events.jsonl that means the allocated `seq` and `ts` are readable from
+    the return value. A caller that needs the seq of what it just wrote
+    reads it HERE; calling next_seq() first and hand-stamping `"seq"` is the
+    racy reserve-then-write pattern that produced duplicate seqs, and
+    writer_contract_lint now flags it.
 
     WRITER LOCK FOR events.jsonl (SPEC A1, v3.19.x):
     For writes to a file named `events.jsonl` specifically, the entire
@@ -494,7 +512,8 @@ def atomic_append_jsonl(
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parent))
             from event_gate import gate_events
-        events = gate_events(events, strict_enum=True, holder=holder)
+        events = gate_events(events, strict_enum=True, holder=holder,
+                             events_jsonl_path=path)
 
         # ACCOUNT-SCOPE WALL (connector-agnostic-v1, R2/R3) — the writer-side
         # privacy guarantee, run at this same single chokepoint. A personal /
@@ -546,6 +565,12 @@ def atomic_append_jsonl(
             except Exception:
                 pass
 
+    # BUG-8330 item 7 — the stamped copies (assigned seq/ts) are RETURNED so
+    # callers that need the allocated seq read it from the return value.
+    # Pre-computing via next_seq() then stamping "seq" by hand is the racy
+    # reserve-then-write pattern this replaces; writer_contract_lint flags it.
+    stamped: list[dict[str, Any]] = []
+
     def _read_stamp_write(evs: list[dict[str, Any]]) -> None:
         existing = ""
         existing_max_seq = 0
@@ -594,6 +619,27 @@ def atomic_append_jsonl(
                 if current_seq is None or not isinstance(current_seq, (int, float)) or isinstance(current_seq, bool):
                     ev["seq"] = next_seq_val
                     next_seq_val += 1
+                elif (
+                    seq_is_valid_human_counter
+                    and int(current_seq) >= next_seq_val
+                    and int(current_seq) > existing_max_seq + SEQ_GAP_MAX
+                ):
+                    # BUG-8330 item 8 — explicit seq LEADS the ledger by more
+                    # than SEQ_GAP_MAX: almost certainly a hand-stamped
+                    # artifact (the 999999 case), and honoring it relocates
+                    # the allocation ceiling permanently (max+1 allocators +
+                    # the .seqhw sidecar lock the jump in). Reassign like a
+                    # stale seq, loudly — the write itself is preserved.
+                    import sys as _sys
+                    _sys.stderr.write(
+                        f"[atomic_append_jsonl] explicit seq {int(current_seq)} "
+                        f"leads the ledger max ({existing_max_seq}) by more than "
+                        f"SEQ_GAP_MAX={SEQ_GAP_MAX}; reassigned to {next_seq_val} "
+                        f"(holder={holder}). Never hand-stamp seq — omit it and "
+                        "the appender allocates inside the writer lock.\n"
+                    )
+                    ev["seq"] = next_seq_val
+                    next_seq_val += 1
                 elif seq_is_valid_human_counter and int(current_seq) >= next_seq_val:
                     # Explicit human-counter seq in this batch — bump counter past it
                     # so subsequent missing-seq events stamp monotonically. Nano-epoch
@@ -622,6 +668,7 @@ def atomic_append_jsonl(
                         ev["ts_source"] = clock_stamp["ts_source"]
                         ev["machine_ts"] = clock_stamp["machine_ts"]
 
+        stamped[:] = evs
         new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs)
 
         # FS-04 — seq high-water regression guard. If the file on disk regressed
@@ -757,6 +804,7 @@ def atomic_append_jsonl(
             _read_stamp_write(events)
     else:
         _read_stamp_write(events)
+    return stamped
 
 
 def acquire_write_lock(
@@ -822,7 +870,21 @@ def acquire_write_lock(
             except OSError:
                 # Race: file disappeared between exists() and stat(). Retry the loop.
                 continue
+            # BUG-8330 item 7d — REFUSE the mtime-stale reclaim while the
+            # holder pid is provably ALIVE on this machine. The mtime backstop
+            # exists for crashed writers; a live writer mid-way through a slow
+            # multi-MB append is not crashed, and reclaiming its lock is
+            # exactly the duplicate-seq / lost-event race the lock closes.
+            # A dead or unreadable pid (crash, other machine) keeps today's
+            # reclaim behavior.
+            holder_alive = False
             if age > stale_after_s:
+                try:
+                    lock_pid, _epoch = _read_lock_payload(lock_path)
+                    holder_alive = bool(lock_pid) and _pid_alive(lock_pid)
+                except Exception:
+                    holder_alive = False
+            if age > stale_after_s and not holder_alive:
                 # Stale — reclaim. Best-effort; if another writer grabs it
                 # first, we'll loop again on our next attempt. v4.8.1 (F-11):
                 # reclaim goes through _clear_lock_file so a refused unlink
@@ -1115,7 +1177,7 @@ def multi_write_context(
 
         with multi_write_context(workspace_path, holder="update-bridge"):
             run_corruption_recovery_if_needed()
-            apply_spaeth_canonical_surname_fix()
+            apply_canonical_surname_fix()
             prompt_brain_name_if_missing()
             # ...all writes under single lock — no deadlock, no partial state
 

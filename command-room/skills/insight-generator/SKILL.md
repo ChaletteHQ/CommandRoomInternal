@@ -61,7 +61,7 @@ The two interactive passes remain the main write paths:
 **Pass 16 (exemplar structure review, SPEC OUT8) — appends:**
 - One `exemplar_update_proposal` event per user action; the approved skeleton is written to `_hq/exemplars/<kind>/exemplar_1.md` via `exemplars.promote_workspace_exemplar` (workspace-side — NEVER the plugin's shipped seeds; the previous version rotates to `exemplar_2.md`; the scrub gate replaces entity names with placeholders and re-runs the leak scan before the write — residual findings REFUSE the write). Decision + cooldown to `proposal_feedback.jsonl`.
 
-All appends follow `shared/WORKSPACE_API.md` — reserve next seq, append atomically, regenerate affected views (MASTER_TRACKER, TIMELINE), log any failure to `_hq/CONFLICTS.md`.
+All appends follow `shared/WORKSPACE_API.md` — append atomically via `atomic_append_jsonl` (omit `seq`; the appender allocates it inside the writer lock — never pre-compute, BUG-8330 item 7), regenerate affected views (MASTER_TRACKER, TIMELINE), log any failure to `_hq/CONFLICTS.md`.
 
 **Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` (the `dormancy_reviewed_at` field updates) MUST use `shared/scripts/atomic_write.py atomic_write_json`. ALL appends to `events.jsonl` and `classifier_feedback.jsonl` MUST use `atomic_append_jsonl`. Hand-rolled writes are forbidden — see `shared/WORKSPACE_API.md` § "Write atomically" + § "Append Protocol".
 

@@ -602,12 +602,11 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
     from a fire that never happened, and the whole point of this event is that
     a validator can tell those apart. `validate_reconcile_ran` reads the status
     and refuses it, so a blocked run can never be reported as a clean zero."""
-    from next_seq import next_seq as _next_seq
     from atomic_write import atomic_append_jsonl as _append
     from cru_match import _now_iso as _audit_ts
 
+    # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
     audit_event = {
-        "seq": _next_seq(str(events_path)),
         "ts": _audit_ts(),
         "type": "sent_reconcile",
         "source_skill": source_skill,
@@ -827,473 +826,483 @@ def reconcile_and_receipt(
             provider=provider,
         )
 
-    # F-28 — the workspace goes to the projector too, so the MC1 all-received
-    # stamp on the rows this driver matches agrees with the roster reader the
-    # matcher below uses. One workspace, one answer, per fire.
-    opens = load_open_commitments(str(events_path), workspace_root=workspace_root)
-    n_open_before = len(opens)
+    # BUG-8330 item 15 — ONE lock session for the whole fire. This function
+    # used to run N+1 separate lock cycles per fire (the closes, each partial
+    # receipt, each pending-review append, each auto-added contact's
+    # entities.json write, then the cursor), and every release under a
+    # cloud-sync hold could mv-aside a fresh piece of lock litter — the
+    # helper built for exactly this (multi_write_context) was used by two
+    # backfill scripts and not by the rail that fires daily. Concurrent
+    # fires now serialize up front instead of interleaving lock churn;
+    # inner writers keep their own per-file locks (reentrant-safe).
+    from atomic_write import multi_write_context
+    with multi_write_context(workspace_root, holder=source_skill):
+        # F-28 — the workspace goes to the projector too, so the MC1 all-received
+        # stamp on the rows this driver matches agrees with the roster reader the
+        # matcher below uses. One workspace, one answer, per fire.
+        opens = load_open_commitments(str(events_path), workspace_root=workspace_root)
+        n_open_before = len(opens)
 
-    res = reconcile_sent(opens, sent_messages or [], user_person_id=user_person_id,
-                         provider=provider,
-                         exclude_captured_since=exclude_captured_since,
-                         # F-28 — this wrapper HOLDS the workspace and used to
-                         # keep it, leaving Path 1's roster fix unreachable on
-                         # the rail that fires daily.
-                         workspace_root=workspace_root)
-    auto_close = res["auto_close"]
-    pending = res["pending"]
-    partial = res.get("partial") or []
-    signal_fields = res.get("signal_fields") or _empty_signal_fields()
+        res = reconcile_sent(opens, sent_messages or [], user_person_id=user_person_id,
+                             provider=provider,
+                             exclude_captured_since=exclude_captured_since,
+                             # F-28 — this wrapper HOLDS the workspace and used to
+                             # keep it, leaving Path 1's roster fix unreachable on
+                             # the rail that fires daily.
+                             workspace_root=workspace_root)
+        auto_close = res["auto_close"]
+        pending = res["pending"]
+        partial = res.get("partial") or []
+        signal_fields = res.get("signal_fields") or _empty_signal_fields()
 
-    # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
-    # legacy-id normalization, loud refusal of orphan tombstones, full-set
-    # idempotency, pending_review floor — matching above is unchanged, only
-    # event construction moved into close_commitment. (Proposal ids come from
-    # _commitment_id over the open set, so they are already canonical.)
-    events_written = 0
-    if auto_close:
-        from commitment_state import close_commitments
-        results = close_commitments(
-            workspace_root,
-            [{
-                "commitment_id": c["commitment_id"],
-                "resolved_by": "sent_reconcile",
-                "evidence": c.get("evidence") or "matched an outbound send",
-                "primary_thread_id": c.get("primary_thread_id") or "",
-            } for c in auto_close],
-            source_skill=source_skill,
-        )
-        by_id = {str(c["commitment_id"]): c for c in auto_close}
-        closed_or_already: set[str] = set()
-        for r in results:
-            rid = str(r.get("commitment_id"))
-            if r["status"] == "closed":
-                events_written += 1
-                closed_or_already.add(rid)
-            elif r["status"] == "already_resolved":
-                closed_or_already.add(rid)
-            elif r.get("error") == "PendingReviewError" and rid in by_id:
-                # F2/F5: a pending_review commitment is never auto-resolved —
-                # demote it to the confirm list instead of closing it.
-                pending.append(by_id[rid])
-            # CommitmentIdError: logged loudly by close_commitments; the
-            # proposal is dropped rather than written as an orphan tombstone.
-        auto_close = [c for c in auto_close if str(c["commitment_id"]) in closed_or_already]
-
-    # HYG1 Item 1 (the MC1 4.7 wire-up): auto-record per-person receipts for
-    # partial_received recommendations — non-destructive by construction
-    # (mark_partial_received NEVER closes; a completed roster only stamps the
-    # derived all_counterparties_received PROPOSE-closure signal). Idempotent
-    # per (commitment, counterparty): a counterparty already in the item's
-    # accumulated received_from (the pre-close `opens` projection) never gets
-    # a second receipt — the write-side mirror of the orchestrator's "never
-    # chase a counterparty already in received_from". Name-only matches were
-    # already routed to skipped_names by reconcile_sent (never guess an id).
-    n_partial_receipts = 0
-    partial_recorded: list = []      # slim rows for the receipt
-    partial_propose_closure: list = []  # rosters completed by this run
-    partial_skipped_names: list = []
-    if partial:
-        from commitment_parties import received_from_ids as _rcv_ids
-        from commitment_state import mark_partial_received
-        already_by_cid = {}
-        for c in opens:
-            already_by_cid[str(_commitment_id(c))] = set(_rcv_ids(c))
-        for p in partial:
-            already = already_by_cid.get(str(p["commitment_id"]), set())
-            recorded_cps = []
-            proposed = False
-            for r in p["receipts"]:
-                cp_id = r["counterparty_id"]
-                if cp_id in already:
-                    continue
-                try:
-                    result = mark_partial_received(
-                        workspace_root,
-                        p["commitment_id"],
-                        # Person-shaped like every other caller (apply-choices
-                        # passes sender_person_id, the orchestrator owner_id) —
-                        # the sender IS the user in a Sent reconcile. A skill
-                        # string here would surprise any future reader of
-                        # data.received_by.
-                        received_by=user_person_id,
-                        counterparty_id=cp_id,
-                        evidence=r.get("evidence") or "delivered by an outbound send",
-                        source_skill=source_skill,
-                    )
-                except Exception:
-                    # A bad id / race is logged by the writer's own guards;
-                    # never let one receipt failure abort the reconcile run.
-                    continue
-                if result.get("status") == "received":
-                    n_partial_receipts += 1
-                    recorded_cps.append(cp_id)
-                    already.add(cp_id)
-                    if result.get("propose_closure"):
-                        proposed = True
-            for nm in p.get("skipped_names") or []:
-                partial_skipped_names.append(
-                    {"commitment_id": p["commitment_id"], "name": nm}
-                )
-            if recorded_cps:
-                partial_recorded.append({
-                    "commitment_id": p["commitment_id"],
-                    "title": p.get("title") or "",
-                    "counterparty_ids": recorded_cps,
-                })
-            if proposed:
-                partial_propose_closure.append({
-                    "commitment_id": p["commitment_id"],
-                    "title": p.get("title") or "",
-                })
-
-    # Stage E (F5): the 0.30–0.55 pending band MUST NOT evaporate. Persist
-    # each pending proposal as a commitment_review_proposed event so the next
-    # Commitments chat surfaces it for one-click confirm/deny — before this,
-    # pending existed only inside the returned receipt (one brief line, then
-    # gone). Deduped against the OPEN proposal set (a still-open proposal for
-    # the same commitment is not re-written; confirmed/dismissed ones may be
-    # re-proposed by genuinely new sends). Cursor mechanics untouched.
-    #
-    # WATCHGATE N-2 (RIDERS1 item 5): this used to hand-build the event dict.
-    # `cru_match.build_pending_review_event` is THE writer for this type, and it
-    # is the only thing that persists `evidence_ts` — WHEN the evidence was
-    # observed — which the shared bulk-accept fence needs for its apply-moment
-    # ordering check. A hand-built row could not carry it, so every proposal
-    # this rail wrote screened as STRONG by construction: not because the match
-    # was strong, but because the fields that could weaken it were absent.
-    # `title` (FB-19) and the two rail-specific keys ride the same event; the
-    # writer owns the shape, the caller owns its own extras.
-    reviews_written = 0
-    if pending:
-        from cru_match import (build_pending_review_event,
-                               load_open_review_proposals)
-        from event_gate import append_event
-        already_proposed = {
-            (p.get("data") or {}).get("commitment_id")
-            for p in load_open_review_proposals(str(events_path))
-        }
-        for p in pending:
-            if p["commitment_id"] in already_proposed:
-                continue
-            ev = build_pending_review_event(
-                commitment_id=p["commitment_id"],
-                primary_thread_id=p.get("primary_thread_id") or "",
-                source_skill=source_skill,
-                proposed_resolution="auto_resolve",
-                score=p.get("score") or 0,
-                evidence=p.get("evidence") or "matched an outbound send",
-                # None: the gate auto-stamps seq inside the writer lock.
-                next_seq=None,
-                # FB-19: the row's own name. Without it the LB1 adapter has no
-                # title, `_row_name` falls back to the shape label, and the card
-                # renders a bare shape name with nothing to identify WHAT
-                # matched (the live 2026-07-16 render).
-                title=p.get("title") or "",
-                # The send's own time. A reply/send cannot be evidence for a
-                # promise captured after it, and the fence checks exactly that
-                # at apply time — but only if the timestamp was persisted.
-                evidence_ts=p.get("ts") or None,
-                # NOT ASSESSED, deliberately. `has_completion_signal` is the
-                # matcher's own fulfillment finding, and the SENT matcher
-                # computes none — its analogue is the close_basis, and deriving
-                # a boolean from that here would re-grade every title-band
-                # confirm on this rail. `None` means "the caller could not
-                # judge" and weakens nothing, which is the honest report.
-                has_completion_signal=None,
-            )
-            ev["data"].update({
-                # FS-11: only genuinely ambiguous matches reach here now
-                # (unambiguous moderate matches auto-closed above). Carry a TTL
-                # so an un-adjudicated proposal expires instead of accumulating;
-                # the LB1 review adapter drops expired ones.
-                "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
-                "ambiguous": True,
-            })
-            append_event(events_path, [ev], holder=source_skill)
-            reviews_written += 1
-
-    # BUG-3719 (v4.6.2): OPEN commitments from the user's own sent commissives
-    # that match nothing open — the rescue path for promises the unread-gated
-    # inbox triage never saw (thread read+replied same day → never a triage
-    # candidate → the outbound promise never scanned; close-only reconcile
-    # could never reconcile a promise that was never logged). Dedup runs
-    # against the PRE-close `opens` projection loaded above, so a sent
-    # restatement merges into its original even when this same fire's matcher
-    # just closed it (a promise already tracked is never double-tracked).
-    # Per-item gate failures land LOUDLY in capture["errors"] + the audit
-    # counts — never a crash after the closes above already landed.
-    capture = None
-    if sent_commitment_items is not None:
-        from sent_capture import capture_sent_items
-        capture = capture_sent_items(
-            workspace_root,
-            sent_commitment_items,
-            user_person_id=user_person_id,
-            opens=opens,
-            source_skill=source_skill,
-            provider=provider,
-        )
-
-    # SPEC CONTACT1 — auto contact records for people the CEO actually
-    # corresponds with. Runs AFTER the capture pass and BEFORE the cursor
-    # write, because it is the one phase that writes PEOPLE into
-    # entities.json: the cursor write below re-reads the doc for exactly that
-    # reason. Per-item gate refusals are normal outcomes, not errors; a
-    # malformed item lands loudly in contacts["errors"] and never crashes a
-    # fire whose closes have already landed.
-    contacts = None
-    if contact_capture_items is not None:
-        from contact_capture import capture_contacts
-
-        try:
-            contacts = capture_contacts(
+        # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
+        # legacy-id normalization, loud refusal of orphan tombstones, full-set
+        # idempotency, pending_review floor — matching above is unchanged, only
+        # event construction moved into close_commitment. (Proposal ids come from
+        # _commitment_id over the open set, so they are already canonical.)
+        events_written = 0
+        if auto_close:
+            from commitment_state import close_commitments
+            results = close_commitments(
                 workspace_root,
-                contact_capture_items,
+                [{
+                    "commitment_id": c["commitment_id"],
+                    "resolved_by": "sent_reconcile",
+                    "evidence": c.get("evidence") or "matched an outbound send",
+                    "primary_thread_id": c.get("primary_thread_id") or "",
+                } for c in auto_close],
                 source_skill=source_skill,
-                # The orchestrator owns the single entities.json write.
-                write_cursor=False,
             )
-        except Exception as exc:  # a contact pass must never sink a reconcile
-            print(f"contact capture failed: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
-            contacts = {"ran": False, "error": f"{type(exc).__name__}: {exc}",
-                        "n_added": 0, "n_needs_confirm": 0, "n_carried": 0,
-                        "n_refused": 0, "n_skipped": 0, "n_errors": 0,
-                        "n_queue_rows_retired": 0, "added": [],
-                        "cursor_from": None, "cursor_to": None}
+            by_id = {str(c["commitment_id"]): c for c in auto_close}
+            closed_or_already: set[str] = set()
+            for r in results:
+                rid = str(r.get("commitment_id"))
+                if r["status"] == "closed":
+                    events_written += 1
+                    closed_or_already.add(rid)
+                elif r["status"] == "already_resolved":
+                    closed_or_already.add(rid)
+                elif r.get("error") == "PendingReviewError" and rid in by_id:
+                    # F2/F5: a pending_review commitment is never auto-resolved —
+                    # demote it to the confirm list instead of closing it.
+                    pending.append(by_id[rid])
+                # CommitmentIdError: logged loudly by close_commitments; the
+                # proposal is dropped rather than written as an orphan tombstone.
+            auto_close = [c for c in auto_close if str(c["commitment_id"]) in closed_or_already]
 
-    # Advance the cursor to the newest Sent ts we saw (never backwards).
-    cursor_after = cursor_before
-    new_ts = res.get("cursor_ts")
-    sent_cursor_write = None
-    if new_ts and (cursor_before is None or new_ts > cursor_before):
-        cursor_after = new_ts
-        sent_cursor_write = cursor_after
-    contact_cursor_write = None
-    if isinstance(contacts, dict) and contacts.get("ran") and \
-            contacts.get("cursor_to") and \
-            contacts.get("cursor_to") != contacts.get("cursor_from"):
-        contact_cursor_write = contacts["cursor_to"]
-    if sent_cursor_write is not None or contact_cursor_write is not None:
-        _write_cursor(workspace_root, raw, sent_cursor_write,
-                      source_skill=source_skill,
-                      contact_cursor=contact_cursor_write)
+        # HYG1 Item 1 (the MC1 4.7 wire-up): auto-record per-person receipts for
+        # partial_received recommendations — non-destructive by construction
+        # (mark_partial_received NEVER closes; a completed roster only stamps the
+        # derived all_counterparties_received PROPOSE-closure signal). Idempotent
+        # per (commitment, counterparty): a counterparty already in the item's
+        # accumulated received_from (the pre-close `opens` projection) never gets
+        # a second receipt — the write-side mirror of the orchestrator's "never
+        # chase a counterparty already in received_from". Name-only matches were
+        # already routed to skipped_names by reconcile_sent (never guess an id).
+        n_partial_receipts = 0
+        partial_recorded: list = []      # slim rows for the receipt
+        partial_propose_closure: list = []  # rosters completed by this run
+        partial_skipped_names: list = []
+        if partial:
+            from commitment_parties import received_from_ids as _rcv_ids
+            from commitment_state import mark_partial_received
+            already_by_cid = {}
+            for c in opens:
+                already_by_cid[str(_commitment_id(c))] = set(_rcv_ids(c))
+            for p in partial:
+                already = already_by_cid.get(str(p["commitment_id"]), set())
+                recorded_cps = []
+                proposed = False
+                for r in p["receipts"]:
+                    cp_id = r["counterparty_id"]
+                    if cp_id in already:
+                        continue
+                    try:
+                        result = mark_partial_received(
+                            workspace_root,
+                            p["commitment_id"],
+                            # Person-shaped like every other caller (apply-choices
+                            # passes sender_person_id, the orchestrator owner_id) —
+                            # the sender IS the user in a Sent reconcile. A skill
+                            # string here would surprise any future reader of
+                            # data.received_by.
+                            received_by=user_person_id,
+                            counterparty_id=cp_id,
+                            evidence=r.get("evidence") or "delivered by an outbound send",
+                            source_skill=source_skill,
+                        )
+                    except Exception:
+                        # A bad id / race is logged by the writer's own guards;
+                        # never let one receipt failure abort the reconcile run.
+                        continue
+                    if result.get("status") == "received":
+                        n_partial_receipts += 1
+                        recorded_cps.append(cp_id)
+                        already.add(cp_id)
+                        if result.get("propose_closure"):
+                            proposed = True
+                for nm in p.get("skipped_names") or []:
+                    partial_skipped_names.append(
+                        {"commitment_id": p["commitment_id"], "name": nm}
+                    )
+                if recorded_cps:
+                    partial_recorded.append({
+                        "commitment_id": p["commitment_id"],
+                        "title": p.get("title") or "",
+                        "counterparty_ids": recorded_cps,
+                    })
+                if proposed:
+                    partial_propose_closure.append({
+                        "commitment_id": p["commitment_id"],
+                        "title": p.get("title") or "",
+                    })
 
-    def _slim(items):
-        from event_time import event_time
-        return [{"commitment_id": c["commitment_id"], "title": c.get("title") or "",
-                 "ts": event_time(c)} for c in items]
+        # Stage E (F5): the 0.30–0.55 pending band MUST NOT evaporate. Persist
+        # each pending proposal as a commitment_review_proposed event so the next
+        # Commitments chat surfaces it for one-click confirm/deny — before this,
+        # pending existed only inside the returned receipt (one brief line, then
+        # gone). Deduped against the OPEN proposal set (a still-open proposal for
+        # the same commitment is not re-written; confirmed/dismissed ones may be
+        # re-proposed by genuinely new sends). Cursor mechanics untouched.
+        #
+        # WATCHGATE N-2 (RIDERS1 item 5): this used to hand-build the event dict.
+        # `cru_match.build_pending_review_event` is THE writer for this type, and it
+        # is the only thing that persists `evidence_ts` — WHEN the evidence was
+        # observed — which the shared bulk-accept fence needs for its apply-moment
+        # ordering check. A hand-built row could not carry it, so every proposal
+        # this rail wrote screened as STRONG by construction: not because the match
+        # was strong, but because the fields that could weaken it were absent.
+        # `title` (FB-19) and the two rail-specific keys ride the same event; the
+        # writer owns the shape, the caller owns its own extras.
+        reviews_written = 0
+        if pending:
+            from cru_match import (build_pending_review_event,
+                                   load_open_review_proposals)
+            from event_gate import append_event
+            already_proposed = {
+                (p.get("data") or {}).get("commitment_id")
+                for p in load_open_review_proposals(str(events_path))
+            }
+            for p in pending:
+                if p["commitment_id"] in already_proposed:
+                    continue
+                ev = build_pending_review_event(
+                    commitment_id=p["commitment_id"],
+                    primary_thread_id=p.get("primary_thread_id") or "",
+                    source_skill=source_skill,
+                    proposed_resolution="auto_resolve",
+                    score=p.get("score") or 0,
+                    evidence=p.get("evidence") or "matched an outbound send",
+                    # None: the gate auto-stamps seq inside the writer lock.
+                    next_seq=None,
+                    # FB-19: the row's own name. Without it the LB1 adapter has no
+                    # title, `_row_name` falls back to the shape label, and the card
+                    # renders a bare shape name with nothing to identify WHAT
+                    # matched (the live 2026-07-16 render).
+                    title=p.get("title") or "",
+                    # The send's own time. A reply/send cannot be evidence for a
+                    # promise captured after it, and the fence checks exactly that
+                    # at apply time — but only if the timestamp was persisted.
+                    evidence_ts=p.get("ts") or None,
+                    # NOT ASSESSED, deliberately. `has_completion_signal` is the
+                    # matcher's own fulfillment finding, and the SENT matcher
+                    # computes none — its analogue is the close_basis, and deriving
+                    # a boolean from that here would re-grade every title-band
+                    # confirm on this rail. `None` means "the caller could not
+                    # judge" and weakens nothing, which is the honest report.
+                    has_completion_signal=None,
+                )
+                ev["data"].update({
+                    # FS-11: only genuinely ambiguous matches reach here now
+                    # (unambiguous moderate matches auto-closed above). Carry a TTL
+                    # so an un-adjudicated proposal expires instead of accumulating;
+                    # the LB1 review adapter drops expired ones.
+                    "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
+                    "ambiguous": True,
+                })
+                append_event(events_path, [ev], holder=source_skill)
+                reviews_written += 1
 
-    n_auto = len(auto_close)
-    n_pend = len(pending)
-    n_fetched = len(sent_messages or [])
+        # BUG-3719 (v4.6.2): OPEN commitments from the user's own sent commissives
+        # that match nothing open — the rescue path for promises the unread-gated
+        # inbox triage never saw (thread read+replied same day → never a triage
+        # candidate → the outbound promise never scanned; close-only reconcile
+        # could never reconcile a promise that was never logged). Dedup runs
+        # against the PRE-close `opens` projection loaded above, so a sent
+        # restatement merges into its original even when this same fire's matcher
+        # just closed it (a promise already tracked is never double-tracked).
+        # Per-item gate failures land LOUDLY in capture["errors"] + the audit
+        # counts — never a crash after the closes above already landed.
+        capture = None
+        if sent_commitment_items is not None:
+            from sent_capture import capture_sent_items
+            capture = capture_sent_items(
+                workspace_root,
+                sent_commitment_items,
+                user_person_id=user_person_id,
+                opens=opens,
+                source_skill=source_skill,
+                provider=provider,
+            )
 
-    # ALWAYS emit a `sent_reconcile` AUDIT event — even on a 0-scan run — so every
-    # run leaves a verifiable trace in events.jsonl (Bug #98-v3). Enforcement now
-    # points at THIS event (cursor_from / cursor_to / sent_scanned_count), NOT at
-    # a printed sentence: the v3.18.9 receipt gate checked the narration, and the
-    # model gamed it by feeding the matcher a curated message list and printing a
-    # truthful-looking line without a real fetch. A validator reads this event back
-    # (validate_reconcile_ran) — a cursor delta backed by a scan count can't be
-    # faked the way a sentence can.
-    from next_seq import next_seq as _next_seq
-    from atomic_write import atomic_append_jsonl as _append
-    from cru_match import _now_iso as _audit_ts
-    audit_event = {
-        "seq": _next_seq(str(events_path)),
-        "ts": _audit_ts(),
-        "type": "sent_reconcile",
-        "source_skill": source_skill,
-        "data": {
-            # v4.5.2 R1 receipt-contract fields (shared/RECEIPT_CONTRACT.md).
-            "task_id": "reconcile-sent",
-            "kind": "reconcile-sent",
-            "status": "complete",
-            "fired_via": fired_via,
-            "cursor_from": cursor_before,
-            "cursor_to": cursor_after,
-            "sent_scanned_count": n_fetched,
-            "n_closed": n_auto,
-            "n_pending": n_pend,
-            # HYG1 Item 1 — per-person receipts auto-recorded this run
-            # (extend the data dict, no new event type).
-            "n_partial_receipts": n_partial_receipts,
-            # MAILSEAM — the provider every ref this run wrote or compared was
-            # attributed to. None means the workspace declares no email
-            # backend; the refs then carry the legacy anchor and the audit
-            # says so rather than the log implying Gmail was verified.
-            "mail_provider": provider,
-            # SENTMATCH review F-4 — did the delivery checks RUN? Folded into
-            # the SAME audit event as the outcome watch (the B6 precedent):
-            # one fire, one verifiable trace, free-form `data`, no schema
-            # change. Without this, "the fix didn't fire" and "nothing was
-            # deliverable" are the same healthy-looking zero.
-            "signal_fields": signal_fields,
-        },
-    }
-    try:
-        from receipts import _machine_name
+        # SPEC CONTACT1 — auto contact records for people the CEO actually
+        # corresponds with. Runs AFTER the capture pass and BEFORE the cursor
+        # write, because it is the one phase that writes PEOPLE into
+        # entities.json: the cursor write below re-reads the doc for exactly that
+        # reason. Per-item gate refusals are normal outcomes, not errors; a
+        # malformed item lands loudly in contacts["errors"] and never crashes a
+        # fire whose closes have already landed.
+        contacts = None
+        if contact_capture_items is not None:
+            from contact_capture import capture_contacts
 
-        _machine = _machine_name()
-        if _machine:
-            audit_event["data"]["machine"] = _machine
-    except Exception:
-        pass
-    # B6: fold the outcome-watch counts (replies/no-reply/bounced) into the SAME
-    # audit event so one fire leaves one verifiable trace. Free-form `data`, so
-    # no schema change for the audit part. Co-locating two silent WRITES is fine
-    # (the Bug #98 anti-pattern was a silent write next to a visible deliverable).
-    if isinstance(outcome_watch_summary, dict):
-        audit_event["data"]["outcome_watch"] = {
-            k: outcome_watch_summary.get(k)
-            for k in ("checked", "replied", "no_reply_7d", "bounced", "still_pending")
+            try:
+                contacts = capture_contacts(
+                    workspace_root,
+                    contact_capture_items,
+                    source_skill=source_skill,
+                    # The orchestrator owns the single entities.json write.
+                    write_cursor=False,
+                )
+            except Exception as exc:  # a contact pass must never sink a reconcile
+                print(f"contact capture failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                contacts = {"ran": False, "error": f"{type(exc).__name__}: {exc}",
+                            "n_added": 0, "n_needs_confirm": 0, "n_carried": 0,
+                            "n_refused": 0, "n_skipped": 0, "n_errors": 0,
+                            "n_queue_rows_retired": 0, "added": [],
+                            "cursor_from": None, "cursor_to": None}
+
+        # Advance the cursor to the newest Sent ts we saw (never backwards).
+        cursor_after = cursor_before
+        new_ts = res.get("cursor_ts")
+        sent_cursor_write = None
+        if new_ts and (cursor_before is None or new_ts > cursor_before):
+            cursor_after = new_ts
+            sent_cursor_write = cursor_after
+        contact_cursor_write = None
+        if isinstance(contacts, dict) and contacts.get("ran") and \
+                contacts.get("cursor_to") and \
+                contacts.get("cursor_to") != contacts.get("cursor_from"):
+            contact_cursor_write = contacts["cursor_to"]
+        if sent_cursor_write is not None or contact_cursor_write is not None:
+            _write_cursor(workspace_root, raw, sent_cursor_write,
+                          source_skill=source_skill,
+                          contact_cursor=contact_cursor_write)
+
+        def _slim(items):
+            from event_time import event_time
+            return [{"commitment_id": c["commitment_id"], "title": c.get("title") or "",
+                     "ts": event_time(c)} for c in items]
+
+        n_auto = len(auto_close)
+        n_pend = len(pending)
+        n_fetched = len(sent_messages or [])
+
+        # ALWAYS emit a `sent_reconcile` AUDIT event — even on a 0-scan run — so every
+        # run leaves a verifiable trace in events.jsonl (Bug #98-v3). Enforcement now
+        # points at THIS event (cursor_from / cursor_to / sent_scanned_count), NOT at
+        # a printed sentence: the v3.18.9 receipt gate checked the narration, and the
+        # model gamed it by feeding the matcher a curated message list and printing a
+        # truthful-looking line without a real fetch. A validator reads this event back
+        # (validate_reconcile_ran) — a cursor delta backed by a scan count can't be
+        # faked the way a sentence can.
+        from atomic_write import atomic_append_jsonl as _append
+        from cru_match import _now_iso as _audit_ts
+        # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
+        audit_event = {
+            "ts": _audit_ts(),
+            "type": "sent_reconcile",
+            "source_skill": source_skill,
+            "data": {
+                # v4.5.2 R1 receipt-contract fields (shared/RECEIPT_CONTRACT.md).
+                "task_id": "reconcile-sent",
+                "kind": "reconcile-sent",
+                "status": "complete",
+                "fired_via": fired_via,
+                "cursor_from": cursor_before,
+                "cursor_to": cursor_after,
+                "sent_scanned_count": n_fetched,
+                "n_closed": n_auto,
+                "n_pending": n_pend,
+                # HYG1 Item 1 — per-person receipts auto-recorded this run
+                # (extend the data dict, no new event type).
+                "n_partial_receipts": n_partial_receipts,
+                # MAILSEAM — the provider every ref this run wrote or compared was
+                # attributed to. None means the workspace declares no email
+                # backend; the refs then carry the legacy anchor and the audit
+                # says so rather than the log implying Gmail was verified.
+                "mail_provider": provider,
+                # SENTMATCH review F-4 — did the delivery checks RUN? Folded into
+                # the SAME audit event as the outcome watch (the B6 precedent):
+                # one fire, one verifiable trace, free-form `data`, no schema
+                # change. Without this, "the fix didn't fire" and "nothing was
+                # deliverable" are the same healthy-looking zero.
+                "signal_fields": signal_fields,
+            },
         }
-    # BUG-3719: when the capture pass ran (even finding nothing), the audit
-    # carries its counts — the same one-verifiable-trace-per-fire doctrine as
-    # the outcome watch. Absent fields = a pre-4.6.2 run or items not passed.
-    if isinstance(capture, dict):
-        audit_event["data"]["n_opened"] = capture["n_opened"]
-        audit_event["data"]["n_capture_merged"] = capture["n_merged"]
-        audit_event["data"]["n_capture_observed"] = capture["n_observed"]
-        audit_event["data"]["n_capture_errors"] = capture["n_errors"]
-    # CONTACT1 (D2, additive): the contact pass's counts ride the SAME receipt
-    # — one fire, one verifiable trace. Absent fields = a pre-CONTACT1 run or
-    # items not passed. `n_contacts_carried` is here so the cap is HONEST: a
-    # capped fire that reported only what it created would be indistinguishable
-    # from a fire that found nothing more to do.
-    if isinstance(contacts, dict):
-        audit_event["data"]["n_contacts_added"] = contacts.get("n_added", 0)
-        audit_event["data"]["n_contacts_needs_confirm"] = \
-            contacts.get("n_needs_confirm", 0)
-        audit_event["data"]["n_contacts_carried"] = contacts.get("n_carried", 0)
-        audit_event["data"]["n_contacts_refused"] = contacts.get("n_refused", 0)
-        audit_event["data"]["n_contacts_skipped"] = contacts.get("n_skipped", 0)
-        audit_event["data"]["n_contacts_errors"] = contacts.get("n_errors", 0)
-        audit_event["data"]["n_contact_queue_rows_retired"] = \
-            contacts.get("n_queue_rows_retired", 0)
-        audit_event["data"]["contact_cursor_from"] = contacts.get("cursor_from")
-        audit_event["data"]["contact_cursor_to"] = contacts.get("cursor_to")
-        # CONTACT1 round 3 — the two states that were previously invisible
-        # fleet-wide. A RESET is the changelog's own promise ("it resets to
-        # today and adds nobody for that gap"), and a promise nothing records
-        # cannot be checked on a customer's machine. A GIVE-UP means the pass
-        # stopped retrying an address it could not write; without it, three
-        # identical stuck fires and three quiet healthy ones look the same.
-        audit_event["data"]["n_contacts_gave_up"] = contacts.get("n_gave_up", 0)
-        if contacts.get("cursor_reset"):
-            audit_event["data"]["contact_cursor_reset"] = \
-                contacts["cursor_reset"]
-    _append(events_path, [audit_event])
+        try:
+            from receipts import _machine_name
 
-    if n_fetched == 0:
-        summary = (f"No new sent mail since {_short_date(cursor_before) or 'the last check'} "
-                   f"— nothing to reconcile.")
-    elif n_auto == 0:
-        summary = (f"Checked {n_fetched} sent message{'s' if n_fetched != 1 else ''} "
-                   f"— nothing matched an open commitment.")
-    else:
-        tail = f", {n_pend} to confirm" if n_pend else ""
-        summary = (f"Reconciled your sent mail through {_short_date(cursor_after)}: "
-                   f"closed {n_auto} you'd already handled{tail}.")
-    n_opened = capture["n_opened"] if isinstance(capture, dict) else 0
-    if n_opened:
-        summary += (f" Started tracking {n_opened} new "
-                    f"promise{'s' if n_opened != 1 else ''} from your sent mail.")
-    n_contacts = contacts.get("n_added", 0) if isinstance(contacts, dict) else 0
-    if n_contacts:
-        summary += (
-            f" Added {n_contacts} "
-            f"{'contact' if n_contacts == 1 else 'contacts'} you've been "
-            f"emailing back and forth with — say `undo` to reverse.")
-        n_carry = contacts.get("n_carried", 0)
-        if n_carry:
+            _machine = _machine_name()
+            if _machine:
+                audit_event["data"]["machine"] = _machine
+        except Exception:
+            pass
+        # B6: fold the outcome-watch counts (replies/no-reply/bounced) into the SAME
+        # audit event so one fire leaves one verifiable trace. Free-form `data`, so
+        # no schema change for the audit part. Co-locating two silent WRITES is fine
+        # (the Bug #98 anti-pattern was a silent write next to a visible deliverable).
+        if isinstance(outcome_watch_summary, dict):
+            audit_event["data"]["outcome_watch"] = {
+                k: outcome_watch_summary.get(k)
+                for k in ("checked", "replied", "no_reply_7d", "bounced", "still_pending")
+            }
+        # BUG-3719: when the capture pass ran (even finding nothing), the audit
+        # carries its counts — the same one-verifiable-trace-per-fire doctrine as
+        # the outcome watch. Absent fields = a pre-4.6.2 run or items not passed.
+        if isinstance(capture, dict):
+            audit_event["data"]["n_opened"] = capture["n_opened"]
+            audit_event["data"]["n_capture_merged"] = capture["n_merged"]
+            audit_event["data"]["n_capture_observed"] = capture["n_observed"]
+            audit_event["data"]["n_capture_errors"] = capture["n_errors"]
+        # CONTACT1 (D2, additive): the contact pass's counts ride the SAME receipt
+        # — one fire, one verifiable trace. Absent fields = a pre-CONTACT1 run or
+        # items not passed. `n_contacts_carried` is here so the cap is HONEST: a
+        # capped fire that reported only what it created would be indistinguishable
+        # from a fire that found nothing more to do.
+        if isinstance(contacts, dict):
+            audit_event["data"]["n_contacts_added"] = contacts.get("n_added", 0)
+            audit_event["data"]["n_contacts_needs_confirm"] = \
+                contacts.get("n_needs_confirm", 0)
+            audit_event["data"]["n_contacts_carried"] = contacts.get("n_carried", 0)
+            audit_event["data"]["n_contacts_refused"] = contacts.get("n_refused", 0)
+            audit_event["data"]["n_contacts_skipped"] = contacts.get("n_skipped", 0)
+            audit_event["data"]["n_contacts_errors"] = contacts.get("n_errors", 0)
+            audit_event["data"]["n_contact_queue_rows_retired"] = \
+                contacts.get("n_queue_rows_retired", 0)
+            audit_event["data"]["contact_cursor_from"] = contacts.get("cursor_from")
+            audit_event["data"]["contact_cursor_to"] = contacts.get("cursor_to")
+            # CONTACT1 round 3 — the two states that were previously invisible
+            # fleet-wide. A RESET is the changelog's own promise ("it resets to
+            # today and adds nobody for that gap"), and a promise nothing records
+            # cannot be checked on a customer's machine. A GIVE-UP means the pass
+            # stopped retrying an address it could not write; without it, three
+            # identical stuck fires and three quiet healthy ones look the same.
+            audit_event["data"]["n_contacts_gave_up"] = contacts.get("n_gave_up", 0)
+            if contacts.get("cursor_reset"):
+                audit_event["data"]["contact_cursor_reset"] = \
+                    contacts["cursor_reset"]
+        _append(events_path, [audit_event])
+
+        if n_fetched == 0:
+            summary = (f"No new sent mail since {_short_date(cursor_before) or 'the last check'} "
+                       f"— nothing to reconcile.")
+        elif n_auto == 0:
+            summary = (f"Checked {n_fetched} sent message{'s' if n_fetched != 1 else ''} "
+                       f"— nothing matched an open commitment.")
+        else:
+            tail = f", {n_pend} to confirm" if n_pend else ""
+            summary = (f"Reconciled your sent mail through {_short_date(cursor_after)}: "
+                       f"closed {n_auto} you'd already handled{tail}.")
+        n_opened = capture["n_opened"] if isinstance(capture, dict) else 0
+        if n_opened:
+            summary += (f" Started tracking {n_opened} new "
+                        f"promise{'s' if n_opened != 1 else ''} from your sent mail.")
+        n_contacts = contacts.get("n_added", 0) if isinstance(contacts, dict) else 0
+        if n_contacts:
             summary += (
-                f" {n_carry} more are waiting their turn and will be added on "
-                f"the next pass.")
-    # These two say themselves even on a fire that added nobody — which is
-    # exactly the fire they describe. A stall that only shows up in an audit
-    # event is a stall nobody finds.
-    n_gave_up = contacts.get("n_gave_up", 0) if isinstance(contacts, dict) else 0
-    if n_gave_up:
-        summary += (
-            f" {n_gave_up} contact{'s' if n_gave_up != 1 else ''} couldn't be "
-            f"added after {CONTACT_GIVE_UP_TRIES} tries — "
-            f"{'they' if n_gave_up != 1 else 'that person'} will be picked up "
-            f"again on their next message.")
-    if isinstance(contacts, dict) and contacts.get("cursor_reset"):
-        summary += (
-            " Contact-adding started fresh from today — the record of where it "
-            "had reached wasn't usable, so nothing older was read back.")
-    if n_partial_receipts:
-        summary += (
-            f" Noted delivery to {n_partial_receipts} "
-            f"recipient{'s' if n_partial_receipts != 1 else ''} on group items"
-            " — those stay open until everyone's received theirs."
-        )
-    if partial_propose_closure:
-        titles = ", ".join(
-            f"\"{p['title']}\"" for p in partial_propose_closure if p.get("title")
-        ) or "a group item"
-        summary += (
-            f" Everyone on {titles} has now received theirs — close it when ready."
-        )
-    # SENTMATCH review F-4 — the counters land in the audit for a validator;
-    # this sentence is for the HUMAN reading the receipt, and it goes LAST
-    # because it is a caveat on everything above it. It fires only when the
-    # fetch carried NEITHER field on ANY message: the dead-rail state, where
-    # the delivery checks did not run at all and the zero above therefore
-    # reads as "nothing was deliverable". Plain language, no field names
-    # (Rule 4). A fetch that carried the fields and simply found no
-    # attachments says nothing extra — that is a normal, honest zero.
-    if n_fetched and not (signal_fields["n_attachment_field_present"]
-                          or signal_fields["n_thread_field_present"]):
-        summary += (
-            f" Heads up: none of the {n_fetched} message"
-            f"{'s' if n_fetched != 1 else ''} came through with attachment or"
-            " conversation details, so the checks that spot an already-sent"
-            " deliverable could not run — only the wording of each email was"
-            " compared."
-        )
+                f" Added {n_contacts} "
+                f"{'contact' if n_contacts == 1 else 'contacts'} you've been "
+                f"emailing back and forth with — say `undo` to reverse.")
+            n_carry = contacts.get("n_carried", 0)
+            if n_carry:
+                summary += (
+                    f" {n_carry} more are waiting their turn and will be added on "
+                    f"the next pass.")
+        # These two say themselves even on a fire that added nobody — which is
+        # exactly the fire they describe. A stall that only shows up in an audit
+        # event is a stall nobody finds.
+        n_gave_up = contacts.get("n_gave_up", 0) if isinstance(contacts, dict) else 0
+        if n_gave_up:
+            summary += (
+                f" {n_gave_up} contact{'s' if n_gave_up != 1 else ''} couldn't be "
+                f"added after {CONTACT_GIVE_UP_TRIES} tries — "
+                f"{'they' if n_gave_up != 1 else 'that person'} will be picked up "
+                f"again on their next message.")
+        if isinstance(contacts, dict) and contacts.get("cursor_reset"):
+            summary += (
+                " Contact-adding started fresh from today — the record of where it "
+                "had reached wasn't usable, so nothing older was read back.")
+        if n_partial_receipts:
+            summary += (
+                f" Noted delivery to {n_partial_receipts} "
+                f"recipient{'s' if n_partial_receipts != 1 else ''} on group items"
+                " — those stay open until everyone's received theirs."
+            )
+        if partial_propose_closure:
+            titles = ", ".join(
+                f"\"{p['title']}\"" for p in partial_propose_closure if p.get("title")
+            ) or "a group item"
+            summary += (
+                f" Everyone on {titles} has now received theirs — close it when ready."
+            )
+        # SENTMATCH review F-4 — the counters land in the audit for a validator;
+        # this sentence is for the HUMAN reading the receipt, and it goes LAST
+        # because it is a caveat on everything above it. It fires only when the
+        # fetch carried NEITHER field on ANY message: the dead-rail state, where
+        # the delivery checks did not run at all and the zero above therefore
+        # reads as "nothing was deliverable". Plain language, no field names
+        # (Rule 4). A fetch that carried the fields and simply found no
+        # attachments says nothing extra — that is a normal, honest zero.
+        if n_fetched and not (signal_fields["n_attachment_field_present"]
+                              or signal_fields["n_thread_field_present"]):
+            summary += (
+                f" Heads up: none of the {n_fetched} message"
+                f"{'s' if n_fetched != 1 else ''} came through with attachment or"
+                " conversation details, so the checks that spot an already-sent"
+                " deliverable could not run — only the wording of each email was"
+                " compared."
+            )
 
-    return {
-        "ran": True,
-        "cursor_before": cursor_before,
-        "cursor_after": cursor_after,
-        "cursor_advanced": cursor_after != cursor_before,
-        "n_fetched": n_fetched,
-        "n_open_before": n_open_before,
-        "n_auto_closed": n_auto,
-        "n_pending": n_pend,
-        "events_written": events_written,
-        # Stage E: pending proposals persisted this run (deduped) — the next
-        # Commitments chat's review section reads them back.
-        "reviews_written": reviews_written,
-        "resolved": _slim(auto_close),
-        "pending": _slim(pending),
-        # HYG1 Item 1 — per-person receipt pass (additive).
-        "n_partial_receipts": n_partial_receipts,
-        "partial": partial_recorded,
-        "partial_propose_closure": partial_propose_closure,
-        "partial_skipped_names": partial_skipped_names,
-        # SENTMATCH review F-4 — the same block written to the audit event, so
-        # a caller can act on it without re-reading events.jsonl.
-        "signal_fields": signal_fields,
-        # BUG-3719 capture pass (additive; zeros/None when items not passed).
-        "n_opened": n_opened,
-        "opened": list(capture["opened"]) if isinstance(capture, dict) else [],
-        "capture": capture,
-        # CONTACT1 (additive; zeros/None when items not passed).
-        "n_contacts_added": n_contacts,
-        "n_contacts_gave_up": n_gave_up,
-        "contacts_added": list(contacts["added"]) if isinstance(contacts, dict)
-                          and contacts.get("added") else [],
-        "contacts": contacts,
-        # MAILSEAM — what this run attributed its refs to, so a caller can act
-        # on it without re-reading the audit event.
-        "mail_provider": provider,
-        "summary": summary,
-    }
+        return {
+            "ran": True,
+            "cursor_before": cursor_before,
+            "cursor_after": cursor_after,
+            "cursor_advanced": cursor_after != cursor_before,
+            "n_fetched": n_fetched,
+            "n_open_before": n_open_before,
+            "n_auto_closed": n_auto,
+            "n_pending": n_pend,
+            "events_written": events_written,
+            # Stage E: pending proposals persisted this run (deduped) — the next
+            # Commitments chat's review section reads them back.
+            "reviews_written": reviews_written,
+            "resolved": _slim(auto_close),
+            "pending": _slim(pending),
+            # HYG1 Item 1 — per-person receipt pass (additive).
+            "n_partial_receipts": n_partial_receipts,
+            "partial": partial_recorded,
+            "partial_propose_closure": partial_propose_closure,
+            "partial_skipped_names": partial_skipped_names,
+            # SENTMATCH review F-4 — the same block written to the audit event, so
+            # a caller can act on it without re-reading events.jsonl.
+            "signal_fields": signal_fields,
+            # BUG-3719 capture pass (additive; zeros/None when items not passed).
+            "n_opened": n_opened,
+            "opened": list(capture["opened"]) if isinstance(capture, dict) else [],
+            "capture": capture,
+            # CONTACT1 (additive; zeros/None when items not passed).
+            "n_contacts_added": n_contacts,
+            "n_contacts_gave_up": n_gave_up,
+            "contacts_added": list(contacts["added"]) if isinstance(contacts, dict)
+                              and contacts.get("added") else [],
+            "contacts": contacts,
+            # MAILSEAM — what this run attributed its refs to, so a caller can act
+            # on it without re-reading the audit event.
+            "mail_provider": provider,
+            "summary": summary,
+        }
 
 
 def apply_roster_complete_closes(workspace_root, *, source_skill: str,

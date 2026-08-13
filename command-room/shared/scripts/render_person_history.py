@@ -154,9 +154,13 @@ def _confident(ev: dict) -> bool:
     return True
 
 
-def _event_persons(ev: dict) -> set[str]:
+def _event_persons(ev: dict, email_index: dict | None = None) -> set[str]:
     """Every person id an event references — top-level person_ids[],
-    data.person_id / person_ids[], and commitment owner/counterparty."""
+    data.person_id / person_ids[], commitment owner/counterparty, and (BUG-8244)
+    every meeting-binding variant via the shared normalizer. Before that fold,
+    meetings bound only by attendee fields vanished from person history — and
+    this module is the SOLE source for call-prep's Relationship Timeline, which
+    silently omits itself below 2 points."""
     out: set[str] = set()
     top = ev.get("person_ids")
     if isinstance(top, list):
@@ -170,6 +174,11 @@ def _event_persons(ev: dict) -> set[str]:
     for k in ("owner_id", "owner_person_id", "counterparty_id"):
         if isinstance(data.get(k), str):
             out.add(data[k])
+    try:
+        from event_refs import meeting_person_ids
+        out.update(meeting_person_ids(ev, email_index))
+    except Exception:
+        pass
     return out
 
 
@@ -193,6 +202,15 @@ def _gather(ws: Path, person_id: str) -> tuple[list[dict], list[dict], int]:
     """(person-events sorted by time asc, skipped-line records, newest seq
     tagging this person)."""
     events, skipped = load_events_defensively(_events_path(ws))
+    email_idx: dict = {}
+    try:
+        from event_refs import email_person_index
+        ent_path = ws / "_hq" / "data" / "entities.json"
+        if ent_path.exists():
+            email_idx = email_person_index(
+                json.loads(ent_path.read_text(encoding="utf-8")))
+    except Exception:
+        pass
     mine: list[dict] = []
     newest_seq = 0
     for ev in events:
@@ -200,7 +218,7 @@ def _gather(ws: Path, person_id: str) -> tuple[list[dict], list[dict], int]:
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         is_retract = ev.get("type") == RETRACT_TYPE and data.get("target_id") == person_id
-        if not is_retract and person_id not in _event_persons(ev):
+        if not is_retract and person_id not in _event_persons(ev, email_idx):
             continue
         seq = ev.get("seq")
         if isinstance(seq, int) and not isinstance(seq, bool) and seq < 10**10:

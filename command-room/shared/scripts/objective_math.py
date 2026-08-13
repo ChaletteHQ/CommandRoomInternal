@@ -92,13 +92,24 @@ def _days_between(a: datetime.date, b: datetime.date) -> int:
     return (b - a).days
 
 
-def matches_series(event: dict, binding: dict) -> bool:
+def matches_series(event: dict, binding: dict,
+                   email_index: Optional[dict] = None) -> bool:
     """Does a meeting-family event belong to the bound review forum?
     The series fingerprint: normalized title match, plus (for
     title_and_people) at least one usual-attendee overlap — the mode that
     disambiguates generic titles like '1:1'. title_only is the
     distinctive-name override (e.g. a named leadership call) where
-    attendee churn must not break the match."""
+    attendee churn must not break the match.
+
+    BUG-8244: attendees fold every binding variant via the shared
+    normalizer (top-level person_ids, data.person_ids,
+    data.attendee_person_ids, and email fields when `email_index` is
+    supplied) — the old two-field read made title_and_people forums look
+    never-met whenever the writer used a different shape, which fired
+    false drift alarms. A title-matched meeting with NO attendee data in
+    any variant still fails the people check on purpose: guessing the
+    series for a generic title is the wrong-series risk this mode exists
+    to prevent."""
     data = event.get("data") or {}
     title = data.get("title") or data.get("summary") or ""
     if _norm_title(title) != (binding.get("series_key") or ""):
@@ -108,7 +119,11 @@ def matches_series(event: dict, binding: dict) -> bool:
     people = set(binding.get("series_people") or [])
     if not people:
         return True  # defensive: legacy binding without people stored
-    attendees = set(event.get("person_ids") or data.get("person_ids") or [])
+    try:
+        from event_refs import meeting_person_ids
+        attendees = meeting_person_ids(event, email_index)
+    except Exception:
+        attendees = set(event.get("person_ids") or data.get("person_ids") or [])
     return bool(people & attendees)
 
 
@@ -137,10 +152,12 @@ def forum_objectives(open_objectives: list[dict], meeting_title: str,
 
 
 def forum_instances(meeting_events: Iterable[dict], binding: dict,
-                    after: Optional[datetime.date] = None) -> list[dict]:
+                    after: Optional[datetime.date] = None,
+                    email_index: Optional[dict] = None) -> list[dict]:
     """Distinct review-forum meetings (deduped by source_ref so a meeting
     plus its meeting_processed receipt never double-counts), optionally
-    only those strictly after a date."""
+    only those strictly after a date. `email_index` (BUG-8244) lets the
+    historical roll-forward resolve email-shaped attendee bindings."""
     seen: set[str] = set()
     out: list[dict] = []
     for e in meeting_events or []:
@@ -148,7 +165,7 @@ def forum_instances(meeting_events: Iterable[dict], binding: dict,
             continue
         if e.get("type") not in ("meeting", "meeting_processed"):
             continue
-        if not matches_series(e, binding):
+        if not matches_series(e, binding, email_index):
             continue
         ts = _event_ts(e)
         if ts is None:

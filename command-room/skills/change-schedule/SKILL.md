@@ -31,8 +31,10 @@ Your current Command Room schedule:
 
 Background maintenance (runs quietly, no chat output):
   Maintenance         — 6:45 AM, 12:45 PM, and 5:45 PM daily
-                        (sent-mail reconcile, session sweep, weekly cleanup
-                        + insights, monthly report — each runs when due)
+                        (sent-mail reconcile, chat reconcile, session sweep,
+                        weekly cleanup, weekly insights, deal signals,
+                        identity reconcile, project lifecycle, monthly report
+                        — each runs when due)
 
 Available, not added yet:
   Commitments         — say `add commitments` when you're ready
@@ -42,6 +44,16 @@ Available, not added yet:
 
 Say `change my schedule` to adjust any of these.
 ```
+
+**The maintenance parenthetical is DERIVED, never copied from the sample above.**
+Render it from the live registry — `maintenance_dispatcher.MAINTENANCE_JOBS`
+carries every background job and its own `description`, and that registry is the
+only thing that knows what actually fires. The sample block drifted from it once
+already: the chat-closure leg was registered beside the mail one and this text
+kept listing mail alone, so a customer read their own schedule and concluded
+chat closures were not scheduled — on the exact feature whose receipts exist to
+prove that they are. A hand-typed roster in a user-facing render is a promise
+about someone else's data that nothing keeps.
 
 Stop. No changes, no prompt for input.
 
@@ -127,9 +139,11 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 **Add an available task (Phase 3 / R1 — routes through the EXISTING add path):**
 - `add <task>` on a task rendered under "Available, not added" → invoke `enable-command-room-schedules`'s Phase 6 `add` flow for that taskId (it composes the bootloader, registers with the config-merged cron, and updates `workspace_config.json`). This skill does not build a second registration mechanism — the add path stays owned by the registration skill.
 
-**Retired tasks (SPEC LIFECYCLE1) — never offered, never added, always answerable:**
+**Retired tasks (SPEC LIFECYCLE1, extended by SPEC BRIEFMERGE) — never offered, never added, always answerable:**
 
 Membership is `schedule_config.RETIRED_TASKS`, never a name you remember. A retired task is not a later-add the customer hasn't got to yet; it is gone.
+
+**A still-registered retired task is REMOVABLE DRIFT (BRIEFMERGE §E).** Schedules are per-machine, so the repo change retires nothing by itself: a machine set up before the merge still has the old entry sitting in its Scheduled list, firing a chat that now only explains itself. When the schedule view is rendered, name that row as drift in one sentence — it is registered here, it is retired, and `pause <name>` clears it — and say nothing at all when no such row exists. Idempotent in both directions: a machine that never had it gets no line ever, and a machine that pauses it gets no second offer.
 
 - **Never render one under "Available, not added yet."** That list is for things worth turning on.
 - **`add <retired task>` / `resume <retired task>` → refuse, warmly, once.** Reply with `schedule_config.retirement_line(task_id)` verbatim (it names why it went and where the work is now) and register nothing. Do not offer a workaround, and do not treat a second ask as a new decision.
@@ -147,7 +161,7 @@ Membership is `schedule_config.RETIRED_TASKS`, never a name you remember. A reti
 Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both `schedule_config.DEFAULT_SCHEDULES` and `mcp__scheduled-tasks__update_scheduled_task` use — a legacy `cr-`-prefixed key would write an override that `load_schedule_config` silently ignores):
 
 - `morning brief` / `morning briefing` / `brief` / `the brief` / `daily brief` → `morning-brief`
-- `upcoming` / `upcoming meetings` / `meetings prep` / `meeting prep` → `upcoming-meetings`
+- `upcoming` / `upcoming meetings` / `meetings prep` / `meeting prep` → `upcoming-meetings` — **RETIRED (BRIEFMERGE, `schedule_config.RETIRED_TASKS`).** Resolve the name so a workspace that still has it registered can `pause upcoming meetings`, and NEVER offer, add or resume it: `add upcoming meetings` / `resume upcoming meetings` get the retirement line from `schedule_config.retirement_line("upcoming-meetings")` verbatim and nothing else. Its prep generation runs inside the Morning Brief now, so a request to move "when my meeting prep runs" is a request to move the Morning Brief — say so, and offer that change instead of re-enabling anything.
 - `inbox` / `Inbox` / `the inbox` / `inbox triage` → `inbox`
 - `waiting on` / `waiting-on` / `commitment chase` / `chase chat` → `waiting-on` (CTS1 Surface 1 — the re-scoped daily)
 - `my plate` / `my-plate` / `plate` → `my-plate` (CTS1 Surface 2)
@@ -169,9 +183,9 @@ Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both 
 
 **MAINT1 — the maintenance task and its jobs:**
 
-- **Moving `maintenance`'s cron moves ALL its slots.** The six background jobs (sent-mail reconcile, session sweep, weekly cleanup, weekly insights, deal signals, monthly report) all run inside this one task; there is no per-job time to move. Say so in the Step 5 diff when the customer moves it — and warn once if the new time drops the pre-7 AM slot: the sent-mail reconcile runs before the morning brief on purpose, so a maintenance time after the brief means the brief reads yesterday's closures.
-- **Pausing an individual job is a JOB-LEVEL override, not a task change.** `pause cleanup` / `pause reconcile sent` etc. writes `workspace.schedule_config.maintenance_jobs.<job_id> = {"enabled": false}` via the same Step 6 atomic write (resume deletes the key or sets `enabled: true`) — the dispatcher (`maintenance_dispatcher.due_jobs`) skips a disabled job and records it in the run's `skipped_disabled`. NEVER pause the `maintenance` task itself to stop one job — that silently stops all five.
-- **The `monthly-scorecard` job is OPT-IN, the inverse default (SPEC OUT7).** The six core jobs run unless disabled; `monthly-scorecard` (in `maintenance_dispatcher.OPTIONAL_JOBS`, not `MAINTENANCE_JOBS`) is inert until the customer turns it on. "turn on the monthly scorecard" / "add the monthly scorecard" / "run a KPI scorecard every month" writes `maintenance_jobs.monthly-scorecard = {"enabled": true}` (same Step 6 atomic write) — this IS the propose-and-confirm registration; confirm the change in one line. "pause / turn off the monthly scorecard" sets `{"enabled": false}` (or deletes the key). It never auto-registers — absent that explicit enable, the dispatcher never surfaces it as due. It fires monthly on/after the 1st for the prior month.
+- **Moving `maintenance`'s cron moves ALL its slots.** EVERY background job (sent-mail reconcile, chat reconcile, session sweep, weekly cleanup, weekly insights, deal signals, identity reconcile, project lifecycle, monthly report — the live roster is `maintenance_dispatcher.MAINTENANCE_JOBS`, and this list is guard-checked against it) runs inside this one task; there is no per-job time to move. Say so in the Step 5 diff when the customer moves it — and warn once if the new time drops the pre-7 AM slot: the sent-mail reconcile runs before the morning brief on purpose, so a maintenance time after the brief means the brief reads yesterday's closures.
+- **Pausing an individual job is a JOB-LEVEL override, not a task change.** `pause cleanup` / `pause reconcile sent` etc. writes `workspace.schedule_config.maintenance_jobs.<job_id> = {"enabled": false}` via the same Step 6 atomic write (resume deletes the key or sets `enabled: true`) — the dispatcher (`maintenance_dispatcher.due_jobs`) skips a disabled job and records it in the run's `skipped_disabled`. NEVER pause the `maintenance` task itself to stop one job — that silently stops every one of them.
+- **The `monthly-scorecard` job is OPT-IN, the inverse default (SPEC OUT7).** The core jobs run unless disabled; `monthly-scorecard` (in `maintenance_dispatcher.OPTIONAL_JOBS`, not `MAINTENANCE_JOBS`) is inert until the customer turns it on. "turn on the monthly scorecard" / "add the monthly scorecard" / "run a KPI scorecard every month" writes `maintenance_jobs.monthly-scorecard = {"enabled": true}` (same Step 6 atomic write) — this IS the propose-and-confirm registration; confirm the change in one line. "pause / turn off the monthly scorecard" sets `{"enabled": false}` (or deletes the key). It never auto-registers — absent that explicit enable, the dispatcher never surfaces it as due. It fires monthly on/after the 1st for the prior month.
 - **Renders:** show `maintenance` as one background task with its slots; when asked about a specific job, say which task carries it in plain English ("Your weekly cleanup runs inside the background Maintenance task, Sundays at 5:45 PM").
 
 (Workspaces upgraded from pre-v2.14.27 may still have a task registered under a legacy `cr-*` id; `enable-command-room-schedules` migrates those to the bare id on its next run. Resolve to the bare id regardless — that is what the live registration uses.)

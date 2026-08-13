@@ -306,12 +306,11 @@ def emit_brief_meta_audit(
         return
     try:
         from pathlib import Path as _Path
-        from next_seq import next_seq as _next_seq
         from atomic_write import atomic_append_jsonl as _append
         from cru_match import _now_iso as _ts
         events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
         _append(events_path, [{
-            "seq": _next_seq(str(events_path)),
             "ts": _ts(),
             "type": "brief_meta",
             "source_skill": "brief_writer",

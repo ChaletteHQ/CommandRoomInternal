@@ -41,19 +41,32 @@ _ENUM_CACHE: Optional[FrozenSet[str]] = None
 # Stage D enforces it as a code-level kind filter.
 KIND_VALUES: FrozenSet[str] = frozenset({"promise", "task", "scheduling", "agenda"})
 
-# Fields on a commitment_resolved event that carry a readable commitment
-# identity. Mirrors the read-side chain in cru_match.load_open_commitments
-# (commitment_id preferred; id fallback; target_id legacy) plus the two
-# seq-alias fields the F3 amnesty maps seq → commitment through. A closure
-# carrying NONE of these is a dead letter the moment it's written — the
-# gatekeeper rejects it at append time (fail loud, not silent).
-COMMITMENT_CLOSURE_ID_FIELDS = (
-    "commitment_id",
-    "id",
-    "target_id",
-    "commitment_seq",
-    "source_event_seq",
+# THE closure-target chain — write-accept and read-honor derive from this
+# one list (BUG-8330 item 3: data.thread_id was honored on read but absent
+# from the gate's accept list, and top-level target_id was accepted nowhere;
+# two lists WILL drift, one cannot). Each limb is (scope, field): scope
+# "data" reads ev["data"][field], scope "" reads ev[field]. Order is the
+# read-side priority — closure_index.closer_target_id walks it verbatim.
+COMMITMENT_CLOSURE_ID_CHAIN = (
+    ("data", "commitment_id"),
+    ("data", "thread_id"),
+    ("data", "id"),
+    ("data", "target_id"),
+    ("", "commitment_id"),
+    ("", "thread_id"),
+    ("", "id"),
+    ("", "target_id"),
 )
+
+# The two F3-amnesty seq-alias fields (data scope) — both map seq → the
+# commitment EVENT at that seq.
+COMMITMENT_CLOSURE_SEQ_FIELDS = ("commitment_seq", "source_event_seq")
+
+# Flat data-scope view of the chain + the seq aliases, kept for the gate's
+# error message and older callers. Derived — never edit independently.
+COMMITMENT_CLOSURE_ID_FIELDS = tuple(
+    field for scope, field in COMMITMENT_CLOSURE_ID_CHAIN if scope == "data"
+) + COMMITMENT_CLOSURE_SEQ_FIELDS
 
 # Legacy seq-alias id spellings (F2/F3): bare int 86, "86", "seq_86",
 # "event_086", "commitment_seq_86" — all resolved read-side as "the commitment

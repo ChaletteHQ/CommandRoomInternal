@@ -58,7 +58,9 @@ from typing import Any, List
 
 try:
     from event_types import (
+        COMMITMENT_CLOSURE_ID_CHAIN,
         COMMITMENT_CLOSURE_ID_FIELDS,
+        COMMITMENT_CLOSURE_SEQ_FIELDS,
         KIND_VALUES,
         LEGACY_SEQ_ID_RE,
         is_known_type,
@@ -68,7 +70,9 @@ except ImportError:
 
     sys.path.insert(0, str(_Path(__file__).resolve().parent))
     from event_types import (
+        COMMITMENT_CLOSURE_ID_CHAIN,
         COMMITMENT_CLOSURE_ID_FIELDS,
+        COMMITMENT_CLOSURE_SEQ_FIELDS,
         KIND_VALUES,
         LEGACY_SEQ_ID_RE,
         is_known_type,
@@ -128,16 +132,65 @@ def _gate_enabled() -> bool:
 
 
 def _has_closure_id(ev: dict) -> bool:
+    """Presence: the event carries SOME readable target reference. Walks the
+    same COMMITMENT_CLOSURE_ID_CHAIN the read side honors (BUG-8330 item 3
+    unified the two lists) plus the F3 seq aliases. Presence is the floor —
+    `_check_closure_resolves` is the wall."""
     data = ev.get("data")
     data = data if isinstance(data, dict) else {}
-    for field in COMMITMENT_CLOSURE_ID_FIELDS:
+    for scope, field in COMMITMENT_CLOSURE_ID_CHAIN:
+        holder_d = data if scope == "data" else ev
+        if holder_d.get(field) not in (None, ""):
+            return True
+    for field in COMMITMENT_CLOSURE_SEQ_FIELDS:
         if data.get(field) not in (None, ""):
             return True
-    # Legacy flat shape — a top-level id is still readable by cru_match.
-    for field in ("commitment_id", "id"):
-        if ev.get(field) not in (None, ""):
-            return True
     return False
+
+
+# Closer families the resolvability wall applies to (BUG-8330 item 3). The
+# gate's presence check let `cmt_TYPO` through clean — a dead letter with
+# perfect posture. With the ledger in hand, an unresolvable reference now
+# rejects at append time through the SAME resolver the closure audit uses.
+_RESOLVE_CHECKED_TYPES = frozenset(
+    {"commitment_resolved", "thread_resolved", "commitment_superseded"}
+)
+
+
+def _check_closure_resolves(ev: dict, etype: str, holder: str,
+                            by_id: dict, by_seq: dict) -> None:
+    """Raise EventGateError when a closer's target resolves to nothing.
+
+    thread_resolved carve-out: the type legitimately closes non-commitment
+    THREADS too. It is only rejected when its reference claims the
+    commitment namespace (cmt_* / legacy seq spelling / seq aliases) and
+    still resolves to nothing — a plain thread id passes untouched."""
+    from closure_index import (
+        closer_target_id,
+        closer_target_seqs,
+        resolve_closure_target,
+    )
+
+    if resolve_closure_target(ev, by_id, by_seq) is not None:
+        return
+    raw = closer_target_id(ev)
+    if etype == "thread_resolved":
+        claims_commitment = bool(closer_target_seqs(ev)) or (
+            raw.startswith("cmt_") or bool(LEGACY_SEQ_ID_RE.match(raw.strip()))
+            if raw else False
+        )
+        if not claims_commitment:
+            return
+    raise EventGateError(
+        f"{etype} event references {raw!r} "
+        f"(seq aliases {closer_target_seqs(ev)!r}) which resolves to no "
+        f"commitment in the ledger (holder={holder}). An unresolvable "
+        "closure is a dead letter — it closes nothing and the closure audit "
+        "would flag it later; the gate now refuses it at append time. Pass "
+        "the commitment's data.id verbatim (cmt_<ulid>, or its "
+        "commitment_seq_<n> spelling), or write through "
+        "commitment_state.close_commitment."
+    )
 
 
 def gate_events(
@@ -145,6 +198,7 @@ def gate_events(
     *,
     strict_enum: bool = True,
     holder: str = "event_gate",
+    events_jsonl_path=None,
 ) -> List[dict]:
     """Validate + enrich a batch of events bound for events.jsonl.
 
@@ -154,9 +208,43 @@ def gate_events(
     defaults to True (Phase 4 2026-07-02); passing False restores the F1
     burn-in warn-only posture and exists for controlled replay tooling only —
     no production writer may pass it.
+
+    events_jsonl_path (BUG-8330 item 3): when the caller supplies the target
+    ledger path (atomic_append_jsonl always does), closer events are checked
+    for RESOLVABILITY, not just presence — a commitment_resolved naming
+    `cmt_TYPO` used to pass the presence check clean and die as a dead
+    letter. The resolution universe is the current ledger plus commitment
+    events earlier in this same batch (by id — batch rows have no seq until
+    the appender stamps them). Skipped when the path is None (direct callers
+    with no ledger in hand) or under the strict_enum=False replay posture.
     """
     if not _gate_enabled():
         return events
+
+    # Lazy resolvability universe — built once per batch, only when a closer
+    # is actually present (a full-ledger read per ordinary append would be
+    # waste; closers are low-frequency).
+    _universe: list = []
+
+    def _resolution_universe():
+        if _universe:
+            return _universe[0]
+        from closure_index import build_commitment_universe, commitment_key
+        ledger_events: list = []
+        try:
+            from cru_match import load_events_defensively
+            loaded, _skipped = load_events_defensively(events_jsonl_path)
+            ledger_events = loaded
+        except Exception:
+            # A missing/unreadable ledger resolves nothing extra; batch-local
+            # commitments below still count (fresh-workspace first append).
+            ledger_events = []
+        by_id, by_seq = build_commitment_universe(ledger_events)
+        for b_ev in events:
+            if isinstance(b_ev, dict) and b_ev.get("type") == "commitment":
+                by_id[commitment_key(b_ev)] = b_ev
+        _universe.append((by_id, by_seq))
+        return _universe[0]
 
     out: List[dict] = []
     for i, ev in enumerate(events):
@@ -425,6 +513,19 @@ def gate_events(
                 "(cmt_<ulid> or legacy commitment_seq_<n>)."
             )
 
+        # 4a (BUG-8330 item 3) — resolvability wall for the closer family.
+        # Presence was never the disease's whole cure: a typo'd id passed
+        # clean and closed nothing. With the ledger path in hand, the target
+        # must RESOLVE (same resolver the closure audit uses). strict_enum
+        # False (controlled replay) keeps the old presence-only posture.
+        if (
+            etype in _RESOLVE_CHECKED_TYPES
+            and strict_enum
+            and events_jsonl_path is not None
+        ):
+            by_id, by_seq = _resolution_universe()
+            _check_closure_resolves(ev, etype, holder, by_id, by_seq)
+
         # 4b (v4.6.0 S4) — the same dead-letter rule for the reassign and
         # unmute references: an event that names no target routes/clears
         # nothing. Both types are written through their canonical writers
@@ -481,7 +582,7 @@ def append_event(
     path,
     events,
     holder: str = "append_event",
-) -> None:
+) -> List[dict]:
     """Canonical gated append to events.jsonl (Phase 1 F1).
 
     Same signature semantics as atomic_write.atomic_append_jsonl (single dict
@@ -514,7 +615,10 @@ def append_event(
         sys.path.insert(0, str(_Path(__file__).resolve().parent))
         from atomic_write import atomic_append_jsonl
 
-    atomic_append_jsonl(path, events, holder=holder)
+    # Returns the stamped copies (allocated seq/ts) — BUG-8330 item 7:
+    # callers read the seq of what they just wrote from the return value
+    # instead of pre-computing it with next_seq().
+    return atomic_append_jsonl(path, events, holder=holder)
 
 
 __all__ = [

@@ -215,23 +215,22 @@ def _project_matters_fallback(
         d = _c_data(c)
         return d.get("id") or c.get("id") or f"commitment_seq_{c.get('seq', '?')}"
 
-    # Find open commitments and resolved IDs
-    resolved_ids: set[str] = set()
+    # Find open commitments. BUG-8330 item 1: closure state comes from the
+    # SHARED closure_index — this builder's private chain missed
+    # commitment_superseded, data.target_id, the F3 seq aliases, and Stage D
+    # reopens (its flat resolved-id set meant a reopened item stayed hidden
+    # here forever). Never re-inline a local closer chain.
+    from closure_index import build_closure_index
+    closure = build_closure_index(events)
     open_commits: list[dict[str, Any]] = []
     for ev in events:
         et = ev.get("type") or ev.get("event") or ""
-        d = ev.get("data") or {}
-        if et in ("commitment_resolved", "thread_resolved"):
-            cid = (
-                d.get("commitment_id") or d.get("thread_id") or d.get("id")
-                or ev.get("commitment_id") or ev.get("thread_id") or ev.get("id")
-            )
-            if cid:
-                resolved_ids.add(cid)
-        elif et == "commitment":
-            if _c_status(ev) in ("open", "overdue"):
-                open_commits.append(ev)
-    open_commits = [c for c in open_commits if _c_id(c) not in resolved_ids]
+        if et == "commitment" and _c_status(ev) in ("open", "overdue"):
+            open_commits.append(ev)
+    open_commits = [
+        c for c in open_commits
+        if not closure.is_closed(_c_id(c), c.get("seq"))
+    ]
 
     matters: list[dict[str, Any]] = []
     seq = 1

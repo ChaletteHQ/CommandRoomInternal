@@ -214,12 +214,11 @@ def _record_blocked_run(workspace_root, events_path, *, reason, source_skill,
     """
     from atomic_write import atomic_append_jsonl as _append
     from cru_match import _now_iso as _audit_ts
-    from next_seq import next_seq as _next_seq
 
     batch_id = batch_id or ("inr_" + _clock_now(workspace_root)
                             .strftime("%Y%m%dT%H%M%SZ"))
+    # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
     audit_event = {
-        "seq": _next_seq(str(events_path)),
         "ts": _audit_ts(),
         "type": "inbound_reconcile",
         "source_skill": source_skill,
@@ -844,19 +843,16 @@ def reconcile_inbound_and_receipt(
     # builder the prose call sites used; only the loop moved.
     if updated:
         from atomic_write import atomic_append_jsonl as _append_upd
-        from next_seq import next_seq as _peek
-        seq = _peek(str(events_path))
-        rows = []
-        for u in updated:
-            rows.append(build_commitment_updated_event(
-                commitment_id=u["commitment_id"],
-                primary_thread_id=u.get("primary_thread_id") or "",
-                source_skill=source_skill,
-                change_summary="Counter-party shifted their own deadline (inbound mail)",
-                evidence=u.get("evidence") or "matched their reply",
-                next_seq=seq,
-            ))
-            seq += 1
+        # next_seq=None — the appender stamps inside the writer lock
+        # (BUG-8330 item 7; the peek-then-append pattern was racy).
+        rows = [build_commitment_updated_event(
+            commitment_id=u["commitment_id"],
+            primary_thread_id=u.get("primary_thread_id") or "",
+            source_skill=source_skill,
+            change_summary="Counter-party shifted their own deadline (inbound mail)",
+            evidence=u.get("evidence") or "matched their reply",
+            next_seq=None,
+        ) for u in updated]
         _append_upd(events_path, rows)
 
     n_auto = len(auto_close)
@@ -870,9 +866,8 @@ def reconcile_inbound_and_receipt(
     # checking anything; it cannot fabricate a row that carries the counts.
     from atomic_write import atomic_append_jsonl as _append
     from cru_match import _now_iso as _audit_ts
-    from next_seq import next_seq as _next_seq
+    # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
     audit_event = {
-        "seq": _next_seq(str(events_path)),
         "ts": _audit_ts(),
         "type": "inbound_reconcile",
         "source_skill": source_skill,

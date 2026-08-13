@@ -92,6 +92,7 @@ from atomic_write import (  # noqa: E402
 from cru_match import load_events_defensively  # noqa: E402
 from event_time import event_time  # noqa: E402
 from next_seq import next_seq  # noqa: E402
+from writer_lock import events_writer_lock  # noqa: E402
 
 
 RECOVERY_VERSION = "v3.13.8.1"
@@ -365,7 +366,16 @@ def run_backfill_if_needed(workspace_root: str | Path) -> dict:
     linked = 0
     marked = 0
 
-    with multi_write_context(workspace_root, holder="source_event_seq_backfill"):
+    # BUG-8330 fix round (FX-2): `multi_write_context` holds
+    # `_hq/.system/atomic.lock` — a DIFFERENT lock from the one every gated
+    # append takes (`_hq/data/.writer.lock`, via `writer_lock`). It therefore
+    # excludes other multi_write callers but NOT `atomic_append_jsonl`, and the
+    # truncating rewrite below silently destroys any append that lands in the
+    # window. Nest the events writer lock inside it (outer atomic.lock, inner
+    # .writer.lock — the same order the in-block `atomic_append_jsonl` already
+    # establishes, so no lock-order inversion) and re-read in there.
+    with multi_write_context(workspace_root, holder="source_event_seq_backfill"), \
+            events_writer_lock(events_path, holder="source_event_seq_backfill"):
         # Re-read INSIDE the lock so the rewrite below operates on the same
         # snapshot the lock protects. The pre-lock read above is only used for
         # the cheap "is there anything to do" decision; rewriting the whole file
@@ -402,10 +412,9 @@ def run_backfill_if_needed(workspace_root: str | Path) -> dict:
         )
         atomic_write_text(events_path, new_content)
 
-        # Append the backfill summary event
-        seq = next_seq(events_path)
+        # Append the backfill summary event. No hand-stamped seq
+        # (BUG-8330 item 7) — appender allocates in-lock.
         backfill_event = {
-            "seq": seq,
             "ts": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "type": "wrapper_source_seq_backfill",
             "source_skill": "update-bridge",
@@ -442,9 +451,8 @@ def _write_backfill_event_and_return(
     """Helper: write the wrapper_source_seq_backfill marker event for a no-op
     fire so future runs see we've already scanned this workspace."""
     with multi_write_context(workspace_root, holder="source_event_seq_backfill"):
-        seq = next_seq(events_path)
+        # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
         backfill_event = {
-            "seq": seq,
             "ts": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "type": "wrapper_source_seq_backfill",
             "source_skill": "update-bridge",

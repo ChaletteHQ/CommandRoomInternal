@@ -49,9 +49,14 @@ USAGE:
 
 Status taxonomy:
   - active: decision is current; no supersede/snooze event references it
-  - superseded: a later decision_superseded event names this seq
+  - superseded: a decision_superseded event names this seq and NO later
+    decision_reaffirmed out-ranks it
   - reaffirmed: a decision_reaffirmed event references this seq (renders
-    with the most-recent reaffirmation date + snooze window)
+    with the most-recent reaffirmation date + snooze window). WALKFIX1 FR-3:
+    a reaffirm whose `reviewed_at` is LATER than the newest referencing
+    supersede RESTORES the decision here, carrying the supersede on the line
+    as history — supersede is no longer terminal, so a wrong one is
+    repairable through the canonical vocabulary instead of being permanent.
   - snoozed: a decision_revisit_scheduled event references this seq with
     a future snooze_until_ts
 """
@@ -65,7 +70,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text, atomic_write_json_locked  # noqa: E402
-from event_time import event_time  # noqa: E402
+from event_time import event_time, parse_ts  # noqa: E402
 
 # Optional: tz module for timezone localization. Fall back to UTC if missing.
 try:
@@ -180,11 +185,16 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
       - supersedes_map: {original_seq: [{new_seq, reason, reviewed_at}]}
       - reaffirms_map: {decision_seq: [{reason, reviewed_at, snooze_until}]}
       - revisits_map: {decision_seq: [{snooze_until_ts, reason}]}
+      - proposals_map: {decision_id: [{score, evidence, proposed_at}]}
+        (WALKFIX1 FR-2 — proposed, never applied; status is untouched)
     """
     decisions: list[dict] = []
     supersedes_map: dict[Any, list[dict]] = {}
     reaffirms_map: dict[Any, list[dict]] = {}
     revisits_map: dict[Any, list[dict]] = {}
+    # WALKFIX1 FR-2 — proposed supersedes, keyed by DECISION ID (a proposal
+    # names the id; the seq on the event is the proposal's own).
+    proposals_map: dict[Any, list[dict]] = {}
 
     for ev in events:
         t = ev.get("type")
@@ -211,6 +221,19 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
                     "reviewed_at": data.get("reviewed_at") or event_time(ev),
                     "snooze_until": data.get("snooze_until"),
                 })
+        elif t == "decision_supersede_proposed":
+            # WALKFIX1 FR-2 — a PROPOSED supersede. It changes no status; it
+            # rides on the decision's own line so the person who owns the
+            # decision adjudicates it where the decision lives, instead of the
+            # fire quietly closing it. Keyed by decision id, because a proposal
+            # names the id (the seq belongs to the proposal event itself).
+            did = data.get("decision_id")
+            if did:
+                proposals_map.setdefault(did, []).append({
+                    "score": data.get("score"),
+                    "evidence": data.get("evidence", ""),
+                    "proposed_at": data.get("reviewed_at") or event_time(ev),
+                })
         elif t == "decision_revisit_scheduled":
             decision_seq = data.get("decision_event_seq") or data.get("original_decision_seq")
             if decision_seq is not None:
@@ -224,35 +247,127 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
         "supersedes_map": supersedes_map,
         "reaffirms_map": reaffirms_map,
         "revisits_map": revisits_map,
+        "proposals_map": proposals_map,
     }
+
+
+# The floor a missing/unparseable timestamp sorts to. Aware, so it can be
+# compared against any parsed instant without raising.
+_EPOCH = datetime.datetime(1, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def _instant(value):
+    """A timestamp as an AWARE datetime, or None when it cannot be read.
+
+    THE DEFECT THIS EXISTS FOR (WALKFIX1 fix round 2, C-3). The first cut of
+    FR-3 compared `reviewed_at` values as raw STRINGS. `event_time()` returns
+    the stored spelling verbatim — it does not normalize — and on a real
+    ledger the two sides of this comparison are never in the same format:
+    every `decision_superseded` this product writes is UTC `Z`, while every
+    `decision_reaffirmed` a human appends from a Pacific machine is `-07:00`.
+    Lexically `"2026-08-10T13:30:00-07:00" < "2026-08-10T19:46:28Z"`, so a
+    repair made at 13:30 Pacific — genuinely 44 minutes AFTER the supersede —
+    read as earlier and was silently ignored. The whole working afternoon
+    (12:46–19:46 Pacific against that day's supersedes) failed that way, with
+    nothing reporting anything: the decision simply stayed under Superseded
+    and the operator would conclude the repair vocabulary was broken.
+
+    `EVENT_TYPES.md` already required this — "Every reader that orders or
+    filters events by time goes through `shared/scripts/event_time.py`" — and
+    this module was not doing it.
+    """
+    return parse_ts(value)
+
+
+def _sort_key(value):
+    """Sort key for a timestamp: parsed instant, unreadable sorts oldest."""
+    return _instant(value) or _EPOCH
+
+
+def _newest(rows: list[dict], key: str) -> dict:
+    """The newest row by `key`, treating a missing/unparseable value as oldest.
+
+    Sorts on the PARSED instant, not the string — see `_instant`. A mixed-
+    offset list is the normal case on a live ledger, not an edge case.
+    """
+    return sorted(rows, key=lambda r: _sort_key(r.get(key)), reverse=True)[0]
 
 
 def _decision_status(seq: Any, overlays: dict) -> tuple[str, dict[str, Any]]:
     """Return (status, overlay_data) for one decision.
 
-    Status priority (most-specific first):
-      1. superseded — if any supersedes event references this seq
-      2. snoozed — if there's a revisit_scheduled with a future snooze_until
-      3. reaffirmed — if there's a reaffirmation overlay
-      4. active — default
+    LATEST SIGNAL WINS between supersede and reaffirm (WALKFIX1 FR-3).
+
+    THE DEFECT THIS REPLACES. Supersede used to be checked first and
+    unconditionally, which made it TERMINAL: once anything referenced a
+    decision as superseded, no later event in the canonical vocabulary could
+    ever bring it back. A `decision_reaffirmed` written afterwards — the exact
+    event a human reaches for when they read the log and disagree with it —
+    changed nothing at all, silently. That is not a display preference; it
+    means a WRONG supersede is unrepairable through the product's own
+    vocabulary, and the 2026-08-10 past-meetings fire wrote up to 19 of them
+    into a live ledger in a single run (WALKFIX1 Item A).
+
+    So the two signals are now compared by their own `reviewed_at`:
+
+      * reaffirm NEWER than the newest supersede  -> `reaffirmed`. The decision
+        is back in the active view where its owner put it. The supersede is
+        NOT deleted and NOT hidden — history is append-only, so it is carried
+        on the overlay as `superseded_history` and rendered on the line, which
+        is what makes this a repair rather than a cover-up.
+      * supersede newer, or the reaffirm carries no readable time ->
+        `superseded`, exactly as before. An undated reaffirm cannot out-rank a
+        dated supersede: "unknown" must never read as "later".
+
+    Everything else is unchanged: snooze still outranks a plain reaffirm, and
+    a decision with no overlay at all is `active`.
+
+    Note what this does NOT do: it does not decide anything by itself. It
+    gives `decision_reaffirmed` — a marker some human or repair pass appends —
+    the power it always looked like it had. The repair appends themselves are
+    a workspace-side job, not this module's.
     """
-    if seq in overlays["supersedes_map"]:
-        supersedes = overlays["supersedes_map"][seq]
-        # Latest supersede wins
-        latest = sorted(supersedes, key=lambda s: s.get("reviewed_at", ""), reverse=True)[0]
-        return ("superseded", latest)
+    supersedes = overlays["supersedes_map"].get(seq) or []
+    reaffirms = overlays["reaffirms_map"].get(seq) or []
+
+    if supersedes:
+        latest_sup = _newest(supersedes, "reviewed_at")
+        latest_re = _newest(reaffirms, "reviewed_at") if reaffirms else None
+        # Parsed instants, never raw strings — a `Z` supersede and a `-07:00`
+        # reaffirm are the NORMAL shapes on a live ledger, and comparing them
+        # lexically silently drops real repairs (see `_instant`).
+        sup_at = _instant(latest_sup.get("reviewed_at"))
+        re_at = _instant((latest_re or {}).get("reviewed_at"))
+        if not (re_at is not None and sup_at is not None and re_at > sup_at):
+            return ("superseded", latest_sup)
+        # A later reaffirm restores the decision, and the supersede rides
+        # along so the line can say what was reversed and when.
+        overlay = dict(latest_re)
+        overlay["superseded_history"] = latest_sup
+        return ("reaffirmed", overlay)
 
     if seq in overlays["revisits_map"]:
         revisits = overlays["revisits_map"][seq]
-        latest = sorted(revisits, key=lambda r: r.get("snooze_until_ts", ""), reverse=True)[0]
+        # Same class as `_instant` — ordered on the parsed instant, because a
+        # revisit written from a local machine and one written in UTC are
+        # not comparable as strings.
+        latest = sorted(revisits,
+                        key=lambda r: _sort_key(r.get("snooze_until_ts")),
+                        reverse=True)[0]
         return ("snoozed", latest)
 
-    if seq in overlays["reaffirms_map"]:
-        reaffirms = overlays["reaffirms_map"][seq]
-        latest = sorted(reaffirms, key=lambda r: r.get("reviewed_at", ""), reverse=True)[0]
-        return ("reaffirmed", latest)
+    if reaffirms:
+        return ("reaffirmed", _newest(reaffirms, "reviewed_at"))
 
     return ("active", {})
+
+
+def _decision_id(ev: dict) -> str:
+    """Stable id for a decision — the same derivation `decision_match` uses,
+    including its `decision_seq_<seq>` fallback, so a proposal written by the
+    matcher joins to the decision it names."""
+    d = ev.get("data") or {}
+    return d.get("id") or ev.get("id") or f"decision_seq_{ev.get('seq', '?')}"
 
 
 def _format_decision_line(
@@ -260,6 +375,7 @@ def _format_decision_line(
     status: str,
     overlay: dict,
     name_idx: dict[str, str],
+    proposals: list[dict] | None = None,
 ) -> str:
     """Return one markdown line for a decision. Format:
 
@@ -304,6 +420,15 @@ def _format_decision_line(
         snooze_until = overlay.get("snooze_until")
         if snooze_until:
             extras += f", revisit after {_localize_date(snooze_until)}"
+        # WALKFIX1 FR-3 — a reaffirm that RESTORED a superseded decision says
+        # so. History is append-only, so the supersede it out-ranked is still
+        # a fact about this decision and the line carries it; hiding it would
+        # make the restore look like the supersede never happened.
+        history = overlay.get("superseded_history")
+        if isinstance(history, dict):
+            when = _localize_date(history.get("reviewed_at") or "")
+            extras += (f" — restored after a supersede"
+                       + (f" of {when}" if when else ""))
     # active gets no badge — it's the default
 
     parts = [f"- **{title}**"]
@@ -316,6 +441,26 @@ def _format_decision_line(
         parts.append(" — " + ", ".join(meta))
     if badge:
         parts.append(f" {badge}{extras}")
+
+    # WALKFIX1 FR-2 — an open supersede PROPOSAL rides on the decision's own
+    # line. It changes no status (the decision keeps whatever badge it had);
+    # it is a question waiting for the person who owns the decision, put where
+    # they will actually see it. Newest proposal only — a queue of them on one
+    # line is a list wearing a sentence's clothes.
+    if proposals:
+        # Same class again (WALKFIX1 fix round 2 sweep): parsed, not lexical.
+        newest = sorted(proposals,
+                        key=lambda p: _sort_key(p.get("proposed_at")),
+                        reverse=True)[0]
+        when = _localize_date(newest.get("proposed_at") or "")
+        score = newest.get("score")
+        bits = []
+        if when:
+            bits.append(when)
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            bits.append(f"match {score:.2f}")
+        detail = f" ({', '.join(bits)})" if bits else ""
+        parts.append(f" [SUPERSEDE PROPOSED]{detail}")
 
     line = "".join(parts)
 
@@ -395,7 +540,9 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
         lines.append(f"## {status_title} ({len(bucket)})")
         lines.append("")
         for d, status, overlay in bucket:
-            lines.append(_format_decision_line(d, status, overlay, name_idx))
+            lines.append(_format_decision_line(
+                d, status, overlay, name_idx,
+                overlays["proposals_map"].get(_decision_id(d))))
             lines.append("")
         lines.append("")
 

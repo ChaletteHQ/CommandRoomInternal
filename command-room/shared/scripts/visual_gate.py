@@ -504,23 +504,35 @@ def log_visual_gate(
     `None`, pass rendered=False + a short `skipped_reason` ("no renderer on
     this machine") so the skipped path is detectable, not invisible.
     Returns True when the event landed, False otherwise.
+
+    WALKFIX1 Item C — `doc` is PERSISTED WORKSPACE-RELATIVE. Callers hand this
+    function the absolute path they just rendered (they have to: the renderer
+    ladder stats the disk), and until this build that absolute path went
+    verbatim into the event. Two live rows carry a `/sessions/<slug>/...` root
+    that resolves on no other machine and in no later session. The conversion
+    is `workspace_paths.to_workspace_relative`, the same writer-side converter
+    every other pointer field goes through, and `doc` is now in
+    `POINTER_FIELDS` so the guard-tier sweep reads it too. A pointer this
+    module cannot make portable persists EMPTY rather than absolute — an
+    honest absent pointer beats a dead one (`normalize_persisted_path`'s own
+    documented degrade).
     """
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from next_seq import next_seq
         from atomic_write import atomic_append_jsonl
         from cru_match import _now_iso
+        from workspace_paths import to_workspace_relative
         events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
         data = {
-            "doc": str(doc),
+            "doc": to_workspace_relative(str(doc), workspace_root),
             "rendered": bool(rendered),
             "findings": [str(f) for f in (findings or [])],
             "fixed": bool(fixed),
         }
         if skipped_reason:
             data["skipped_reason"] = str(skipped_reason)
+        # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
         atomic_append_jsonl(events_path, [{
-            "seq": next_seq(str(events_path)),
             "ts": _now_iso(),
             "type": "visual_gate",
             "source_skill": source_skill,

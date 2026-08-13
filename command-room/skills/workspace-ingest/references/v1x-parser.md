@@ -185,7 +185,6 @@ Per decision:
 
 ```json
 {
-  "seq": <next>,
   "ts": "<date>",
   "type": "decision",
   "source_skill": "workspace-ingest",
@@ -221,14 +220,14 @@ Within each session block, extract structured sub-sections:
 | `**Decisions:**` / `## Decisions` | one `decision` event per bullet |
 | `**Commitments:**` / `**Open Items:**` / `## Action Items` | one `commitment` event per bullet with status=`open` |
 | `**Completed:**` / `**Done:**` / `## Shipped` | one `commitment_resolved` event per bullet (attempt to match prior commitment by fuzzy description; else emit standalone) |
-| `**Meeting notes:**` / `## Meeting` / attendee list present | one `meeting` event with `data.attendee_person_ids[]` + `data.summary` + `data.duration_min` (if parseable) |
+| `**Meeting notes:**` / `## Meeting` / attendee list present | one `meeting` event via `meeting_capture.build_meeting_event()` (BUG-8244: top-level `person_ids[]` resolved + `data.attendees[]` emails when the notes carry them + `data.attendees_external[]` unmatched names) + `data.summary` + `data.duration_min` (if parseable) |
 | `**Status change:**` / explicit `paused → active` / etc. | one `status_change` event with `data.from`/`data.to` |
 | `**Scope change:**` | one `scope_change` event |
 | Free-form body with no sub-sections | one `interaction` event with `data.channel = "in-person"` (or inferred) + `data.summary` + `data.direction` |
 
 **Every event carries:**
 
-- `seq` = monotonic (reserve as parsed)
+- `seq` — OMIT (BUG-8330 item 7): the appender allocates it inside the writer lock; never reserve or pre-compute
 - `ts` = session date
 - `source_skill` = `"workspace-ingest"`
 - `primary_thread_id` = the owning thread of this SESSION_NOTES file

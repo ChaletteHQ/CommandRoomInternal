@@ -113,6 +113,12 @@ CANONICAL_TASK_IDS = frozenset({
     "friday-wrap",
     "cleanup",
     "reconcile-sent",
+    # CHATSCAN1 — the chat closure leg. A SIBLING job inside the same
+    # `maintenance` task as `reconcile-sent`, not a new scheduled task: M's
+    # ruling is that closing from chat is wired into the maintenance cadence
+    # exactly like closing from mail, so it needs its own job id, its own
+    # receipt and its own due-ness — and NO registration of its own.
+    "reconcile-chat",
     "monthly-report",
     "weekly-insights",
     "session-sweep",
@@ -206,6 +212,14 @@ RECEIPT_TYPES: dict[str, dict] = {
     "commitment-triage":  {"types": frozenset({"pack_run"})},
     "cleanup":            {"types": frozenset({"cleanup_run", "audit_run"})},
     "reconcile-sent":     {"types": frozenset({"sent_reconcile"})},
+    # CHATSCAN1 — the chat leg's own receipt. Deliberately a DIFFERENT type
+    # from `sent_reconcile`: the two legs run in the same fire, and
+    # `validate_reconcile_ran` reads "the latest sent_reconcile event". Had
+    # the chat leg written that type, a chat run would have satisfied the mail
+    # leg's validator and a mail leg that never fired would have read as
+    # healthy — the two would have vouched for each other. Same shape, same
+    # cadence, separate proof.
+    "reconcile-chat":     {"types": frozenset({"chat_reconcile"})},
     "monthly-report":     {"types": frozenset({"operator_report_generated", "value_receipt_generated"}),
                            "count_types": frozenset({"operator_report_generated"})},
     # weekly-insights writes a pack_run receipt from v4.5.2 (it was the one
@@ -263,6 +277,7 @@ RECEIPT_TYPES: dict[str, dict] = {
 # Types that identify their task by TYPE alone (exactly one writer each).
 _TYPE_IMPLIES_TASK = {
     "sent_reconcile": "reconcile-sent",
+    "chat_reconcile": "reconcile-chat",
     "session_sweep_run": "session-sweep",
     "cleanup_run": "cleanup",
     "audit_run": "cleanup",
@@ -447,6 +462,21 @@ def log_receipt(
             if k not in data:
                 data[k] = v
 
+    # WALKFIX1 Item H — where this fire landed relative to its own slot, so the
+    # ledger explains itself. Stamped HERE rather than asked of each
+    # orchestrator: a prose mandate across a dozen orchestrators is presumed
+    # skipped (Bug #98 class), and every scheduled fire already ends at this
+    # one call. Import is local — `late_fire` imports this module.
+    # A caller that computed the fields itself keeps its own values.
+    try:
+        from late_fire import slot_provenance
+
+        for k, v in slot_provenance(workspace_root, canonical,
+                                    fired_via=via).items():
+            data.setdefault(k, v)
+    except Exception:  # noqa: BLE001 — provenance never blocks a receipt
+        pass
+
     event = {
         "type": receipt_type,
         "source_skill": canonical,
@@ -458,6 +488,49 @@ def log_receipt(
     events_path.parent.mkdir(parents=True, exist_ok=True)
     append_event(events_path, event, holder=f"receipt:{canonical}")
     return event
+
+
+# ---------------------------------------------------------------------------
+# WALKFIX1 Item J — receipt errors reach the chat, in one line
+# ---------------------------------------------------------------------------
+
+def receipt_errors_notice(receipt) -> Optional[str]:
+    """ONE chat line when a fire's own receipt carries `data.errors`, else None.
+
+    THE FINDING (2026-08-10). A past-meetings fire wrote an `errors[]` entry
+    naming a real correctness defect in its own run, and the chat presented a
+    clean two-brief recap with no mention of it. The operator learned about it
+    only by reading the ledger. The product's own closing-silently-is-worse
+    principle says a system that noticed something and said nothing has spent
+    trust it did not have to.
+
+    WHAT THIS DELIBERATELY IS NOT: an error dump, an alarm, or a phase-internals
+    tour. One sentence, a count, and a pointer. The CEO is not being asked to
+    do anything; they are being told the run is not claiming to be perfect.
+
+    VOCABULARY NOTE — the wording differs from the spec's draft in one word,
+    because the draft's own spelling is forbidden output. `seq N` is an
+    "event seq leak" in the renderer's Gate 2 pattern table and `(seq N)` is a
+    `telemetry_narration` violation in `chat_output_validator`; a line that
+    trips the product's own gates cannot ship as product output. "entry" says
+    the same thing to a reader and passes both, and the suite pins that it
+    does rather than asserting it.
+
+    Returns None for an empty / absent / malformed `errors` — a notice about
+    nothing is worse than silence.
+    """
+    if not isinstance(receipt, dict):
+        return None
+    data = receipt.get("data") if isinstance(receipt.get("data"), dict) else {}
+    errors = data.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return None
+    n = len(errors)
+    noun = "correction" if n == 1 else "corrections"
+    seq = receipt.get("seq")
+    where = (f" (entry {seq})" if isinstance(seq, int)
+             and not isinstance(seq, bool) else "")
+    return f"{n} internal {noun} noted — details in the run receipt{where}."
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +558,7 @@ def log_prep_receipt(
     generated_by: str = "upcoming-meetings",
     fired_via: str = "scheduled",
     refreshed: bool = False,
+    meeting_start: Optional[str] = None,
     extra_data: Optional[dict] = None,
 ) -> dict:
     """THE per-brief receipt writer. Both prep paths (scheduled auto-prep and
@@ -494,6 +568,20 @@ def log_prep_receipt(
     derives the filename from, so detector and file share one key.
     `refreshed` records that an existing brief was updated in place rather
     than a new one written (the F-29b contract made auditable).
+
+    `meeting_start` is the INSTANCE discriminator (BRIEFFIX1 Item B, added
+    2026-08-09 after the second-eyes review). A calendar id is stable across a
+    recurring series, so the id alone cannot say WHICH standup a document was
+    written for — and a reuse rule keyed on the id plus a clock window handed
+    the CEO yesterday's brief for today's meeting, reproduced at 14h and 23.9h.
+    The start time is the one field that differs between two instances, so it
+    is what the reuse test compares.
+
+    Optional, and its absence is meaningful rather than tolerated: every
+    pre-BRIEFFIX1 receipt lacks it (history is append-only and nothing here
+    rewrites it), and `prep_leg` treats a receipt with no `meeting_start` as
+    unprovable and REGENERATES. Callers that have the value must pass it; the
+    cost of omitting it is a duplicate document, never a stale one.
     """
     if not isinstance(meeting_id, str) or not meeting_id.strip():
         raise ValueError("meeting_id is required (the calendar event id)")
@@ -518,6 +606,8 @@ def log_prep_receipt(
         "fired_via": via,
         "refreshed": bool(refreshed),
     }
+    if isinstance(meeting_start, str) and meeting_start.strip():
+        data["meeting_start"] = meeting_start.strip()
     machine = _machine_name()
     if machine:
         data["machine"] = machine

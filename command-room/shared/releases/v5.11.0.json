@@ -1,0 +1,55 @@
+{
+  "version": "5.11.0",
+  "headline": "The Aug-10 train: meetings know who was in them, wrongly-closed decisions come back, your surfaces stop disagreeing with themselves — and the morning brief preps your day itself.",
+  "items": [
+    {
+      "id": "v5110_announce_meeting_prep_folded_into_morning_brief",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two chats became one. Your Morning Brief now writes today's meeting prep before it writes the brief, so the prep documents are ready and linked by the time you read it. Same prep, same folder, same quality — one less chat to watch, and if the prep ever fails the brief still arrives and tells you which meeting to ask about. Anything booked after the brief runs is one ask away: say 'prep me for my 2pm'.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5110_instruct_pick_up_the_merge_on_this_computer",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One thing to do, once, on each computer you use Command Room from: say 'set up command room schedules'. Your scheduled chats live on the computer that runs them, so the change only reaches this one when you say it here. If your Upcoming Meetings chat is still sitting in your Scheduled list afterwards, say 'pause upcoming meetings' and I'll switch it off — its work now happens inside your Morning Brief.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v5110_announce_prep_links_open_on_every_machine",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "A fix from the field: meeting prep documents attached to your brief could answer a click with \"This file can't be found on your computer.\" The documents were always fine and always in your workspace folder — the link recorded where the file sat on the computer that made it, which is not where it sits on any other. Links are now recorded relative to your workspace and resolved at the moment they are posted, against the machine posting them — which is the machine you are reading on, because your scheduled chats run where you are. Older links are repaired as they are read; nothing in your history is rewritten. If a document has not finished syncing yet, the brief says so plainly instead of handing you a dead link.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5110_announce_mark_done_refuses_stale_numbering",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One new thing you may see, so it isn't a surprise: when you close an item from your Morning Brief by its number, that number has to match the list the brief recorded when it posted. If a brief ever posts without recording its list, closing by number could land on the wrong item — so instead of guessing, I'll tell you plainly that the numbers don't line up and offer two ways through: run the brief once so they match, or just name the item and I'll close it directly. You should rarely see it. It exists because closing the wrong thing quietly is worse than asking.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5110_announce_meeting_binding",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Meetings finally know who was in them. Every new meeting records its attendees canonically, so relationship cadence, dormancy alerts, call-prep timelines and 'when did I last talk to X' stop under-counting people you actually meet. Historical meetings can be repaired too — your operator runs that backfill for you, so there's nothing you need to do.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5110_announce_decisions_propose_not_close",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Meetings no longer close your decisions on a word-match. When a call looks like it reversed an old decision, the decision log now shows a 'supersede proposed' note on that decision's own line — it stays active until YOU say otherwise. And a decision that was closed by mistake can be brought back: say 'still valid' on it and the newest signal wins, with the history kept.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5110_announce_surfaces_reconcile",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your daily surfaces got honest: My Plate renders every promise (no more silently missing rows), unowned items drain through their own triage lane instead of sitting pinned forever, review questions ask per item instead of closing in bulk, duplicate rows collapse to one card that names what it absorbed, and every unconfirmed number now says which slice of what it is.",
+      "action": "announce_only"
+    }
+  ]
+}

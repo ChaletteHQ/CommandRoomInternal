@@ -1,0 +1,13 @@
+{
+  "version": "5.11.1",
+  "headline": "Meeting-prep links now open on OneDrive and SharePoint workspaces, and a workspace with two cloud drives connected always searches the right one.",
+  "items": [
+    {
+      "id": "v5111_announce_links_open_on_microsoft_workspaces",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "A fix from the field: if your workspace folder syncs through OneDrive or SharePoint, the document links in your briefs could answer a click with nothing at all. The documents were always fine — the link only knew how to find files on Google Drive. Links now resolve against whichever cloud drive actually hosts your workspace, and if you have more than one drive connected, the right one is chosen from where your workspace lives rather than whichever tool answered first. Nothing for you to do — the next brief that fires carries working links.",
+      "action": "announce_only"
+    }
+  ]
+}

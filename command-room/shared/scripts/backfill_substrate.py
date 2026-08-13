@@ -190,8 +190,8 @@ def apply(plan: dict, events_path: Path) -> dict:
     for line_idx, new_ev in edits.items():
         raw[line_idx] = json.dumps(new_ev, ensure_ascii=False) + "\n"
     atomic_write_text(events_path, "".join(raw))
+    # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
     marker = {
-        "seq": next_seq(events_path),
         "type": "substrate_backfill",
         "source_skill": "backfill_substrate",
         "data": {

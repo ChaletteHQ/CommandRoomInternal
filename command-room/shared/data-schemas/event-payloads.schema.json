@@ -36,6 +36,35 @@
     "required": [["commitment_id", "commitment_seq"], ["new_owner_id", "new_counterparty_id"]],
     "properties": {"commitment_id": "string", "commitment_seq": "number", "new_owner_id": "string", "new_counterparty_id": "string", "new_owner_name": "string", "new_counterparty_name": "string", "reason": "string", "reassigned_by": "string", "confirmed": "boolean"}
   },
+  "chat_reconcile": {
+    "description": "ONE receipt per chat-closure fire (SPEC CHATSCAN1 §B — the `reconcile-chat` job inside the `maintenance` task, beside `reconcile-sent`). WRITTEN ONLY via chat_reconcile._log_receipt -> receipts.log_receipt; never hand-built. Deliberately NOT `sent_reconcile`: that type's validator reads `the latest one`, so sharing it would let the chat leg vouch for a mail leg that never fired. Written on every terminal state — skipped (no chat backend declared), blocked (a declared backend whose read could not happen; the cursor never advances over an unread window), degraded (a real run on the partial per-conversation path, carrying scan_mode + a plain-language coverage_note), complete — because a leg that stays silent when it does not run cannot be told apart from one that swept everything and found nothing. Counts are what was WRITTEN, never the plan: n_scanned is the denominator, n_candidates shows the relevance bound actually ran, and n_refused_no_pointer counts closes REFUSED for want of an auditable pointer (a non-zero value is the fence working).",
+    "required": [["task_id"], ["status"]],
+    "properties": {
+      "task_id": "string",
+      "kind": "string",
+      "status": "string",
+      "fired_via": "string",
+      "provider": "string",
+      "scan_mode": "string",
+      "degraded": "boolean",
+      "coverage_note": "string",
+      "scan_limits": "object",
+      "cursor_from": "string",
+      "cursor_to": "string",
+      "skip_reason": "string",
+      "blocked_reason": "string",
+      "n_scanned": "number",
+      "n_dropped_bad_ts": "number",
+      "n_deferred": "number",
+      "deferred_from_ts": "string",
+      "cursor_advanced_over_partial_sweep": "boolean",
+      "n_candidates": "number",
+      "n_candidates_over_cap": "number",
+      "n_closed": "number",
+      "n_proposed": "number",
+      "n_refused_no_pointer": "number"
+    }
+  },
   "chat_dismissal_cleared": {
     "description": "Unmutes a live chat_dismissal before its TTL expires (v4.6.0 S4 mute ledger — mutes stop being a one-way door). WRITTEN ONLY via mute_ledger.clear_dismissal() / clear_dismissals() (loud no-match on an unknown dismissal_seq, idempotent over already-inactive dismissals). References the dismissal by data.dismissal_seq (preferred — the chat_dismissal event's seq) or by data.target_id / data.fingerprint (clears every dismissal with that identity written BEFORE the clear). Readers of chat_dismissal MUST honor it: a dismissal followed by a matching clear is INACTIVE regardless of remaining TTL (mute_ledger.live_mutes / active_dismissal_target_ids are the canonical readers).",
     "required": [["dismissal_seq", "target_id", "fingerprint"]],
@@ -62,9 +91,9 @@
     "properties": {"decision": "string", "summary": "string", "title": "string", "rationale": "string", "context": "string"}
   },
   "meeting": {
-    "description": "A meeting record. Has a title or summary. meeting_type (optional) is the writer's classification of the meeting — sales | internal_1_1 | external | board | ... — stamped by past-meetings; the deal-signal detector's D9.1 genesis lane keys on meeting_type='sales' (defensive read: an untyped meeting contributes no genesis signal).",
+    "description": "A meeting record. Has a title or summary. meeting_type (optional) is the writer's classification of the meeting — sales | internal_1_1 | external | board | ... — stamped by past-meetings; the deal-signal detector's D9.1 genesis lane keys on meeting_type='sales' (defensive read: an untyped meeting contributes no genesis signal). PERSON BINDING (BUG-8244): the canonical shape carries top-level person_ids[] (resolved) AND data.attendees[] (invitee emails, verbatim from the source) — construct via meeting_capture.build_meeting_event(), never by hand. data.attendees_external[] holds display names with no entities.json match. data.attendee_person_ids and data.attendee_emails are LEGACY read-only variants: readers fold them via event_refs.meeting_person_ids(); no new writer may emit them.",
     "required": [["title", "summary"]],
-    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "primary_thread_id": "string", "meeting_type": "string"}
+    "properties": {"title": "string", "summary": "string", "source_ref": "string", "person_ids": "array", "attendees": "array", "attendees_external": "array", "attendee_person_ids": "array", "attendee_emails": "array", "primary_thread_id": "string", "meeting_type": "string", "duration_min": "number", "status": "string"}
   },
   "meeting_processed": {
     "description": "A processed meeting. References the meeting and carries a summary/title.",

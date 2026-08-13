@@ -919,20 +919,19 @@ def _close_rows(workspace_root, rows, *, batch_id, source_skill, resolution,
 def _write_audit(workspace_root, events_path, receipt, *, source_skill) -> None:
     """ONE `backlog_sweep` audit event per run — dry-run included.
 
-    Written through the same `next_seq` + `atomic_append_jsonl` pair both mail
-    rails' audits use. The slim lists carry ids and titles only; the digest is
-    rendered from the return value, not from this row.
+    Written through `atomic_append_jsonl`, which allocates seq inside the
+    writer lock (BUG-8330 item 7 — no hand-stamped seq). The slim lists
+    carry ids and titles only; the digest is rendered from the return value,
+    not from this row.
     """
     from atomic_write import atomic_append_jsonl as _append
     from cru_match import _now_iso as _audit_ts
-    from next_seq import next_seq as _next_seq
 
     def _slim(items, key="commitment_id"):
         return [{key: i.get(key), "title": (i.get("title") or "")[:120]}
                 for i in items]
 
     event = {
-        "seq": _next_seq(str(events_path)),
         "ts": _audit_ts(),
         "type": AUDIT_EVENT_TYPE,
         "source_skill": source_skill,

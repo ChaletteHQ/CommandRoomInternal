@@ -222,6 +222,21 @@ def _weak_reason(ev: dict) -> str:
     return _watch_weak_reason(ev)
 
 
+def _stamped_fields(ev: dict) -> dict:
+    """The producer's own strength stamp off a capture event, or {}.
+
+    RIDERS (c). One reader (`watch_gate.stamped_strength_fields`) shared with
+    the proposal adapter, so the two proposal surfaces cannot grow two ideas
+    of what a stamped row says. Defensive: any failure yields no stamp, which
+    is the pre-rider render."""
+    try:
+        from watch_gate import stamped_strength_fields
+
+        return stamped_strength_fields((ev or {}).get("data"))
+    except Exception:
+        return {}
+
+
 def _review_reason(ws: Path, ev: dict, cache: dict) -> str:
     """The row's `review_reason` in the copy the user should read.
 
@@ -485,6 +500,13 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
                 "evidence": _evidence_text(ev),
                 "weak_reason": weak,
             })
+            # RIDERS (c) — the PRODUCER'S own strength stamp, carried onto the
+            # row so the shared renderer below can SAY it. Only when the writer
+            # set one: a row with no stamp gains no keys and renders exactly as
+            # before. Deliberately NOT folded into `weak_reason` — that field
+            # is what `confirm_items` screens a bulk answer with, and this
+            # rider is a rendering change, not a screening one.
+            rows[-1].update(_stamped_fields(ev))
         group = {"name": labels.get(key, key), "count": len(rows),
                  "items": rows}
         if by_meeting:
@@ -788,6 +810,59 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
     return {"results": results, "n_confirmed": n_confirmed,
             "n_not_pending": n_not_pending, "n_held": n_held,
             "n_failed": n_failed}
+
+
+def confirm_satisfied_reasons(workspace_root, *,
+                              source_skill: str = SOURCE_SKILL) -> dict:
+    """The reason-scoped batch verb (BUG-8330 item 4).
+
+    The old batch surface was reason-BLIND and per-id only: nothing could
+    say "clear every item whose reason is answered". This scans the
+    projection for items the read-side fold marked
+    `review_reason_auto_satisfied` (a SOLE review_reason clause whose
+    mechanical check no longer holds — e.g. "counterparty 'X' has no person
+    record" where X resolves to a contact today) and formalizes each as an
+    ordinary `clear_review_flags` event — the ONE write path, so history
+    shows an explicit adjudication instead of a state perpetually re-derived
+    at read time. The capture event is never rewritten.
+
+    No weak-evidence screen applies: nothing here accepts extraction
+    evidence in bulk — the reason the item was held is gone, and the fold
+    has ALREADY released it for gating; this only makes that durable.
+
+    Returns {"results": [...], "n_cleared": int, "n_failed": int}.
+    """
+    from commitment_state import CommitmentIdError, clear_review_flags
+    from cru_match import load_open_commitments
+
+    events_path = _events_path(Path(workspace_root))
+    opens = load_open_commitments(events_path, workspace_root=workspace_root)
+    cleared_by = _resolve_user(workspace_root)
+    results: list[dict] = []
+    n_cleared = n_failed = 0
+    for ev in opens:
+        d = ev.get("data") or {}
+        if not d.get("review_reason_auto_satisfied"):
+            continue
+        cid = _commitment_id(ev)
+        try:
+            res = clear_review_flags(
+                workspace_root, cid, cleared_by=cleared_by,
+                source_skill=source_skill,
+                note=f"review reason satisfied — {str(d.get('review_reason') or '')[:120]}",
+            )
+        except CommitmentIdError as exc:
+            results.append({"commitment_id": cid, "status": "not_found",
+                            "detail": str(exc)})
+            n_failed += 1
+            continue
+        results.append({"commitment_id": res.get("commitment_id", cid),
+                        "status": res.get("status")})
+        if res.get("status") == "cleared":
+            n_cleared += 1
+        else:
+            n_failed += 1
+    return {"results": results, "n_cleared": n_cleared, "n_failed": n_failed}
 
 
 def confirm_group(workspace_root, view: dict, group, *,
@@ -1685,7 +1760,7 @@ def _row_context_tag(row: dict, *, meeting_label: str = "") -> str:
     answers "is there source text?"; only the reason answers "why am I being
     asked?". Appended LAST so the group label stays the tag's head, which is
     what the surface tests key on."""
-    from watch_gate import strength_line
+    from watch_gate import stamped_strength_note, strength_line
 
     bits = []
     if meeting_label:
@@ -1697,6 +1772,15 @@ def _row_context_tag(row: dict, *, meeting_label: str = "") -> str:
         bits.append(f"due {row['due']}")
     bits.append(strength_line(row.get("weak_reason") or "",
                               evidence=row.get("evidence") or ""))
+    # RIDERS (c) — the PRODUCER'S strength claim, if it made one. The
+    # `strength_line` above answers "is there source text?" from the evidence
+    # TEXT; a producer that knows the row came from a meeting the user was not
+    # in knows something the text cannot say, and until this line nothing on
+    # either surface showed it. "" for every unstamped row, so their tag is
+    # byte-identical to before.
+    stamp_note = stamped_strength_note(row)
+    if stamp_note:
+        bits.append(stamp_note)
     reason = str(row.get("review_reason") or "").strip()
     if reason:
         # Same wording as the text render, so one row reads the same in both.
@@ -1935,6 +2019,7 @@ __all__ = [
     "ids_for_group",
     "confirm_items",
     "confirm_group",
+    "confirm_satisfied_reasons",
     "done_items",
     "drop_items",
     "not_mine_items",

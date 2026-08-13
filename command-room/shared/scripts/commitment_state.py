@@ -63,6 +63,13 @@ I/O lives in the explicitly-named `commitment_counts` /
 `compute_and_log_brief_state` / `latest_brief_state_event` wrappers).
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import datetime
 import re
@@ -231,6 +238,54 @@ def reconcile_is_stale(sent_reconcile_cursor: Optional[str], now_iso: str,
 # The one counting API (Stage A)
 # -----------------------------------------------------------------------------
 
+# The four headline buckets, as ids. Spelled once so no surface invents its
+# own spelling of a bucket name (F-47 P2b / F-56: four different open counts
+# in one day came from each surface folding buckets its own way).
+BUCKET_YOU_OWE = "you_owe"
+BUCKET_OWED_TO_YOU = "owed_to_you"
+BUCKET_UNOWNED = "unowned"
+BUCKET_UNCONFIRMED = "unconfirmed"
+HEADLINE_BUCKETS = (BUCKET_YOU_OWE, BUCKET_OWED_TO_YOU, BUCKET_UNOWNED,
+                    BUCKET_UNCONFIRMED)
+
+
+def bucket_of(commitment_event: dict,
+              user_person_id: Optional[str]) -> str:
+    """THE headline-bucket membership predicate for ONE top-level commitment.
+
+    `count_commitments` counts by calling this; any surface that has to place
+    a row in a bucket (SPEC_BOARD1's board tabs and pinned strips) calls the
+    SAME function rather than re-deriving ownership. That is the whole point:
+    a bucket count and a bucket membership that disagree is the F-56 defect
+    class, and it can only be prevented structurally — one predicate, two
+    readers.
+
+    Returns one of `HEADLINE_BUCKETS`:
+
+      unconfirmed  — pending_review (INTAKE 2026-07-31: a queue member, not
+                     an open commitment; it counts in that ONE tile and
+                     nowhere else, so it is checked FIRST)
+      you_owe      — a resolvable owner that IS the primary user
+      owed_to_you  — a resolvable owner that is someone else
+      unowned      — no resolvable owner_id (extraction gap; still open)
+
+    `user_person_id=None` (unresolvable primary user) degrades exactly as
+    `count_commitments` documents: nothing matches the user, so every owned
+    item reads as owed_to_you.
+
+    Expects a TOP-LEVEL item (callers partition sub-items out first via
+    `cru_match.partition_subitems`) — a sub-item is a step of a promise, not a
+    promise, and never carries a bucket of its own.
+    """
+    if _is_pending_review(commitment_event):
+        return BUCKET_UNCONFIRMED
+    owner = _commitment_field(commitment_event, "owner_id")
+    if owner and user_person_id and owner == user_person_id:
+        return BUCKET_YOU_OWE
+    if owner:
+        return BUCKET_OWED_TO_YOU
+    return BUCKET_UNOWNED
+
 
 def count_commitments(
     open_commitments: list[dict],
@@ -352,6 +407,7 @@ def count_commitments(
     you_owe = they_owe = unowned = overdue = undated = 0
     unconfirmed = 0
     by_kind: dict[str, int] = {}
+    _bucket = bucket_of  # THE membership predicate (see its docstring)
     # INTAKE — a pending_review item is a QUEUE MEMBER, not an open
     # commitment. It increments `unconfirmed` (the pointer count) and is
     # skipped from every other tally: direction buckets, overdue, undated,
@@ -360,14 +416,14 @@ def count_commitments(
     # many promises am I carrying".
     confirmed_top: list[dict] = []
     for ev in top_level:
-        if _is_pending_review(ev):
+        bucket = _bucket(ev, user_person_id)
+        if bucket == BUCKET_UNCONFIRMED:
             unconfirmed += 1
             continue
         confirmed_top.append(ev)
-        owner = _commitment_field(ev, "owner_id")
-        if owner and user_person_id and owner == user_person_id:
+        if bucket == BUCKET_YOU_OWE:
             you_owe += 1
-        elif owner:
+        elif bucket == BUCKET_OWED_TO_YOU:
             they_owe += 1
         else:
             unowned += 1
@@ -430,6 +486,109 @@ def count_commitments(
         "by_kind": by_kind,
         "headline": headline,
     }
+
+
+# ---------------------------------------------------------------------------
+# WALKFIX1 Item E — THE unconfirmed vocabulary
+# ---------------------------------------------------------------------------
+
+# The renderer prose for a row whose title is missing entirely. Spelled once
+# and shared by the widget and the board so the two surfaces cannot describe
+# the same broken row differently. It says REPAIR because that is the action:
+# a title-less row is a damaged record, not a row the user forgot to name.
+UNTITLED_PLACEHOLDER = "(untitled — needs repair)"
+
+# The escalation block's own name. The header now carries a reconciliation
+# sentence after it, so the NAME is spelled here and the lane key below is what
+# any consumer should identify the block by — a rendered sentence is a label,
+# never an identifier.
+UNCONFIRMED_SECTION_LABEL = "Unconfirmed"
+
+# The stable, non-rendered key on the escalation section. Three shipped suites
+# used to find that block by matching its title string; the moment the title
+# gained a reconciliation they all broke, which is the point — a surface's
+# rendered text is allowed to change and its identity is not.
+UNCONFIRMED_LANE = "unconfirmed"
+
+
+def unconfirmed_slices(*, queue_total, shown: int, escalated: int) -> dict:
+    """THE derivation behind every unconfirmed number this product renders.
+
+    Three surfaces show three different unconfirmed numbers, and on the
+    2026-08-10 walk they read 198 / 110 / 89 with nothing on any of them
+    saying which slice of what each one was. All three are correct; none of
+    them was legible. The fix is vocabulary, not arithmetic — but the
+    vocabulary only stays true if the three labels come from ONE computation,
+    so this function owns all three.
+
+    Inputs, all derived by the caller from the SAME bucketing pass:
+      queue_total  the whole pending-review queue (the headline tile's value)
+      shown        rows the escalation strip/section actually renders
+      escalated    how many of those rows are in the unconfirmed BUCKET
+
+    `shown - escalated` is the crossing set: rows the escalation selector
+    pinned that the bucket predicate does not call unconfirmed — the ownerless
+    escalation is the live case, and it is a verified non-bug, which is
+    exactly why the label has to name it instead of quietly absorbing it.
+
+    Returns the numbers plus the three rendered labels. `None`/unreadable
+    `queue_total`, or a total that cannot be reconciled against what is shown,
+    degrades every label to its plain form: a reconciliation of one number is
+    noise and an invented total is worse than none.
+    """
+    try:
+        shown = int(shown)
+        escalated = int(escalated)
+    except (TypeError, ValueError):
+        shown, escalated = 0, 0
+    if isinstance(queue_total, bool) or not isinstance(queue_total, int):
+        queue_total = None
+    crossing = max(0, shown - escalated)
+    remainder = (queue_total - escalated) if queue_total is not None else None
+    # Nothing left to reconcile — no remainder AND no crossing row — is the
+    # degrade case, not a sentence: "5 rows — 5 escalated of 5" restates one
+    # number three times. A negative remainder means the inputs disagree, and
+    # an invented total is worse than none.
+    degraded = (queue_total is None or remainder is None
+                or remainder < 0 or (remainder == 0 and crossing == 0))
+
+    out = {
+        "queue_total": queue_total,
+        "shown": shown,
+        "escalated": escalated,
+        "crossing": crossing,
+        "remainder": remainder,
+        "degraded": degraded,
+    }
+    if degraded:
+        out["section_title"] = UNCONFIRMED_SECTION_LABEL
+        out["board_heading_tail"] = f"({shown})"
+        out["quick_read"] = None
+        return out
+
+    # "Unconfirmed — 110 rows, 109 escalated of 198, plus 1 unowned"
+    #
+    # The section KEEPS ITS NAME. The spec's draft header dropped the noun
+    # ("110 rows — 109 escalated of 198, plus 1 unowned"), and on a surface
+    # whose whole job here is legibility a header with no subject is a step
+    # backwards: the section header is the only place the widget says what the
+    # block IS. Same shape as the board strip's heading, so the two surfaces
+    # read as one product.
+    parts = [f"{shown} rows", f"{escalated} escalated of {queue_total}"]
+    if crossing:
+        parts.append(f"plus {crossing} unowned")
+    out["section_title"] = f"{UNCONFIRMED_SECTION_LABEL} — " + ", ".join(parts)
+    # The board strip pins only rows the strip itself renders, so its heading
+    # is the same sentence without the crossing term.
+    out["board_heading_tail"] = (
+        f"{escalated} escalated of {queue_total} unconfirmed · "
+        f"say `needs your call` for the rest") if remainder else f"({shown})"
+    noun = ("extraction waiting" if remainder == 1 else "extractions waiting")
+    out["quick_read"] = (
+        f"{remainder} unconfirmed {noun} (not yet escalated; "
+        f"{queue_total} total) — say `needs your call` to clear them."
+        if remainder else None)
+    return out
 
 
 def commitment_counts(
@@ -952,7 +1111,8 @@ def cap_needs_attention(rows, *, cap: int = BRIEF_ATTENTION_CAP,
     }
 
 
-def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefing", **kwargs):
+def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefing",
+                                fired_via="manual", **kwargs):
     """Compute the brief state AND emit a `brief_state` audit event carrying the
     CODE's real numbers (Bug #99).
 
@@ -974,6 +1134,19 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     stuck/blocked numbers with no extra orchestrator step. A derivation
     failure degrades to a headline without the keys — never a guessed 0,
     never a blocked brief.
+
+    BRIEFFIX1 Item C (2026-08-09, second-eyes F1) — the event now records WHICH
+    KIND OF FIRE wrote it. It is emitted on BOTH paths (the scheduled
+    orchestrator's driver and the on-demand "brief me"), and before this it
+    carried no discriminator at all: no `fired_via`, no mode, and the same
+    `source_skill` either way. Anything reading it therefore could not tell a
+    hand-run brief from a scheduled one — which is how the receipt-ordering
+    check came to read every manual brief as the defect it was built to catch.
+
+    The default is `manual` on purpose, per RECEIPT_CONTRACT § Run-mode
+    detection: an unlabelled fire is treated as the interactive one, because
+    mislabelling a manual costs a missing note while mislabelling a scheduled
+    fabricates history (F-47 P1a). Callers that KNOW pass the value.
     """
     if "commitment_movement" not in kwargs:
         try:
@@ -989,6 +1162,17 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     # fills. `setdefault`, so an explicit caller value still wins.
     kwargs.setdefault("workspace_root", workspace_root)
     state = compute_brief_state(**kwargs)
+
+    def _normalize_fired_via(value):
+        """The canonical spelling, or `manual` when the value means nothing.
+        Import-tolerant: the audit write must never be what breaks a brief."""
+        try:
+            from receipts import FIRED_VIA, normalize_fired_via
+            via = normalize_fired_via(value)
+            return via if via in FIRED_VIA else "manual"
+        except Exception:  # noqa: BLE001
+            return value if value in ("scheduled", "manual", "catchup") else "manual"
+
     try:
         from pathlib import Path as _Path
         from atomic_write import atomic_append_jsonl as _append
@@ -1007,6 +1191,10 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
                 "n_needs_attention": len(state["needs_attention"]),
                 "n_meeting_linked": len(state.get("meeting_linked") or []),
                 "reconcile_stale": state["reconcile_stale"],
+                # Which kind of fire computed this (BRIEFFIX1 Item C / F1).
+                # Normalized through the receipt vocabulary so `catchup`,
+                # `user-trigger` and the rest land in one spelling.
+                "fired_via": _normalize_fired_via(fired_via),
             },
         }])
     except Exception:
@@ -1085,38 +1273,19 @@ class OpenSubitemsError(ValueError):
 
 def _closer_target_id(ev: dict) -> str:
     """The id a commitment_resolved / thread_resolved / commitment_superseded
-    event closes — MUST mirror load_open_commitments' closer chain exactly, so
-    close_commitment's idempotency agrees with what the loader actually treats
-    as closed. (Stage C extended both chains together with the seq aliases —
-    see `_closer_target_seqs` for that half of the mirror.)"""
-    d = ev.get("data") or {}
-    return (
-        d.get("commitment_id")
-        or d.get("thread_id")
-        or d.get("id")
-        or d.get("target_id")
-        or ev.get("commitment_id")
-        or ev.get("thread_id")
-        or ev.get("id")
-        or ""
-    )
+    event closes. Since BUG-8330 item 1 this IS load_open_commitments' chain —
+    both sides import closure_index, so the mirror holds by construction
+    instead of by comment."""
+    from closure_index import closer_target_id
+    return closer_target_id(ev)
 
 
 def _closer_target_seqs(ev: dict) -> list[int]:
     """The F3 amnesty half of the closer chain (Stage C): seqs a closure
-    references via `data.commitment_seq` / `data.source_event_seq` — both map
-    seq → the commitment event at that seq. Mirrors the loader exactly."""
-    d = ev.get("data") or {}
-    out: list[int] = []
-    for field in ("commitment_seq", "source_event_seq"):
-        v = d.get(field)
-        if isinstance(v, bool):
-            continue
-        if isinstance(v, str) and v.strip().isdigit():
-            v = int(v.strip())
-        if isinstance(v, int):
-            out.append(v)
-    return out
+    references via `data.commitment_seq` / `data.source_event_seq`. Shared
+    fold — see `_closer_target_id`."""
+    from closure_index import closer_target_seqs
+    return closer_target_seqs(ev)
 
 
 def _scan_commitment_index(events_jsonl_path) -> dict:
@@ -1139,30 +1308,39 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
     Mirrors load_open_commitments' state machine exactly.
     """
     from cru_match import load_events_defensively
+    from closure_index import ClosureIndex
     from pathlib import Path as _Path
 
     by_id: dict[str, dict] = {}
     by_seq: dict[int, dict] = {}
-    closed_ids_at: dict[str, int] = {}
-    closed_seqs_at: dict[int, int] = {}
-    reopened_ids_at: dict[str, int] = {}
-    reopened_seqs_at: dict[int, int] = {}
+    # BUG-8330 item 1: closure/reopen state folds through the SHARED
+    # closure_index (the same object load_open_commitments builds), so the
+    # write-side pre-flight can never drift from the read-side projection.
+    # The four *_at keys stay in the returned dict for shape compat — they
+    # are the ClosureIndex's own maps.
+    closure = ClosureIndex()
     kind_by_id: dict[str, str] = {}
     kind_by_seq: dict[int, str] = {}
     superseded_onto: dict[str, str] = {}
     children_of: dict[str, list] = {}
-    p = _Path(events_jsonl_path)
-    if not p.exists():
-        return {"by_id": by_id, "by_seq": by_seq,
-                "closed_ids_at": closed_ids_at, "closed_seqs_at": closed_seqs_at,
-                "reopened_ids_at": reopened_ids_at,
-                "reopened_seqs_at": reopened_seqs_at,
+
+    def _index_dict() -> dict:
+        return {"by_id": by_id, "by_seq": by_seq, "closure": closure,
+                "closed_ids_at": closure.closed_ids_at,
+                "closed_seqs_at": closure.closed_seqs_at,
+                "reopened_ids_at": closure.reopened_ids_at,
+                "reopened_seqs_at": closure.reopened_seqs_at,
                 "kind_by_id": kind_by_id, "kind_by_seq": kind_by_seq,
                 "superseded_onto": superseded_onto, "children_of": children_of}
+
+    p = _Path(events_jsonl_path)
+    if not p.exists():
+        return _index_dict()
     events, _skipped = load_events_defensively(p)
     for idx, ev in enumerate(events):
         et = ev.get("type") or ev.get("event") or ""
         d = ev.get("data") or {}
+        closure.fold(idx, ev)
         if et == "commitment":
             by_id[_commitment_id(ev)] = ev
             seq = ev.get("seq")
@@ -1171,28 +1349,14 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
             pid = d.get("parent_id")
             if isinstance(pid, str) and pid.strip():
                 children_of.setdefault(pid.strip(), []).append(ev)
-        elif et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
-            cid = _closer_target_id(ev)
-            if cid:
-                closed_ids_at[str(cid)] = idx
-            for s in _closer_target_seqs(ev):
-                closed_seqs_at[s] = idx
+        elif et == "commitment_superseded" and not d.get("split_into"):
             # SUB1 D3b — merge re-point map (mirrors the loader's merged_onto
             # fold): a non-split supersession transfers the closed parent's
             # children to the survivor read-side. Split closers stay skipped.
-            if et == "commitment_superseded" and not d.get("split_into"):
-                survivor = d.get("superseded_by") or d.get("survivor_id")
-                if cid and survivor:
-                    superseded_onto[str(cid)] = str(survivor)
-        elif et == "commitment_reopened":
-            target = d.get("commitment_id") or d.get("target_id") or ev.get("commitment_id")
-            if target:
-                reopened_ids_at[str(target)] = idx
-            v = d.get("commitment_seq")
-            if isinstance(v, str) and v.strip().isdigit():
-                v = int(v.strip())
-            if isinstance(v, int) and not isinstance(v, bool):
-                reopened_seqs_at[v] = idx
+            cid = _closer_target_id(ev)
+            survivor = d.get("superseded_by") or d.get("survivor_id")
+            if cid and survivor:
+                superseded_onto[str(cid)] = str(survivor)
         elif et == "commitment_reclassified":
             new_kind = d.get("new_kind") or d.get("new_type")
             target = d.get("target_id") or d.get("commitment_id")
@@ -1202,12 +1366,7 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
             if new_kind and isinstance(v, int) and not isinstance(v, bool):
                 kind_by_seq[v] = new_kind
 
-    return {"by_id": by_id, "by_seq": by_seq,
-            "closed_ids_at": closed_ids_at, "closed_seqs_at": closed_seqs_at,
-            "reopened_ids_at": reopened_ids_at,
-            "reopened_seqs_at": reopened_seqs_at,
-            "kind_by_id": kind_by_id, "kind_by_seq": kind_by_seq,
-            "superseded_onto": superseded_onto, "children_of": children_of}
+    return _index_dict()
 
 
 def _resolve_survivor(superseded_onto: dict, cid: str) -> str:
@@ -1243,18 +1402,10 @@ def _currently_closed(index: dict, cid: str, seq) -> bool:
     """CURRENT closure state of one commitment, cross-keyed over both the id
     chain and the F3 seq aliases: closed iff the latest closure (either
     keying) comes after the latest reopen (either keying) in append order.
-    This is exactly load_open_commitments' per-commitment math — the two can
-    never disagree."""
-    seq_ok = isinstance(seq, int) and not isinstance(seq, bool)
-    last_close = max(
-        index["closed_ids_at"].get(cid, -1),
-        index["closed_seqs_at"].get(seq, -1) if seq_ok else -1,
-    )
-    last_reopen = max(
-        index["reopened_ids_at"].get(cid, -1),
-        index["reopened_seqs_at"].get(seq, -1) if seq_ok else -1,
-    )
-    return last_close > last_reopen
+    This IS load_open_commitments' per-commitment math — both delegate to
+    the shared closure_index fold (BUG-8330 item 1), so the two can never
+    disagree."""
+    return index["closure"].is_closed(cid, seq)
 
 
 def effective_kind(index: dict, target: dict) -> str:
@@ -1446,7 +1597,7 @@ def close_commitment(
         data.update({
             "commitment_id": cid,
             "resolved_by": resolved_by,
-            "evidence": (evidence or "")[:200],
+            "evidence": clip(evidence),
             "resolution": resolution,
         })
         ev = {
@@ -1605,7 +1756,7 @@ def supersede_commitment(
             "superseded_by": survivor_cid,
             "resolved_by": merged_by,
             "resolution": "duplicate",
-            "evidence": (evidence or f"merged into {survivor_cid}")[:200],
+            "evidence": clip(evidence or f"merged into {survivor_cid}"),
             "merged_source_refs": refs,
         }
         # Seq aliases on BOTH sides: commitment_seq feeds the F3 closer chain
@@ -2154,7 +2305,7 @@ def mark_partial_received(
         if isinstance(target.get("seq"), int):
             data["commitment_seq"] = target["seq"]
         if evidence:
-            data["evidence"] = (evidence or "")[:200]
+            data["evidence"] = clip(evidence)
         ev = {
             "type": "commitment_partial_received",
             "source_skill": source_skill,
@@ -2624,9 +2775,20 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     surface_split's `personal` partition renders on My Plate. Provenance links back
     to the originating row. Atomic append via the event gate; no in-place mutation.
     Returns status "created" (in the apply-audit OK vocabulary — FS-18a: a missing
-    status would audit this write as an error)."""
+    status would audit this write as an error).
+
+    PROVENANCE (FLOOR2 C2, intake BUG_2026-08-06_myplate-synthetic-granola-
+    sourceref): this is a USER-INITIATED capture, and it says so in its own
+    scheme. A caller's originating ref is kept when it is one — that is the
+    provenance — but a synthetic `granola:<not-a-uuid>` ref is replaced by
+    `user:my_plate` rather than written as if a connector had produced it. The
+    live row `granola:past-meetings-2026-08-04` is what this closes: it made a
+    hand-typed task look like a meeting capture to every reader that resolves
+    the scheme, `account_scope_gate` included. `data.origin` is stamped for the
+    same reason — the scope wall should read the discriminator, not sniff a
+    prefix."""
     from pathlib import Path as _Path
-    from capture_gate import gate_commitment_data
+    from capture_gate import gate_commitment_data, user_initiated_source_ref
     from event_gate import append_event
     data = {
         "title": (title or "").strip(),
@@ -2635,9 +2797,9 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
         "status": "open",
         "no_due": True,
         "source": "my_plate_capture",
+        "origin": "user_stated",
     }
-    if source_ref:
-        data["source_ref"] = source_ref
+    data["source_ref"] = user_initiated_source_ref(source_ref)
     if source_event_seq is not None:
         data["source_event_seq"] = source_event_seq
     gate_commitment_data(data, subject="add to my plate")
@@ -2738,6 +2900,16 @@ __all__ = [
     "load_open_commitments",
     "is_overdue",
     "reconcile_is_stale",
+    "HEADLINE_BUCKETS",
+    "BUCKET_YOU_OWE",
+    "BUCKET_OWED_TO_YOU",
+    "BUCKET_UNOWNED",
+    "BUCKET_UNCONFIRMED",
+    "bucket_of",
+    "unconfirmed_slices",
+    "UNTITLED_PLACEHOLDER",
+    "UNCONFIRMED_SECTION_LABEL",
+    "UNCONFIRMED_LANE",
     "count_commitments",
     "commitment_counts",
     "match_commitments_to_meetings",

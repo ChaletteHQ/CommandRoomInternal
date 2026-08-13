@@ -807,11 +807,13 @@ def _meeting_co_occurrence(workspace_root, cluster: dict,
                     | _norm_ref_keys(d.get("meeting_id")))
             if not (keys & refs):
                 continue
-            hit = bool(mid and mid in (ev.get("person_ids") or []))
+            # BUG-8244: fold every binding variant — ids via the shared
+            # normalizer, emails via attendee_emails_of (attendees /
+            # attendee_emails / invitees), not one hand-picked field each.
+            from event_refs import attendee_emails_of, meeting_person_ids
+            hit = bool(mid and mid in meeting_person_ids(ev))
             if not hit and emails:
-                attendees = {str(a).strip().lower()
-                             for a in (d.get("attendees") or [])}
-                hit = bool(emails & attendees)
+                hit = bool(emails & attendee_emails_of(ev))
             if hit:
                 return str(d.get("title") or "").strip() or "the same call"
     except Exception:

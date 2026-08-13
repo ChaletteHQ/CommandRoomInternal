@@ -211,7 +211,7 @@ marker = receipt_window_marker(window, incomplete=any_capped_read_truncated)
 
 - Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire) events that already occurred (start_ts < now).
 - Cap: no cap (typically <200 events / week).
-- Emit per event: `type: meeting`, `data: {title, start_ts, duration_min, attendee_person_ids, source_ref: "gcal:<event_id>"}`.
+- Emit per event: `type: meeting` via `meeting_capture.build_meeting_event()` (BUG-8244 — never a hand-rolled dict): top-level `person_ids` = invitees resolved against entities.json, `attendees` = every invitee EMAIL verbatim, `attendees_external` = unmatched display names, plus `duration_min` and `source_ref: "gcal:<event_id>"`. (`data.attendee_person_ids` is the retired legacy spelling — read-only, never emitted.)
 
 ### Slack / Teams
 
@@ -233,7 +233,7 @@ Generalize across all detected MCP connectors — no Granola hardcoding. Whichev
 - Window: the Phase 1 resolved window (7 days by default; wider on a catch-up fire).
 - Cap: 50 transcripts total across all sources.
 - Body strategy: summaries by default; full text for the top-5 highest-signal (longest duration × canonical-attendee count).
-- Emit per transcript: `type: meeting`, `data: {title, start_ts, duration_min, attendee_person_ids, summary: <first 500 chars>, source_ref: "<connector>:<meeting_id>"}`.
+- Emit per transcript: `type: meeting` via `meeting_capture.build_meeting_event()` (BUG-8244, same canonical binding as the calendar leg: `person_ids` resolved + `attendees` emails + `attendees_external` names), with `summary: <first 500 chars>` and `source_ref: "<connector>:<meeting_id>"`.
 
 ### Command Room chat sessions — what happened in your chats this week (R4)
 
@@ -370,7 +370,7 @@ print(f'BRIEF_SESSION_SCOPED={is_session_scoped_path(path)}')
 "
 ```
 
-**If `BRIEF_SESSION_SCOPED=True`** (v5.9.2 — cloud-mounted workspace, e.g. Google Drive: the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine — this exact surface, QMG field report 2026-07-31): after the recap is written and synced, look up its web link via the discovered drive tool (`tool_discovery.discover_drive_tool()`, search the filename under `_hq/meetings/`) and use `brief_path.get_brief_opener_url(path, drive_web_url)` in step 5.C. Lookup failure is non-fatal — the helper falls back to the `computer://` form.
+**If `BRIEF_SESSION_SCOPED=True`** (v5.9.2, platform-neutral v5.11.1 — cloud-mounted workspace: Google Drive, OneDrive, or SharePoint; the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine — this exact surface, QMG field report 2026-07-31; the OneDrive/SharePoint gap, 2026-08-11 / BUG-8538): after the recap is written and synced, look up its web link on the workspace's OWN cloud platform — discover the drive tool with `tool_discovery.discover_drive_tool(tools, "search", prefer_platform=tool_discovery.infer_workspace_drive_platform(<WORKSPACE>))` (never first-match: with two drives connected it can search the one that does not hold the workspace, BUG-8538), search the filename under `_hq/meetings/` (`google_drive` → Drive web link; `onedrive`/`m365_sharepoint`, e.g. the M365 connector's `sharepoint_search` → OneDrive/SharePoint web URL; lookup empty-handed + another drive connected, with or without an inferred preference → try the other) — and use `brief_path.get_brief_opener_url(path, drive_web_url)` in step 5.C. Lookup failure is non-fatal — the helper falls back to the `computer://` form.
 
 Capture stdout. Then compose section content matching the inline recap and pipe to `brief_writer.py` stdin as JSON:
 
@@ -456,9 +456,11 @@ from chat_output_renderer import doc_headline_link
 from brief_path import get_brief_opener_url
 
 label = f"Weekly Recap — {date_iso}"
-# v5.9.2 — Drive-aware: on a cloud-mounted workspace pass the Drive web link
-# resolved in the BRIEF_SESSION_SCOPED step ("" if none was found); on a
-# host-native workspace this returns the same computer:// form as before.
+# v5.9.2 (platform-neutral v5.11.1) — cloud-aware: on a cloud-mounted
+# workspace pass the web link resolved in the BRIEF_SESSION_SCOPED step —
+# Google Drive, OneDrive, or SharePoint, whichever hosts the workspace ("" if
+# none was found); on a host-native workspace this returns the same
+# computer:// form as before.
 url = get_brief_opener_url(absolute_docx_path, drive_web_url)
 h2_link = doc_headline_link(label, url)
 # h2_link == "## → **[Weekly Recap — 2026-05-23](computer://...)**"

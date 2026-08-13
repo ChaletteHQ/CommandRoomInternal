@@ -59,6 +59,90 @@ every writer calls one helper; every reader goes through one parser.
 (`meetings_processed`, `items_drafted_text`, `needs_attention_ids`, ...)
 ride along via `extra_data`.
 
+### Multi-leg fires: one receipt, both legs (SPEC BRIEFMERGE §D)
+
+A fire that runs more than one leg reports every leg in its OWN receipt — no
+second receipt type. The morning-brief `pack_run` carries two extra fields
+since BRIEFMERGE, written by `prep_leg.log_combined_receipt`:
+
+```json
+"legs": {"brief": "ran", "prep": "degraded"},
+"prep_leg": {"status": "ran",
+             "counts": {"ran": 2, "reused": 1, "degraded": 1, "skipped": 0},
+             "meetings": [{"meeting_id": "evt_sample_1",
+                           "outcome": "degraded",
+                           "reason": "<why, for the watchdog — never for the digest>"},
+                          {"meeting_id": "evt_sample_2",
+                           "outcome": "ran", "reason": null,
+                           "receipt_seq": 8110},
+                          {"meeting_id": "evt_sample_3",
+                           "outcome": "reused", "reason": null,
+                           "source_receipt_seq": 7927}]}
+```
+
+**Per-meeting outcomes are FOUR words, not three (SPEC BRIEFFIX1 Item B,
+2026-08-09).** `reused` means a prep already existed for that meeting and none
+was generated; the digest renders the same link and the row names the
+`prep_brief` seq it leaned on (`source_receipt_seq`). It is not a flavour of
+`ran` — `ran` means THIS fire generated the document and carries the
+`receipt_seq` of the `prep_brief` it wrote — and not a flavour of `skipped`,
+which renders nothing at all. Before the word existed, an agent holding a
+fresh prep had to choose between withholding the link and claiming work it had
+not done; it chose the second, and a six-hour-old document was handed over as
+this morning's.
+
+**Reuse is an IDENTITY test, not an age test** (revised 2026-08-09 after the
+second-eyes review reproduced the failure). A `prep_brief` receipt counts as
+this meeting's prep only when it was written in the fire's own local day AND
+its `meeting_start` equals this instance's start. `meeting_start` is a new
+optional field on `prep_brief` written by `receipts.log_prep_receipt`; every
+pre-BRIEFFIX1 row lacks it, and its absence means "cannot prove", so the prep
+regenerates. The first cut bounded reuse by receipt AGE (24h) and a recurring
+meeting with a stable series id reused yesterday's document at 14h and at
+23.9h — for a daily or weekday cadence the whole window sits inside the
+recurrence interval, so age can never separate two instances.
+
+A `ran` row with no `receipt_seq`, or a `reused` row with no
+`source_receipt_seq`, is the BYPASS: `prep_leg.validate_leg_result` names it
+and `prep_leg_block` puts the findings on the receipt as `bypass`. The write is
+never refused over it — losing a whole fire's audit to a provenance gap trades
+one blind spot for a bigger one — but the gap is on the record. Readers
+tolerate every one of these keys' absence forever: pre-BRIEFFIX1 rows have
+none of them.
+
+**BOTH brief paths write the receipt (SPEC BRIEFFIX1 Item C, F1).** The
+scheduled orchestrator and the on-demand "brief me" both compute a
+`brief_state` and both post numbered items the CEO can close by number, so
+both owe the `pack_run` — the on-demand path through the same
+`prep_leg.log_combined_receipt` with `fired_via: "manual"`,
+`needs_attention_ids`, and `skipped_leg(SKIP_NO_LEG)` (that path has no prep
+leg, which is a different fact from a leg that failed). `brief_state` now
+carries `fired_via` on every path; before this the two paths were
+byte-identical and nothing could tell a hand-run brief from a scheduled one.
+The discriminator words the health finding — it never excuses a path, because
+the incident this came from WAS a manual fire that recorded nothing.
+
+**The morning-brief receipt is written BEFORE the digest posts (SPEC BRIEFFIX1
+Item C).** Both orders lose something when a fire dies mid-way; they do not
+lose the same thing. Receipt-then-post leaves a receipt with no post, which the
+degrade tier already blesses and the next fire can see. Post-then-receipt
+leaves a digest on screen the substrate has no record of — the watchdog reads
+it as a fire that never happened, and `mark done [n]` resolves against an older
+brief's numbering. `brief_receipt.orphan_brief_finding` surfaces that state as
+a named red line on the health read, and `brief_receipt.resolve_mark_done`
+refuses one-tap closes while the recorded numbering is older than the newest
+brief.
+
+`legs.prep` is `degraded` when the leg failed as a whole OR when any single
+meeting degraded: a fire that prepped four of five meetings is not a clean
+fire, and rounding it to `ran` is how a partial failure goes invisible. This
+is the maintenance-parity pattern — the same "what was due / what landed /
+what failed" idea `maintenance_run` records for its jobs — and it is what lets
+the watchdog say "the brief ran, the prep didn't," which nothing could say
+while prep was a separate task that could die in silence. Readers tolerate
+both fields' absence forever: every pre-BRIEFMERGE morning-brief receipt has
+neither.
+
 The `sent_reconcile` audit additionally carries `cursor_from` / `cursor_to` /
 `sent_scanned_count` / `n_closed` / `n_pending` (the Bug #98-v3 ungameable
 trace), `outcome_watch` counts when the watch ran, and — when the v4.6.2
@@ -71,8 +155,9 @@ never treat absence as zero-with-certainty.
 
 | Task | Receipt type(s) | Run-counted type |
 |---|---|---|
-| morning-brief, upcoming-meetings, inbox, commitments, past-meetings, friday-wrap, relationship-moves, commitment-triage, weekly-insights, dormant-scan | `pack_run` | `pack_run` |
+| morning-brief (carries the `legs` / `prep_leg` blocks since BRIEFMERGE), inbox, commitments, past-meetings, friday-wrap, relationship-moves, commitment-triage, weekly-insights, dormant-scan | `pack_run` | `pack_run` |
 | pulse (RETIRED chat — read-only forever, LIFECYCLE1) | `pack_run` + legacy `pulse_run` / `dont_forget_run` | all three |
+| upcoming-meetings (RETIRED chat — read-only forever, BRIEFMERGE) | `pack_run` | `pack_run` |
 | lifecycle (the job that replaced its Phase 4) | `lifecycle_run` | that one |
 | cleanup | `cleanup_run` (legacy `audit_run`) | both |
 | reconcile-sent | `sent_reconcile` | `sent_reconcile` |
@@ -162,10 +247,13 @@ brief's no-prep flag asks, and why F-29 shipped a false "no prep brief" while
 the file and the fire receipt were both on disk.
 
 - **One `prep_brief` event per Call_Prep brief saved**, written via
-  `receipts.log_prep_receipt` ONLY — both the scheduled auto-prep
-  (orchestrator-upcoming-meetings) and on-demand 'prep me' (call-prep) call
-  it after a successful `make_brief` save. Payload: `{meeting_id, slug,
-  artifact, generated_by, fired_via, refreshed, machine}`.
+  `receipts.log_prep_receipt` ONLY — both the scheduled auto-prep (the
+  morning-brief fire's prep leg, `generated_by="morning-brief"`; before SPEC
+  BRIEFMERGE, the retired `upcoming-meetings` chat) and on-demand 'prep me'
+  (call-prep) call it after a successful `make_brief` save. Payload:
+  `{meeting_id, slug, artifact, generated_by, fired_via, refreshed, machine}`.
+  Every `generated_by` spelling ever written stays parseable — history is
+  append-only and `normalize_task_id` reads them all.
 - **The detector rule (F-29):** the "no prep" flag may render for a meeting
   ONLY when `receipts.prep_exists_for_meeting(ws, meeting_id)` is False.
   Never from folder globs, filename guesses, or memory.

@@ -98,7 +98,19 @@ one giant widget. One page's worth of the layout:
   additionally lead with the question **"sat unconfirmed for [N] days —
   drop it?"** — Drop stays a manual click, never automatic. These rows are
   EXCLUDED from the age sections below (no double-surfacing); they still
-  count in `headline["unconfirmed"]` and nowhere else.
+  count in `headline["unconfirmed"]` and nowhere else. **Rows whose ONLY
+  amber class is `unowned` do NOT pin here (BUG-8330 item 13)** — this
+  block was the bounded pinned page 145 unowned rows sat in without
+  draining; they drain through the Unowned lane below instead.
+- **Unowned lane (BUG-8330 item 13) — after the Unconfirmed block, before
+  the age sections:** every open row with no resolvable owner (the same
+  `bucket_of` membership as the Unowned tile; suspected duplicates keep
+  their pin for merge adjudication), oldest first, titled **"Unowned —
+  oldest first"**. Verbs: `mine` / `theirs to [name]` / `drop` — claim it,
+  route it, or let it go, dispatched per apply-choices' confirm-section
+  handlers. Stored `attribution_candidates` from capture render on the row
+  as owner proposals ("maybe: [names]") — the driver builds all of this;
+  never hand-compose the lane.
 - **Age sections**, oldest first (event ts via `event_time`): a `30+ DAYS
   OLD` section title above the aged block, the rest below. No confidence
   filter, no cap-by-bucket — this is the full-set surface.
@@ -338,6 +350,57 @@ reopen items while their snoozes stayed in force) — all additive; history
 keeps the tombstone, the reopen, and the clear. Never narrate event-type
 names (CONTRACT Rule 4/9).
 
+## Publish the board (BOARD1 — the artifact surface, copy-paste apply)
+
+Fires on **"publish my triage board"** / **"put my triage on a page"** /
+**"refresh my board"**. Same surface, same view, different serialization: the
+full open set renders as ONE self-contained page with working controls (no
+byte-relay ceiling, so nothing pages and nothing drops), and it lives at a
+stable URL you can read from a phone between sessions.
+
+```bash
+# Rule 22 preamble REQUIRED before this runs (as in Step 3).
+python3 shared/scripts/surface_drivers.py commitments \
+    --workspace "<WORKSPACE>" --format artifact
+```
+
+Stdout carries `CR-BOARD: {...}` (one line of JSON — the generated-at stamp,
+the per-tab counts, the persisted path) followed by the board's validated
+bytes between `CR-BOARD-HTML-BEGIN` / `CR-BOARD-HTML-END`. Those markers are
+deliberately NOT the widget's: board bytes go to the **Artifact** tool, widget
+bytes go to `show_widget`, and relaying either into the other is the wrong
+surface. Everything the widget path validates has already run inside the call
+(the pre-render gate family, the leak scan, the board's structural contract,
+the persist into `_hq/.system/widgets/`) — there is nothing to prepare and
+nothing to post-process. **Never hand-edit the HTML.**
+
+Publish it with the Artifact tool as a **default-private** page, and pass back
+the URL stored in **`_hq/config/artifact_board.json`** (read it with
+`artifact_board.load_board_url`, write it with `save_board_url`) so a redeploy
+keeps the SAME link — a board that moves every week is not a bookmark. **Never
+share, publicize, or widen the board**: it renders the user's real client and
+person names, and it is theirs alone. If the running surface has no Artifact
+tool, say so plainly and give the saved file path — never silently skip the
+publish and never describe an unpublished file as a board.
+
+What the board does and does not do:
+
+- **It never writes.** Selections are local to the page; the Copy button
+  composes the exact `apply choices: [...]` line and the user pastes it into
+  any Command Room chat. Dispatch is the existing `apply-choices` §
+  `commitment-triage` path, unchanged, so cascade confirms, Later-date
+  validation, ambiguous reassign and `undo` all keep working.
+- **A board is stale by design.** It shows the list as of its stamp — which
+  the page prints prominently — and does not refresh itself. A pasted tuple
+  for something already closed acks honestly ("that one was already closed")
+  and writes nothing; say that in one line and move on.
+- **Layout:** two pinned strips above three tabs — **Unconfirmed** (the 7d+
+  escalation pins) and **Unowned**, never folded into a tab (F-47 P2b /
+  F-56) — then **My Tasks** / **I Owe** / **Owed to Me**, each keeping its age
+  sections oldest-first. One Copy button covers every tab.
+- **Auto-republish is OFF.** The Friday scheduled fire renders its widget as
+  it always has; the board is on-demand only until the user asks otherwise.
+
 ## Scheduled mode (opt-in — NOT first-install)
 
 Registered via the `change my schedule` → `add commitment-triage` flow
@@ -359,5 +422,7 @@ not in the daily chats.
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
+
+**Board triggers (BOARD1)** — 'publish my triage board' / 'put my triage on a page' / 'refresh my board' / 'triage board' fire § Publish the board, NOT the widget path. Same surface, different serialization. These live here rather than in the description because the description sits within 13 characters of the G11a cap: adding them needs a deliberate trim decision, not a silent one. DOES NOT fire on 'board pack' / 'board deck' / 'prep the board meeting' (board-pack-assembler — a governance document, not this list).
 
 > Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Also runs as an OPT-IN Friday-afternoon scheduled chat (add via `change my schedule` → add commitment-triage; not first-install). Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).

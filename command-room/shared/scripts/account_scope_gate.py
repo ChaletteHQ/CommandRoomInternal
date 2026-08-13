@@ -77,6 +77,11 @@ _PERSON_ENRICHMENT = frozenset({
 _CONNECTOR_PROVIDERS = frozenset({
     "gmail", "gcal", "gcalendar", "slack", "granola", "superhuman",
     "outlook", "drive",
+    # CHATSCAN1 — the second chat provider. `slack` has been here since the
+    # capture leg landed; without its sibling, a Teams-sourced row would sniff
+    # as NOT connector-derived and skip the scope wall entirely, which is the
+    # opposite of what a per-tenant client backend needs.
+    "ms365_teams",
 })
 
 
@@ -193,11 +198,22 @@ def _sender_of(ev: dict) -> Optional[str]:
 def _has_person_refs(ev: dict) -> bool:
     """True when the event references a resolved entity — the cheap, already-
     computed business-by-association signal (person records are the entity
-    graph; capture paths resolve person_ids/counterparty_id at write time)."""
+    graph; capture paths resolve person_ids/counterparty_id at write time).
+
+    BUG-8244: folds RESOLVED-id variants only (persons_of covers
+    data.attendee_person_ids etc.). Attendee EMAILS deliberately do not
+    count — an unresolved address is not a resolved entity, and treating it
+    as one would file unknown-sender events to business by association."""
     d = _data(ev)
     pids = ev.get("person_ids") or d.get("person_ids")
     if isinstance(pids, list) and any(p for p in pids):
         return True
+    try:
+        from event_refs import persons_of
+        if persons_of(ev):
+            return True
+    except Exception:
+        pass
     return bool(d.get("counterparty_id"))
 
 

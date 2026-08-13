@@ -102,6 +102,31 @@ Up to 5 unprocessed meetings to process this fire.
 - **Carry the marker forward.** If this fire processed nothing (Granola unavailable, zero capacity) and the previous receipt already carried a `window_incomplete_before`, the receipt this fire writes carries the SAME value. A receipt without the marker means "everything before this point is handled" — writing one while a backlog is outstanding is the orphaning bug, restated.
 - Only when the fire drained its entire window does the receipt omit the field.
 
+## Phase 3.5 — Discovery + attendance classification + meeting-level dedup (SPEC GRANOLA1 §A/§A2)
+
+**This is a STEP inside this same fire — there is NO new scheduled task, and this one is never re-registered** (re-registration is how the folder-rename defect class eats tasks).
+
+Ask the declared transcript backend for the same window a SECOND way: with the involvement filters OMITTED, so the return includes meetings the user never joined (a teammate's client call, a shared workspace session). Then classify and dedup in code — never by eye:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from meeting_discovery import dedup_meetings, processed_index
+prior = processed_index('<workspace_root>')
+print(json.dumps([{k: d[k] for k in ('source_ref','classification','classification_reason','certain','action','duplicate_of','note_owner')}
+                  for d in dedup_meetings(<the raw meeting records from the backend>, processed=prior)]))
+"
+```
+
+What comes back, and what you do with it:
+
+- **`classification: attended`** (`captured_by_me` OR `listed_as_participant`) → the EXISTING pipeline, Phase 4 onward, completely unchanged. **Arriving shared is not evidence of absence** — many shared notes are of meetings the user did attend, and the classification reads the involvement flags, never how the note arrived. When the only note of an attended meeting is a teammate's, keep `note_owner` on the receipt so a transcript-quality caveat (someone else's capture settings) stays traceable.
+- **`classification: non_attendee`** (neither flag, INCLUDING "the backend did not say") → Phase 4.8's lane, never Phase 4. Participant metadata is incomplete by the backend's own admission, so **uncertain is non_attendee**: nothing auto-enters the user's book from that lane, which makes the cheap direction the default one.
+- **`action: skip_duplicate` / `skip_processed`** → do not process, and record `duplicate_of` on the receipt. Dedup is on the MEETING, not the document: one real meeting can produce several notes with different document ids (the user's own note plus a teammate's shared note), and document-id dedup alone double-captures every shared meeting. The helper keys on the calendar event id when the backend exposes one, else normalized title + start within a tolerance window + participant overlap — and a recurring series never dedups across occurrences.
+
+Never hand-roll either verdict, and never re-derive the dedup key in prose: the fuzzy key is the thing that keeps a weekly recurring meeting from collapsing into one row, and it is tested (`tests/run_granola1_nonattendee_shadow_test.py`).
+
 # Phase 4 — Per-meeting auto-processing
 
 For each meeting:
@@ -140,6 +165,8 @@ For each meeting:
 
    What the helper enforces, in ONE place, because none of it was enforced anywhere before: the **capture floor** (owner + concrete deliverable + consequence — stated in `meeting-notes/SKILL.md` since Stage D and never enforced, which is why a third of this rail's captures were discussed-only), the **cross-meeting fusion guardrail** (the verbatim check below, in code), and **party-only relevance scoping** (`capture_gate.classify_capture`, whose `party-only` default this rail had never consulted because no meeting writer called the gate). Its four outputs: `book` (ordinary open commitments), `review` (written `pending_review` so they land in the needs-your-call queue and never in the open book — BOTH fusion refusals, marked `data.fusion_unverified`, and below-floor captures, marked `data.floor_gated` with their `FLOOR_*` reason as `review_reason`), `observed` (`commitment_observed` — kept and searchable, no open item, no count, no row), `skipped` (near-empty since the ruling below; never narrated). **M RULING 2026-08-01 — below-floor captures are NEVER silently dropped.** They used to be, and the review measured what that cost: on the audit's own hand-judged sample the floor destroyed a real promise for every junk capture it stopped, with no event, no counter and no row left behind. The floor's verdict is now a routing decision, so a wrong call costs one tap in the queue rather than a lost promise. The dated case routes to the queue too — the observed writer refuses dated/money items, and 'surfaces nowhere' was never an acceptable reading of a rail that says a dated item ALWAYS surfaces. Carry `routed['summary']['n_book'] + n_review` into the `meeting_processed` receipt's `extracted_count` / `pending_review_count`, and pass the whole return as `capture_summary=routed` on that same receipt (step 9) so the gates' own counts persist.
 
+   **FLOOR2 (2026-08-06) — two of the floor's conditions read the TRANSCRIPT, not the sentence,** and they are the reason `transcript_text` is not optional here. The V1 interim re-measure found both shapes clearing every sentence-level condition on real calls: `FLOOR_DONE_IN_MEETING` (the action was performed on the call — "just click that right now" — and nothing survives it; never fires when the item carries a due date, a money amount, or a send/share/schedule/follow-up verb, because then the deliverable outlives the call) and `FLOOR_SUPERSEDED_IN_MEETING` (the same conversation took the offer back — the row then carries `data.superseding_quote`, the retracting words verbatim from that same transcript, beside the original evidence). Both are `meeting_capture.transcript_floor_reason`, both route to `review` exactly like any other floor verdict, and both are deliberately conservative: an uncertain case books rather than gates. Extract normally; the one code path decides.
+
 6. **Surface LOW confidence items as pending:** your confidence scoring still applies to everything the helper returns in `book` — an ambiguous owner, a vague timeline, conflicting info, a new entity, or a sensitive category (firing / pricing / contract terms) means you pass that item with `pending_review=True` and a `review_reason` in its kwargs, exactly as the safety inversion requires. DECISIONS (not commitments) keep the write path they already had: `meeting_capture.build_decision_event` + `event_gate.append_event`, `committed: true` on high confidence. Add pending commitments to the chat-turn output as a `⚠ Needs your call` sub-block for that meeting.
 7. **Generate the .docx meeting summary — v2.14.32+ MANDATORY brief_writer flow:**
 
@@ -166,7 +193,11 @@ For each meeting:
    "
    ```
 
-   **If `BRIEF_SESSION_SCOPED=True`** (v5.9.2 — the workspace is a cloud mount, e.g. Google Drive; there is no host-native path and the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine — QMG field reports 2026-07-28 / 2026-07-31): after the brief file is written and synced, look up its web link through the discovered drive tool (per `tool_discovery.discover_drive_tool()` — search the filename under `_hq/meetings/`) and carry that URL forward for Step 4's links via `brief_path.get_brief_opener_url(path, drive_web_url)`. If the lookup finds nothing, proceed with the `computer://` form — `get_brief_opener_url` falls back on its own.
+   **If `BRIEF_SESSION_SCOPED=True`** (v5.9.2, platform-neutral v5.11.1 — the workspace is a cloud mount: Google Drive, OneDrive, or SharePoint; there is no host-native path and the `computer://` BRIEF_URL will fail with "Failed to load local file." on the customer's machine — QMG field reports 2026-07-28 / 2026-07-31 / 2026-08-11): after the brief file is written and synced, look up its web link on the workspace's OWN cloud platform and carry that URL forward for Step 4's links via `brief_path.get_brief_opener_url(path, drive_web_url)`:
+   - Discover the drive tool with the workspace host preferred: `tool_discovery.discover_drive_tool(tools, "search", prefer_platform=tool_discovery.infer_workspace_drive_platform(<WORKSPACE>))`. When both Google Drive and Microsoft 365 are connected, first-match discovery can bind the drive that does NOT hold the workspace and return an empty lookup (BUG-8538) — the preference decides from the workspace mount, not tool order.
+   - `platform == "google_drive"` → search the filename under `_hq/meetings/` and use the file's Drive web link.
+   - `platform` in `"onedrive"` / `"m365_sharepoint"` (the Microsoft 365 connector's file surface spells `sharepoint`, e.g. `sharepoint_search`) → search the filename the same way and use the item's OneDrive/SharePoint web URL.
+   - If the lookup finds nothing and another drive platform is connected — whether or not a preference was inferred (a bare `/sessions/...` mount usually infers none) — try that one before giving up. If no lookup succeeds, proceed with the `computer://` form — `get_brief_opener_url` falls back on its own.
 
    Capture the BRIEF_PATH + BRIEF_URL stdout. Then compose section content from meeting-notes' output and pipe it as JSON to `brief_writer.py` stdin:
 
@@ -216,7 +247,7 @@ For each meeting:
    If output is `MISSING`: the writer failed to save. EXCLUDE this meeting from the Meeting briefs section (no broken links). Surface plain-English: `(Brief for <meeting> couldn't be saved to _hq/meetings/. Re-fire `process the call <name>` to retry.)` Append a `brief_save_failed` event silently.
 
    On success: cache the BRIEF_PATH + BRIEF_URL on the meeting record. Phase 6 Step 3 uses BRIEF_URL as the `artifact_link.url` (inside widget) AND as the Briefs-section link target (below widget). Single source of truth — no path drift.
-8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. Shape: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
+8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. **Construct via `meeting_capture.build_meeting_event()` (BUG-8244 — the one sanctioned constructor; hand-rolled dicts are how 4 incompatible attendee shapes shipped),** passing `brief_path` through the returned event's `data` before appending. Shape the builder produces: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees: [<every invitee EMAIL from the calendar invite / backend metadata, verbatim, resolved or not — identity-reconcile corroborates merges from these and the backfill repairs history with them>], attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. Pass `source_had_attendees=True` whenever the backend listed ANY participants — an empty binding then stamps `data.binding_missing` for the audit instead of vanishing silently. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
 
 9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. Build it with `meeting_capture.build_meeting_processed_event(..., capture_summary=routed)` — passing Phase 4 step 5's `route_meeting_captures` return stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, floor_reasons, skipped_reasons}`, which is the ONLY record anywhere of what the admission gates did. `n_floor_gated` is the share of `n_review` the capture floor routed — a SUBSET of it, never added to it — and `floor_reasons` tallies which `FLOOR_*` condition gated each one; those two are what make the floor's tuning measurable, and without them a mis-tuned floor is undetectable and the acceptance re-measure has nothing to read. None of it goes in the chat card. Counts and reason tallies only — never a title. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist.
 
@@ -374,7 +405,8 @@ review_ok = {r['commitment_id'] for r in filter_duplicate_review_targets(
     [r for r in results if r['recommendation'] in ('pending_review', 'supersede')],
     already_proposed=already_proposed)}
 n_resolved = 0
-next_seq = <peek-next-seq>  # for updated/pending events only
+# NO seq peek (BUG-8330 item 7): pass next_seq=None below — the appender
+# allocates seq inside the writer lock; a peeked value is racy.
 to_append = []
 for r in results:
     rec = r['recommendation']
@@ -402,9 +434,8 @@ for r in results:
             source_skill='past-meetings',
             change_summary='Schedule shifted in transcript',
             evidence=evidence,
-            next_seq=next_seq,
+            next_seq=None,  # appender stamps in-lock
         ))
-        next_seq += 1
     elif rec == 'pending_review' and r['commitment_id'] in review_ok:
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
@@ -413,7 +444,7 @@ for r in results:
             proposed_resolution='auto_resolve',
             score=r['score'],
             evidence=evidence,
-            next_seq=next_seq,
+            next_seq=None,  # appender stamps in-lock
             # WATCHGATE — the matcher's OWN fulfillment finding, carried
             # rather than discarded. The accept surface screens on it; without
             # it the only thing separating a bare guess from a bulk confirm is
@@ -424,7 +455,6 @@ for r in results:
             # time, evidence that predates the promise.
             evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
         ))
-        next_seq += 1
     elif rec == 'supersede' and r['commitment_id'] in review_ok:
         to_append.append(build_pending_review_event(
             commitment_id=r['commitment_id'],
@@ -433,11 +463,10 @@ for r in results:
             proposed_resolution='supersede',
             score=r['score'],
             evidence=evidence,
-            next_seq=next_seq,
+            next_seq=None,  # appender stamps in-lock
             has_completion_signal=r.get('has_completion_signal'),
             evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
         ))
-        next_seq += 1
 if to_append:
     atomic_append_jsonl(events_path, to_append)
 print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")} stale_evidence_skipped={cru_diag.get(\"stale_evidence_dropped\", 0)}')
@@ -456,7 +485,15 @@ print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_appe
 
 Per `shared/scripts/decision_match.py`. Sister to Phase 4.6 but scoped to decisions. After commitment-CRU completes, scan each newly-processed transcript against pre-existing open decisions. The premise: many decisions get executed or reversed in conversation — auto-detecting closes the historical log without the user manually marking decisions resolved/superseded.
 
-**Conservative — HIGH-confidence auto-close only.** Threshold is tighter than commitments (0.65 vs 0.55) because decision false-positives lose real history. No `pending_review` queue yet — borderline matches simply don't act. If telemetry shows the threshold misses too many real closures, we'll add a Pulse review surface.
+**Conservative — HIGH-confidence only.** Threshold is tighter than commitments (0.65 vs 0.55) because decision false-positives lose real history; below it, nothing acts. **Read this together with the recommend-only rule below, which supersedes the auto-close posture this paragraph used to describe:** a high-confidence COMPLETION still auto-resolves, while a high-confidence REVERSAL is proposed for review rather than written. The review surface this paragraph once said did not exist yet is the decision log itself — a proposal renders on the decision's own line.
+
+**MANDATORY — supersedes are RECOMMEND-ONLY (WALKFIX1 FR-2, 2026-08-10). ⚠ M-STRIKEABLE.** This pass no longer auto-writes `decision_superseded`. A high-scoring reversal match now appends a `decision_supersede_proposed` event, which changes NO decision's status and renders as a `[SUPERSEDE PROPOSED]` note on that decision's own line in the decision log, where the person who owns the decision can adjudicate it.
+
+Why: on 2026-08-10 one fire read TWO transcripts and auto-wrote NINETEEN supersedes. Six targeted decisions the same fire had just written (the fence above kills those). Of the thirteen against older decisions, four of four sampled from the live ledger were plainly wrong — a client onboarding call was recorded as reversing an unrelated internal meeting time, an office-lease decision, a different person's login preference and a different client's video platform. The mechanism is structural, not a tuning miss: the score is a whole-transcript overlap coefficient whose divisor is the SHORT TITLE's token set (so any title whose words all appear anywhere in a long call scores 1.0), ANDed with a whole-transcript reversal boolean containing phrases as common as "instead of", with no requirement that the reversal language be anywhere near the matched title. The attendee filter is no second gate — every affected decision named the operator, who is on every call.
+
+A supersede is a WRITE to the canonical decision ledger and a superseded decision drops out of the active view, so a wrong one silently removes a real decision from the customer's "current decisions". Proposing costs one review click; auto-writing costs real history. `decision_resolved` is UNCHANGED — completion language is a different signal and is not implicated. The scoring is untouched; only the write moves.
+
+**MANDATORY — the same-fire circularity fence (WALKFIX1 Item A, 2026-08-10).** Pass `exclude_captured_since=<the same UTC ISO fire_start Phase 4.6 passes>` on EVERY `match_transcript_to_decisions` call. This pass reads the transcripts Phase 4 just extracted decisions from; without the fence the fire scores its own seconds-old decisions against the words they came out of and supersedes them. Field-reported on the 2026-08-10 fire: 8 decisions written, 6 of them superseded by this pass, evidence "Past meeting transcript (reversal language)". The fence drops same-fire captures as candidates before scoring, so they can never be supersede TARGETS; decisions from EARLIER fires are unaffected by this fence and still match normally — what happens to those matches is the recommend-only rule above (they are PROPOSED, not written). Omitting the argument leaves the fence inert — this is the one argument on this call that is not optional.
 
 **Skip entirely if:**
 - No newly-processed transcripts in this fire.
@@ -473,20 +510,24 @@ from decision_match import (
     load_open_decisions,
     match_transcript_to_decisions,
     build_decision_resolved_event,
-    build_decision_superseded_event,
+    build_decision_supersede_proposal_event,
 )
 from atomic_write import atomic_append_jsonl
 
 events_path = '<absolute path to _hq/data/events.jsonl>'
 opens = load_open_decisions(events_path)
 
-next_seq = <peek-next-seq>
+# NO seq peek (BUG-8330 item 7): next_seq=None below — appender stamps in-lock.
 to_append = []
 for transcript in <list of newly-processed transcripts>:
     results = match_transcript_to_decisions(
         open_decisions=opens,
         attendee_person_ids=transcript['attendee_person_ids'],
         transcript_text=transcript['text'],
+        # WALKFIX1 Item A — the same-fire circularity fence. Same value Phase
+        # 4.6 passes. Never omit it: without it this pass supersedes the
+        # decisions Phase 4 wrote seconds earlier from these same transcripts.
+        exclude_captured_since='<the same UTC ISO fire_start Phase 4.6 recorded>',
     )
     for r in results:
         rec = r['recommendation']
@@ -497,21 +538,23 @@ for transcript in <list of newly-processed transcripts>:
                 primary_thread_id=r['primary_thread_id'],
                 source_skill='past-meetings',
                 evidence=evidence,
-                next_seq=next_seq,
+                next_seq=None,  # appender stamps in-lock
             ))
-            next_seq += 1
-        elif rec == 'decision_superseded':
-            to_append.append(build_decision_superseded_event(
+        elif rec == 'decision_supersede_proposed':
+            # WALKFIX1 FR-2 — a PROPOSAL, never a closure. See the
+            # recommend-only paragraph above.
+            to_append.append(build_decision_supersede_proposal_event(
                 decision_id=r['decision_id'],
                 primary_thread_id=r['primary_thread_id'],
                 source_skill='past-meetings',
                 evidence=evidence,
-                next_seq=next_seq,
+                next_seq=None,  # appender stamps in-lock
+                score=r.get('score'),
+                title=r.get('title', ''),
             ))
-            next_seq += 1
 if to_append:
     atomic_append_jsonl(events_path, to_append)
-print(f'CRU decisions: resolved={sum(1 for e in to_append if e[\"type\"]==\"decision_resolved\")} superseded={sum(1 for e in to_append if e[\"type\"]==\"decision_superseded\")}')
+print(f'CRU decisions: resolved={sum(1 for e in to_append if e[\"type\"]==\"decision_resolved\")} supersede_proposed={sum(1 for e in to_append if e[\"type\"]==\"decision_supersede_proposed\")}')
 "
 ```
 
@@ -539,6 +582,48 @@ append_event("<abs workspace root>/_hq/data/events.jsonl", [ev], holder="past-me
 
 Only meetings that HAD a prep brief are graded (no brief → no `prep_feedback`, nothing to learn from). insight-generator Pass 15 aggregates these monthly and proposes call-prep section-weight changes. On any error, swallow + append a `pack_run.data.errors[]` entry; grading never blocks the fire.
 
+# Phase 4.8 — Non-attendee lane, SHADOW MODE (SPEC GRANOLA1 §B; silent)
+
+The meetings Phase 3.5 classified `non_attendee` run here, and **nowhere else**. They do NOT enter Phase 4: the attended pipeline's routing assumes the user was in the room, and pointing it at other people's meetings is how other people's homework lands on the user's book at scale.
+
+**⛔ THIS LANE IS IN SHADOW. It writes NOTHING.** It fetches the transcript, runs the same admission gates, works out where each item WOULD go, and hands back counts. `meeting_discovery.shadow_fence` withholds every candidate event, so the lane's one append callsite appends nothing. Leaving shadow is a separate decision gated on this report — it is not something this fire, or a fix to something else, may switch on.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from meeting_discovery import run_shadow_pass, render_shadow_report
+from cru_match import load_open_commitments
+ws = '<workspace_root>'
+events_path = ws + '/_hq/data/events.jsonl'
+report = run_shadow_pass(
+    # one entry per DISCOVERED meeting — attended ones included, so the report
+    # can say what the run saw; the lane only enters the non-attendee ones.
+    <[{'meeting': <the backend record>, 'items': <the extracted captures for it>,
+       'transcript_text': <the transcript already fetched for it>,
+       'attendee_person_ids': [<resolved attendees>],
+       'meeting_date': '<YYYY-MM-DD>', 'org_id': <resolved or None>,
+       'org_name': <resolved or None>, 'primary_thread_id': <resolved or None>}, …]>,
+    workspace_root=ws,
+    events_path=events_path,
+    open_commitments=load_open_commitments(events_path),
+    fire_start='<the same UTC ISO fire_start Phase 4.6 recorded>',
+)
+print(render_shadow_report(report))
+print('SHADOW_JSON=' + json.dumps({'counts': report['counts'], 'would_be': report['would_be']}))
+"
+```
+
+How the lane routes, and why each way (nothing below reaches the open book):
+
+- **Default is the observed tier.** The user is neither owner nor counterparty, so a teammate's commitment is context, not homework: it adds weight to entity history and team intelligence and zero weight to the book.
+- **The user named in absentia is the one book-adjacent case, and it is REVIEW only** — `absent_owner: true` plus a pointer back at the meeting. He was not there to agree to it, so it is never auto-confirmed; it renders in the existing grouped queue under the existing caps. No new surface.
+- **A dated or money item still always surfaces** — from this lane, surfacing means the queue.
+- **Closure evidence from here is a PROPOSAL, never a close.** A teammate saying the user's deliverable "went out" is weaker provenance than the user's own transcript, so the matcher's auto-resolve verdict is demoted to a proposal carrying the transcript `source_ref` and the weak strength class. Transcript AUTO-close stays confined to attended meetings.
+- **Ambiguous speaker attribution goes to review, never observed-silent** — merged or mis-labelled speaker labels are a known transcript failure, and an item whose owner cannot be established is a question, not a silent record.
+
+Best-effort, silent, and it never blocks the fire: on any error swallow it, append a `pack_run.data.errors[]` entry with `{"phase": "4.8_nonattendee_shadow", …}`, and carry on. Nothing from this phase is narrated in chat — Phase 6's surface is unchanged by it.
+
 # Phase 5 — Memory updates (silent per Rule 9)
 
 Append to events.jsonl:
@@ -547,6 +632,8 @@ Append to events.jsonl:
 - `meeting_processed` per meeting
 - CRU resolution events (Phase 4.6) — already appended in Phase 4.6 itself; mentioned here for completeness of the audit trail
 - The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1); NEVER hand-roll the receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose): `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "past-meetings", fired_via=<the Phase 2.9 receipt_fired_via: manual|scheduled|catchup>, surfaced=n_meetings, duration_ms=elapsed_ms, late_tier=<the lateness tier when note/degrade, else None>, extra_data={"errors": [], "window_start": "<the Phase 3 window start>", "window_end": "<the Phase 3 window end>", "window_incomplete_before": <ISO of the oldest still-unprocessed meeting, per the Phase 3 batch-cap gate — OMIT the key entirely when the fire drained its window>, "n_stale_evidence_skipped": <the Phase 4.6 `cru_diag` total — EVORDER layer 3's refusals across every transcript this fire; write 0 rather than omitting it>, "telemetry": build_pack_run_telemetry(...)})` — `receipt_fired_via` is what Phase 2.9's helper returned, never guessed; the field name is `window_incomplete_before` and nothing else (`shared/scripts/catchup.py` `WINDOW_INCOMPLETE_FIELD` is the one spelling — an improvised synonym is invisible to the reader and re-opens the orphaning bug, the F-50 P2c class); telemetry silent per Rule 9
+
+**Carry the Phase 4.8 shadow report onto that SAME receipt** as `extra_data={"nonattendee_shadow": <the `counts` + `would_be` maps the phase printed>, …}`. This is the ONLY record of what the non-attendee lane would have done, and it is what the write-enable decision reads; the lane itself writes nothing, so a fire that drops these counts leaves the shadow run unmeasured. Counts only — never a meeting title, exactly as `meeting_processed`'s `capture_counts` keeps it. Write zeros rather than omitting the key: an absent key reads as "this fire had no lane", which is a different claim.
 
 Append to staging_emissions.jsonl per .docx generated. Telemetry writes silently — no chat narration.
 
@@ -676,10 +763,11 @@ from brief_path import get_brief_opener_url
 # After the widget, render one H3 heading link per brief beneath a single
 # Briefs: section header. H3 (not H2) because past-meetings often surfaces
 # several briefs at once; stacked H2s would visually dominate.
-# v5.9.2 — get_brief_opener_url is Drive-aware: on a cloud-mounted workspace
-# (session-scoped path) it returns the file's Drive web link when one was
-# resolved (see the BRIEF_SESSION_SCOPED step above); on a host-native
-# workspace it returns the same computer:// form as before.
+# v5.9.2 (platform-neutral v5.11.1) — get_brief_opener_url is cloud-aware: on
+# a cloud-mounted workspace (session-scoped path) it returns the file's web
+# link — Google Drive, OneDrive, or SharePoint, whichever hosts the workspace
+# — when one was resolved (see the BRIEF_SESSION_SCOPED step above); on a
+# host-native workspace it returns the same computer:// form as before.
 print("**Briefs:**")
 print()
 for brief in briefs:

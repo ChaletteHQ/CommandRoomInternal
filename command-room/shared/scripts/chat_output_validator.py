@@ -31,6 +31,14 @@ VIOLATION CATEGORIES (negative — flag presence of):
                            <run-summary> tags, bootloader, fire-marker,
                            bare "seq N" refs (v4.6.1 S3 — the F-14 pile)
   - sender_email_leak_in_first_line — email appears in item first line instead of in To: metadata
+  - dead_doc_link        — a document link still in its PERSISTED
+                           (workspace-relative) form. Correct on disk, dead in
+                           chat: the href resolves against the reader's own
+                           filesystem, so it answers "this file can't be found
+                           on your computer" while the file sits in the synced
+                           folder. Convert the POSTED copy with
+                           `chat_output_renderer.absolutize_doc_links`; the
+                           saved copy keeps the relative form (BRIEFFIX1 Item A)
 
 VIOLATION CATEGORIES (positive — flag absence of, v2.10.8+):
 
@@ -386,7 +394,47 @@ def validate_chat_output(text: str) -> ValidationResult:
     # Item-separator check between consecutive blocks
     _check_item_separators(lines, blocks, result)
 
+    # SPEC BRIEFFIX1 Item A — a document link still in its PERSISTED form.
+    #
+    # This surface is where the bug actually happened. The morning brief is
+    # prose, not a widget, so it never reaches the renderer's rendered-payload
+    # gate; if the fence lived only there it would be a fence beside the door.
+    # The predicate is IMPORTED, never re-typed, so the converter and both
+    # validators cannot drift on what a workspace-relative doc pointer is.
+    _check_dead_doc_links(text, lines, result)
+
     return result
+
+
+def _check_dead_doc_links(text: str, lines: list, result: "ValidationResult") -> None:
+    """Flag every workspace-relative deliverable href about to be posted.
+
+    A relative doc href is not a formatting preference: it is a card that
+    answers "this file can't be found on your computer" on every machine,
+    every time, while the file sits in the synced folder. The fix is one call
+    to `chat_output_renderer.absolutize_doc_links` on the posted copy — the
+    saved copy keeps the relative form.
+
+    Import tolerance mirrors the vocabulary-policy import above: a partial
+    plugin update must not brick every chat post. An absent module means this
+    ONE check does not run; everything else still does.
+    """
+    try:
+        from chat_output_renderer import scan_for_relative_doc_links
+    except ImportError:  # pragma: no cover — partial-install tolerance
+        result.warnings.append(
+            "dead-link check did NOT run (chat_output_renderer unavailable)")
+        return
+    for _kind, target in scan_for_relative_doc_links(text):
+        line_num = next((i for i, ln in enumerate(lines, start=1)
+                         if target in ln), 1)
+        result.violations.append(Violation(
+            category="dead_doc_link",
+            pattern="workspace-relative deliverable href",
+            matched=target,
+            line_number=line_num,
+            context=lines[line_num - 1] if 0 < line_num <= len(lines) else "",
+        ))
 
 
 __all__ = ["validate_chat_output", "ValidationResult", "Violation"]

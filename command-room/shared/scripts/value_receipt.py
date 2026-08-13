@@ -774,7 +774,11 @@ def compute_value_receipt(
       }
     """
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    events, skipped = load_events_org_scoped(workspace_root)
+    # BUG-8330 fix round (FX-5) — measure what the personal firewall removed.
+    # An org receipt that cannot say how many rows it did not see is the same
+    # invisible-collapse shape item 6 closed on the confidence lane.
+    org_stats: dict = {}
+    events, skipped = load_events_org_scoped(workspace_root, stats=org_stats)
 
     computed = compute_metrics(events, window_start, window_end)
     metrics = computed["metrics"]
@@ -821,10 +825,12 @@ def compute_value_receipt(
     # (metrics + hours_estimate), not a printed sentence: a hand-rolled receipt
     # with no event fails validate_receipt_ran. The payload numbers are
     # byte-equal to the returned receipt (acceptance #3).
-    from next_seq import next_seq
     from atomic_write import atomic_append_jsonl
+    # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
+    # WALKFIX1 Item C — `output_path` arrives from the calling skill, which
+    # knows the absolute path it is about to write. Persist the portable form.
+    from workspace_paths import to_workspace_relative
     audit_event = {
-        "seq": next_seq(str(events_path)),
         "ts": _now_iso(),
         "type": "value_receipt_generated",
         "source_skill": source_skill,
@@ -833,9 +839,17 @@ def compute_value_receipt(
             "rollup": rollup,
             "metrics": metrics,
             "hours_estimate": hours_estimate,
-            "output_path": output_path,
+            "output_path": (to_workspace_relative(output_path, workspace_root)
+                            if output_path else output_path),
         },
     }
+    # FX-5 / fix round 2: a MEASURED zero is written; an unmeasured read
+    # carries no key at all. `org_stats` is empty exactly when layer 3 did not
+    # run, and defaulting that to 0 would put a measurement on the permanent
+    # record that never happened.
+    for _k in ("personal_withheld", "personal_withheld_by_tie"):
+        if _k in org_stats:
+            audit_event["data"][_k] = int(org_stats[_k])
     atomic_append_jsonl(events_path, [audit_event])
 
     return {

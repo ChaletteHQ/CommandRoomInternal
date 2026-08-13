@@ -46,30 +46,57 @@ def provider_row(provider: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 def capabilities_for(provider: Optional[str],
-                     detected: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     detected: Optional[Dict[str, Any]] = None,
+                     category: Optional[str] = None) -> Dict[str, Any]:
     """Effective capabilities for a provider. `detected` (a per-workspace
     detect-once row) overrides the manifest defaults key-by-key (H-E). An
-    unknown provider returns the category baseline (fail-closed booleans)."""
+    unknown provider returns the category baseline (fail-closed booleans).
+
+    `category` (CHATSCAN1) names which baseline an UNKNOWN provider falls to.
+    Without it the guess was `row.get("category") or "email"`, and an unknown
+    provider has no row at all — so every unrecognized chat backend inherited
+    the MAIL baseline, whose keys (`draft`, `send`, `reply_threaded`) answer
+    none of the questions a chat consumer asks. `chat_resource_read` then read
+    as absent rather than false, which is the same answer only by luck of the
+    fail-closed default; the moment a chat key shared a name with a mail key
+    the two vocabularies would have silently crossed. Known providers are
+    unaffected — their own row wins and `category` is never consulted."""
     row = provider_row(provider) or {}
     caps = dict(row.get("capabilities") or {})
     if not caps:
-        # unknown provider — baseline by (guessed) category
+        # unknown provider — baseline by category (explicit wins over the row's)
         base = load_manifest().get("baseline") or {}
-        cat = (row.get("category") or "email")
+        cat = category or row.get("category") or "email"
         caps = dict(base.get(cat) or base.get("email") or {})
     if detected:
         caps.update(detected)
     return caps
 
 
+def probed_facts(provider: Optional[str]) -> Dict[str, Any]:
+    """The provider row's `probed` block — facts MEASURED against a live
+    connector rather than read off documentation (CHATSCAN1 §2A). Separate from
+    `capabilities` because they are not yes/no capabilities: they are the
+    limits and silent degrades a consumer has to plan around. `{}` when the
+    provider declares none; keys prefixed `$` are commentary and are dropped."""
+    row = provider_row(provider) or {}
+    p = row.get("probed")
+    if not isinstance(p, dict):
+        return {}
+    return {k: v for k, v in p.items() if not str(k).startswith("$")}
+
+
 def supports(provider: Optional[str], capability: str,
-             detected: Optional[Dict[str, Any]] = None) -> bool:
+             detected: Optional[Dict[str, Any]] = None,
+             category: Optional[str] = None) -> bool:
     """True iff the provider supports `capability` (missing = False,
     fail-closed). Non-bool capability values (threading_model, etc.) return
     True when present + truthy."""
-    val = capabilities_for(provider, detected).get(capability)
+    val = capabilities_for(provider, detected, category).get(capability)
     if isinstance(val, bool):
         return val
+    if isinstance(val, (list, tuple, dict)):
+        return bool(val)
     return bool(val) and val not in ("", "false", "none")
 
 

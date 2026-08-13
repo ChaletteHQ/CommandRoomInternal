@@ -80,6 +80,13 @@ CLI:
 stdlib only.
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import argparse
 import datetime as _dt
@@ -122,6 +129,78 @@ FUTURE_MEETING_REASON = "the meeting this refers to hasn't happened yet"
 STALE_EVIDENCE_REASON = "the evidence came before the promise was made"
 
 WEAK_LEAD = "This came up in a meeting, but I can't see proof it got done"
+
+# ---------------------------------------------------------------------------
+# The PRODUCER'S OWN strength stamp (RIDERS item c)
+# ---------------------------------------------------------------------------
+#
+# `weakness_reason` reads the evidence TEXT. Some producers know something the
+# text cannot say. GRANOLA1's non-attendee lane is the live case: a close
+# proposal built from a meeting the user was not in carries real completion
+# language, so the text-only screen returns STRONG — and the row rendered
+# identically to one from a meeting they sat through. The producer stamps
+# `evidence_strength` / `strength_reason` / `auto_close_blocked` on the event;
+# until now nothing rendered them, so a weak secondhand proposal and a strong
+# firsthand one were the same row on screen.
+#
+# ONE reader, ONE sentence, both proposal surfaces. A second wording would be
+# a second idea of what the row says.
+STAMP_STRENGTH_FIELD = "evidence_strength"
+STAMP_REASON_FIELD = "strength_reason"
+STAMP_BLOCKED_FIELD = "auto_close_blocked"
+STAMP_FALLBACK_REASON = "the source is secondhand"
+BLOCKED_LEAD = "never auto-closed"
+STAMPED_WEAK_LEAD = "weaker evidence"
+
+
+def stamped_strength(data) -> dict:
+    """The producer's own strength claim off an event payload / row, or {}.
+
+    {} when there is no stamp — which is what keeps an unstamped row's render
+    byte-identical to what it was before this existed.
+
+    A stamp may only make a row WEAKER. A producer claiming STRONG never
+    promotes a row the text screen called weak: the bulk fence screens on the
+    text, and a badge that disagrees with the fence is worse than no badge.
+    """
+    d = data if isinstance(data, dict) else {}
+    strength = str(d.get(STAMP_STRENGTH_FIELD) or "").strip().lower()
+    if strength not in (STRONG, WEAK):
+        return {}
+    return {
+        "strength": strength,
+        "reason": str(d.get(STAMP_REASON_FIELD) or "").strip(),
+        "blocked": bool(d.get(STAMP_BLOCKED_FIELD)),
+    }
+
+
+def stamped_strength_fields(data) -> dict:
+    """The stamp, re-emitted under its OWN field names for a render row — or
+    {} when there is none, so an unstamped row's dict is key-for-key what it
+    was before this existed (the byte-identity property the riders pin)."""
+    stamp = stamped_strength(data)
+    if not stamp:
+        return {}
+    out = {STAMP_STRENGTH_FIELD: stamp["strength"],
+           STAMP_BLOCKED_FIELD: stamp["blocked"]}
+    if stamp["reason"]:
+        out[STAMP_REASON_FIELD] = stamp["reason"]
+    return out
+
+
+def stamped_strength_note(data) -> str:
+    """The one clause a stamped-WEAK row adds to its render, or "".
+
+    "" for an unstamped row and for a stamp that says STRONG — a badge that
+    fires on everything says nothing. RENDER ONLY: this changes what the row
+    SAYS, never what any fence decides.
+    """
+    stamp = stamped_strength(data)
+    if not stamp or stamp["strength"] != WEAK:
+        return ""
+    reason = stamp["reason"] or STAMP_FALLBACK_REASON
+    lead = BLOCKED_LEAD if stamp["blocked"] else STAMPED_WEAK_LEAD
+    return f"{lead} — {reason}"
 
 
 def _clock_now(workspace_root=None):
@@ -376,7 +455,7 @@ def build_watch(*, watch_until: str, stakes, matched_ref=None,
         except (TypeError, ValueError):
             pass
     if evidence:
-        watch["evidence"] = str(evidence)[:200]
+        watch["evidence"] = clip(evidence)
     if reason:
         watch["reason"] = str(reason)[:200]
     return watch
@@ -763,7 +842,7 @@ def dual_evidence(original: str, signal: dict) -> str:
     had, and the corroborating signal is named so the close can be audited."""
     orig = (original or "").strip() or DEFAULT_ORIGINAL_EVIDENCE
     detail = (signal or {}).get("detail") or (signal or {}).get("kind") or ""
-    return f"{orig}; confirmed by {detail}".strip()[:200]
+    return clip(f"{orig}; confirmed by {detail}".strip())
 
 
 def self_confirm(workspace_root, commitment_id, *, signal: dict,
@@ -967,7 +1046,7 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
         try:
             res = close_commitment(
                 ws, cid, resolved_by=resolved_by,
-                evidence=(row.get("evidence") or "")[:200] or
+                evidence=clip(row.get("evidence")) or
                 DEFAULT_ORIGINAL_EVIDENCE,
                 source_skill=source_skill, resolution="done",
                 user_confirmed=True,
@@ -1197,6 +1276,9 @@ __all__ = [
     "STRONG", "WEAK", "TITLE_MATCH_MARKER",
     "NO_EVIDENCE_REASON", "TITLE_MATCH_REASON", "NO_COMPLETION_REASON",
     "FUTURE_MEETING_REASON", "STALE_EVIDENCE_REASON",
+    "STAMP_STRENGTH_FIELD", "STAMP_REASON_FIELD", "STAMP_BLOCKED_FIELD",
+    "STAMP_FALLBACK_REASON", "BLOCKED_LEAD", "STAMPED_WEAK_LEAD",
+    "stamped_strength", "stamped_strength_fields", "stamped_strength_note",
     "weakness_reason", "commitment_weak_reason", "evidence_strength",
     "strength_line", "temporal_warning",
     "screen_bulk_accept", "bulk_accept_ack",

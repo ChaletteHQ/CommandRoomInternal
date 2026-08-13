@@ -136,6 +136,13 @@ stdlib only. Construction/validation only — nothing here touches disk;
 appends stay with the callers through `event_gate.append_event`.
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import datetime as _dt
 import hashlib
@@ -199,12 +206,68 @@ def parse_iso_date(value) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Provenance schemes (FLOOR2 C2, intake BUG_2026-08-06_myplate-synthetic-
+# granola-sourceref).
+# ---------------------------------------------------------------------------
+#
+# A live user-initiated capture ("Add to My Plate") wrote
+# `source_ref: "granola:past-meetings-2026-08-04"` — the CONNECTOR scheme
+# carrying a value no connector ever minted. Two costs, both real:
+#
+#   * anything that treats `granola:<x>` as a fetchable meeting id (transcript
+#     verification, the V1 sampler, FLOOR2's own re-scan, HIST1 enrichment)
+#     mis-resolves or fails on it, and
+#   * `account_scope_gate` sniffs the scheme prefix to decide whether a
+#     commitment is connector-derived, so a hand-typed task was being weighed
+#     as a connector read.
+#
+# A user-initiated capture is legitimately evidence-less and gate-exempt — it
+# should be IDENTIFIABLE as such by its scheme, not disguised as a connector
+# read. So: one scheme for them, and a shape rule for the connector scheme they
+# were borrowing.
+USER_SOURCE_REF_MY_PLATE = "user:my_plate"
+
+# Granola mints UUIDs. Nothing else belongs behind this prefix.
+_UUID_RE = re.compile(
+    r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def granola_ref_ok(source_ref) -> bool:
+    """True unless `source_ref` is the `granola:` scheme carrying a value that
+    is not UUID-shaped. Anything that is not a `granola:` ref at all — another
+    scheme, a bare id, "" — is not this rule's business and passes."""
+    s = str(source_ref or "").strip()
+    if not s.lower().startswith("granola:"):
+        return True
+    return bool(_UUID_RE.match(s.split(":", 1)[1].strip()))
+
+
+def user_initiated_source_ref(
+    source_ref=None, *, scheme: str = USER_SOURCE_REF_MY_PLATE
+) -> str:
+    """The provenance a USER-INITIATED capture writes.
+
+    Keeps a real originating ref (that IS the provenance, and a genuine
+    `granola:<uuid>` row the user promoted by hand should still point at its
+    meeting); substitutes the user scheme for a synthetic `granola:` ref and
+    for no ref at all. Never raises — a one-tap user action must not be lost
+    to a provenance quibble; the wrong ref is what gets dropped, not the
+    capture."""
+    s = str(source_ref or "").strip()
+    if not s or not granola_ref_ok(s):
+        return scheme
+    return s
+
+
 def gate_commitment_data(
     data: dict,
     *,
     subject: str,
     classification_confidence: Optional[float] = None,
     error_cls: Type[Exception] = CaptureGateError,
+    workspace_root=None,
 ) -> None:
     """THE Stage-D / S2 / Stage-E capture block, shared by every commitment
     writer (v4.5.2 C1 parity with scan-for-commitments Step 3).
@@ -278,9 +341,17 @@ def gate_commitment_data(
             reasons.append("no counterparty identified for a promise")
         if not data.get("owner_id"):
             reasons.append("no resolved owner")
+    # BUG-8330 item 6 — the floor resolves through the calibration accessor
+    # (confidence.surface_min) so a workspace override moves THIS gate too;
+    # the baked-constant import stays only as the accessor's own fallback.
+    try:
+        from confidence import surface_min as _surface_min
+        _floor = _surface_min(workspace_root)
+    except Exception:
+        _floor = CONFIDENCE_SURFACE_MIN
     if (
         isinstance(classification_confidence, (int, float))
-        and classification_confidence < CONFIDENCE_SURFACE_MIN
+        and classification_confidence < _floor
     ):
         reasons.append(
             f"extraction confidence {classification_confidence} below threshold"
@@ -736,7 +807,7 @@ def build_observed_event(
     if counterparty_name and not counterparty_id:
         data["counterparty_name"] = counterparty_name
     if evidence:
-        data["evidence"] = evidence[:200]
+        data["evidence"] = clip(evidence)
     if channel:
         data["channel"] = channel
     if extra_data:
@@ -1022,7 +1093,7 @@ def promote_observed(
         if od.get(k):
             data[k] = od[k]
     if evidence:
-        data["evidence"] = evidence[:200]
+        data["evidence"] = clip(evidence)
     gate_commitment_data(data, subject=f"promoted item {oid or observed_ref}")
     data["status"] = "open"
     if (data.get("due")
@@ -1257,6 +1328,9 @@ __all__ = [
     "CaptureGateError",
     "parse_iso_date",
     "gate_commitment_data",
+    "USER_SOURCE_REF_MY_PLATE",
+    "granola_ref_ok",
+    "user_initiated_source_ref",
     # W4c relevance gate + observed tier
     "OBSERVED_TYPE",
     "MODE_PARTY_ONLY",

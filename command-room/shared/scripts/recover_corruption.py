@@ -206,11 +206,10 @@ def run_recovery_if_needed(
         # Rewrite events.jsonl without the quarantined lines
         atomic_write_text(events_path, "".join(surviving))
 
-        # Append the corruption_recovery event (atomic append)
-        # next_seq reads the file we just rewrote; correct.
-        seq = next_seq(events_path)
+        # Append the corruption_recovery event (atomic append). No
+        # hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock
+        # against the file we just rewrote.
         recovery_event = {
-            "seq": seq,
             "ts": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "type": "corruption_recovery",
             # v3.13.8.1 Bug #66 — source_skill flows through from caller

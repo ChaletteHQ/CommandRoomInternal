@@ -400,10 +400,37 @@ def emit_slack_payload(data: dict, profile: dict) -> dict:
 
     widget_mode = data.get("widget_mode", "all_batch_widget")
     if widget_mode == "all_clear_summary":
-        summary = str(data.get("summary") or "All clear — nothing needs your eyes right now.")
-        blocks.append({"type": "section",
-                       "text": {"type": "mrkdwn", "text": _md_to_mrkdwn(summary)}})
-        fallback_lines.append(summary)
+        # Same key vocabulary as `_render_all_clear_summary` (the vocabulary
+        # contract test pins that a mode never spends a key it can't render):
+        # header (required, emitted above) + optional summary_line / counters /
+        # tracked_items / footer.
+        summary_line = str(data.get("summary_line") or "")
+        if summary_line:
+            blocks.append({"type": "section",
+                           "text": {"type": "mrkdwn", "text": _md_to_mrkdwn(summary_line)}})
+            fallback_lines.append(summary_line)
+        counters = data.get("counters") or []
+        if counters:
+            counter_text = " · ".join(
+                f"*{c.get('value')}* {c.get('label')}" for c in counters[:4])
+            blocks.append({"type": "context",
+                           "elements": [{"type": "mrkdwn", "text": counter_text}]})
+        for it in (data.get("tracked_items") or [])[:10]:
+            fallback_lines.append(
+                f"{it.get('direction')}: {it.get('title')} ({it.get('due')})")
+        if data.get("tracked_items"):
+            listing = "\n".join(
+                f"• _{it.get('direction')}_ — {_md_to_mrkdwn(str(it.get('title', '')))} ({it.get('due')})"
+                for it in data["tracked_items"][:10])
+            blocks.append({"type": "section",
+                           "text": {"type": "mrkdwn",
+                                    "text": _truncate(listing, SLACK_MAX_TEXT_OBJECT_CHARS)}})
+        if data.get("footer"):
+            blocks.append({"type": "context",
+                           "elements": [{"type": "mrkdwn",
+                                         "text": _truncate(_md_to_mrkdwn(str(data["footer"])), 500)}]})
+        if not fallback_lines:
+            fallback_lines.append(header or "All clear.")
         return {"blocks": blocks, "text": "\n".join(fallback_lines)}
 
     chart = data.get("chart")

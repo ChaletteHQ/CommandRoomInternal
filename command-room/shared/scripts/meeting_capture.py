@@ -23,6 +23,13 @@ default-on below the confidence floor — absence of the flag is an assertion
 of high-confidence attribution, never an accident.
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import datetime as _dt
 import re
@@ -105,6 +112,114 @@ def _norm_ref_keys(ref) -> set:
 # -----------------------------------------------------------------------------
 
 
+def build_meeting_event(
+    title: str,
+    *,
+    source_ref: str,
+    source_skill: str = "meeting-notes",
+    primary_thread_id: Optional[str] = None,
+    org_ids: Optional[List[str]] = None,
+    person_ids: Optional[List[str]] = None,
+    attendees: Optional[List[str]] = None,
+    attendees_external: Optional[List[str]] = None,
+    summary: Optional[str] = None,
+    meeting_type: Optional[str] = None,
+    duration_min: Optional[int] = None,
+    status: Optional[str] = None,
+    ts: Optional[str] = None,
+    source_had_attendees: Optional[bool] = None,
+) -> dict:
+    """The one sanctioned constructor for a `meeting` event (BUG-8244).
+
+    Before this existed the `meeting` event was the ONLY primary event with no
+    builder: 16 writer sites improvised 4 incompatible attendee shapes, the
+    highest-volume writer (meeting-notes) had a prose promise and no recipe,
+    and a client workspace shipped every one of its meeting events with no
+    person binding — which silently degraded 19 downstream readers
+    (relationship cadence read weeks-since-contact for people met daily).
+
+    Canonical binding, BOTH halves:
+      * top-level `person_ids[]` — attendees resolved against entities.json
+      * `data.attendees[]`      — invitee EMAILS verbatim from the source
+        (calendar invite / transcript backend), so identity-reconcile can
+        corroborate merges and later resolution can repair what today's
+        entities.json cannot match
+      * `data.attendees_external[]` — display names with no entities match
+
+    `data.attendee_person_ids` / `data.attendee_emails` are legacy read-only
+    variants (readers fold them via `event_refs.meeting_person_ids`); this
+    builder never emits them and no new writer may.
+
+    An empty binding is legal (PASSIVE_CAPTURE: a meeting with no matchable
+    attendees captures with `person_ids: []`) but it is always EXPLICIT: both
+    keys are present even when empty, and when the caller says the source DID
+    carry attendees (`source_had_attendees=True`) an empty result additionally
+    stamps `data.binding_missing: true` so the claim audit and the backfill
+    can find it. Capture is never blocked over metadata — flag, don't drop.
+
+    Strings without an "@" passed as `attendees` are rerouted to
+    `attendees_external`: the emails-as-names drift is exactly how the
+    4-shape fork happened, so the builder refuses to write it.
+    """
+    if not str(title or "").strip() and not str(summary or "").strip():
+        raise ValueError("meeting event needs a title or summary")
+    if not str(source_ref or "").strip():
+        raise ValueError("meeting event needs a source_ref (dedup key)")
+
+    pids: List[str] = []
+    for p in person_ids or []:
+        p = str(p or "").strip()
+        if p and p not in pids:
+            pids.append(p)
+
+    emails: List[str] = []
+    external: List[str] = []
+    for a in attendees or []:
+        a = str(a or "").strip()
+        if not a:
+            continue
+        if "@" in a:
+            low = a.lower()
+            if low not in emails:
+                emails.append(low)
+        elif a not in external:
+            external.append(a)
+    for n in attendees_external or []:
+        n = str(n or "").strip()
+        if n and n not in external:
+            external.append(n)
+
+    data: dict = {
+        "title": str(title or "").strip(),
+        "source_ref": str(source_ref).strip(),
+        "attendees": emails,
+        "attendees_external": external,
+    }
+    if summary:
+        data["summary"] = str(summary).strip()
+    if meeting_type:
+        data["meeting_type"] = str(meeting_type).strip()
+    if duration_min is not None:
+        data["duration_min"] = int(duration_min)
+    if status:
+        data["status"] = str(status).strip()
+    if source_had_attendees and not (pids or emails or external):
+        data["binding_missing"] = True
+
+    ev: dict = {
+        "type": "meeting",
+        "source_skill": source_skill,
+        "primary_thread_id": primary_thread_id,
+        "person_ids": pids,
+        "data": data,
+    }
+    if org_ids:
+        ev["org_ids"] = [str(o).strip() for o in org_ids if str(o or "").strip()]
+    if ts:
+        ev["ts"] = ts
+    return ev
+
+
 def build_meeting_commitment_event(
     title: str,
     *,
@@ -179,13 +294,17 @@ def build_meeting_commitment_event(
         counterparty_ids=counterparty_ids, counterparty_names=counterparty_names,
     ))
     if evidence:
-        data["evidence"] = evidence[:200]
+        data["evidence"] = clip(evidence)
     if meeting_date:
         data["meeting_date"] = meeting_date
     if source_event_seq is not None:
         data["source_event_seq"] = source_event_seq
-    if urgency:
-        data["urgency"] = urgency
+    # BUG-8330 item 16 — `data.urgency` RETIRED from the write: it was
+    # written here and by slack_capture and read by NOTHING (the schema
+    # claimed morning-briefing consumed it; no such reader exists). The
+    # parameter stays for caller compat; the value is dropped. Historic
+    # rows keep their field (append-only). Wire a real reader before ever
+    # re-adding the stamp — guard G29 fails a writer-without-reader field.
     if pending_review:
         data["pending_review"] = True
         if review_reason:
@@ -559,6 +678,47 @@ def count_meeting_writes(
     return counts
 
 
+def meeting_binding_audit(workspace_root, source_ref: str) -> dict:
+    """BUG-8244 claim-audit extension: does the `meeting` event for this
+    source_ref carry a person binding? Returns
+    {found, bound, binding_missing_flagged} — `bound` is True when ANY
+    binding variant is present (top-level person_ids, data.attendees /
+    attendee_person_ids / attendee_emails / attendees_external);
+    `binding_missing_flagged` mirrors the builder's explicit
+    `data.binding_missing` stamp. The closing summary surfaces an unbound
+    meeting the same way it surfaces a failed write: plainly. A meeting
+    written with no binding and no flag is the write defect that left a
+    client workspace fully unbound and its weekly cadence read wrong."""
+    ref_keys = _norm_ref_keys(source_ref)
+    out = {"found": False, "bound": False, "binding_missing_flagged": False}
+    if not ref_keys:
+        return out
+    try:
+        from event_refs import attendee_emails_of, meeting_person_ids
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from event_refs import attendee_emails_of, meeting_person_ids
+    for ev in iter_events(workspace_root):
+        if ev.get("type") != "meeting":
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ev_keys = _norm_ref_keys(data.get("source_ref")) | _norm_ref_keys(
+            data.get("meeting_id")
+        )
+        if not (ev_keys & ref_keys):
+            continue
+        out["found"] = True
+        if data.get("binding_missing"):
+            out["binding_missing_flagged"] = True
+        if (meeting_person_ids(ev) or attendee_emails_of(ev)
+                or (data.get("attendees_external") or [])):
+            out["bound"] = True
+        if out["bound"]:
+            break
+    return out
+
+
 def already_processed(workspace_root, source_ref: str) -> bool:
     """True when a `meeting_processed` receipt exists for this meeting — the
     canonical already-processed marker (dedup must not depend on the bare
@@ -671,6 +831,18 @@ FLOOR_NO_DELIVERABLE = "no concrete deliverable"
 FLOOR_NO_CONSEQUENCE = "nothing depends on it"
 FLOOR_RETOLD = "retold from an earlier conversation, not committed here"
 FLOOR_NOT_ACCEPTED = "discussed, never accepted as a commitment"
+# FLOOR2 (2026-08-06) — the two junk MODES the V1 interim re-measure found on
+# real transcripts. Both are things the five conditions above cannot see,
+# because both are visible only by reading the MEETING, not the sentence:
+#   J-1 an action performed DURING the call ("just click that right now")
+#       carries an owner, a deliverable and a consequence, so it clears every
+#       condition above — what it lacks is a deliverable that survives the
+#       meeting.
+#   J-2 an offer the SAME conversation then took back ("you don't need to").
+#       Scored in isolation the sentence is a real promise; nothing re-read the
+#       rest of the transcript before writing it.
+FLOOR_DONE_IN_MEETING = "already done during the call, nothing left afterwards"
+FLOOR_SUPERSEDED_IN_MEETING = "taken back later in the same conversation"
 
 # The same five conditions under their STABLE names.
 #
@@ -688,6 +860,8 @@ FLOOR_CODE_NO_DELIVERABLE = "FLOOR_NO_DELIVERABLE"
 FLOOR_CODE_NO_CONSEQUENCE = "FLOOR_NO_CONSEQUENCE"
 FLOOR_CODE_RETOLD = "FLOOR_RETOLD"
 FLOOR_CODE_NOT_ACCEPTED = "FLOOR_NOT_ACCEPTED"
+FLOOR_CODE_DONE_IN_MEETING = "FLOOR_DONE_IN_MEETING"
+FLOOR_CODE_SUPERSEDED_IN_MEETING = "FLOOR_SUPERSEDED_IN_MEETING"
 
 # Every key a receipt written from here can carry, plus the one bucket a READER
 # needs for the receipts that already exist.
@@ -697,9 +871,24 @@ FLOOR_CODES = {
     FLOOR_NO_CONSEQUENCE: FLOOR_CODE_NO_CONSEQUENCE,
     FLOOR_RETOLD: FLOOR_CODE_RETOLD,
     FLOOR_NOT_ACCEPTED: FLOOR_CODE_NOT_ACCEPTED,
+    FLOOR_DONE_IN_MEETING: FLOOR_CODE_DONE_IN_MEETING,
+    FLOOR_SUPERSEDED_IN_MEETING: FLOOR_CODE_SUPERSEDED_IN_MEETING,
 }
 FLOOR_CODE_VALUES = frozenset(FLOOR_CODES.values())
-FLOOR_CODE_LEGACY = "legacy"
+# FLOOR2 C1: the catch-all bucket is itself spelled as a FLOOR_ code, so the
+# WRITE-side invariant is total — every key `capture_telemetry` can emit
+# matches FLOOR_CODE_RE, including the one that means "I did not recognise
+# this". It was `"legacy"`, which is the one value a receipt could carry that
+# a `^FLOOR_[A-Z_]+$` pin would have to carve an exception for, and an
+# invariant with an exception is a convention. Readers key off the CONSTANT
+# (`parse_floor_reasons` re-keys either spelling), so the rename costs a
+# reader nothing.
+FLOOR_CODE_LEGACY = "FLOOR_LEGACY"
+
+# The shape every `floor_reasons` key on a receipt has (FLOOR2 C1's pin). A
+# tally keyed by anything else is a sentence someone may reword — the exact
+# drift the code enum exists to stop.
+FLOOR_CODE_RE = re.compile(r"^FLOOR_[A-Z_]+$")
 
 
 def floor_reason_code(reason) -> str:
@@ -1033,6 +1222,363 @@ def fusion_refusal_reason(data: dict, transcript_text) -> str:
     return ""
 
 
+# =============================================================================
+# FLOOR2 — the two junk modes only the MEETING can show (2026-08-06).
+# =============================================================================
+#
+# The five conditions in `capture_floor_reason` read ONE sentence: the title and
+# whatever evidence the extractor saved beside it. The V1 interim re-measure
+# (17 transcript-verified captures) found the confirmed lane still ~18% junk,
+# and BOTH misses were shapes a sentence cannot show:
+#
+#   J-1  a live screen-share walkthrough: the speaker talks the other side
+#        through a one-time setup step and tells them to click it right now —
+#        an action done ON the call. Owner, deliverable and consequence all
+#        present, so every existing condition passes. What is absent is a
+#        deliverable that OUTLIVES the meeting. (Paraphrased: the real
+#        utterance is a customer's own words, and this file ships to every
+#        client repo. The fixture in `tests/run_floor2_test.py` carries the
+#        SHAPE, which is what the checks are written against.)
+#   J-2  "I should be able to do <name>'s and get that information on our one
+#        on one tomorrow" — an offer the same conversation then redirected
+#        ("you don't need his instance to achieve this"). The extractor scores
+#        the sentence in isolation; nothing re-read the REST of the transcript.
+#
+# So these two checks are a second floor LAYER, and the layer is defined by
+# what it reads: the transcript, not the sentence. They run only after the
+# sentence-level floor has cleared (an item already below the floor has its
+# reason; a second one adds nothing) AND after the FUSION check has cleared
+# (F-2: reading the transcript is only meaningful once the evidence is known to
+# BE transcript), and their verdict routes exactly like the first layer's —
+# REVIEW, never a drop (Option A standing).
+#
+# CONSERVATIVE BY CONSTRUCTION, because the reviewed floor's own precision is
+# ~50% and a noisy addition costs more than it saves:
+#   * Every check is INERT unless it can positively establish its condition —
+#     no transcript, no locatable evidence span, no cue: BOOK.
+#   * J-1 refuses to fire on anything with a post-meeting surface. A due date,
+#     a money amount, or a send/share/follow-up verb means the deliverable
+#     survives the call by construction, whatever "right now" appears beside it.
+#   * J-2 needs BOTH halves of "the same conversation took THIS back": a
+#     retraction cue in the transcript after the evidence span AND inside the
+#     same stretch of conversation, AND a lexical tie to what was being
+#     discussed. Proximity alone was tried and rejected during the build — on a
+#     dense call every clean promise sits within a minute of somebody saying
+#     "never mind" about something else, and a check that gates four real
+#     promises to catch one junk row is the over-tightening V2 exists to stop.
+#
+# TRAP CLOSED (spec §5): the re-scan normalizes through `_FUSION_WORD_RE` — the
+# SAME class the fusion check uses, and for the same reason. An asymmetric
+# normalizer across these two sources is what the CAPTUREFLOW MF-1 apostrophe
+# pin closed: a transcript writes `don’t` with a curly apostrophe, an evidence
+# string writes `don't` straight, and a class that keeps the apostrophe makes
+# them different words. Everything below reads the normalized token stream, so
+# every pattern here is written in ITS vocabulary: contractions are already
+# split (`don t`, `let s`, `we ll`), and there is no punctuation at all.
+
+# How far after the evidence span a supersession still reads as "the same
+# stretch of conversation". ~120 words is under a minute of speech. Builder
+# constants, tunable, pinned by test at both ends.
+SUPERSEDE_WINDOW_WORDS = 120
+# Shared content tokens required between the retraction and the topic. TWO,
+# not one: a single shared word is the coincidence rate of ordinary English.
+SUPERSEDE_MIN_SHARED = 2
+# How much transcript BEFORE the evidence span counts as the item's topic. The
+# extracted evidence is one sentence; what the retraction answers is the
+# exchange that set it up, and the words it re-uses live there.
+SUPERSEDE_CONTEXT_WORDS = 40
+# How much verbatim transcript rides along as the superseding quote, and as the
+# retraction's own local window for the lexical test.
+SUPERSEDE_QUOTE_WORDS = 16
+# How far after the evidence span a completion acknowledgment still reads as
+# the acknowledgment of THAT action. Tighter than the supersession window: an
+# ack carries no topic words of its own ("that's done"), so proximity is the
+# only tie it can have and it has to be a short one.
+ACK_WINDOW_WORDS = 60
+
+# An action taken ON the call, in the words people use for it.
+#
+# DEICTIC ONLY (F-1, review 2026-08-06). This class was first written wide —
+# it also carried a bare `right now`, `real quick`, `go ahead and`, and a bare
+# `while we're on/at it` — and the review measured what that cost: 7 of 7
+# authored clean promises in the cue-without-veto quadrant gated ("I'll go
+# ahead and update the contract terms", "I'll start building the report right
+# now", "let me fix the rounding bug real quick", "while we're on it I'll
+# document the escalation path"), and on the live corpus 1 of 475 booked rows
+# gated falsely ("I couldn't get the ad context button right now").
+#
+# The cut those numbers argue for: a bare temporal adverb is not an in-call
+# marker. "go ahead and" / "real quick" / a free-standing "right now" are what
+# people say about work they are about to START, and the thing that outlives
+# the call is the work, not the adverb. What actually marks an action
+# PERFORMED on the call is DEIXIS — a referent that only exists in the room
+# ("click THAT now", "right here", "while we're on the call"). So only the
+# deictic forms survive; the fillers are gone. The J-1 signature is unaffected
+# (it is deictic: "click that right now"), and the one measured live false
+# gate stops firing.
+_IN_MEETING_NOW_RE = re.compile(
+    r"""(?ix)
+      \bright\s+here\b
+    | \bright\s+there\b
+    | \bas\s+we\s+speak\b
+    | \bwhile\s+(?:we|you|i)\s+(?:re|are|am)\s+
+      (?:on\s+(?:the\s+)?(?:call|phone|line|zoom)
+        | here
+        | in\s+(?:the\s+)?(?:call|meeting))\b
+    | \b(?:do|click|hit|press|tap|type|enter|check)\s+(?:that|this|it)\s+
+      (?:right\s+)?now\b
+    | \blet\s+s\s+(?:just\s+)?do\s+(?:that|this|it)\s+(?:right\s+)?now\b
+    """
+)
+
+# The veto. Any of these and the deliverable OUTLIVES the meeting, so J-1 has
+# nothing to say — "I'll send the deck right now" is a real promise with a real
+# artifact, not a walkthrough step.
+_POST_MEETING_SURFACE_RE = re.compile(
+    r"""(?ix)
+      \b(?:send|sends|sending|email|emails|emailing|share|shares|sharing|
+           circulate|circulates|deliver|delivers|forward|forwards|
+           draft|drafts|drafting|write\s+up|writes\s+up|
+           put\s+together|pull\s+together|follow\s+up|follows\s+up|
+           get\s+back\s+to|loop\s+in|schedule|schedules|book|books|
+           invite|invites|introduce|introduces)\b
+    | \bafter\s+(?:the|this|our)\s+(?:call|meeting)\b
+    | \b(?:later\s+today|tonight|tomorrow|next\s+week|this\s+week|
+           by\s+(?:eod|eow|cob))\b
+    | \bby\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b
+    """
+)
+
+# Someone saying, later in the transcript, that the thing just happened.
+# EXPLICIT COMPLETIONS ONLY. "there we go" / "that worked" / "perfect" were
+# drafted here and cut: they are said about anything, they carry no topic words
+# to tie them to the item, and this leg's only tie is proximity — a weak cue
+# plus a weak tie is a guess, and a guess routes to BOOK.
+_COMPLETION_ACK_RE = re.compile(
+    r"""(?ix)
+      \b(?:it|that)\s+s\s+done\b
+    | \b(?:ok|okay|alright)\s+(?:it\s+s\s+|that\s+s\s+)?done\b
+    | \bdone\s+and\s+done\b
+    | \b(?:i|we)\s+(?:just\s+)?(?:did|clicked|hit|entered|typed|verified)\s+
+      (?:it|that)\b
+    | \b(?:got|all)\s+(?:it|that)\s+done\b
+    | \b(?:it|that)\s+s\s+(?:verified|confirmed|set\s+up)\s+now\b
+    """
+)
+
+# The counterparty redirecting the plan, or the owner replacing the
+# deliverable — a retraction of the thing just offered.
+_SUPERSEDE_CUE_RE = re.compile(
+    r"""(?ix)
+      \b(?:you|we|i|they)\s+don\s+t\s+(?:need|have\s+to)\b
+    | \b(?:you|we|i|they)\s+re\s+not\s+going\s+to\s+need\b
+    | \bno\s+need\s+(?:to|for)\b
+    | \bnever\s+mind\b
+    | \bnevermind\b
+    | \bscratch\s+that\b
+    | \bforget\s+(?:that|it|about\s+that)\b
+    | \bdisregard\s+(?:that|it)\b
+    | \bhold\s+off\s+on\b
+    | \binstead\s+(?:let\s+s|we\s+ll|i\s+ll|we\s+can|of\s+that)\b
+    | \b(?:let\s+s|we\s+ll|i\s+ll|we\s+can|let\s+me)\s+\w+
+      (?:\s+\w+){0,5}\s+instead\b
+    | \bactually\s+(?:let\s+s|we\s+ll|i\s+ll|we\s+can|don\s+t|hold\s+off)\b
+    | \b(?:that|it)\s+s\s+not\s+(?:necessary|needed)\b
+    | \b(?:that|it)\s+won\s+t\s+be\s+necessary\b
+    | \b(?:skip|drop)\s+(?:that|it)\s+(?:for\s+now|then)\b
+    """
+)
+
+
+def _fusion_token_spans(text) -> list:
+    """`[(token, start, end, source_text)]` over the FUSION token class, with
+    offsets back into the source string so a match can be quoted VERBATIM.
+
+    `.lower()` is length-preserving for every character this class can match;
+    the guard below degrades to the lowered text on the rare locale-dependent
+    expansion rather than slicing at a shifted offset."""
+    raw = str(text or "")
+    low = raw.lower()
+    if len(low) != len(raw):  # pragma: no cover — locale-dependent expansion
+        raw = low
+    return [(m.group(0), m.start(), m.end(), raw)
+            for m in _FUSION_WORD_RE.finditer(low)]
+
+
+def _locate_span(hay_tokens: list, needle: str):
+    """Where `needle` sits in the transcript's token stream, by the SAME anchor
+    rule the fusion check uses: the whole phrase, else its first
+    `FUSION_MIN_WORDS`-gram. Returns `(start, end)` token indices — `end` is
+    advanced by the needle's FULL length from the anchor, so the "remainder"
+    never re-reads the tail of the item's own evidence. None when the phrase is
+    too short to anchor or is not there at all (check inert — skip-not-fail)."""
+    words = _normalize_for_fusion(needle).split()
+    if len(words) < FUSION_MIN_WORDS:
+        return None
+    n = len(hay_tokens)
+    for gram_len in (len(words), FUSION_MIN_WORDS):
+        gram = words[:gram_len]
+        for i in range(0, n - gram_len + 1):
+            if hay_tokens[i:i + gram_len] == gram:
+                return (i, min(n, i + len(words)))
+    return None
+
+
+def _content_set(text) -> set:
+    """Stopword-stripped content tokens, in the fusion vocabulary."""
+    return {t for t in _normalize_for_fusion(text).split()
+            if len(t) > 1 and t not in _FLOOR_STOPWORDS}
+
+
+def _evidence_anchor(data: dict, spans: list):
+    """The item's own words located in the transcript — evidence first, title
+    second (the fusion check's field order). None = nothing to anchor on."""
+    hay = [s[0] for s in spans]
+    for field in ("evidence", "title"):
+        at = _locate_span(hay, (data or {}).get(field))
+        if at:
+            return at
+    return None
+
+
+def done_in_meeting_reason(data: dict, transcript_text=None) -> str:
+    """FLOOR2 A (J-1) — the item was DISCHARGED inside the meeting. "" when it
+    was not, or when the check cannot establish that it was.
+
+    Two independent signals, either sufficient:
+      (a) the item's own evidence is a DEICTIC in-call instruction ("click
+          that right now", "right here", "while we're on the call") — a bare
+          future-tense filler ("go ahead and", "real quick", a free-standing
+          "right now") is deliberately NOT one of these; see the class, or
+      (b) the transcript acknowledges the action completed AFTER the evidence
+          span and within the same stretch of conversation.
+
+    Gated behind one hard precondition in both cases: the item must have NO
+    post-meeting surface. A parseable due date, a money amount, or a
+    send/share/schedule/follow-up verb all mean a deliverable that outlives the
+    call, and this check then has nothing to say — that is what keeps
+    "I'll send the deck right now" on the book. Pure."""
+    data = data or {}
+    title = str(data.get("title") or "")
+    evidence = str(data.get("evidence") or "")
+
+    try:
+        from capture_gate import carries_due_or_money, parse_iso_date
+    except ImportError:  # pragma: no cover — direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from capture_gate import carries_due_or_money, parse_iso_date
+    if parse_iso_date(data.get("due")) or carries_due_or_money(data):
+        return ""
+    blob = _normalize_for_fusion(f"{title} {evidence}")
+    if _POST_MEETING_SURFACE_RE.search(blob):
+        return ""
+
+    if evidence.strip() and _IN_MEETING_NOW_RE.search(
+            _normalize_for_fusion(evidence)):
+        return FLOOR_DONE_IN_MEETING
+
+    spans = _fusion_token_spans(transcript_text)
+    if not spans:
+        return ""
+    at = _evidence_anchor(data, spans)
+    if not at:
+        return ""
+    tail = [s[0] for s in spans][at[1]:at[1] + ACK_WINDOW_WORDS]
+    if tail and _COMPLETION_ACK_RE.search(" ".join(tail)):
+        return FLOOR_DONE_IN_MEETING
+    return ""
+
+
+def superseded_in_meeting(data: dict, transcript_text=None) -> dict:
+    """FLOOR2 B (J-2) — the SAME conversation took the offer back. Returns
+    `{"reason": "", "quote": ""}` when it did not (or when the check cannot
+    run), else the floor reason and the VERBATIM superseding quote.
+
+    Runs on the FETCHED transcript, never on a summary of it, and only on the
+    REMAINDER after the item's own evidence span — a retraction that precedes
+    the offer is not a retraction of it. TWO conditions, both required:
+
+      near    the cue falls within `SUPERSEDE_WINDOW_WORDS` of the span (the
+              same stretch of conversation), and
+      about   its own words share `SUPERSEDE_MIN_SHARED` content tokens with
+              the item's TOPIC — the title, the evidence, and the
+              `SUPERSEDE_CONTEXT_WORDS` of transcript that led into it, because
+              a retraction answers the exchange and not the one sentence an
+              extractor kept.
+
+    Proximity alone gates every clean promise on a dense call (measured during
+    the build: four of four); the lexical tie is what makes "never mind" about
+    the parking validation stop being a verdict on the pricing sheet.
+
+    Pure — the caller supplies the transcript it already loaded.
+
+    Cross-meeting supersession is deliberately NOT in scope (that is
+    decision-superseded territory); this reads one transcript only."""
+    out = {"reason": "", "quote": ""}
+    spans = _fusion_token_spans(transcript_text)
+    if not spans:
+        return out
+    data = data or {}
+    at = _evidence_anchor(data, spans)
+    if not at:
+        return out
+    start = at[1]
+    tokens = [s[0] for s in spans]
+    remainder = tokens[start:]
+    if not remainder:
+        return out
+    joined = " ".join(remainder)
+    # Char offset -> token index over the joined remainder (single-space join).
+    offsets = []
+    pos = 0
+    for tok in remainder:
+        offsets.append(pos)
+        pos += len(tok) + 1
+
+    # The topic: what the item says, plus the run-up to it in the transcript.
+    lead = tokens[max(0, at[0] - SUPERSEDE_CONTEXT_WORDS):at[1]]
+    want = _content_set(
+        f"{data.get('title') or ''} {data.get('evidence') or ''} "
+        f"{' '.join(lead)}")
+    import bisect as _bisect
+    for m in _SUPERSEDE_CUE_RE.finditer(joined):
+        idx = _bisect.bisect_right(offsets, m.start()) - 1
+        if idx < 0 or idx >= SUPERSEDE_WINDOW_WORDS:
+            continue  # not this stretch of conversation any more
+        window = remainder[idx:idx + SUPERSEDE_QUOTE_WORDS]
+        if len(want & {t for t in window
+                       if len(t) > 1 and t not in _FLOOR_STOPWORDS}) \
+                < SUPERSEDE_MIN_SHARED:
+            continue  # a retraction of something else
+        # The quote is sliced out of the SOURCE text by the matched tokens' own
+        # offsets, so it is verbatim including its punctuation — never a
+        # re-rendering of the normalized form.
+        first = spans[start + idx]
+        last = spans[min(len(spans) - 1,
+                         start + idx + SUPERSEDE_QUOTE_WORDS - 1)]
+        out["reason"] = FLOOR_SUPERSEDED_IN_MEETING
+        out["quote"] = clip(first[3][first[1]:last[2]].strip())
+        return out
+    return out
+
+
+def transcript_floor_reason(data: dict, transcript_text=None) -> dict:
+    """The FLOOR2 layer as one call: `{"reason", "code", "quote"}`, all "" when
+    the item clears it. J-1 is tested first — an action already performed is a
+    stronger statement about the item than a later redirect."""
+    reason = done_in_meeting_reason(data, transcript_text)
+    if reason:
+        return {"reason": reason, "code": floor_reason_code(reason),
+                "quote": ""}
+    hit = superseded_in_meeting(data, transcript_text)
+    if hit["reason"]:
+        return {"reason": hit["reason"],
+                "code": floor_reason_code(hit["reason"]),
+                "quote": hit["quote"]}
+    return {"reason": "", "code": "", "quote": ""}
+
+
 def admit_meeting_capture(
     item: dict,
     *,
@@ -1049,11 +1595,12 @@ def admit_meeting_capture(
 
     Returns {"tier": book|review|observed|skip, "reason": str,
              "floor_reason": str, "floor_code": str, "fusion_reason": str,
-             "relevance_reason": str}.
+             "relevance_reason": str, "superseding_quote": str}.
 
     `floor_reason` is the sentence a human reads on the row; `floor_code` is the
     same verdict's stable name, and it is what a tally is keyed by. Both are ""
-    when the item cleared the floor."""
+    when the item cleared the floor. `superseding_quote` is set only by the
+    FLOOR2 supersession check, and it is verbatim transcript."""
     data = _probe_data(item)
 
     floor = capture_floor_reason(data)
@@ -1079,13 +1626,39 @@ def admit_meeting_capture(
         tier = TIER_OBSERVED if (someone_else_owes and not rail) else TIER_REVIEW
         return {"tier": tier, "reason": floor, "floor_reason": floor,
                 "floor_code": floor_reason_code(floor),
-                "fusion_reason": "", "relevance_reason": ""}
+                "fusion_reason": "", "relevance_reason": "",
+                "superseding_quote": ""}
 
     fusion = fusion_refusal_reason(data, transcript_text)
     if fusion:
         return {"tier": TIER_REVIEW, "reason": fusion, "floor_reason": "",
                 "floor_code": "",
-                "fusion_reason": fusion, "relevance_reason": ""}
+                "fusion_reason": fusion, "relevance_reason": "",
+                "superseding_quote": ""}
+
+    # FLOOR2 — the second floor layer, the one that reads the MEETING. It runs
+    # only on items the sentence-level floor cleared (an item already below the
+    # floor has its reason, and a second one tells a reader nothing new) AND
+    # only after FUSION has cleared them (F-2, review 2026-08-06): this layer
+    # reads the transcript on the assumption the item's evidence is genuine
+    # transcript, and establishing exactly that is what the fusion check does.
+    # Run first, it answered "already done during the call" for an item whose
+    # evidence was nowhere in the call — masking the refusal and undercounting
+    # fusion telemetry. Fusion refusal wins; the dependency now runs the way it
+    # points.
+    deeper = transcript_floor_reason(data, transcript_text)
+    if deeper["reason"]:
+        # Always REVIEW, never the observed tier — unlike the first layer,
+        # which sends a plainly-someone-else's item to observed. These two
+        # verdicts carry something a reader needs (and, for supersession, a
+        # quote the observed writer has nowhere to put): the question "did we
+        # hear this right?" belongs in the queue where it can be answered in
+        # one tap. Never a drop either way (Option A).
+        return {"tier": TIER_REVIEW, "reason": deeper["reason"],
+                "floor_reason": deeper["reason"],
+                "floor_code": deeper["code"],
+                "fusion_reason": "", "relevance_reason": "",
+                "superseding_quote": deeper["quote"]}
 
     ctx = capture_context or {}
     try:
@@ -1106,7 +1679,8 @@ def admit_meeting_capture(
     tier = TIER_BOOK if verdict["tier"] == "open" else TIER_OBSERVED
     return {"tier": tier, "reason": verdict["reason"], "floor_reason": "",
             "floor_code": "",
-            "fusion_reason": "", "relevance_reason": verdict["reason"]}
+            "fusion_reason": "", "relevance_reason": verdict["reason"],
+            "superseding_quote": ""}
 
 
 def route_meeting_captures(
@@ -1285,6 +1859,13 @@ def route_meeting_captures(
             # — because a future config toggle needs something to key on.
             if floor_gated:
                 ev["data"]["floor_gated"] = True
+                # FLOOR2 B: the retraction rides BESIDE the original evidence,
+                # both verbatim from the same transcript. A row that says "the
+                # call took this back" and cannot show the words is a verdict
+                # the user has to take on faith.
+                quote = str(verdict.get("superseding_quote") or "").strip()
+                if quote:
+                    ev["data"]["superseding_quote"] = clip(quote)
                 n_floor_gated += 1
             else:
                 ev["data"]["fusion_unverified"] = True
@@ -1329,14 +1910,22 @@ __all__ = [
     "FLOOR_NO_CONSEQUENCE",
     "FLOOR_RETOLD",
     "FLOOR_NOT_ACCEPTED",
+    "FLOOR_DONE_IN_MEETING",
+    "FLOOR_SUPERSEDED_IN_MEETING",
     "FLOOR_CODE_NO_OWNER",
     "FLOOR_CODE_NO_DELIVERABLE",
     "FLOOR_CODE_NO_CONSEQUENCE",
     "FLOOR_CODE_RETOLD",
     "FLOOR_CODE_NOT_ACCEPTED",
+    "FLOOR_CODE_DONE_IN_MEETING",
+    "FLOOR_CODE_SUPERSEDED_IN_MEETING",
     "FLOOR_CODES",
     "FLOOR_CODE_VALUES",
     "FLOOR_CODE_LEGACY",
+    "FLOOR_CODE_RE",
+    "SUPERSEDE_WINDOW_WORDS",
+    "SUPERSEDE_MIN_SHARED",
+    "SUPERSEDE_QUOTE_WORDS",
     "floor_reason_code",
     "parse_floor_reasons",
     "FUSION_REVIEW_REASON",
@@ -1347,6 +1936,9 @@ __all__ = [
     "TIER_SKIP",
     "capture_floor_reason",
     "fusion_refusal_reason",
+    "done_in_meeting_reason",
+    "superseded_in_meeting",
+    "transcript_floor_reason",
     "admit_meeting_capture",
     "route_meeting_captures",
 ]

@@ -123,13 +123,28 @@ def _archive_move(root: Path, src: Path, bucket: str) -> bool:
         return False
 
 
+# Locks that exist BY DESIGN and must never be swept: the A1 events writer
+# lock file (content never changes, byte-range locked at write time — its age
+# means nothing) and its info sidecar's shape is not *.lock anyway.
+_PERMANENT_LOCK_NAMES = frozenset({".writer.lock"})
+
+
 def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
                       now: float | None = None) -> list[str]:
-    """Archive `*.lock.stale.*` sentinels older than `max_age_s` (default 1 hour)
-    under `_hq/data/` and `_hq/.system/` by MOVING them into
-    `_archive/stale-locks/` — nothing is deleted. Returns the workspace-relative
-    paths cleared from their working spot. Fresh sentinels (a writer may still be
-    mid-recovery) are preserved in place.
+    """Archive stale lock litter under `_hq/data/` and `_hq/.system/` by
+    MOVING it into `_archive/stale-locks/` — nothing is deleted. Returns the
+    workspace-relative paths cleared. Two passes:
+
+      1. `*.lock.stale.*` mv-aside sentinels older than `max_age_s` (the
+         original D6 sweep — a writer still mid-recovery is never disturbed).
+      2. BARE ORPHANED `*.lock` sentinels (BUG-8330 item 15): a sentinel
+         older than `max_age_s` whose recorded pid is DEAD is an abandoned
+         lock from a crashed writer — before this pass, only the renamed
+         `.stale.*` shape was ever swept, so daily fires re-littered bare
+         orphans faster than the weekly sweep could not-collect them. A lock
+         with a LIVE pid is never touched regardless of age (mirrors the
+         item-7d reclaim-refusal), and `.writer.lock` (the A1 byte-range
+         lock file, permanent by design) is exempt.
 
     Idempotent: a second run finds nothing to archive (the moved sentinels now
     live under `_archive/`, outside the `_LOCK_DIRS` it scans)."""
@@ -151,6 +166,26 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
                 src_rel = str(f.relative_to(root)).replace("\\", "/")
                 if _archive_move(root, f, "stale-locks"):
                     archived.append(src_rel)
+        # Pass 2 — bare orphaned sentinels (dead holder + past the floor).
+        from atomic_write import _pid_alive, _read_lock_payload
+        for f in d.glob("*.lock"):
+            if not f.is_file() or f.name in _PERMANENT_LOCK_NAMES:
+                continue
+            try:
+                age = cutoff_now - f.stat().st_mtime
+            except OSError:
+                continue
+            if age <= max_age_s:
+                continue
+            try:
+                pid, _epoch = _read_lock_payload(f)
+            except Exception:
+                pid = 0
+            if pid and _pid_alive(pid):
+                continue  # a live holder is never swept, however old
+            src_rel = str(f.relative_to(root)).replace("\\", "/")
+            if _archive_move(root, f, "stale-locks"):
+                archived.append(src_rel)
     return archived
 
 

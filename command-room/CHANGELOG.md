@@ -1,5 +1,264 @@
 # Command Room — Changelog
 
+## v5.11.1 — 2026-08-13 — Brief links open on OneDrive and SharePoint workspaces too
+
+### BUG-8538 — the cloud opener learns Microsoft (PR #51)
+
+Reported by a client 2026-08-12 (bug_received seq 8538), with the diagnosis already right: v5.9.2 fixed dead brief links for Google Drive workspaces only. `tool_discovery`'s drive-platform hints knew no Microsoft spellings, so on a OneDrive/SharePoint-synced workspace the web-link lookup came up empty and every meeting-prep link fell back to the dead `computer://` form — on all four surfaces (past-meetings, call-prep, weekly-recap, and the merged morning brief).
+
+#### Root cause
+
+`_DRIVE_PLATFORM_HINTS` carried Google tokens plus `onedrive` spellings no real connector uses; the client's Microsoft 365 / SharePoint connector matched nothing. Second-order: `discover_drive_tool` returned the FIRST match, so a workspace with both drives connected could bind the wrong one and search Google Drive for a file living in OneDrive. Third (found in build): the morning-brief orchestrator's prose claimed web links while passing none into `absolutize_doc_links` — the merged surface was Drive-blind by omission.
+
+#### Fix
+
+- `_DRIVE_PLATFORM_HINTS` gains the `m365_sharepoint` family — file-scoped tokens only. The review killed the spec's proposed server-level `m365`/`microsoft365` tokens by demonstration (they can mis-bind an email tool as the drive tool); `sharepoint` is the evidence-backed token.
+- Wrong-drive binding closed: `discover_drive_tool(prefer_platform=)` + `infer_workspace_drive_platform()` decide from the workspace mount, never from tool order; `onedrive` and `m365_sharepoint` match as one Microsoft family; `None` preserves the old first-match behavior exactly.
+- All four opener call sites go platform-neutral through the one chokepoint; the morning brief now actually passes its links through resolution; the degraded-link copy reads "open from your cloud drive" instead of naming Drive; `present_files` stays demoted, locked by a structural test.
+- New 46-check suite (`run_bug8538_cloud_opener_test.py`, Sample/Stone fixtures) including the wrong-drive-binding cases.
+
+### CASE1 — the name-pair guard stops caring about case (PR #52)
+
+PR #49's review finding C1: the G9 real-customer-name pair scan was case-sensitive, so a lowercased or shouting spelling of a protected name walked past the guard. The scan is now case-insensitive (guard layer only — no runtime behavior changes). Rebased over v5.11.0 and merged with its own fresh-context review.
+
+#### Files touched
+
+`shared/scripts/tool_discovery.py` (+169), `brief_path.py`, `workspace_paths.py`, `chat_output_renderer.py`, `shared/CONTRACT.md`, the four surface texts (`orchestrator-past-meetings.md`, `call-prep/SKILL.md`, `weekly-recap/SKILL.md`, `orchestrator-morning-brief.md`), `tests/run_bug8538_cloud_opener_test.py` (new), `run_guard_g9_detection_scope_test.py`, `run_no_real_customer_names_test.py`, `tests/GUARDS.md`.
+
+#### Customer migration impact
+
+None required. Links become clickable on Microsoft-synced workspaces at the next scheduled fire. Both-drives workspaces stop binding the wrong drive.
+
+#### What's NOT in this ship
+
+The capture-floor J-1 broadening (FLOOR3 — the V1 re-measure of 2026-08-12 failed on the demo-shape done-in-meeting class) ships as its own train. CHATSCAN1 leg D and GRANOLA1 writes stay gated on a V1 retake.
+
+## v5.11.0 — 2026-08-11 — the Aug-10 train: meetings know their people, the system stops keeping things to itself, and the morning brief preps your day
+
+### BUG-8330 — Closures, surfaces, substrate, and the dead-mechanism class
+
+A customer bug report received 2026-08-10 (bug_received seq 8330 — 16 items in one email; the reporter had hand-repaired 178 records the same day to route around item 1). Triage verified 10 items as reported or worse, 3 partial, 3 refuted-as-diagnosed — and confirmed the report's best find as a CLASS: mechanisms that get built and documented and then read by nobody. Ships on one release train with the BUG-8244 meeting-binding sweep (PR #49). Version number assigned at ship.
+
+#### Fix round (second-eyes review, 2026-08-10)
+
+Four blockers from the independent review, each closed and pinned. **Privacy:** the branch history carried a reporter's first name and a family health detail in eleven commits — the history was rewritten from base and force-pushed, the tree byte-identical either side of the rewrite, and a case-insensitive sweep of the full rewritten history is clean. A scrub commit would not have done it; the blobs stay reachable. **Substrate:** `repair_seq_relocation.apply_remap` did an unlocked read-modify-write and destroyed a concurrent gated append by execution — the whole read-modify-write now runs under `writer_lock.events_writer_lock` with the plan re-derived inside it (PR #49's shape), and the same audit fixed `seq_health`'s read-decide-append, `source_event_seq_backfill`'s rewrite (which held `multi_write_context` — a DIFFERENT lock that never excluded the appender), and three phantom-path sites that created directories under a mistyped root. **Data visibility:** the item-14 dedup fold was non-transitive with no cycle guard, so two commitments each marked a duplicate of the other erased BOTH rows while the header kept counting them; folds now resolve to a component root (lowest seq wins, cycle-safe), the survivor back-references every folded id, and the fold runs before the counts because a fold is identity, not a row filter. **Release train:** G29 rejected fields whose reader sat one file away in the composed tree — the reader census now spans all non-test plugin python in either quote style, its subscript lookahead no longer lets a second WRITE pass as a read, and a separate expiring `CROSS_TRAIN_ALLOW` carries the genuinely cross-branch cases with a justification and a named retirement. Plus the item-12 completion: the personal-tie join withholds only rows with no GENUINE business binding — a thread id that RESOLVES in the workspace's own thread register to a business-lane thread, or an explicit `org_id` on the row. The bare presence of `primary_thread_id` is not that signal: `capture_gate` stamps it on every thread-sourced commitment including one captured from personal mail, so keying on presence put the marker-less family row back on every org surface. Unresolvable and personal-lane threads fail closed — withheld, and COUNTED: the org-scoped reader fills `personal_withheld` / `personal_withheld_by_tie` on request, a measured zero is written and an unmeasured read writes no key at all. Two call sites carry the counter onto a receipt today — `value_receipt`'s org receipt and `org_value_detector`'s run report; the remaining org-scoped reads write no receipt and drop rows uncounted, which the reader docstring names and a pin holds against the tree.
+
+#### One closure chain, resolvable at the gate (items 1–3)
+
+Append-only closure is the DESIGN (in-place status flips damaged 249 rows and are mid-retirement) — the real defect was three surfaces rolling private, weaker closure chains that missed `commitment_superseded`, `data.target_id`, the F3 seq aliases, and reopens: a reopened item stayed hidden on workspace-map, the daily command center, and the punctuality read forever, silently disagreeing with the loader. The fold now lives in ONE module (`closure_index`) consumed by the loader, the write-side pre-flight (mirror by construction, not by comment), both builders, and punctuality. Write-accept and read-honor derive from one field list (`data.thread_id` was read-honored but write-rejected; top-level `target_id` honored nowhere), and closers must RESOLVE against the ledger at append time — a typo'd id used to pass the presence check clean and die as a dead letter. Stragglers already on disk get additive tombstones via the repair script's new source_ref tier. History is never rewritten.
+
+#### Seq allocation: one allocator, bounded, watched (items 7–8)
+
+New collisions were not occurring by the reported mechanism (the appender allocates inside the writer lock) — but 15 script sites and ~8 prose sites still pre-computed seq against the allocator's own contract, and the honor-explicit branch accepted any far-future seq, so one hand-stamped 999999 relocated a real ledger's allocation ceiling above 1,000,000 permanently. The appender now RETURNS the stamped events (callers read the allocated seq from the return; every pre-compute site converted; a writer-contract lint fails regressions in code AND prose), an explicit seq may not lead the ledger by more than 1,000 (reassigned loudly instead), a recurring duplicate-seq detector marks historic collisions additively (`seq_repaired`, cleanup weekly + system-health read-only), the sentinel lock's stale window scales with ledger size and never reclaims a LIVE holder, and a supervised one-shot remap (`repair_seq_relocation.py`) heals already-relocated ledgers: snapshot → contiguous renumber → reference remap → canonical `.seqhw` rewrite.
+
+#### The personal firewall gets its join (item 12)
+
+`is_personal`'s tie branch was a reader with no writer: `tie` lives on person records and no capture path stamps a personal marker onto a commitment — a family item captured from ordinary mail carried nothing and rendered on org-scoped surfaces. The org-scoped reader now JOINS: a row any of whose person references resolves to a `tie: "personal"` person is personal-lane, using the one marker the CEO already sets. Classification is read-side; every org rollup gets it at once.
+
+#### Daily surfaces stop disagreeing with themselves (items 4–6, 9, 13–15)
+
+The confidence floor moves from orchestrator prose into code — and missing confidence now means UNSCORED (passes), not 0.0 (silently dropped): the 70-shown-as-6 collapse class. The floor resolves through the calibration accessor, so a workspace's override file finally moves the filter; headers stay full-set and NAME the gap; the removal count rides the fire receipt. `pending_review` re-evaluates instead of freezing (the render overlay already said "contact added ✓" while gating stayed frozen — one shared verdict now drives both, a no-longer-holding sole clause releases read-side with zero writes, and a reason-scoped batch verb formalizes it as ordinary clear events). My Plate renders EVERY promise (draft-less rows were absent, not capped; an explicit promised cap + a footer that finally survives both render paths says what is held back). The review digest asks per item (evidence + counterparty/thread agreement in the key, the no-evidence bucket never digests, and the affirmative EXPANDS instead of closing every member off one click). Unowned items get a triage lane that actually drains (oldest first, mine / theirs / drop, stored attribution candidates finally rendered as owner proposals). Suspected duplicates collapse at render (the survivor says "2 records — merge?"; triage keeps both rows — it is the adjudication surface). And reconcile-sent holds ONE lock session per fire while cleanup sweeps bare orphaned lock litter (dead holders only; live writers are never reclaimed).
+
+#### Polish + the structural guards (items 10, 11, 16)
+
+Evidence truncation goes through one word-boundary + ellipsis clipper (`text_clip.clip`; 16 bare `[:200]` slices across 10 files used to store "…Premise retrac" and renderers interpolated it mid-sentence). Connector-minted opaque ids join both leak scanners from one shared family (a normalized chat permalink id had zero coverage — every pattern anchored on plugin-minted prefixes). And the dead-mechanism class gets its guard: G29 fails any `data` field with a writer and no non-test reader (provenance allowlist with reasons; census pins hold every wire-or-retire outcome — `data.urgency` retired, the tracker-column prose replaced with the regenerator, the calibration accessors kept live).
+
+#### Files touched
+
+New: `shared/scripts/closure_index.py`, `shared/scripts/seq_health.py`, `shared/scripts/repair_seq_relocation.py`, `shared/scripts/review_reasons.py`, `shared/scripts/text_clip.py`, `shared/scripts/connector_id_patterns.py`, plus fifteen battery suites (`run_closure_index_test`, `run_closure_gate_test`, `run_seq_hardening_test`, `run_personal_tie_join_test`, `run_confidence_floor_test`, `run_review_reason_reeval_test`, `run_my_plate_residual_test`, `run_digest_per_item_test`, `run_unowned_triage_lane_test`, `run_lock_litter_test`, `run_text_clip_test`, `run_connector_id_leak_test`, `run_dup_render_fold_test`, `run_guard_g29_dead_fields_test`, `run_repair_oneshot_concurrency_test`). Changed: `cru_match`, `commitment_state`, `event_gate`, `event_types`, `atomic_write`, `writer_lock`, `writer_contract_lint`, `cleanup_actions`, `surface_drivers`, `chat_output_renderer`, `proposal_digests`, `brain_proposals`, `needs_review_queue`, `commitment_dedup`, `capture_gate`, `confidence` consumers, `personal_leak`, `events_io`, `org_value_detector`, `value_receipt`, `reconcile_sent_commitments` (+ the 15 seq pre-compute sites), `docx_leak_scanner`, the commitments/my-plate/past-meetings/historical-backfill orchestrators, `apply-choices` / `commitment-triage` / `cleanup` / `system-health` / `meeting-notes` / `workspace-ingest` skill texts, `COMMITMENT_SCHEMA.md`, `EVENT_TYPES.md`, `VIEW_GENERATION.md`, `events.schema.json` (`seq_repaired`), and `tests/GUARDS.md` (G29).
+
+### BUG-8244 — Meetings finally know who was in them
+
+Reported by a client 2026-08-10 with the diagnosis already right: "the reader exists and the writer does not." Their weekly insights claimed weeks of no contact with their own team — people they hold weekly 1:1s with — because every meeting event in the workspace carried no attendees. The investigation found the condition was wider than the report: the `meeting` event was the ONLY primary event with no builder and no shape spec, 16 writer sites improvised 4 incompatible attendee shapes, the two person-resolution helpers read disjoint field sets (so no writer shape satisfied every reader), and 19 readers silently degraded — relationship cadence, dormancy, the Balance surface, call-prep's Relationship Timeline, thread rosters, objective review forums, commitment closing from meetings, and the extraction-miss telemetry whose job was to catch exactly this.
+
+#### One builder, one shape
+
+`meeting_capture.build_meeting_event()` is now the one sanctioned constructor for a `meeting` event, and every writer doc names it: top-level `person_ids[]` (attendees resolved against entities.json) plus `data.attendees[]` (invitee emails verbatim from the source — kept even when unresolved, because identity-reconcile corroborates merges from them and the backfill repairs history with them) plus `data.attendees_external[]` (names with no match). An empty binding stays legal but explicit; when the source listed attendees and nothing bound, the event carries `data.binding_missing` and the meeting-notes claim audit (`meeting_binding_audit`) says so out loud instead of shipping it silently. meeting-notes finally has the append step its Writer Contract promised since v2.x (Step 9a1 — the claim audit was counting an event the file never told anyone to write).
+
+#### One reader, every legacy shape
+
+`event_refs.meeting_person_ids()` folds every variant the substrate has ever carried — top-level and nested `person_ids`, `data.attendee_person_ids`, email fields (`attendees` / `attendee_emails` / `invitees`, resolved through a workspace email index the caller supplies), and the improvised ids some pre-spec writers put inside `data.attendees`. Repair-on-read: legacy rows resolve; nothing rewrites history.
+
+**Wired end to end, email-shaped meetings included:** dormancy (the contrary-evidence gate that suppresses stale "haven't talked in a while" signals now actually fires for meeting-only relationships), person history (call-prep's Relationship Timeline stops silently omitting itself), thread rosters, meeting discovery's substrate replay, identity-reconcile's co-occurrence clause, and Balance's last-touch — which reads through `cru_match.event_references_person`, whose `data.attendees` probe compared person ids against email strings and so had never once matched since birth. It now handles both shapes, accepts the person's own emails, and probes the `data.attendee_person_ids` spelling it had always been missing.
+
+**Wired for the id-shaped variants only:** extraction-miss telemetry and objective forum matching call the normalizer without an email index, so they pick up `data.attendee_person_ids` and the improvised-id rows but still under-report a meeting bound by email alone. The account-scope association carve-out folds resolved ids only *by design* — an unresolved address is not a resolved entity, and counting one would file unknown-sender events to the business lane by association.
+
+**Not closed by this change** (pre-existing degradation, listed so the record is honest rather than round): `coach_state`'s cohort/coaching handoff is untouched and still takes attendees from its caller; `extraction_hints` and `objective_math` are plumbed for an email index that no live caller passes yet; `morning-briefing`, `dormant-customer-scan` and `command-room-coach`'s selection algorithm call `event_references_person` without the new `person_emails`; and the prose readers in `thread-resurrection`, `insight-generator`, `weekly-recap`'s notable-meetings ranking, `team-intelligence` and `board-pack-assembler` benefit only where they route through a helper above. All are follow-ups, none is a regression — and from this release forward every NEW meeting carries the canonical binding, which is what all of them read first.
+
+#### Decision matching fails closed
+
+The one reader that turned a missing binding into wrong PERSISTED state: with no attendees resolved, `decision_match`'s attendee filter used to skip itself, scoring every person-scoped open decision against every transcript — a coincidental title match plus a generic completion phrase could auto-write `decision_resolved`. An unverifiable overlap now downgrades to `no_action` with an `attendee_unverified` flag: surface in review, never auto-act. Workspace-wide decisions keep full auto power — they never had a people filter to verify.
+
+#### The morning brief stops being read "read-only" to death
+
+BRIEFMERGE's "the digest half stays read-only" line sat in the same file as Phase 2's "every connector read MUST emit corresponding events" — and a model executing the brief could reasonably conclude capture was cancelled, which starves the exact interaction events relationship cadence falls back on. Both files now scope read-only to views/entities/tracker and name passive capture as always in scope.
+
+#### Backfill for existing workspaces
+
+`shared/scripts/backfill_meeting_binding.py` binds historical unbound meeting events offline: emails on the row first, then the meeting title resolved against canonical names + aliases — the same repair the reporting client ran by hand across several dozen events, which corrected their numbers immediately. Conservative by construction (an ambiguous "Sam 1:1" with two Sams binds nobody and is reported), dry-run by default, archives every touched shard under `_hq/data/_backups/` before writing, fills ONLY empty bindings (a hand-backfilled workspace plans zero rows), and stamps `data.binding_backfilled` + `data.binding_source` so the repair is auditable. Because a rewrite is a truncating write, the whole read-modify-write is held under `writer_lock.events_writer_lock` — the same lock every gated append takes — and the plan is re-derived inside it, so a `maintenance` or `morning-brief` task appending while the backfill runs at promote blocks and survives instead of being silently destroyed; the rewrite itself goes out through `atomic_write.atomic_write_text`, so a crash mid-write cannot truncate the ledger.
+
+#### Guard
+
+G28 (`run_guard_meeting_binding_test.py`) pins both layers: the builder's canonical shape and the readers' variant fold in code, and at the instruction layer a writer-doc census (every doc instructing a `type: meeting` emit must name the builder) plus a retired-spelling fence (`attendee_person_ids` may appear in a meeting-emit context only marked legacy). The 4-shape fork cannot quietly restart.
+
+#### Files touched
+
+New: `shared/scripts/backfill_meeting_binding.py`, `tests/run_guard_meeting_binding_test.py`, `tests/run_backfill_meeting_binding_test.py`. Changed: `shared/scripts/meeting_capture.py` (build_meeting_event + meeting_binding_audit), `event_refs.py`, `cru_match.py`, `decision_match.py`, `dormancy.py`, `balance.py`, `render_person_history.py`, `objective_math.py`, `thread_roster.py`, `extraction_hints.py`, `account_scope_gate.py`, `meeting_discovery.py`, `identity_reconcile.py`, the meeting-event writer docs (meeting-notes, past-meetings orchestrator, weekly-recap, PASSIVE_CAPTURE, workspace-manager, people-crm, workspace-ingest parsers, historical-backfill), `orchestrator-morning-brief.md` + `morning-briefing/SKILL.md` (read-only scoping), `relationship-moves/SKILL.md`, `references/DATA_CONTRACT.md`, `shared/data-schemas/event-payloads.schema.json`, `tests/GUARDS.md`, `tests/run_decision_match_test.py`, `tests/run_cru_match_test.py` (the removal-proof pins for the ids-vs-emails closure).
+
+### WALKFIX1 — The system stops keeping things to itself
+
+Ten fixes from one dogfood walk, and one theme runs through nearly all of them: the product knew something and did not say it. A fire recorded a correction in its own record and showed a clean recap. A live read that found nothing left no trace, so "found nothing" and "never looked" read the same. A version number meant three different things in one run. Where a number was already correct, it was not legible.
+
+#### Numbers say what they are a slice of
+
+The unconfirmed queue showed three different numbers on three surfaces — 198, 110, 89 — every one of them correct and none of them saying which slice of what it was. They now come from one computation and say so: the tile still carries the queue total, the section reads "Unconfirmed — 110 rows, 109 escalated of 198, plus 1 unowned", and the quick-read reads "89 unconfirmed extractions waiting (not yet escalated; 198 total)". Move the computation and all three move together.
+
+#### A card is never blank
+
+A row with no title used to render an empty card, which reads as a broken product rather than as the damaged record it is. It now says "(untitled — needs repair)" on the widget and on the board.
+
+#### A run that corrected itself says so, in one line
+
+When a fire's own record carries an internal correction, the chat adds one line: a count and a pointer, no error text and no alarm. Closing silently is worse than saying it.
+
+#### A meeting no longer closes decisions it only mentioned
+
+A past-meetings run used to close old decisions on its own, whenever a call happened to use the same words as a decision's title and the word "instead" appeared anywhere in the conversation. One run did that to thirteen decisions that had nothing to do with the call. Closing a decision removes it from your current-decisions view, so real decisions were quietly disappearing.
+
+The run now raises its hand instead of acting. A decision a meeting might have reversed gets a "supersede proposed" note on its own line in the decision log, with the match strength, and stays exactly where you left it until you say otherwise. Decisions a meeting shows were *carried out* still close automatically — that is a different, much stronger signal.
+
+#### A decision that was closed by mistake can be brought back
+
+Reversing a decision used to be permanent: once anything marked it superseded, nothing in the product could restore it. Now the most recent signal wins — reaffirm a decision after it was wrongly closed and it returns to your active list, with the closure kept on the line as history. Nothing is rewritten; the record shows what happened and what you decided about it.
+
+#### Meeting outcomes stop reversing themselves
+
+A past-meetings run wrote eight decisions from a call and then superseded six of them using the same conversation they came from. The log read as though the call had reversed itself. A run's own fresh decisions are no longer candidates for its own reversal pass. Decisions from earlier meetings are still matched — and, per the change two sections above, are now proposed for your review rather than closed automatically.
+
+#### A new chat no longer apologises for a slot it never had
+
+Switching on a chat mid-week used to make it immediately report having skipped the most recent slot — one that came before the chat existed. Registration now floors the catch-up window: a slot older than the chat is recorded as skipped for that reason, with no apology and no wasted run. Genuinely missed slots still catch up.
+
+#### The ledger explains its own clock
+
+A run that lands a long way from its scheduled time now records how far off it was, so a record that reads oddly six months from now explains itself instead of needing a person to reconstruct it.
+
+#### One version, one story
+
+An install running code ahead of its last shipped version is a normal state, and the update check now has words for it: it resolves the version picture once per run and every record and sentence from that run says the same thing. Before, one run could report the same install as two different versions and tell you a third.
+
+#### Links keep working on other machines
+
+One more record type was storing a file location that only existed on the machine that wrote it. Fixed, along with two others found by the same sweep — and the sweep is now a standing check rather than a one-time pass.
+
+### BRIEFMERGE — Two morning chats become one, and prep links open on every machine
+
+M ruled 2026-08-08: merge the Upcoming Meetings chat into the Morning Brief. Fewer chats is the point — the top defect class in this product is a scheduled task dying silently, and every extra task is another surface where that can happen unnoticed. Version number assigned at ship; the release manifest is written for `v5.11.0`.
+
+#### Meeting prep is now the Morning Brief's first leg
+
+The separate Upcoming Meetings chat is RETIRED. Its prep generation runs inside the morning-brief fire, ordered first: today's meetings are discovered once, prepped through the same `call-prep` generator the on-demand "prep me for my 2pm" runs, and the digest then reads what that leg produced. There is no second discovery pass and no thinner scheduled variant of the generator — the retired orchestrator's copy of the prep pipeline is deleted rather than duplicated, so the ONE-GENERATOR contract now has exactly one generator and one fewer place to drift.
+
+Two fences make the merge safe, both proven by removal in the battery. The prep leg can never kill the brief: a per-meeting failure degrades to one line in the brief naming the meeting and the phrase that regenerates it, a whole-leg failure degrades to one banner, and the brief always renders. And the brief's meeting section refuses to render without the leg's result, so prep is strictly before render — asserted on call sequence, never on a sleep.
+
+There is deliberately no midday refresh. A meeting booked after the brief fires is covered on demand by `call-prep`.
+
+#### One receipt, both legs
+
+The fire writes ONE receipt in the existing `pack_run` shape — no new receipt type — carrying a `legs` map (`{"brief": ..., "prep": ...}`) and a `prep_leg` block with per-meeting outcomes (`ran` / `degraded` / `skipped`) and their reasons. `prep` reads `degraded` when the leg failed as a whole OR when any single meeting failed, because a fire that prepped four of five meetings is not a clean fire. The watchdog reads it and can finally say "your Morning Brief ran, but meeting prep didn't" — the sentence nothing could say while prep was a separate task that could die in silence.
+
+#### Attachment links stop rotting across machines
+
+Reported and substrate-verified 2026-08-08: brief attachment cards answered "This file can't be found on your computer" while every prep document sat safely in the synced meetings folder. The files were never the problem; the pointers were. A stored path recorded where the file sat on the machine and in the session that wrote it — three different absolute roots for one logical folder — and none of them exists anywhere else.
+
+Persisted file-pointers are now workspace-relative, refused at the write if absolute, and resolved against the current machine at render time. Legacy rows are repaired on READ; nothing rewrites history. When a resolved file has not finished syncing to this machine, the brief says so in plain English instead of emitting a dead card.
+
+#### Migration
+
+Schedules are per-machine, so the repo change retires nothing by itself. Clients pick this up by re-running `set up command room schedules`. A machine that still has the old chat registered is OFFERED the switch-off once (`pause upcoming meetings`) and never silently disabled; a machine that never had it does nothing at all. Registration will not re-add it on any path, including an explicit ask.
+
+#### Files touched
+
+New: `shared/scripts/prep_leg.py`, `shared/scripts/workspace_paths.py`, `shared/releases/v5.11.0.json`, `tests/run_briefmerge_test.py`, `tests/run_guard_briefmerge_paths_test.py` (guard G27). Retired to a stub: `skills/enable-command-room-schedules/references/orchestrator-upcoming-meetings.md`. Changed: `shared/scripts/schedule_config.py`, `shared/scripts/task_watchdog.py`, the morning-brief orchestrator, `skills/morning-briefing/SKILL.md`, `skills/call-prep/SKILL.md`, `skills/change-schedule/SKILL.md`, `skills/system-health/SKILL.md`, plus the receipt/event/contract references.
+
+#### BRIEFFIX1 — the morning brief stops lying about itself, in four places
+
+Four defects found on one live fire, 2026-08-09. They look unrelated and they are the same thing: a fire whose account of what it did drifted from what it did. Version number assigned at ship.
+
+#### Document links open on the machine you are reading them on
+
+A brief posted a prep document as a link, and clicking it answered "this file can't be found on your computer" while the document sat in the synced folder. Both halves of the system were right and the seam between them was not: what gets SAVED has to be a relative pointer, so one file means one file on your laptop and your desktop; what gets POSTED has to be an absolute one, because that link is opened against the computer in front of you. The brief was saving correctly and then posting the saved string.
+
+There is now one conversion, at the moment of posting, applied to the posted copy only — the saved copy is unchanged, which is checked. And it is enforced rather than requested: a chat post still carrying the saved form of a document link is refused before it reaches you, because the alternative is a link that looks fine and does nothing.
+
+#### "Reused" is now a word the system can say
+
+The brief could report a meeting as prepped or as skipped, and skipped shows no link. So when a prep already existed — built by an earlier fire the same day — the only way to give you the link you actually wanted was to report it as freshly made. It did, and a six-hour-old document was presented as this morning's.
+
+A prep that already exists is now REUSED: nothing is regenerated (rebuilding a good document to earn the right to link it is work for the machine's benefit), the link renders exactly as before, and the record names which earlier run made the document. "Ran" now means this run made it, and the system checks that claim against its own record rather than taking its own word for it.
+
+Reuse is decided by identity, not by age: the existing prep has to have been written today, for the exact meeting occurrence in front of you. A recurring meeting keeps the same calendar id every week, so anything looser hands you last week's brief for this week's standup — which is the same mistake in a different disguise. When it can't be certain, it just writes a fresh one.
+
+#### A brief that posts without recording itself is impossible to miss
+
+The same fire posted a full digest and recorded nothing. Every health surface reported fine, because an earlier run's record was still the most recent one. Two things follow.
+
+The record is now written BEFORE the digest posts. Both orders lose something if a run stops halfway; they do not lose the same thing. This way a stopped run leaves a record and no digest — visible, and something the system already knows how to handle. The other way leaves a digest on your screen that the system has no memory of.
+
+And the health check now names it: a brief that posted with nothing recorded behind it gets its own line, with the one action that fixes it — worded for the kind of brief it was, since "press Run Now on the scheduled task" is the wrong instruction for a brief you ran by hand.
+
+This applies to both kinds of brief. A brief you run yourself by typing "brief me" posts the same numbered items the scheduled one does, so it now records itself the same way. That is what makes closing an item by number work after a hand-run brief, rather than merely not break.
+
+#### One-tap "mark done" refuses when the numbers can't be trusted
+
+That affordance closes item number 3 from the brief in front of you by looking up what number 3 was. When a brief posts without recording its list, the most recent recorded list belongs to a DIFFERENT brief — so number 3 is a different item, and closing it closes real work silently.
+
+It now refuses, in plain English, and tells you the two ways forward: run the brief once so the numbers line up, or name the item and it gets closed directly. A refused close is recoverable; a wrong one is not.
+
+#### A background job stops waiting out the weekend for no reason
+
+The chat-closing pass skipped one Friday evening because no chat tool was connected — correctly, and it said so. A chat tool was connected ten minutes later. The pass stayed asleep until Monday morning, because the Friday skip was still counted as Friday's work.
+
+A skip is not work; it is an answer to a question, and the answer can stop being true. When the setting that caused a skip changes, the skip stops counting and the job runs at the next opportunity — including on a weekend. A job that actually ran is untouched: changing a setting is never a reason to redo finished work.
+
+#### Files touched
+
+New: `shared/scripts/brief_receipt.py`, `tests/run_brieffix1_test.py`. Changed: `shared/scripts/chat_output_renderer.py`, `shared/scripts/chat_output_validator.py`, `shared/scripts/workspace_paths.py`, `shared/scripts/prep_leg.py`, `shared/scripts/receipts.py`, `shared/scripts/commitment_state.py`, `shared/scripts/surface_drivers.py`, `shared/scripts/task_watchdog.py`, `shared/scripts/maintenance_dispatcher.py`, the morning-brief orchestrator, `skills/morning-briefing/SKILL.md`, `skills/call-prep/SKILL.md`, `skills/apply-choices/SKILL.md`, `shared/CONTRACT.md`, `shared/RECEIPT_CONTRACT.md`, `shared/releases/v5.11.0.json`, and G27's fixture (its generate-path meeting now has no prior receipt, so reuse cannot take the anchor split off the guard's code path).
+
+#### WALKRIDERS — six fixes from the first live walk of the triage board
+
+Found in one session on 2026-08-10, the first time the board was published against real work. Version number assigned at ship.
+
+#### Your own words stop being mistaken for a leak
+
+Every surface is scanned before it posts, so nothing internal can reach your screen. The scan could not tell your writing apart from the system's, and one commitment you wrote — a note to yourself about repairing your own records, which named one of the files those records live in — made the entire board unpublishable. One row out of hundreds, and nothing would publish at all.
+
+The scan now knows who wrote what. Text you wrote is still scanned in full for anything genuinely dangerous — a file path from someone's computer, a session address, an internal id — because those are a problem in a title no matter who typed them. What it stops doing is treating this product's own vocabulary as a leak when the words are yours. The identical sentence, written by the system rather than by you, is refused exactly as before; nothing was added to any exception list, and nothing was switched off.
+
+The same blind spot sat one layer down, where it was quieter and worse: on the interactive surface a colliding row was not refused, it was silently replaced with "1 row withheld". Same fix, so your row is simply there.
+
+#### The board renders its punctuation
+
+Dashes and separators came out as garbled character pairs the first time the board was opened. The page was correct; it just never told the viewer how to read it, so the viewer guessed wrong. It now says so in its first line, and a board that somehow lost that line is refused before it can be published.
+
+#### The Unconfirmed strip says what it is a slice of
+
+The board pins the unconfirmed items that have been waiting longest. The number on that strip is therefore smaller than the number of unconfirmed items you have, and nothing on the page said so — every other group reconciled exactly, and this one quietly did not. The heading now reads "N escalated of M unconfirmed" and names the phrase that brings up the rest. Both numbers are counted from the page and the list behind it.
+
+#### A surface that cannot see your latest changes refuses to render one
+
+A session can end up looking at a slightly out-of-date copy of your workspace. When that happened, the board either failed with a confusing message or — the case that actually matters — published a perfectly normal-looking page built from stale rows and stale counts, with nothing saying so. Both surfaces now check before they read, and refuse in plain English if what they can see is behind. Nothing is written when they refuse, and the next run picks up normally. The morning brief already handled this by saying so at the top, and keeps doing that instead: a brief that says "this is stale" is more useful than no brief.
+
+#### Your schedule lists every background job
+
+The schedule view listed the background maintenance jobs by hand, and the list had fallen behind — most visibly, it did not mention the pass that closes commitments from chat, so reading your own schedule suggested that pass was not running when it was. The list now comes from the same registry the jobs actually run from, the counts that used to sit in front of it are gone (a count is one more thing to fall behind), and a check keeps the two in step.
+
+#### Files touched
+
+New: `tests/run_board_render_riders_test.py`, `tests/run_driver_freshness_preflight_test.py`, `tests/run_leak_provenance_test.py`, `tests/run_guard_change_schedule_roster_test.py`, `tests/run_guard_ledger_drift_test.py`, `tests/run_guard_user_text_provenance_test.py`, `tests/run_walkriders_mutation_test.py`, `tests/walkriders_mutation_lib.py`. Changed: `shared/scripts/chat_output_renderer.py`, `shared/scripts/artifact_board.py`, `shared/scripts/surface_drivers.py`, `shared/CHAT_ACTION_WIDGET.md`, `skills/change-schedule/SKILL.md`, `skills/thread-resurrection/SKILL.md`, `skills/apply-choices/SKILL.md`, `tests/run_artifact_board_test.py`, `tests/run_guard_roster_layer_test.py`.
+
+A note for anyone writing a skill that builds one of these rows: a row's title and quoted subject are treated as your own words and are exempt from part of the outbound scan on that basis. If your skill *composes* that title itself, declare `composed_fields` on the item so your template keeps facing the whole scan — see `shared/CHAT_ACTION_WIDGET.md`. Nothing else changes.
+
 ## v5.10.0 — 2026-08-05 — The workspace stops drifting from the truth, in four places
 
 Minor release, four independent improvements with one theme: places where the workspace could quietly disagree with reality now either stay correct on their own or say plainly that something is wrong.

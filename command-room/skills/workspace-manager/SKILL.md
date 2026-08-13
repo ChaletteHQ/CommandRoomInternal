@@ -348,7 +348,7 @@ If the tracker stamp can't be parsed, treat the tracker as stale and apply the o
 **Step 2a: Emit passive-capture events (silent)**
 5a. Every connector read in Step 2 emits events to `_hq/data/events.jsonl` per `shared/PASSIVE_CAPTURE.md` — not optional. Shape by source:
     - Gmail hit touching a tracked person/project → `interaction` event with `channel: email`, populated `primary_thread_id` (via alias lookup) and `related_thread_ids[]` if the thread spans projects, `confidence` from the alias match strength, `source_ref` hash of thread_id + date for dedup.
-    - Calendar event for today/upcoming → `meeting` event with `status: scheduled` (flip to `occurred` post-end-time), attendee list resolved to `person_*` ids, `primary_thread_id` from calendar-title alias match or attendee majority.
+    - Calendar event for today/upcoming → `meeting` event with `status: scheduled` (flip to `occurred` post-end-time), built via `meeting_capture.build_meeting_event()` (BUG-8244 canonical binding: top-level `person_ids` = attendees resolved to `person_*` ids, `data.attendees` = every invitee EMAIL verbatim, `data.attendees_external` = unmatched names), `primary_thread_id` from calendar-title alias match or attendee majority.
     - Slack message in tracked channel or DM with tracked person → `interaction` event with `channel: slack`, thread context in `source_ref`.
     - Granola transcript surfaced here → do NOT emit a full `meeting` event (that's `meeting-notes`' job). Emit a lightweight `note` event flagging "transcript available, awaiting process" so end-session and meeting-notes can see it.
     Dedup via `source_ref` hash before append. Briefing surfacing is SEPARATE from capture — the CEO doesn't confirm capture, only confirms tracker pushes.
@@ -431,7 +431,22 @@ This is the contract: when M (or any user) says `go [name]`, the next assistant 
 3. MASTER_TRACKER.md row — orientation only, per `references/SOURCE_OF_TRUTH.md`. The row's `Last touched` / `Next Action` / `Waiting On` columns are the projected values; step 4 below supplies the canonical freshened values that drive any surface decision the `go` response includes.
 4. `_hq/data/events.jsonl` — last 14 days of events with `primary_thread_id` matching this project (cached substrate for warm `go` calls). **This is the canonical source for "what's current."** If the tracker row's `<!-- generated-at -->` stamp is older than 24h, use the max ts of these events as `Last touched`, the most recent `data.next_step` as `Next Action`, and filter `Waiting On` by checking for `commitment_resolved` / `thread_resolved` events that close prior open items. Same overlay shape as `morning-briefing` Step 3a.
 5. **Mail** (Gmail or Outlook, if connected) — recent threads from people in the brain's People table or PEOPLE.md, since the last session note's date
-6. **Slack / Teams** (if connected) — recent messages mentioning project or key people
+6. **The declared chat backend** (if connected) — recent messages mentioning project or key people. Resolve with `tool_discovery.discover_chat_tool`; `connector_adapters.chat.resolve_chat_provider` returning None means there is no chat backend and this source is skipped silently. **Read-only and source-linked (SPEC CHATSCAN1 §C)** — a `go [name]` query is a live read at ask time: it closes nothing, captures nothing, and every surfaced line carries its link back to the message per `_hq/CONVENTIONS_SOURCE_LINKS.md`. Append `plan_scan(provider)["coverage_note"]` when the backend's sweep is partial.
+
+   **MANDATORY — receipt the read (WALKFIX1 Item G).** When a chat backend IS declared, this leg ends with one `connector_read` write, whatever it found:
+
+   ```bash
+   CR_WORKSPACE="$WORKSPACE" python3 -c "
+   import sys; sys.path.insert(0, 'shared/scripts')
+   from chat_context import log_connector_read
+   log_connector_read('<WORKSPACE>', provider='<the resolved provider>',
+                      scope='<the thread/project this go resolved to>',
+                      window_days=<the window this sweep actually used>,
+                      n_results=<number of messages this leg surfaced>)
+   "
+   ```
+
+   This does not change what the leg retrieves — it changes whether anybody can tell. On 2026-08-09 a warm `go` against a declared Slack backend surfaced zero chat lines while a three-day-old key-person DM sat in the backend carrying a time-sensitive scheduling ask, and "the leg never ran", "the leg ran too narrow" and "the leg ran and found nothing" were indistinguishable from outside, because a read writes nothing. The read stays read-only about the customer's records; only the fact that it looked is recorded. `n_results: 0` against a declared backend is then a fact somebody can check.
 7. **Granola** (if connected) — recent transcripts matching project name
 8. **Drive / OneDrive / SharePoint** (if connected) — recently modified docs
 
@@ -600,7 +615,7 @@ Only proceed with creation if no match is found.
    - Add to MASTER_TRACKER.md (view auto-regenerates)
 3a. **Emit capture events for everything the scan found (silent, per `shared/PASSIVE_CAPTURE.md`):**
     - Every Gmail thread touching `[Name]` → `interaction` event with `primary_thread_id` = the new id, confidence from alias-match strength, `source_ref` hash of thread_id.
-    - Every Calendar event mentioning `[Name]` or attended by a surfaced person → `meeting` event tagged to the new project, with `status: occurred` for past and `scheduled` for future.
+    - Every Calendar event mentioning `[Name]` or attended by a surfaced person → `meeting` event tagged to the new project, with `status: occurred` for past and `scheduled` for future — built via `meeting_capture.build_meeting_event()` with the canonical binding (`person_ids` resolved + `data.attendees` invitee emails + `data.attendees_external` names; BUG-8244).
     - Every Granola transcript matching `[Name]` → `note` event flagging "transcript available, link to project_*" so meeting-notes can pick it up.
     - Every Slack thread in a matched channel or DM → `interaction` event with `channel: slack`.
     - Every Drive doc matching → `interaction` event with `channel: drive`, `source_ref` = drive file id.

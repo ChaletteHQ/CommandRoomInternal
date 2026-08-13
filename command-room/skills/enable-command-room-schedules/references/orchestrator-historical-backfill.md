@@ -51,7 +51,7 @@ For each message capture: `{thread_id, message_id, sender_email, sender_name (if
 Batch with pageSize 100. Append to events.jsonl in append-only fashion, one event per thread (NOT per message — group messages by thread to keep event count tractable):
 
 ```jsonl
-{"type":"interaction","ts":"<ISO>","seq":<seq>,"data":{"channel":"email","thread_id":"<id>","subject":"<subject>","participants":["<email>", "..."],"first_message_date":"<date>","last_message_date":"<date>","message_count":<N>,"has_attachments":<bool>,"snippet":"<≤200 char snippet>","source_ref":"<thread_url>","inferred_from":["historical_backfill"]}}
+{"type":"interaction","ts":"<ISO>","data":{"channel":"email","thread_id":"<id>","subject":"<subject>","participants":["<email>", "..."],"first_message_date":"<date>","last_message_date":"<date>","message_count":<N>,"has_attachments":<bool>,"snippet":"<≤200 char snippet>","source_ref":"<thread_url>","inferred_from":["historical_backfill"]}}
 ```
 
 Resolve `participants` against entities.json. For unrecognized email addresses, append a provisional person record with `inferred_from: ["historical_backfill"]`, `pending_review: true`, `first_seen: <window_end>`. Don't try to enrich now — the weekly `identity-reconcile` maintenance job picks up provisional records (it inherited that pass when LIFECYCLE1 retired the Pulse chat).
@@ -62,7 +62,7 @@ Query: events where `start >= window_start AND start <= window_end`. List events
 
 Per event:
 ```jsonl
-{"type":"meeting","ts":"<ISO>","seq":<seq>,"data":{"event_id":"<id>","title":"<title>","start":"<ISO>","end":"<ISO>","attendees":["<email>","..."],"location":"<loc>","status":"occurred","source_ref":"<gcal:event_id or the connector event id>","inferred_from":["historical_backfill"]}}
+{"type":"meeting","ts":"<ISO>","person_ids":["<attendee emails resolved against entities.json — BUG-8244: this top-level binding was missing here, so backfilled meetings were invisible to every person-keyed reader>"],"data":{"event_id":"<id>","title":"<title>","start":"<ISO>","end":"<ISO>","attendees":["<email>","..."],"attendees_external":["<display names with no entities.json match>"],"location":"<loc>","status":"occurred","source_ref":"<gcal:event_id or the connector event id>","inferred_from":["historical_backfill"]}}
 ```
 
 For new attendee emails, same provisional-person logic as mail.
@@ -73,7 +73,7 @@ Query: files modified in window. Cap at top 500 most-recently-modified per cloud
 
 Per file:
 ```jsonl
-{"type":"file_filed","ts":"<ISO>","seq":<seq>,"data":{"file_id":"<id>","name":"<name>","path":"<path>","mtime":"<ISO>","mime_type":"<mime>","owner":"<email>","sharing":["<email>","..."],"webViewLink":"<url>","inferred_from":["historical_backfill"]}}
+{"type":"file_filed","ts":"<ISO>","data":{"file_id":"<id>","name":"<name>","path":"<path>","mtime":"<ISO>","mime_type":"<mime>","owner":"<email>","sharing":["<email>","..."],"webViewLink":"<url>","inferred_from":["historical_backfill"]}}
 ```
 
 NEVER `read_file_content` or `download_file_content` here. Names + paths + dates only.
@@ -86,7 +86,7 @@ Query: meetings (transcripts) in window. List only — do NOT fetch full transcr
 
 Per transcript:
 ```jsonl
-{"type":"note","ts":"<ISO>","seq":<seq>,"data":{"note_id":"<id>","title":"<title>","date":"<date>","attendees":["<email>","..."],"duration_seconds":<N>,"source_ref":"<granola_url>","inferred_from":["historical_backfill"]}}
+{"type":"note","ts":"<ISO>","data":{"note_id":"<id>","title":"<title>","date":"<date>","attendees":["<email>","..."],"duration_seconds":<N>,"source_ref":"<granola_url>","inferred_from":["historical_backfill"]}}
 ```
 
 ## Slack / Teams
@@ -99,7 +99,7 @@ This is intentionally light — Slack/Teams metadata is the lowest-signal source
 
 Per DM partner:
 ```jsonl
-{"type":"interaction","ts":"<ISO>","seq":<seq>,"data":{"channel":"slack","participants":["<m>","<other>"],"last_message_date":"<date>","message_count_in_window":<N>,"inferred_from":["historical_backfill"]}}
+{"type":"interaction","ts":"<ISO>","data":{"channel":"slack","participants":["<m>","<other>"],"last_message_date":"<date>","message_count_in_window":<N>,"inferred_from":["historical_backfill"]}}
 ```
 
 # Phase 4 — Project clustering pass (lightweight)
@@ -120,7 +120,7 @@ For each cluster, IF the project doesn't already exist in entities.json, append 
 | > 180 days | `archived` (proposed; never surfaces in daily flows) |
 
 ```jsonl
-{"type":"project_proposed","ts":"<ISO>","seq":<seq>,"data":{"proposed_name":"<inferred>","attendees":["<email>","..."],"signal_count":<N>,"signal_types":["email","calendar","drive"],"earliest_signal":"<date>","latest_signal":"<date>","auto_status":"<active|dormant|archived>","inferred_from":["historical_backfill_clustering"],"pending_review":true}}
+{"type":"project_proposed","ts":"<ISO>","data":{"proposed_name":"<inferred>","attendees":["<email>","..."],"signal_count":<N>,"signal_types":["email","calendar","drive"],"earliest_signal":"<date>","latest_signal":"<date>","auto_status":"<active|dormant|archived>","inferred_from":["historical_backfill_clustering"],"pending_review":true}}
 ```
 
 These are PROPOSED projects — they don't enter `entities.projects[]` automatically. The user reviews them via `cleanup` or via insight-generator Pass 9. The `auto_status` field tells the proposal review whether to default the new project to active vs dormant vs archived if the user confirms the proposal.

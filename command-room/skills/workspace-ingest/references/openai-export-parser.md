@@ -250,7 +250,6 @@ For each match:
 
 ```json
 {
-  "seq": <next>,
   "ts": "<conversation create_time>",
   "type": "decision",
   "source_skill": "workspace-ingest",
@@ -300,7 +299,6 @@ For every conversation with **5+ user messages** AND **a project cluster resolve
 
 ```json
 {
-  "seq": <next>,
   "ts": "<conversation create_time>",
   "type": "interaction",
   "source_skill": "workspace-ingest",

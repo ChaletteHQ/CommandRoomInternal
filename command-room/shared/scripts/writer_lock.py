@@ -446,10 +446,25 @@ def _acquire_sentinel(
         pass
     # acquire_write_lock raises TimeoutError with an actionable message if the
     # sentinel stays held; let that propagate (record the timeout first).
+    #
+    # BUG-8330 item 7d — the stale window SCALES with ledger size instead of a
+    # flat 30s: atomic_append_jsonl rewrites the whole file, so a legitimate
+    # multi-MB append on a slow mount can hold the lock well past 30s, and a
+    # flat window let a second writer reclaim a LIVE holder's lock mid-write
+    # (the exact duplicate-seq race the lock exists to close). 30s base +
+    # 30s/MB, capped at 10 minutes. Same-machine live holders are additionally
+    # refused reclaim outright by acquire_write_lock's pid-liveness check.
     try:
+        ledger_bytes = 0
+        try:
+            ledger_bytes = (lock_path.parent / "events.jsonl").stat().st_size
+        except OSError:
+            ledger_bytes = 0
+        stale_after = max(30.0, min(600.0, 30.0 + 30.0 * (ledger_bytes / 1_048_576)))
         remaining = max(0.5, timeout_s - (time.monotonic() - start))
         lock_file = acquire_write_lock(
-            sentinel_target, holder=holder, timeout_s=remaining, stale_after_s=30.0
+            sentinel_target, holder=holder, timeout_s=remaining,
+            stale_after_s=stale_after,
         )
     except TimeoutError:
         _record_lock_stats(

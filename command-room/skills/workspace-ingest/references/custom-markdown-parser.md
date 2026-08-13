@@ -221,7 +221,7 @@ HQ and per-project SESSION_NOTES get identical treatment:
 | `**Deliverables created:**` | `interaction` event per bullet, channel=`"deliverable"` |
 | `**Open items:**` / `## Open Items` | `commitment` event per bullet, status=`open` |
 | `**Accomplished:**` / `**What's next:**` | one summary `note` event for the block |
-| `### Session NN` / `### [Title]` fallback (no structured sub-sections) | single `meeting` event with whole-session text as summary |
+| `### Session NN` / `### [Title]` fallback (no structured sub-sections) | single `meeting` event with whole-session text as summary — still built via `meeting_capture.build_meeting_event()` (empty binding is legal here: a work session has no invitees; the builder keeps the shape canonical) |
 
 **Multi-thread events** (HQ SESSION_NOTES heavily): when an entry references multiple projects, populate `related_thread_ids[]` with resolved project ids. Primary = owning thread (HQ thread for HQ notes; project thread for project notes).
 
@@ -290,7 +290,7 @@ Per Parser A's P7 + P8: compute `first_seen`/`last_interaction` across events pe
 - **BUSINESS_CONTEXT.md prose often encodes the org tree** — extract explicit parent statements (`"X is a subsidiary of Y"`, `"Z operating entities: A, B, C"`) and feed them into org tree before connector pass.
 - **SUBPROJECTS.md** when present → child thread records with `parent_thread_id` set to the enclosing project thread. Each subproject row = one thread_id.
 - **Cross-project references in HQ SESSION_NOTES are dense** — be aggressive about populating `related_thread_ids[]`. Fuzzy-match any capitalized project-name-shaped token against threads[].
-- **processed-meetings.json if present** → backfill `meeting` events with canonical attendee lists + Granola links. Dedup against SESSION_NOTES-parsed meetings by date + title fuzzy-hash.
+- **processed-meetings.json if present** → backfill `meeting` events via `meeting_capture.build_meeting_event()` (BUG-8244 canonical binding: `person_ids` resolved + `data.attendees` emails + `data.attendees_external` names) + Granola links. Dedup against SESSION_NOTES-parsed meetings by date + title fuzzy-hash.
 - **WORKING_STYLE.md, PENDING_GLOBAL.md, GOTCHAS.md at HQ level** — PENDING_GLOBAL.md contents → `commitment` events (status=open). Others narrative-only.
 
 ---

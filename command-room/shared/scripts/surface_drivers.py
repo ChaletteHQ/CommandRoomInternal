@@ -20,6 +20,15 @@ surface and prints exactly what the runtime needs to relay:
     python3 shared/scripts/surface_drivers.py my-plate \
         --workspace <WORKSPACE> [--page N] [--status-json <file>] \
         [--personal-cap N] [--fired-via scheduled|manual|catchup]
+    python3 shared/scripts/surface_drivers.py commitments \
+        --workspace <WORKSPACE> --format artifact
+
+ARTIFACT MODE (SPEC_BOARD1): `--format artifact` on the commitments surface
+serializes the SAME view as the full-set triage board — one self-contained
+page, no pagination, its own CR-BOARD / CR-BOARD-HTML-* markers so nobody
+relays a board into show_widget or an interactive widget page into the
+Artifact tool. It renders and validates; it never writes a receipt and never
+freezes a page-set.
 
 STDOUT SHAPE (fixed contract — the skill texts pin it):
 
@@ -119,6 +128,9 @@ def _pointer_line(count: int) -> str:
 # Unconfirmed-block confirm cluster (W4b).
 _CONFIRM_VERBS = ["mine", "theirs to [name]", "make task", "drop"]
 _DUP_VERBS = ["merge", "keep both", "drop"]
+# BUG-8330 item 13 — the triage Unowned lane's verbs (all registered; same
+# family as the confirm tail): claim it, route it, or let it go.
+_UNOWNED_VERBS = ["mine", "theirs to [name]", "drop"]
 # pending_review rows outside the 7d escalation pin (explicit confirm-shaped
 # actions only — an explicit click IS confirmation).
 _PENDING_VERBS = ["resolved", "drop", "not mine"]
@@ -196,9 +208,84 @@ _MP_UNRESOLVED_VERBS = ["reassign to [name]", "make task", "push to [date]",
 # before this driver merged — removed at the train merge, never emitted.)
 _MP_PERSONAL_VERBS = ["resolved", "push to [date]", "prep deep work",
                       "promote", "snooze 3d"]
+# BUG-8330 item 5 — the RESIDUAL Promised class: a counterparty-RESOLVED
+# promise the orchestrator drafted no status email for. These rows were
+# ABSENT from My Plate entirely (not capped — absent); they render
+# deterministically now with the owner-me act verbs (no reassign — the
+# counterparty is known; no draft — that stays connector-side).
+_MP_RESIDUAL_VERBS = ["resolved", "push to [date]", "drop", "snooze 3d"]
 # Default Personal-group cap (CTS1 §4.2 — `my-plate` skill config
 # `personal_cap`, default 7); the tail line points at `show my plate`.
 _MP_PERSONAL_CAP = 7
+# Default Promised-group cap (BUG-8330 item 5): explicit, with the same
+# footer tail — the old behavior was an implicit cap of "however many rows
+# the orchestrator happened to compose", with the overflow invisible.
+_MP_PROMISED_CAP = 7
+
+
+class MountStaleError(RuntimeError):
+    """A surface driver refused to render because the substrate view is stale.
+
+    SPEC SYNC1 A4, extended to the RENDER path. `preflight_freshness` was wired
+    into the maintenance orchestrator only, so a driver rendering from a stale
+    sandbox mount had no gate at all. Two observed outcomes, and the silent one
+    is worse:
+
+      * loud — a stale projection resurfaces a token that was already fixed on
+        disk, and the render dies inside a downstream validator with an error
+        naming the wrong thing (a leak, when the substrate is clean);
+      * silent — the surface PUBLISHES a stale page: stale rows, stale counts,
+        no indication anywhere that the view is behind.
+
+    So the drivers refuse up front and produce NO SURFACE and NO RECORD: no
+    page, no receipt, no page-set, no events. That enumeration is the claim,
+    and it is what the pins assert — not "writes nothing", which would be
+    false. The refusal path DOES touch disk, deliberately and only through the
+    sanctioned alarm machinery:
+
+      * `preflight_freshness` writes the `.mount_stale.json` sidecar beside
+        events.jsonl (a sidecar, never an events append — an append through a
+        stale view is the clobber vector itself) and renders the alert through
+        `alarm_artifacts.write_alert`;
+      * `substrate_alarm_lines` calls `alarm_artifacts.sweep_alerts`, which
+        archives any alert whose condition has already resolved.
+
+    All three are alarm artifacts about the refusal, never workspace state, and
+    routing through them is why this class hand-authors no prose of its own.
+    `lines` is `substrate_health.substrate_alarm_lines`, the same plain-English
+    syncing vocabulary the health check and the morning brief already print.
+
+    One honest edge: `preflight_freshness` retries ×3 with backoff and
+    `substrate_alarm_lines` re-probes without retrying, so a staleness that
+    clears between the two probes yields an empty `lines`. The fallback below
+    handles it by reporting the machine detail; it is not the impossible case
+    an earlier draft of this docstring implied.
+    """
+
+    def __init__(self, lines, detail=None):
+        self.lines = [str(ln) for ln in (lines or [])]
+        self.detail = dict(detail or {})
+        # Never invent prose. With no alarm line to speak (a degenerate case —
+        # a not-ok preflight always leaves at least one), the machine detail is
+        # reported verbatim rather than replaced by a sentence nobody wrote.
+        super().__init__("\n".join(self.lines) or json.dumps(self.detail))
+
+
+def refuse_if_mount_stale(workspace_root) -> None:
+    """The render-path preflight. Returns on a healthy view; raises
+    `MountStaleError` on a stale one, BEFORE the caller reads or renders
+    anything.
+
+    Deliberately the FIRST statement of every driver entry point that renders
+    substrate — a preflight that runs after the view is built has already paid
+    for the stale read it exists to prevent.
+    """
+    from substrate_health import preflight_freshness, substrate_alarm_lines
+    result = preflight_freshness(workspace_root)
+    if result.get("ok"):
+        return
+    raise MountStaleError(substrate_alarm_lines(workspace_root),
+                          result.get("detail"))
 
 
 def _now_iso() -> str:
@@ -252,10 +339,11 @@ def _people_by_id(ws: Path) -> dict:
     return out
 
 
-# RRF1 — the one review_reason clause class whose staleness is mechanically
-# checkable at render time: capture_gate stamps it when the counterparty had
-# no person record AT CAPTURE and never revisits it.
-_RR_NO_PERSON_RE = re.compile(r"^counterparty '(.+)' has no person record$")
+# RRF1 — the checkable clause class + the resolve verdict live in the shared
+# review_reasons module now (BUG-8330 item 4: the same verdict also drives
+# the loader's read-side gating and the queue's reason-scoped batch verb —
+# render and gating can no longer disagree). This alias keeps the local name.
+from review_reasons import NO_PERSON_RE as _RR_NO_PERSON_RE  # noqa: E402
 
 
 def _display_review_reason(ws: Path, raw, cache: dict) -> str:
@@ -288,16 +376,13 @@ def _display_review_reason(ws: Path, raw, cache: dict) -> str:
             out.append(clause)
             continue
         name = m.group(1)
-        if name not in cache:
-            try:
-                from entity_resolve import resolve_all
-                cache[name] = any(r.entity_type == "person"
-                                  for r in resolve_all(ws, name))
-            except Exception:
-                # Display nicety only — a resolver failure (fresh workspace,
-                # mid-sync entities.json) must never break a surface render.
-                cache[name] = False
-        out.append(f"'{name}' — contact added ✓" if cache[name]
+        # Shared verdict (review_reasons._resolves_to_person semantics via
+        # clause_still_holds): the same memo dict, the same resolver, the
+        # same failure posture — a resolver failure reads as unresolved and
+        # never breaks a surface render.
+        from review_reasons import _resolves_to_person
+        out.append(f"'{name}' — contact added ✓"
+                   if _resolves_to_person(ws, name, cache)
                    else f"'{name}' isn't in your contacts yet")
     return "; ".join(out)
 
@@ -360,10 +445,19 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     canonical loader + bucket export + escalation split + age sections +
     per-row context tags + per-kind verb sets. Pure read."""
     from commitment_activity import derive_commitment_movement
-    from commitment_state import (commitment_kind, count_commitments,
-                                  stale_tasks)
+    from chat_output_renderer import COMPOSED_FIELDS_KEY
+    from commitment_state import (BUCKET_UNCONFIRMED, UNCONFIRMED_LANE,
+                                  UNCONFIRMED_SECTION_LABEL,
+                                  UNTITLED_PLACEHOLDER, bucket_of,
+                                  commitment_kind, count_commitments,
+                                  stale_tasks, unconfirmed_slices)
     from confirm_flow import select_unconfirmed_escalation, unconfirmed_classes
-    from cru_match import _is_pending_review, load_open_commitments
+    # WALKFIX1 Item E: `_is_pending_review` is deliberately NOT imported here
+    # any more. This view partitions by `commitment_state.bucket_of` — THE
+    # predicate `count_commitments` counts with — and importing a second way to
+    # ask the same question is how the headline and the rendered rows ended up
+    # partitioned by two functions that only happened to agree.
+    from cru_match import load_open_commitments
     from event_time import event_time
     from primary_user import resolve_primary_user
 
@@ -406,11 +500,40 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     display_n = 0
     sections: list[dict] = []
     rr_cache: dict = {}  # RRF1 per-render-pass memo (name -> resolves now)
+    # BOARD1 — the projected event behind each rendered row, so a row's
+    # bucket and kind are read from THE event through the canonical
+    # predicates rather than re-derived from the row's rendered text.
+    by_cid: dict = {_cid(ev): ev for ev in opens}
+
+    def _stamp(row: dict, ev) -> dict:
+        """Stamp the row with its headline bucket + effective kind (BOARD1).
+
+        The one derivation: `commitment_state.bucket_of` is the SAME predicate
+        `count_commitments` counts with, and `commitment_kind` is the same
+        effective-kind projection every other surface reads. The board's tabs
+        and pinned strips partition on these two keys, so a tab's membership
+        cannot drift from the tile above it. Unknown row keys are ignored by
+        the widget renderer, so the widget path is byte-identical.
+        """
+        row["bucket"] = bucket_of(ev, user_id) if ev is not None else BUCKET_UNCONFIRMED
+        row["kind"] = commitment_kind(ev) if ev is not None else "promise"
+        return row
 
     # Unconfirmed block FIRST (v4.6.1 W4b escalation — never age-buried).
+    # BUG-8330 item 13: rows whose ONLY amber class is `unowned` do NOT pin
+    # here — this block was the "pinned block on a bounded page" 145 unowned
+    # rows sat in without draining. They drain through the dedicated Unowned
+    # lane below (mine / theirs to [name] / drop). pending_review and
+    # suspected-duplicate escalations keep their pin.
+    pin_shown = pin_escalated = 0
+    unconfirmed_section_index = None
     if esc["pin"]:
         rows = []
         for r in esc["pin"]:
+            _pin_ev = by_cid.get(r["commitment_id"])
+            if (_pin_ev is not None
+                    and unconfirmed_classes(_pin_ev) == ["unowned"]):
+                continue
             display_n += 1
             dup = bool(r.get("suspected_duplicate_of"))
             lead = ""
@@ -421,35 +544,85 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
                    f"unconfirmed"
                    + (f" · {_display_review_reason(ws, r['review_reason'], rr_cache)}"
                       if r.get("review_reason") else ""))
-            rows.append({
+            row = _stamp({
                 "n": r["commitment_id"], "display_n": display_n,
-                "name": r.get("title") or "(untitled)",
+                # WALKFIX1 Item E — a title-less row renders the shared
+                # repair placeholder, not an empty card. The live case was an
+                # unowned, undated scheduling row whose card came out blank.
+                "name": r.get("title") or UNTITLED_PLACEHOLDER,
                 "context_tag": tag,
                 "actions": _DUP_VERBS if dup else _CONFIRM_VERBS,
-            })
-        sections.append({"title": "Unconfirmed", "count": len(rows),
-                         "items": rows})
+            }, by_cid.get(r["commitment_id"]))
+            if not (r.get("title") or "").strip():
+                # The placeholder is the RENDERER talking about the record, so
+                # it declares its own prose and keeps facing the whole scan.
+                row[COMPOSED_FIELDS_KEY] = ["name"]
+            rows.append(row)
+        # The rows this strip renders, and how many of them the BUCKET
+        # predicate calls unconfirmed. The difference is the crossing set (the
+        # ownerless escalation — a verified non-bug), and it is counted here
+        # so no surface has to guess at it later.
+        pin_shown = len(rows)
+        pin_escalated = sum(
+            1 for row in rows if row.get("bucket") == BUCKET_UNCONFIRMED)
+        # BUG-8330 item 13 × WALKFIX1 merge: with unowned-only rows skipped
+        # above, the strip can be EMPTY while esc["pin"] was not — guard the
+        # append and take the section index inside it, or the index points at
+        # whatever section lands in this slot next.
+        if rows:
+            unconfirmed_section_index = len(sections)
+            # `lane` is the STABLE identifier. The title carries a reconciliation
+            # sentence and is therefore a label that may change; three shipped
+            # suites used to find this block by matching its title string and all
+            # three broke the moment it did. Unknown section keys are ignored by
+            # both renderers, so this is invisible on the surface.
+            sections.append({"title": UNCONFIRMED_SECTION_LABEL,
+                             "lane": UNCONFIRMED_LANE,
+                             "count": len(rows), "items": rows})
 
     # Age sections, oldest first; escalation-pinned rows excluded (no
     # double-surfacing). SUB1: top-level items only — children render nested.
-    # INTAKE: EVERY pending_review row is excluded here, not just the pinned
-    # ones — an unconfirmed extraction is not an open commitment, so it does
-    # not belong in an age section. The labelled "Unconfirmed" pin block
+    # INTAKE: EVERY unconfirmed-bucket row is excluded here, not just the
+    # pinned ones — an unconfirmed extraction is not an open commitment, so it
+    # does not belong in an age section. The labelled "Unconfirmed" pin block
     # above is the deliberate exception; the rest are pointed at the
     # needs-your-call queue by the pointer line below.
+    #
+    # WALKFIX1 Item E — the membership test here is `bucket_of`, THE bucketing
+    # predicate `count_commitments` counts with, not a second read of the
+    # pending_review flag. The two agree today, which is exactly why the
+    # substitution is safe and exactly why it was never noticed that the
+    # headline and the rendered rows were partitioned by two different
+    # functions. One of them changing was the off-by-one class: a row counted
+    # as confirmed by one predicate and skipped as unconfirmed by the other
+    # renders NOWHERE while still being in the header's total.
     aged: list[tuple[int, dict]] = []
+    unowned_aged: list[tuple[int, dict]] = []
     n_pending_unpinned = 0
     for ev in top_level:
         cid = _cid(ev)
-        if _is_pending_review(ev):
+        if bucket_of(ev, user_id) == BUCKET_UNCONFIRMED:
             if cid not in esc_ids:
                 n_pending_unpinned += 1
             continue
+        age = _age_days(ev.get("ts") or "", now_iso)
+        # BUG-8330 item 13 — unowned rows get their OWN lane instead of
+        # age-burying or pin-block accumulation. The daily confirm selector
+        # only admits rows ≤7 days old and the escalation pin block sat on a
+        # bounded page: 145 unowned rows mathematically never drained. Same
+        # membership predicate as the Unowned tile (bucket_of), so the lane
+        # can never disagree with the counter above it. Suspected duplicates
+        # keep their pin (the merge adjudication needs its own verbs);
+        # everything else unowned drains here, esc-pinned or not.
+        if (bucket_of(ev, user_id) == "unowned"
+                and not (ev.get("data") or {}).get("suspected_duplicate_of")):
+            unowned_aged.append((age if age is not None else -1, ev))
+            continue
         if cid in esc_ids:
             continue
-        age = _age_days(ev.get("ts") or "", now_iso)
         aged.append((age if age is not None else -1, ev))
     aged.sort(key=lambda t: -t[0])
+    unowned_aged.sort(key=lambda t: -t[0])
 
     def _row(ev, age):
         nonlocal display_n
@@ -482,13 +655,13 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
             parts.append(chip)
         if d.get("parent_closed") and d.get("parent_title"):
             parts.append(f"was part of: {d['parent_title']}")
-        row = {
+        row = _stamp({
             "n": cid, "display_n": display_n,
             "name": d.get("title") or d.get("summary") or "(untitled)",
             "context_tag": " · ".join(parts),
             "actions": (_PENDING_VERBS if pending
                         else (_TASK_VERBS if kind == "task" else _PROMISE_VERBS)),
-        }
+        }, ev)
         if pending:
             row["reduced_verbs_reason"] = _REDUCED_REASON
         # SUB1 D3 — the PROPOSE-closure line (never auto-close): renders on
@@ -512,6 +685,10 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
                     "summary": summary,
                     "actions": (_CHILD_TASK_VERBS if k_kind == "task"
                                 else _CHILD_PROMISE_VERBS),
+                    # BOARD1 — the CHILD's own effective kind. A child of a
+                    # promise can itself be a task, so a reader that needs
+                    # the kind must not inherit the parent's.
+                    "kind": k_kind,
                 })
         return row
 
@@ -531,6 +708,44 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
                 best_ev, best_date = k, kd_date
         pick = best_ev or kids[0]
         return (pick.get("data") or {}).get("title") or None
+
+    # BUG-8330 item 13 — the UNOWNED lane, oldest first, ahead of the age
+    # sections (these are the rows nothing else ever surfaces). Stored
+    # `attribution_candidates` finally render: the capture paths write them
+    # and no surface ever read one — proposing them here is the wire half of
+    # that census entry (item 16).
+    def _unowned_row(ev, age):
+        nonlocal display_n
+        display_n += 1
+        cid = _cid(ev)
+        d = ev.get("data") or {}
+        parts = []
+        if age >= 0:
+            parts.append(f"{age} days old" if age != 1 else "1 day old")
+        parts.append(_due_phrase(d.get("due"), now_iso))
+        parts.append("no owner on record — whose is this?")
+        cand_names = []
+        for cand in (d.get("attribution_candidates") or [])[:3]:
+            if isinstance(cand, str) and cand.strip():
+                cand_names.append(cand.strip())
+            elif isinstance(cand, dict):
+                nm = (cand.get("name") or cand.get("display_name")
+                      or cand.get("person_name") or "").strip()
+                if nm:
+                    cand_names.append(nm)
+        if cand_names:
+            parts.append("maybe: " + " / ".join(cand_names))
+        return _stamp({
+            "n": cid, "display_n": display_n,
+            "name": d.get("title") or d.get("summary") or "(untitled)",
+            "context_tag": " · ".join(parts),
+            "actions": list(_UNOWNED_VERBS),
+        }, ev)
+
+    unowned_rows = [_unowned_row(ev, age) for age, ev in unowned_aged]
+    if unowned_rows:
+        sections.append({"title": "Unowned — oldest first",
+                         "count": len(unowned_rows), "items": unowned_rows})
 
     old_rows = [_row(ev, age) for age, ev in aged if age >= 30]
     new_rows = [_row(ev, age) for age, ev in aged if age < 30]
@@ -561,19 +776,56 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         "counters": counters,
         "sections": sections,
     }
+
+    # WALKFIX1 Item E — THE unconfirmed derivation, computed ONCE, feeding
+    # every surface that says an unconfirmed number. The tile keeps the queue
+    # total unchanged; the section header and the quick-read read off this.
+    slices = unconfirmed_slices(queue_total=h.get("unconfirmed"),
+                                shown=pin_shown, escalated=pin_escalated)
+    view["unconfirmed_slices"] = slices
+    if unconfirmed_section_index is not None:
+        sections[unconfirmed_section_index]["title"] = slices["section_title"]
+
     # INTAKE — the unconfirmed extractions this surface deliberately does NOT
     # render as rows still get one honest line saying where they went. Only
     # the ones outside the labelled pin block: those already have rows.
-    # Drop-empty at zero (never "0 unconfirmed" padding).
+    # Drop-empty at zero (never "0 unconfirmed" padding). The sentence now
+    # names what its number is a slice OF, from the same derivation.
     if n_pending_unpinned:
-        noun = ("extraction waiting" if n_pending_unpinned == 1
-                else "extractions waiting")
-        pointer = (f"{n_pending_unpinned} unconfirmed {noun} — say "
-                   f"`needs your call` to clear them.")
+        pointer = slices.get("quick_read")
+        if not pointer:
+            noun = ("extraction waiting" if n_pending_unpinned == 1
+                    else "extractions waiting")
+            pointer = (f"{n_pending_unpinned} unconfirmed {noun} — say "
+                       f"`needs your call` to clear them.")
         view["pointer"] = pointer
         # `quick_read` is the key BOTH renderers (markdown + widget) actually
         # print; `pointer` is the machine-readable twin the tests pin.
         view["quick_read"] = pointer
+
+    # WALKFIX1 Item E — the arithmetic, on the record. Everything below comes
+    # off the SAME bucketing pass, so the identity is a fact about this view
+    # rather than a hope about two independent counts:
+    #
+    #     rows rendered = headline.total + pinned rows in the unconfirmed
+    #                     bucket
+    #
+    # (an unconfirmed-bucket row renders ONLY when the escalation strip pinned
+    # it; a pinned row from any other bucket was already inside headline.total
+    # and is merely relocated into the strip). The 225-vs-226 class was a row
+    # counted by one predicate and skipped by another, rendering nowhere; a
+    # residual here is that class, and it is visible instead of silent.
+    rendered_rows = sum(len(s.get("items") or []) for s in sections)
+    view["count_reconciliation"] = {
+        "headline_total": h["total"],
+        "queue_total": h.get("unconfirmed"),
+        "rows_rendered": rendered_rows,
+        "pin_shown": pin_shown,
+        "pin_escalated": pin_escalated,
+        "pin_crossing": slices["crossing"],
+        "queue_not_rendered": slices["remainder"],
+        "residual": rendered_rows - (h["total"] + pin_escalated),
+    }
     return view
 
 
@@ -768,6 +1020,22 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
     now_iso = now_iso or _now_iso()
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
+    # BUG-8330 item 14 (fix round FX-3) — collapse suspected-duplicate
+    # components BEFORE the counts are taken. A duplicate fold is an IDENTITY
+    # operation, not a row filter: the folded rows are the SAME commitment, so
+    # counting them separately double-counts one real promise. This is not the
+    # F-47 exception below — F-47 keeps headline numbers full-set against ROW
+    # FILTERS (visibility), and the fold is not one. The review's B3 shape
+    # ("2 owed to you" over an empty surface) needed both halves: the cycle
+    # guard in `fold_suspected_duplicates`, and the header reconciling here.
+    opens, n_dup_folded = _fold_dups(opens)
+    # BUG-8330 item 6 — the confidence floor lives HERE (code), not in
+    # orchestrator prose. It filters ROWS only: header counts stay computed
+    # over the FULL open set (the F-47 rule — headline numbers identical
+    # across morning brief / this chat / commitment-triage; row filters
+    # never shrink them). The receipt records how many rows the floor
+    # removed, so a 70→6 collapse is visible instead of silent.
+    surfaced, n_conf_filtered = _apply_confidence_floor(ws, opens)
     try:
         user_id = resolve_primary_user(ws)
     except Exception:
@@ -775,7 +1043,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
     movement = derive_commitment_movement(events_path)
     counts = count_commitments(opens, user_person_id=user_id,
                                now_iso=now_iso, movement=movement)
-    part = partition_surfaces(opens, user_id)
+    part = partition_surfaces(surfaced, user_id)
 
     def _cid(ev) -> str:
         d = ev.get("data") or {}
@@ -821,6 +1089,9 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
                 f"delegated to {owner_name} — nudge is manual, "
                 "I won't auto-chase this" if owner_name
                 else "delegated — nudge is manual, I won't auto-chase this")
+            _dfn = _dup_fold_note(d)
+            if _dfn:
+                bits.append(_dfn)
             # `nudge` (WG1-A D-A4) composes the chase on demand at dispatch
             # (no pre-staged body). Resolve the owner's email so the row
             # carries a real To:; when none is on file, degrade `nudge` to the
@@ -878,17 +1149,25 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
         {"label": "Unowned", "value": h["unowned"]},
         {"label": "Unconfirmed", "value": h["unconfirmed"]},
     ]
+    header = f"Waiting On — {h['owed_to_you']} owed to you"
+    if n_conf_filtered:
+        # Item 6's honesty rule: the headline stays the full-set truth, so
+        # any gap between it and the rows below must say WHY, on-surface.
+        header += f" ({n_conf_filtered} low-confidence not shown)"
     return {
         "source_skill": "commitments",
-        "header": f"Waiting On — {h['owed_to_you']} owed to you",
+        "header": header,
         "counters": counters,
         "sections": sections,
+        "receipt_extra": {"n_filtered_by_confidence": n_conf_filtered,
+                          "n_duplicates_folded": n_dup_folded},
     }
 
 
 def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
                         status_rows: list | None = None,
-                        personal_cap: int = _MP_PERSONAL_CAP) -> dict:
+                        personal_cap: int = _MP_PERSONAL_CAP,
+                        promised_cap: int = _MP_PROMISED_CAP) -> dict:
     """The daily My Plate chat data view (CTS1 Surface 2 — orchestrator-my-plate,
     mechanized): canonical loader + `surface_split` partition + the count
     headline + the two owner-me groups. Pure read.
@@ -920,6 +1199,13 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
     now_iso = now_iso or _now_iso()
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
+    # BUG-8330 item 14 (fix round FX-3) — same identity-before-counts fold as
+    # Waiting On: duplicates collapse first, so the header counts one real
+    # promise once.
+    opens, n_dup_folded = _fold_dups(opens)
+    # BUG-8330 item 6 — same code-side floor as build_waiting_on_view: rows
+    # filter, header counts stay full-set (F-47), receipt carries the delta.
+    surfaced, n_conf_filtered = _apply_confidence_floor(ws, opens)
     try:
         user_id = resolve_primary_user(ws)
     except Exception:
@@ -927,7 +1213,7 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
     movement = derive_commitment_movement(events_path)
     counts = count_commitments(opens, user_person_id=user_id,
                                now_iso=now_iso, movement=movement)
-    part = partition_surfaces(opens, user_id)
+    part = partition_surfaces(surfaced, user_id)
     promised = part[SURFACE_PROMISED]
     personal = part[SURFACE_PERSONAL]
 
@@ -964,6 +1250,9 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         if age is not None and age >= 0:
             bits.append("1 day old" if age == 1 else f"{age} days old")
         bits.append(_due_phrase(d.get("due"), now_iso))
+        _dfn = _dup_fold_note(d)
+        if _dfn:
+            bits.append(_dfn)
         bits.append("counterparty unresolved — who was this for?")
         promised_rows.append({
             "n": _cid(ev), "display_n": display_n,
@@ -972,9 +1261,49 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
             "actions": list(_MP_UNRESOLVED_VERBS),
         })
 
+    # 3. RESIDUAL promised rows (BUG-8330 item 5, deterministic): a
+    #    counterparty-RESOLVED promise the orchestrator composed no status
+    #    draft for. Before this class existed such a promise was ABSENT from
+    #    the widget — not capped, absent — while the header counted it; the
+    #    "+49 more" the user saw was model-composed. Draft-less is a state,
+    #    not an exclusion.
+    status_ids = {str(r.get("n")) for r in (status_rows or []) if r.get("n")}
+    for ev in promised:
+        if counterparty_unresolved(ev, user_id):
+            continue
+        if _cid(ev) in status_ids:
+            continue
+        display_n += 1
+        d = ev.get("data") or {}
+        age = _age_days(ev.get("ts") or "", now_iso)
+        bits = []
+        if age is not None and age >= 0:
+            bits.append("1 day old" if age == 1 else f"{age} days old")
+        bits.append(_due_phrase(d.get("due"), now_iso))
+        _dfn = _dup_fold_note(d)
+        if _dfn:
+            bits.append(_dfn)
+        promised_rows.append({
+            "n": _cid(ev), "display_n": display_n,
+            "name": d.get("title") or d.get("summary") or "(untitled)",
+            "context_tag": " · ".join(bits),
+            "actions": list(_MP_RESIDUAL_VERBS),
+        })
+
+    # Explicit cap + honest footer (BUG-8330 item 5): the section shows at
+    # most `promised_cap` rows and SAYS how many it is holding back — the
+    # footer_note now survives both render paths.
+    p_cap = promised_cap if promised_cap and promised_cap > 0 \
+        else len(promised_rows)
+    p_hidden = len(promised_rows) - min(len(promised_rows), p_cap)
     if promised_rows:
-        sections.append({"title": "↗ PROMISED — someone's waiting",
-                         "count": len(promised_rows), "items": promised_rows})
+        sec = {"title": "↗ PROMISED — someone's waiting",
+               "count": len(promised_rows),
+               "items": promised_rows[:p_cap]}
+        if p_hidden > 0:
+            sec["footer_note"] = (f"+{p_hidden} more promised — say "
+                                  "'show my plate' for everything")
+        sections.append(sec)
 
     # === Group B — PERSONAL (my own work; capped) =========================
     # Sort: dated first (due soonest), then undated by most-recently-touched
@@ -1007,6 +1336,9 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         if age is not None and age >= 0:
             bits.append("1 day old" if age == 1 else f"{age} days old")
         bits.append(_due_phrase(d.get("due"), now_iso))
+        _dfn = _dup_fold_note(d)
+        if _dfn:
+            bits.append(_dfn)
         personal_rows.append({
             "n": _cid(ev), "display_n": display_n,
             "name": d.get("title") or d.get("summary") or "(untitled)",
@@ -1028,13 +1360,62 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         {"label": "Personal", "value": len(personal)},
         {"label": "Waiting on others", "value": h["owed_to_you"]},
     ]
+    header = (f"My Plate — {h['you_owe']} on your plate "
+              f"({len(promised)} promised · {len(personal)} personal)")
+    if n_conf_filtered:
+        # Same on-surface honesty as Waiting On: the headline is full-set,
+        # the groups are row-level — the gap must name itself.
+        header += f" · {n_conf_filtered} low-confidence not shown"
     return {
         "source_skill": "commitments",
-        "header": (f"My Plate — {h['you_owe']} on your plate "
-                   f"({len(promised)} promised · {len(personal)} personal)"),
+        "header": header,
         "counters": counters,
         "sections": sections,
+        "receipt_extra": {"n_filtered_by_confidence": n_conf_filtered,
+                          "n_duplicates_folded": n_dup_folded},
     }
+
+
+def _apply_confidence_floor(ws, opens: list) -> tuple[list, int]:
+    """BUG-8330 item 6 — the ONE confidence surface filter, in code.
+
+    The floor previously existed only as orchestrator prose (a bare constant
+    applied by hand over `_commitment_confidence`, whose missing→0.0 default
+    silently dropped every unscored capture). `passes_surface_floor` treats
+    missing as unscored (passes) and resolves the floor through
+    `confidence.surface_min(ws)` — so the per-workspace calibration override
+    finally moves the filter that matters. Returns (kept, n_filtered);
+    defensive — any failure keeps the full set (a broken floor must never
+    blank a daily surface)."""
+    try:
+        from confidence import surface_min
+        from cru_match import passes_surface_floor
+        floor = surface_min(ws)
+        kept = [ev for ev in opens if passes_surface_floor(ev, floor=floor)]
+        return kept, len(opens) - len(kept)
+    except Exception:
+        return opens, 0
+
+
+def _fold_dups(surfaced: list) -> tuple[list, int]:
+    """BUG-8330 item 14 — the render-time suspected-duplicate fold, applied to
+    the OPEN set of the daily surfaces before rows and counts are derived from
+    it (fix round FX-3: a fold is identity, not visibility, so the header must
+    see the folded set or it double-counts one promise). Never applied to
+    triage, whose pin block is the merge-adjudication surface and must show
+    both rows. Defensive: any failure keeps the set unfolded."""
+    try:
+        from commitment_dedup import fold_suspected_duplicates
+        return fold_suspected_duplicates(surfaced)
+    except Exception:
+        return surfaced, 0
+
+
+def _dup_fold_note(d: dict) -> str | None:
+    n = d.get("duplicate_fold_count")
+    if isinstance(n, int) and n > 1:
+        return f"{n} records — merge?"
+    return None
 
 
 def _neg_ts(ts: str) -> str:
@@ -1104,6 +1485,15 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
 
       alarm_lines    substrate_health.substrate_alarm_lines — render
                      VERBATIM at the very top of the brief (FS-04/05/06/15).
+                     This block is ALSO this entry point's mount-freshness
+                     answer, and the reason it does NOT take the hard refusal
+                     `run_board` / `run_surface` take. A stale view here is
+                     already LOUD — the same syncing vocabulary, first block,
+                     above everything — so the brief degrades honestly instead
+                     of vanishing. The refusal exists on the other two because
+                     a widget page and a board page carry no alarm surface at
+                     all: they would publish stale rows and stale counts
+                     silently.
       changed        change_feed.changes_since(<last brief ts>) — the lines
                      the CHANGED contract line MUST cite when non-empty
                      (FS-09; "Nothing material" over a non-empty feed is
@@ -1174,7 +1564,12 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     except Exception:
         user_id = None
     state = compute_and_log_brief_state(
-        ws, open_commitments=opens, user_person_id=user_id, now_iso=now_iso)
+        ws, open_commitments=opens, user_person_id=user_id, now_iso=now_iso,
+        # BRIEFFIX1 Item C / F1 — the driver is the ONE place that already
+        # knows the run mode, so it is the place that stamps it. Without this
+        # the audit event is identical on both paths and the receipt-ordering
+        # check cannot tell a hand-run brief from a scheduled one.
+        fired_via=mode)
     # CAPTUREFLOW §D — the lane is BOUND here, at the render, never at the
     # derivation: `compute_brief_state` keeps returning the full list and the
     # `brief_state` audit event keeps counting all of it, so the header counts
@@ -1391,6 +1786,7 @@ def watch_expiry_receipt_extra(pass_result) -> dict:
 
 def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
                         chase_rows, status_rows, personal_cap,
+                        promised_cap=_MP_PROMISED_CAP,
                         watch_rows=None) -> dict:
     """Build ONE surface's data view from LIVE substrate. The only place that
     reads; `run_surface` decides WHEN it is allowed to be called."""
@@ -1406,10 +1802,110 @@ def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
     if surface == "my-plate":
         return build_my_plate_view(ws, now_iso=now_iso,
                                    status_rows=status_rows,
-                                   personal_cap=personal_cap)
+                                   personal_cap=personal_cap,
+                                   promised_cap=promised_cap)
     raise SystemExit(
         f"unknown surface {surface!r} "
         "(supported: commitments, staff-meeting, waiting-on, my-plate)")
+
+
+def run_board(workspace_root, *, now_iso: str | None = None,
+              persist_dir=None) -> dict:
+    """SPEC_BOARD1 — the commitments surface, serialized as an artifact board.
+
+    This is the ARTIFACT BRANCH of the commitments pipeline, not a second
+    pipeline. Read the order and note what is shared:
+
+      0. `refuse_if_mount_stale` — SPEC SYNC1 A4's mount-freshness preflight,
+         run BEFORE the read. ok=false → refuse in the existing syncing
+         vocabulary, producing no page, no receipt, no page-set and no
+         events. (The preflight's own alarm sidecar and alert artifact are
+         written on that path by design — see `MountStaleError`.)
+      1. `build_commitment_triage_view` — THE view. Identical call, identical
+         helpers, identical rows to the widget path (§3: one derivation; the
+         artifact mode differs only at the serialization step).
+      2. `chat_output_renderer.validate_data_view` — the pre-render gate
+         family the widget path runs (canonical actions, data shape, pulse
+         richness, send-class emails, the voice-tell backstop). CALLED, not
+         re-typed.
+      3. `artifact_board.render_board_html` — the serialization. The ONLY
+         step that differs from the widget path.
+      4. `chat_output_renderer.scan_rendered_html` — the same leak scan, with
+         the same style/script/href/data-* preparation the widget path uses.
+      5. `artifact_board.validate_board_html` — the board-shaped structural
+         contract (the `validate_rendered_widget` analog: that validator
+         asserts the widget DOM, which this page is not).
+      6. persist to `_hq/.system/widgets/` — the same audit trail the
+         persisted widget pages already write to.
+
+    NO PAGINATION (§3 full-set single page): the board is one document, so
+    there is no page-set to freeze and nothing is dropped — a single render is
+    its own snapshot, which is why PAGESNAP does not apply here. NO RECEIPT:
+    a receipt records a FIRE of a scheduled surface; publishing a board is not
+    one, and writing one would corrupt the triage fire history the load audits
+    read.
+
+    Returns {"html", "path", "file_uri", "board": {...}} — no `pagination`
+    key, deliberately, so no caller can mistake this for the widget transport.
+    """
+    from artifact_board import (generated_at_line, lane_counts,
+                                render_board_html, validate_board_html)
+    from chat_output_renderer import scan_rendered_html, validate_data_view
+
+    ws = Path(workspace_root)
+    # 0. MOUNT-FRESHNESS PREFLIGHT — before the read, not after it. A board
+    #    built from a stale mount either dies in a downstream validator naming
+    #    the wrong cause or, worse, publishes stale rows and stale counts with
+    #    nothing on the page saying so.
+    refuse_if_mount_stale(ws)
+    now_iso = now_iso or _now_iso()
+    view = build_commitment_triage_view(ws, now_iso=now_iso)
+    validate_data_view(view)
+    html = render_board_html(
+        view, generated_at=now_iso,
+        stamp_line=generated_at_line(now_iso, ws))
+    scan_rendered_html(html)
+    counts = lane_counts(view)
+    # Conservation: the page must carry exactly the rows THE VIEW handed over.
+    #
+    # Derived from the view's own sections, NOT from `lane_counts` (review
+    # F-2). `lane_counts` calls the same `partition_board` the page is
+    # serialized from, so a partitioner that dropped a row lowered the
+    # expectation by exactly the rows it dropped and the gate agreed with
+    # itself — measured at 8 rows in, 6 rendered, `expect_rows` 6, no raise.
+    # That is the self-referential-assertion gotcha in its runtime form: the
+    # suite caught the mutation, the gate that ships to real data did not.
+    # The view's `sections` are the one count upstream of the partition.
+    # (Sub-items ride nested inside their parent row, so a section's `items`
+    # is exactly the top-level population `validate_board_html` counts.)
+    #
+    # An empty board is a legitimate answer; a board one row short is not.
+    expect_rows = sum(len(s.get("items") or [])
+                      for s in (view.get("sections") or []))
+    validate_board_html(html, expect_rows=expect_rows)
+
+    persist_dir = Path(persist_dir) if persist_dir is not None \
+        else ws / "_hq" / ".system" / "widgets"
+    persist_dir.mkdir(parents=True, exist_ok=True)
+    stamp = now_iso[:19].replace(":", "-")
+    out_path = persist_dir / f"commitment-board_{stamp}.html"
+    from atomic_write import atomic_write_text
+    atomic_write_text(out_path, html)
+    file_uri = "file:///" + str(out_path.resolve()).replace("\\", "/").lstrip("/")
+
+    return {
+        "html": html,
+        "path": out_path,
+        "file_uri": file_uri,
+        "board": {
+            "generated_at": now_iso,
+            "generated_at_local": generated_at_line(now_iso, ws),
+            "lane_counts": counts,
+            "headline": {c["label"]: c["value"]
+                         for c in (view.get("counters") or [])},
+            "rows": sum(counts.values()),
+        },
+    }
 
 
 def run_surface(surface: str, workspace_root, *, page: int = 1,
@@ -1418,6 +1914,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
                 chase_rows: list | None = None,
                 status_rows: list | None = None,
                 personal_cap: int = _MP_PERSONAL_CAP,
+                promised_cap: int = _MP_PROMISED_CAP,
                 fired_via: str | None = None,
                 pageset_ttl_minutes: int | None = None) -> dict:
     """Build the view + render_and_persist ONE page. Returns the transport
@@ -1471,6 +1968,11 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
         raise SystemExit(
             f"unknown surface {surface!r} "
             "(supported: commitments, staff-meeting, waiting-on, my-plate)")
+    # MOUNT-FRESHNESS PREFLIGHT — the widget path's half of the same gate
+    # `run_board` runs. This entry point is write-chained (a page-1 fire with
+    # `fired_via` appends the surface's receipt), so a stale view here is the
+    # stale-READ-becomes-clobbering-WRITE class, not only a stale render.
+    refuse_if_mount_stale(ws)
     name_hint = _SURFACE_NAME_HINTS[surface]
     page = 1 if page is None else int(page)
     ttl = (DEFAULT_TTL_MINUTES if pageset_ttl_minutes is None
@@ -1529,7 +2031,8 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
         view = _build_surface_view(
             surface, ws, now_iso=now_iso, moves_rows=moves_rows,
             chase_rows=chase_rows, status_rows=status_rows,
-            personal_cap=personal_cap, watch_rows=watch_rows)
+            personal_cap=personal_cap, promised_cap=promised_cap,
+            watch_rows=watch_rows)
         live_view = view
         # STAFFCUT D2 — the builder's receipt arithmetic travels on the view
         # and is POPPED here, before `save_pageset` freezes it and before the
@@ -1592,6 +2095,15 @@ def main() -> int:
                     help="morning-brief only: scheduled renders the confirm "
                          "card as a widget page; manual renders markdown "
                          "lines (t3 FB-9)")
+    ap.add_argument("--format", dest="fmt", default="widget",
+                    choices=["widget", "artifact"],
+                    help="commitments only: `widget` (default, unchanged) "
+                         "relays one paginated page to show_widget; "
+                         "`artifact` serializes the SAME view as the "
+                         "full-set, self-contained triage board for the "
+                         "Artifact tool (SPEC_BOARD1). Never both in one "
+                         "call — the board is a different question, not a "
+                         "different page")
     ap.add_argument("--page", type=int, default=1)
     ap.add_argument("--page-size", type=int, default=None,
                     help="requested rows/page ceiling (the byte-fit may lower "
@@ -1615,6 +2127,9 @@ def main() -> int:
                     help="my-plate only: Personal-group row cap (CTS1 §4.2 "
                          "`personal_cap`, default 7); 'show my plate' passes a "
                          "large value to lift the cap")
+    ap.add_argument("--promised-cap", type=int, default=_MP_PROMISED_CAP,
+                    help="my-plate only: Promised-group row cap (BUG-8330 "
+                         "item 5); the footer names what's held back")
     ap.add_argument("--fired-via", default=None,
                     choices=["scheduled", "manual", "catchup"],
                     help="the fire's run mode (the orchestrator's Phase-2.9 "
@@ -1623,6 +2138,18 @@ def main() -> int:
                          "per-fire receipt inside this call (FB-7)")
     args = ap.parse_args()
 
+    try:
+        return _dispatch(args)
+    except MountStaleError as stale:
+        # Exit nonzero having written nothing. The message is the existing
+        # syncing vocabulary (substrate_alarm_lines); the durable alert was
+        # already rendered through alarm_artifacts by the preflight itself.
+        for line in (stale.lines or [str(stale)]):
+            print(line, file=sys.stderr)
+        return 2
+
+
+def _dispatch(args) -> int:
     if args.surface == "morning-brief":
         # t3 FB-9 — ONE call, every mandatory block. The orchestrator places
         # each emitted block; the CR-BRIEF-PACK line is the checklist.
@@ -1633,6 +2160,25 @@ def main() -> int:
         pack = build_morning_brief_pack(args.workspace, mode=args.mode,
                                         now_iso=args.now)
         print("CR-BRIEF-PACK: " + json.dumps(pack, ensure_ascii=False))
+        return 0
+
+    if args.fmt == "artifact":
+        # SPEC_BOARD1 — the board. Its own markers on purpose: the widget
+        # contract says "relay the bytes between CR-WIDGET-HTML-* to
+        # show_widget byte-exact", and these bytes go to the Artifact tool
+        # instead. Reusing those markers would invite exactly the wrong relay.
+        if args.surface != "commitments":
+            raise SystemExit(
+                "--format artifact is the commitments surface only "
+                f"(got {args.surface!r})")
+        result = run_board(args.workspace, now_iso=args.now)
+        meta = dict(result["board"])
+        meta["path"] = str(result["path"])
+        meta["file_uri"] = result["file_uri"]
+        print("CR-BOARD: " + json.dumps(meta, ensure_ascii=False))
+        print("CR-BOARD-HTML-BEGIN")
+        print(result["html"])
+        print("CR-BOARD-HTML-END")
         return 0
 
     moves_rows = None
@@ -1649,7 +2195,9 @@ def main() -> int:
         args.surface, args.workspace, page=args.page,
         page_size=args.page_size, now_iso=args.now, moves_rows=moves_rows,
         chase_rows=chase_rows, status_rows=status_rows,
-        personal_cap=args.personal_cap, fired_via=args.fired_via,
+        personal_cap=args.personal_cap,
+        promised_cap=getattr(args, "promised_cap", _MP_PROMISED_CAP),
+        fired_via=args.fired_via,
         pageset_ttl_minutes=args.pageset_ttl_minutes)
 
     pagination = transport.get("pagination") or {}
@@ -1664,11 +2212,14 @@ def main() -> int:
 
 
 __all__ = [
+    "MountStaleError",
     "build_commitment_triage_view",
     "build_morning_brief_pack",
     "build_my_plate_view",
     "build_staff_meeting_view",
     "build_waiting_on_view",
+    "refuse_if_mount_stale",
+    "run_board",
     "run_surface",
 ]
 

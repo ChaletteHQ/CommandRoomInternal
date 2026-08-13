@@ -101,6 +101,13 @@ commitments." Events are written to events.jsonl; the user sees the result on
 the next Commitments fire (the resolved item simply doesn't appear).
 """
 from __future__ import annotations
+try:
+    from text_clip import clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import clip  # noqa: E402
 
 import datetime
 import json
@@ -592,7 +599,13 @@ _PERSON_ID_FIELDS = (
     "actor",                       # when actor is a person, not a skill
     # Nested under data
     "data.person_ids",             # older interaction/meeting events, pre-v2.7.15
-    "data.attendees",              # meeting events
+    "data.attendee_person_ids",    # meeting events — PASSIVE_CAPTURE legacy shape
+    "data.attendees",              # meeting events — canonically EMAILS (matched
+                                   # via the person_emails parameter below), kept
+                                   # in the id-probe because pre-BUG-8244
+                                   # improvised writers sometimes put person_NNN
+                                   # ids here; an email string never equals a
+                                   # person_NNN id, so no false positives.
     "data.owner_id",               # commitment events — canonical shape
     "data.owner_person_id",        # commitment events — owner_person_id-variant shape (cr-past-meetings)
     "data.requester_id",           # commitment events — canonical shape
@@ -607,7 +620,7 @@ _PERSON_ID_FIELDS = (
 )
 
 
-def event_references_person(ev: dict, person_id: str) -> bool:
+def event_references_person(ev: dict, person_id: str, person_emails=None) -> bool:
     """Return True iff this event references `person_id` in any known field
     location, across all shape variants per shared/COMMITMENT_SCHEMA.md and
     the audit-derived `_PERSON_ID_FIELDS` table above.
@@ -617,6 +630,13 @@ def event_references_person(ev: dict, person_id: str) -> bool:
     the retired Pulse chat used pre-v3.5.0, which silently missed shape-4 events from
     cr-past-meetings and any flat-new / legacy commitment shapes.
 
+    `person_emails` (BUG-8244, optional): the person's own email addresses.
+    When supplied, an event whose attendee-email fields (`data.attendees` /
+    `data.attendee_emails`) intersect them also counts as a reference — the
+    email-shaped meeting binding this function silently dropped for its whole
+    life. Callers with a person record in hand pass
+    `people_writer.get_person_emails(record)`.
+
     The function is shape-agnostic — pass any event dict; it inspects every
     known field and returns True at the first match. False positives are
     essentially impossible (person_id strings are namespaced like `person_NNN`
@@ -624,6 +644,16 @@ def event_references_person(ev: dict, person_id: str) -> bool:
     """
     if not person_id or not isinstance(ev, dict):
         return False
+    if person_emails:
+        try:
+            from event_refs import attendee_emails_of
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from event_refs import attendee_emails_of
+        wanted = {str(e).strip().lower() for e in person_emails if str(e or "").strip()}
+        if wanted and (wanted & attendee_emails_of(ev)):
+            return True
     for path in _PERSON_ID_FIELDS:
         parts = path.split(".")
         v = ev
@@ -651,8 +681,9 @@ def _commitment_confidence(ev: dict) -> float:
     Some writers store confidence as a string label (`"HIGH"`, `"medium"`)
     instead of a 0-1 float; the comparison `data.confidence >= 0.7` crashes on
     string values and silently drops the event. This helper coerces both shapes
-    via `_CONFIDENCE_LEVEL_MAP`. Missing confidence defaults to 0.0 (filtered
-    out by any non-trivial threshold).
+    via `_CONFIDENCE_LEVEL_MAP`. Missing confidence defaults to 0.0 — which is
+    why SURFACE filtering must go through `passes_surface_floor` below, where
+    missing means UNSCORED, not failing (BUG-8330 item 6).
     """
     v = _commitment_field(ev, "confidence")
     if isinstance(v, (int, float)):
@@ -660,6 +691,42 @@ def _commitment_confidence(ev: dict) -> float:
     if isinstance(v, str):
         return _CONFIDENCE_LEVEL_MAP.get(v.strip().lower(), 0.0)
     return 0.0
+
+
+def passes_surface_floor(ev: dict, *, floor=None, workspace_root=None) -> bool:
+    """THE code-side confidence surface filter (BUG-8330 item 6).
+
+    Before this helper the floor existed only as orchestrator PROSE (a bare
+    constant the model applied by hand), and `_commitment_confidence`'s
+    missing→0.0 default meant any faithful application of that prose silently
+    dropped every UNSCORED capture — the 70→6 collapse class. Two rules:
+
+      - missing confidence = UNSCORED → PASSES. Absence of a score is not an
+        assertion of doubt; most captures are written scoreless by design.
+      - an explicit score or label below the floor fails (a "medium" label is
+        an explicit 0.50 and answers to the same floor as a numeric 0.5 —
+        move the floor per-workspace via the calibration override, not by
+        special-casing labels).
+
+    The floor resolves through `confidence.surface_min(workspace_root)` — the
+    calibration surface — so a workspace's override file actually moves this
+    filter. Pass `floor` directly to skip the lookup (batch callers resolve
+    once)."""
+    v = _commitment_field(ev, "confidence")
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return True
+    if isinstance(v, str) and v.strip().lower() not in _CONFIDENCE_LEVEL_MAP:
+        # A label outside the known vocabulary is unparseable, not low —
+        # treating it as 0.0 re-creates the silent-drop class for one
+        # misspelling. Unscored → passes.
+        return True
+    if floor is None:
+        try:
+            from confidence import surface_min
+            floor = surface_min(workspace_root)
+        except Exception:
+            floor = 0.7
+    return _commitment_confidence(ev) >= floor
 
 
 def load_events_defensively(
@@ -1023,16 +1090,14 @@ def load_open_commitments(
     open_evs: list[dict] = []
     # Closure state is ORDER-AWARE since Stage D's `commitment_reopened`
     # (S4 undo): a commitment is closed iff its latest closure comes AFTER its
-    # latest reopen in append order. Each dict maps target → last file index.
-    # F3 amnesty (Stage C): closure seqs referencing the commitment EVENT's
-    # seq — `data.commitment_seq` and `data.source_event_seq` both map
-    # seq → the commitment at that seq. ~252 of the 289 historic dead-letter
-    # closures carry one of these (the 52 workspace-manager catch-all
-    # closures wrote ONLY source_event_seq).
-    closed_ids_at: dict[str, int] = {}
-    closed_seqs_at: dict[int, int] = {}
-    reopened_ids_at: dict[str, int] = {}
-    reopened_seqs_at: dict[int, int] = {}
+    # latest reopen in append order. F3 amnesty (Stage C): closure seqs
+    # referencing the commitment EVENT's seq — `data.commitment_seq` and
+    # `data.source_event_seq` both map seq → the commitment at that seq.
+    # BUG-8330 item 1: the fold lives in the shared `closure_index` module
+    # now, so surface builders read the SAME chain as this loader instead of
+    # rolling private weaker ones. Do not re-inline it.
+    from closure_index import build_closure_index, closer_target_id
+    closure = build_closure_index(events)
     # commitment id → latest due-shifting update (Stage A fold; see docstring).
     due_updates: dict[str, dict] = {}
     # commitment id → latest wording update per field (v4.6.0 S4 fold: the
@@ -1113,38 +1178,13 @@ def load_open_commitments(
         et = ev.get("type") or ev.get("event") or ""
         d = ev.get("data") or {}
         if et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
+            # Closure/reopen state itself folds in the shared closure_index
+            # pre-pass above — this branch keeps only the C4 merge fold.
             # commitment_superseded (v3.14.5): people-crm/SKILL.md Gate 2 names
-            # it as a valid closer ("commitments closed via commitment_resolved /
-            # thread_resolved / commitment_superseded"). It was missing from this
-            # filter, so a superseded commitment would stay surfaced as open. No
-            # writer emits it yet, but honoring it here closes the contract drift
-            # before any producer ships.
-            # v3.11.4+: accept data.target_id as a defensive backwards-
-            # compat closer-id field. Pre-v3.11.4 show-my-list's `resolved`
-            # handler wrote thread_resolved with data.target_id (no other
-            # writer used target_id), and consumers didn't recognize the
-            # field as a closer — so those events silently failed to close
-            # their referenced commitments. Per SOURCE_OF_TRUTH.md the
-            # canonical id field going forward is data.commitment_id;
-            # target_id stays in the accept list only for in-flight events.
-            cid = (
-                d.get("commitment_id")
-                or d.get("thread_id")
-                or d.get("id")
-                or d.get("target_id")
-                or ev.get("commitment_id")
-                or ev.get("thread_id")
-                or ev.get("id")
-            )
-            if cid:
-                closed_ids_at[str(cid)] = idx
-            # F3 amnesty (Stage C): the seq aliases close the commitment at
-            # that seq REGARDLESS of whether an id field was also present. A
-            # seq pointing at a non-commitment event simply matches nothing.
-            for seq_field in ("commitment_seq", "source_event_seq"):
-                sv = _as_seq(d.get(seq_field))
-                if sv is not None:
-                    closed_seqs_at[sv] = idx
+            # it as a valid closer; the target-id chain (incl. the v3.11.4
+            # data.target_id back-compat field) lives in
+            # closure_index.CLOSURE_ID_FIELDS now.
+            cid = closer_target_id(ev) or None
             # C4 merge fold: a supersession names the survivor that absorbed
             # the closed item — accumulate its provenance for the patch below.
             # S4 split closers (data.split_into present) are NOT merges: the
@@ -1165,18 +1205,6 @@ def load_open_commitments(
                     # the survivor read-side (never rewritten on disk).
                     if cid:
                         superseded_onto[str(cid)] = str(survivor)
-        elif et == "commitment_reopened":
-            # Stage D (S4 undo): reopen the referenced commitment. Same target
-            # chain shape as closures; append order decides the final state.
-            target = (
-                d.get("commitment_id") or d.get("target_id")
-                or ev.get("commitment_id")
-            )
-            if target:
-                reopened_ids_at[str(target)] = idx
-            sv = _as_seq(d.get("commitment_seq"))
-            if sv is not None:
-                reopened_seqs_at[sv] = idx
         elif et == "commitment_reclassified":
             # Stage D fold (S5/S6): latest kind override wins; applied to the
             # in-memory copy only — the original event is never rewritten.
@@ -1305,17 +1333,9 @@ def load_open_commitments(
 
     def _closed_here(cid: str, seq) -> bool:
         """Closed iff the LATEST closure (id chain or F3 seq alias) comes
-        after the LATEST reopen (Stage D undo). Never closed → -1."""
-        seq_ok = isinstance(seq, int) and not isinstance(seq, bool)
-        last_close = max(
-            closed_ids_at.get(cid, -1),
-            closed_seqs_at.get(seq, -1) if seq_ok else -1,
-        )
-        last_reopen = max(
-            reopened_ids_at.get(cid, -1),
-            reopened_seqs_at.get(seq, -1) if seq_ok else -1,
-        )
-        return last_close > last_reopen
+        after the LATEST reopen (Stage D undo) — delegated to the shared
+        closure_index fold (BUG-8330 item 1)."""
+        return closure.is_closed(cid, seq)
 
     # SUB1 fold prep — effective parent per child (merge re-point, cycle-safe)
     # and the per-parent child roster in append order.
@@ -1341,6 +1361,21 @@ def load_open_commitments(
             return _dtm.date.fromisoformat(value.strip()[:10])
         except ValueError:
             return None
+
+    # BUG-8330 item 4 — pending_review re-evaluation inputs. The workspace
+    # root (for the entity-resolve check) comes from the explicit param or
+    # from the events path's own <ws>/_hq/data/events.jsonl shape; the memo
+    # is per-load (each distinct counterparty name resolves at most once).
+    _rr_ws = workspace_root
+    if _rr_ws is None:
+        try:
+            _p = Path(events_jsonl_path)
+            if _p.name == "events.jsonl" and _p.parent.name == "data" \
+                    and _p.parent.parent.name == "_hq":
+                _rr_ws = _p.parent.parent.parent
+        except Exception:
+            _rr_ws = None
+    _rr_cache: dict = {}
 
     out: list[dict] = []
     for c in open_evs:
@@ -1435,6 +1470,32 @@ def load_open_commitments(
                     patch["suspected_duplicate_of"] = None
                     patch["suspected_duplicate_score"] = None
                     patch["review_cleared_by_seq"] = entry["seq"]
+        # BUG-8330 item 4 — pending_review RE-EVALUATION (read-side, ZERO
+        # writes). The stamp froze at capture while RRF1's render overlay
+        # already showed "'X' — contact added ✓" — the row contradicted its
+        # own gating. When the EFFECTIVE state (post-adjudication) is still
+        # pending and the reason is a SOLE clause the mechanical check says
+        # no longer holds, the projection treats it as satisfied: the item
+        # leaves the unconfirmed bucket and gates like an ordinary open
+        # commitment. Annotated `review_reason_auto_satisfied` so surfaces
+        # and the reason-scoped batch verb (needs_review_queue.
+        # confirm_satisfied_reasons — the durable formalization) can see the
+        # verdict. Conservative by construction: multi-clause and unknown
+        # clause classes keep their question (review_reasons module).
+        _d_now = c.get("data") or {}
+        _eff_pending = (patch["pending_review"] if "pending_review" in patch
+                        else _d_now.get("pending_review"))
+        if _eff_pending and _rr_ws is not None:
+            _reason = (patch["review_reason"] if "review_reason" in patch
+                       else _d_now.get("review_reason"))
+            if _reason:
+                try:
+                    from review_reasons import review_reason_still_holds
+                    if not review_reason_still_holds(_rr_ws, _reason, _rr_cache):
+                        patch["pending_review"] = False
+                        patch["review_reason_auto_satisfied"] = True
+                except Exception:
+                    pass
         # WATCHGATE §2.3 — the watch stamp, additive and last-writer-wins.
         # `data.watch` present == parked; absent == not parked. Nothing else
         # about the row changes, which is the whole back-compat contract.
@@ -3361,7 +3422,7 @@ def build_commitment_resolved_event(
         "data": {
             "commitment_id": commitment_id,
             "resolved_by": resolved_by,
-            "evidence": evidence[:200] if evidence else "",
+            "evidence": clip(evidence) if evidence else "",
         },
     }
 
@@ -3387,8 +3448,8 @@ def build_commitment_updated_event(
         "primary_thread_id": primary_thread_id,
         "data": {
             "commitment_id": commitment_id,
-            "change_summary": change_summary[:200] if change_summary else "",
-            "evidence": evidence[:200] if evidence else "",
+            "change_summary": clip(change_summary) if change_summary else "",
+            "evidence": clip(evidence) if evidence else "",
         },
     }
 
@@ -3436,7 +3497,7 @@ def build_pending_review_event(
         "commitment_id": commitment_id,
         "proposed_resolution": proposed_resolution,
         "match_score": round(score, 3),
-        "evidence": evidence[:200] if evidence else "",
+        "evidence": clip(evidence) if evidence else "",
         "title": title or "",
     }
     if has_completion_signal is not None:

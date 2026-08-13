@@ -300,6 +300,18 @@ print(json.dumps({'count': len(findings), 'skills': [f['skill'] for f in finding
 
 FLAG only — never auto-edit a SKILL.md. If the count is non-zero, add ONE plain-English line to the Monday note's "worth a glance" tier (no `_hq/` paths, no `atomic_append_jsonl` jargon, no skill names): *"Part of Command Room is saving your activity log an older way — nothing's broken, but it's worth mentioning to whoever set up your Command Room."* A clean tree (count 0) adds nothing.
 
+In the same pass, run the seq-prestamp lint (`wcl.lint_seq_prestamp('.')`) — it flags any script or skill prose that reserves a seq via `next_seq()` and hand-stamps `"seq"` on an event (BUG-8330 item 7: the appender allocates seq inside the writer lock; a peeked value is the duplicate-seq race). Same flag-only handling, same single Monday-note line.
+
+### 3d-ter. Duplicate-seq detector (BUG-8330 item 7c, recurring)
+
+Historic duplicate seqs (pre-atomic-write window) are live ambiguity — a seq-alias closure resolves to EVERY commitment at that seq. This step detects and marks them additively; history is never rewritten:
+
+```bash
+python3 shared/scripts/seq_health.py "<workspace_root>" --mark
+```
+
+The `--mark` run appends one `seq_repaired` marker per NEWLY-found duplicated seq (the marker is the detector's own memory, so a known duplicate is never re-reported). If `n_new` is non-zero, add ONE plain-English line to the Monday note's "worth a glance" tier: *"Found N activity-log entries sharing a record number — marked them so they can't be confused for each other. New ones appearing would mean something's writing the log wrong; mention it to whoever set up your Command Room."* `n_new: 0` adds nothing.
+
 ### 3e. Append the run record + conflicts
 
 - Append schema/integrity violations to `_hq/CONFLICTS.md` (same as the old audit).

@@ -39,6 +39,7 @@ No other files touched; no view renders. Reads: the declared mail backend's Sent
 | Mode | Trigger |
 |------|---------|
 | **Scheduled (primary)** | the FIRST job in the `maintenance` task's weekday fires (MAINT1) — due at every 6:45 AM / 12:45 PM / 5:45 PM weekday slot per `maintenance_dispatcher.due_jobs`; the 6:45 pass runs BEFORE the 7:00 morning brief, so the brief reads an already-reconciled substrate |
+| **Scheduled (chat leg)** | `reconcile-chat` — the SECOND job, same cadence, same fire (Step 6). Closing from chat is wired into the maintenance cadence exactly like closing from mail: a registered leg, never an on-demand extra. A maintenance run missing it is reported as incomplete (`maintenance_dispatcher.roster_gap`), not quietly partial |
 | **Manual (normal)** | "reconcile my sent mail", "reconcile sent" |
 | **Manual (wide catch-up)** | "catch up my sent mail", "reconcile the last N days", "reconcile my backlog" — fetches a 30-day (or N-day) window regardless of the cursor, to clear backlog stranded behind a stale cursor (Bug #101) |
 
@@ -196,6 +197,52 @@ closes = apply_roster_complete_closes("<abs workspace root>",
    - `receipt["pending"]` non-empty → *"Did you already handle these? [title] — `mark done [n]`."*
    - `receipt["partial_propose_closure"]` non-empty → *"Everyone on [title] has received theirs — close it when ready."* (Partial receipts themselves stay silent; only a COMPLETED roster earns a line.)
    - Nothing closed, nothing opened → no output. Silence is correct; the audit event is the proof it ran. (Restatement merges, set-asides, and per-person receipts are silent by design — they surface through the Waiting On chat's outstanding rows, not here.)
+
+6. **The chat leg (SPEC CHATSCAN1 §B) — a SEPARATE registered job in this same fire, not an optional extra.** Mail is one channel a promise gets discharged through; the declared chat backend is another, and a commitment delivered there stays open forever without this. The dispatcher lists `reconcile-chat` immediately after `reconcile-sent` on the identical cadence, so both run in the same maintenance fire and both land before the 7:00 brief. **This leg adds no scheduled task of its own** — it is a job inside the already-authorized `maintenance` task, which is why it needs no registration on any client machine.
+
+   **Write `the declared chat backend`, never a product name.** There is exactly one chat vocabulary here, and every difference between backends lives in the capability manifest and `shared/scripts/connector_adapters/chat.py`. If you ever find yourself about to write "if it's [product] then…", stop: that branch belongs in the manifest, not in this text and not in your reasoning.
+
+   a. **Resolve the backend and PLAN the scan before fetching anything.**
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from connector_adapters import chat as chat_seam
+from tool_discovery import discover_chat_tool
+
+provider = chat_seam.resolve_chat_provider("<abs workspace root>")
+plan = chat_seam.plan_scan(provider, date_filtered=True)   # mode / degraded / coverage_note / limits
+```
+
+   - `provider is None` → **the workspace has no chat backend. Skip the leg silently** — say nothing to the CEO, raise nothing — and still call Step 6c, which writes the skip receipt. The receipt is the point: without it, "no chat backend" and "swept everything and found nothing" are the same clean zero.
+   - `plan["mode"] == "per_chat_scan"` → this backend cannot filter chat by date and the connector degrades to a partial per-conversation sweep on its own, without warning. That is a real run, not a failure — but it is PARTIAL, and `plan["coverage_note"]` is the plain-language sentence that says so. It rides the receipt automatically; never claim a full reconcile over it.
+   - Resolve the read tool with `discover_chat_tool(tools, operation, declared=<the declared chat row>)` — the provider-agnostic resolver. `discover_slack_tool` is the CAPTURE leg's older, single-product resolver; using it here would make every non-Slack workspace look like a workspace with no chat at all.
+
+   b. **Fetch the window through that tool** — since `chat_reconcile.backfill_floor(workspace_root)`, which returns the stored cursor or, on a first-ever run, a short fixed backfill window (never full history — passive whole-history ingestion is the named anti-goal). Build `chat_messages` as raw connector dicts; the leg normalizes both id shapes itself. Per message carry: the conversation/channel id, the message id, an ISO timestamp, the text, the author id, `counterparty_person_ids` / `counterparty_names` resolved against `entities.json`, and `thread_id` / `permalink` when the backend has them. **If the read cannot happen at all**, do NOT hand in an empty list — pass `fetch_blocked="<what was missing, in plain language>"` so the audit records a blocked run and the cursor does not advance over a window nobody read.
+
+   c. **Run the leg. It does the rest — matching, closing, proposing, the receipt, the cursor.**
+
+```python
+from chat_reconcile import reconcile_chat_and_receipt, validate_chat_reconcile_ran
+chat = reconcile_chat_and_receipt(
+    "<abs workspace root>", chat_messages,
+    user_person_id=user_id,          # the SAME resolved user as Step 3
+    provider=provider, scan_plan=plan,
+    user_chat_ids=[...], user_names=[...],   # the CEO's own ids on that backend
+    fired_via="scheduled",
+    exclude_captured_since=fire_start,       # the Step-1 instant, same fence as mail
+)
+v = validate_chat_reconcile_ran("<abs workspace root>")   # v["ok"] must be True
+```
+
+   There is no separate matching engine here: the CEO's own outbound messages score through the same sent matcher Step 3 uses, and a counterparty's message scores through the same reply matcher the inbound rail uses. **Thresholds are untouched.** Chat is terse, so expect more of the traffic to land in the propose-band than mail does — that is the thresholds working correctly, and it is not a reason to move them.
+
+   d. **Every chat-evidenced close carries a pointer back to the message, or it does not happen.** The leg refuses any close it cannot point at, counts the refusal in `chat["n_refused_no_pointer"]`, and leaves the item open. An unauditable close is a row the CEO cannot check, and that hole must not reach a third channel. Nothing to do here — but if that count is non-zero, the fetch in Step 6b dropped ids and needs fixing. **A message whose timestamp is not a real ISO-8601 instant is quarantined** (dropped, counted in `chat["n_dropped_bad_ts"]`) rather than carried: an unparseable time cannot order evidence against a promise, and it used to reach the cursor and wedge the leg permanently. If that count is non-zero, Step 6b is passing a display string where the connector's raw timestamp belongs.
+
+   d-bis. **The cursor never passes a message this fire did not adjudicate.** When more candidates survive than the per-fire cap, the leg drains the OLDEST first and holds the cursor at the newest one it actually scored — so the deferred remainder sits inside the next fire's window and the "picked up on the next one" line is true. Nothing to do here; just do not "help" by advancing the cursor yourself. On a backend whose sweep is partial by construction the cursor still advances (otherwise the leg never progresses) and the receipt records `cursor_advanced_over_partial_sweep` — that gap is not recoverable by re-running the same window, so never describe it as something that comes back later.
+
+   e. **Where the results go: the surfaces that already exist.** Closes are ordinary closures — the brief and the daily chats read them like any other. Anything needing a human call is written as the SAME close-proposal the mail leg writes, so it reaches the needs-your-call queue and the staff-meeting fold through the shared adapters, the shared card builder and the shared fences. **There is no chat-specific queue, pile, or review surface, and you must not invent one** — a second place to look is a place that goes unlooked.
+
+   f. **Surface only what the CEO can act on** (same posture as Step 5): closes → the existing "closed N you'd already handled" line; proposals → the existing confirm line. `chat["n_scanned"]`, the scan mode, the caps and the coverage note belong on the RECEIPT, not in the CEO's morning. The one exception is `chat["coverage_note"]`: when a report would otherwise imply a full chat sweep, append it verbatim — an honest gap beats a confident overclaim.
 
 ## Self-heal
 The FIRST fire on a workspace fetches a **30-day window regardless of the cursor**

@@ -42,9 +42,11 @@ from pathlib import Path
 from typing import List
 
 try:
+    from connector_id_patterns import connector_id_patterns
     from vocabulary_policy import marketing_patterns
 except ImportError:  # pragma: no cover — direct-path import fallback
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from connector_id_patterns import connector_id_patterns
     from vocabulary_policy import marketing_patterns
 
 
@@ -80,6 +82,12 @@ _FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
     # list, so a word blocked in a docx can no longer lead an email).
     # Add/remove words in shared/scripts/vocabulary_policy.py, never here.
     *marketing_patterns(),
+
+    # Connector-minted opaque ids (BUG-8330 item 11) — the ONE shared
+    # family; every prior pattern anchored on plugin-minted prefixes and a
+    # normalized Slack permalink id (`p1786032197391009`) had zero coverage.
+    # Add/remove in shared/scripts/connector_id_patterns.py, never here.
+    *connector_id_patterns(),
 ]
 
 

@@ -282,6 +282,104 @@ def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:
     return dt
 
 
+# WALKFIX1 Item F — the suppression reason and the skip receipt's own reason
+# string, spelled once so the ledger and the tests read the same words.
+SUPPRESSED_PRE_REGISTRATION = "slot_predates_registration"
+PRE_REGISTRATION_SKIP_REASON = "slot predates registration"
+
+# WALKFIX1 Item H — the two fields that make an off-slot fire self-explaining.
+SLOT_DELTA_FIELD = "slot_delta_minutes"
+OFFSLOT_FIELD = "fired_offslot"
+
+
+def slot_provenance(workspace_root, task_id, *, now=None,
+                    fired_via: str = "scheduled") -> dict:
+    """Where this fire landed relative to its own slot. `{}` when unresolvable.
+
+    THE FINDING (2026-08-10). M pressed Run Now on the past-meetings task at
+    12:38 for a 17:00 slot. The receipt read `fired_via: "scheduled"`, no
+    lateness, no vocabulary — a later auditor sees a 17:00 task firing at 12:38
+    with nothing on the record explaining the five-hour gap. The field HAS
+    richer vocabulary elsewhere (`catchup` on the same hour's commitment-triage
+    fire, `manual` for chat-verb re-fires), so Run Now is a third provenance
+    with no word for itself.
+
+    THE PROBE FOR A REAL DISCRIMINATOR, and its answer: there is none. Cowork
+    registers ONE prompt body per task and replays it byte-identically for the
+    cron fire and for a Run Now press — the bootloader's own Step 2.5 says so
+    in as many words ("this prompt is not evidence of the run mode"). The
+    scheduled-tasks runtime surfaces `taskId`, `cronExpression`, `fireAt`,
+    `enabled`, `nextRunAt`, `lastRunAt` and the prompt path; none of them says
+    how a given run started, and no environment variable carries it either.
+    Registration accepts no trigger-context parameter to bake one in. So the
+    run mode remains a judgement the fire makes about itself, and a fire that
+    genuinely cannot tell is required to say `manual`.
+
+    What CAN be stated as fact is where the fire landed, so that is what the
+    receipt carries: `slot_delta_minutes`, signed, from the slot the cron says
+    was most recently due (positive = after it), and `fired_offslot` when that
+    distance is outside the window the lateness math itself treats as on-slot.
+    The Run Now case then reads as a scheduled-context fire sitting a long way
+    off its slot with no lateness claimed — which is exactly what happened, and
+    is now legible without anyone reconstructing it from wall clocks.
+
+    `fired_offslot` is present ONLY when true, so an on-slot fire's receipt is
+    shape-identical to before. It is set on genuine catchups too, where it is
+    redundant with the tier already on the receipt; its load-bearing case is
+    the SUPPRESSED fire, where nothing else on the record explains the gap.
+
+    Best-effort and silent: no schedule entry, an unparseable cron or a
+    non-scheduled run mode all return `{}`.
+    """
+    if normalize_fired_via(fired_via) not in SCHEDULED_CONTEXT:
+        return {}
+    try:
+        now = now or _now_local(workspace_root)
+        entities = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        spec = load_schedule_config(entities).get(normalize_task_id(task_id))
+        if not spec or not spec.get("cron"):
+            return {}
+        fires = expected_fires(spec["cron"], now=now, count=1)
+    except Exception:  # noqa: BLE001 — provenance never blocks a receipt
+        return {}
+    if not fires:
+        return {}
+    delta = int((now - fires[0]).total_seconds() // 60)
+    out = {SLOT_DELTA_FIELD: delta, "scheduled_for": fires[0].isoformat()}
+    if abs(delta) >= LATENESS_TIERS["note"].total_seconds() // 60:
+        out[OFFSLOT_FIELD] = True
+    return out
+
+
+def _log_pre_registration_skip(workspace_root, task_id, *, scheduled,
+                               registered_at) -> bool:
+    """Write the honest SKIPPED receipt for a slot older than the task.
+
+    Best-effort — a receipt write must never block a fire (RELIABILITY.md).
+    Routed through the canonical `receipts.log_receipt` rather than a
+    hand-rolled event: a hand-rolled receipt is how the `fired_via` /
+    `lateness_tier` vocabulary drifted in the first place (F-49/F-50 P2c).
+    """
+    try:
+        from receipts import log_receipt
+
+        log_receipt(
+            workspace_root,
+            task_id,
+            status="skipped",
+            fired_via="scheduled",
+            surfaced=0,
+            extra_data={
+                "skipped_reason": PRE_REGISTRATION_SKIP_REASON,
+                "scheduled_for": scheduled.isoformat(),
+                "registered_at": registered_at.isoformat(),
+            },
+        )
+        return True
+    except Exception:
+        return False
+
+
 def served_slot_markers(workspace_root, task_id) -> dict:
     """One pass over the substrate for the two facts the lateness ledger
     needs — machine-local naive datetimes (None = never):
@@ -296,6 +394,23 @@ def served_slot_markers(workspace_root, task_id) -> dict:
                              `data.changes: [{task_id, cron, enabled}]`).
                              A slot older than this was minted retroactively
                              by the change (F-51) — never a missed fire.
+      registered_at        — OLDEST `schedule_created` event naming this task
+                             (WALKFIX1 Item F). The registration floor: a task
+                             cannot have missed a slot that predates its own
+                             existence.
+
+    WHY `registered_at` IS A THIRD MARKER AND NOT PART OF THE SECOND ONE.
+    `last_schedule_change` reads `schedule_config_changed` only, which
+    change-schedule writes when an EXISTING task is re-timed. A first
+    registration writes `schedule_created` and nothing else, so the F-51
+    suppression never applied to it — which is why "add staff meeting" on a
+    Sunday immediately catch-up-fired Friday's 9 AM slot, 2.5 days before the
+    task existed, and greeted the customer with "Skipped the full Staff
+    Meeting" as the first thing the feature ever said to them.
+
+    OLDEST, not newest: re-running the setup ritual re-registers every task
+    idempotently, and keying on the newest `schedule_created` would move the
+    floor forward on every re-run and quietly suppress real missed slots.
     """
     canonical = normalize_task_id(task_id)
     # CTS1 — a split successor's ledger also reads its RETIRED predecessor's
@@ -306,8 +421,18 @@ def served_slot_markers(workspace_root, task_id) -> dict:
     accepted = {canonical} | set(TASK_PREDECESSORS.get(canonical, ()))
     last_receipt: Optional[_dt.datetime] = None
     last_change: Optional[_dt.datetime] = None
+    registered: Optional[_dt.datetime] = None
     for ev in _iter_events(workspace_root):
         if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "schedule_created":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            named = normalize_task_id(data.get("taskId")
+                                      or data.get("task_id") or "")
+            if named in accepted:
+                dt = event_dt(ev)
+                if dt is not None and (registered is None or dt < registered):
+                    registered = dt
             continue
         if ev.get("type") == "schedule_config_changed":
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
@@ -330,6 +455,7 @@ def served_slot_markers(workspace_root, task_id) -> dict:
     return {
         "last_receipt": _to_local_naive(last_receipt),
         "last_schedule_change": _to_local_naive(last_change),
+        "registered_at": _to_local_naive(registered),
     }
 
 
@@ -463,9 +589,35 @@ def check_lateness(
     try:
         markers = served_slot_markers(workspace_root, task_id)
     except Exception:
-        markers = {"last_receipt": None, "last_schedule_change": None}
+        markers = {"last_receipt": None, "last_schedule_change": None,
+                   "registered_at": None}
     last_receipt = markers["last_receipt"]
     last_change = markers["last_schedule_change"]
+    registered_at = markers.get("registered_at")
+    if registered_at is not None and scheduled < registered_at:
+        # WALKFIX1 Item F — the REGISTRATION FLOOR. A task cannot be late for a
+        # slot that predates its own existence, and the customer cannot have
+        # missed an appointment they never made. Live twice on 2026-08-09/10:
+        # "add staff meeting" on a Sunday catch-up-fired Friday 9 AM (3,499
+        # minutes "late") and the first thing the feature ever said to its new
+        # owner was that it had skipped something.
+        #
+        # Three costs, all removed here: the first-touch apology for a failure
+        # nobody committed; a `late_fire` datapoint feeding the better-default-
+        # times loop about a slot that could not have fired on time; and a full
+        # catchup fire for a period the customer never owned.
+        #
+        # An honest SKIP receipt is written instead of a degraded catchup fire,
+        # so the slot is accounted for rather than silently dropped — the same
+        # posture every other suppression on this path takes.
+        out["suppressed"] = SUPPRESSED_PRE_REGISTRATION
+        out["lateness_minutes"] = 0
+        out["registered_at"] = registered_at.isoformat()
+        if emit:
+            out["skip_receipt_logged"] = _log_pre_registration_skip(
+                workspace_root, task_id, scheduled=scheduled,
+                registered_at=registered_at)
+        return out
     if last_receipt is not None and last_receipt >= scheduled:
         # The slot was served — a receipt exists after it. This fire is a
         # re-run / second delivery, not a late first serve (F-47 triggers

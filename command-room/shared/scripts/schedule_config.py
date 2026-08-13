@@ -81,11 +81,16 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "label": "7 AM weekdays",
         "enabled": True,
     },
-    "upcoming-meetings": {
-        "cron": "30 6 * * 1-5",
-        "label": "6:30 AM weekdays",
-        "enabled": True,
-    },
+    # `upcoming-meetings` is GONE from the default set (BRIEFMERGE, M's ruling
+    # 2026-08-08 — merge the chat into the morning-brief fire; fewer chats is
+    # the point). Same removal shape LIFECYCLE1 used for `pulse` and CTS1 used
+    # for `commitments`: the row leaves DEFAULT_SCHEDULES so nothing offers or
+    # registers it again, the DISPLAY_NAMES row stays for legacy renders, the
+    # receipt vocabulary stays parseable forever, and an existing registration
+    # is retired through the RETIRED_TASKS proposal below — never silently.
+    # The prep generation it carried is now the morning brief's FIRST leg
+    # (`shared/scripts/prep_leg.py`); the on-demand ask it answered is
+    # `call-prep`, untouched.
     "inbox": {
         "cron": "15 7 * * 1-5",
         "label": "7:15 AM weekdays",
@@ -258,18 +263,20 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
 }
 
 
-# M1 (2026-05-23) — the 5 tasks registered on a fresh-install workspace.
+# M1 (2026-05-23) — the tasks registered on a fresh-install workspace.
 # Detection: workspace_config.json missing OR has empty registered_taskIds.
 # Pre-M1 the set was 4 (morning-brief / upcoming-meetings / past-meetings /
 # friday-wrap), with inbox deferred to a later Zapier-integration session.
 # M1 brings inbox forward — the Chat 2 substantive education + the Phase 4
-# Run Now ritual establish all 5 in one onboarding pass.
+# Run Now ritual establish them in one onboarding pass.
+# BRIEFMERGE (2026-08-08) drops `upcoming-meetings`: its prep generation is now
+# the morning brief's first leg, so the fresh-install chat set is 4 (the fifth
+# entry, `maintenance`, is the silent background task).
 # The remaining defaults (waiting-on, my-plate — CTS1 split the old
 # commitments chat into the two) stay deferred — both benefit from
 # accumulated workspace signal before they fire well.
 FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "morning-brief",
-    "upcoming-meetings",
     "past-meetings",
     "inbox",         # M1 — promoted into first-install set; surfaced to customer as `inbox-triage`
     "friday-wrap",   # v3.11.0 weekly rhythm; surfaced to customer as `weekly-recap`
@@ -470,6 +477,18 @@ RETIRED_TASKS: dict[str, dict] = {
             "did in the background runs weekly with everything else"
         ),
     },
+    "upcoming-meetings": {
+        "retired_in": "BRIEFMERGE",
+        "reason": (
+            "it fired half an hour before your morning brief to prep the same "
+            "meetings the brief already walks you through"
+        ),
+        "replacement": (
+            "your morning brief now preps today's meetings itself before it "
+            "writes — same briefs, same folder, one chat — and anything booked "
+            "after it runs is one ask away: say 'prep me for my 2pm'"
+        ),
+    },
 }
 
 # The 6-week suppression window a retirement proposal honors, mirroring
@@ -530,7 +549,7 @@ def compose_silent_task_prompt(task_id: str, workspace_basename: str) -> str:
 # titles. Used by change-schedule skill to render schedules in plain English.
 DISPLAY_NAMES: dict[str, str] = {
     "morning-brief": "Morning Brief",
-    "upcoming-meetings": "Upcoming Meetings",
+    "upcoming-meetings": "Upcoming Meetings",  # BRIEFMERGE — RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever so pre-retirement receipts and any still-registered task render with a name, never a bare id)
     "inbox": "Inbox",
     "commitments": "Commitments",  # CTS1 — retired taskId (disabled on migration; row kept for legacy renders of pre-CTS1 receipts/schedules)
     "waiting-on": "Waiting On",  # CTS1 Surface 1 — things people owe the user (the re-scoped daily; owns the unowned/unconfirmed confirm tail)

@@ -44,6 +44,30 @@ already-reconciled substrate (Bug #98-v3's original reason for the 6:45
 anchor), and weekly-insights runs AFTER cleanup (synthesis wants a settled
 substrate). Never parallelize the jobs.
 
+A SKIPPED RECEIPT IS VOIDED BY THE CONFIG CHANGE THAT REMOVES ITS REASON
+------------------------------------------------------------------------
+(SPEC BRIEFFIX1 Item D, 2026-08-09)
+
+The uniform rule above treats every receipt alike: a receipt after the slot
+means the slot was served. That is right for a COMPLETED run and wrong for a
+SKIPPED one, because a skip is not work — it is a recorded answer to a
+question the workspace was asked at that moment ("is a chat backend
+declared?"), and a config change can make that answer obsolete before the next
+slot arrives.
+
+Lived on 2026-08-09: the chat leg skipped at 22:05 with "no chat backend is
+declared", the user declared one at 22:15, and the leg stayed inert until
+Monday 06:45 — a whole weekend of chat closures nobody was watching for —
+because Friday's skip receipt was serving Friday's slot. Nothing was broken;
+the rule simply could not see that the reason had evaporated.
+
+So a job may declare `voided_by`: event shapes whose appearance AFTER a
+skipped receipt voids it for dueness. COMPLETED receipts serve their slot
+unconditionally — a config change never re-runs finished work. It lives on the
+registry ROW rather than in the due function so the next config-skipped leg
+inherits the behaviour by declaring one line, instead of by someone
+remembering this paragraph.
+
 PARTITIONED JOBS PROCESS EVERY MISSED PERIOD (CATCHUP1, 2026-07-28)
 -------------------------------------------------------------------
 Due-ness above answers "should this job run"; for most jobs that is the whole
@@ -92,6 +116,32 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "skill": "reconcile-sent",
         "nominal_cron": "45 6,12,17 * * 1-5",
         "description": "close commitments completed by mail sent outside the product",
+    },
+    # CHATSCAN1 — the chat closure leg, ordered IMMEDIATELY BESIDE the mail
+    # one and on the identical nominal cron. M's ruling 2026-08-06: closing
+    # and review from chat are wired into the maintenance cadence exactly like
+    # mail, first-class and registered, never an on-demand extra. Same slot as
+    # `reconcile-sent` and ordered after it so both legs land before the 7:00
+    # brief reads the substrate. It rides the already-authorized `maintenance`
+    # taskId, so it adds ZERO scheduled tasks on any machine. A workspace with
+    # no declared chat backend still runs it: the leg skips silently and
+    # writes its skip receipt, which is what keeps "no chat backend" readable
+    # apart from "swept and found nothing". Entry point:
+    # chat_reconcile.reconcile_chat_and_receipt.
+    "reconcile-chat": {
+        "skill": "reconcile-sent (chat leg — shared/scripts/chat_reconcile.py)",
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": "close commitments discharged in the declared chat backend",
+        # BRIEFFIX1 Item D — this leg's ONE skip reason is "no chat backend is
+        # declared", and declaring one is exactly the event below. A skip
+        # receipt written before that declaration is answering a question the
+        # workspace has since answered differently, so it stops serving its
+        # slot and the leg runs at the next fire instead of at the next slot.
+        "voided_by": (
+            {"type": "connector_backend_changed", "match": {"category": "chat"}},
+        ),
+        "voided_reason": ("its last run skipped because no chat backend was "
+                          "declared, and one has been declared since"),
     },
     # Nominal midnight daily -> due once per day, served at the FIRST fire of
     # the day (6:45). Evening chats sweep the next morning, still BEFORE the
@@ -197,6 +247,33 @@ OPTIONAL_JOBS: dict[str, dict] = {
 MAINTENANCE_TASK_ID = "maintenance"
 RECEIPT_EVENT_TYPE = "maintenance_run"
 
+# CHATSCAN1 V1b — THE CLOSURE ROSTER.
+#
+# The set of legs a maintenance fire is expected to close commitments through.
+# Declared HERE, separately from MAINTENANCE_JOBS, and that separation is the
+# whole mechanism: if a leg were only ever "expected" because it appeared in
+# the job registry, then deleting it from the registry would delete the
+# expectation too, and a fire that reconciled mail and not chat would report
+# a clean, complete run. The roster is the independent statement of what
+# SHOULD be there, so a missing leg reads as a GAP instead of a smaller plan.
+#
+# A gap is not an error — a workspace can legitimately disable a leg — but it
+# is never invisible: it lands on the receipt as `roster_gap`, and
+# `validate_maintenance_ran` refuses to call such a run complete.
+RECONCILE_LEGS: tuple = ("reconcile-sent", "reconcile-chat")
+
+
+def roster_gap(jobs=None) -> list:
+    """Which closure legs the registry is MISSING, in roster order.
+
+    `jobs` defaults to the live `MAINTENANCE_JOBS` keys. A leg the workspace
+    explicitly disabled is NOT a gap — it is a registered leg that was turned
+    off, which `skipped_disabled` already records honestly. A gap means the
+    leg is not in the roster's registry at all: nothing will run it, nothing
+    will report it, and without this check nothing would say so."""
+    registered = set(jobs if jobs is not None else MAINTENANCE_JOBS.keys())
+    return [leg for leg in RECONCILE_LEGS if leg not in registered]
+
 
 def _all_job_ids() -> list[str]:
     """Every job id whose receipts drive due-ness — core plus optional."""
@@ -235,6 +312,119 @@ def _job_overrides(workspace_root) -> dict:
     return mj if isinstance(mj, dict) else {}
 
 
+SKIPPED_STATUS = "skipped"
+
+
+def _newest_receipt(workspace_root, job_id) -> tuple:
+    """`(status, machine-local naive dt)` for this job's newest RECEIPT, or
+    `(None, None)`.
+
+    Deliberately returns the receipt's own instant rather than reusing the
+    dueness `last` (review F11). `task_watchdog.last_receipts` takes the newer
+    of {receipt, analytical-view mtime} for jobs that declare `views`, so
+    `last` is not always a receipt timestamp — and comparing a voiding EVENT
+    against a view's file mtime while reading the status from a receipt would
+    be two clocks in one decision. No job declares both today; the divergence
+    is one registry row away, and it would be invisible when it arrived.
+
+    Best-effort like everything else here: an unreadable substrate must never
+    crash a fire, and "unknown" falls through to the unchanged uniform rule.
+    """
+    try:
+        from receipts import iter_receipts
+
+        rows = iter_receipts(workspace_root, task_ids=[job_id])
+    except Exception:  # noqa: BLE001
+        return None, None
+    newest, newest_dt = None, None
+    for r in rows or []:
+        dt = r.get("dt")
+        if dt is None:
+            continue
+        if newest_dt is None or dt > newest_dt:
+            newest, newest_dt = r, dt
+    if newest is None:
+        return None, None
+    status = newest.get("status")
+    return (status if isinstance(status, str) else None,
+            _to_local_naive(newest_dt))
+
+
+def _voiding_event_after(workspace_root, specs, after: _dt.datetime) -> Optional[str]:
+    """The newest event matching any of `specs` that is NEWER than `after`
+    (machine-local naive), as an ISO string — or None.
+
+    `specs` are the registry's own `voided_by` rows: `{"type": ...,
+    "match": {<data key>: <value>}}`. Matching on the DATA payload rather than
+    on the type alone is what keeps a mail-backend change from re-arming the
+    chat leg — same event type, different category, unrelated fact.
+    """
+    try:
+        import events_io
+        from event_time import event_dt
+
+        events = events_io.iter_events(workspace_root)
+    except Exception:  # noqa: BLE001
+        return None
+    wanted = []
+    for spec in specs or ():
+        if not isinstance(spec, dict) or not spec.get("type"):
+            continue
+        wanted.append((spec["type"], dict(spec.get("match") or {})))
+    if not wanted:
+        return None
+    newest = None
+    try:
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            etype = ev.get("type")
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if not any(etype == t and all(data.get(k) == v for k, v in m.items())
+                       for t, m in wanted):
+                continue
+            dt = event_dt(ev)
+            if dt is None:
+                continue
+            local = _to_local_naive(dt)
+            if local is None or local <= after:
+                continue
+            if newest is None or local > newest:
+                newest = local
+    except Exception:  # noqa: BLE001
+        return None
+    return newest.isoformat() if newest else None
+
+
+def _skip_rearm(workspace_root, job_id, spec, last: _dt.datetime) -> Optional[str]:
+    """Is this job's served slot VOIDED because the config changed under a
+    SKIPPED receipt? Returns the voiding event's ISO instant, or None.
+
+    Two conditions, both required and both deliberate:
+      * the newest receipt says `skipped` — a completed run serves its slot
+        unconditionally, because a config change is not a reason to redo
+        finished work;
+      * a declared voiding event is NEWER than that receipt — the reason the
+        run skipped is gone.
+
+    "Newer than that receipt" means newer than the RECEIPT's own instant, not
+    than the dueness `last` this function is handed: for a job declaring
+    `views`, `last` can be an analytical-view mtime, and one decision must not
+    straddle two clocks (review F11). `last` stays the parameter because it is
+    the correct fallback when the receipt read fails.
+
+    Only ever consulted for a job that declares `voided_by`, so the common
+    path pays nothing.
+    """
+    specs = spec.get("voided_by")
+    if not specs:
+        return None
+    status, receipt_dt = _newest_receipt(workspace_root, job_id)
+    if status != SKIPPED_STATUS:
+        return None
+    return _voiding_event_after(workspace_root, specs, receipt_dt or last)
+
+
 def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
     """The full fire plan: which jobs are due (ordered), which were skipped by
     a job-level disable. Machine-local naive `now` (the clock cron evaluates
@@ -243,6 +433,11 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
     Returns {"now": iso, "due": [job dicts], "skipped_disabled": [job ids]}.
     Each due dict: {job_id, skill, description, reason, last_receipt (iso|None),
     slot (iso)}.
+
+    A job whose newest receipt is `skipped` and whose registry row declares a
+    `voided_by` event that has since fired is due ANYWAY (BRIEFFIX1 Item D) —
+    its due dict carries `skip_voided_at` and a reason naming the change.
+    Completed receipts are unaffected.
 
     A job registered `partitioned` (CATCHUP1) carries two more keys:
     `periods` — every unserved nominal slot since its last receipt, ISO,
@@ -267,10 +462,18 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
             return None
         slot = slots[0]
         last = lasts.get(job_id)
+        voided_at = None
         if last is not None and last >= slot:
-            return None  # already served this slot
-        reason = ("no run recorded yet" if last is None else
-                  f"last ran {last.isoformat()}, its {slot.isoformat()} slot has passed")
+            voided_at = _skip_rearm(workspace_root, job_id, spec, last)
+            if voided_at is None:
+                return None  # already served this slot
+        if voided_at is not None:
+            reason = (f"skipped at {last.isoformat()} — "
+                      f"{spec.get('voided_reason') or 'the reason it skipped no longer applies'} "
+                      f"(recorded {voided_at})")
+        else:
+            reason = ("no run recorded yet" if last is None else
+                      f"last ran {last.isoformat()}, its {slot.isoformat()} slot has passed")
         d = {
             "job_id": job_id,
             "skill": spec["skill"],
@@ -279,6 +482,11 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None) -> dict:
             "last_receipt": last.isoformat() if last else None,
             "slot": slot.isoformat(),
         }
+        if voided_at is not None:
+            # Named on the due dict so the fire's own receipt can say WHY this
+            # job ran outside its slot — a job appearing off-cadence with no
+            # recorded cause is the next reader's mystery.
+            d["skip_voided_at"] = voided_at
         if spec.get("partitioned"):
             # Each period is its own deliverable — enumerate every one that
             # went unserved, oldest first. Best-effort like everything the
@@ -393,6 +601,13 @@ def maintenance_receipt(
             "jobs_completed": _job_ids(jobs_completed),
             "jobs_failed": _job_ids(jobs_failed),
             "skipped_disabled": _job_ids(skipped_disabled),
+            # CHATSCAN1 V1b — computed at WRITE time from the live registry,
+            # never handed in by the caller. A caller-supplied value would be
+            # a claim; this is a measurement, and it is the difference between
+            # a fire that is genuinely complete and one that is missing a
+            # closure leg nobody noticed had gone.
+            "roster_gap": roster_gap(),
+            "reconcile_legs": list(RECONCILE_LEGS),
         },
     )
 
@@ -432,7 +647,8 @@ def validate_maintenance_ran(
         return {"ok": False, "dt": newest_dt.isoformat() if newest_dt else None,
                 "reason": "newest maintenance_run audit event predates this fire"}
     data = newest["raw"].get("data") if isinstance(newest["raw"].get("data"), dict) else {}
-    return {
+    gap = data.get("roster_gap") or []
+    out = {
         "ok": True,
         "reason": None,
         "dt": newest_dt.isoformat() if newest_dt else None,
@@ -441,7 +657,23 @@ def validate_maintenance_ran(
         "jobs_completed": data.get("jobs_completed") or [],
         "jobs_failed": data.get("jobs_failed") or [],
         "skipped_disabled": data.get("skipped_disabled") or [],
+        # CHATSCAN1 V1b — a closure leg missing from the roster is reported
+        # every time this receipt is read back, not only at the fire that
+        # wrote it.
+        "roster_gap": list(gap),
+        "reconcile_legs": data.get("reconcile_legs") or list(RECONCILE_LEGS),
     }
+    if gap:
+        # NOT ok. A run that closed commitments through some of its declared
+        # channels and silently not the others is the "visibly incomplete vs
+        # silently partial" distinction this whole check exists to draw — and
+        # a validator that answered True here would be the thing making it
+        # silent.
+        out["ok"] = False
+        out["reason"] = (
+            "this maintenance run reconciled only part of what it is supposed "
+            "to: no leg is registered for " + ", ".join(gap))
+    return out
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -473,6 +705,8 @@ __all__ = [
     "OPTIONAL_JOBS",
     "MAINTENANCE_TASK_ID",
     "RECEIPT_EVENT_TYPE",
+    "RECONCILE_LEGS",
+    "roster_gap",
     "dispatch_plan",
     "due_jobs",
     "maintenance_receipt",

@@ -227,22 +227,19 @@ def compute_relationship_moves(
 
     if emit and top:
         try:
-            from next_seq import next_seq
             from atomic_write import atomic_append_jsonl
             events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-            seq = next_seq(str(events_path))
-            rows = []
-            for c in top:
-                rows.append({
-                    "seq": seq, "ts": now or _now_iso(),
-                    "type": "relationship_move_suggested", "source_skill": "relationship-moves",
-                    "data": {
-                        "person_id": c["person_id"], "thread_ref": None,
-                        "score": c["score"], "components": c["components"],
-                        "evidence": [], "opener_draft_event_seq": None,
-                    },
-                })
-                seq += 1
+            # No hand-stamped seq (BUG-8330 item 7) — the appender allocates
+            # the whole batch monotonically inside the writer lock.
+            rows = [{
+                "ts": now or _now_iso(),
+                "type": "relationship_move_suggested", "source_skill": "relationship-moves",
+                "data": {
+                    "person_id": c["person_id"], "thread_ref": None,
+                    "score": c["score"], "components": c["components"],
+                    "evidence": [], "opener_draft_event_seq": None,
+                },
+            } for c in top]
             atomic_append_jsonl(events_path, rows)
         except Exception:
             pass

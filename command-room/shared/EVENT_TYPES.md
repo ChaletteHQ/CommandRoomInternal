@@ -116,7 +116,7 @@ expected until its phase lands.
 | `pulse_run` | Pulse orchestrator (Phase 3/6 quick win B) | insight-generator (cadence baseline), usage-report, value-receipt |
 | `triage_feedback` | apply-choices, on every inbox action at dispatch (Phase 6, Loop 1) — `{sender, domain, bucket_assigned, action_taken, draft_offered}` via `triage_feedback.build_triage_feedback_event` | insight-generator Pass 13 (sender-priority proposals), usage-report |
 | `prep_feedback` | orchestrator-past-meetings grades the prep brief against the transcript after meeting-notes runs (Phase 6, Loop 3) — `{meeting_id, meeting_type, sections_hit, sections_rendered, sections_missed, unpredicted_topics}` via `prep_grading.build_prep_feedback_event` | insight-generator Pass 15 (section-weight proposals), value-receipt |
-| `prep_brief` | BOTH prep paths — orchestrator-upcoming-meetings Phase 4 auto-prep AND call-prep on-demand 'prep me' — one per Call_Prep brief saved, via `receipts.log_prep_receipt` ONLY (v4.5.2 S1; F-29/F-29b) — `{meeting_id, slug, artifact, generated_by, fired_via, refreshed}`. NOT a task-run receipt: five briefs in one fire are five prep_brief events and ONE pack_run | morning-briefing no-prep detection (`receipts.prep_exists_for_meeting` — the "no prep" flag may only render when NO receipt exists for that meeting id), upcoming-meetings/call-prep refresh-in-place check, value-receipt |
+| `prep_brief` | BOTH prep paths — the morning-brief fire's prep leg (SPEC BRIEFMERGE Phase 2.95, `generated_by="morning-brief"`; before that, the retired upcoming-meetings chat) AND call-prep on-demand 'prep me' — one per Call_Prep brief saved, via `receipts.log_prep_receipt` ONLY (v4.5.2 S1; F-29/F-29b) — `{meeting_id, slug, artifact, generated_by, fired_via, refreshed}`. NOT a task-run receipt: five briefs in one fire are five prep_brief events and ONE pack_run | morning-briefing no-prep detection (`receipts.prep_exists_for_meeting` — the "no prep" flag may only render when NO receipt exists for that meeting id), the prep leg's / call-prep's refresh-in-place check, value-receipt |
 | `prep_weight_proposal` | insight-generator Pass 15 (Phase 6, Loop 3) — one per user decision on a proposed call-prep section-weight change; the applied weight lands in the call-prep skill config (`_hq/data/skill_config/call-prep.json`) | call-prep (reads section weights before rendering), usage-report |
 | `extraction_hint_proposal` | insight-generator Loop 5 pass (Phase 6, Round 3) — one per user decision on a proposed extraction hint; the applied hint appends to `_hq/data/extraction-hints.md` | meeting-notes (extraction prompt), cru_match (resolution language), usage-report |
 | `exemplar_update_proposal` | insight-generator Pass 16 (SPEC OUT8) — one per user decision on a proposed workspace-exemplar update (`{user_action, fingerprint, kind}`); the approved skeleton is written to `_hq/exemplars/<kind>/exemplar_1.md` via `exemplars.promote_workspace_exemplar` (scrub-gated, previous version rotated to `exemplar_2.md`) | insight-generator (60-day fingerprint cooldown via `proposal_ledger`), every STANDARD_KINDS composer (reads the exemplar at render time via `exemplars.get_exemplar`), usage-report |
@@ -630,15 +630,61 @@ Hard rules:
   `brain_change_class`, so `undo` lists and reverses a sweep with the reversers
   that already exist.
 
+### `seq_repaired` (BUG-8330 item 7c, 2026-08-10)
+
+| type | writer | readers |
+|------|--------|---------|
+| `seq_repaired` | `seq_health.detect_and_mark(apply=True)` — the ONLY writer (cleanup's weekly pass) | `seq_health.detect_and_mark` (its own dedup memory — an already-marked duplicate seq is not re-reported), cleanup's Monday note + system-health's report line (render the counts) |
+
+One additive marker per NEWLY-detected duplicated seq (`data.duplicate_seq`,
+`n_occurrences`, `event_types`). The events holding the duplicate stay exactly
+as written — history is never rewritten. Post-A1 the appender allocates seq
+inside the writer lock, so a NEW marker indicates a real writer bug worth
+eyes, which is exactly what the Monday note surfaces.
+
 ## Receipt contract (v4.5.2 R1)
 
-Scheduled-task run receipts (`pack_run`, `sent_reconcile`, `session_sweep_run`,
-`cleanup_run`, `operator_report_generated`, ...) have their own schema layer on
+Scheduled-task run receipts (`pack_run`, `sent_reconcile`, `chat_reconcile`,
+`session_sweep_run`, `cleanup_run`, `operator_report_generated`, ...) have their
+own schema layer on
 top of this registry: canonical task_id spellings, the `late_tier` field name,
 `fired_via`, `machine`, and the one shared writer/reader. See
 `shared/RECEIPT_CONTRACT.md` + `shared/scripts/receipts.py`. Writers call
 `log_receipt()` — never hand-rolled receipt JSON; readers go through
 `iter_receipts()` / `count_runs()` — never per-reader matchers.
+
+### `chat_reconcile` (SPEC CHATSCAN1 §B, 2026-08-08)
+
+| type | writer | readers |
+|------|--------|---------|
+| `chat_reconcile` | `chat_reconcile._log_receipt` -> `receipts.log_receipt` (task_id `reconcile-chat`) — the ONLY writer | `chat_reconcile.validate_chat_reconcile_ran` (the leg's own success validator), `maintenance_dispatcher` due-ness via `receipts.last_receipt_times`, `task_watchdog.check_maintenance_jobs` |
+
+The chat closure leg's per-fire receipt. Deliberately a DIFFERENT type from
+`sent_reconcile` even though the two legs run in the same fire and carry the
+same shape: `validate_reconcile_ran` reads "the latest `sent_reconcile`
+event", so a chat leg writing that type would have satisfied the mail leg's
+validator, and a mail leg that never fired would have read as healthy. The two
+legs must not be able to vouch for each other.
+
+Written on EVERY terminal state, which is the whole point:
+`status: "skipped"` (no chat backend declared — the leg correctly did nothing,
+and without a receipt that is indistinguishable from a sweep that found
+nothing), `status: "blocked"` (a declared backend whose read could not happen —
+the cursor does not advance and the validator refuses it), `status: "degraded"`
+(a real run on the partial per-conversation path — carries `scan_mode` and a
+plain-language `coverage_note` so no surface claims a full reconcile), and
+`status: "complete"`.
+
+The closures it produces are ordinary `commitment_resolved` rows stamped
+`resolved_by: "chat_reconcile"`, each carrying BOTH spellings of one pointer:
+`data.source_ref` (the canonical `<provider>:<room>:<message id>` string every
+existing reader and the dedup index already understand) and
+`data.chat_source_ref` (the structured `{provider, kind, chat_or_channel_id,
+message_id, ts}` — provider and kind explicit, because Slack addresses a
+message as channel+ts and Teams as chat+message-id, and a reader must know
+which shape it holds). `connector_adapters.chat.pointer_fields` emits both
+together so a writer cannot produce one half without the other. No pointer, no
+close.
 
 ## Read-side timestamp contract
 
@@ -648,3 +694,29 @@ in live substrates are never rewritten. Every reader that orders or filters
 events by time goes through `shared/scripts/event_time.py`
 (`event_time` / `event_dt`), which resolves `ts` → `timestamp` → `date` in
 priority order.
+
+## Decision-review lane (WALKFIX1 FR-2, 2026-08-10) — ⚠ M-STRIKEABLE
+
+- `decision_supersede_proposed` — **writer:**
+  `decision_match.build_decision_supersede_proposal_event`, appended by the
+  past-meetings Phase 4.6.b decision-CRU pass in place of the
+  `decision_superseded` it used to auto-write. `data: {decision_id,
+  proposed_action, evidence, status, score, title}`. `proposed_action` is
+  always `decision_superseded`; `status` is always `proposed`.
+  **Named consumer:** `render_decision_log._categorize_decisions` →
+  `proposals_map`, which `_format_decision_line` renders as a
+  `[SUPERSEDE PROPOSED]` note ON THE DECISION'S OWN LINE — the person who owns
+  the decision adjudicates it where the decision lives, rather than the fire
+  closing it for them.
+
+  **This event NEVER changes a decision's status.** That is the whole point:
+  one 2026-08-10 fire read two transcripts and auto-wrote nineteen
+  `decision_superseded` events, four of four sampled being plainly wrong (a
+  client onboarding call recorded as reversing an unrelated internal meeting
+  time, an office-lease decision, another person's login preference and
+  another client's video platform). The matcher scores a whole transcript
+  against a short title with an overlap coefficient and ANDs it with a
+  whole-transcript reversal boolean, with no locality requirement — a signal
+  strong enough to propose on and far too weak to write closures on. The full
+  argument and the complete strike set live at `RECOMMEND_ONLY_SUPERSEDES` in
+  `shared/scripts/decision_match.py`.

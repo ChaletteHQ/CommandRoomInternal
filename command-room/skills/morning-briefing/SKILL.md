@@ -168,9 +168,13 @@ Check each available connector. Skip gracefully if not connected — never error
 
 ### Calendar (if connected)
 - Pull today's events + tomorrow's first event (this is the **display** fetch for the "Today's calendar" section — narrow on purpose).
+- **On the scheduled fire, today's events are ALREADY IN HAND (SPEC BRIEFMERGE §A).** The fire's prep leg made this exact pull before the digest started composing, so reuse its meetings and add only tomorrow's first event. Do not query the calendar twice in one fire — the leg IS the discovery pass, and a second one can disagree with the first about what today holds. On the on-demand path ("brief me") there is no leg, and this bullet's own fetch stands unchanged.
 - **Do not reuse this narrow pull for the scheduling-verification gate.** Step 3c-bis needs a *much wider* window (~7 days back through ~30 days forward) to see that a "book/lock/propose time" item is already on the calendar days out. Reusing this today/tomorrow pull there starves the gate — a meeting four days from now looks unbooked and the brief tells the CEO to redo it (Bug #93). Step 3c-bis issues its own wide `list_events`.
 - For each event: title, time, attendees, project association (match against tracker)
 - Flag: meetings with no prep brief, back-to-back blocks, meetings with people who have overdue commitments. The "overdue commitments by attendee" check derives from `_hq/data/events.jsonl` via `load_open_commitments` filtered by `owner_id in <attendee_person_ids>` — **confirmed half only, `cru_match.split_pending_review(opens)[0]`** (per `references/SOURCE_OF_TRUTH.md` — never from PERSON.md commitment tables, which can lag). Flagging a meeting because someone "has overdue commitments" that are really unconfirmed extractions puts a guess between the CEO and the person he is about to sit down with.
+- **On the scheduled fire the prep OUTCOMES come from the leg, and the leg's failures become lines (SPEC BRIEFMERGE §A/§B).** Render them with `prep_leg.meeting_lines(leg, workspace_root=...)`: a prepped meeting gets a workspace-relative link (or `syncing — open from your cloud drive` when the workspace's cloud platform — Google Drive, OneDrive, or SharePoint — has not landed the file on this machine yet; never a dead card); a meeting whose prep failed gets one line naming it and the phrase that regenerates it; a whole-leg failure gets ONE banner and the brief renders regardless. The helper refuses to run without the leg's result, which is what keeps prep strictly before render. A deliberate skip renders nothing, and there is no all-clear line — prep outcomes are LINES inside this section, never a section of their own, and never a pad.
+  - **A meeting already prepped renders the SAME link, under the honest word (SPEC BRIEFFIX1 Item B).** When a `prep_brief` receipt written today names THIS meeting instance (the calendar id and the instance's own start — a recurring meeting's id repeats, its start does not), the leg does not regenerate: the outcome is `reused`, the link line is identical to a freshly-generated one, and the row names the receipt it leaned on. Nothing about the digest changes — the CEO wanted the document, not a report on which fire built it — and nothing here should distinguish the two on screen. `ran` means THIS fire generated it and is never a synonym for "a prep exists".
+  - **The links here are WORKSPACE-RELATIVE and stay that way through composition.** The saved snapshot keeps that form; the chat copy is converted once at post time by `chat_output_renderer.absolutize_doc_links` (SPEC BRIEFFIX1 Item A). Do not write an absolute path into the digest text — a relative href posted raw is a card that cannot open, and an absolute one saved to disk is a pointer the other machine cannot read.
 - **The "no prep" flag reads receipts, ONLY receipts (v4.5.2 S1 — F-29):** for each of today's meetings, `from receipts import prep_exists_for_meeting; prep_exists_for_meeting(workspace_root, <calendar event id>)`. The `⚠️ no prep` flag may render ONLY when that returns False. NEVER answer "was this meeting prepped?" from folder globs, filename/slug guesses, or memory — that detector/writer mismatch is how the brief claimed "no prep brief" for a 9:15 call while the prep file AND its fire receipt were both on disk (reproduced 2-for-2 days in the v4.5.1 dogfood). Both prep paths now write a per-brief `prep_brief` receipt via `receipts.log_prep_receipt`; the receipt is the contract. A meeting the calendar gives no id for (rare) gets NO flag rather than a guessed one.
 - **Build the `todays_meetings` input for Step 3d (v4.5.2 C1 — REQUIRED when the calendar is connected):** for each of today's events, resolve attendee emails to person_ids via `entities.json`/`aliases.json` and collect attendee display names PLUS their alias spellings from `aliases.json` — `{"meeting_id": <event id>, "title": <event title>, "attendee_person_ids": [...], "attendee_names": [...]}`. Step 3d passes this to `compute_and_log_brief_state`, which matches open commitments to today's meetings by counterparty OR name-mention in the item's own text (`commitment_state.match_commitments_to_meetings`). **A missing due date must not make a meeting-relevant item invisible** — the F-44 failure was sweep-recovered items about that morning's 9:15 appearing nowhere in the brief because every ranking bucket keyed on `due`.
 
@@ -189,10 +193,32 @@ Check each available connector. Skip gracefully if not connected — never error
 
 If the connector supports it, broaden the initial query with the **inbox-or-sent, not-draft** intent — a DISJUNCTION, expressed as `{"any_of": [{"in_inbox": true}, {"in_sent": true}], "not_draft": true}` and compiled per provider by `connector_adapters/mail.py` `compile_search` (never a hardcoded operator string; on Gmail this reproduces the original parenthesized OR-group query byte-for-byte) — and then run step 1-3. This is cheaper than a per-candidate thread fetch but produces the same outcome — threads where M is the latest sender get dropped. Pick whichever path the connected mail tool supports; both are acceptable as long as the latest-sender check is applied.
 
-### Slack (if connected)
+### Chat (the declared chat backend, if connected)
 - Check for unread DMs and mentions from the last 18 hours
 - Check project-related channels for activity
 - Limit to 5 most relevant — summarize each in one line
+- Resolve the read tool with `tool_discovery.discover_chat_tool(tools, operation, declared=<the declared chat row>)` — the provider-agnostic resolver. **Never name a chat product in this skill's reasoning or output.** One vocabulary, one seam: every difference between backends lives in the capability manifest and `shared/scripts/connector_adapters/chat.py`, so "if it's [product] then…" is always the wrong shape here.
+
+**Chat context + memory (SPEC CHATSCAN1 §C) — one line, never a row.** This is a leg INSIDE this same Step 2 sweep and reuses the fetch above; do not open a second pass over the same window.
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from connector_adapters import chat as chat_seam
+from chat_context import run_chat_context, ReadBudget
+
+provider = chat_seam.resolve_chat_provider("<abs workspace root>")
+plan = chat_seam.plan_scan(provider, date_filtered=True)
+ctx = run_chat_context("<abs workspace root>", chat_messages, tracked_entities,
+                       provider=provider, scan_plan=plan, budget=ReadBudget())
+```
+
+- `provider is None` → the leg returns a skipped block and there is nothing to render. Say nothing; the skip is receipted, not announced.
+- `tracked_entities` is `[{"id","kind","names":[…]}]` resolved against `entities.json` / `aliases.json`. **Resolve them — never match a bare token you have not tied to a record.** A wrong entity touch lands in that person's permanent history, which is worse than a missed one.
+- `ctx["context_line"]` is at most ONE sentence and goes inside an EXISTING section. **It is never a row.** The needs-attention lane still shows at most 5 rows via `commitment_state.cap_needs_attention` — this leg cannot add a sixth, and the brief's row count must be identical with the chat leg on and off.
+- The leg also appends a bounded per-entity touchpoint to entity history (one roll-up per entity per run, capped, with the overflow counted in `ctx["n_touches_spilled"]`). That is how the workspace learns from chat without the book growing. It writes no message text — the pointer is the read-through.
+- **The read budget is spent by the leg, not by you.** `ReadBudget` bounds how many CONVERSATIONS one fire will read (one unit per channel or chat), drained oldest-first; a conversation the budget cannot afford is not examined at all, so it cannot mint an entity touch. Pass the budget in and let `run_chat_context` spend it — do not pre-filter the fetch yourself, or the bound stops being measurable.
+- `ctx["deferred_windows"]` / `ctx["n_conversations_deferred"]` non-empty means the budget was spent before the window was finished; the remainder is picked up OLDEST FIRST next run. It belongs on the receipt, not in the CEO's morning.
+- `ctx["coverage_note"]` (set when the backend can only sweep chat partially) must be appended verbatim to any line that would otherwise read as full chat coverage.
 
 ## Step 3: Check Tracker for Urgency
 
@@ -254,7 +280,9 @@ If the tracker stamp can't be parsed, treat the tracker as stale and apply the o
 
 Scan `_hq/data/events.jsonl` for `type: commitment` events that haven't been closed by a later `commitment_resolved` / `thread_resolved` event.
 
-**Mark-done affordance (v3.18.3+ — Bug #85; receiving route registered P0.7 2026-07).** Every item surfaced under "Needs Attention" carries a one-tap **`mark done [n]`** action. The route: the fire records `data.needs_attention_ids` on its `pack_run` event — the commitment id (`data.id` verbatim) for each numbered Needs Attention item, in render order — and apply-choices Step 2's `morning-brief` source entry resolves `[n]` against that list and closes through `commitment_state.close_commitment` (the canonical closure path — never a hand-built `commitment_resolved` append). This is the manual close path the 7-day stopgap below was waiting on — the CEO closes a stale "you owe" item in one tap instead of seeing it re-surface daily. Pair it with the auto-close from Step 3a-bis: the system closes what it can prove from Sent mail, and `mark done` covers the rest.
+**Mark-done affordance (v3.18.3+ — Bug #85; receiving route registered P0.7 2026-07).** Every item surfaced under "Needs Attention" carries a one-tap **`mark done [n]`** action. The route: the fire records `data.needs_attention_ids` on its `pack_run` event — the commitment id (`data.id` verbatim) for each numbered Needs Attention item, in render order — and apply-choices Step 2's `morning-brief` source entry resolves `[n]` through `brief_receipt.resolve_mark_done` and closes through `commitment_state.close_commitment` (the canonical closure path — never a hand-built `commitment_resolved` append). This is the manual close path the 7-day stopgap below was waiting on — the CEO closes a stale "you owe" item in one tap instead of seeing it re-surface daily. Pair it with the auto-close from Step 3a-bis: the system closes what it can prove from Sent mail, and `mark done` covers the rest.
+
+**The numbering is only as good as the receipt behind it (SPEC BRIEFFIX1 Item C).** Position 3 in today's brief and position 3 in yesterday's are different items, so the affordance is only safe while the newest recorded `needs_attention_ids` belongs to the newest brief. When a brief posts without its receipt, that stops being true and `resolve_mark_done` REFUSES in plain English rather than closing whatever is at that position. Which is why the fire writes its receipt BEFORE it posts: the ordering is what keeps the map and the screen in step.
 
 **Prospect-conversion nudge (v3.18.7+ — Bug #92, detect-and-nudge — CONDITIONAL, cheap).** Call `shared/scripts/prospect_conversion_detector.py::detect_prospect_conversion_candidates(workspace_root)` (a fast substrate-only read — no connector fetch, unlike Step 3a-bis). This is the same detector the coach and weekly cleanup use; surfacing it in the daily brief is the highest-visibility nudge. **NEVER auto-flip `relationship_type`** — only surface the suggestion; the CEO runs the Bug #91 `[Name] is now a client` conversion. If the detector returns no candidates, emit nothing (this is a conditional line, NOT a mandatory one — contrast Step 3a-bis's required status line).
 
@@ -465,7 +493,7 @@ Render rules (M's four settled choices, 2026-07-08):
 - **Upcoming reminders** (`status == "upcoming"`, within 3 days): lighter render — one line each, no ask, no affordance row.
 - `status == "scheduled"` rows do NOT render in the brief (they show in `show my reminders`).
 - Both sections render only when non-empty (never pad). Reminder rows never mention `personal`, event names, ids, or the word "reminder lane" — plain English only.
-- These phrases route to the `show-my-reminders` skill's writer helpers (`shared/scripts/reminders.py`) — the brief itself stays read-only (its one write remains the pack_run receipt).
+- These phrases route to the `show-my-reminders` skill's writer helpers (`shared/scripts/reminders.py`) — the brief itself stays read-only toward views and entities (its writes remain the pack_run receipt AND the Writer Contract's passive-capture `interaction`/`meeting` events, which are substrate capture, not brief mutation — BUG-8244 clarification: "read-only" was being read as cancelling capture, which starves cadence/dormancy/last-touch downstream).
 
 ### Step 3g: Confirm-section pointer count (v4.6.1 W4b — one number, read-only)
 
@@ -632,6 +660,10 @@ plainly, never as a blank. pending_review rows carry the "needs a quick
 confirm" tag and are asks-to-confirm, not settled facts. Omit the sub-line
 only when the row is already rendered verbatim in Needs Attention.]
 [H2 link to the call-prep brief if one was generated, per CONTRACT Rule 3 — clickable, opens in side panel.]
+[SPEC BRIEFMERGE: on the scheduled fire these are the prep leg's lines, rendered
+verbatim from prep_leg.meeting_lines — a link per prepped meeting, one
+regenerate line per failed one, one banner if the leg failed whole. Lines, not
+a section; nothing at all for a skipped meeting; never an all-clear.]
 
 [Week-ahead horizon.]
 This week ahead: [Wed/Thu light · 3 demos Friday · Acme contract due Mon].
@@ -706,13 +738,28 @@ This scrub runs at render time — read the user's session notes / project conte
 
 ### Scheduled mode (running as a scheduled task):
 
-The Morning Brief chat IS the surface. The `morning-brief` orchestrator (registered by enable-command-room-schedules, back-filled by command-room-update-bridge) posts the digest as a markdown chat post in that persistent scheduled chat, saves the snapshot copy to `_hq/briefings/morning-[YYYY-MM-DD].md`, and records the `pack_run` receipt (including `data.needs_attention_ids` so `mark done [n]` resolves — see Step 3b). The post is markdown end to end — **no widget on any fire (FB-20)**: Step 3h's money sentences and queue-pointer line are prose inside that same digest, and `show_widget` is never called from this surface. Do not send the digest anywhere else on a scheduled fire.
+The Morning Brief chat IS the surface. The `morning-brief` orchestrator (registered by enable-command-room-schedules, back-filled by command-room-update-bridge) composes the digest, saves the snapshot copy to `_hq/briefings/morning-[YYYY-MM-DD].md`, records the `pack_run` receipt (including `data.needs_attention_ids` so `mark done [n]` resolves — see Step 3b), and THEN posts it as a markdown chat post in that persistent scheduled chat. **That order is the contract, not an implementation detail (SPEC BRIEFFIX1 Item C):** receipt before post, so a fire that dies mid-way leaves a receipt with no post — a state this product already tolerates — instead of a posted brief the substrate has no record of, which reads as a fire that never happened and puts `mark done [n]` on the wrong numbering. The post is markdown end to end — **no widget on any fire (FB-20)**: Step 3h's money sentences and queue-pointer line are prose inside that same digest, and `show_widget` is never called from this surface. Do not send the digest anywhere else on a scheduled fire.
 
 **Legacy delivery-channel fallback (explicit opt-in only):** if the user's `CLAUDE.md` / `_hq/BUSINESS_CONTEXT.md` carries an explicit "Briefing Delivery" preference naming Slack or email, honor it as an ADDITIONAL copy (Slack DM, or Gmail with subject `Morning briefing — [Day, Month DD]`). Never infer this from a connector merely being connected, and note that `mark done [n]` only works in the Morning Brief chat.
 
 ### Manual mode (user triggered in chat):
 - Display the digest directly in chat
 - No file save needed (the "what's going on" command handles full briefing saves)
+- **Record the fire BEFORE you post it, whenever the digest carries a numbered Needs Attention section (SPEC BRIEFFIX1 Item C / F1 — REQUIRED).** A hand-run brief posts the same numbered items the scheduled one does, and `mark done [n]` resolves those numbers against a recorded list. Post without recording and the newest list on file belongs to a DIFFERENT brief — so the affordance either closes the wrong item or refuses. Neither is acceptable when the CEO is looking at a numbered list you just wrote. The incident that produced this rule was exactly this: a hand-run fire that posted numbered actions and recorded nothing.
+
+  ```python
+  from prep_leg import log_combined_receipt, skipped_leg, SKIP_NO_LEG
+  log_combined_receipt(
+      WORKSPACE,
+      leg_result=skipped_leg(SKIP_NO_LEG),   # on-demand: there IS no prep leg
+      brief_status="ran",
+      fired_via="manual",                     # a typed trigger is never scheduled
+      extra_data={"needs_attention_ids": [...]},   # render order, same as the scheduled fire
+  )
+  ```
+
+  Same helper, same `pack_run` shape, same field the scheduled fire writes — never a hand-rolled receipt. `skipped_leg(SKIP_NO_LEG)` states the honest reason: this path never had a prep leg, which is different from a leg that failed and different again from a leg suppressed by lateness. If the section did not render, there is nothing to number and no receipt is owed.
+- **Same link conversion (SPEC BRIEFFIX1 Item A).** A document link is a card that either opens or does not, and that does not depend on how the brief was triggered. Whatever is about to reach chat goes through `chat_output_renderer.absolutize_doc_links(text, <workspace root>)` first; the workspace-relative form is for what is written to disk, never for what is posted.
 
 ## Tone
 
@@ -722,7 +769,7 @@ Direct and specific, like a calm chief of staff. **Opening order (the one canoni
 
 - **Scheduling threads close on the calendar, not the inbox.** The latest-sender check (Step 3c) only sees email replies. When the user answers "can we set a time?" by creating a calendar invite, the thread's newest *message* is still the counter-party's, so the email-only check keeps surfacing "reply to X to lock the time" for days (the v3.14.7 live bug). Step 3c-bis is the fix — for any scheduling-flavored "ball is on you" item you MUST also check the calendar and drop it if the user organized / the counter-party accepted a matching event. A counter-party invite-acceptance is a close signal, not inbox noise.
 - **Don't duplicate "what's going on."** This briefing is shorter and proactive — it fires before the user asks. "What's going on" is the comprehensive interactive version. They complement each other.
-- **Don't update the tracker.** This is read-only. Surface what you find; don't change anything. The user decides what to act on during their actual work session.
+- **Don't update the tracker.** This is read-only toward the tracker, entities, and views — surface what you find; don't change them. The user decides what to act on during their actual work session. **Read-only does NOT cover passive capture** (BUG-8244): the Writer Contract's `interaction`/`meeting` event emissions from connector reads are MANDATORY on every fire — skipping them because "the brief is read-only" starves relationship cadence and every last-touch computation.
 - **Don't read session notes.** The tracker has enough for a morning scan. Per-project deep dives happen on "go [project]." Keep this fast.
 - **Respect quiet periods.** If the tracker shows no active projects (all Steady State or Archived), output a minimal briefing: "Quiet day. Calendar: [events]. Inbox: [count] new." Don't pad.
 - **Weekend handling.** If configured as a weekday-only scheduled task, this won't fire on weekends. If the user manually says "morning briefing" on a weekend, run it normally — they're choosing to check in.
@@ -737,7 +784,7 @@ This skill runs as a scheduled task (weekdays 7:30am) and must implement `shared
 ## What It Doesn't Do
 
 - Does not triage individual emails or draft replies — that's `inbox-triage`.
-- Does not produce deep per-meeting prep — that's `call-prep`.
+- Does not produce deep per-meeting prep itself — that's `call-prep`. On the SCHEDULED fire the orchestrator runs `call-prep` as the fire's first leg and this digest reads its outcomes (SPEC BRIEFMERGE); on the on-demand path nothing is generated and "prep me for my 2pm" is still the way to get one.
 - Does not update MASTER_TRACKER, entities.json, or any other workspace state — this skill is read-only, and since FB-20 it is read-only in the stronger sense too: it renders no card, so nothing can be adjudicated, confirmed, or applied from a brief. (It no longer writes the LB1 card's shown-markers either — with no card rendered there is nothing to mark shown, and the staff meeting sees the full queue.)
 - Does not generate insights or pattern analysis — that's `insight-generator`.
 - Does not deliver on weekends by default — manual trigger only on weekends.

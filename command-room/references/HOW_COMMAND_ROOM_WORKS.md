@@ -162,11 +162,23 @@ Processes meeting transcripts from everything since its last successful run — 
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md`.
 
-### 5. upcoming-meetings (cron 9:30 AM weekdays)
+### 5. upcoming-meetings — RETIRED (SPEC BRIEFMERGE, M's ruling 2026-08-08)
 
-Generates per-meeting prep briefs for today's calendar via `call-prep`. Each meeting in the next 24 hours gets a .docx brief in `_hq/meetings/Call_Prep_<slug>_<date>.docx` + a widget row with the link, attendees, last-touch summary, and a quick-action button.
+The separate prep chat is **merged into the morning brief**. It is out of `DEFAULT_SCHEDULES`, listed in `schedule_config.RETIRED_TASKS`, never offered, and never registered again. A workspace that still has it registered gets ONE offer to switch it off (update bridge → `pause upcoming meetings`), never a silent disable; its orchestrator file is a retirement stub so that fire explains itself instead of replaying the old chat.
 
-**Spec**: `skills/enable-command-room-schedules/references/orchestrator-upcoming-meetings.md`.
+Where its work went — none of it was deleted:
+
+| It did | Now |
+|---|---|
+| Discovered today's meetings on its own cron | the morning-brief fire's **prep leg**, ordered FIRST (`orchestrator-morning-brief.md` Phase 2.95). One calendar pass per fire; the digest reads what the leg returned |
+| Generated a `.docx` prep per meeting | the same generator, invoked per meeting: `skills/call-prep/SKILL.md`. Same folder, same filenames, same refresh-in-place identity — the ONE-GENERATOR contract with one caller fewer |
+| Wrote its own fire receipt that nobody cross-read | ONE receipt for the merged fire carrying both legs (`prep_leg.log_combined_receipt`), so the watchdog can see "brief ran, prep didn't" — the sentence nothing could say while this was a task that could die in silence |
+| Posted a per-meeting widget | nothing. The brief is read-only (FB-20); prep outcomes are lines in its meeting section |
+| Covered later-booked meetings badly | `call-prep` on demand ("prep me for my 2pm"). There is deliberately no midday leg |
+
+Two fences make the merge safe, both proven by removal in `tests/run_briefmerge_test.py`: the prep leg can never kill the brief (per-meeting failure degrades to a line, whole-leg failure to one banner, the brief always renders), and the brief's meeting section refuses to render without the leg's result, so prep is always strictly before render.
+
+**Spec**: `skills/enable-command-room-schedules/references/orchestrator-morning-brief.md` (Phase 2.95); the retirement stub is `references/orchestrator-upcoming-meetings.md`.
 
 ### 6. pulse — RETIRED (SPEC LIFECYCLE1, M's ruling 2026-08-02)
 

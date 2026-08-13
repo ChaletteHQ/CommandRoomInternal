@@ -56,6 +56,13 @@ DOCTRINE (D1–D3, D10 + M rulings R1/R2)
 All writes go through event_gate / atomic_write. stdlib only.
 """
 from __future__ import annotations
+try:
+    from text_clip import PROPOSAL_EVIDENCE_MAX_CHARS, clip  # noqa: E402
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_tc
+    from pathlib import Path as _Path_tc
+    _sys_tc.path.insert(0, str(_Path_tc(__file__).resolve().parent))
+    from text_clip import PROPOSAL_EVIDENCE_MAX_CHARS, clip  # noqa: E402
 
 import hashlib
 import json
@@ -516,7 +523,7 @@ def propose(
         "kind": kind,
         "fingerprint": fingerprint,
         "tier": tier,
-        "evidence": (evidence or "")[:400],
+        "evidence": clip(evidence, PROPOSAL_EVIDENCE_MAX_CHARS),
         "action_tuples": action_tuples,
         "ttl_days": int(ttl_days),
         "detector": detector,
@@ -548,7 +555,7 @@ def propose(
         legacy = {
             "thread_id": thread_id,
             "proposal_kind": (extra or {}).get("proposal_kind") or "update",
-            "evidence": (evidence or "")[:400],
+            "evidence": clip(evidence, PROPOSAL_EVIDENCE_MAX_CHARS),
             "fingerprint": fingerprint,
         }
         for k in ("proposed_stage", "proposed_value"):
@@ -671,7 +678,8 @@ def _cru_strength(evidence: str, has_completion_signal) -> tuple:
 
 
 def _cru_render_line(title: str, evidence: str,
-                     weak_reason: str = "") -> str:
+                     weak_reason: str = "",
+                     stamp_note: str = "") -> str:
     """FB-19: the row's ASK, in the user's language.
 
     The live 2026-07-16 render was "Housekeeping — matched your sent message
@@ -691,13 +699,26 @@ def _cru_render_line(title: str, evidence: str,
     someone saying they had sent the thing; the user learned the difference
     only after answering. A weak row says what is missing, up front, so the
     answer is informed rather than corrected.
+
+    RIDERS (c) — `stamp_note` is the PRODUCER'S own strength claim
+    (`watch_gate.stamped_strength_note`), appended when the writer stamped one.
+    It exists because the screen above reads the evidence TEXT, and a proposal
+    built from a meeting the user was never in carries real completion
+    language: it screened STRONG and read exactly like a firsthand one. Empty
+    for every row with no stamp — which is every row that existed before this
+    parameter did, so their line is byte-identical.
     """
     ask = "Did you already handle this?"
     ev = (evidence or "").strip()
     if weak_reason:
-        return (f"{ask} I can't see proof it got done — {weak_reason}. "
+        line = (f"{ask} I can't see proof it got done — {weak_reason}. "
                 f"Close it anyway?")
-    return f"{ask} Command Room {ev} — close it?" if ev else f"{ask} — close it?"
+    elif ev:
+        line = f"{ask} Command Room {ev} — close it?"
+    else:
+        line = f"{ask} — close it?"
+    note = (stamp_note or "").strip()
+    return f"{line} ({note})" if note else line
 
 
 def _adapt_commitment_reviews(workspace_root, *,
@@ -772,6 +793,30 @@ def _adapt_commitment_reviews(workspace_root, *,
         if not isinstance(completion, bool):
             completion = None
         weak_reason, strength = _cru_strength(evidence, completion)
+        # RIDERS (c) — the WRITER'S OWN stamp, RENDER ONLY. GRANOLA1's
+        # non-attendee lane writes `evidence_strength` / `strength_reason` /
+        # `auto_close_blocked` on the proposal because it knows the provenance
+        # the evidence text cannot express, and nothing rendered them: a weak
+        # secondhand close-proposal was the same row on screen as a strong
+        # firsthand one, which is what blocks that lane's write-enable.
+        #
+        # A stamp may only make a row WEAKER (see `stamped_strength`), and it
+        # moves the render BADGE only. `weak_reason` is deliberately NOT
+        # touched: `confirm_review_rows` re-derives that field from the
+        # evidence text before screening, so writing the stamp into it would
+        # change nothing at the fence while breaking the invariant that a
+        # row's `weak_reason` is exactly what `weakness_reason(evidence)`
+        # returns. No threshold, no score, no write path moves here.
+        try:
+            from watch_gate import (stamped_strength, stamped_strength_fields,
+                                    stamped_strength_note)
+            stamp = stamped_strength(data)
+            stamp_fields = stamped_strength_fields(data)
+            stamp_note = stamped_strength_note(data)
+        except Exception:
+            stamp, stamp_fields, stamp_note = {}, {}, ""
+        if stamp_note:
+            strength = stamp["strength"]
         if not title:
             # DROP-EMPTY (FB-19): no title means no honest ask — the row would
             # render as a bare "Housekeeping" shrug, which is the defect this
@@ -790,7 +835,7 @@ def _adapt_commitment_reviews(workspace_root, *,
             "evidence": evidence,
             "action_tuples": list(_CRU_ACTIONS),
             "render_line": _cru_render_line(title, render_evidence,
-                                            weak_reason),
+                                            weak_reason, stamp_note),
             "opened_at": ev.get("ts") or "",
             "expires_at": "",
             "detector": "reconcile-sent",
@@ -810,7 +855,16 @@ def _adapt_commitment_reviews(workspace_root, *,
             "has_completion_signal": completion,
             "evidence_ts": data.get("evidence_ts"),
             "promise_ts": promise_ts.get(cid),
+            # BUG-8330 item 9 — the digest key's thread-agreement input:
+            # rows sharing an evidence line digest together only when they
+            # also agree on thread (and counterparty, when carried).
+            "primary_thread_id": ev.get("primary_thread_id") or "",
         })
+        # RIDERS (c) — the stamp rides the row ONLY when the writer set one, so
+        # an unstamped row's dict is key-for-key what it was before. A surface
+        # that wants the class rather than the sentence reads these; the two
+        # shared renderers read the sentence.
+        out[-1].update(stamp_fields)
     return out
 
 

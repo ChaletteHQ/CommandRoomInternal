@@ -204,22 +204,36 @@ def get_brief_opener_url(absolute_path: str, drive_web_url: str = "") -> str:
     "Failed to load local file." Field-reported twice by QMG (2026-07-28,
     2026-07-31) before this helper existed.
 
+    `drive_web_url` is the file's web URL on WHICHEVER cloud platform hosts
+    the workspace — a Google Drive / Docs link, a OneDrive share link, or a
+    SharePoint document URL. The name says "drive" generically, not "Google
+    Drive": v5.9.2 shipped with Drive-only lookup INSTRUCTIONS upstream, and
+    a OneDrive/SharePoint-hosted workspace stayed on dead `computer://` links
+    (BUG-8538, bug_received seq 8538 — the THIRD link-delivery report from
+    the same customer). The helper itself never cared which platform the URL
+    came from; the fix is in the lookup, `tool_discovery.discover_drive_tool`
+    + `infer_workspace_drive_platform`.
+
     Resolution order:
-      1. Session-scoped path + a `drive_web_url` supplied → the Drive web URL
-         (the file IS in their Drive; the browser opens it everywhere).
+      1. Session-scoped path + a `drive_web_url` supplied → the cloud web URL
+         (the file IS in their cloud drive; the browser opens it everywhere).
       2. Anything else → `get_brief_artifact_url(absolute_path)`, unchanged —
          host-native paths keep the `computer://` opener that M's 2026-05-20
          testing validated.
 
-    Orchestrators on a session-scoped workspace root MUST attempt the Drive
-    web-link lookup (search `_hq/meetings/<filename>` via the discovered
-    drive tool per `tool_discovery.discover_drive_tool()`) and pass it here.
-    An empty `drive_web_url` falls back to the `computer://` form rather than
-    dropping the link — a maybe-dead link with a working file card beside it
-    beats no link at all.
+    Orchestrators on a session-scoped workspace root MUST attempt the cloud
+    web-link lookup (search `_hq/meetings/<filename>` through the drive tool
+    discovered with `tool_discovery.discover_drive_tool(tools, "search",
+    prefer_platform=tool_discovery.infer_workspace_drive_platform(root))` —
+    preferring the platform that hosts the workspace when several drives are
+    connected) and pass it here. An empty `drive_web_url` falls back to the
+    `computer://` form rather than dropping the link — a maybe-dead link with
+    a working file card beside it beats no link at all.
 
     >>> get_brief_opener_url("/sessions/abc/mnt/CR/_hq/meetings/x.docx", "https://docs.google.com/document/d/f1/view")
     'https://docs.google.com/document/d/f1/view'
+    >>> get_brief_opener_url("/sessions/abc/mnt/CR/_hq/meetings/x.docx", "https://stoneindustries.sharepoint.com/:w:/r/Documents/x.docx")
+    'https://stoneindustries.sharepoint.com/:w:/r/Documents/x.docx'
     >>> get_brief_opener_url("C:/Users/Sample/CR/_hq/meetings/x.docx", "https://docs.google.com/document/d/f1/view")
     'computer://C:\\\\Users\\\\Sample\\\\CR\\\\_hq\\\\meetings\\\\x.docx'
     >>> get_brief_opener_url("/sessions/abc/mnt/CR/_hq/meetings/x.docx")

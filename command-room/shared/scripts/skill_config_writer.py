@@ -188,10 +188,10 @@ def save_skill_config(
     }
     atomic_write_json(config_path, payload)
 
-    # Emit the substrate event
+    # Emit the substrate event. No hand-stamped seq (BUG-8330 item 7) —
+    # appender allocates in-lock.
     event_type = "skill_reconfigured" if is_reconfigure else "skill_first_run_configured"
     event = {
-        "seq": next_seq(events_path),
         "ts": now_iso,
         "type": event_type,
         "source_skill": skill_name,

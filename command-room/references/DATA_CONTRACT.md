@@ -231,7 +231,7 @@ Append-only newline-delimited JSON. One event per line. Full schema: `shared/dat
 
 | Type | data payload fields | Used by |
 |---|---|---|
-| `meeting` | `{title, duration_min, attendee_person_ids, summary, transcript_ref}` | meeting-notes |
+| `meeting` | `{title, duration_min, attendees[] (invitee EMAILS, verbatim from the source), attendees_external[] (display names with no entities.json match), summary, source_ref, meeting_type}` — **person binding is MANDATORY: top-level `person_ids[]` (resolved) + `data.attendees[]` (emails). Construct ONLY via `meeting_capture.build_meeting_event()` (BUG-8244)**. Legacy read-only variants readers must fold: `data.attendee_person_ids`, `data.attendee_emails`. | meeting-notes, past-meetings, weekly-recap, workspace-manager, people-crm, workspace-ingest, historical-backfill |
 | `decision` | `{title, context, decision, rationale, alternatives[], decided_by_person_id}` | decision-log, meeting-notes, workspace-manager |
 | `commitment` | `{description, owner_person_id, due_date, status}` | meeting-notes, workspace-manager |
 | `commitment_resolved` | `{commitment_seq, resolution}` | workspace-manager, meeting-notes |

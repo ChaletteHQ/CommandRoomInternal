@@ -381,6 +381,21 @@ Telemetry events (`pack_run`, `draft_created`, `connector_read`, `meeting_proces
 - The Quick Read block (Rule 7), when applicable
 - A one-line plain-English save confirmation: "Drafts saved — reply to send any of them." or "Briefs saved to your Command Room folder for today."
 - A "Sources:" block of inline source links per Rule 2, when ≥3 sources back the items and inline linking would have been cluttered
+- **The receipt-errors notice, when there is one (WALKFIX1 Item J, 2026-08-10).** If this fire's own `pack_run` receipt carries a non-empty `data.errors`, the tail carries ONE line, rendered by `shared/scripts/receipts.py::receipt_errors_notice(<the receipt event>)` — never composed:
+
+  > 1 internal correction noted — details in the run receipt (entry 8324).
+
+  This is the ONE exception to "never narrate telemetry", and it is narrow on purpose: a count and a pointer, no error text, no phase names, no alarm vocabulary, and nothing for the reader to do. It exists because the alternative is worse — on 2026-08-10 a fire wrote an `errors[]` entry naming a real correctness defect in its own run and the chat presented a clean recap beside it, so the operator could only learn of it by reading the ledger. A system that noticed something and said nothing has spent trust it did not have to. Empty or absent `errors` renders nothing at all; a notice about nothing is worse than silence.
+
+  > **FLAGGED FOR M's UI/UX RETEST.** This amends chat-surface posture on a question M has not explicitly ruled on. It follows the product's own closing-silently-is-worse principle, and M may strike it.
+  >
+  > **COMPLETE STRIKE SET — all five, and the battery is RED if you stop at three.** (The first cut of this list named only the first three; a reviewer executed it and the mutation harness halted with `mutation anchor in shared/scripts/receipts.py matched 0 times, expected 1` — a striker following a partial list gets a red battery and no hint why. The list is complete when striking it leaves the battery green, and that is now verified by execution.)
+  >
+  > 1. **this bullet** — the whole `**The receipt-errors notice…**` item, including this flag block;
+  > 2. `shared/scripts/receipts.py` — the `receipt_errors_notice` function and its docstring;
+  > 3. `tests/run_walkfix1_chat_errors_test.py` — `section_errors_notice` (its `[J]` / `[J2]` output) **and its call in `main()`**;
+  > 4. `tests/run_walkfix1_mutation_test.py` — mutation **`W18`** (the `M.run_mutation("W18 …")` block) **and its `W18` row in the module docstring**. *This is the one the partial list missed: the mutation's anchor is the code struck in step 2, so leaving it in place halts the harness.*
+  > 5. `CHANGELOG.md` — the *"A run that corrected itself says so, in one line"* section of the `## Unreleased — WALKFIX1` block, which would otherwise ship a release note for a feature that is not in the build.
 - Nothing else. No internal mechanics. No tool-call summaries. No event seq numbers.
 
 ### Rule 11 — Phase labels NEVER appear in chat (v2.10.5+)

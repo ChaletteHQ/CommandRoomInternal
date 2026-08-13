@@ -196,6 +196,7 @@ def load_all(root: str | Path, since_ts=None) -> list[dict]:
 
 def load_events_org_scoped(
     root: str | Path, since_ts=None, drop_personal: bool = True,
+    stats: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """THE events reader for org/board/client/external outputs — the mask is
     the default, not a call-site opt-in.
@@ -219,6 +220,49 @@ def load_events_org_scoped(
     Returns (events, skipped). `since_ts` passes through to the loader's
     shard pruning; masks are computed from the loaded list with a
     workspace-root fallback so a pruned shard can't hide a mask event.
+
+    WITHHELD COUNTER (BUG-8330 fix round, FX-5). Pass a dict as `stats` and it
+    is filled with:
+
+      personal_withheld          rows layer 3 removed, total
+      personal_withheld_by_tie   the subset removed by the PERSON-TIE JOIN
+                                 specifically (item 12's inferred rule, the
+                                 one with no explicit marker behind it)
+
+    A ZERO IS WRITTEN WHEN THE LAYER RAN AND REMOVED NOTHING. A KEY IS ABSENT
+    WHEN THE LAYER DID NOT RUN — `drop_personal=False`, or the firewall symbol
+    failing to import (fix round 2, finding C-6). Those two states are not the
+    same fact, and a zero for the second one is precisely the "measured,
+    nothing withheld" ambiguity this counter exists to end. Read an absent key
+    as "not measured", never as zero.
+
+    The drop used to be a bare list comprehension with nothing recording its
+    size, so a 70→6 collapse would have been invisible in exactly the lane
+    item 6 was given `n_filtered_by_confidence` to make visible.
+
+    WHO ACTUALLY CARRIES IT (census, kept honest — fix round 2, finding C-4).
+    Passing `stats=` is per-call-site, so the counter reaches a surface only
+    where a real receipt or run report can hold it. In-tree today:
+
+      value_receipt.compute_value_receipt      -> the `value_receipt_generated`
+                                                  org receipt payload
+      org_value_detector.detect_org_value_signals
+                                               -> its run-report counts dict
+
+    The remaining org-scoped reads — `brain_proposals._load_events`,
+    `coach_state`'s member-pack seam, `entity_signal_detector._load_events`,
+    `objective_link_detector._load_events`, `value_receipt.validate_receipt_ran`
+    — drop rows UNCOUNTED, because none of them writes a receipt and inventing
+    a receipt type to carry a counter is worse than saying so here.
+    `run_personal_tie_join_test` pins this census against the tree, so the
+    paragraph cannot drift from the code.
+
+    **M-REVIEWABLE SEAM:** what belongs on an org surface when a person is
+    both client and family is a policy call, not a code call. The shipped
+    policy is "a GENUINE business binding wins, and what is withheld is
+    measured" — `personal_leak.business_binding`, resolved against the
+    workspace's own thread register. The counter is what makes the policy's
+    cost visible so M can re-set it with evidence.
 
     OWNER surfaces (the brief, show-my-reminders, person/org history) should
     NOT use this — they legitimately show personal rows; use `iter_events` +
@@ -255,25 +299,84 @@ def load_events_org_scoped(
     except Exception:
         pass
 
-    # Layer 3 — personal lane. is_personal never raises.
+    # Layer 3 — personal lane. is_personal never raises. The person-tie JOIN
+    # (BUG-8330 item 12): a row referencing a `tie: "personal"` person is
+    # personal even when the row itself carries no marker — no capture path
+    # ever stamped one, so a family commitment captured from ordinary mail
+    # was invisible to this layer before the join.
+    n_withheld = 0
+    n_withheld_by_tie = 0
+    # Did layer 3 actually RUN? Only then may a zero be written — see the
+    # docstring's absent-vs-zero rule (fix round 2, finding C-6).
+    measured = False
+    measured_by_tie = False
     if drop_personal:
         try:
-            from personal_leak import is_personal
-            events = [ev for ev in events if not is_personal(ev, masks=masks)]
+            from personal_leak import is_personal, personal_tie_ids
+            # Imported SEPARATELY on purpose: the counter is an accounting
+            # nicety, the drop is the privacy wall. A single combined import
+            # would let a missing counter symbol take the whole firewall down
+            # with it.
+            try:
+                from personal_leak import withheld_by_personal_tie
+            except ImportError:  # pragma: no cover
+                withheld_by_personal_tie = None
+            # The thread register the join's override resolves against
+            # (BUG-8330 fix round 2). Also imported separately, but in the
+            # OPPOSITE direction from the counter: a missing resolver must
+            # leave the override INERT (empty register -> nothing resolves ->
+            # every tie-touching row withheld), never permissive.
+            try:
+                from personal_leak import business_thread_ids
+                b_threads = business_thread_ids(root)
+            except ImportError:  # pragma: no cover
+                b_threads = frozenset()
+            p_ids = personal_tie_ids(root)
+            kept = []
+            for ev in events:
+                if is_personal(ev, masks=masks, personal_ids=p_ids,
+                               business_threads=b_threads):
+                    n_withheld += 1
+                    if (withheld_by_personal_tie is not None
+                            and withheld_by_personal_tie(
+                                ev, personal_ids=p_ids,
+                                business_threads=b_threads)):
+                        n_withheld_by_tie += 1
+                    continue
+                kept.append(ev)
+            events = kept
+            measured = True
+            measured_by_tie = withheld_by_personal_tie is not None
         except ImportError:
+            # The firewall symbol itself is missing: the drop DID NOT RUN.
+            # Report nothing — a zero here would claim a measurement that
+            # never happened, and the caller must be able to tell the two
+            # apart. The rows stay in `events` exactly as before; this branch
+            # has always been the (near-impossible, same-package) degraded
+            # path, and making it silent-and-honest is the whole fix.
             pass
+
+    if isinstance(stats, dict):
+        # Zeros are written when MEASURED; keys stay ABSENT when the layer
+        # did not run (drop_personal=False, or the import above failed).
+        if measured:
+            stats["personal_withheld"] = n_withheld
+            if measured_by_tie:
+                stats["personal_withheld_by_tie"] = n_withheld_by_tie
 
     return events, skipped
 
 
 def iter_events_org_scoped(
     root: str | Path, since_ts=None, drop_personal: bool = True,
+    stats: dict | None = None,
 ) -> Iterator[dict]:
     """Generator form of `load_events_org_scoped` (same three layers; the
     skipped-lines channel is dropped — use the load_ form when a surface must
-    report skipped counts)."""
+    report skipped counts). `stats` is filled the same way, before the first
+    row is yielded."""
     events, _skipped = load_events_org_scoped(
-        root, since_ts=since_ts, drop_personal=drop_personal
+        root, since_ts=since_ts, drop_personal=drop_personal, stats=stats
     )
     yield from events
 

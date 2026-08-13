@@ -277,7 +277,6 @@ Manual commitment logging. Used when the CEO hears a commitment outside of a pro
 
    ```json
    {
-     "seq": <reserved by writer helper>,
      "ts": "<ISO 8601 — when the commitment was MADE>",
      "type": "commitment",
      "source_skill": "team-intelligence",

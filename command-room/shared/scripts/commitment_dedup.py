@@ -866,6 +866,144 @@ def apply_auto_merges(workspace_root, *, source_skill: str,
     return out
 
 
+# ---------------------------------------------------------------------------
+# Render-time fold (BUG-8330 item 14)
+# ---------------------------------------------------------------------------
+
+def _fold_sort_key(ev: dict, index: int, cid: str) -> tuple:
+    """Canonical-survivor ordering: LOWEST seq wins the fold root.
+
+    Seq is the ledger's own append order, so the lowest seq in a duplicate
+    component is the ORIGINAL record — the one whose id other rows, threads
+    and closures already point at. Rows with no usable seq sort last (they
+    cannot be the original), then by id, then by position, so the choice is
+    total and deterministic for any input order.
+    """
+    seq = ev.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        return (1, 0, cid, index)
+    return (0, seq, cid, index)
+
+
+def fold_suspected_duplicates(events: list) -> tuple[list, int]:
+    """Collapse a suspected-duplicate COMPONENT into one rendered row.
+
+    The capture-time annotation flags only the NEW row (`data.
+    suspected_duplicate_of`) and the survivor renders clean — so a daily
+    surface printed BOTH rows, the second one beside a "same ask, a second
+    open record" note: the spec working as (mis)designed. This fold is the
+    RENDER half: where a flagged row's suspected_duplicate_of points at a
+    row IN THE SAME rendered set, the flagged row is folded into the
+    survivor, and the SURVIVOR carries the back-reference —
+    `data.duplicate_fold_ids` (EVERY folded row's id in the component) and
+    `data.duplicate_fold_count` (total records, survivor included) — so its
+    row can say "3 records — merge?".
+
+    TRANSITIVE AND CYCLE-SAFE (BUG-8330 fix round, FX-3). The first cut was a
+    single non-transitive pass: it collected every flagged row into `dropped`
+    and emitted the complement, with nothing checking whether a fold TARGET
+    was itself dropped. Two consequences, both proven by the PR #50
+    second-eyes review:
+
+      - a CYCLE erased every row. `commitment_state.flag_duplicate_for_review`
+        is public, exported and takes an arbitrary target, so two ordinary
+        calls marking A and B as duplicates of each other dropped BOTH while
+        the header kept counting them: "2 owed to you" over an empty surface.
+      - a CHAIN C→B→A dropped C with no back-reference anywhere — the
+        module's own promise that "the SURVIVOR carries the back-reference"
+        was violated, and the user had no path back to the dropped record.
+
+    Now every pointer is resolved to a component ROOT. An acyclic component
+    roots at the row nobody points away from; a component containing a cycle
+    roots at the cycle's canonical survivor (`_fold_sort_key` — lowest seq,
+    i.e. the original record). Either way exactly ONE row per component
+    renders, and it carries every other member's id.
+
+    READ-SIDE ONLY over projected copies; adjudication is untouched — the
+    triage pin block keeps rendering both rows with the merge verbs, and
+    the flagged event stays open in the substrate. A pointer at a row NOT
+    in the set folds nothing (there is nothing on the page to collapse
+    into). Returns (folded_events, n_folded)."""
+    from cru_match import _commitment_id
+
+    events = [ev for ev in (events or []) if isinstance(ev, dict)]
+    ids = [_commitment_id(ev) for ev in events]
+    by_id: dict[str, int] = {}
+    for i, cid in enumerate(ids):
+        by_id.setdefault(cid, i)  # first spelling wins; never remap onto a later twin
+
+    # Edge set: i folds toward parent[i]. Self-pointers and pointers outside
+    # the rendered set are dropped here — there is nothing on the page to
+    # collapse into.
+    parent: dict[int, int] = {}
+    for i, ev in enumerate(events):
+        target = (ev.get("data") or {}).get("suspected_duplicate_of")
+        if not target:
+            continue
+        j = by_id.get(str(target))
+        if j is None or j == i:
+            continue
+        parent[i] = j
+
+    if not parent:
+        return events, 0
+
+    # Resolve every node to its component root. The walk is bounded by the
+    # node count (each step either terminates or records a not-yet-seen node),
+    # so a cycle of any length terminates instead of spinning.
+    root_of: dict[int, int] = {}
+    for start in range(len(events)):
+        if start in root_of:
+            continue
+        path: list[int] = []
+        seen: dict[int, int] = {}
+        cur = start
+        while True:
+            if cur in root_of:
+                root = root_of[cur]
+                break
+            if cur in seen:
+                # CYCLE GUARD. Everything from the repeat point onward is a
+                # closed loop with no natural root; elect the canonical
+                # survivor so exactly one member of the loop renders.
+                cycle = path[seen[cur]:]
+                root = min(cycle, key=lambda n: _fold_sort_key(events[n], n, ids[n]))
+                break
+            if cur not in parent:
+                root = cur
+                break
+            seen[cur] = len(path)
+            path.append(cur)
+            cur = parent[cur]
+        for node in path:
+            root_of[node] = root
+        root_of.setdefault(start, root)
+
+    fold_into: dict[int, list] = {}
+    dropped: set = set()
+    for i in range(len(events)):
+        root = root_of.get(i, i)
+        if root == i:
+            continue
+        fold_into.setdefault(root, []).append(ids[i])
+        dropped.add(i)
+
+    if not dropped:
+        return events, 0
+    out: list = []
+    for i, ev in enumerate(events):
+        if i in dropped:
+            continue
+        folded = fold_into.get(i)
+        if folded:
+            d = dict(ev.get("data") or {})
+            d["duplicate_fold_ids"] = list(folded)
+            d["duplicate_fold_count"] = len(folded) + 1
+            ev = {**ev, "data": d}
+        out.append(ev)
+    return out, len(dropped)
+
+
 __all__ = [
     "DUP_WINDOW_DAYS",
     "DUP_TITLE_STRONG",
@@ -880,4 +1018,5 @@ __all__ = [
     "has_stale_auto_merge_stamp",
     "apply_auto_merges",
     "flag_suspected_duplicates",
+    "fold_suspected_duplicates",
 ]

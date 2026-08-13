@@ -294,19 +294,15 @@ def watch_and_receipt(
 
     events_written = 0
     if outcomes:
-        from next_seq import next_seq
         from atomic_write import atomic_append_jsonl
-        seq = next_seq(str(events_path))
-        rows = []
-        for o in outcomes:
-            rows.append({
-                "seq": seq,
-                "ts": now,
-                "type": "email_outcome",
-                "source_skill": source_skill,
-                "data": o,
-            })
-            seq += 1
+        # No hand-stamped seq (BUG-8330 item 7) — the appender allocates the
+        # whole batch monotonically inside the writer lock.
+        rows = [{
+            "ts": now,
+            "type": "email_outcome",
+            "source_skill": source_skill,
+            "data": o,
+        } for o in outcomes]
         atomic_append_jsonl(events_path, rows)
         events_written = len(rows)
 
@@ -334,33 +330,21 @@ def watch_and_receipt(
 # Commitment punctuality — read-side, no new events (D5)
 # ---------------------------------------------------------------------------
 
-_CLOSER_TYPES = ("commitment_resolved", "thread_resolved", "commitment_superseded")
-
-
 def commitment_punctuality(events: List[dict], *, as_of_iso: str) -> dict:
     """Per-commitment punctuality, computed from existing events only.
 
     Buckets: on_time | late | open_past_due | open_not_due | no_due_date.
     Returns `{"per_commitment": [...], "aggregates": {<bucket>: count}}`.
-    Pure — `as_of_iso` is the clock; no `datetime.now()` here."""
-    as_of = _parse_ts(as_of_iso)
+    Pure — `as_of_iso` is the clock; no `datetime.now()` here.
 
-    # Earliest resolved ts per commitment id (mirrors load_open_commitments' closer chain).
-    resolved_ts: Dict[str, object] = {}
-    for ev in events:
-        if ev.get("type") not in _CLOSER_TYPES:
-            continue
-        d = ev.get("data") or {}
-        cid = (
-            d.get("commitment_id") or d.get("thread_id") or d.get("id")
-            or d.get("target_id") or ev.get("commitment_id") or ev.get("thread_id")
-            or ev.get("id")
-        )
-        if not cid:
-            continue
-        rdt = _parse_ts(event_time(ev))
-        if cid not in resolved_ts or (rdt is not None and (resolved_ts[cid] is None or rdt < resolved_ts[cid])):
-            resolved_ts[cid] = rdt
+    BUG-8330 item 1: closure state comes from the shared closure_index —
+    the private chain here missed the F3 seq aliases and Stage D reopens, so
+    a seq-alias-closed commitment counted as open forever and a reopened one
+    counted as resolved. `closing_event` is the latest STANDING closure
+    (after a reopen + re-close, the re-close is what punctuality measures)."""
+    from closure_index import build_closure_index
+    as_of = _parse_ts(as_of_iso)
+    closure = build_closure_index(events)
 
     per: List[dict] = []
     agg = {"on_time": 0, "late": 0, "open_past_due": 0, "open_not_due": 0, "no_due_date": 0}
@@ -370,11 +354,12 @@ def commitment_punctuality(events: List[dict], *, as_of_iso: str) -> dict:
         cid = _commitment_id(ev)
         due_raw = _commitment_field(ev, "due")
         due = _parse_ts(due_raw) if isinstance(due_raw, str) else None
-        rdt = resolved_ts.get(cid)
+        closer = closure.closing_event(cid, ev.get("seq"))
+        rdt = _parse_ts(event_time(closer)) if closer is not None else None
 
         if due is None:
             bucket = "no_due_date"
-        elif cid in resolved_ts:
+        elif closer is not None:
             bucket = "on_time" if (rdt is not None and rdt <= due) else "late"
         elif as_of is not None and as_of > due:
             bucket = "open_past_due"
@@ -385,7 +370,7 @@ def commitment_punctuality(events: List[dict], *, as_of_iso: str) -> dict:
         per.append({
             "commitment_id": cid,
             "due": due_raw,
-            "resolved_ts": (rdt.isoformat() if rdt is not None else None) if cid in resolved_ts else None,
+            "resolved_ts": rdt.isoformat() if rdt is not None else None,
             "bucket": bucket,
         })
 

@@ -8,7 +8,7 @@ description: "Walk into a specific meeting already prepped. Fires on: 'prep me f
 
 This skill produces a `.docx` brief deliverable. It MUST be produced through the canonical chokepoint — no exceptions:
 
-- **ONE GENERATOR (v4.5.2 S1, fixes FINDINGS F-60):** this pipeline — five-block gathering → `prep_pipeline.assemble_prep_sections` → `make_brief` → `receipts.log_prep_receipt` — is THE prep generator. The scheduled auto-prep (`orchestrator-upcoming-meetings.md` Phase 4) runs this same pipeline; there is no thinner scheduled variant. Depth differences come ONLY from the Standard/Deep setting, never from which path fired.
+- **ONE GENERATOR (v4.5.2 S1, fixes FINDINGS F-60; SPEC BRIEFMERGE 2026-08-08 made it literal):** this pipeline — five-block gathering → `prep_pipeline.assemble_prep_sections` → `make_brief` → `receipts.log_prep_receipt` — is THE prep generator, and since the Upcoming Meetings chat retired it is the ONLY one. The scheduled auto-prep is now the morning-brief fire's first leg (`references/orchestrator-morning-brief.md` Phase 2.95), and that leg INVOKES THIS FILE per meeting rather than carrying its own copy of the pipeline. There is no thinner scheduled variant and no second prose home to drift from. Depth differences come ONLY from the Standard/Deep setting, never from which path fired. Two arguments differ on the scheduled path: `generated_by="morning-brief"` and `fired_via` from the fire's run mode (`scheduled` / `catchup`) instead of `manual`.
 - **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="call_prep", ...)`** (see the required call sequence below). That single call runs the output-contract gate (B3 — per-section depth floors), the voice-tell gate (B2), and the post-render leak scan, in that order, BEFORE the file is written. The brief is also where the forwardable-clean / no-provenance rules are enforced.
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard or PII-leaking briefs (the v3.20.0 failure mode).
 - **NEVER create, render, copy, upload, or update a brief — or any part, derivative, or restatement of one ("talking points", "an agenda", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not on one vendor's API quirk). This is the same severity as the hand-rolled-`.docx` ban and fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root — so the artifact violates the workspace root rule by construction (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "as a copy alongside the canonical file" — **nor a direct instruction**: "put that in a Google Doc" is a request this gate refuses, not an override. Say the canonical brief already exists and hand back its link. Delivery is the `computer://` link to the canonical `.docx` in the meetings folder, only.
@@ -144,13 +144,13 @@ Generates a comprehensive meeting brief by pulling context from all your tools a
 7. Reads `events.jsonl` for any open commitments tied to this project (legacy `_hq/MASTER_TRACKER.md` is still read as a fallback if present)
 8. Retrieves notes from Granola for the last meeting with these people
 9. **Resolves the ONE file this meeting's brief lives in** via `prep_pipeline.resolve_prep_brief_path(workspace_root, meeting_id, title=…, date_iso=…)` — the slug is a pure function of the calendar event id (v4.5.2 S1, F-29b). If a brief for this meeting already exists, the regeneration **refreshes it in place**; a second differently-slugged file for the same meeting is a defect (`acme-bo-sample-session` vs `bo-sample` was one meeting).
-10. Generates a structured brief with all the context you need, then **writes the per-brief receipt** via `receipts.log_prep_receipt(workspace_root, meeting_id=…, slug=…, brief_path=…, generated_by="call-prep", fired_via="manual", refreshed=…)` — THE signal the morning brief's no-prep detection reads (F-29). A brief without its receipt gets flagged "no prep" tomorrow morning no matter how good it is.
+10. Generates a structured brief with all the context you need, then **writes the per-brief receipt** via `receipts.log_prep_receipt(workspace_root, meeting_id=…, slug=…, brief_path=…, generated_by="call-prep", fired_via="manual", refreshed=…, meeting_start=…)` — THE signal the morning brief's no-prep detection reads (F-29). A brief without its receipt gets flagged "no prep" tomorrow morning no matter how good it is, and one without `meeting_start` cannot be reused by tomorrow's fire (a recurring meeting's id is the same every week; the start is what makes this instance this instance).
 
 ### Brief save path (canonical — v2.12.6+, v2.14.32+ writer)
 
 The brief saves to `_hq/meetings/` under the canonical filename produced by `shared/scripts/brief_path.get_brief_path()`. Do not hand-roll paths in this skill. Per `shared/CONTRACT.md` Rule 3, the prior `[Project]/meetings/` location (v2.10.8 - v2.12.5) didn't always resolve in Cowork's sandbox — users hit "folder cannot be found" on click.
 
-**Required call sequence (v4.5.2 S1 — mirrors `orchestrator-upcoming-meetings.md` Phase 4 step 3; the SAME pipeline both paths run):**
+**Required call sequence (v4.5.2 S1 — the ONE sequence both the on-demand ask and the morning brief's prep leg run; BRIEFMERGE removed the second copy that used to live in the retired `orchestrator-upcoming-meetings.md`):**
 
 ```python
 # Add shared/scripts to path (canonical preamble — same as orchestrators)
@@ -181,14 +181,46 @@ make_brief(res["path"], brief_kind="call_prep", title=..., subtitle=...,
 
 # 4. Per-brief receipt — THE no-prep detector's signal (F-29). Skipping this
 #    step re-creates the "no prep brief" false flag tomorrow morning.
+#    `meeting_start` is the INSTANCE discriminator (BRIEFFIX1 Item B): a
+#    calendar id is stable across a recurring series, so without it nothing
+#    downstream can tell this standup's prep from next week's, and the morning
+#    brief regenerates rather than risk handing over the wrong document.
 log_prep_receipt(workspace_root, meeting_id=meeting_id, slug=res["slug"],
                  brief_path=res["path"], generated_by="call-prep",
-                 fired_via="manual", refreshed=res["refresh"])
+                 fired_via="manual", refreshed=res["refresh"],
+                 meeting_start=meeting_start)   # the calendar event's own start
 
 # 5. Surface the brief as a clickable link in chat. NEVER as a plain path string
 #    or "saved to ..." narration.
 artifact_url = get_brief_artifact_url(res["path"])  # native computer:// per v3.13.0+
 ```
+
+**Persist the pointer WORKSPACE-RELATIVE (SPEC BRIEFMERGE §C).** `res["path"]` is absolute — correct for `make_brief`, wrong for the substrate. Anything this skill writes into an event (`brief_path` on the prep receipt, any deliverable pointer) goes through `workspace_paths.to_workspace_relative(res["path"], workspace_root)` first, and `workspace_paths.assert_workspace_relative` refuses an absolute value at the write. An absolute path is valid only on the machine and in the session that produced it: a prep generated in a cloud session, or on the CEO's other computer, yields a card that reads "This file can't be found on your computer" everywhere else (field-verified 2026-08-08 — the files were all present in the synced meetings folder; the pointers had rotted). Readers resolve back at render time via `workspace_paths.normalize_persisted_path`, which also repairs legacy absolute rows on READ — history is never rewritten.
+
+**Cloud-aware opener (v5.9.2, platform-neutral v5.11.1 — MANDATORY on both paths).** A `computer://` link only opens a file that exists on the customer's own machine. A workspace mounted from Google Drive, OneDrive, or SharePoint resolves to a session-scoped root, so the `computer://` form is a guaranteed "Failed to load local file." there (QMG field reports 2026-07-28 / 2026-07-31 / 2026-08-11 — the third was a OneDrive/SharePoint workspace the v5.9.2 Drive-only lookup could never serve, BUG-8538). Check the shape, then emit through the cloud-aware opener:
+
+```python
+from brief_path import is_session_scoped_path, get_brief_opener_url
+
+BRIEF_SESSION_SCOPED = is_session_scoped_path(res["path"])
+# If BRIEF_SESSION_SCOPED is True: after the brief is written and synced, look
+# up its web link on the workspace's OWN cloud platform and pass it below.
+# Discover the drive tool with the workspace host preferred —
+#   tool_discovery.discover_drive_tool(tools, "search",
+#       prefer_platform=tool_discovery.infer_workspace_drive_platform(workspace_root))
+# — never first-match: with Google Drive AND Microsoft 365 both connected,
+# first-match can search the drive that does not hold the workspace (BUG-8538).
+# platform == "google_drive" → search the filename under _hq/meetings/, use the
+# Drive web link. platform in "onedrive"/"m365_sharepoint" (the M365 connector's
+# file surface spells `sharepoint`, e.g. sharepoint_search) → same search, use
+# the OneDrive/SharePoint web URL. Lookup empty-handed + another drive
+# connected (with or without an inferred preference) → try the other before
+# giving up. Lookup failure is non-fatal — get_brief_opener_url falls back to
+# the computer:// form on its own.
+opener_url = get_brief_opener_url(res["path"], drive_web_url)
+```
+
+**Name spelling (v4.6.1 S3 / F-50 P2b).** The `title`'s attendee name — and every attendee name in the sections — is the RESOLVED person record's spelling (`entity_resolve` display_name / `canonical_name`), never a calendar-invite or transcript spelling. Raw spellings survive only inside verbatim quotes; an unresolved attendee keeps the as-heard spelling until a record exists. Full rule: `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names.
 
 **Surface in chat (v3.13.0+ — per CONTRACT.md Rule 3, H2 heading-link primary, `present_files` demoted):**
 
@@ -228,7 +260,7 @@ Call-prep was the headline violator: it opened with Meeting Details (which the C
 - **NEEDED** = the single reader-action, if any (most call-prep briefs have none → "Nothing from you.").
 - **Meeting Details drops to section 2** — directly under the exec header.
 
-The full section content is unchanged; only the ORDER flips and the lead moves to the top. The per-section content floors below still apply. **Sync rule (same commit): the section ORDER change is mirrored in `orchestrator-upcoming-meetings.md` Phase 4 section list.**
+The full section content is unchanged; only the ORDER flips and the lead moves to the top. The per-section content floors below still apply. **Sync rule (same commit): the section order lives in `prep_pipeline.assemble_prep_sections` and is described here. Since BRIEFMERGE there is no third copy — the scheduled leg reads THIS file at fire time — so those two are the whole sync surface.**
 
 **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("call_prep", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: visual placement and proportions (for call-prep, `assemble_prep_sections` owns the section list — the exemplar anchors layout within it, never against it). Workspace exemplar (`_hq/exemplars/call_prep/`) beats the shipped seed; `None` = compose on the defaults above, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the brief. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered brief ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="call_prep", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
@@ -236,7 +268,7 @@ The full section content is unchanged; only the ORDER flips and the lead moves t
 
 The brief is structured around the **five blocks** (v4.5.2 S1, the FINDINGS F-60 PROPOSAL): ① walk-out-with ② changed since last touch ③ decide ④ owed both directions ⑤ sourced talking points. `prep_pipeline.assemble_prep_sections` owns the section order — both prep paths call it. Every section is required (omit only when no signal exists for it; never pad with placeholder text). **Order (EXEC1-inverted): the exec header is first.**
 
-> **Sync rule (v3.11.1+ / v4.5.2):** If you add, rename, or reorder any section below, update `prep_pipeline.assemble_prep_sections` AND [`skills/enable-command-room-schedules/references/orchestrator-upcoming-meetings.md`](../enable-command-room-schedules/references/orchestrator-upcoming-meetings.md) Phase 4 **in the same commit**. Pre-v3.6.4 these drifted silently; the upcoming-meetings orchestrator dropped any content from a section it didn't know about.
+> **Sync rule (v3.11.1+ / v4.5.2, narrowed by BRIEFMERGE):** If you add, rename, or reorder any section below, update `prep_pipeline.assemble_prep_sections` **in the same commit**. That is now the entire sync surface: the scheduled path reads THIS file at fire time instead of carrying its own section list, so the drift that made this rule necessary (pre-v3.6.4 the upcoming-meetings orchestrator silently dropped content from any section it didn't know about) is structurally gone.
 
 - **Exec header (EXEC1 — first block; block ①):** verdict (= the walk-out objective, one sentence, the concrete win) + CHANGED / DECIDE / NEEDED leads. Replaces the bottom-of-document "Suggested Outcome" as the lead.
 - **At a Glance (visual layer, v4.5.2 S1):** stat-tile band — days since last touch · you-owe / owed-to-you counts with oldest age · engagement touch #. Built by `prep_pipeline.build_prep_tiles` from substrate only; **a tile with no data is DROPPED, never rendered empty** (the band is omitted entirely when nothing is known).
@@ -301,7 +333,7 @@ Per-section content floors (count, then fix — a floor without a count is not a
 
 ### Internal-meeting variant (v3.6.3+)
 
-When ALL non-user attendees share the user's primary domain (internal-only meeting per orchestrator-upcoming-meetings.md Phase 3), the section template changes. The external prep sections (Relationship Context, Cross-Project Insights, full attendee bios) are dropped — the user knows their teammates. The brief becomes project-context prep instead.
+When ALL non-user attendees share the user's primary domain (internal-only meeting — the attendee-mix rule the morning brief's prep leg applies at discovery, `orchestrator-morning-brief.md` Phase 2.95 Step A), the section template changes. The external prep sections (Relationship Context, Cross-Project Insights, full attendee bios) are dropped — the user knows their teammates. The brief becomes project-context prep instead.
 
 Internal-only section list, in order:
 
@@ -338,7 +370,7 @@ The internal variant exists because orchestrator v2.14.36+ surfaces internal mee
 
 - **Google Calendar** — Find the meeting, extract attendees and agenda
 - **Gmail** — Search for recent email threads with attendees
-- **Slack** — Pull recent messages about the project or people
+- **The declared chat backend** — Pull recent messages about the project or people. Resolve the tool with `tool_discovery.discover_chat_tool(tools, operation, declared=<the declared chat row>)`; when `connector_adapters.chat.resolve_chat_provider` returns None the workspace has no chat backend and this source simply does not exist for this prep — skip it silently, never mention it. **Read-only, live, and source-linked (SPEC CHATSCAN1 §C):** this is an on-demand query at prep time, it writes no commitments, and every chat line it surfaces carries its link back to the message per `_hq/CONVENTIONS_SOURCE_LINKS.md`. When the backend can only sweep chat partially, append `connector_adapters.chat.plan_scan(provider)["coverage_note"]` verbatim rather than letting the section imply it saw everything.
 - **Granola** — Retrieve notes from past meetings with these people
 - **entities.json** — Canonical relationship context on attendees (how you know them, last interaction, key notes) per `shared/PASSIVE_CAPTURE.md`. Legacy `_hq/PEOPLE.md` is read as a fallback if present.
 - **events.jsonl** — Open commitments, prior decisions, project events. Legacy `_hq/MASTER_TRACKER.md` is read as a fallback if present.

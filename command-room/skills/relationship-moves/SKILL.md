@@ -29,6 +29,8 @@ score = 0.5 × normalized_dormancy + 0.3 × thread_context + 0.2 × min(overdue_
 
 Resolve the workspace per `shared/CONTRACT.md` Rule 22. Then, per candidate, you MUST call `shared/scripts/live_contact_check.py::live_contact_check()` before surfacing — inherit the `dormant-customer-scan` live-check MUST-language verbatim: NO dormancy-driven outreach from substrate-only data. Drop any candidate the live check un-dormants (a recent touch the substrate missed) — EXCEPT candidates whose rank is carried by overdue commitments (overdue component >= dormancy component in the blend): an overdue item is still overdue after a recent touch, so keep the card and cite the recent touch in the why-now line instead of pitching re-engagement.
 
+**Meetings count as contact (BUG-8244).** `dormancy.load_dormancy_signals` now folds every meeting-binding variant (including email-shaped attendee fields) into its contrary-evidence gate, so a person the user actively MEETS no longer ranks as dormant off stale signals — the failure that once pre-drafted a "we haven't talked in a while" opener about someone the user holds weekly 1:1s with. The live check stays mail/Slack-scoped; recent meetings are the substrate's job, and a candidate whose only "dormancy" is a missing meeting binding never reaches Step 2 in the first place.
+
 ### Step 2 — Compute the ranked candidates
 
 ```bash

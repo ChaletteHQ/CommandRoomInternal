@@ -26,8 +26,10 @@ deliverable running on TWO generators:
           slug is a pure function of the MEETING ID, so regeneration always
           resolves to the same file (refresh-in-place, never a sibling).
 
-This module is the shared contract BOTH paths call — the scheduled
-auto-prep (orchestrator-upcoming-meetings Phase 4) and on-demand 'prep me'
+This module is the shared contract BOTH paths call — the scheduled auto-prep
+(since SPEC BRIEFMERGE, the morning-brief fire's prep leg, which invokes
+call-prep per meeting rather than carrying its own copy of the pipeline; before
+that, the retired upcoming-meetings chat) and on-demand 'prep me'
 (call-prep SKILL.md). The five-block layout, the visual layer's drop-empty
 rule, and the sourced-talking-points floor are enforced HERE in code, not
 re-improvised per fire. Depth (Standard/Deep) stays a synthesis-side concern

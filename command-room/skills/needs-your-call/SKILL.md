@@ -32,7 +32,13 @@ every row:
 |---|---|---|
 | The extractor was unsure | — | whatever the extractor recorded |
 | The evidence isn't in the transcript | `data.fusion_unverified` | the phrase could not be found in the source it was attributed to |
-| Below the capture floor | `data.floor_gated` | the `FLOOR_*` condition it missed — no owner, no concrete deliverable, nothing depending on it, retold from an earlier call, or discussed-never-accepted |
+| Below the capture floor | `data.floor_gated` | the `FLOOR_*` condition it missed — no owner, no concrete deliverable, nothing depending on it, retold from an earlier call, discussed-never-accepted, already done during the call (`FLOOR_DONE_IN_MEETING`), or taken back later in the same conversation (`FLOOR_SUPERSEDED_IN_MEETING`) |
+
+**A `FLOOR_SUPERSEDED_IN_MEETING` row carries `data.superseding_quote`** — the
+words, verbatim from the same transcript, that took the promise back. Print it
+under the reason when it is there. The verdict is "the call changed its mind
+about this"; a user cannot answer that in one tap without seeing the sentence
+that changed it.
 
 **The third kind is new, and it is M's 2026-08-01 ruling.** Those captures used
 to be dropped where nobody could see them. The review measured the floor

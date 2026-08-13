@@ -232,25 +232,19 @@ def _aggregate_commitments(
         threads_records   : list of thread records for THREADS_JSON (commitment per thread)
         commitments       : list of all open commitments (richer shape, for COMMITMENTS_JSON tab)
     """
-    # First, find all commitments and which ones got resolved.
+    # First, find all commitments and which ones got resolved. BUG-8330
+    # item 1: closure state comes from the SHARED closure_index — this
+    # builder's private chain missed commitment_superseded, data.target_id,
+    # the F3 seq aliases, and Stage D reopens (its flat resolved-id set meant
+    # a reopened item stayed hidden here forever). Never re-inline a local
+    # closer chain; the loader and every surface read the same fold now.
+    from closure_index import build_closure_index
+    closure = build_closure_index(events)
     open_commitments: list[dict[str, Any]] = []
-    resolved_ids: set[str] = set()
 
     for ev in events:
         et = ev.get("type") or ev.get("event") or ""
-        d = ev.get("data") or {}
-        if et == "commitment_resolved" or et == "thread_resolved":
-            cid = (
-                d.get("commitment_id")
-                or d.get("thread_id")
-                or d.get("id")
-                or ev.get("commitment_id")
-                or ev.get("thread_id")
-                or ev.get("id")
-            )
-            if cid:
-                resolved_ids.add(cid)
-        elif et == "commitment":
+        if et == "commitment":
             # Use the shared shape-aware reader (v3.4.5+) so all 5 known
             # commitment-event shapes are covered. Pre-v3.4.5 this used a
             # narrower local handler that missed the owner_person_id-variant
@@ -271,7 +265,10 @@ def _aggregate_commitments(
         d = ev.get("data") or {}
         return d.get("id") or ev.get("id") or f"commitment_seq_{ev.get('seq', '?')}"
 
-    open_commitments = [c for c in open_commitments if _cid(c) not in resolved_ids]
+    open_commitments = [
+        c for c in open_commitments
+        if not closure.is_closed(_cid(c), c.get("seq"))
+    ]
 
     owes_by_project: dict[str, dict[str, int]] = {}
     owes_by_person: dict[str, int] = {}

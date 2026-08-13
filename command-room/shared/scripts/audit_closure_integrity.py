@@ -43,12 +43,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from commitment_state import (  # noqa: E402
-    _closer_target_id,
-    _closer_target_seqs,
-)
 from cru_match import _commitment_id  # noqa: E402
-from event_types import LEGACY_SEQ_ID_RE  # noqa: E402
 
 
 CLOSER_TYPES = ("commitment_resolved", "thread_resolved", "commitment_superseded")
@@ -81,23 +76,12 @@ def _iter_all_events(workspace_root):
 
 def _resolve_target(ev, by_id, by_seq):
     """Canonical id a closer event references, or None when nothing matches.
-    Mirrors normalize_commitment_id's amnesty WITHOUT raising: exact id →
-    legacy seq spelling → seq-alias fields."""
-    raw = _closer_target_id(ev)
-    if raw:
-        raw_s = str(raw).strip()
-        if raw_s in by_id:
-            return raw_s
-        m = LEGACY_SEQ_ID_RE.match(raw_s)
-        if m:
-            target = by_seq.get(int(m.group(1)))
-            if target is not None:
-                return _commitment_id(target)
-    for s in _closer_target_seqs(ev):
-        target = by_seq.get(s)
-        if target is not None:
-            return _commitment_id(target)
-    return None
+    Delegates to the shared resolver (BUG-8330 item 3 promoted it into
+    closure_index so the WRITE GATE rejects at append time exactly what this
+    audit would flag later — same resolver, both ends)."""
+    from closure_index import resolve_closure_target
+    target = resolve_closure_target(ev, by_id, by_seq)
+    return _commitment_id(target) if target is not None else None
 
 
 def _label(ev):

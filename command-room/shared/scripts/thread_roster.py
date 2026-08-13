@@ -73,6 +73,9 @@ def derive_roster(workspace_root: str | Path, thread_id: str) -> list[dict]:
     suppress = {p for p in (overrides.get("suppress") or [])}
 
     events = event_refs.load_events(workspace_root / "_hq" / "data" / "events.jsonl")
+    # BUG-8244: resolve email-shaped meeting bindings too, so participation
+    # counts don't demote `direct` people to `inherited` on legacy rows.
+    email_idx = event_refs.email_person_index(ent)
 
     agg: dict[str, dict] = {}
     for ev in events:
@@ -82,7 +85,7 @@ def derive_roster(workspace_root: str | Path, thread_id: str) -> list[dict]:
         if not (direct or inherited):
             continue
         ts = event_refs.event_ts(ev)
-        for pid in event_refs.persons_of(ev):
+        for pid in event_refs.meeting_person_ids(ev, email_idx):
             if pid in suppress:
                 continue
             rec = agg.setdefault(pid, {"n_direct": 0, "n_inherited": 0, "last": ""})

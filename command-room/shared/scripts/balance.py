@@ -213,11 +213,20 @@ def _last_touch_days(events: List[dict], person: dict, now_dt) -> Optional[float
             best = dt
     pid = person.get("id")
     if pid:
+        # BUG-8244: pass the tie's own emails so meetings bound only via
+        # attendee-email fields still count as touch. Without this a spouse
+        # you had dinner with last week could read "starved" — or silently
+        # drop from the ranking when the record's last_interaction was blank.
+        try:
+            from people_writer import get_person_emails
+            emails = get_person_emails(person)
+        except Exception:
+            emails = [e for e in (person.get("emails") or []) if e]
         for ev in events:
             if ev.get("type") not in _INTERACTION_TYPES:
                 continue
             try:
-                if not event_references_person(ev, pid):
+                if not event_references_person(ev, pid, person_emails=emails):
                     continue
             except Exception:
                 continue
@@ -421,11 +430,9 @@ def compute_balance(
     emitted_seq = None
     if emit:
         try:
-            from next_seq import next_seq
             from atomic_write import atomic_append_jsonl
-            seq = next_seq(str(events_path))
-            atomic_append_jsonl(events_path, [{
-                "seq": seq, "ts": now_iso,
+            written = atomic_append_jsonl(events_path, [{
+                "ts": now_iso,
                 "type": "balance_nudge_suggested",
                 "source_skill": "balance",
                 "person_ids": [top["person_id"]] if top["person_id"] else [],
@@ -433,9 +440,10 @@ def compute_balance(
                 # classification personal_leak.is_personal already applies.
                 "data": dict(nudge, personal=True),
             }])
-            # Only after the append RETURNS — a seq handed out for a row that
-            # never landed would key a confirm to a nonexistent suggestion.
-            emitted_seq = seq
+            # Seq comes back FROM the append (BUG-8330 item 7) — allocated
+            # inside the writer lock, so it can key the confirm without the
+            # reserve-then-write race, and only exists if the row landed.
+            emitted_seq = written[0].get("seq")
         except Exception:
             # Surfaced, not swallowed (second-eyes fix, 2026-07-19): a failed
             # append means no audit trail AND no dedupe next fire — the skill

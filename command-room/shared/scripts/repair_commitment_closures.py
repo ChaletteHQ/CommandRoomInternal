@@ -197,6 +197,29 @@ def analyze(workspace_root) -> dict:
                     ok += 1  # already closed some other way — no work
                 continue
 
+        # Tier 1b — data.source_commitment_ref straggler (BUG-8330 item 3):
+        # an external-origin pointer field NO reader honors and no plugin
+        # writer emits. Where its value resolves (exact id or legacy seq
+        # spelling), the closure gets an additive canonical tombstone; the
+        # field itself stays unhonored — promoting a zero-writer field into
+        # the live chain would be a new dead mechanism (item 16's class).
+        scr = (ev.get("data") or {}).get("source_commitment_ref")
+        if scr not in (None, ""):
+            scr_s = str(scr).strip()
+            target = by_id.get(scr_s)
+            if target is None:
+                m = _LEGACY_SEQ_SPELLING_RE.match(scr_s)
+                if m:
+                    target = by_seq.get(int(m.group(1)))
+            if target is not None:
+                if _is_open(target):
+                    _plan("source_ref", target, closure_seq,
+                          f"data.source_commitment_ref {scr_s!r} resolves; "
+                          "field is honored by no reader (external origin)")
+                else:
+                    ok += 1
+                continue
+
         # Tier 2 — ≥0.8 title match against EXACTLY ONE open commitment.
         text = _closure_text(ev)
         if text:
@@ -247,11 +270,20 @@ def analyze(workspace_root) -> dict:
     }
 
 
-def snapshot(workspace_root) -> Path:
-    """Copy events.jsonl into _archive/ before any write (never delete)."""
+def snapshot(workspace_root) -> Path | None:
+    """Copy events.jsonl into _archive/ before any write (never delete).
+
+    Returns None and creates NOTHING when there is no events.jsonl at the
+    given root (BUG-8330 fix round, FX-2 — phantom-path class). The
+    `mkdir(parents=True)` below would otherwise fabricate an `_archive/` tree
+    under a mistyped root before the copy failed; `main()` guards the CLI, but
+    `apply_repairs`/`snapshot` are importable and were reachable directly.
+    """
     import datetime
     import shutil
     src = _events_path(workspace_root)
+    if not src.exists():
+        return None
     stamp = datetime.date.today().isoformat()
     dest_dir = Path(workspace_root) / "_archive" / f"events-jsonl_repair-snapshot_{stamp}"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -262,10 +294,20 @@ def snapshot(workspace_root) -> Path:
 
 def apply_repairs(workspace_root, plan: dict) -> dict:
     """Snapshot, then append one canonical tombstone per planned repair through
-    THE closure path. Returns {snapshot, closed, already, errors}."""
+    THE closure path. Returns {snapshot, closed, already, errors}.
+
+    Every write goes through `commitment_state.close_commitments`, which takes
+    `writer_lock.events_writer_lock` per item — there is no raw rewrite here,
+    so FX-2's read-modify-write class does not apply. What DID apply is the
+    phantom-path class: a missing events.jsonl is now refused before anything
+    is created.
+    """
     from commitment_state import close_commitments
 
     snap = snapshot(workspace_root)
+    if snap is None:
+        return {"refused": f"no events.jsonl under {str(workspace_root)!r}",
+                "snapshot": None, "closed": 0, "already": 0, "errors": []}
     results = close_commitments(
         workspace_root,
         [{
@@ -309,6 +351,8 @@ def render_report(plan: dict, *, applied: dict | None = None) -> str:
             lines.append(f"  [??] closure seq {u['closure_seq']} — {u['text']!r} ({u['reason']})")
     if applied is None:
         lines.append("MODE: PREVIEW — nothing written. Re-run with --apply (supervised) to write.")
+    elif applied.get("refused"):
+        lines.append(f"MODE: REFUSED — {applied['refused']}. Nothing written.")
     else:
         lines.append(f"MODE: APPLIED — snapshot at {applied['snapshot']}")
         lines.append(f"tombstones written: {applied['closed']} (already resolved: {applied['already']})")

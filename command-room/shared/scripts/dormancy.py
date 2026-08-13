@@ -30,11 +30,13 @@ from typing import Dict, List, Optional
 try:
     from cru_match import _now_iso, _parse_ts, load_events_defensively
     from event_time import event_time
+    from event_refs import email_person_index, meeting_person_ids
 except Exception:  # pragma: no cover
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     from cru_match import _now_iso, _parse_ts, load_events_defensively  # type: ignore
     from event_time import event_time  # type: ignore
+    from event_refs import email_person_index, meeting_person_ids  # type: ignore
 
 _INTERACTION_TYPES = ("interaction", "meeting", "meeting_processed", "email_sent",
                       "email_drafted", "commitment")
@@ -109,12 +111,12 @@ def emit_dormancy_signal(
     if score is None:
         return None
     try:
-        from next_seq import next_seq
         from atomic_write import atomic_append_jsonl
         events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-        seq = next_seq(str(events_path))
-        atomic_append_jsonl(events_path, [{
-            "seq": seq, "ts": _now_iso(), "type": "dormancy_signal",
+        # Seq comes back from the append (BUG-8330 item 7) — allocated
+        # inside the writer lock, never pre-computed.
+        written = atomic_append_jsonl(events_path, [{
+            "ts": _now_iso(), "type": "dormancy_signal",
             "source_skill": source_skill,
             "data": {
                 "entity_id": entity_id, "entity_type": entity_type,
@@ -122,7 +124,7 @@ def emit_dormancy_signal(
                 "score": round(score, 4),
             },
         }])
-        return seq
+        return written[0].get("seq")
     except Exception:
         return None
 
@@ -147,7 +149,25 @@ def load_dormancy_signals(workspace_root, window_days: int = 14) -> List[dict]:
         from datetime import timedelta
         floor = now - timedelta(days=window_days)
 
-    # Latest interaction ts per entity (person_ids member or primary_thread_id).
+    # BUG-8244: an email→person index so meeting events whose binding lives
+    # in attendee-email fields still count as contact. Without this, the
+    # contrary-evidence gate below never fired for meeting-only relationships
+    # and stale dormancy signals survived forever (fed relationship-moves'
+    # "haven't talked in a while" drafts about people the user meets weekly).
+    email_idx: Dict[str, str] = {}
+    try:
+        import json as _json
+        ent_path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        if ent_path.exists():
+            email_idx = email_person_index(
+                _json.loads(ent_path.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+
+    # Latest interaction ts per entity: the RAW person_ids read (unfiltered —
+    # dormancy entity ids are person/org/thread and legacy rows carry loose
+    # spellings) UNIONED with the shared normalizer's fold (attendee variants
+    # + resolved emails), plus primary_thread_id.
     last_interaction: Dict[str, object] = {}
     for ev in events:
         if ev.get("type") not in _INTERACTION_TYPES:
@@ -156,7 +176,8 @@ def load_dormancy_signals(workspace_root, window_days: int = 14) -> List[dict]:
         if dt is None:
             continue
         d = ev.get("data") or {}
-        ids = set(ev.get("person_ids") or d.get("person_ids") or [])
+        ids = set(ev.get("person_ids") or []) | set(d.get("person_ids") or [])
+        ids |= set(meeting_person_ids(ev, email_idx))
         pt = ev.get("primary_thread_id") or d.get("primary_thread_id")
         if pt:
             ids.add(pt)

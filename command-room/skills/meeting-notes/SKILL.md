@@ -28,7 +28,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes
 
 You are a **primary appender** for `_hq/data/events.jsonl` — every meeting you process becomes at least one event:
 
-- One `meeting` event with attendees, summary, transcript reference.
+- One `meeting` event with the person binding, summary, transcript reference — built ONLY via `meeting_capture.build_meeting_event()` (Step 9a1; BUG-8244: this line was a promise with no step for two years — 16 writer sites improvised 4 incompatible attendee shapes and a client workspace shipped every one of its meeting events with no binding, which broke relationship cadence, person history, and commitment closing downstream). Canonical binding = top-level `person_ids[]` (resolved) + `data.attendees[]` (invitee emails verbatim) + `data.attendees_external[]` (unmatched names).
 - One `decision` event per captured decision (Step 5b — **MANDATORY in both modes**, v4.5.2; same contract the scheduled past-meetings writer uses).
 - One `commitment` event per captured action item. **Schema is non-negotiable — see `shared/COMMITMENT_SCHEMA.md` and Step 5e below for the exact shape.** v2.7.15+ uses the canonical `data` envelope; legacy flat shape is read-only. Extraction never creates hierarchies (SUB1): no captured event carries `data.parent_id` — compound promises pre-split into PEERS; sub-item decomposition is the user's verb (`add subitems`), never an extraction output.
 - One `person_proposal` (or `person_update_proposal`) event per unknown name meaningfully involved (Step 5f, v4.5.2 — pending-review, never chat-only).
@@ -250,25 +250,33 @@ Only prompt the user for a destination when classification confidence is `<0.40`
 
 ---
 
-## Step 5: Update Master Tracker
+## Step 5: Refresh the Master Tracker (via the regenerator — NEVER a hand edit)
 
-After routing SESSION_NOTES, update `[WORKSPACE_ROOT]/_hq/MASTER_TRACKER.md`:
+**MASTER_TRACKER.md is a REGENERATED VIEW** (`render_master_tracker.py`
+rebuilds it from the substrate; the Writer Contract at the top of this file
+says so). **Never hand-write a column into it** — a hand-edited cell is
+erased by the next regeneration. This step used to instruct exactly that
+(BUG-8330 item 16: a "Relationship Status" column written here was clobbered
+by every regen — a write into a view no reader could ever rely on).
 
-For each project or client mentioned in the meeting:
+What actually updates the tracker is the DATA this skill already writes:
+the meeting event (Step 5d), commitments (Step 5e), decisions (Step 5b),
+and SESSION_NOTES routing — the regenerator derives Last Touched / Next
+Action / Commitments from those. After the data steps land, refresh the
+view:
 
-| Field | Update |
-|-------|--------|
-| **Last Touched** | Today's date |
-| **Next Action** | Most critical action item (owner + deadline) |
-| **Commitments** | Any promises made (e.g., "deliver X by date Y") |
-| **Timeline Status** | Accelerated, delayed, on-track, at-risk |
-| **Relationship Status** | New, strong, fragile, warming, cooling |
-| **Financial Impact** | New spend, revenue, margin shift ($ and direction) |
-
-**Example update:**
+```python
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT"
+import sys; sys.path.insert(0, "shared/scripts")
+import render_master_tracker
+render_master_tracker.main(["render_master_tracker.py", "<WORKSPACE_ROOT>"])
 ```
-| Project X | Last: 2026-04-08 | Next: [Aria] deliver spec by 2026-04-15 | Commitment: Beta launch by May | At-risk (scope creep) | Strong | +$50K budget |
-```
+
+Relationship-quality observations (new / strong / fragile / warming /
+cooling) belong in the PEOPLE layer, not a tracker column: record them as
+person facts through `people-crm`'s write protocol (`record_person_fact` —
+additive events the person-history view renders), where a reader actually
+exists.
 
 ## Step 5b: Log Decisions (MANDATORY in both modes — via decision-log's write protocol, never a direct view write)
 
@@ -377,7 +385,13 @@ append_event("<WORKSPACE>/_hq/data/events.jsonl",
 - `review` — written `pending_review`, so they land in the **needs-your-call** queue and never in the open book. TWO kinds arrive here: rows refused by the fusion guardrail (`data.fusion_unverified`), and rows the capture floor gated (`data.floor_gated`, with the `FLOOR_*` reason as their `review_reason`).
 - `observed` — kept on file (searchable, feeds prep) with no open item, no count, no row: third-party↔third-party items under party-only, and below-floor items someone else plainly owes.
 - `skipped` — near-empty since M's 2026-08-01 ruling. Nothing below the floor comes here; what is left is the honest residue (an item the canonical builder refused to construct). Never narrate it.
-- Omitting `transcript_text` leaves only the fusion check inert; the floor and the relevance gate still run.
+- Omitting `transcript_text` leaves the fusion check AND the two transcript-reading floor checks below inert; the sentence-level floor and the relevance gate still run. Pass it.
+
+**Two of the floor's conditions read the MEETING, not the sentence (FLOOR2, 2026-08-06).** They are `meeting_capture.transcript_floor_reason`, they run inside the same helper, and they exist because the V1 re-measure found both of these clearing every other condition:
+- `FLOOR_DONE_IN_MEETING` — the action was performed ON the call ("just click that right now") and nothing survives it. It never fires on an item with a post-meeting surface: a due date, a money amount, or a send/share/schedule/follow-up verb means the deliverable outlives the call.
+- `FLOOR_SUPERSEDED_IN_MEETING` — the same conversation took the offer back afterwards ("you don't need to — the shared export covers it"). The row carries `data.superseding_quote`, the retracting words verbatim from the same transcript, beside the original evidence.
+
+Both route to `review` like any other floor verdict, never to a drop. Both are deliberately conservative — an uncertain case books rather than gates — so keep extracting normally and let the helper decide.
 
 **M RULING 2026-08-01 — a below-floor capture is NEVER silently dropped.** It used to be. The review measured the floor against a hand-judged sample and found it as likely to be wrong as right when it refuses — it destroyed a real promise for every junk capture it stopped, and the destroyed side left nothing behind to find. So the floor now ROUTES rather than deletes: the item goes to the queue as a `floor_gated` row the user can confirm in one pass. You do not need to do anything differently at extraction — keep applying the floor as your own judgment about what to send — but do NOT drop an item yourself on the grounds that the gate would have dropped it. Hand the helper everything you extracted and let the one code path decide.
 
@@ -418,7 +432,6 @@ Same guard applies for `decision` events. The bug class this closes: Granola has
 
 ```json
 {
-  "seq": <reserved by writer helper>,
   "ts": "<ISO 8601 — the moment the commitment was MADE, i.e., the meeting start time>",
   "type": "commitment",
   "source_skill": "meeting-notes",
@@ -740,6 +753,33 @@ After all extraction + persistence steps complete, produce the chat surface as a
 - **NEVER hand-roll the brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and the Brief Authoring Rules above are enforced at the render chokepoint, so a hand-rolled brief is one where none of them ran.
 - **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the recap", "the decisions", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/meetings/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with the attendees", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the meeting notes in a Google Doc for the team" is a request this gate refuses, not an override. The brief is already forwardable by design — that is what the clean-output contract above buys; hand back its link and let the user forward the file itself.
 
+**Step 9a1 — Append the canonical `meeting` event (BUG-8244, MANDATORY in both modes).** The Writer Contract has promised this event since v2.x; this is the step that writes it. Construct ONLY via the builder — never a hand-rolled dict (hand-rolled shapes are how a client workspace ended up with every meeting event unbound, and a weekly insight claiming weeks of no contact with people they meet daily):
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from meeting_capture import build_meeting_event
+from event_gate import append_event
+
+ev = build_meeting_event(
+    "<meeting title>",
+    source_ref="granola:<meeting_id>",            # same spelling Step 9a2's receipt uses
+    source_skill="meeting-notes",
+    primary_thread_id="<resolved or None>",
+    org_ids=["<resolved org ids>"],
+    person_ids=["<every attendee resolved against entities.json>"],
+    attendees=["<every invitee EMAIL from the calendar invite / transcript backend, verbatim>"],
+    attendees_external=["<display names with no entities.json match>"],
+    summary="<1-2 sentence factual summary>",
+    meeting_type="<sales|internal_1_1|external|board|...>",
+    duration_min=<minutes or omit>,
+    ts="<meeting start ISO — backdate to meeting time, not processing time>",
+    source_had_attendees=<True when the invite/transcript listed ANY participants>,
+)
+append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.meeting")
+```
+
+Binding rules: resolve every attendee you can (`person_ids`), carry every invitee email you saw (`data.attendees`) even when unresolved — identity-reconcile corroborates merges from them and the backfill repairs history with them. An empty binding is legal only when the source truly listed nobody; `source_had_attendees=True` with nothing resolved stamps `data.binding_missing` so the claim audit surfaces it. Dedup: check `meeting_capture.already_processed` first — never a second `meeting` event for the same `source_ref` (idempotency contract, same as the scheduled writer).
+
 **Step 9a2 — Write the `meeting_processed` receipt (v4.5.2, MANDATORY — F-46 P2a).** After the brief lands (so `brief_path` is known), append one `meeting_processed` event — the same receipt the scheduled past-meetings writer emits, and the canonical already-processed marker its Phase 3 dedup and the no-prep detectors read. F-50 proved the bare `meeting` event held off double-capture by accident, not contract; the receipt is the contract. This is a substrate event, NOT a `pack_run` run-receipt (that plumbing is owned elsewhere — do not touch it here).
 
 ```python
@@ -773,6 +813,8 @@ from meeting_capture import count_meeting_writes
 counts = count_meeting_writes("<WORKSPACE>", "granola:<meeting_id>")
 # counts = {"meeting": 1, "meeting_processed": 1, "decision": 3, "commitment": 6, "person_proposal": 2, ...}
 ```
+
+**Binding audit (BUG-8244):** in the same pass, call `meeting_capture.meeting_binding_audit("<WORKSPACE>", "granola:<meeting_id>")`. `found` False → the Step 9a1 write failed (say so, same as any failed write). `bound` False → the meeting saved with NO person binding: say plainly *"Heads up — I couldn't attach any attendees to this meeting record, so it won't count toward relationship cadence until it's repaired"* and re-check Step 9a1's inputs. Never silently ship an unbound meeting.
 
 Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N commitments" line comes from `counts` — never from extraction intent. If a count is lower than what you attempted to write, a write FAILED: say so plainly ("I captured 3 decisions but only 2 saved — say 'process meeting' again and I'll retry the missing one"), and never render the failed item as logged. The dogfood caught both failure directions: 3 decisions claimed / 0 written (F-46) and 7 claimed / 6 written (F-50) — neither may recur silently.
 

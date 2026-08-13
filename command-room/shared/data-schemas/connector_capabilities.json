@@ -1,7 +1,8 @@
 {
   "$schema_note": "Capability manifest for the connector-agnostic layer (Layer A2). KNOWN provider rows, keyed by provider tag. Detection is DETECT-ONCE-AT-DECLARATION (H-E): at declaration the agent inspects the declared server's tool list, writes the detected row into workspace config, user confirms; per-fire detection is only the never-declared fallback. Vocabularies are authored for mail + calendar ONLY (YAGNI — chat/storage/e-sign/accounting get keys when their first consumer skill exists). Fingerprints are the DISTINCTIVE tool-name subset used to re-pair a reconnected server (new UUID) to a known provider (A1b). Capability values are the provider's KNOWN default; a per-workspace detected row (from the actual connected server's tool list) overrides — e.g. M's Microsoft 365 is read-only, so its detected calendar row has event_crud=false even though outlook_calendar CAN do CRUD in general.",
+  "$chat_note": "SPEC CHATSCAN1 §2A (2026-08-08) — the `chat` category, authored at its first consumer exactly as the YAGNI note above invites. Two provider rows, one seam: `slack` (the native Slack connector) and `ms365_teams` (the native Microsoft 365 connector's Teams surface). Keys: `chat_search_model` (how a query is expressed), `channel_search` (can a query reach CHANNEL messages at all), `channel_list` (can channels be enumerated), `chat_resource_read` (can a matched message be fetched back in full), `send`. Consumers ask per capability and DEGRADE — they never branch on the provider name. A workspace that declares no chat backend skips every chat leg silently and RECEIPTS the skip; it never errors. The Teams row's `probed` block records facts measured against a live tenant on 2026-08-06, not documentation: they are what force the per-chat-scan path, and a consumer that ignores them will claim coverage it did not have.",
   "$version": "connector-agnostic-v1",
-  "categories": ["email", "calendar"],
+  "categories": ["email", "calendar", "chat"],
   "providers": {
     "gmail": {
       "category": "email",
@@ -118,11 +119,58 @@
         "event_id_shape": "graph_event_id"
       },
       "notes": "General Outlook Calendar row. On M's read-only M365 the detected row is availability/search only (event_crud=false) — detection overrides these defaults per connected server."
+    },
+    "slack": {
+      "category": "chat",
+      "label": "Slack (native)",
+      "fingerprint": ["slack_read_channel", "slack_read_thread", "slack_search_public_and_private", "slack_search_channels"],
+      "whoami": false,
+      "capabilities": {
+        "chat_search_model": "slack_operators",
+        "channel_search": true,
+        "channel_list": true,
+        "chat_resource_read": true,
+        "send": true,
+        "date_filtered_search": true,
+        "thread_read": true,
+        "ref_kinds": ["channel", "thread", "dm"],
+        "chat_id_shape": "slack_channel_ts"
+      },
+      "notes": "Channel read, threads and search are all first-class, and search accepts date operators, so the closure leg runs its window as ONE query per fire. `send` is TRUE as a fact about the connector; v1 declares no chat-send consumer, so nothing calls it (drafts route through the declared email backend). Provenance canonicalizes through connector_adapters/provenance._canon_slack — both `slack:<permalink>` and `slack:<team>/<channel>/<ts>` reduce to `slack:<channel>:<ts-digits>`."
+    },
+    "ms365_teams": {
+      "category": "chat",
+      "label": "Microsoft Teams (Microsoft 365)",
+      "fingerprint": ["teams_list_chats", "chat_message_search"],
+      "whoami": true,
+      "capabilities": {
+        "chat_search_model": "graph_literal_substring",
+        "channel_search": false,
+        "channel_list": false,
+        "chat_resource_read": true,
+        "send": false,
+        "date_filtered_search": false,
+        "thread_read": false,
+        "ref_kinds": ["chat", "channel"],
+        "chat_id_shape": "graph_chat_message"
+      },
+      "probed": {
+        "$note": "Measured 2026-08-06 against a live tenant. These are the facts a consumer must plan around; they are not preferences and must not be softened.",
+        "date_filter_degrades_to_per_chat_scan": true,
+        "per_chat_scan_chat_cap": 50,
+        "per_chat_scan_messages_per_chat": 50,
+        "per_chat_scan_covers_channels": false,
+        "search_match_is_literal_substring": true,
+        "page_size": 25,
+        "channel_search_requires_scope": "ChannelMessage.Read.All"
+      },
+      "notes": "Asking for a DATE-FILTERED search silently degrades: the connector stops running a search at all and walks the newest 50 chats reading 50 messages each, channels excluded. That path is a PARTIAL sweep, so any leg taking it must record its scan mode and a coverage note rather than report a clean reconcile. `channel_search` is false because the tenant grant (ChannelMessage.Read.All) is not assumed — a tenant that grants it detects true at declaration and the detected row overrides. `channel_list` is false because NO tool exists to enumerate channels, which detection cannot change. `send` is write-gated and defaults false: the M365 connectors we have shipped against are read-only, so a Teams write path would ship untested by construction (the same posture as the `outlook` row)."
     }
   },
   "baseline": {
     "$note": "Unknown-provider fallback (C4). At declaration an unrecognized server feature-detects into this shape (can it draft? send? create events?) rather than hard-failing. Absent booleans are treated as false (fail-closed).",
     "email": {"draft": false, "send": false, "reply_threaded": false, "from_addressing": false},
-    "calendar": {"availability": false, "event_crud": false, "free_busy": false, "rsvp": false}
+    "calendar": {"availability": false, "event_crud": false, "free_busy": false, "rsvp": false},
+    "chat": {"channel_search": false, "channel_list": false, "chat_resource_read": false, "send": false, "date_filtered_search": false, "thread_read": false}
   }
 }

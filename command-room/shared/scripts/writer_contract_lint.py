@@ -194,6 +194,107 @@ def lint_skill_event_writes(plugin_root) -> List[Dict]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Seq pre-stamp lint (BUG-8330 item 7)
+# ---------------------------------------------------------------------------
+#
+# The appender allocates `seq` inside the writer lock; a caller that peeks
+# next_seq() and hand-stamps `"seq"` re-opens the reserve-then-write race the
+# lock exists to close (15 script sites + ~8 prose sites had regrown it).
+# This lint flags the pattern in BOTH surfaces:
+#   - shared/scripts/*.py: `"seq": next_seq(...)` stamping, or a
+#     `<var> = next_seq(...)` reservation later stamped as `"seq": <var>`.
+#   - skills/**/*.md: prose templates instructing the model to stamp seq —
+#     `"seq": <placeholder>` keys, `peek-next-seq`, "reserved by writer".
+# Callers that need the allocated seq read it from atomic_append_jsonl's
+# RETURN value instead.
+
+# Files allowed to touch seq allocation by design.
+_SEQ_LINT_PY_ALLOW = frozenset({
+    "next_seq.py",            # the allocator's read-only peek helper itself
+    "atomic_write.py",        # THE allocator
+    "writer_contract_lint.py",
+    "reconcile_forward.py",   # quarantine replay — remaps seqs by design
+    "repair_seq_relocation.py",  # supervised one-shot remap tool
+})
+
+# The allocator peek always takes the events path as an argument — requiring
+# a non-empty arg list keeps in-process counters that happen to be named
+# `_next_seq()` (prep_leg's ordering pin) out of scope.
+_SEQ_STAMP_DIRECT_RE = re.compile(r'"seq"\s*:\s*_?next_seq\s*\(\s*[^)\s]')
+_SEQ_RESERVE_RE = re.compile(
+    r'^\s*(\w+)\s*=\s*_?next_seq\s*\(\s*[^)\s]', re.MULTILINE)
+_SEQ_STAMP_VAR_RE_TMPL = r'"seq"\s*:\s*{var}\b'
+_SEQ_MD_RES = (
+    re.compile(r'"seq"\s*:\s*<'),          # "seq": <next> / <seq> / <reserved…>
+    re.compile(r'"seq"\s*:\s*[A-Z]\b'),    # "seq": N / M template letters
+    re.compile(r'"seq"\s*:\s*next_seq'),
+    re.compile(r'peek-next-seq'),
+    re.compile(r'reserve (the )?(next )?seq', re.IGNORECASE),
+)
+
+
+def lint_seq_prestamp(plugin_root) -> List[Dict]:
+    """Flag seq pre-stamping in scripts and skill prose. Flag-only, like the
+    writer-contract lint; the guard test is the teeth."""
+    root = Path(plugin_root)
+    findings: List[Dict] = []
+
+    scripts_dir = root / "shared" / "scripts"
+    if scripts_dir.is_dir():
+        for py in sorted(scripts_dir.glob("*.py")):
+            if py.name in _SEQ_LINT_PY_ALLOW:
+                continue
+            try:
+                text = py.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            hit = bool(_SEQ_STAMP_DIRECT_RE.search(text))
+            if not hit:
+                for m in _SEQ_RESERVE_RE.finditer(text):
+                    var = re.escape(m.group(1))
+                    if re.search(_SEQ_STAMP_VAR_RE_TMPL.format(var=var), text):
+                        hit = True
+                        break
+            if hit:
+                findings.append({
+                    "skill": f"shared/scripts/{py.name}",
+                    "check": "writer_contract.seq_prestamped",
+                    "reason": (
+                        f"{py.name} reserves a seq via next_seq() and stamps "
+                        '"seq" on an event by hand — the reserve-then-write '
+                        "race (BUG-8330 item 7). Omit seq; read the allocated "
+                        "value from atomic_append_jsonl's return."
+                    ),
+                })
+
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        for md in sorted(skills_dir.rglob("*.md")):
+            try:
+                text = md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for pat in _SEQ_MD_RES:
+                m = pat.search(text)
+                if m:
+                    findings.append({
+                        "skill": str(md.relative_to(root)).replace("\\", "/"),
+                        "check": "writer_contract.seq_prestamped_prose",
+                        "reason": (
+                            f"{md.name} instructs stamping/reserving `seq` "
+                            f"(matched {m.group(0)!r}) — the appender "
+                            "allocates seq inside the writer lock "
+                            "(BUG-8330 item 7). Drop the seq key from the "
+                            "template; read it from the append return if a "
+                            "later step needs it."
+                        ),
+                    })
+                    break
+
+    return findings
+
+
 def _resolve_plugin_root() -> Path:
     """This file lives at <root>/shared/scripts/writer_contract_lint.py."""
     return Path(__file__).resolve().parent.parent.parent

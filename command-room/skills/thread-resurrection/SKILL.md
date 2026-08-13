@@ -128,6 +128,12 @@ for i, thread in enumerate(candidate_threads, start=1):
         "n": i,
         "icon": "💬",
         "name": f"{counterparty_label} — {title_clause}",
+        # PROVENANCE — this skill WROTE that `name` (a label, an em-dash and a
+        # clause it assembled), so it says so. `name` is normally the user's
+        # own words and the renderer exempts it from the internal-vocabulary
+        # scan on that basis; a driver template sitting in it must keep facing
+        # the full scan, or this skill's own prose gets a silent carve-out.
+        "composed_fields": ["name"],
         "context_tag": f"quiet for {days_silent} days",
         "body_lines": body_lines,
         "actions": [

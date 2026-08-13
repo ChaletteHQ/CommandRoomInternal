@@ -110,7 +110,7 @@ Walk every markdown/text file. For each:
 
 - **Decision keywords** — lines containing `decided`, `decision:`, `✅ decided`, `— agreed to` → `decision` event at confidence 0.6
 - **Commitment keywords** — lines containing `will <verb>`, `TODO`, `- [ ]`, `action item`, `next step` → `commitment` event at confidence 0.5
-- **Meeting keywords** — files with `transcript`, `meeting`, `call` in filename, OR sections with `## Attendees:` / `Participants:` → `meeting` event with attendees parsed (name list → person resolution)
+- **Meeting keywords** — files with `transcript`, `meeting`, `call` in filename, OR sections with `## Attendees:` / `Participants:` → `meeting` event via `meeting_capture.build_meeting_event()` (BUG-8244: parsed names resolved → top-level `person_ids[]`; parsed emails → `data.attendees[]`; unresolved names → `data.attendees_external[]`)
 
 **Channel inference:**
 

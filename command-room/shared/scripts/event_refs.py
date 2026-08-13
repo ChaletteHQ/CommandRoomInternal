@@ -57,7 +57,11 @@ def persons_of(ev: dict) -> set[str]:
     for k in ("person_id", "owner_person_id", "requester_person_id", "inferred_person_id"):
         if d.get(k):
             out.add(d[k])
-    for k in ("attendee_person_ids", "counterparty_person_ids", "people"):
+    for k in ("attendee_person_ids", "counterparty_person_ids", "people",
+              # BUG-8244: canonically these carry emails, but pre-spec
+              # improvised writers sometimes put person ids in them — the
+              # person_ prefix filter below keeps emails out.
+              "attendees", "attendee_emails", "invitees"):
         for r in (d.get(k) or []):
             out.add(r)
     for k in ("owner_id", "requester_id", "target_id"):
@@ -65,6 +69,78 @@ def persons_of(ev: dict) -> set[str]:
         if isinstance(v, str) and v.startswith("person_"):
             out.add(v)
     return {p for p in out if isinstance(p, str) and p.startswith("person_")}
+
+
+def attendee_emails_of(ev: dict) -> set[str]:
+    """Every attendee EMAIL this event carries, lowercased (BUG-8244).
+
+    Meeting events historically forked across field names: `data.attendees`
+    (emails — historical-backfill; also the canonical builder's home),
+    `data.attendee_emails` (meeting_discovery's substrate replay), and
+    `data.invitees` (observed drift). Entries without an "@" are skipped —
+    `data.attendees_external` and name-drift never leak into an email set."""
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    out: set[str] = set()
+    for k in ("attendees", "attendee_emails", "invitees"):
+        for a in (d.get(k) or []):
+            if isinstance(a, str) and "@" in a and a.strip():
+                out.add(a.strip().lower())
+    return out
+
+
+def meeting_person_ids(ev: dict, email_index: dict | None = None) -> set[str]:
+    """THE meeting→person binding reader (BUG-8244). Folds every variant the
+    substrate has ever carried into one person_id set:
+
+      * top-level `person_ids` / `data.person_ids`   (canonical + ingest)
+      * `data.attendee_person_ids`                   (PASSIVE_CAPTURE legacy)
+      * `data.attendees` / `data.attendee_emails`    (emails — resolved when
+        the caller supplies `email_index`, built via `email_person_index`)
+
+    Before this existed the two resolution helpers covered DISJOINT field
+    sets (`cru_match._PERSON_ID_FIELDS` probed `data.attendees` emails as ids
+    — a branch that never once matched; `persons_of` skipped emails entirely),
+    so no writer shape satisfied every reader. Every consumer that asks
+    "who was in this meeting" imports THIS, so producer and consumer can
+    never drift again. Repair-on-read: legacy rows resolve here; nothing
+    rewrites history."""
+    out = persons_of(ev)
+    if email_index:
+        for e in attendee_emails_of(ev):
+            pid = email_index.get(e)
+            if pid:
+                out.add(pid)
+    return out
+
+
+def email_person_index(entities: dict) -> dict[str, str]:
+    """{email_lower: person_id} over an entities.json dict — the resolver
+    `meeting_person_ids` takes. Built once per scan, never per event. Uses
+    `people_writer.get_person_emails` (canonical `emails` + deprecated
+    `email`) with a dependency-free fallback so this module stays importable
+    standalone."""
+    try:
+        from entities_io import entities_collection
+        from people_writer import get_person_emails
+        people = entities_collection(entities, "people")
+        getter = get_person_emails
+    except Exception:
+        people = entities.get("people") or []
+        def getter(p):  # noqa: E306 — local fallback mirrors get_person_emails
+            out = [e for e in (p.get("emails") or []) if isinstance(e, str)]
+            if isinstance(p.get("email"), str):
+                out.append(p["email"])
+            return out
+    idx: dict[str, str] = {}
+    for p in people:
+        pid = p.get("id")
+        if not (isinstance(pid, str) and pid.startswith("person_")):
+            continue
+        for e in getter(p):
+            e = str(e or "").strip().lower()
+            if e and e not in idx:
+                idx[e] = pid
+    return idx
 
 
 def event_ts(ev: dict) -> str:

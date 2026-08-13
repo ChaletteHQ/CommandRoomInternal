@@ -69,8 +69,15 @@ def is_resolution_miss(text: str) -> bool:
 
 
 def _person_ids(ev: dict) -> set:
-    data = ev.get("data") or {}
-    return set(ev.get("person_ids") or []) | set(data.get("person_ids") or [])
+    # BUG-8244: fold every meeting-binding variant — the two-field read made
+    # extraction-miss telemetry under-report, which is how the missing meeting
+    # binding stayed invisible to the quality loop that exists to catch it.
+    try:
+        from event_refs import meeting_person_ids
+        return meeting_person_ids(ev)
+    except Exception:
+        data = ev.get("data") or {}
+        return set(ev.get("person_ids") or []) | set(data.get("person_ids") or [])
 
 
 def find_recent_meeting(

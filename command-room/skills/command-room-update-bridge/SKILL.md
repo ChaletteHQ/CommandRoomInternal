@@ -47,11 +47,25 @@ It is **conservative by design.** It does not modify existing data, does not run
 9. **Output guard — internal tokens, paths, and event names only (re-scoped v4.6.1 S3, F-06/F-07):** no file paths, no event-type names, no internal tokens (Rule numbers, schema fields, skill mechanics) in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. Version numbers are NOT internal tokens — the version diff and per-version recap lines are explicitly allowed (Rule 10 owns that surface; pre-4.6.1 this rule also banned version numbers, which contradicted Rule 10's mandated one-liner — F-06. Rule 10 wins).
    - BAD: "Artifact installed. Rule 8 verified the renderer output (source bytes) — the bridge cannot read the installed file directly to auto-verify."
    - GOOD: "✓ Installed. Pin it in your sidebar, then open it once and confirm it looks right — I can't see the installed copy from here, so you're the final check."
-10. **What-changed content comes from the release manifests, NEVER from CHANGELOG.md. (Added v2.7.24; amended v4.6.1 S3 per F-07 P2b.)** CHANGELOG.md is dev-internal — file paths, Rule numbers, version-by-version implementation detail — and stays forbidden verbatim OR paraphrased. What the bridge DOES say: the version diff in one line — phrased as currency, not identity: "your workspace was last brought current at v[INSTALLED]; the plugin is now v[CURRENT]" (F-07 P2d: "you're on 4.2.0" right after the user clicked Update reads as a contradiction) — followed by a plain-English recap of what's new, sourced ONLY from the release manifests' announce items (`shared/releases/v*.json` prompt/notice templates — already written for the customer; the dogfood confirmed the recap is the right product answer, F-07 P2b), then the artifact + migration lists and the confirmation ask. If the user asks for MORE detail than the manifests carry, link the GitHub CHANGELOG — still never paraphrase it inline.
+10. **What-changed content comes from the release manifests, NEVER from CHANGELOG.md. (Added v2.7.24; amended v4.6.1 S3 per F-07 P2b.)** CHANGELOG.md is dev-internal — file paths, Rule numbers, version-by-version implementation detail — and stays forbidden verbatim OR paraphrased. What the bridge DOES say: the version diff in one line — phrased as currency, not identity: "your workspace was last brought current at v[INSTALLED]; the plugin is now v[CURRENT]" (F-07 P2d: "you're on 4.2.0" right after the user clicked Update reads as a contradiction). **Render that line with `bridge_versions.version_sentence(<the Phase 1 struct>)` — never compose it (WALKFIX1 Item I).** It is the same struct the receipts carry, so the sentence cannot contradict the record beside it, and on an unshipped-tip install it says so explicitly ("the tree at v5.11.0-unreleased — plugin.json still stamps v5.10.0, because the version stamp is written at ship") rather than picking one member and asserting it as the whole truth. Followed by a plain-English recap of what's new, sourced ONLY from the release manifests' announce items (`shared/releases/v*.json` prompt/notice templates — already written for the customer; the dogfood confirmed the recap is the right product answer, F-07 P2b), then the artifact + migration lists and the confirmation ask. If the user asks for MORE detail than the manifests carry, link the GitHub CHANGELOG — still never paraphrase it inline.
 
 ---
 
 ## Phase 1: Detect plugin version + installed artifacts
+
+**MANDATORY — resolve the version triple ONCE per run (WALKFIX1 Item I).** Before anything else in this phase, run this and keep the result for the WHOLE run — every later pass, every receipt, and the chat sentence read from this one struct, never from a fresh disk read:
+
+```bash
+CR_WORKSPACE="$WORKSPACE" python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from bridge_versions import resolve_install_versions
+print(json.dumps(resolve_install_versions('$PLUGIN_ROOT', '$WORKSPACE')))
+"
+```
+
+It returns `{plugin_json_version, newest_manifest_version, workspace_stamp, from_version, to_version, unshipped_tip}`. **`to_version` is `newest_manifest_version`** — what this tree IS, which is the question an install record is actually asked later.
+
+Why the mandate. Version-at-ship means an installed unshipped tip legitimately carries plugin.json at the last shipped version, a CHANGELOG Unreleased block, and a newest manifest one version ahead. That state is documented and correct. What was missing was a vocabulary for it, so different code paths picked different members of the triple: on 2026-08-10 one bridge run emitted `to_version 5.10.0` on its first pass and `to_version 5.11.0` on its second for the same install, the first reading as a downgrade, while the chat asserted "the plugin still reads v5.11.0" over a plugin.json that read 5.10.0. Re-reading the disk per pass is the defect; resolving once is the fix.
 
 Read three things:
 
@@ -921,7 +935,7 @@ For each returned offer, surface its `line` VERBATIM (one line, built from the r
 
 **Unconditional prompt refresh (Phase 3 / W4):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1 hash-compare against every registered prompt — never skip it because "the tasks look registered." Bootloaders are stamped with the plugin version at registration (Phase 1.B `<PLUGIN_VERSION>` substitution), so after any plugin upgrade the composed bootloader's hash differs from the registered one and the refresh lands automatically; the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) is the detector for prompts this refresh hasn't reached yet. This replaces hoping Rule 16 was obeyed.
 
-The schedule skill creates the chat orchestrators with sensible defaults silently — no calibration questions on first install. Defaults: time zone from entities.json primary user, morning anchor 6:30 AM, work hours 8 AM–6 PM weekdays, per-chat times as documented in `enable-command-room-schedules` Phase 3. Users who want different cadences fire `change my schedule cadence` later for per-task customization.
+The schedule skill creates the chat orchestrators with sensible defaults silently — no calibration questions on first install. Defaults: time zone from entities.json primary user, work hours 8 AM–6 PM weekdays, per-chat times read from `schedule_config.DEFAULT_SCHEDULES` (never a time typed here). Users who want different cadences fire `change my schedule cadence` later for per-task customization.
 
 If `enable-command-room-schedules` fails or is unavailable, log a warning and continue — the user can run it manually later via `set up command room schedules`.
 
@@ -1153,8 +1167,10 @@ The goal: a broken manifest, detector, or action never blocks the rest of the up
 After installs, workspace migrations, scheduled-task registration, and release-manifest remediations complete (full or partial), append a single event to `_hq/data/events.jsonl`:
 
 ```jsonl
-{"id":"evt_NNN","timestamp":"<ISO>","type":"plugin_update","from_version":"<INSTALLED>","to_version":"<CURRENT>","installed_artifacts":["orgs-map","quick-commands"],"failed_artifacts":[],"applied_migrations":["prompt_restructuring_preference"],"skipped_migrations":[],"applied_remediation_ids":["v344_refire_commitments","v345_announce_manifest_system"],"actor":"command-room-update-bridge"}
+{"id":"evt_NNN","timestamp":"<ISO>","type":"plugin_update","from_version":"<INSTALLED>","to_version":"<CURRENT>","plugin_json_version":"<PJ>","newest_manifest_version":"<NM>","workspace_stamp":"<WS>","unshipped_tip":false,"installed_artifacts":["orgs-map","quick-commands"],"failed_artifacts":[],"applied_migrations":["prompt_restructuring_preference"],"skipped_migrations":[],"applied_remediation_ids":["v344_refire_commitments","v345_announce_manifest_system"],"actor":"command-room-update-bridge"}
 ```
+
+**MANDATORY — the version fields come from the Phase 1 struct, verbatim (WALKFIX1 Item I).** Build them with `bridge_versions.receipt_version_fields(<the Phase 1 struct>)` and merge the result into the event's data. Every `plugin_update` receipt this run writes carries the SAME three named members, so a reader never has to infer which member a bare number came from — the ambiguity that made one run's two receipts read first as a downgrade and then as a no-op. This applies to `plugin_update_deferred` too.
 
 If failures occurred, list them in `failed_artifacts`. If migrations were skipped (user-declined or structural mismatch), list them in `skipped_migrations` with a brief reason inline. The `applied_remediation_ids` list carries every release-manifest item the user saw in Phase 4.8 (v3.4.5+). The next run of this skill detects the partial update and offers to retry the failed ones — but does NOT re-prompt for migrations the user explicitly declined (unless they say `redo workspace migrations`).
 

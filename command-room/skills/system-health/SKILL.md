@@ -95,12 +95,15 @@ import sys, json; sys.path.insert(0, 'shared/scripts')
 from org_writer import count_failing_orgs
 from brain_proposals import load_open_proposals
 from substrate_health import substrate_alarm_lines, check_git_in_drive
+from seq_health import detect_and_mark
 ws = '<workspace_root>'
 integ = count_failing_orgs(ws)
 n_waiting = len(load_open_proposals(ws, 'system-health'))
 alarms = substrate_alarm_lines(ws)   # FS-04/05/06/15 + SYNC1 stale-view — loud substrate alarms
 git_lint = check_git_in_drive(ws)    # SYNC1 B4 — .git-in-Drive advisory
-print(json.dumps({'integ': integ, 'n_waiting': n_waiting, 'alarms': alarms + git_lint}))
+seq_rep = detect_and_mark(ws)        # BUG-8330 item 7c — READ-ONLY here (no --mark; cleanup marks weekly)
+print(json.dumps({'integ': integ, 'n_waiting': n_waiting, 'alarms': alarms + git_lint,
+                  'n_new_duplicate_seqs': seq_rep['n_new']}))
 "
 ```
 
@@ -113,6 +116,7 @@ print(json.dumps({'integ': integ, 'n_waiting': n_waiting, 'alarms': alarms + git
 - **Scheduled/maintenance fires preflight first.** Any write-chained scheduled fire calls `substrate_health.preflight_freshness(ws)` as step 0 and EXITS before any job runs when it returns `ok=False` (a stale mount is refused up front, jobs stay due, no quarantine litter) — see the maintenance prompt.
 - **Entity-integrity line:** `unreadable=True` → surface a LOUD one-liner: *"⚠ I couldn't read your records file — it may be mid-sync or corrupted. If this persists, fully quit and reopen Cowork."* (FS-15 — corruption is never silent.) Else `n_failing == 0` → *"Your records are clean ([n_orgs] orgs checked)."*; `n_failing > 0` → *"[n_failing] of [n_orgs] org records need repair — say `update command room` to fix them."*
 - **Queue-health line:** `n_waiting > 0` → *"[n_waiting] items are waiting on you — say `staff meeting` to work through them."* When `n_waiting > 0` you may NOT claim the queue is empty or that nothing needs the CEO's attention — that was the FS-09 failure (an all-clear line rendered over 77 open proposals). Only `n_waiting == 0` renders the honest empty line: *"Nothing waiting on your eyes right now."*
+- **Duplicate-seq line (BUG-8330 item 7c):** `n_new_duplicate_seqs > 0` → *"[n] activity-log entries share a record number — the weekly cleanup will mark them; new ones appearing means something is writing the log wrong."* Zero → render nothing (a marked historic duplicate is known, not news).
 
 Then stop. No widget on the health check (the Staff Meeting surface below has its own render contract), no doc, no follow-up question.
 
@@ -159,7 +163,8 @@ The Tue/Thu quiet-chased-tail sweep shipped Phase 4 (2026-07-02) as the daily co
 
 - **Machine-local time is the scheduler's clock.** Cron evaluates in the machine's timezone, not the workspace timezone — the watchdog's math is machine-local by design. Don't "correct" a fire time against the workspace TZ; `tz.py` localization is presentation-only.
 - **A later-add task rendering as "not registered" is not a failure** — relationship-moves / commitments / commitment-triage / staff-meeting are deliberately not first-install. The watchdog stays quiet about them; change-schedule owns that render.
-- **A RETIRED task is quiet too, and for a different reason** — membership is `schedule_config.RETIRED_TASKS` (currently `pulse`, eliminated by SPEC LIFECYCLE1), never a name list here. A later-add is absent because the workspace hasn't added it YET; a retired task is absent because it is GONE. Both are silent, and the retired class stays silent PERMANENTLY: never report its absence, never propose adding it, never count it as a missing chat in any completeness check. If a workspace still has one REGISTERED, that is not a health finding either — the retirement offer belongs to the update bridge (propose, never silent), not to the watchdog.
+- **A fire can be on schedule and still half-failed (SPEC BRIEFMERGE §D).** The morning-brief fire runs TWO legs — meeting prep first, then the digest — and writes ONE receipt carrying both. `health_verdict` folds `legs` findings in the same way it folds maintenance job findings: they ride the problem lines and the attention count, and they never move the task out of its bucket, because the brief genuinely did run. "Your Morning Brief ran, but meeting prep didn't" is a real finding with a real fix; report it and say nothing when both legs ran. A receipt with no leg fields is a pre-BRIEFMERGE fire — silence, not a finding.
+- **A RETIRED task is quiet too, and for a different reason** — membership is `schedule_config.RETIRED_TASKS` (`pulse`, eliminated by SPEC LIFECYCLE1; `upcoming-meetings`, merged into the morning brief by SPEC BRIEFMERGE), never a name list here. A later-add is absent because the workspace hasn't added it YET; a retired task is absent because it is GONE. Both are silent, and the retired class stays silent PERMANENTLY: never report its absence, never propose adding it, never count it as a missing chat in any completeness check. If a workspace still has one REGISTERED, that is not a health finding either — the retirement offer belongs to the update bridge (propose, never silent), not to the watchdog.
 - **Don't fabricate a diagnosis.** If the watchdog returns a finding you can't explain, surface the finding and the named fix — never speculate about causes beyond the generic self-serve list (which is possibilities, not a diagnosis). "The computer was likely asleep" as an asserted cause is the exact fabricated-narrative class the 2026-07 dogfood catalogued (F-10/F-43/F-47).
 - **An empty scheduler list is a vantage question before it is a finding.** `health_verdict` checks the substrate's registration history first (F-40); trust its `vantage` verdict. A cloud/remote chat reading an empty machine-local registry and reporting "nothing is registered" is the false total-outage failure this skill exists to never repeat.
 

@@ -23,7 +23,9 @@ Design goals:
   - One US Letter page friendly (margins + font sizes tuned for density).
 
 Used by:
-  - orchestrator-upcoming-meetings.md (Phase 4 step 3 -> Call_Prep_*.docx)
+  - call-prep/SKILL.md (Call_Prep_*.docx) — the ONE prep generator, called
+    on demand AND by the morning-brief fire's prep leg (SPEC BRIEFMERGE;
+    the retired orchestrator-upcoming-meetings.md used to be the second caller)
   - orchestrator-past-meetings.md (Phase 4 step 7 -> Past_Meeting_*.docx)
   - meeting-notes/SKILL.md Step 9a (on-demand Past_Meeting_*.docx)
 

@@ -45,6 +45,20 @@ Each scheduled-task skill calls `mcp__visualize__show_widget` (fed the persisted
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Provenance — say so when the prose in a row is YOURS
+
+`name` and `subject` are treated as the USER'S OWN WORDS. The renderer marks them, and the leak scanner's internal-vocabulary rules skip what is marked — so a person whose commitment title happens to name one of this product's own mechanics can still publish their board. (Path rules, session slugs, internal ids and the personal-content scan keep reading those fields in full: a machine path in a title is a leak whoever typed it.)
+
+If YOUR skill composed the value — a label plus an em-dash plus a clause, or a sentence like `f"Add {display_name} as a different person"` — say so on the item:
+
+```python
+{"n": 3, "name": f"{counterparty} — {clause}", "composed_fields": ["name"], ...}
+```
+
+The renderer then leaves that field unmarked and your template faces the whole scan, which is what you want: the exemption exists for the user's words, not for yours. Omit the key and the field is marked, so declare it whenever the value is not straight from the substrate.
+
+The markable set is declared once, in `chat_output_renderer.USER_AUTHORED_FIELDS`, and marking anything outside it raises. A guard pins the registry, scans for emitters bypassing the chokepoint, and fails any skill that composes `name`/`subject` without declaring it.
+
 ### Per-item verb dropdown (T2.2 row diet — replaces the button group)
 
 Each item gets ONE `<select>` (class `cr-action-select`) listing that row's
@@ -643,7 +657,7 @@ All 17 existing renderer tests still pass — markdown mode unchanged by the v2.
 | `orchestrator-commitments.md` | YOU OWE + OWED TO YOU | All actions batch. Grouped items (sub_items `7a`, `7b`, etc.) get individual checkboxes within the parent item's button group. |
 | `orchestrator-inbox.md` | Top of pile | All actions batch. The `escalate to memo` action is heavyweight — fires its memo content inline AFTER Apply, not before. |
 | `orchestrator-past-meetings.md` | Per-meeting cards | All actions batch. Pending review sub-items (`Na`, `Nb`, `Nc`) batch within parent. |
-| `orchestrator-upcoming-meetings.md` | Per-meeting cards | All actions batch. The `open SLUG` action expands the brief inline AFTER Apply. |
+| `orchestrator-upcoming-meetings.md` | — | **RETIRED (SPEC BRIEFMERGE).** The file is a retirement stub and emits no widget. Prep now runs as the morning brief's first leg, and the brief renders no widget at all (FB-20) — prep outcomes are lines. |
 | `meeting-notes/SKILL.md` Step 9 | OPEN ITEMS section | All actions batch. Decisions are NOT in the widget — they auto-log at processing time per the v2.10.9 4-section card spec. The widget only handles M-only resolution items. |
 | `orchestrator-staff-meeting.md` + morning-briefing / coach card | Living Brain queue (`src: "cr-brain"`) | All actions batch. Per-kind dispatch via `context.kind` (see the LB1 action section above). Staff Meeting renders the FULL paginated queue + change feed + "This week's moves"; daily surfaces render the ≤5 card. |
 

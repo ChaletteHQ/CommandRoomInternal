@@ -414,7 +414,6 @@ Event shape (unchanged from v3.13.0):
 
 ```json
 {
-  "seq": N,
   "timestamp": "...",
   "type": "email_drafted",
   "source_skill": "email-writer",
@@ -445,7 +444,6 @@ Same relocation as Phase 5: when the user clicks `send` or `edit then send` in t
 
 ```json
 {
-  "seq": M,
   "timestamp": "...",
   "type": "email_sent",
   "source_skill": "email-writer",
@@ -454,7 +452,7 @@ Same relocation as Phase 5: when the user clicks `send` or `edit then send` in t
   "data": {
     "recipient": "...@example.com",
     "topic": "[topic]",
-    "draft_event_seq": N,
+    "draft_event_seq": <seq of the email_drafted event, read from the append RETURN value>,
     ...connector_adapters.provenance.build_email_sent_provenance(
         message_id=<the send response's message id>,
         thread_id=<the send response's thread id, when provided>,

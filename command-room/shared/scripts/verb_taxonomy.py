@@ -475,6 +475,16 @@ VERB_TAXONOMY = (
     _row("confirm", "Confirm", None,
          "Apply the proposed change to the person record.",
          ("dont-forget", "commitments", "cr-brain"), family="review"),
+    _row("show these", "Show these", None,
+         "Expand this grouped row into its own items, each with its own "
+         "buttons.",
+         ("cr-brain",), family="review",
+         notes="BUG-8330 item 9. The review digest's AFFIRMATIVE — replaces "
+               "the digest-level `confirm` whose one click closed every "
+               "member. Presentation only: dispatch re-renders the "
+               "data.digest_members as individual rows; nothing is written. "
+               "A surviving bulk verb must name all members ('Close all N'); "
+               "this build ships none on the review digest."),
     _row("edit [change]", "Edit", None,
          "Type the corrected value; it applies instead of the proposal.",
          ("dont-forget", "decision-memo-composer"), input="optional",

@@ -148,8 +148,8 @@ def doc_headline_link(label: str, url: str) -> str:
     that the user is meant to open right now. NOT for source citations (those
     stay as plain inline `_link()` calls), NOT for in-widget artifact_link
     (the widget iframe doesn't render `computer://` reliably — that's why the
-    widget side is data-only post-v2.12.0; per `orchestrator-upcoming-meetings`
-    line 256).
+    widget side is data-only post-v2.12.0; the finding was recorded in the
+    since-retired upcoming-meetings orchestrator and the rule outlived it).
 
     Usage:
 
@@ -210,6 +210,149 @@ def doc_headline_link_h3(label: str, url: str) -> str:
     if _current_surface() == "slack":
         return _slack_doc_headline(label)
     return _doc_headline_link_impl(label, url, level=3)
+
+
+# ============================================================================
+# SPEC BRIEFFIX1 Item A — the ONE post-time doc-link conversion
+#
+# The persisted side and the posted side are different strings, deliberately:
+#
+#   PERSISTED (receipt pointers, the saved digest snapshot under
+#   `_hq/briefings/`) stays WORKSPACE-RELATIVE. That is load-bearing for
+#   cross-machine sync — one file means one file everywhere — and BRIEFMERGE
+#   §C exists to keep it that way. Nothing below touches it.
+#
+#   POSTED (the chat turn) must be MACHINE-ABSOLUTE in the `computer://` form,
+#   because that URL is resolved against THIS computer's filesystem. A
+#   workspace-relative href renders a card that answers "this file can't be
+#   found on your computer" while the document sits in the synced folder —
+#   field-verified on 2026-08-09, on a fire whose persisted digest was
+#   correct and whose chat post carried the persisted string verbatim.
+#
+# So the conversion is a CHOKEPOINT at post time, not a change to any writer:
+# compose the digest in the persisted form, save that, then hand the same text
+# through `absolutize_doc_links` on the way to chat. And because a prose
+# instruction to call it would be presumed skipped (the Bug #98 class), the
+# rendered-payload scan REFUSES a payload that still carries the relative form.
+# ============================================================================
+
+import re as _re_doc  # module-level: the patterns below compile at import time
+
+_DOC_HREF_PATTERNS = (
+    # markdown link target: `](<target>)`
+    _re_doc.compile(r"\]\(\s*([^)\s]+)\s*\)"),
+    # html attribute: `href="<target>"` / `href='<target>'`
+    _re_doc.compile(r"""href\s*=\s*["']([^"']+)["']"""),
+)
+
+
+def _is_relative_doc_target(target: str) -> bool:
+    """True when a link target is a workspace-relative generated-deliverable
+    pointer. Delegates the predicate to `workspace_paths` so the conversion,
+    the fence and the writer contract cannot drift apart on what counts."""
+    try:
+        from workspace_paths import is_workspace_relative_doc
+    except ImportError:  # pragma: no cover — partial install tolerance
+        return False
+    return is_workspace_relative_doc(target)
+
+
+def absolutize_doc_links(text: str, workspace_root, *, drive_web_url=None) -> str:
+    """THE post-time conversion: every workspace-relative deliverable link in
+    `text` becomes the machine-absolute opener URL. Everything else is
+    returned byte-for-byte unchanged.
+
+    Call it on the copy that goes to CHAT, never on the copy that goes to
+    disk. `workspace_root` is the fire-time root (Rule 22 discovery), and it
+    is REQUIRED: without it there is no machine to be absolute on, so the text
+    comes back untouched rather than half-converted.
+
+    A pointer this workspace cannot resolve is left ALONE rather than
+    rewritten into a guess. In practice there is exactly one way that happens
+    — no `workspace_root` — and it takes the whole payload with it, because
+    without a root there is no machine to be absolute on. A workspace-relative
+    pointer WITH a root always converts: `_resolve` short-circuits on the
+    relative shape before any anchor-ambiguity check, so the doubled-anchor
+    case an earlier version of this docstring described as "caught by the
+    fence" does not arise (review F7 — the claim was checked and was wrong).
+    The fence still backstops a payload that was never converted at all.
+
+    `drive_web_url` is the cloud web link for a session-scoped (cloud-mounted)
+    workspace — Google Drive, OneDrive, or SharePoint, whichever platform
+    hosts the workspace (resolve it through
+    `tool_discovery.discover_drive_tool(..., prefer_platform=
+    tool_discovery.infer_workspace_drive_platform(root))` — BUG-8538);
+    `brief_path.get_brief_opener_url` prefers it there and ignores
+    it on a host-native root. Pass a callable to resolve per-path, a string to
+    apply one link to every doc in the payload, or None for the `computer://`
+    form.
+
+    >>> absolutize_doc_links("[Prep](_hq/meetings/x.docx)", "/ws")
+    '[Prep](computer:///ws/_hq/meetings/x.docx)'
+    >>> absolutize_doc_links("[Prep](_hq/meetings/x.docx)", None)
+    '[Prep](_hq/meetings/x.docx)'
+    """
+    if not text or not workspace_root:
+        return text
+    from brief_path import get_brief_opener_url
+    from workspace_paths import machine_absolute
+
+    def _url_for(target: str) -> Optional[str]:
+        absolute = machine_absolute(target, workspace_root)
+        if not absolute:
+            return None
+        if callable(drive_web_url):
+            web = drive_web_url(target) or ""
+        else:
+            web = drive_web_url or ""
+        return get_brief_opener_url(absolute, web) or None
+
+    def _sub(match):
+        target = match.group(1)
+        if not _is_relative_doc_target(target):
+            return match.group(0)
+        url = _url_for(target)
+        if not url:
+            return match.group(0)
+        # Rebuilt from the TARGET's own span, not by replacing its text
+        # inside the match: a label that happens to repeat the path would
+        # otherwise get rewritten instead of the href.
+        start, end = match.span(1)
+        offset = match.start()
+        whole = match.group(0)
+        return whole[:start - offset] + url + whole[end - offset:]
+
+    out = text
+    for pattern in _DOC_HREF_PATTERNS:
+        out = pattern.sub(_sub, out)
+    return out
+
+
+def scan_for_relative_doc_links(text: str) -> list:
+    """Every workspace-relative deliverable href in a payload about to be
+    posted — the fence half of Item A.
+
+    Returns `[(kind, matched_target)]` in the shape `validate_chat_output`
+    already collects, so a hit refuses the post through the one gate every
+    surface already runs. A relative doc href in chat is not a style problem:
+    it is a card that cannot open, on every machine, every time.
+    """
+    if not text:
+        return []
+    hits = []
+    seen = set()
+    for pattern in _DOC_HREF_PATTERNS:
+        for match in pattern.finditer(text):
+            target = match.group(1)
+            if target in seen or not _is_relative_doc_target(target):
+                continue
+            seen.add(target)
+            hits.append((
+                "dead-link (workspace-relative doc href — the card cannot "
+                "open on any machine)",
+                target,
+            ))
+    return hits
 
 
 def _pill_row(actions: list[str]) -> str:
@@ -362,6 +505,15 @@ def _render_section(section: dict) -> list[str]:
             out.append("")
         out.extend(_render_item(item))
 
+    # BUG-8330 item 5 — footer_note finally renders. Builders set it on
+    # capped sections ("+N more — say 'show my plate' for everything") and
+    # BOTH render paths dropped it, so every "+N more" a user ever saw was
+    # model-composed. The note is the section's honesty line; never drop it.
+    note = section.get("footer_note")
+    if isinstance(note, str) and note.strip():
+        out.append("")
+        out.append(f"_{note.strip()}_")
+
     return out
 
 
@@ -429,10 +581,23 @@ def render_chat_output(data: dict) -> str:
 __all__ = [
     "render_chat_output",
     "render_chat_output_widget",
+    "absolutize_doc_links",
+    "scan_for_relative_doc_links",
     "scan_for_id_leaks",
     "scan_for_generic_summary",
     "validate_chat_output",
+    "validate_data_view",
     "validate_rendered_widget",
+    "scan_rendered_html",
+    "mark_field",
+    "mark_user_text",
+    "blank_user_text",
+    "USER_TEXT_OPEN",
+    "USER_TEXT_CLOSE",
+    "USER_TEXT_BLANKED_LABELS",
+    "USER_AUTHORED_FIELDS",
+    "COMPOSED_FIELDS_KEY",
+    "UserTextProvenanceError",
     "CANONICAL_ACTIONS",
     "is_canonical_action",
     "CanonicalActionError",
@@ -1057,7 +1222,7 @@ def _validate_canonical_actions(data):
 
 
 def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
-                         plugin_root=None, surface=None):
+                         plugin_root=None, surface=None, vocab_text=None):
     """Blocking leak-scanner gate per shared/CONTRACT.md Rule 4 + Rule 25.
 
     Runs two scanners over the input (three when `surface` declares an org
@@ -1100,15 +1265,31 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
       - apply-choices Step 4 (over the consolidated chat ack before posting)
       - orchestrator Phase 8/9 post-widget chat-links section (before posting)
 
+      - vocab_text — the same text with user-authored spans blanked (see
+        `blank_user_text`). Passed only by `scan_rendered_html`, which is the
+        one caller that knows where the renderer stopped and the user's own
+        words began. It narrows WHICH TEXT the internal-vocabulary pattern
+        classes read; it never removes a pattern, and every other class —
+        paths, session slugs, ids, the wire literal, the personal scan —
+        still reads the full text. Omitted everywhere else, so every other
+        caller behaves exactly as before.
+
     NEVER silently passes. The fix is always at the data layer — strip the
     leak before re-rendering. Never add the leaking pattern to the allow-list.
     """
-    leaks = scan_for_id_leaks(text_or_html)
+    leaks = scan_for_id_leaks(text_or_html, user_text_blanked=vocab_text)
+    paths_scan_text = paths_text if paths_text is not None else text_or_html
     path_leaks = _scan_for_path_leaks(
-        paths_text if paths_text is not None else text_or_html,
+        paths_scan_text,
         workspace=workspace,
         plugin_root=plugin_root,
     )
+    # SPEC BRIEFFIX1 Item A — the post-time conversion, enforced. Scanned over
+    # the href-PRESERVED text for the same reason the path scan is: the ID pass
+    # blanks hrefs, and the whole point here is what is inside one. Unlike the
+    # path scan this needs no workspace discovery — a relative doc href is dead
+    # on every machine, so there is nothing to compare it against.
+    dead_links = scan_for_relative_doc_links(paths_scan_text)
     # PGUARD1 D2 — personal-content scan, surface-gated BLOCKING. Only fires
     # when the caller DECLARES an org/board/client/external surface; never on
     # m_facing / undeclared. Import tolerance mirrors turn_backstop (a partial
@@ -1128,7 +1309,7 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
                 "[chat_output_renderer] WARN: personal_leak module missing — "
                 "the org-surface personal-content scan did NOT run.\n"
             )
-    all_leaks = leaks + path_leaks + personal_leaks
+    all_leaks = leaks + path_leaks + personal_leaks + dead_links
     if all_leaks:
         unique = {}
         for kind, sample in all_leaks:
@@ -1156,6 +1337,16 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
                 "`find $SESSION_DIR/mnt -name _hq`). Never copy a path from "
                 "docstrings, references, or CHANGELOG examples — those land on "
                 "the author's machine, not the user's, and click 404s on user surfaces."
+            )
+        if dead_links:
+            msg_parts.append(
+                "Dead-link fix (BRIEFFIX1 Item A): the payload still carries "
+                "the PERSISTED form of a document pointer. Persist relative, "
+                "post absolute — run the text through "
+                "`chat_output_renderer.absolutize_doc_links(text, "
+                "<workspace root>)` on the way to chat, and save the "
+                "unconverted copy to disk. Never hand-write the absolute form "
+                "into the composed text: that is what re-rots the saved copy."
             )
         raise LeakDetectedError("\n".join(msg_parts))
 
@@ -1289,20 +1480,290 @@ _LEAK_PATTERNS = [
      "platform CSS echo leak"),
 ]
 
+# Connector-minted opaque ids (BUG-8330 item 11) — the ONE shared family
+# (shared/scripts/connector_id_patterns.py), registered ALWAYS-SCANNED here
+# and in docx_leak_scanner alike. Every pattern above anchors on
+# plugin-minted prefixes; a normalized Slack permalink id
+# (`p1786032197391009`) had zero coverage and reached a user surface. Add
+# or remove patterns in the shared module, never here.
+try:
+    from connector_id_patterns import connector_id_leak_patterns
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_cip
+    from pathlib import Path as _Path_cip
+    _sys_cip.path.insert(0, str(_Path_cip(__file__).resolve().parent))
+    from connector_id_patterns import connector_id_leak_patterns
+_LEAK_PATTERNS.extend(connector_id_leak_patterns())
 
-def scan_for_id_leaks(text):
+
+# ============================================================================
+# PROVENANCE MARKING — user-authored text, and what it is still scanned for.
+#
+# THE BUG THIS CLOSES. Gate 2 scans every visible string, by design and by
+# docstring. That is right for text the RENDERER wrote and wrong for text the
+# USER wrote: an operator whose own commitment title names a substrate file was
+# quoting their own work, and the entire triage board became unpublishable. The
+# board hit it first because it renders the full row set on one page — the
+# paginated widget only refused when a colliding row happened to land on the
+# rendered page — but the class is the same on both emitters, and it is
+# unbounded: an operator who builds against these files writes titles about
+# them.
+#
+# WHY THIS IS NOT AN ALLOW-LIST. The gate's own refusal text says "Never add to
+# the allow-list", and that rule is intact here. An allow-list exempts a STRING
+# — it says `events.jsonl` is acceptable output, everywhere, from anyone, and
+# it can never be un-said. This exempts a PROVENANCE: the identical literal
+# still refuses the moment the renderer is the one who wrote it, which is the
+# case the gate exists for. Nothing is added to any pattern; no pattern is
+# weakened; no pattern is deleted. The set of forbidden strings is unchanged.
+# What changes is that a pattern class whose match in the user's own words is a
+# false positive stops reading the user's own words.
+#
+# WHAT STILL SCANS USER TEXT IN FULL. Everything whose match is dangerous no
+# matter who typed it: absolute filesystem paths, `/sessions/` slugs and other
+# machine paths (a machine path in a title IS still a leak — it 404s on every
+# other machine and names the author's disk), internal entity and commitment
+# IDs, the apply-payload wire literal, the platform CSS echo, the relative
+# dead-link scan, and the PGUARD1 personal-content scan. The mojibake
+# detectors are unaffected by construction: they live in `chat_output_validator`
+# / `docx_leak_scanner`, which scan plain text and never see this marker.
+#
+# The marker is delimited by HTML COMMENTS rather than an element, and that is
+# deliberate: escaping turns every `<` in user text into `&lt;`, so a user can
+# never author the closing delimiter, and comment delimiters cannot be nested
+# by the markdown subset the renderer emits (`<a>`, `<strong>`, `<em>`). A
+# `<span>` marker would end at the first `</span>` some future inner element
+# emitted, silently un-blanking the tail.
+# ============================================================================
+
+USER_TEXT_OPEN = "<!--cr:ut-->"
+USER_TEXT_CLOSE = "<!--/cr:ut-->"
+
+_USER_TEXT_SPAN_RE = _leak_re.compile(
+    _leak_re.escape(USER_TEXT_OPEN) + r".*?" + _leak_re.escape(USER_TEXT_CLOSE),
+    _leak_re.DOTALL,
+)
+
+# The pattern labels that stop reading user-authored spans. Every one is
+# INTERNAL VOCABULARY — a name for one of this product's own mechanics — whose
+# appearance in a person's own sentence means they were talking about their
+# work, not that a mechanic leaked. Labels absent from this set scan user text
+# in full; a new pattern is therefore always-scanned until somebody argues it
+# onto this list, which is the safe default direction.
+USER_TEXT_BLANKED_LABELS = frozenset({
+    # storage + schema vocabulary
+    "internal data file",
+    "internal session-notes file",
+    "internal schema file",
+    "internal _hq path",
+    # `schema-field leak` matches four snake_case internal identifiers. They
+    # are NOT ordinary words that happen to collide with prose — nobody writes
+    # `primary_thread_id` by accident. It is here on the operator-vocabulary
+    # basis instead: the person repairing their own records writes titles
+    # naming the fields those records are made of, which is the same family as
+    # the reported case. Renderer-authored occurrences still refuse, which is
+    # what the pattern exists for.
+    "schema-field leak",
+    "event seq leak",
+    # event-type names
+    "internal event-type leak",
+    # telemetry / narration
+    "freelance file-write leak",
+    "internal narration leak",
+    "widget-narration leak",
+    # threshold rationales
+    "confidence-score leak",
+    # engineer phrasing
+    "routing-metadata leak",
+    "routing label",
+    "phase/step label",
+    "plugin-version protocol leak",
+    "plugin-version reference leak",
+    "widget-improvisation leak (couldn't transmit)",
+    "widget-improvisation leak (session payload)",
+    "widget-improvisation leak (live widget surface)",
+    "widget-improvisation leak (payload limit/size)",
+    "widget-improvisation leak (too large)",
+    "widget-improvisation leak (render validated but...)",
+})
+
+
+# ---------------------------------------------------------------------------
+# WHICH FIELDS ARE USER-AUTHORED — declared once, enforced, never assumed.
+#
+# The marker is a CLAIM: "the words inside this span are the user's own." The
+# first cut made that claim by field position at each renderer — `crb-title`
+# here, `name` and `subject` there — and left the claim itself as a docstring.
+# A claim nothing checks is a claim that drifts, and it was already drifting:
+# two shipped skills compose `item["name"]` from a driver template with a
+# user-derived fragment interpolated into it. Neither composed string happens
+# to match a blanked class today, so nothing leaked — but the next skill that
+# writes `name=f"Phase 2 — {title}"` would have handed its own template a
+# silent exemption from the vocabulary scan, and no test would have noticed.
+#
+# So the field set is a REGISTRY, the renderers mark FROM it, and marking a
+# field the registry does not declare RAISES rather than quietly proceeding.
+# Adding a field here is a deliberate act with a guard pinning the contents.
+USER_AUTHORED_FIELDS: dict[str, tuple[str, ...]] = {
+    # The interactive widget: the row's title and the quoted subject line.
+    "widget": ("name", "subject"),
+    # The artifact board: the row title only (its tags, notes and headings are
+    # all driver-composed).
+    "board": ("name",),
+}
+
+# The per-item escape hatch, for the case the registry alone cannot see: a
+# field that is USUALLY the user's words but which THIS caller composed
+# itself. The orchestrator names the fields it wrote, and the renderer does
+# not mark them — so a driver template keeps facing the full scan even when it
+# is sitting in a user-authored field.
+COMPOSED_FIELDS_KEY = "composed_fields"
+
+
+class UserTextProvenanceError(ValueError):
+    """A renderer tried to mark a field the registry does not declare
+    user-authored. Never caught — the fix is to justify the field into
+    `USER_AUTHORED_FIELDS`, or to stop marking it."""
+
+
+def mark_field(item: dict, field: str, rendered: str, *, surface: str) -> str:
+    """THE marking chokepoint. Every emitter goes through here.
+
+    Returns `rendered` wrapped in the provenance marker when the registry
+    declares `field` user-authored for `surface` AND the item has not declared
+    that it composed the value itself; returns it untouched otherwise.
+
+    RAISES `UserTextProvenanceError` on an unknown surface or an undeclared
+    field. That is the whole point: the alternative is an emitter marking
+    whatever it likes, which is how the invariant became a docstring nobody
+    could enforce. A guard also pins that nothing outside this function calls
+    `mark_user_text`, so the raise cannot be routed around.
+    """
+    declared = USER_AUTHORED_FIELDS.get(surface)
+    if declared is None:
+        raise UserTextProvenanceError(
+            f"surface {surface!r} declares no user-authored fields. Add it to "
+            f"USER_AUTHORED_FIELDS with the fields that genuinely carry the "
+            f"user's own words — a surface that marks text without declaring "
+            f"what it is marking is the invariant this registry replaced.")
+    if field not in declared:
+        raise UserTextProvenanceError(
+            f"{surface} tried to mark {field!r} as user-authored, and the "
+            f"registry declares only {', '.join(declared)}. Marking a field "
+            f"exempts it from the internal-vocabulary scan, so a "
+            f"driver-composed field marked by mistake is a silent hole in "
+            f"Gate 2. Either justify {field!r} into USER_AUTHORED_FIELDS, or "
+            f"do not mark it.")
+    composed = item.get(COMPOSED_FIELDS_KEY) or ()
+    _warn_unknown_composed_fields(item, composed, surface=surface)
+    if field in composed:
+        # The caller says it wrote this one. Believe it — an orchestrator that
+        # names its own prose is the only party that actually knows.
+        return rendered
+    return mark_user_text(rendered)
+
+
+# One warning per (surface, declaration) per process. The renderer runs once
+# per row and a 200-row page would otherwise print the same line 200 times,
+# which is how a real warning becomes scroll.
+_COMPOSED_TYPO_SEEN: set = set()
+
+
+def _warn_unknown_composed_fields(item: dict, composed, *, surface: str) -> None:
+    """Warn — never raise — when `composed_fields` names something the item
+    does not have (WALKRIDERS residual G-5).
+
+    THE HOLE. `composed_fields: ["nam"]` reads as a declaration and does
+    nothing: the typo matches no field, so `name` is marked anyway and the
+    driver's own prose keeps the exemption the declaration was written to
+    give up. It fails in the UNSAFE direction and says nothing, which is the
+    same shape as the finding this whole registry exists to close.
+
+    WARN, NOT RAISE, deliberately. A declaration is an orchestrator's
+    statement about text it wrote; the marking decision itself is already
+    correct-by-default (an unrecognized name simply does not match, so the
+    field stays scanned in full — the safe side). Raising would take a
+    surface down over a typo in a provenance hint, which trades a quiet
+    over-exemption for a loud outage. The guard tier pins the warning, so
+    "warn" is not "nobody finds out".
+    """
+    if not composed:
+        return
+    try:
+        known = {k for k in item.keys() if isinstance(k, str)}
+    except Exception:  # noqa: BLE001 — a hostile item never breaks a render
+        return
+    unknown = [f for f in composed
+               if isinstance(f, str) and f not in known]
+    if not unknown:
+        return
+    key = (surface, tuple(sorted(unknown)))
+    if key in _COMPOSED_TYPO_SEEN:
+        return
+    _COMPOSED_TYPO_SEEN.add(key)
+    import sys as _sys
+
+    _sys.stderr.write(
+        f"[chat_output_renderer] {COMPOSED_FIELDS_KEY} on the {surface} "
+        f"surface names {', '.join(repr(u) for u in unknown)}, which this "
+        f"item does not carry. The declaration has no effect and the field it "
+        f"meant to cover is being marked as the user's own words. Check the "
+        f"spelling against the item's keys "
+        f"({', '.join(sorted(known)[:8])}).\n")
+
+
+def mark_user_text(rendered: str) -> str:
+    """Wrap ALREADY-ESCAPED user-authored text in the sanctioned marker.
+
+    Call this on the escaped/markdown-rendered form, never on the raw value —
+    the marker's safety rests on the user being unable to author its closing
+    delimiter, and escaping is what guarantees that.
+
+    NOT the emitter entry point — use `mark_field`, which is the one place
+    that decides WHETHER a field may be marked at all. This function only
+    knows how to wrap; it cannot know whose words it is wrapping.
+    """
+    if not rendered:
+        return rendered or ""
+    return f"{USER_TEXT_OPEN}{rendered}{USER_TEXT_CLOSE}"
+
+
+def blank_user_text(html: str) -> str:
+    """The same HTML with every marked user span emptied.
+
+    The markers survive so the result stays the same SHAPE as the input — a
+    diff of the two texts shows exactly which spans were exempted, and a scan
+    of this copy can still tell "there was user text here" from "there was
+    nothing here".
+    """
+    if not html:
+        return html or ""
+    return _USER_TEXT_SPAN_RE.sub(USER_TEXT_OPEN + USER_TEXT_CLOSE, html)
+
+
+def scan_for_id_leaks(text, *, user_text_blanked=None):
     """Return a list of (pattern_label, matched_substring) for every forbidden
     pattern found in the input text. Empty list = clean.
 
     Use against widget HTML and against the chat-links section markdown to catch
     internal-mechanics leaks before posting. Per Sam's Apr 30 feedback ("Why
     is it showing IDs?") — these patterns must never reach the user surface.
+
+    `user_text_blanked` is the SAME text with user-authored spans emptied (see
+    `blank_user_text`). When given, the internal-VOCABULARY classes listed in
+    `USER_TEXT_BLANKED_LABELS` scan THAT copy and every other class still scans
+    `text` in full. Omitted (the default, and what every caller outside
+    `scan_rendered_html` passes) the behaviour is exactly what it always was:
+    one text, every pattern.
     """
     if not text:
         return []
     findings = []
     for pat, label in _LEAK_PATTERNS:
-        for m in pat.finditer(text):
+        haystack = text
+        if user_text_blanked is not None and label in USER_TEXT_BLANKED_LABELS:
+            haystack = user_text_blanked
+        for m in pat.finditer(haystack):
             findings.append((label, m.group(0)))
     return findings
 
@@ -1917,6 +2378,7 @@ _ONBOARDING_SETUP_CSS = """
 .cr-card-onboarding-setup .cr-item:last-child { border-bottom: none; margin-bottom: 0; }
 .cr-onboarding-context { font-size: 12px; color: #8C7A65; margin: 4px 0 8px 28px; line-height: 1.4; font-style: italic; }
 .cr-onboarding-footer-note { font-size: 12px; color: #8C7A65; font-style: italic; margin: 8px 0 12px; padding: 0 4px; }
+.cr-section-footer-note { font-size: 12px; color: #8C7A65; font-style: italic; margin: 6px 0 10px; padding: 0 4px; }
 """
 
 
@@ -1949,6 +2411,48 @@ def validate_data_view(data: dict) -> None:
         # (same tolerance as the HTML path; the hard voice gate lives in
         # make_brief for the .docx surface).
         pass
+
+
+def scan_rendered_html(html: str, *, surface=None) -> None:
+    """Gate 2 — the leak-scanner pass over RENDERED HTML, extracted so every
+    HTML-emitting surface runs the identical preparation (SPEC_BOARD1: the
+    artifact board is a second HTML emitter; "call them, don't fork them").
+
+    The preparation is load-bearing and easy to get subtly wrong, which is
+    exactly why it may not be re-typed per surface:
+
+      - <style> / <script> blocks are stripped: they legitimately name
+        internal CSS classes and would false-positive forever.
+      - href values are preserved for the PATH scan (a bad absolute path
+        inside a `computer:///…` href is a real leak, Rule 3) and blanked
+        for the ID scan (a legitimate `_hq/meetings/<file>.docx` in an href
+        would otherwise trip the internal-path rule).
+      - data-* attribute VALUES are blanked (T3.1 FB-13): data-* is the
+        F2-sanctioned wire home for ids, and a legacy `event_NNNN` id there
+        refused a card whose visible text was clean.
+      - USER-AUTHORED spans are blanked for the internal-VOCABULARY classes
+        only (the marker `mark_user_text` writes; the classes listed in
+        `USER_TEXT_BLANKED_LABELS`). This is the newest layer and the one
+        easiest to misread: it is NOT an allow-list. No string is exempted —
+        the identical literal still refuses when the RENDERER wrote it. What
+        is exempted is one provenance, for one family of patterns, all of
+        which name this product's own mechanics. Paths, session slugs,
+        internal ids, the wire literal and the personal-content scan still
+        read user text in full, because a machine path or a personal-lane row
+        in a title is a leak no matter who typed it.
+
+    Raises LeakDetectedError exactly as validate_chat_output does.
+    """
+    scannable = _re_mod.sub(r"<style[^>]*>.*?</style>", "", html,
+                            flags=_re_mod.DOTALL)
+    scannable = _re_mod.sub(r"<script[^>]*>.*?</script>", "", scannable,
+                            flags=_re_mod.DOTALL)
+    paths_scannable = scannable
+    scannable = _re_mod.sub(r'href="[^"]*"', 'href=""', scannable)
+    scannable = _re_mod.sub(r'(\bdata-[a-z-]+=")[^"]*(")', r"\1\2", scannable)
+    vocab_scannable = blank_user_text(scannable)
+    validate_chat_output(scannable, paths_text=paths_scannable,
+                         vocab_text=vocab_scannable, surface=surface)
 
 
 def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
@@ -2017,46 +2521,21 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     if widget_mode == "onboarding_setup":
         return _render_onboarding_setup(data, wrapper=wrapper)
 
-    # Gate 1: canonical-action validator (raises CanonicalActionError on miss)
-    _validate_canonical_actions(data)
-
-    # Gate 1b (v2.14.1+): data-shape validator (raises DataShapeError on miss).
-    # Catches email items missing required send/edit/draft actions AND items
-    # with edit-then-* actions but blank metadata/body. Per M's Apr 30 v2.14.1
-    # testing: Drew's "Edit then send didn't open" was traced to data-shape
-    # inconsistency, not action-label misspelling.
-    _validate_data_shape(data)
-
-    # Gate 1c (v2.14.38+): Pulse richness validator (raises PulseRichnessError).
-    # Catches bare person-dormant cards: missing mandatory metadata rows, bare
-    # "Last contact" values without a topic, OR source-thread URLs without an
-    # `original_thread` block to render the inbox-style accordion. Per M's
-    # 2026-05-07 testing on Sam's bare card.
-    _validate_pulse_richness(data)
-
-    # Gate 1d (v3.13.8+): send-class chrome must carry a valid email.
-    # Closes Bug #44 (canonical renderer dead-chrome for degraded items).
-    # Items with send/draft/edit-then-send actions must have a parseable
-    # email address in metadata To:. Items that can't be sent should use
-    # the `add email then send` recovery verb instead.
-    _validate_send_class_email_addresses(data)
-
-    # Gate 1e (SPEC GATE1, v3.20.x): turn-level voice-tell backstop. Scans every
-    # email-shaped item's body for banned voice tells even when no composer ran
-    # its Step-2 gate — this is the deterministic backstop for the email/chat
-    # surface that never reaches brief_writer.make_brief. NON-BLOCKING by design
-    # (stderr-warn only; the renderer has no per-client allow_phrases context, so
-    # blocking here would punish a calibrated voice). Best-effort + never raises.
-    try:
-        from turn_backstop import scan_data_view_for_tells
-        # workspace_root self-resolves inside the backstop (SPEC GATE2 D4) so the
-        # emit branch actually fires from the renderer call-site — the GATE1 wiring
-        # gap that left the backstop scanning but writing nothing detectable.
-        scan_data_view_for_tells(data, source_skill=data.get("source_skill"))
-    except Exception:
-        # The backstop must never break a render. The hard voice gate still lives
-        # in make_brief for the .docx surface.
-        pass
+    # Gates 1 → 1e, in one call (SPEC_BOARD1: extracted to `validate_data_view`
+    # so the artifact-board emitter runs the IDENTICAL stack rather than a
+    # re-typed copy of it). What each gate is for, unchanged:
+    #   1  canonical-action validator (CanonicalActionError on an unknown verb);
+    #   1b data-shape validator (v2.14.1+) — email items missing required
+    #      send/edit/draft actions, or edit-then-* actions over blank
+    #      metadata/body. M's Apr 30 testing traced "Edit then send didn't
+    #      open" to data-shape inconsistency, not a misspelled label;
+    #   1c Pulse richness (v2.14.38+) — bare person-dormant cards;
+    #   1d send-class chrome must carry a valid email (v3.13.8+, Bug #44) —
+    #      an unsendable item uses the `add email then send` recovery verb;
+    #   1e turn-level voice-tell backstop (SPEC GATE1) — NON-BLOCKING by
+    #      design; the renderer has no per-client allow_phrases context, so
+    #      blocking here would punish a calibrated voice.
+    validate_data_view(data)
 
     sections = data.get("sections", [])
     total = _count_total_selectable_items(sections)
@@ -2182,29 +2661,11 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     html = "".join(assembled)
 
     # Gate 2: leak-scanner blocking gate (raises LeakDetectedError on miss).
-    # We scan the human-content portion of the HTML — header, sub_header, item
-    # bodies, sub-item summaries — NOT the embedded CSS/JS (which legitimately
-    # references internal class names). Strip <style> and <script> blocks
-    # before scanning so we don't false-positive on `_WIDGET_CSS` etc.
-    scannable = _re_mod.sub(r"<style[^>]*>.*?</style>", "", html, flags=_re_mod.DOTALL)
-    scannable = _re_mod.sub(r"<script[^>]*>.*?</script>", "", scannable, flags=_re_mod.DOTALL)
-    # v3.6.0+ — the path-leak scanner needs href values preserved so that bad
-    # absolute paths inside `computer:///...` hrefs (the clickable artifact
-    # URLs per Rule 3) get caught. Keep a copy with hrefs intact, then strip
-    # hrefs from the ID-leak scannable (legitimate `_hq/meetings/<file>.docx`
-    # in an href URL would otherwise trip the internal-path leak rule).
-    paths_scannable = scannable
-    scannable = _re_mod.sub(r'href="[^"]*"', 'href=""', scannable)
-    # T3.1 (FB-13) — data-* attributes are the F2-sanctioned wire home for
-    # ids (data-item-n / data-n / data-sub-id / data-note-for-n); a legacy
-    # commitment id shaped `event_NNNN` in `data-item-n` tripped the
-    # entity-ID pattern and refused a card whose VISIBLE text was clean
-    # (live morning-brief brain card, 2026-07-16). Blank data-* values the
-    # same way hrefs are blanked — every visible string stays fully scanned,
-    # and validate_rendered_widget's visible-span check still refuses any
-    # wire id that reaches row text.
-    scannable = _re_mod.sub(r'(\bdata-[a-z-]+=")[^"]*(")', r"\1\2", scannable)
-    validate_chat_output(scannable, paths_text=paths_scannable)
+    # The scan and its preparation live in `scan_rendered_html` (SPEC_BOARD1
+    # extraction — the artifact board runs the same one), which documents why
+    # style/script blocks, href values and data-* values are treated the way
+    # they are. Every VISIBLE string stays fully scanned.
+    scan_rendered_html(html)
 
     # Gate 3 (v2.14.35+): self-validate the structural button-to-wrapper invariant
     # before returning. Per Cowork's 2026-05-07 follow-up after the v2.14.34 fix:
@@ -3265,9 +3726,34 @@ def _render_widget_item(item: dict) -> str:
     icon = item.get("icon", "")
     if icon:
         head_parts.append(f'<span class="cr-item-icon">{_html_mod.escape(icon)}</span>')
+    # The row's NAME and its quoted SUBJECT are the user's own words — the two
+    # strings on this row the renderer did not compose — so both carry the
+    # provenance marker Gate 2 reads (see `mark_user_text`). The context tag,
+    # the annotations and everything below stay unmarked: those are
+    # renderer-composed, and a forbidden pattern in them is exactly the leak
+    # the gate exists to refuse.
     name = item.get("name", "")
-    if name:
-        head_parts.append(f'<span class="cr-item-name"><strong>{_md_to_html(name)}</strong></span>')
+    subject_probe = item.get("subject", "")
+    if not name and not subject_probe:
+        # WALKFIX1 Item E — the blank-card guard. A row with neither a name nor
+        # a quoted subject used to render as a bare row number: a card with
+        # nothing on it, which reads as a rendering fault rather than as the
+        # damaged record it is (live case: an unowned, undated scheduling row).
+        # Named rows with a subject-only shape are UNTOUCHED — that is the
+        # deliberate CTS1 §8.2 orphan-promise render, not a blank card.
+        #
+        # Renderer prose, so it is never marked: a fixed string this module
+        # wrote is not the user's words and keeps facing the whole scan.
+        from commitment_state import UNTITLED_PLACEHOLDER
+
+        head_parts.append(
+            f'<span class="cr-item-name"><strong>'
+            f"{_html_mod.escape(UNTITLED_PLACEHOLDER)}</strong></span>")
+    elif name:
+        head_parts.append(
+            f'<span class="cr-item-name"><strong>'
+            f'{mark_field(item, "name", _md_to_html(name), surface="widget")}'
+            f"</strong></span>")
     subject = item.get("subject", "")
     if subject:
         # The "· " separator sits BETWEEN a name and the subject. On a
@@ -3276,7 +3762,10 @@ def _render_widget_item(item: dict) -> str:
         # "· " is the render-side twin of the "?"-lead bug. Only emit it when
         # a name actually precedes the subject.
         _sep = '· ' if name else ''
-        head_parts.append(f'<span class="cr-item-subject">{_sep}"{_md_to_html(subject)}"</span>')
+        head_parts.append(
+            f'<span class="cr-item-subject">{_sep}"'
+            f'{mark_field(item, "subject", _md_to_html(subject), surface="widget")}'
+            f'"</span>')
     context_tag = item.get("context_tag", "")
     if context_tag:
         head_parts.append(f'<span class="cr-item-context">— {_md_to_html(context_tag)}</span>')
@@ -3563,13 +4052,21 @@ def _scan_row_fragment(fragment: str):
     _QUARANTINE_DEFECT_CLASSES when the row's rendered fragment carries a leak,
     else None. Uses the SAME scannable prep as the page-level gate — blank
     data-* attributes + href values so wire ids parked there don't
-    false-positive; only visible text is scanned — and the SAME always-on
-    scanners (id-leak + non-workspace path)."""
+    false-positive, and blank user-authored spans for the internal-VOCABULARY
+    classes — and the SAME always-on scanners (id-leak + non-workspace path).
+
+    The provenance blanking matters MORE here than at the page level, not less.
+    A page-level refusal is loud; this gate's answer is to replace the row with
+    a "1 row withheld" placeholder, so a user whose own title named a substrate
+    file watched their row quietly disappear from the surface. The path scan
+    below is deliberately left reading the full fragment: a machine path in a
+    title is worth withholding a row over."""
     if not fragment:
         return None
     scannable = _re_mod.sub(r'href="[^"]*"', 'href=""', fragment)
     scannable = _re_mod.sub(r'(\bdata-[a-z-]+=")[^"]*(")', r"\1\2", scannable)
-    if scan_for_id_leaks(scannable):
+    if scan_for_id_leaks(scannable,
+                         user_text_blanked=blank_user_text(scannable)):
         return "id_leak"
     try:
         if _scan_for_path_leaks(scannable):
@@ -3594,6 +4091,12 @@ def _quarantine_placeholder_item(item: dict, defect_class: str, ordinal) -> dict
         "display_n": ordinal,
         "icon": "⚠",  # ⚠
         "name": "1 row withheld",
+        # PROVENANCE — this placeholder is the RENDERER talking about itself,
+        # so it declares its own prose and stays fully scanned. The backstop
+        # below asserts the placeholder scans clean ("built from fixed
+        # strings"); marking `name` as user text would have quietly exempted
+        # half of what that backstop checks.
+        COMPOSED_FIELDS_KEY: ["name"],
         "context_tag": f"row {ordinal} {reason}",
         "actions": ["show why"],
     }
@@ -3629,6 +4132,7 @@ def _render_widget_item_quarantined(item: dict, *, ordinal) -> str:
         placeholder = _render_widget_item({
             "n": item.get("n") if item.get("n") is not None else f"withheld-{ordinal}",
             "display_n": ordinal, "name": "1 row withheld",
+            COMPOSED_FIELDS_KEY: ["name"],
             "context_tag": "withheld — failed a content scan",
             "actions": ["show why"]})
     return placeholder
@@ -3653,6 +4157,14 @@ def _render_widget_section(section: dict) -> str:
             parts.append('<hr class="cr-divider">')
         ordinal = item.get("display_n", i + 1)
         parts.append(_render_widget_item_quarantined(item, ordinal=ordinal))
+    # BUG-8330 item 5 — footer_note survives the widget path too (it was
+    # only ever read by the onboarding widget; both section renderers
+    # dropped it and the "+N more" tail was model-composed).
+    note = section.get("footer_note")
+    if isinstance(note, str) and note.strip():
+        parts.append(
+            f'<div class="cr-section-footer-note">'
+            f'{_html_mod.escape(note.strip())}</div>')
     return "".join(parts)
 
 

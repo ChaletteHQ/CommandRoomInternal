@@ -103,7 +103,7 @@ Projected from: `entities.json` (threads array + orgs array) + `events.jsonl` (a
 
 | Description | Owner | Due | Thread | Org | Status |
 |---|---|---|---|---|---|
-<for each event where type == "commitment" and _commitment_field(ev, "status") in ("open", "overdue") and _commitment_confidence(ev) >= 0.40 and id not in closed-commitment-ids, sorted by _commitment_field(ev, "due") asc, top 20>
+<for each event where type == "commitment" and _commitment_field(ev, "status") in ("open", "overdue") and passes_surface_floor(ev, floor=0.40) and id not in closed-commitment-ids, sorted by _commitment_field(ev, "due") asc, top 20>
 | <_commitment_field(ev, "title")> | <canonical_name(_commitment_field(ev, "owner_id"))> | <_commitment_field(ev, "due")> | <display_name(primary_thread_id)> | <canonical_name(thread.affiliation_id)> | <_commitment_field(ev, "status")> |
 </for>
 
@@ -112,7 +112,7 @@ Projected from: `entities.json` (threads array + orgs array) + `events.jsonl` (a
 </if>
 ```
 
-**Shape-aware reads (v3.4.4+ — REQUIRED):** every commitment field read in this section MUST go through `shared/scripts/cru_match.py::_commitment_field` (handles 5 shape variants: canonical, flat-new, legacy `owner`, `owner_person_id`-variant, pending-review). Confidence threshold uses `_commitment_confidence` to coerce string-label confidences ("HIGH" / "medium") into floats. Closed-commitment filter mirrors `load_open_commitments` — subtract any commitment whose id appears as `data.commitment_id` on a later `commitment_resolved` or `thread_resolved` event. Direct reads of `data.owner_person_id` / `data.description` (legacy field names) silently drop ~42% of commitments in production workspaces; this is the v3.4.4 bug class extended to view-regen.
+**Shape-aware reads (v3.4.4+ — REQUIRED):** every commitment field read in this section MUST go through `shared/scripts/cru_match.py::_commitment_field` (handles 5 shape variants: canonical, flat-new, legacy `owner`, `owner_person_id`-variant, pending-review). Confidence filtering goes through `cru_match.passes_surface_floor(ev, floor=0.40)` (BUG-8330 item 6): MISSING confidence is unscored and PASSES — `_commitment_confidence`’s missing→0.0 default is for explicit comparisons only, and applying it to a floor silently dropped every unscored capture. The 0.40 here is the VIEW floor (render tail note for what it hides); the daily-surface floor is `confidence.surface_min()` (0.7 shipped, per-workspace calibrated) and is enforced in code by `surface_drivers._apply_confidence_floor` — the two are different dials by design. Closed-commitment filter is the SHARED closure chain — use `cru_match.load_open_commitments` (or `closure_index.build_closure_index`); never a private resolved-id set (BUG-8330 item 1: private chains missed `commitment_superseded`, `target_id`, the seq aliases, and reopens). Direct reads of `data.owner_person_id` / `data.description` (legacy field names) silently drop ~42% of commitments in production workspaces; this is the v3.4.4 bug class extended to view-regen.
 
 **Headline count — the one counting API (Phase 2 Stage A, REQUIRED):** the tracker's "N open commitments" headline (header line + `<!-- totals -->` comment) is `commitment_state.count_commitments(load_open_commitments(...))["total"]` — the FULL open set, NOT the confidence-filtered row count above. The ≥0.40 floor only decides which rows render in the table; provisional items stay in the headline (they are open commitments) and are called out in the blockquote note. Reporting the filtered count as the headline made the tracker one of the three diverging aggregators in the 2026-07-01 audit (tracker 54 vs live replay 105). `render_master_tracker.py` implements this; the projector's loader also folds `commitment_updated` deferrals into the effective `due`, so a pushed item renders its new date.
 
@@ -539,7 +539,7 @@ Sorted by days-open desc. Flag threshold: 7 days = 🟡, 21 days = 🔴.
 
 | Commitment | To | Made | Days Open | Due | Thread | Org | Flag |
 |---|---|---|---|---|---|---|---|
-<for each open commitment where _commitment_field(ev, "owner_id") == user_self_id and _commitment_confidence(ev) >= 0.40, sorted by days_open desc>
+<for each open commitment where _commitment_field(ev, "owner_id") == user_self_id and passes_surface_floor(ev, floor=0.40), sorted by days_open desc>
 | <_commitment_field(ev, "title")> | <canonical_name(_commitment_field(ev, "requester_id")) or "—"> | <ts (YYYY-MM-DD)> | <days_open> | <_commitment_field(ev, "due") or "—"> | <display_name(primary_thread_id) or "—"> | <canonical_name(thread.affiliation_id) or "—"> | <flag> |
 </for>
 
@@ -549,7 +549,7 @@ Sorted by days-open desc. Flag threshold: 7 days = 🟡, 21 days = 🔴.
 
 | Commitment | From | Made | Days Open | Due | Thread | Org | Flag |
 |---|---|---|---|---|---|---|---|
-<for each open commitment where _commitment_field(ev, "requester_id") == user_self_id and _commitment_confidence(ev) >= 0.40, sorted by days_open desc>
+<for each open commitment where _commitment_field(ev, "requester_id") == user_self_id and passes_surface_floor(ev, floor=0.40), sorted by days_open desc>
 | <_commitment_field(ev, "title")> | <canonical_name(_commitment_field(ev, "owner_id"))> | <ts (YYYY-MM-DD)> | <days_open> | <_commitment_field(ev, "due") or "—"> | <display_name(primary_thread_id) or "—"> | <canonical_name(thread.affiliation_id) or "—"> | <flag> |
 </for>
 

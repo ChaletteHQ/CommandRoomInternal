@@ -392,7 +392,7 @@ For rows with `action == skip`:
 After all file operations complete, append one `onboarding_step` event to `events.jsonl`:
 
 ```json
-{"seq": <next>, "ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
+{"ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
  "data": {"step": "file_migration_complete", "counts": {"copied": N, "queued": N, "skipped": N, "conflicts": N}}}
 ```
 
@@ -401,7 +401,7 @@ After all file operations complete, append one `onboarding_step` event to `event
 Create `_hq/INGEST_REPORT.md` per the template in `references/ingest-report-template.md` (covers both data ingest and file migration). Append one final `onboarding_step` event:
 
 ```json
-{"seq": <next>, "ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
+{"ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
  "data": {"step": "ingest_complete", "source_shape": "<shape>", "counts": {...}}}
 ```
 

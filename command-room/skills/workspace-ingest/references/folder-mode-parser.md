@@ -171,7 +171,6 @@ For each confirmed file:
 
 ```json
 {
-    "seq": <next>,
     "ts": <now ISO>,
     "type": "file_filed",
     "source_skill": "workspace-ingest",

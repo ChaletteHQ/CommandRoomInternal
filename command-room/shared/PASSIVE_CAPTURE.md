@@ -63,10 +63,10 @@ See `references/ORG_AND_THREAD_MODEL.md` for the resolution + confidence model. 
 
 | Trigger | Event emitted |
 |---|---|
-| Calendar event occurred (today or in the past) with ≥1 canonical attendee | `type: meeting`, `data: { title, start_ts, duration_min, attendee_person_ids, source_ref: "gcal:<event_id>" }` |
+| Calendar event occurred (today or in the past) with ≥1 canonical attendee | `type: meeting` via `meeting_capture.build_meeting_event()` (BUG-8244): top-level `person_ids` = invitees resolved, `data.attendees` = every invitee EMAIL verbatim, `data.attendees_external` = unmatched names, `duration_min`, `source_ref: "gcal:<event_id>"` (`attendee_person_ids` is the retired legacy spelling — read-only) |
 | Calendar event for the future | do NOT emit; wait for the event to occur |
 
-**Resolution:** a meeting with no matchable attendees to canonical people is captured with `person_ids: []` and surfaced later during "end session" as "unresolved meeting — want to add the attendees to your people registry?"
+**Resolution:** a meeting with no matchable attendees to canonical people is captured with `person_ids: []` — but `data.attendees` still carries every invitee EMAIL the source listed (BUG-8244: the unresolved emails are what identity-reconcile corroborates merges from and what the backfill repairs history with; dropping them because they didn't resolve TODAY is how bindings go missing forever). Surfaced later during "end session" as "unresolved meeting — want to add the attendees to your people registry?"
 
 ### Slack
 
@@ -82,7 +82,7 @@ See `references/ORG_AND_THREAD_MODEL.md` for the resolution + confidence model. 
 
 | Trigger | Event emitted |
 |---|---|
-| Meeting transcript processed (via `meeting-notes` skill) | `type: meeting`, `data: { title, start_ts, duration_min, attendee_person_ids, summary (first 500 chars of meeting-notes output), decisions_seq_refs: [...], commitments_seq_refs: [...], source_ref: "granola:<meeting_id>" }` |
+| Meeting transcript processed (via `meeting-notes` skill) | `type: meeting` via `meeting_capture.build_meeting_event()` (BUG-8244 — meeting-notes Step 9a1 owns this write): `person_ids` resolved + `data.attendees` emails + `data.attendees_external` names, `summary` (first 500 chars of meeting-notes output), `decisions_seq_refs: [...]`, `commitments_seq_refs: [...]`, `source_ref: "granola:<meeting_id>"` |
 | Decisions extracted from transcript | separate `type: decision` events per decision |
 | Commitments extracted from transcript | separate `type: commitment` events per commitment |
 

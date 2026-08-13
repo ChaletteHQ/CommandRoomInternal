@@ -713,6 +713,74 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
     return problems, lines
 
 
+def _prep_leg_problems(workspace_root, reports):
+    """SPEC BRIEFMERGE §D — the "brief ran, prep didn't" finding.
+
+    Leg detail is only meaningful when the morning-brief TASK itself is
+    firing: a task that is late or never authorized already gets its own
+    task-level line, and a leg line under it would be noise about a fire that
+    did not happen. So this returns ([], []) unless the morning-brief report
+    exists, is receipted, and is not itself a problem — the same gate
+    `_maintenance_job_problems` applies to job detail.
+
+    Returns (findings, lines): at most ONE finding, with one plain-English
+    sentence (facts + the one action, never a cause — R3).
+    """
+    brief = next((r for r in reports if r["task"] == "morning-brief"), None)
+    if brief is None or not brief.get("last_fired"):
+        return [], []
+    if brief["status"] not in ("ok",) or brief.get("receipt_gap"):
+        return [], []
+    try:
+        from prep_leg import prep_leg_finding
+
+        finding = prep_leg_finding(workspace_root)
+    except Exception:  # noqa: BLE001 — a health read never breaks a surface
+        return [], []
+    if not finding:
+        return [], []
+    return [finding], [finding["line"]]
+
+
+def _brief_receipt_problems(workspace_root, reports, *, now=None):
+    """SPEC BRIEFFIX1 Item C — "a brief posted without its receipt".
+
+    Deliberately NOT gated on the morning-brief report being healthy the way
+    `_prep_leg_problems` is, because the failure this catches is invisible to
+    that gate: an EARLIER fire's receipt keeps the task looking on schedule
+    while the NEWEST fire posted a digest and recorded nothing. That is the
+    exact 2026-08-09 shape, and a gate on task health would have hidden it.
+
+    What IS excluded is a morning-brief already sitting in the problems
+    bucket — its task-level line exists and a second sentence about the same
+    task is noise (the `check_task_failures` posture).
+
+    Returns (findings, lines): at most one, fact-only.
+    """
+    brief = next((r for r in reports if r["task"] == "morning-brief"), None)
+    if brief is None:
+        return [], []
+    if (brief["status"] in ("late", "never_authorized", "not_registered")
+            or brief.get("receipt_gap")):
+        return [], []
+    # This module's `now` is MACHINE-LOCAL NAIVE (the clock cron evaluates in);
+    # `orphan_brief_finding` compares against event timestamps, which are UTC.
+    # Handing it a naive local instant would shift the comparison by the whole
+    # UTC offset and the finding would simply never fire west of Greenwich. So
+    # a naive value is dropped and the helper reads the real clock; an aware
+    # one (a test freezing the instant) passes straight through.
+    frozen = now if (now is not None and now.tzinfo is not None) else None
+    try:
+        from brief_receipt import orphan_brief_finding
+
+        finding = orphan_brief_finding(workspace_root, now=frozen)
+    except Exception:  # noqa: BLE001 — a health read never breaks a surface
+        return [], []
+    if not finding:
+        return [], []
+    return [finding], [finding["line"]]
+
+
 # ---------------------------------------------------------------------------
 # Hard-failure surfacing (HYG1 Item 4 — the dead-letter scheduled_task_failure)
 # ---------------------------------------------------------------------------
@@ -991,6 +1059,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
             "on_schedule": [], "caught_up": [],
             "first_run_pending": [], "problems": [],
             "maintenance_jobs": [],
+            "legs": [],
+            "brief_receipt": [],
             "task_failures": [],
             "summary_line": vantage["line"],
             "lines": [],
@@ -1024,6 +1094,27 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
         workspace_root, reports, now=now
     )
     lines += job_lines
+
+    # SPEC BRIEFMERGE §D: the merged morning-brief fire runs two legs, so a
+    # fire can be on schedule and still have half-failed. The combined receipt
+    # records both; this reads the newest one and surfaces "brief ran, prep
+    # didn't" — the sentence nothing could say while prep was a separate task
+    # that could die in silence. Same posture as the job findings above: a leg
+    # finding never moves the TASK out of its bucket (the brief did run), it
+    # rides the problem lines and the attention count.
+    leg_problems, leg_lines = _prep_leg_problems(workspace_root, reports)
+    lines += leg_lines
+
+    # SPEC BRIEFFIX1 Item C: the other half of the same fire's honesty. The
+    # leg finding above says "the brief ran, the prep didn't"; this one says
+    # "a brief posted and nothing recorded it" — the state where every other
+    # signal here reads healthy because an older fire's receipt is still the
+    # newest one. It rides the problem lines/count exactly like the leg
+    # finding and never moves the task out of its bucket.
+    receipt_problems, receipt_lines = _brief_receipt_problems(
+        workspace_root, reports, now=now
+    )
+    lines += receipt_lines
 
     # HYG1 Item 4: recent hard failures (scheduled_task_failure) ride the
     # problem lines/counts like the job findings — a failure never moves a
@@ -1084,7 +1175,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
                 f"{len(first_run)} are waiting on their first run" if len(first_run) > 1
                 else "1 is waiting on its first run"
             )
-        n_attention = len(problems) + len(job_problems) + len(failure_findings)
+        n_attention = (len(problems) + len(job_problems) + len(leg_problems)
+                       + len(receipt_problems) + len(failure_findings))
         if n_attention:
             parts.append(
                 f"{n_attention} need attention" if n_attention > 1
@@ -1103,8 +1195,12 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
         # tell a task from a job inside the maintenance task.
         "problems": [r["task"] for r in problems]
                     + [f"maintenance:{f['job']}" for f in job_problems]
+                    + [f"leg:{f['leg']}" for f in leg_problems]
+                    + [f"receipt:{f['check']}" for f in receipt_problems]
                     + [f"failure:{f['task']}" for f in failure_findings],
         "maintenance_jobs": job_problems,
+        "legs": leg_problems,
+        "brief_receipt": receipt_problems,
         "task_failures": failure_findings,
         "summary_line": summary,
         "lines": lines,
