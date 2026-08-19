@@ -45,6 +45,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 from tz import to_local, TZResolutionError  # noqa: E402
 
 
+def _primary_user_id(data: dict) -> str:
+    """The workspace's primary user, resolved through THE shared seam
+    (SPEC USERKEY1). Takes the RAW entities.json dict — the seam does its own
+    shape unwrapping and settings-block merge. Defensive: an unresolvable user
+    returns "" and every caller below degrades exactly as it did when the
+    inline flag loop found nobody, so this is never a new crash surface."""
+    try:
+        from primary_user import resolve_primary_user_from_entities
+        return resolve_primary_user_from_entities(data) or ""
+    except Exception:
+        return ""
+
+
 def _format_last_built(now: datetime, workspace_root: Path) -> str:
     """Render LAST_BUILT in workspace TZ per tz.py.
 
@@ -84,9 +97,20 @@ def _ceo_first_name(entities_path: Path) -> str:
     # v2.14.17: entities.schema.json canonical shape nests under `entities`;
     # tolerate older flat shape by falling back to top-level keys.
     entities = data["entities"] if isinstance(data.get("entities"), dict) else data
+    # USERKEY1 — the user is resolved through THE shared seam, then named. The
+    # inline person-flag loop this replaces found nobody on a workspace that
+    # stores only the canonical `workspace.user_id` pointer, so the widget
+    # greeted its owner with no name at all. The seam still covers both flag
+    # spellings as its flag fallback, after every pointer spelling it reads, so
+    # a flags-only workspace resolves exactly as it did. NOT "strictly more
+    # resolution": where a workspace carries the
+    # canonical pointer AND a flag on a DIFFERENT person, the pointer now wins
+    # and the resolved user CHANGES. That is the schema's stated precedence
+    # ("preferred over the legacy `is_primary_user: true` person field") and it
+    # is pinned in run_userkey1_canonical_pointer_test.py §3b.
+    uid = _primary_user_id(data)
     for p in entities.get("people", []):
-        # v2.7.13: handle both schemas
-        if p.get("is_user") or p.get("is_primary_user"):
+        if uid and p.get("id") == uid:
             name = (p.get("name") or p.get("canonical_name") or "").strip()
             if name:
                 return name.split()[0]
@@ -164,12 +188,11 @@ def _project_matters_fallback(
                 continue
             events.append(ev)
 
-    # Identify the user
-    user_id = ""
-    for p in entities.get("people", []):
-        if p.get("is_user") or p.get("is_primary_user"):
-            user_id = p.get("id", "")
-            break
+    # Identify the user — USERKEY1: through THE shared seam, not an inline
+    # flag loop. `user_id` gates every "you owe" vs "nudge someone" verb in
+    # this projection (see is_user_owed below), so an unresolved user does not
+    # degrade quietly here: it flips the artifact's instructions to the user.
+    user_id = _primary_user_id(data)
 
     # Build lookup tables
     people_by_id = {p.get("id"): p for p in entities.get("people", [])}

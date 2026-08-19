@@ -100,6 +100,136 @@ except ImportError:
         partition_subitems,
     )
 
+# PROV1 — the close-family source pointer. Every closer canonicalizes through
+# Layer A4 (connector_adapters.provenance) before append, so `data.source_ref`
+# is a resolvable key and never a raw spelling a reader has to re-normalize.
+try:
+    from connector_adapters.provenance import (  # noqa: E402
+        PROVENANCE_MISSING_KEY,
+        REF_GRAIN_KEY,
+        REF_GRAIN_SURFACE_MINTED,
+        SOURCE_REF_KEY,
+        SourceRefError,
+        close_provenance_fields,
+        dedup_key_of,
+    )
+except ImportError:  # pragma: no cover — direct-path fallback
+    from pathlib import Path as _Path_pv
+
+    sys.path.insert(0, str(_Path_pv(__file__).resolve().parent))
+    from connector_adapters.provenance import (  # noqa: E402
+        PROVENANCE_MISSING_KEY,
+        REF_GRAIN_KEY,
+        REF_GRAIN_SURFACE_MINTED,
+        SOURCE_REF_KEY,
+        SourceRefError,
+        close_provenance_fields,
+        dedup_key_of,
+    )
+
+
+def _now_iso() -> str:
+    """UTC to the second — the resolution every minted receipt in this codebase
+    already uses (`needs_review_queue._now_iso`, `watch_gate._now_iso`). Kept as
+    a module-level name so a test can drive the clock at one seam instead of
+    monkeypatching `datetime`."""
+    return datetime.datetime.now(
+        datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _mint_surface_ref(source_skill, now_iso=None) -> str:
+    """THE minted floor pointer: `session:<surface>:<instant>` (SPEC PROVMINT1
+    §2-1). ONE helper, ONE home — every writer that needs this shape calls
+    here, and no module outside this one spells it locally.
+
+    WHY IT IS REAL PROVENANCE, not a placebo. It names WHO closed the item
+    (the surface the gesture arrived on) and WHEN (to the second). That is a
+    smaller grain than `gmail:<message-id>` — it points at the act rather than
+    at an artifact — but it is a true fact about the close, and it is the only
+    fact available when a human types "mark done" in a chat. The grain marker
+    (`_minted_pointer_fields`) is what stops a reader mistaking it for the
+    bigger thing.
+
+    THE TIME COMPONENT IS LOAD-BEARING, not decoration. Without it every close
+    a surface ever performs carries one identical string, which resolves to
+    nothing and still counts as `with_pointer` in
+    `closure_index.pointer_coverage` — a constant that inflates the very metric
+    the provenance work exists to produce (review F-2, and the EODFIX1 per-day
+    `pack_run` constant, both of that class).
+
+    `now_iso`: the caller's own gesture instant. Passed by every caller that
+    performs ONE act over MANY ids, so the batch reads as one act rather than
+    N; omitted only when the writer genuinely is the gesture.
+    """
+    skill = str(source_skill or "").strip() or "unknown-surface"
+    return f"session:{skill}:{now_iso or _now_iso()}"
+
+
+def _minted_pointer_fields(source_skill, now_iso=None) -> dict:
+    """The minted ref PLUS its grain marker — the two halves are one shape and
+    are never written apart. A minted pointer with no marker is exactly the
+    silent coverage inflation §0-1 refuses; a marker with no pointer is a
+    field naming nothing."""
+    fields = close_provenance_fields(_mint_surface_ref(source_skill, now_iso))
+    fields[REF_GRAIN_KEY] = REF_GRAIN_SURFACE_MINTED
+    return fields
+
+
+def _close_pointer_fields(source_ref=None, extra_data=None, *,
+                          default_provider=None, mint_for=None, now_iso=None) -> dict:
+    """The pointer fragment for ONE close-family write (PROV1 §3.2, PROVMINT1
+    §2-1).
+
+    Resolution order — CALLER FIRST, THEN THE FLOOR. This is the same
+    prefer-the-better-ref-then-mint shape `watch_gate.confirm_review_rows`
+    already used at its own call site; it is generalized here rather than
+    forked, so there is one answer to "what pointer does this write carry":
+
+      1. the explicit `source_ref` argument;
+      2. a pointer the caller threaded through `extra_data` (the chat-reconcile
+         leg has carried one there since CHATSCAN1 — it must not be re-marked
+         just because the parameter is newer than the caller);
+      3. `mint_for` → the minted surface receipt + its grain marker;
+      4. nothing (no `mint_for`) → the honest `provenance_missing` marker.
+
+    A writer that passes `mint_for` can never reach shape 4 — that is the whole
+    inversion: prose ASKS for the better pointer, and the module catches what
+    prose misses, instead of the pointer existing only where a caller
+    remembered it.
+
+    Raises SourceRefError BEFORE the writer lock is taken, so a malformed
+    pointer refuses without touching the file.
+    """
+    ref = source_ref
+    if ref is None and isinstance(extra_data, dict):
+        ref = extra_data.get(SOURCE_REF_KEY)
+    if mint_for and (ref is None or (isinstance(ref, str) and not ref.strip())):
+        return _minted_pointer_fields(mint_for, now_iso)
+    return close_provenance_fields(ref, default_provider=default_provider)
+
+
+def _title_snapshot(commitment_event) -> dict:
+    """`{"title": <the commitment's title>}`, or `{}` (SPEC EODFIX1 §2-2).
+
+    A tombstone that names only an id is a tombstone every downstream reader
+    has to join back to the log to render. Every other win writer stamps the
+    name of the thing it moved; this one never did, which is why the End of
+    Day's wins block was structurally blind to closes (`_WIN_SPECS`).
+
+    SNAPSHOT, not a pointer: it records what the commitment was CALLED at the
+    moment it closed. A later retitle does not rewrite history, and a reader
+    that wants the current title still has the id.
+
+    Absent or empty title → no key at all. An empty string would satisfy the
+    presence checks downstream and render as a nameless row, which is the
+    defect wearing the fix's clothes.
+    """
+    title = _commitment_field(commitment_event, "title")
+    if isinstance(title, str) and title.strip():
+        return {"title": clip(title.strip())}
+    return {}
+
+
 RECENT_ACTIVITY_WINDOW_DAYS = 7
 
 # Read-side kind default: commitments written before the Phase 1 gate carry no
@@ -203,6 +333,192 @@ def parse_later_when(text, now_iso: str):
     if d is not None:
         return d.isoformat()
     return None
+
+
+LATER_SNOOZE_VIA = "later"
+
+
+def _later_when(when_iso: str) -> tuple:
+    """`(calendar_day, utc_stamp)` for one Later… — the SAME input read the two
+    ways its two legs need, from ONE parse.
+
+      calendar_day  the date the user NAMED, in the offset their input carried
+                    ("2026-07-22"). This is what `data.new_due` gets: a due
+                    date is a calendar day, not an instant.
+      utc_stamp     the same moment normalized to UTC in the exact shape the
+                    mute ledger writes its own `snooze_until`
+                    (`%Y-%m-%dT%H:%M:%SZ`), so one ledger holds one format.
+                    This is what `data.snooze_until` gets: a mute expiring IS
+                    an instant.
+
+    THE TWO ARE NOT INTERCHANGEABLE, and treating them as one was a real bug
+    (review N-2). The defer leg used to take `utc_stamp[:10]`, so
+    `2026-07-22T20:00:00-07:00` — an evening push in the fleet's most common
+    timezone, and a shape the orchestrator's natural-language date parse
+    genuinely produces — became `03:00Z the NEXT day`, and the due date landed
+    a day after the one the user named. The snooze leg's UTC reading is
+    correct and unchanged: hiding a row until 20:00 local IS 03:00Z, and the
+    row re-surfaces exactly when they meant.
+
+    A bare date ("2026-07-22" — what `parse_later_when` returns) and a naive
+    datetime are both read as UTC, so both legs agree on them; that day at
+    00:00Z is what "hidden until Friday" means — the row is back ON Friday,
+    not after it. TIME-CARRYING INPUT IS AN ACCEPTED SHAPE, deliberately: see
+    `apply_later`'s contract note.
+    """
+    raw = str(when_iso or "").strip()
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise ValueError(
+            "apply_later needs an ISO date/timestamp for when_iso — run "
+            "commitment_state.parse_later_when (or the orchestrator's "
+            "natural-language date parse) FIRST; a push with no date moves "
+            f"nothing and would still be receipted. Got: {when_iso!r}")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    # The calendar day comes off the value AS GIVEN — before any conversion.
+    calendar_day = dt.date().isoformat()
+    utc_stamp = dt.astimezone(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return calendar_day, utc_stamp
+
+
+def apply_later(
+    workspace_root,
+    commitment_id,
+    *,
+    when_iso: str,
+    actor_id: str,
+    source_skill: str,
+    reason: str = "pushed to a later date",
+    surface: str = "",
+) -> dict:
+    """THE `push to [date]` writer (APPLYAUDIT1 part 3).
+
+    `later_route` decides WHERE a Later… click lands; until now nothing
+    performed the landing. Every surface that offers the verb — commitment
+    triage, My Plate, the End of Day — read the route and then hand-appended
+    its own event from prose. A hand-append returns no writer result, so the
+    Apply receipt had no `status` to derive an outcome from and booked every
+    single `push to [date]` as an error (7 of the defect register's 93). The
+    dispatch was also two subtly different hand-shapes in three places.
+
+    One call now does both legs and says which one happened:
+
+      {"status": "deferred", ...}  the item is the user's OWN, so its due date
+        moves: a `commitment_updated` carrying `data.new_due`, which
+        `cru_match.load_open_commitments` folds read-side (history is never
+        rewritten). Classified OK.
+      {"status": "snoozed", ...}   the item is owed TO the user (or unowned),
+        so the date the counterparty owns is NOT touched: a `chat_dismissal`
+        carrying `data.target_id` + `data.snooze_until`, the mute-ledger
+        fields. The commitment stays OPEN and simply stops rendering until
+        then. Classified OK — the write landed; the item is dealt with.
+      {"status": "not_open", ...}  the commitment is closed. Deferring a
+        tombstone moves nothing, so nothing is written (the same refusal
+        `reassign_commitment` gives, and already never-optimistic).
+
+    `when_iso` is REQUIRED and must already be RESOLVED — this writer does no
+    date parsing, deliberately: `parse_later_when` owns the deterministic
+    slice and the orchestrator owns natural language, and a writer that
+    quietly accepted "sometime soon" would write a mute that never expires.
+    Raises ValueError on anything unparseable, BEFORE the lock.
+
+    RESOLVED MEANS ISO, NOT NECESSARILY A BARE DATE. A full offset-carrying
+    timestamp is an accepted shape — the orchestrator's natural-language parse
+    produces one ("tomorrow evening"), and the dispatch table routes that parse
+    straight into this argument. The two legs then read it differently, and
+    that split is the fix for review N-2:
+      * the DUE DATE is the calendar day the user NAMED, taken in the offset
+        their own input carried. Reading it off a UTC-normalized stamp instead
+        moved every evening push west of UTC forward a day.
+      * the MUTE EXPIRY is an instant, stored UTC like every other
+        `snooze_until` in the ledger.
+    `_later_when` returns both from one parse; neither leg re-derives the
+    other's value.
+
+    NOT IDEMPOTENT, and that is the design (review N-6). The snooze leg copies
+    `mute_ledger.hold_item`'s event shape but does NOT route through it, so
+    hold_item's no-extend guard — "a user repeating themselves must not
+    silently extend the clock" — does not cover this path: pushing the same
+    row twice writes two events and the later date wins. That is right for a
+    verb whose whole content is a date the user chose, and wrong for a
+    weak-evidence hold, which is why the two stay separate writers. Do not
+    assume the ledger's guard applies here.
+
+    Same guard set as its sibling lifecycle writers: id normalization over
+    legacy spellings, loud CommitmentIdError on no match, scan→append inside
+    the writer lock (R1c).
+    """
+    calendar_day, utc_stamp = _later_when(when_iso)
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"apply_later:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        route = later_route(target, actor_id)
+        if route == "defer":
+            data: dict = {
+                "commitment_id": cid,
+                # N-2: the day the user NAMED, in their own offset — never
+                # a slice off the UTC stamp (that is the day-shift bug).
+                "new_due": calendar_day,
+                "pushed_by": actor_id,
+                "reason": (reason or "")[:200],
+            }
+            if isinstance(target.get("seq"), int):
+                data["commitment_seq"] = target["seq"]
+            ev = {
+                "type": "commitment_updated",
+                "source_skill": source_skill,
+                "primary_thread_id": target.get("primary_thread_id") or "",
+                "data": data,
+            }
+        else:
+            data = {
+                "target_id": cid,
+                "snooze_until": utc_stamp,
+                "reason": (reason or "")[:200],
+                "via": LATER_SNOOZE_VIA,
+            }
+            if surface:
+                data["surface"] = surface
+            # NO Loop-2 suppression identity here, and that is deliberate.
+            # apply-choices Step 3f stamps `item_class` + `entity_id` +
+            # `fingerprint` on the dismissals it writes so a repeated "no"
+            # becomes learnable. A Later… is not a "no": the user picked a
+            # DATE, and mining it as a suppression preference would teach a
+            # rule they never stated. Worse, the fingerprint would be
+            # class-wide — a commitment id is not one of the entity prefixes
+            # `surface_preferences.normalize_dismissal` recognises, so three
+            # deferrals of three DIFFERENT items would read as one repeated
+            # refusal of a whole class. Leaving the identity off makes that
+            # normalizer skip the row by construction, which is the honest
+            # outcome. Suppression itself is unaffected: `live_mutes` and
+            # `active_dismissal_target_ids` key on target_id + snooze_until.
+            ev = {
+                # `primary_thread_id` stays EMPTY here, exactly as
+                # `mute_ledger.hold_item` writes it: a mute is view management,
+                # and stamping the commitment's thread on it would make hiding
+                # a row read as activity ON that project to every recency
+                # surface that folds the envelope. The commitment id lives in
+                # `data.target_id`, which is what the ledger keys on.
+                "type": "chat_dismissal",
+                "source_skill": source_skill,
+                "primary_thread_id": "",
+                "data": data,
+            }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "deferred" if route == "defer" else "snoozed",
+            "commitment_id": cid, "route": route,
+            "when": calendar_day if route == "defer" else utc_stamp,
+            "event": ev}
 
 
 def _within_recent_window(activity_iso: Optional[str], now_iso: str,
@@ -1465,6 +1781,8 @@ def close_commitment(
     user_confirmed: bool = False,
     extra_data: Optional[dict] = None,
     close_subitems: bool = False,
+    source_ref=None,
+    mint_now_iso=None,
 ) -> dict:
     """THE closure path (F2). Every closer — log-resolution, apply-choices,
     the workspace-manager catch-all, reconcile-sent, the Commitments
@@ -1485,6 +1803,24 @@ def close_commitment(
         close without it — no path may AUTO-resolve them (PendingReviewError).
       extra_data: optional additional data keys (e.g. Bug #51's
         resolved_via_wrapper_seq). Never overrides the canonical keys.
+      source_ref: PROV1 — the pointer back to the thing that justified this
+        close, canonicalized through Layer A4 before append
+        (`gmail:<message-id>`, `granola:<meeting-id>`, either Slack spelling,
+        `session:<receipt-id>` for a human/chat close). A close is NEVER
+        blocked for want of one — and since PROVMINT1 it is never UNSOURCED
+        either: pass nothing and this writer MINTS `session:<source_skill>:
+        <now>` and stamps `ref_grain: "surface_minted"` beside it, so the
+        event points at the act that closed it (who, and when) and says
+        out loud that that is all it points at. `provenance_missing` is
+        unreachable from this writer. Pass a real artifact pointer whenever
+        you hold one: the mint is the FLOOR, never the ceiling, and a
+        caller-passed ref wins with no grain marker.
+        A MALFORMED pointer is
+        refused loudly (SourceRefError) before the writer lock is taken —
+        garbage in `data.source_ref` is worse than no pointer, because every
+        reader downstream treats that key as resolvable evidence. The cascade
+        children inherit the parent's pointer: the parent's evidence is what
+        justified closing them.
       close_subitems: SUB1 D3 — closing a parent with OPEN sub-items raises
         OpenSubitemsError unless this is True (from a one-line user confirm:
         "this also closes its N open sub-items"). The cascade then closes
@@ -1498,6 +1834,13 @@ def close_commitment(
         whole sequence runs inside the one writer-lock span. Programmatic
         closers (reconcile-sent, CRU auto_resolve) NEVER pass True — they
         downgrade to a propose (cru_match.parent_blocks_auto_resolve).
+      mint_now_iso: PROVMINT1 — the GESTURE's instant, for the minted fallback
+        only (the event's own `ts` still comes from the append gate; this never
+        touches it). A caller performing ONE act over MANY ids reads the clock
+        once and passes it to every close, so the batch carries one receipt
+        instead of N — one gesture, one act. Omit it and the writer reads the
+        clock itself, which is right when the write IS the gesture. Ignored
+        entirely when a real pointer is supplied.
 
     Returns {"status": "closed", "commitment_id": <canonical>, "event": {...}}
     or {"status": "already_resolved", "commitment_id": <canonical>} (idempotent
@@ -1519,6 +1862,13 @@ def close_commitment(
         raise ValueError(
             f"invalid resolution {resolution!r} (allowed: {VALID_RESOLUTIONS})"
         )
+    # PROV1 — resolve the pointer BEFORE the lock. A malformed ref refuses with
+    # nothing written and no lock held; a missing one is MINTED here (PROVMINT1),
+    # once, for the parent and every cascade child — so a cascade reads as one
+    # act with one receipt rather than N receipts one second apart.
+    pointer_fields = _close_pointer_fields(source_ref, extra_data,
+                                           mint_for=source_skill,
+                                           now_iso=mint_now_iso)
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -1589,6 +1939,14 @@ def close_commitment(
                         "resolved_by": resolved_by,
                         "evidence": "parent closed",
                         "resolution": resolution,
+                        # EODFIX1 — the title SNAPSHOT (see the parent's note).
+                        **_title_snapshot(k),
+                        # PROV1 — a cascade child is closed on the PARENT's
+                        # evidence, so it carries the parent's pointer (or the
+                        # parent's missing-marker). A child tombstone with no
+                        # provenance at all would be the least auditable close
+                        # in the system: nobody typed it and nothing cites it.
+                        **pointer_fields,
                     },
                 })
             _append_ev(events_path, child_closers, holder=source_skill)
@@ -1599,7 +1957,25 @@ def close_commitment(
             "resolved_by": resolved_by,
             "evidence": clip(evidence),
             "resolution": resolution,
+            # EODFIX1 — the title SNAPSHOT. Additive, never required: every
+            # other win writer stamps the name of the thing it moved, and this
+            # one did not, so the End of Day's wins block could only ever see
+            # a close by joining back to the commitment. The join stays (it is
+            # the half that covers the closes already on disk and any writer
+            # that is not this function); the snapshot is what makes a close
+            # written from here legible without one.
+            **_title_snapshot(target),
         })
+        # PROV1 last: the CANONICAL pointer wins over whatever spelling arrived
+        # through extra_data, and the marker can never sit next to a real ref.
+        # PROVMINT1: the GRAIN marker is popped with them — it is a statement
+        # this writer makes about its OWN pointer, so a caller must not be able
+        # to hand one in beside a real ref and make an artifact pointer read as
+        # a mint (or the reverse).
+        data.pop(PROVENANCE_MISSING_KEY, None)
+        data.pop(SOURCE_REF_KEY, None)
+        data.pop(REF_GRAIN_KEY, None)
+        data.update(pointer_fields)
         ev = {
             "type": "commitment_resolved",
             "source_skill": source_skill,
@@ -1622,6 +1998,79 @@ def close_commitment(
     return result
 
 
+def resolve_thread(
+    workspace_root,
+    target_id,
+    *,
+    source_skill: str,
+    kind: str = "unknown",
+    source_artifact: Optional[str] = None,
+    resolved_by: Optional[str] = None,
+    primary_thread_id: Optional[str] = None,
+    extra_data: Optional[dict] = None,
+    source_ref=None,
+) -> dict:
+    """THE `thread_resolved` writer (PROV1).
+
+    `thread_resolved` is the third member of the closer family
+    (`closure_index.CLOSER_TYPES`) and was the only one with no writer in
+    code: log-resolution hand-composed the JSON in prose, so the one closer
+    that most often fires from a raw dashboard click was also the one nothing
+    could stamp a pointer onto. This function is that writer — same envelope
+    the skill has always emitted (`data.id` / `data.kind` /
+    `data.source_artifact`), now with the close-family pointer contract.
+
+    Deliberately NOT a commitment closer: a commitment closes through
+    `close_commitment`, which normalizes legacy id spellings, refuses orphan
+    tombstones, and honors the pending_review floor. This writer covers the
+    non-commitment kinds (meeting, inbox, priority) and the back-compat
+    `thread_resolved` twin log-resolution still appends after a canonical
+    close. The append gate keeps the wall up either way: a `thread_resolved`
+    whose target CLAIMS the commitment namespace and resolves to nothing is
+    refused at append time (`event_gate._check_closure_resolves`).
+
+    `source_ref`: the pointer that justified the resolve — the dashboard
+    click's session/receipt id (`session:<id>`), or the message / meeting the
+    artifact was built from. Absent → `provenance_missing: true`, never a
+    blocked write; malformed → SourceRefError before anything is appended.
+
+    Returns {"status": "resolved", "target_id": <str>, "event": {...}}.
+    """
+    tid = str(target_id or "").strip()
+    if not tid:
+        raise ValueError(
+            "resolve_thread needs a target id — a thread_resolved event that "
+            "names nothing closes nothing and is a dead letter by construction"
+        )
+    pointer_fields = _close_pointer_fields(source_ref, extra_data)
+
+    from pathlib import Path as _Path
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+
+    data = dict(extra_data) if isinstance(extra_data, dict) else {}
+    data.update({
+        "id": tid,
+        "kind": (kind or "unknown").strip() or "unknown",
+        "source_artifact": source_artifact,
+    })
+    if resolved_by:
+        data["resolved_by"] = resolved_by
+    data.pop(PROVENANCE_MISSING_KEY, None)
+    data.pop(SOURCE_REF_KEY, None)
+    data.pop(REF_GRAIN_KEY, None)
+    data.update(pointer_fields)
+
+    ev = {
+        "type": "thread_resolved",
+        "source_skill": source_skill,
+        "primary_thread_id": primary_thread_id or "",
+        "data": data,
+    }
+    from event_gate import append_event
+    append_event(events_path, [ev], holder=source_skill)
+    return {"status": "resolved", "target_id": tid, "event": ev}
+
+
 def supersede_commitment(
     workspace_root,
     survivor_id,
@@ -1635,6 +2084,7 @@ def supersede_commitment(
     auto_merge_evidence: Optional[dict] = None,
     brain_batch_id: Optional[str] = None,
     brain_change_class: Optional[str] = None,
+    source_ref=None,
 ) -> dict:
     """THE merge writer (v4.6.0 C4): two open items are the same real-world
     commitment → close the duplicate with a `commitment_superseded` event that
@@ -1697,6 +2147,15 @@ def supersede_commitment(
     class must be one `brain_undo.REVERSERS` knows — pass `"commitment_merge"`,
     whose reverser reopens the absorbed item and puts the pair back on the flag
     tier. Both None (the default) = pre-SWEEPBACK behavior, byte-identical.
+
+    PROV1 — `source_ref` is the pointer to what justified THIS merge (the
+    sweep receipt / session id for a user-confirmed merge, the gate's batch for
+    an auto-merge), canonicalized through Layer A4 and stamped on the event;
+    nothing passed lands `provenance_missing: true`. It is a different fact
+    from `data.merged_source_refs`, which is the union of the two ABSORBED
+    items' own capture provenance and is left exactly as history wrote it —
+    conflating the two would rewrite the merged items' capture story into a
+    claim about the merge decision.
     """
     if (brain_batch_id is None) != (brain_change_class is None):
         raise ValueError(
@@ -1704,6 +2163,9 @@ def supersede_commitment(
             "with no change class is a row brain_undo skips, i.e. an undo handle "
             "that looks present and reverses nothing"
         )
+    # PROV1 — refuse a malformed pointer before the lock (same posture as
+    # close_commitment); an absent one becomes the marker.
+    pointer_fields = _close_pointer_fields(source_ref)
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -1745,11 +2207,21 @@ def supersede_commitment(
             )
 
         # Provenance union — survivor's ref first, then the absorbed one(s).
+        # PROV2: two case-variant spellings of ONE artifact are one provenance
+        # entry, so the union dedups on the DERIVED identity while storing each
+        # pointer's own bytes — the stored ref stays resolvable, the list stays
+        # honest about how many distinct sources are folded in.
         refs: list[str] = []
+        ref_keys: set = set()
         for ev in (survivor, superseded):
             ref = (ev.get("data") or {}).get("source_ref") or ev.get("source_ref")
-            if isinstance(ref, str) and ref.strip() and ref not in refs:
-                refs.append(ref)
+            if not (isinstance(ref, str) and ref.strip()):
+                continue
+            key = dedup_key_of(ref)
+            if key in ref_keys:
+                continue
+            ref_keys.add(key)
+            refs.append(ref)
 
         data: dict = {
             "commitment_id": superseded_cid,
@@ -1782,6 +2254,18 @@ def supersede_commitment(
             # cannot surprise a caller.
             data["brain_batch_id"] = brain_batch_id
             data["brain_change_class"] = brain_change_class
+
+        # PROV1 LAST — the pointer for the MERGE DECISION, alongside (never
+        # instead of) the absorbed items' own capture refs in
+        # `merged_source_refs`. Stamped after the auto_merge fold so an
+        # evidence dict carrying its own `source_ref` spelling cannot land an
+        # un-canonicalized value in the field readers treat as resolvable.
+        # PROVMINT1: this writer never mints, so it never stamps a grain — and
+        # popping the key means an evidence dict cannot stamp one on its behalf.
+        data.pop(PROVENANCE_MISSING_KEY, None)
+        data.pop(SOURCE_REF_KEY, None)
+        data.pop(REF_GRAIN_KEY, None)
+        data.update(pointer_fields)
 
         ev = {
             "type": "commitment_superseded",
@@ -2008,6 +2492,8 @@ def clear_review_flags(
     cleared_by: str,
     source_skill: str,
     note: str = "confirmed distinct",
+    source_ref=None,
+    mint_now_iso=None,
 ) -> dict:
     """THE Keep-both writer (v4.6.1 W4b / C4). A suspected duplicate the
     user adjudicates as a real, separate item: appends a `commitment_updated`
@@ -2019,7 +2505,19 @@ def clear_review_flags(
     Same guard set as confirm_commitment_owner: id normalization, loud
     CommitmentIdError on no match, refuses a CLOSED item ({"status":
     "not_open"}), scan→append inside the writer lock (R1c).
+
+    PROVMINT1 §0-2 — `source_ref` / `mint_now_iso`. This writer STRUCTURALLY
+    could not carry a pointer before, which is the whole finding behind the
+    walk's six unmarked `commitment_updated` events: they were not a caller
+    forgetting, they were a signature with nowhere to put one. This write
+    asserts an EXTERNAL fact ("these two really are different things"), so it
+    belongs to the pointer contract exactly as the close does — caller ref
+    wins, and nothing supplied mints `session:<source_skill>:<now>` with
+    `ref_grain: "surface_minted"`. Same semantics as `close_commitment`; see
+    its docstring for why the mint's time component is load-bearing.
     """
+    pointer_fields = _close_pointer_fields(source_ref, mint_for=source_skill,
+                                           now_iso=mint_now_iso)
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -2036,6 +2534,7 @@ def clear_review_flags(
             "cleared_by": cleared_by,
             "note": (note or "")[:200],
         }
+        data.update(pointer_fields)
         if isinstance(target.get("seq"), int):
             data["commitment_seq"] = target["seq"]
         ev = {
@@ -2253,6 +2752,7 @@ def mark_partial_received(
     counterparty_id: Optional[str] = None,
     counterparty_name: Optional[str] = None,
     evidence: str = "",
+    source_ref=None,
 ) -> dict:
     """THE per-person receipt writer (v4.6.0 MC1). A multi-counterparty
     commitment ("send the deck to the board") is fulfilled one counterparty
@@ -2278,6 +2778,14 @@ def mark_partial_received(
     loud CommitmentIdError on no match, scan→append inside the writer lock
     (R1c). No pending_review floor — a receipt is informational, not a
     closure; it never removes the item from the open set.
+
+    PROV1 — a receipt ASSERTS AN EXTERNAL FACT ("they delivered"), which is
+    exactly the update class §3.1 puts under the pointer contract even though
+    the event never closes anything: it is the evidence a later close will
+    stand on (`all_counterparties_received` is the PROPOSE-closure signal), so
+    a receipt nobody can trace is a close nobody can trace one hop later.
+    Same rule as the closers: absent → `provenance_missing: true`, malformed →
+    SourceRefError before the lock.
     """
     if not (counterparty_id or counterparty_name):
         raise ValueError(
@@ -2285,6 +2793,7 @@ def mark_partial_received(
             "counterparty_name — a receipt records WHICH recipient of a "
             "multi-counterparty commitment delivered"
         )
+    pointer_fields = _close_pointer_fields(source_ref)
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -2306,6 +2815,7 @@ def mark_partial_received(
             data["commitment_seq"] = target["seq"]
         if evidence:
             data["evidence"] = clip(evidence)
+        data.update(pointer_fields)
         ev = {
             "type": "commitment_partial_received",
             "source_skill": source_skill,
@@ -2411,6 +2921,7 @@ def split_commitment(
     split_by: str,
     source_skill: str,
     user_confirmed: bool = False,
+    source_ref=None,
 ) -> dict:
     """THE split writer (v4.6.0 S4 — M decision 2026-07-09: extraction
     pre-split stays the doctrine; this is the MANUAL correction path for the
@@ -2439,6 +2950,13 @@ def split_commitment(
     `children`: list of dicts — {"title" (required), "due"?, "owner_id"?,
     "counterparty_id"?, "counterparty_name"?, "kind"?}. Missing kind/owner/
     counterparty inherit the parent's effective values.
+
+    PROV1 — the split CLOSER is a `commitment_superseded`, so it carries the
+    close-family pointer contract: `source_ref` names what justified the split
+    (the session/receipt of the verb that asked for it), and nothing passed
+    lands `provenance_missing: true`. This is a distinct fact from the
+    CHILDREN's inherited capture `source_ref`, which keeps pointing at the
+    artifact the original promise was captured from.
     """
     children = list(children or [])
     if len(children) < 2:
@@ -2450,6 +2968,7 @@ def split_commitment(
         if not isinstance(ch, dict) or not (ch.get("title") or "").strip():
             raise ValueError(f"split child {i} has no title — every child "
                              "must be a Stage-D-complete commitment")
+    pointer_fields = _close_pointer_fields(source_ref)
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -2501,6 +3020,7 @@ def split_commitment(
         }
         if isinstance(parent.get("seq"), int):
             closer_data["commitment_seq"] = parent["seq"]
+        closer_data.update(pointer_fields)
         closer = {
             "type": "commitment_superseded",
             "source_skill": source_skill,
@@ -2635,9 +3155,18 @@ def add_subitems(
 def close_commitments(workspace_root, closures, *, source_skill: str) -> list[dict]:
     """Batch closure for callers that close several commitments in one run
     (reconcile-sent). Same contract as close_commitment per item; a
-    CommitmentIdError, PendingReviewError, or OpenSubitemsError on one item
-    is recorded as {"status": "error", ...} and does NOT abort the rest (a
-    bad id in a batch of real closes must not lose the real closes).
+    CommitmentIdError, PendingReviewError, OpenSubitemsError, or SourceRefError
+    on one item is recorded as {"status": "error", ...} and does NOT abort the
+    rest (a bad id — or a bad POINTER — in a batch of real closes must not lose
+    the real closes; PROV1 refuses the one row, never the run).
+
+    Each row may carry `source_ref` (PROV1): the pointer to the artifact that
+    justified THAT row's close. A row without one falls to the module floor and
+    is MINTED (PROVMINT1) — with ONE receipt minted for the whole batch, read
+    from the clock once here, because a batch IS one gesture: N receipts a
+    second apart would read as N separate acts and hand the coverage metric N
+    distinct pointers for one decision. (The per-row pointer is still per-row:
+    a row that carries its own artifact key wins over the batch receipt.)
 
     SUB1 D3 — this batch path NEVER cascades (no close_subitems passthrough,
     deliberately): programmatic closers propose, they don't cascade. The
@@ -2646,6 +3175,9 @@ def close_commitments(workspace_root, closures, *, source_skill: str) -> list[di
     OpenSubitemsError here is the loud defensive floor, not the design path.
     """
     results: list[dict] = []
+    # PROVMINT1 — the batch's own instant, read ONCE. See the docstring: one
+    # gesture, one receipt.
+    batch_mint_iso = _now_iso()
     for c in closures or []:
         try:
             results.append(close_commitment(
@@ -2658,8 +3190,14 @@ def close_commitments(workspace_root, closures, *, source_skill: str) -> list[di
                 primary_thread_id=c.get("primary_thread_id"),
                 user_confirmed=bool(c.get("user_confirmed")),
                 extra_data=c.get("extra_data"),
+                # PROV1 — per-row pointer. A batch is N independent closes and
+                # each cites its OWN message; one pointer for the batch would
+                # be a plausible-looking lie on N-1 of them.
+                source_ref=c.get("source_ref"),
+                mint_now_iso=batch_mint_iso,
             ))
-        except (CommitmentIdError, PendingReviewError, OpenSubitemsError) as e:
+        except (CommitmentIdError, PendingReviewError, OpenSubitemsError,
+                SourceRefError) as e:
             sys.stderr.write(
                 f"[close_commitments] {type(e).__name__} for "
                 f"{c.get('commitment_id')!r}: {e}\n"
@@ -2687,6 +3225,8 @@ def reopen_commitment(
     reopened_by: str,
     reason: str,
     source_skill: str,
+    source_ref=None,
+    mint_now_iso=None,
 ) -> dict:
     """S4 undo: reopen a closed commitment ADDITIVELY — append a
     `commitment_reopened` event; the tombstone stays in history and the
@@ -2694,12 +3234,20 @@ def reopen_commitment(
     no-match as close_commitment, and the same scan->append lock span
     (v4.5.2 R1c). A later re-close works normally.
 
+    PROVMINT1 §0-2 — `source_ref` / `mint_now_iso`. A reopen REVERSES a close
+    that carries a pointer, so the reversal owed one too and had no parameter
+    to take it. Caller ref wins (an undo fired from a surface with a receipt
+    should pass that receipt); nothing supplied mints
+    `session:<source_skill>:<now>` with `ref_grain: "surface_minted"`.
+
     SUB1 D3 — reopening a cascade-closed PARENT reopens the PARENT ONLY;
     each child has its own tombstone and is reopened individually. The
     triage batch-undo already caches every closed id in the batch (the
     cascade's `closed_subitems` return joins that cache), so an undone
     cascade round-trips with zero new undo code.
     """
+    pointer_fields = _close_pointer_fields(source_ref, mint_for=source_skill,
+                                           now_iso=mint_now_iso)
     from pathlib import Path as _Path
     from writer_lock import events_writer_lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -2717,6 +3265,7 @@ def reopen_commitment(
                 "commitment_id": cid,
                 "reopened_by": reopened_by,
                 "reason": (reason or "")[:200],
+                **pointer_fields,
             },
         }
         from event_gate import append_event
@@ -2923,4 +3472,8 @@ __all__ = [
     "normalize_commitment_id",
     "close_commitment",
     "close_commitments",
+    "later_route",
+    "parse_later_when",
+    "apply_later",
+    "LATER_SNOOZE_VIA",
 ]

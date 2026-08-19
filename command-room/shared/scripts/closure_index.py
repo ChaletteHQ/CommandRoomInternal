@@ -230,6 +230,139 @@ def resolve_closure_target(ev: dict, by_id: dict, by_seq: dict):
     return None
 
 
+# ---------------------------------------------------------------------------
+# PROV1 — pointer coverage over the closer family
+# ---------------------------------------------------------------------------
+
+def pointer_coverage(events, *, since=None) -> dict:
+    """How many closes can be traced back to the thing that justified them.
+
+    Lives HERE because this module already owns "what is a closer" — a second
+    surface deciding that question separately is exactly the divergence class
+    the module docstring exists to stop.
+
+    Returns:
+      {"closes": int,           # closer-family events in scope
+       "with_pointer": int,     # carry a resolvable `data.source_ref`
+       "caller_passed": int,    # ...of those, pointers a CALLER supplied
+       "surface_minted": int,   # ...of those, the writer's own floor receipt
+       "marked_missing": int,   # carry `provenance_missing: true`
+       "legacy": int,           # carry NEITHER — written before PROV1
+       "measured": int,         # with_pointer + marked_missing
+       "coverage_pct": float|None}   # with_pointer / measured, None when 0
+
+    THE SPLIT (SPEC PROVMINT1). Since the writers mint a surface receipt when
+    nothing reaches them, `with_pointer` alone would climb toward 100% by
+    construction and stop measuring anything. `caller_passed` counts the rows
+    that point at an EMAIL, MEETING or MESSAGE; `surface_minted` counts the
+    rows that point only at the act — who closed it and when. Both are real
+    provenance and both belong in the numerator; reporting them apart is what
+    keeps the number honest as the marker bucket empties. A row with no grain
+    key is caller-passed, which is exactly what every pre-PROVMINT1 row is —
+    so the boundary needs no migration and reclassifies nothing.
+
+    LEGACY ROWS ARE NOT IN THE DENOMINATOR, and that is the whole design of
+    this metric. Provenance cannot be retrofitted — history was written
+    without it and never gets rewritten — so counting legacy rows as failures
+    would render a permanent, unfixable deficit that reads as a bug in the
+    system rather than a fact about its past. They are reported as their own
+    number instead, so the picture stays honest in both directions: what the
+    system does NOW, and how much of the book predates the contract.
+
+    `since`: optional ISO-8601 string; events with an earlier `ts` are
+    skipped. A row with no parseable `ts` is always counted (dropping it
+    would let an unstamped write hide from the measurement).
+    """
+    try:
+        from connector_adapters.provenance import (PROVENANCE_MISSING_KEY,
+                                                   has_source_pointer,
+                                                   is_surface_minted)
+    except Exception:  # pragma: no cover — direct-path fallback
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parent))
+        from connector_adapters.provenance import (PROVENANCE_MISSING_KEY,
+                                                   has_source_pointer,
+                                                   is_surface_minted)
+
+    cutoff = (since or "").strip() if isinstance(since, str) else ""
+    closes = with_pointer = marked_missing = legacy = 0
+    surface_minted = 0
+    for ev in events or ():
+        if not isinstance(ev, dict):
+            continue
+        if (ev.get("type") or ev.get("event")) not in CLOSER_TYPES:
+            continue
+        if cutoff:
+            ts = ev.get("ts")
+            if isinstance(ts, str) and ts.strip() and ts < cutoff:
+                continue
+        closes += 1
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if has_source_pointer(ev):
+            with_pointer += 1
+            if is_surface_minted(ev):
+                surface_minted += 1
+        elif data.get(PROVENANCE_MISSING_KEY) is True:
+            marked_missing += 1
+        else:
+            legacy += 1
+    measured = with_pointer + marked_missing
+    return {
+        "closes": closes,
+        "with_pointer": with_pointer,
+        # PROVMINT1 — the two halves of `with_pointer`, never a third bucket:
+        # they sum back to it exactly, so an older reader that knows only
+        # `with_pointer` keeps reading the same number it always did.
+        "caller_passed": with_pointer - surface_minted,
+        "surface_minted": surface_minted,
+        "marked_missing": marked_missing,
+        "legacy": legacy,
+        "measured": measured,
+        "coverage_pct": (round(100.0 * with_pointer / measured, 1)
+                         if measured else None),
+    }
+
+
+def pointer_coverage_line(coverage: dict) -> str:
+    """The ONE plain-English line usage-report and operator-report render.
+
+    Rendered here so both surfaces say the same sentence — the two reports
+    disagreeing about the same number is the Bug #85 class. Customer
+    vocabulary only: no field names, no event names (the output guard both
+    skills carry).
+    """
+    if not isinstance(coverage, dict):
+        return ""
+    measured = coverage.get("measured") or 0
+    legacy = coverage.get("legacy") or 0
+    if not measured:
+        if legacy:
+            return (f"Traceable closes: nothing closed under the new rule yet "
+                    f"({legacy} older ones predate it).")
+        return "Traceable closes: nothing closed in this window."
+    with_pointer = coverage.get("with_pointer") or 0
+    pct = coverage.get("coverage_pct")
+    line = (f"Traceable closes: {with_pointer} of {measured} "
+            f"({pct:g}%) point back to the email, meeting, or message that "
+            f"closed them.")
+    # PROVMINT1 — the honest half of the mint. Once the writers stopped leaving
+    # closes unsourced, the headline number climbs toward 100% by construction,
+    # so the line has to say how many of those point at a real artifact and how
+    # many point only at the act. Reporting the climb without the split would
+    # be the fake-100% this spec exists to avoid.
+    minted = coverage.get("surface_minted") or 0
+    if minted:
+        line += (f" {minted} of those point to the surface and moment you "
+                 f"closed them, with no message or meeting behind it.")
+    missing = coverage.get("marked_missing") or 0
+    if missing:
+        line += f" {missing} closed with nothing to point back to."
+    if legacy:
+        line += f" ({legacy} older ones predate the rule and aren't counted.)"
+    return line
+
+
 __all__ = [
     "CLOSER_TYPES",
     "CLOSURE_ID_FIELDS",
@@ -240,6 +373,8 @@ __all__ = [
     "closer_target_id",
     "closer_target_seqs",
     "commitment_key",
+    "pointer_coverage",
+    "pointer_coverage_line",
     "reopen_target",
     "resolve_closure_target",
 ]

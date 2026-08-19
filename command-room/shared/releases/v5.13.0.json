@@ -1,0 +1,20 @@
+{
+  "version": "5.13.0",
+  "headline": "Your morning brief stops hedging on days when nothing is behind, the Apply receipt stops calling finished work an error, and the pile of unconfirmed captures finally has a way out.",
+  "items": [
+    {
+      "id": "v5130_announce_brief_honesty_and_apply_receipts",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two things you may have noticed are fixed, and neither needs anything from you. First, your morning brief had been telling you every single day that it had not been able to check your sent mail, and softening every item you owe with \"you may have already handled this\" — even on days when your sent mail was being read cleanly several times over. It was never being told how far that reading had got, so it assumed the worst every morning. It now reads the real state, so the warning appears only when something is actually behind, and the brief also stops listing items on conversations that moved in the last week. Second, when you answered a row and it landed correctly, the record of it could still come back labelled an error, and rows that looked failed were offered to you again. Both now say what actually happened. If your workspace stored who you are under an older internal name, your owed-by-you and owed-to-you counts were also being computed against nobody — that is fixed too, so those two numbers may look quite different from yesterday. They are right now; nothing about your recorded work changed.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5130_announce_review_amnesty",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "New in this release: a way to clear the pile of unconfirmed captures. When something in a meeting or an email sounds like a promise but is not clear enough to act on, it is held as a guess and waits for your word — it is never chased and never closed on its own. Nothing ever retired one, so on a busy few months that pile becomes the largest number in your workspace, and a list nobody can finish is a list nobody opens. Two answers now reach it. Say \"review amnesty\" to let go of every guess nobody has answered in the last two weeks — you see the count and the split between yours and other people's before anything happens, and one \"undo\" puts them all back. Or, when one bad import filled it with junk, name that meeting and say to drop everything that ingest captured. Neither one says the work was not real and neither stops anything being captured again: if it comes up in a later conversation, it is captured fresh. Worth knowing: this clears what has piled up, it does not change what arrives — that is separate work.",
+      "action": "announce_only"
+    }
+  ]
+}

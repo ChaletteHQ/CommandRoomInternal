@@ -18,6 +18,11 @@ review widget) — never a silent capture change.
 Signal: a commitment `data.resolution` of `dropped` is the CEO saying "this
 wasn't worth tracking." A counterparty above a small-n floor with a high drop
 rate is a noise source. stdlib only; pure analysis, one small append helper.
+
+ONE EXCEPTION, since REVAMN1: a `dropped` closure carrying a review-tier
+`resolution_reason` is a bulk LAPSE, not the CEO's judgment on a row, and it is
+skipped entirely rather than counted either way. The test is
+`event_types.is_non_dismissal_closure`; the reasoning is at the call site.
 """
 from __future__ import annotations
 
@@ -32,6 +37,11 @@ except Exception:  # pragma: no cover
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     from events_io import iter_events  # type: ignore
+
+# REVAMN1 §0-3 — the lapse-vs-dismissal test, imported and never restated: this
+# pass and `capture_gate.propose_gate_directives` are two learners reading the
+# same signal, and two copies of the reason list WILL drift.
+from event_types import is_non_dismissal_closure as _is_non_dismissal  # noqa: E402
 
 MIN_COMMITMENTS = 8      # small-n floor: ≥8 resolved commitments from a source
 MIN_DROP_RATE = 0.5      # ≥50% dropped → a noise source worth a rule
@@ -69,7 +79,18 @@ def analyze_noise(workspace_root) -> Dict[str, dict]:
         elif t == "commitment_resolved":
             cid = data.get("commitment_id") or data.get("id")
             res = data.get("resolution")
-            if cid and res:
+            # REVAMN1 §0-3 — a review-tier LAPSE carries no CEO judgment in
+            # EITHER direction, so it is not a data point for this pass at
+            # all. An expiry closed what nobody answered inside the window;
+            # an ingest kill closed a cluster because one ingest was bad.
+            # Counting it as a drop would propose suppressing a counterparty
+            # nobody complained about (and would defeat the ruling that a
+            # re-mention after an expiry is fresh evidence); counting it as a
+            # NON-drop would dilute the rate with a non-answer and mask a
+            # source that really is noise. So it is skipped, and the item
+            # simply contributes nothing to this source's numbers. The reason
+            # set is spelled once, in `event_types`.
+            if cid and res and not _is_non_dismissal(data):
                 resolutions[cid] = res
 
     stats: Dict[str, dict] = {}

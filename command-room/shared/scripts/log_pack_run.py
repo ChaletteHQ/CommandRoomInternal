@@ -60,9 +60,9 @@ from receipts import (  # noqa: E402
     CANONICAL_TASK_IDS,
     FIRED_VIA,
     log_receipt,
+    machine_fields,
     normalize_fired_via,
     normalize_task_id,
-    _machine_name,
 )
 
 
@@ -114,9 +114,9 @@ def log_pack_run(
         "surfaced": surfaced,
         "duration_ms": duration_ms,
     }
-    machine = _machine_name()
-    if machine:
-        data["machine"] = machine
+    # SCHED1 — the shared stamp helper, so this non-registry fire marker
+    # carries the same machine token (and not-persisted flag) as a real receipt.
+    data.update(machine_fields())
     if extra_data:
         for k, v in extra_data.items():
             if k not in data:

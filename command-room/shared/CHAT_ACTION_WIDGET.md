@@ -111,11 +111,14 @@ display + dispatch only:
 - The option's value stays `push to [date]`; its when-input accepts a
   natural-language date OR a bare number of days ("5" = five days from
   today; `commitment_state.parse_later_when` owns the deterministic slice).
-- Dispatch AUTO-ROUTES by ownership (`commitment_state.later_route`): the
-  user's OWN item → `commitment_updated` due-date shift; owed-to-you /
-  unowned / visibility-only → `chat_dismissal` carrying `data.snooze_until`
-  via the mute ledger (the item stays open, it just stops rendering until
-  the date).
+- Dispatch is ONE writer call — `commitment_state.apply_later` — which
+  AUTO-ROUTES by ownership (`later_route`) and performs the landing: the
+  user's OWN item → `commitment_updated` due-date shift (`deferred`);
+  owed-to-you / unowned / visibility-only → `chat_dismissal` carrying
+  `data.snooze_until` via the mute-ledger shape (`snoozed`; the item stays
+  open, it just stops rendering until the date). Never hand-append either
+  event — the writer's return dict is what the Apply receipt derives its
+  outcome from (APPLYAUDIT1 part 3).
 - Rows without `push to [date]` keep their snooze option unchanged, and the
   footer **Snooze rest (1 day)** still mutes merged rows (their skip entries
   ride the Apply payload directly since the dropdown no longer offers skip).
@@ -306,7 +309,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | Action | Display | What it does |
 |---|---|---|
 | `resolved` | Done | Close via `close_commitment(..., resolution="done", user_confirmed=True)`. |
-| `push to [date]` | Later… | Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere); owed-to-you/unowned → `chat_dismissal` with `data.snooze_until` via the mute ledger. |
+| `push to [date]` | Later… | `commitment_state.apply_later` — THE writer, never a hand-appended event. Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere), `status: deferred`; owed-to-you/unowned → `chat_dismissal` with `data.snooze_until`, the mute-ledger shape, `status: snoozed`. |
 | `drop` | Drop | Close via `close_commitment(..., resolution="dropped", user_confirmed=True)` — deliberately let go, distinct from done. |
 | `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. When the user NAMES the real owner, route via `reassign to [name]` instead of dropping. |
 | `fix wording [text]` | Fix wording | `commitment_state.edit_commitment_wording` — corrects a mis-extracted title/summary; the projector renders the new text, history keeps the original (S4). |

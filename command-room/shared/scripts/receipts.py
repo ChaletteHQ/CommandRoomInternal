@@ -109,7 +109,15 @@ CANONICAL_TASK_IDS = frozenset({
     # is append-only. `pulse` parses forever; it is simply never written again.
     "pulse",
     "lifecycle",     # LIFECYCLE1 — the project lifecycle pass job inside `maintenance` (the fold that replaced Pulse's Phase 4)
+    # EOD2 — the 5 PM chat's taskId was RENAMED to `end-of-day`, but the
+    # RECEIPT id deliberately did NOT move: `end_of_day.TASK_ID` still writes
+    # `past-meetings`, so the day-close series is ONE continuous history
+    # across the rename instead of two half-series either side of whenever a
+    # given customer took the offer. `past-meetings` therefore stays the
+    # WRITTEN id; `end-of-day` is registered below so the watchdog can ask
+    # about the successor by name and TASK_PREDECESSORS bridges the read.
     "past-meetings",
+    "end-of-day",
     "friday-wrap",
     "cleanup",
     "reconcile-sent",
@@ -130,8 +138,8 @@ CANONICAL_TASK_IDS = frozenset({
     "objectives",    # OBJ1 (draft) — the on-demand objectives readout (same shape as stalled-projects: what was surfaced + drifting_thread_ids, so drift-flag value counts read from receipts)
     "maintenance",   # MAINT1 — the single silent dispatcher task (the five silent ids above live on as its JOBS and keep their receipt vocabularies forever)
     "staff-meeting",  # LB1 R3 — the weekly Staff Meeting chat (opt-in later-add)
-    "balance",        # BAL1 — the Sunday personal white-space chat (opt-in later-add, m_facing only; receipt carries counts, never personal content)
-    "pipeline-digest",  # PIPE1 Part 2 — the Tuesday deal-review chat (opt-in later-add, gated >=1 open deal); its receipt keys the next digest's since-window
+    "balance",        # BAL1 — the personal white-space surface (m_facing only; receipt carries counts, never personal content). TASKRET1 READINESS-retired the Sunday CHAT; this row stays forever so pre-retirement receipts keep parsing, and the on-demand `balance check` fire still writes it.
+    "pipeline-digest",  # PIPE1 Part 2 — the Tuesday deal-review chat. TASKRET1 READINESS-retired it; the row stays forever so pre-retirement receipts keep parsing (and its since-window marker stays readable), but nothing writes it any more — the on-demand report is `pipeline-tracker` above.
     "deal-signals",   # LB1 D7 — the deal-signal detector job inside `maintenance`
     "identity-reconcile",  # PID1 D7 — the Sunday identity reconciler job inside `maintenance` (also the M-fired one-time backfill)
     "monthly-scorecard",  # SPEC OUT7 — the OPT-IN monthly KPI scorecard job inside `maintenance` (never auto-fires; its pack_run receipt self-limits it to monthly once opted in)
@@ -162,6 +170,13 @@ _TASK_ALIASES = {
 TASK_PREDECESSORS: dict[str, tuple] = {
     "waiting-on": ("commitments",),
     "my-plate": ("commitments",),
+    # EOD2 — the RENAME direction. Stronger than the CTS1 split above: the
+    # successor is the same chat under a new id, reading the same orchestrator
+    # file, and the fire still WRITES `past-meetings`. So every `end-of-day`
+    # read resolves through here, on both sides of the rename and forever —
+    # a workspace that took the offer must not read as never-fired, and one
+    # that never takes it must not read as never-registered.
+    "end-of-day": ("past-meetings",),
 }
 
 # The one lateness field name written from v4.5.2 on. Legacy spellings are
@@ -207,8 +222,18 @@ RECEIPT_TYPES: dict[str, dict] = {
     # lifecycle_pass.run_lifecycle_pass, and ONLY on an --apply run).
     "lifecycle":          {"types": frozenset({"lifecycle_run"})},
     "past-meetings":      {"types": frozenset({"pack_run"})},
+    # EOD2 — the successor id. Same type, and in practice the receipts it
+    # reads are written under `past-meetings` (TASK_PREDECESSORS bridges
+    # them): the row exists so the watchdog / usage-report can ASK about
+    # `end-of-day` by name without a KeyError, and so a receipt ever written
+    # under the new id parses rather than being dropped as unknown.
+    "end-of-day":         {"types": frozenset({"pack_run"})},
     "friday-wrap":        {"types": frozenset({"pack_run"})},
     "relationship-moves": {"types": frozenset({"pack_run"})},
+    # TASKRET1 READINESS-retired the Friday CHAT; this row stays forever so
+    # pre-retirement receipts keep parsing. The on-demand `triage my
+    # commitments` fire is unchanged and does not write a pack_run (only the
+    # scheduled fire ever did).
     "commitment-triage":  {"types": frozenset({"pack_run"})},
     "cleanup":            {"types": frozenset({"cleanup_run", "audit_run"})},
     "reconcile-sent":     {"types": frozenset({"sent_reconcile"})},
@@ -382,12 +407,62 @@ def receipt_task_id(ev) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _machine_name() -> Optional[str]:
+    """The machine token for this computer (SPEC SCHED1 §0-3), or None.
+
+    THE FINDING (2026-08-17). This was `platform.node()`, and rule 4 of
+    `RECEIPT_CONTRACT.md` says the field exists so "readers can't tell two
+    machines from a double-registration bug". Inside Cowork's sandbox
+    `platform.node()` returns the SAME string on every physical machine — 840
+    receipts written from two different computers all carry one value — so the
+    field answered the question it exists for with a constant. Swapping it for
+    another sandbox-visible name fixes nothing: they are all properties of the
+    sandbox, not of the computer under it.
+
+    `machine_identity` resolves a machine-local marker instead. Kept as the ONE
+    chokepoint rather than editing each stamp site to import the new module: a
+    prose-free single point of change is how the `fired_via` vocabulary stopped
+    drifting, and every existing caller migrates without touching its file.
+    Falls back to the pre-SCHED1 behaviour if the module is unavailable.
+    """
     try:
-        import platform
-        name = platform.node()
-        return name[:64] if name else None
+        from machine_identity import machine_id
+
+        return machine_id()
     except Exception:
-        return None
+        try:
+            import platform
+            name = platform.node()
+            return name[:64] if name else None
+        except Exception:
+            return None
+
+
+def machine_fields() -> dict:
+    """`{"machine": <token>}` for a receipt's `data`, `{}` when unknowable.
+
+    THE PUBLIC stamp helper — every writer outside this module uses it rather
+    than reaching for the private `_machine_name`, so the fallback flag lands
+    uniformly instead of at whichever site remembered it.
+
+    Carries `machine_id_fallback: true` ONLY when the token could not be
+    persisted to the machine-local marker (a read-only or absent home), which
+    means "this token is this run's best guess, not a durable identity".
+    Present only when true, so the ordinary receipt's shape is unchanged.
+    """
+    try:
+        from machine_identity import FALLBACK_FIELD, machine_identity
+
+        ident = machine_identity()
+        token = ident.get("machine")
+        if not token:
+            return {}
+        out = {"machine": token}
+        if ident.get("fallback"):
+            out[FALLBACK_FIELD] = True
+        return out
+    except Exception:  # noqa: BLE001 — identity never blocks a receipt
+        name = _machine_name()
+        return {"machine": name} if name else {}
 
 
 def log_receipt(
@@ -452,9 +527,7 @@ def log_receipt(
         data["duration_ms"] = duration_ms
     if late_tier is not None:
         data[LATENESS_FIELD] = late_tier
-    machine = _machine_name()
-    if machine:
-        data["machine"] = machine
+    data.update(machine_fields())
     if extra_data:
         # extra_data never overrides the contract fields — task-specific
         # counts ride along; identity/vocabulary stays canonical.
@@ -608,9 +681,7 @@ def log_prep_receipt(
     }
     if isinstance(meeting_start, str) and meeting_start.strip():
         data["meeting_start"] = meeting_start.strip()
-    machine = _machine_name()
-    if machine:
-        data["machine"] = machine
+    data.update(machine_fields())
     if extra_data:
         for k, v in extra_data.items():
             if k not in data:

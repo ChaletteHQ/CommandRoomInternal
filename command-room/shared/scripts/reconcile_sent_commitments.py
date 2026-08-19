@@ -129,9 +129,33 @@ def _empty_signal_fields() -> dict:
 
     `n_fetched` is the denominator; the `*_field_present` counts say whether
     the FETCH carried the field at all, and the `n_with_*` counts say how many
-    messages actually had one. `n_closed_on_*` closes the loop from field to
-    outcome. All seven read together answer the one question a healthy-looking
-    zero cannot: did the delivery checks RUN, or was there nothing to find?
+    messages actually had one. The basis counters close the loop from field to
+    outcome. Read together they answer the one question a healthy-looking zero
+    cannot: did the delivery checks RUN, or was there nothing to find?
+
+    GRADED AND CLOSED ARE TWO DIFFERENT MOMENTS, AND THE NAMES SAY WHICH.
+    Live seq 9561 and 9617 both carried `n_closed_on_delivery: 1` beside
+    `n_closed: 0` — read literally, one commitment closed on delivery evidence
+    and zero commitments closed. Neither number was wrong; they were measured
+    on opposite sides of the write and labelled as though they were measured
+    together. `reconcile_sent` grades what it is about to RETURN;
+    `reconcile_and_receipt` then writes through `close_commitments`, which
+    refuses a `pending_review` item (the floor doing its job) and drops an
+    unresolvable id rather than writing an orphan tombstone, and REBINDS
+    `auto_close` to what survived. So:
+
+      * `n_graded_on_*` — what the MATCHER proposed. Filled by `reconcile_sent`.
+      * `n_closed_on_*` — what was WRITTEN. Filled by `reconcile_and_receipt`
+        from the post-rebind list, so it can never outrun `n_closed`.
+      * `n_graded_close_refused` + `close_refusals` — how many graded closes the
+        closure path refused, and why, keyed by the exception class it raised.
+        The delta between the two halves then explains itself instead of
+        leaving a reader to infer a lost write from a discrepancy.
+
+    BOTH HALVES ARE KEPT ON PURPOSE. Recomputing `n_closed_on_*` alone would
+    answer this defect by re-creating the one F-4 was built for: a run that
+    graded a delivery close and had it refused would read identically to a run
+    where the delivery checks never ran.
 
     EVORDER adds `n_stale_evidence_skipped` — candidates dropped because the
     message predates the commitment it would have closed. A fence that drops
@@ -143,8 +167,14 @@ def _empty_signal_fields() -> dict:
         "n_with_attachment": 0,
         "n_thread_field_present": 0,
         "n_with_thread_ref": 0,
+        # Pre-write: the matcher's grades.
+        "n_graded_on_delivery": 0,
+        "n_graded_on_thread": 0,
+        # Post-write: what the closure path actually wrote.
         "n_closed_on_delivery": 0,
         "n_closed_on_thread": 0,
+        "n_graded_close_refused": 0,
+        "close_refusals": {},
         "n_stale_evidence_skipped": 0,
     }
 
@@ -472,13 +502,18 @@ def reconcile_sent(
     partial.sort(key=lambda p: p["score"] or 0, reverse=True)
 
     # Review F-4 — close the loop from field to outcome. Counted AFTER the
-    # FS-11 promotion so these are the closures that actually happened, not
-    # the matcher's intermediate grades.
+    # FS-11 promotion, so this is the matcher's FINAL grade rather than an
+    # intermediate one — but it is still a GRADE, and the names say so. Nothing
+    # has been written at this point: this function does no I/O, and the rows
+    # counted here still have to survive `close_commitments` in the caller
+    # (the pending-review floor and the unresolvable-id refusal both take rows
+    # out of the list after this line runs). `n_closed_on_*` is the caller's to
+    # fill from what it actually wrote — see `_empty_signal_fields`.
     for p in auto_close:
         if p.get("close_basis") == _DELIVERY_BASIS:
-            signals["n_closed_on_delivery"] += 1
+            signals["n_graded_on_delivery"] += 1
         elif p.get("close_basis") == _THREAD_BASIS:
-            signals["n_closed_on_thread"] += 1
+            signals["n_graded_on_thread"] += 1
 
     # EVORDER — fold layer 3's drop count into the receipt. A non-zero value is
     # the fence working, not an error: it says "N candidates were older than
@@ -627,11 +662,11 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
         },
     }
     try:
-        from receipts import _machine_name
+        # SCHED1 — the shared stamp helper, so the machine token and its
+        # not-persisted flag land the same way here as on every other receipt.
+        from receipts import machine_fields
 
-        _machine = _machine_name()
-        if _machine:
-            audit_event["data"]["machine"] = _machine
+        audit_event["data"].update(machine_fields())
     except Exception:
         pass
     _append(events_path, [audit_event])
@@ -799,7 +834,7 @@ def reconcile_and_receipt(
             "would match nothing and this run would write a clean audit "
             "claiming zero to close. No audit event written, cursor NOT "
             "advanced. Fix: pass the WORKSPACE ROOT (not _hq) to "
-            "resolve_primary_user, or set workspace.user_person_id in "
+            "resolve_primary_user, or set workspace.user_id in "
             "entities.json (Bug #102)."
         )
         print(msg, file=sys.stderr)
@@ -870,6 +905,15 @@ def reconcile_and_receipt(
                     "resolved_by": "sent_reconcile",
                     "evidence": c.get("evidence") or "matched an outbound send",
                     "primary_thread_id": c.get("primary_thread_id") or "",
+                    # PROV1 — the sent message that IS the fulfillment. Built
+                    # through `primary_artifact_key`, the same key the matcher
+                    # above compared on, so the close cites the artifact it
+                    # matched rather than a second spelling of it. An
+                    # unresolved provider degrades to the legacy anchor there
+                    # and here identically; a row with no message id at all
+                    # lands marked rather than blocked.
+                    "source_ref": primary_artifact_key(
+                        provider, c.get("message_id")),
                 } for c in auto_close],
                 source_skill=source_skill,
             )
@@ -888,7 +932,32 @@ def reconcile_and_receipt(
                     pending.append(by_id[rid])
                 # CommitmentIdError: logged loudly by close_commitments; the
                 # proposal is dropped rather than written as an orphan tombstone.
+                if r.get("status") == "error":
+                    # NAME THE REFUSAL. Every one of these is the system working
+                    # — the pending-review floor, the orphan-tombstone refusal,
+                    # the sub-item guard, the malformed-pointer guard — and
+                    # every one of them used to leave the receipt reporting a
+                    # close that never landed. Keyed by the exception class, so
+                    # a fifth refusal added to `close_commitments` shows up here
+                    # without an edit.
+                    reason = str(r.get("error") or "UnknownError")
+                    refusals = signal_fields["close_refusals"]
+                    refusals[reason] = refusals.get(reason, 0) + 1
+                    signal_fields["n_graded_close_refused"] += 1
             auto_close = [c for c in auto_close if str(c["commitment_id"]) in closed_or_already]
+
+        # THE POST-WRITE COUNT (live seq 9561/9617). `auto_close` above is now
+        # what SURVIVED the closure path, so the basis counters are recomputed
+        # from it rather than inherited from the matcher's pre-write grade. This
+        # is what makes `n_closed_on_delivery` unable to outrun the `n_closed`
+        # sitting beside it in the same audit event; the matcher's numbers are
+        # still here under `n_graded_on_*`, which is what keeps "graded and
+        # refused" distinguishable from "the checks never ran".
+        for c in auto_close:
+            if c.get("close_basis") == _DELIVERY_BASIS:
+                signal_fields["n_closed_on_delivery"] += 1
+            elif c.get("close_basis") == _THREAD_BASIS:
+                signal_fields["n_closed_on_thread"] += 1
 
         # HYG1 Item 1 (the MC1 4.7 wire-up): auto-record per-person receipts for
         # partial_received recommendations — non-destructive by construction
@@ -930,6 +999,12 @@ def reconcile_and_receipt(
                             counterparty_id=cp_id,
                             evidence=r.get("evidence") or "delivered by an outbound send",
                             source_skill=source_skill,
+                            # PROV1 — the send that delivered to THIS
+                            # counterparty. A roster close later stands on
+                            # these receipts, so each one has to name its own
+                            # message or the derived close is unauditable.
+                            source_ref=primary_artifact_key(
+                                provider, r.get("message_id")),
                         )
                     except Exception:
                         # A bad id / race is logged by the writer's own guards;
@@ -1142,11 +1217,11 @@ def reconcile_and_receipt(
             },
         }
         try:
-            from receipts import _machine_name
+            # SCHED1 — the shared stamp helper, so the machine token and its
+            # not-persisted flag land the same way here as everywhere else.
+            from receipts import machine_fields
 
-            _machine = _machine_name()
-            if _machine:
-                audit_event["data"]["machine"] = _machine
+            audit_event["data"].update(machine_fields())
         except Exception:
             pass
         # B6: fold the outcome-watch counts (replies/no-reply/bounced) into the SAME
@@ -1427,6 +1502,12 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
                 extra_data={"auto_predicate": predicate,
                             "brain_batch_id": batch_id,
                             "brain_change_class": "commitment_close"},
+                # PROV1 — this close is derived from the ACCUMULATED per-person
+                # receipts, not from one message, so its pointer is the gate
+                # run that read them. Each underlying receipt carries its own
+                # message pointer (mark_partial_received), so the chain back to
+                # mail stays walkable one hop down.
+                source_ref=f"session:{batch_id}",
             )
             resolve_proposal(ws, res["proposal_id"], "applied",
                              resolved_by=source_skill,

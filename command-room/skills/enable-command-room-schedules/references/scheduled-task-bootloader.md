@@ -141,6 +141,45 @@ For `ABORT_WORKSPACE_NOT_FOUND`:
 
 > ⚠️ Command Room scheduled task `<TASK_ID>` could not find your workspace. Either no folder with `_hq/data/events.jsonl` is connected to Cowork right now, or the workspace I was registered to (`<WORKSPACE_BASENAME>`) isn't connected. Please connect your Command Room workspace folder in Cowork's Settings → Folders, then type `set up command room schedules` to re-bind. This task will work tomorrow once the workspace is reachable.
 
+## Step 1.5 — Is this task RETIRED? (SPEC RETIREGATE1)
+
+A retired chat must say that it retired. It must never say the plugin is broken — and before this step existed it said exactly that, because Step 2's contract grep runs BEFORE Step 3 ever opens the file. A retirement stub that had not been given the `OUTPUT CONTRACT` marker failed that grep, the fire aborted with "the plugin may be partially installed or corrupted", and the customer's only available workaround was to switch the task off themselves (BUG-9517). This step makes the corruption message unreachable for a retired task id.
+
+Run this bash:
+
+```bash
+RETIREMENT_LINE=$(cd "$PLUGIN_ROOT" 2>/dev/null && python3 -c '
+import sys
+sys.path.insert(0, "shared/scripts")
+try:
+    import schedule_config as sc
+except Exception:
+    raise SystemExit(0)
+tid = sys.argv[1]
+# Membership AND class come from the registry, never from a name anyone
+# remembers. A RENAMED row is deliberately NOT short-circuited: its
+# orchestrator is the live successor pack, so that chat keeps firing the real
+# surface forever. Every other retired id -- eliminated, readiness, and any
+# class the registry grows later -- lands here, which is the safe direction,
+# because the file such an id resolves to is a stub that can only post one
+# line anyway.
+if sc.is_retired_task(tid) and not sc.is_renamed_task(tid):
+    print((sc.retirement_line(tid) or "").strip())
+' "<TASK_ID>" 2>/dev/null)
+if [ -n "$RETIREMENT_LINE" ]; then
+  echo "TASK_RETIRED=1"
+  echo "RETIREMENT_LINE=$RETIREMENT_LINE"
+else
+  echo "TASK_RETIRED=0"
+fi
+```
+
+If the output is `TASK_RETIRED=1`: post the `RETIREMENT_LINE` value in chat, exactly as printed, as the ENTIRE chat turn — then STOP. **Skip Step 2 and Step 3 completely.** No widget, no scans, no connector reads, no substrate writes of any kind — not even a receipt; a retired chat that keeps writing receipts is a retired chat that still looks alive. Do NOT offer to re-register the task, do NOT propose an alternative schedule, and do NOT run any part of the old prompt "just this once."
+
+**Do not append a deregistration suggestion of your own.** The line already carries the right one for its class, and the classes disagree on purpose: an ELIMINATED chat's line offers the `pause` that clears it, while a READINESS retirement's line deliberately offers none — the update that retired it already switched the task off, and asking the customer to perform a tap the product has already taken reads as the product not knowing its own state. `schedule_config.retirement_line` is the ONE renderer for this sentence; whatever it printed is the whole message.
+
+If the output is `TASK_RETIRED=0`, or the block printed nothing at all, continue to Step 2 unchanged. **Silence is the FALL-THROUGH, never a short-circuit**: if python is unavailable or the registry cannot be imported, a live task must still fire, and the cost of guessing wrong in that direction is one ordinary fire rather than a working chat silenced without being asked. That is also why this step is a belt and not the only brace — every retirement stub carries the `OUTPUT CONTRACT` marker inside its own first 2000 bytes, so Step 2 passes and Step 3 reaches a file that posts the same line by itself. **The same line, byte for byte:** every stub's quoted line is pinned equal to `schedule_config.retirement_line(<its id>)`, which is the sentence this step prints, so the two paths cannot answer one customer two ways. Either half alone produces the retirement line; the pair is what makes the corruption message unreachable.
+
 ## Step 2 — Verify the orchestrator content carries the canonical contract marker
 
 Run this bash:

@@ -68,6 +68,10 @@ if str(_HERE) not in sys.path:
 
 from capture_gate import gate_commitment_data  # noqa: E402
 
+# SPEC PROV2 — identity comparisons on STORED source pointers route through
+# Layer A4's derivation, never a raw `==` (guard G30).
+from connector_adapters.provenance import dedup_key_of  # noqa: E402
+
 # Scope + cost bounds (MC3): chat volume is unbounded, the scan is not.
 DEFAULT_WINDOW_DAYS = 7
 DEFAULT_MESSAGE_CAP = 400
@@ -397,7 +401,11 @@ def already_captured(workspace_root, permalink: str, title: str) -> bool:
     for ev in iter_events(workspace_root):
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         ev_ref = str(data.get("source_ref") or "").strip()
-        if ev_ref != ref:
+        # PROV2 — the BUG-3719 self-closure guard's ref match is an IDENTITY
+        # comparison. A raw `!=` skips a row whose pointer differs only in
+        # case, which turns the idempotency guard off and re-captures the same
+        # Slack promise.
+        if dedup_key_of(ev_ref) != dedup_key_of(ref):
             continue
         etype = ev.get("type")
         if etype in ("commitment_resolved", "thread_resolved"):

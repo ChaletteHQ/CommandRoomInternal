@@ -47,6 +47,8 @@ import sys, os, json, datetime
 sys.path.insert(0, 'shared/scripts')
 from receipts import count_runs, iter_receipts
 from telemetry import aggregate_pack_run_telemetry
+from closure_index import pointer_coverage, pointer_coverage_line
+from events_io import load_events_org_scoped
 
 ws = os.environ['WORKSPACE']
 since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)  # the parsed window
@@ -60,7 +62,15 @@ runs = count_runs(ws, since=since)
 window_receipts = [r['raw'] for r in iter_receipts(ws, since=since)]
 agg = aggregate_pack_run_telemetry(window_receipts)
 
-print(json.dumps({'runs': runs, 'agg': agg}, default=str))
+# 3. Pointer coverage (PROV1) — how many of the window's closes point back to
+#    the thing that closed them. Read through the shared closer fold, never a
+#    hand-rolled scan; the LINE is rendered by the helper so this report and
+#    the operator report say the same sentence.
+events, _skipped = load_events_org_scoped(ws)
+coverage = pointer_coverage(events, since=since.isoformat().replace('+00:00', 'Z'))
+
+print(json.dumps({'runs': runs, 'agg': agg, 'coverage': coverage,
+                  'coverage_line': pointer_coverage_line(coverage)}, default=str))
 ```
 
 If the workspace has no receipts at all: surface plain English `(Nothing to report yet — let a few of your scheduled chats run first, then check back.)` Don't guess.
@@ -95,9 +105,13 @@ Where the lookups go:
   Meeting transcripts:       10
 
 Total this week: 25 runs, ~245k words processed, ~205 lookups, about 5 1/2 minutes of run time.
+
+Traceable closes: 23 of 25 (92%) point back to the email, meeting, or message that closed them. 6 of those point to the surface and moment you closed them, with no message or meeting behind it. 2 closed with nothing to point back to.
 ```
 
 Numbers shown rounded for readability. Plain English.
+
+**The traceable-closes line is `pointer_coverage_line(coverage)` VERBATIM** — one line, rendered by the helper, never re-worded and never re-derived from the raw counts here. Two surfaces phrasing the same measurement differently is how a customer ends up with two answers to one question. Omit the line only when the helper returns an empty string.
 
 ### Step 4 — Surface optimization candidates
 

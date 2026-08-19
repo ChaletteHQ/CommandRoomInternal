@@ -139,8 +139,30 @@ def _empty_signal_fields() -> dict:
         "n_with_thread_ref": 0,
         "n_attachment_field_present": 0,
         "n_with_attachment": 0,
+        # GRADED AND WRITTEN ARE TWO DIFFERENT MOMENTS — see the sent rail's
+        # `_empty_signal_fields` for the live instance (seq 9561/9617) that
+        # named this class. `n_graded_on_reply` is what the MATCHER proposed;
+        # `n_closed_on_reply` and `n_proposed_on_reply` are filled by
+        # `reconcile_inbound_and_receipt` from the lists that survived
+        # `close_commitments`, so neither can outrun the `n_closed` /
+        # `n_pending` beside them in the same audit event.
+        #
+        # NO REFUSAL IS REACHABLE ON THIS RAIL TODAY: every raise inside
+        # `close_commitments` is pre-empted by a matcher-side downgrade
+        # (`_is_pending_review` and `parent_blocks_auto_resolve` in Path 4,
+        # a source_ref this rail always builds through `primary_artifact_key`).
+        # This half is therefore structural, not a live-defect fix — it makes
+        # the number's SOURCE the written list, so the day an FS-11-shaped
+        # promotion lands here the receipt cannot quietly reopen the same lie.
+        "n_graded_on_reply": 0,
         "n_closed_on_reply": 0,
         "n_proposed_on_reply": 0,
+        "n_graded_close_refused": 0,
+        "close_refusals": {},
+        # MAILTRUST1 — matches whose evidence lives on a thread the caller
+        # could not corroborate (two differently-shaped reads disagreed).
+        # Held, not written: a wrong hold is recoverable, a wrong close is not.
+        "n_held_uncorroborated": 0,
         # EVORDER — candidates refused because the reply predates the promise it
         # would have closed. Non-zero is the fence working, not an error.
         "n_stale_evidence_skipped": 0,
@@ -239,11 +261,11 @@ def _record_blocked_run(workspace_root, events_path, *, reason, source_skill,
         },
     }
     try:
-        from receipts import _machine_name
+        # SCHED1 — the shared stamp helper, so the machine token and its
+        # not-persisted flag land the same way here as on every other receipt.
+        from receipts import machine_fields
 
-        _machine = _machine_name()
-        if _machine:
-            audit_event["data"]["machine"] = _machine
+        audit_event["data"].update(machine_fields())
     except Exception:
         pass
     _append(events_path, [audit_event])
@@ -284,6 +306,7 @@ def reconcile_inbound(
     user_person_id,
     provider=None,
     exclude_captured_since=None,
+    uncorroborated_thread_ids=None,
     workspace_root=None,
 ):
     """Match a batch of INBOUND messages to open waiting-on commitments.
@@ -298,8 +321,21 @@ def reconcile_inbound(
           "updated":    [ same shape ],   # the counterparty moved their own date
           "partial":    [ {commitment_id, title, primary_thread_id, score,
                            receipts: [...]} ],   # MC1 per-person receipts
+          "held":       [ same shape + held_reason ],  # MAILTRUST1 — see below
           "signal_fields": { ... },       # did the reply checks actually run?
         }
+
+    MAILTRUST1 — `uncorroborated_thread_ids`: raw connector thread ids whose
+    reads the caller could NOT corroborate via `mail_absence.
+    corroborate_absence` (the per-thread fetch and a differently-shaped
+    recency sweep disagreed — the 2026-07-29 incident shape, where
+    `get_thread` FULL_CONTENT was itself one message short). Any single read
+    can only prove presence, never absence, so a match whose evidence lives
+    on such a thread lands in `held` instead of auto_close/pending/updated/
+    partial: it neither closes nor declines to close, and the caller
+    surfaces the disagreement. A commitment also matched on a corroborated
+    thread keeps its real bucket and drops out of `held` — good evidence is
+    not poisoned by a flaky sibling read.
 
     Each commitment appears at most once across auto_close/pending — the
     strongest evidence wins (a close beats a confirm; within a tier, the higher
@@ -356,11 +392,13 @@ def reconcile_inbound(
             file=sys.stderr,
         )
         return {"auto_close": [], "pending": [], "updated": [], "partial": [],
-                "signal_fields": _empty_signal_fields()}
+                "held": [], "signal_fields": _empty_signal_fields()}
 
     best: dict[str, dict] = {}
     updated_by_cid: dict[str, dict] = {}
     partial_by_cid: dict[str, dict] = {}
+    held_by_cid: dict[str, dict] = {}
+    uncorroborated = {str(t) for t in (uncorroborated_thread_ids or []) if t}
     signals = _empty_signal_fields()
     # EVORDER — one dict for the whole run; the matcher increments per dropped
     # candidate and the total folds into the receipt below.
@@ -468,6 +506,29 @@ def reconcile_inbound(
             if not cid:
                 continue
             basis = r.get("close_basis") or ""
+            # MAILTRUST1: evidence from a thread whose reads disagree is
+            # diverted BEFORE any bucket — neither a close, nor a proposal,
+            # nor a receipt may be written from an uncorroborated read.
+            if tid and tid in uncorroborated:
+                if rec in ("auto_resolve", "pending_review",
+                           "commitment_updated", "partial_received"):
+                    signals["n_held_uncorroborated"] += 1
+                    prev = held_by_cid.get(cid)
+                    if prev is None or (r.get("score") or 0) > (prev["score"] or 0):
+                        held_by_cid[cid] = {
+                            "commitment_id": cid,
+                            "score": r.get("score"),
+                            "title": r.get("title") or "",
+                            "owner_id": r.get("owner_id") or sender,
+                            "primary_thread_id": r.get("primary_thread_id") or "",
+                            "message_id": msg.get("message_id") or "",
+                            "thread_id": tid,
+                            "ts": ts or "",
+                            "recommendation": rec,
+                            "close_basis": basis,
+                            "held_reason": "uncorroborated_read",
+                        }
+                continue
             if basis == _REPLY_BASIS:
                 lede = "they replied on this thread with what you were waiting for"
             elif basis == _AMBIGUOUS_REPLY_BASIS:
@@ -567,28 +628,38 @@ def reconcile_inbound(
                if u["commitment_id"] not in {p["commitment_id"]
                                              for p in auto_close}]
 
+    # MAILTRUST1: a commitment that ALSO matched on a corroborated thread
+    # keeps its real bucket — held only lists items whose ONLY evidence came
+    # from a disagreed-upon read.
+    written_cids = ({p["commitment_id"] for p in auto_close}
+                    | {p["commitment_id"] for p in pending}
+                    | {p["commitment_id"] for p in updated}
+                    | partial_cids)
+    held = [h for h in held_by_cid.values()
+            if h["commitment_id"] not in written_cids]
+
     auto_close.sort(key=lambda p: p["score"] or 0, reverse=True)
     pending.sort(key=lambda p: p["score"] or 0, reverse=True)
     updated.sort(key=lambda p: p["score"] or 0, reverse=True)
     partial.sort(key=lambda p: p["score"] or 0, reverse=True)
+    held.sort(key=lambda p: p["score"] or 0, reverse=True)
 
-    # Close the loop from field to outcome. Read from the FINAL lists, so these
-    # describe what actually happened rather than the matcher's intermediate
-    # grades.
+    # Close the loop from field to outcome. Read from this function's FINAL
+    # lists — after the ambiguity downgrade and the MC1 split — so this is the
+    # matcher's settled GRADE. It is still a grade: nothing here has been
+    # written, and `reconcile_inbound_and_receipt` can still lose a row to
+    # `close_commitments`. The caller fills `n_closed_on_reply` /
+    # `n_proposed_on_reply` from what survived; see `_empty_signal_fields`.
     for p in auto_close:
         if p.get("close_basis") == _REPLY_BASIS:
-            signals["n_closed_on_reply"] += 1
-    for p in pending:
-        if p.get("close_basis") in (_REPLY_PROPOSED_BASIS,
-                                    _AMBIGUOUS_REPLY_BASIS):
-            signals["n_proposed_on_reply"] += 1
+            signals["n_graded_on_reply"] += 1
 
     # EVORDER — fold layer 3's drop count into the receipt, same as the sent rail.
     signals["n_stale_evidence_skipped"] = int(
         _evorder_diag.get("stale_evidence_dropped", 0))
 
     return {"auto_close": auto_close, "pending": pending, "updated": updated,
-            "partial": partial, "signal_fields": signals}
+            "partial": partial, "held": held, "signal_fields": signals}
 
 
 def reconcile_inbound_and_receipt(
@@ -601,6 +672,7 @@ def reconcile_inbound_and_receipt(
     provider=None,
     exclude_captured_since=None,
     batch_id=None,
+    uncorroborated_thread_ids=None,
     fetch_blocked=None,
 ):
     """Run inbound→commitment reconciliation end-to-end and return a receipt.
@@ -627,8 +699,15 @@ def reconcile_inbound_and_receipt(
          "events_written": int, "reviews_written": int,
          "resolved": [...], "pending": [...], "updated": [...],
          "n_partial_receipts": int, "partial": [...],
+         "n_held_uncorroborated": int, "held": [...],   # MAILTRUST1
          "signal_fields": {...}, "coverage": {...},
          "mail_provider": str|None, "summary": str}
+
+    MAILTRUST1 — pass `uncorroborated_thread_ids` (thread ids whose reads
+    disagreed per `mail_absence.corroborate_absence`) and every match on
+    those threads is HELD: no close, no confirm proposal, no receipt, no
+    date-shift marker — the receipt and summary name the disagreement
+    instead. A wrong hold is recoverable; a wrong close is not.
 
     `batch_id` is the undo handle. Every closure is stamped
     `data.brain_batch_id` + `data.brain_change_class`, which is the shape
@@ -655,7 +734,7 @@ def reconcile_inbound_and_receipt(
             "bases are inert and this run would write a clean audit claiming "
             "zero to close. No audit event written. Fix: pass the WORKSPACE "
             "ROOT (not _hq) to resolve_primary_user, or set "
-            "workspace.user_person_id in entities.json (Bug #102)."
+            "workspace.user_id in entities.json (Bug #102)."
         )
         print(msg, file=sys.stderr)
         raise PrimaryUserUnresolvedError(msg)
@@ -694,6 +773,10 @@ def reconcile_inbound_and_receipt(
                             user_person_id=user_person_id,
                             provider=provider,
                             exclude_captured_since=exclude_captured_since,
+                            # MAILTRUST1 — threads whose reads the caller
+                            # could not corroborate (mail_absence): matches
+                            # there are held, never written.
+                            uncorroborated_thread_ids=uncorroborated_thread_ids,
                             # F-28 — this wrapper HOLDS the workspace and used
                             # to keep it, leaving Path 4's roster fix
                             # unreachable on the rail that fires daily.
@@ -702,6 +785,7 @@ def reconcile_inbound_and_receipt(
     pending = list(res["pending"])
     updated = res["updated"]
     partial = res["partial"]
+    held = res["held"]
     signal_fields = res["signal_fields"]
 
     # §7 precedent (efb_/idr_/pbs_/rcc_): ONE batch per RUN, timestamped. A
@@ -727,6 +811,12 @@ def reconcile_inbound_and_receipt(
                 "resolved_by": c.get("owner_id") or "",
                 "evidence": c.get("evidence") or "matched their reply",
                 "primary_thread_id": c.get("primary_thread_id") or "",
+                # PROV1 — the INBOUND message that delivered. Same key shape
+                # the matcher compared on (`primary_artifact_key`), so the
+                # close points at the reply a reader can open, not at the
+                # sweep that noticed it.
+                "source_ref": primary_artifact_key(provider,
+                                                   c.get("message_id")),
                 "extra_data": {"brain_batch_id": batch_id,
                                "brain_change_class": CHANGE_CLASS},
             } for c in auto_close],
@@ -745,8 +835,31 @@ def reconcile_inbound_and_receipt(
                 # A pending_review commitment is never auto-resolved — demote it
                 # to the confirm list instead of closing it.
                 pending.append(by_id[rid])
+            if r.get("status") == "error":
+                # Name the refusal, keyed by the exception class — the sent
+                # rail's twin. Unreachable on this rail today; recorded so a
+                # future one is visible the first time it happens rather than
+                # inferred from a discrepancy weeks later.
+                reason = str(r.get("error") or "UnknownError")
+                refusals = signal_fields.setdefault("close_refusals", {})
+                refusals[reason] = refusals.get(reason, 0) + 1
+                signal_fields["n_graded_close_refused"] += 1
         auto_close = [c for c in auto_close
                       if str(c["commitment_id"]) in closed_or_already]
+
+    # THE POST-WRITE COUNTS. `auto_close` is what survived the closure path and
+    # `pending` now carries anything demoted into it, so both counters describe
+    # what this run actually did rather than what its matcher proposed.
+    for c in auto_close:
+        if c.get("close_basis") == _REPLY_BASIS:
+            signal_fields["n_closed_on_reply"] += 1
+    for p in pending:
+        # A demoted R1 row keeps `_REPLY_BASIS` and really did become a queued
+        # proposal, so it counts as one here — the three reply bases together
+        # are exactly "this run asked the user about a reply".
+        if p.get("close_basis") in (_REPLY_BASIS, _REPLY_PROPOSED_BASIS,
+                                    _AMBIGUOUS_REPLY_BASIS):
+            signal_fields["n_proposed_on_reply"] += 1
 
     # MC1 per-person receipts, same contract as the sent rail: informational,
     # never a closure, idempotent per (commitment, counterparty).
@@ -775,6 +888,10 @@ def reconcile_inbound_and_receipt(
                         counterparty_id=cp_id,
                         evidence=r.get("evidence") or "delivered in their reply",
                         source_skill=source_skill,
+                        # PROV1 — the inbound message this counterparty
+                        # delivered in.
+                        source_ref=primary_artifact_key(provider,
+                                                        r.get("message_id")),
                     )
                 except Exception:
                     continue
@@ -880,6 +997,7 @@ def reconcile_inbound_and_receipt(
             "n_closed": n_auto,
             "n_pending": n_pend,
             "n_updated": n_upd,
+            "n_held_uncorroborated": len(held),
             "n_partial_receipts": n_partial_receipts,
             # MAILSEAM — the provider every ref this run compared was built
             # under. None means the run could not establish one, which is a
@@ -895,10 +1013,10 @@ def reconcile_inbound_and_receipt(
         },
     }
     try:
-        from receipts import _machine_name
-        _machine = _machine_name()
-        if _machine:
-            audit_event["data"]["machine"] = _machine
+        # SCHED1 — the shared stamp helper, so the machine token and its
+        # not-persisted flag land the same way here as on every other receipt.
+        from receipts import machine_fields
+        audit_event["data"].update(machine_fields())
     except Exception:
         pass
     _append(events_path, [audit_event])
@@ -915,6 +1033,16 @@ def reconcile_inbound_and_receipt(
                    f"waiting on — they came in by email{tail}.")
     if n_upd:
         summary += (f" {n_upd} moved to a new date on their side.")
+    # MAILTRUST1 — the held caveat is user-facing on purpose: a hold with no
+    # sentence is a silent wrong answer wearing a different hat.
+    if held:
+        summary += (
+            f" {len(held)} match{'es' if len(held) != 1 else ''} came from"
+            f" conversation{'s' if len(held) != 1 else ''} where my two mail"
+            f" reads disagreed, so I held {'them' if len(held) != 1 else 'it'}"
+            f" instead of closing anything — check"
+            f" {'those threads' if len(held) != 1 else 'that thread'} directly."
+        )
 
     # The counters are for a validator; this sentence is for the HUMAN, and it
     # goes LAST because it is a caveat on everything above it. It fires only in
@@ -982,6 +1110,8 @@ def reconcile_inbound_and_receipt(
         "n_partial_receipts": n_partial_receipts,
         "partial": partial_recorded,
         "partial_propose_closure": partial_propose_closure,
+        "n_held_uncorroborated": len(held),
+        "held": held,
         "signal_fields": signal_fields,
         "coverage": coverage,
         "mail_provider": provider,

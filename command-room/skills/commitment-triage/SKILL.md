@@ -1,7 +1,7 @@
 ---
 name: commitment-triage
 surfaces: both
-description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. Also an opt-in Friday chat via 'change my schedule'. Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts). Action semantics: Routing section in the body."
+description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. On demand only (the opt-in Friday chat is retired). Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts). Action semantics: Routing section in the body."
 ---
 
 # commitment-triage
@@ -147,8 +147,9 @@ one giant widget. One page's worth of the layout:
   dispatch nuance documented in apply-choices § cr-commitments) and
   `make task` (demote to Personal) — plus `drop`. After a bite applies, offer
   the next bite ("M left — another 5?"); any skip ends the run, and the next
-  Friday fire re-offers from wherever it left off (resumable by construction:
-  resolved rows leave the set). Also summonable on demand: "fix my orphaned
+  run re-offers from wherever it left off (resumable by construction:
+  resolved rows leave the set — which is why the retirement of the weekly
+  fire costs this nothing: resumability was never a property of the cadence). Also summonable on demand: "fix my orphaned
   promises" / "who were these for" in this chat starts a bite directly.
   NEVER auto-demote — Bug #103 says most of these are REAL promises whose
   counterparty linking failed; the human attaches or demotes, one tap each.
@@ -398,18 +399,29 @@ What the board does and does not do:
   escalation pins) and **Unowned**, never folded into a tab (F-47 P2b /
   F-56) — then **My Tasks** / **I Owe** / **Owed to Me**, each keeping its age
   sections oldest-first. One Copy button covers every tab.
-- **Auto-republish is OFF.** The Friday scheduled fire renders its widget as
-  it always has; the board is on-demand only until the user asks otherwise.
+- **Auto-republish is OFF.** The board is on-demand only until the user asks
+  otherwise.
 
-## Scheduled mode (opt-in — NOT first-install)
+## Scheduled mode — RETIRED (SPEC TASKRET1, M's ruling 2026-08-17)
 
-Registered via the `change my schedule` → `add commitment-triage` flow
-(enable-command-room-schedules Phase 6 add path; DEFAULT_SCHEDULES carries
-the Friday 15:00 default). The scheduled fire runs the identical Steps 1–4
-via `references/orchestrator-commitment-triage.md` (which adds the standard
-late-fire check + pack_run receipt). Weekly cadence is the point: S5's
-30-day task staleness and the undated-share target (< 30%) are reviewed here,
-not in the daily chats.
+**There is no scheduled mode.** The weekly Friday 3 PM chat is READINESS-
+retired: a pass over the whole open set only helps once the sorting that
+decides what belongs on that set is trustworthy, and that work is still in
+flight. `commitment-triage` is out of `DEFAULT_SCHEDULES`,
+`references/orchestrator-commitment-triage.md` is a retirement stub, and
+`add commitment triage` is refused warmly by change-schedule with
+`schedule_config.retirement_line("commitment-triage")`.
+
+**Everything above this section is untouched and fully live.** Steps 1–4 run
+exactly as specified whenever the user says `triage my commitments` — same
+full open set, same verbs, same undo. Only the weekly fire is gone, and with
+it the late-fire check and `pack_run` receipt that only a scheduled fire ever
+needed.
+
+The two things the weekly cadence used to own — S5's 30-day task staleness
+("still on your plate?") and the undated-share target (< 30%) — are reviewed
+on the on-demand run, in the same Steps. They were never separate machinery;
+they were sections of this pass that happened to be read on a Friday.
 
 ## What this skill does NOT do
 
@@ -425,4 +437,4 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 **Board triggers (BOARD1)** — 'publish my triage board' / 'put my triage on a page' / 'refresh my board' / 'triage board' fire § Publish the board, NOT the widget path. Same surface, different serialization. These live here rather than in the description because the description sits within 13 characters of the G11a cap: adding them needs a deliberate trim decision, not a silent one. DOES NOT fire on 'board pack' / 'board deck' / 'prep the board meeting' (board-pack-assembler — a governance document, not this list).
 
-> Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Also runs as an OPT-IN Friday-afternoon scheduled chat (add via `change my schedule` → add commitment-triage; not first-install). Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).
+> Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. On demand only: the OPT-IN Friday-afternoon scheduled chat was retired in TASKRET1 (2026-08-17) until the review-tier backlog model settles — `add commitment triage` is refused warmly and the skill is otherwise unchanged. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).

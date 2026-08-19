@@ -61,6 +61,10 @@ from thread_writer import (  # noqa: E402
 )
 from entities_io import entities_collection  # noqa: E402
 
+# SPEC PROV2 — identity comparisons on STORED source pointers route through
+# Layer A4's derivation, never a raw `==` (guard G30).
+from connector_adapters.provenance import dedup_key_of  # noqa: E402
+
 
 class ObjectiveStateError(ValueError):
     """An objective write was refused. Fail loud — silent fallthrough is how
@@ -469,8 +473,12 @@ def record_review(
 
     events, _skipped = load_objective_events(ws)
     for e in events:
+        # PROV2 — the already-reviewed check is an IDENTITY question. Compared
+        # raw, the same forum meeting re-observed under a different spelling
+        # would read as a NEW review and double-record it.
         if (e.get("type") == "objective_review"
-                and (e.get("data") or {}).get("source_ref") == source_ref
+                and dedup_key_of((e.get("data") or {}).get("source_ref"))
+                == dedup_key_of(source_ref)
                 and _event_thread_id(e) == thread_id):
             return {"status": "already_reviewed", "thread_id": thread_id,
                     "source_ref": source_ref}

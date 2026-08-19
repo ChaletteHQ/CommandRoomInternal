@@ -53,6 +53,8 @@ print(json.dumps(check_lateness('<workspace_root>', 'inbox', fired_via='<schedul
 - **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
 
 
+**Read `directive` BEFORE the tier — it is the render decision (SPEC SCHED1).** If `directive` is `skip_render`, the slot this fire is serving was ALREADY delivered: a receipt for it is on the ledger, and the helper has already written the honest `skipped` receipt for this fire. Post the returned `ack` line, exactly as returned, as the ENTIRE output of this fire — no surface, no widget, no sections, no Sources block, and no receipt of your own — then STOP. Do not re-derive whether it "really" ran, do not render a shortened version, and do not read the tier as the decision: on this path the tier is `none`, `none` means "run normally", and that reading is what delivered three duplicate full surfaces in one day. `directive` is present on every tier and is `null` on all the others, so this is one unconditional check rather than a special case to remember. A `manual` fire never carries it — a human who asks for the surface gets the surface.
+
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
 - **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
@@ -171,6 +173,58 @@ Classify every thread so noise can be counted and surfaced:
 
 Maintain a counter: `{listings, marketing, calendar, security, self_test}`. This drives the noise-breakdown line in Phase 8 (REQUIRED — surface even when all sub-counts are zero, so the filter's work is visible).
 
+# Phase 5.4 — CAPTURE pass: inbound mail becomes tracked items (INCAP1 v5.12.1, silent)
+
+**This is the phase that did not exist.** Everything below it — the reconcile pass, the fences both this file and `orchestrator-commitments.md` already state, the reply bases REPLYCLOSE ships — reads commitments extracted from inbound mail. Nothing wrote them. A counterparty could promise something in writing, with a date, and this fire would summarize it in the widget, draft the reply, and track nothing; and an inbound ask the CEO was expected to answer was skipped by doctrine. Three dogfood records found the same absence before it was fixed.
+
+It runs BEFORE Phase 5.5 on purpose: capture is a WRITE, reconcile is a READ of what has been written, and the fire's own circularity fences (`exclude_captured_since=fire_start`) are what keep this phase's captures from being treated as independent evidence by the phase below it. Reversing the order would not just reorder work — it would make this fire's captures invisible to their own fences.
+
+Run it over ALL fetched threads (`inbox-triage`'s "Step: Extract Commitments" carries the direction table and the trigger phrases — read it; it is the semantic contract this phase executes). For each thread, the SKILL decides three things a script cannot: whether the message carries a real commitment at all (the Stage-D floor), which DIRECTION it runs in, and the title. Everything exact is the writer's:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json
+sys.path.insert(0, 'shared/scripts')
+from inbound_capture import capture_inbound_items, DIRECTION_WAITING_ON, DIRECTION_REPLY_OWED
+from primary_user import resolve_primary_user
+
+workspace_root = '<absolute path to the workspace root>'
+user_id = resolve_primary_user(workspace_root)   # deterministic — do NOT guess (Bug #102)
+
+# One dict per trackable thing found in the fetched inbound messages.
+# direction: DIRECTION_WAITING_ON  — the SENDER promised the CEO something
+#            DIRECTION_REPLY_OWED  — an inbound ask the CEO must answer
+items = <[{'message_id', 'thread_id', 'ts', 'direction',
+           'sender_person_id' or 'sender_name', 'title', 'kind',
+           'due' or 'no_due', 'evidence', 'org_id', 'person_ids',
+           'classification_confidence',
+           'below_bar'/'below_bar_reason' (declared, never dropped)}, ...]>
+
+capture = capture_inbound_items(
+    workspace_root, items,
+    user_person_id=user_id,
+    source_skill='inbox',
+    provider='<the seam-resolved provider>',
+)
+print('capture: candidates=%s captured=%s deduped=%s below_bar=%s capped=%s'
+      % (capture['n_candidates'], capture['n_captured'],
+         capture['n_deduped'], capture['n_below_bar'], capture['n_capped']))
+"
+```
+
+**Direction doctrine (hard).** The CEO's OWN messages never create waiting-on-them items through this lane — the writer refuses a message whose sender resolves to, or is named as, the primary user. Outbound promises belong to `reconcile-sent`, on the sent rail's evidence. A thread whose newest message is the CEO's still contributes nothing HERE, no matter how much commitment language it carries.
+
+**Real ids, never draft ids (F-22).** `message_id` and `thread_id` are the connector's own values from the Phase 3 fetch. The writer refuses draft-shaped ids outright: a row anchored to a draft can never be matched against the message that was actually sent. `thread_id` is not optional in spirit — it becomes `data.thread_ref`, which is the anchor the reply gates read, and omitting it leaves them inert for that item.
+
+**This phase WRITES and never closes (EVORDER).** No closure, no resolution, no reschedule — the writer refuses to compose any non-writer event. Closing is Phase 5.5's job, on Phase 5.5's evidence.
+
+**Volume honesty.** One fire writes at most `inbound_capture.DEFAULT_CAPTURE_CAP` items; on a catch-up spanning months the remainder is DEFERRED (nothing is marked captured, so the next fire takes the next slice) and counted in `n_capped`. Never raise the cap to clear a backlog in one morning — that is the spray this bound exists to prevent.
+
+**Carry the four counters into the Phase 7 receipt** (`extra_data`): `n_candidates`, `n_captured`, `n_deduped`, `n_below_bar` — plus `n_capped` and `n_errors`. They are what separate "the lane ran and the mailbox was quiet" from "the lane did not run", and the absence of that distinction is why this gap survived for releases: a dead rail and a quiet morning wrote the identical receipt. Never narrate the counters or any event-type name to the CEO (CONTRACT.md Rule 4/9); the visible effect is that the items appear on the next Waiting On / My Plate fire.
+
+**Failure handling:** per-item failures are already collected into `capture['errors']` rather than crashing the fire. If the CALL itself errors (import failure, unresolved user), swallow silently, append a `pack_run.data.errors[]` entry `{"phase": "5.4_inbound_capture", ...}` per Phase 7, and continue — but do NOT let the fire report a clean zero: a `n_candidates: 0` receipt from a fire that never reached the writer is the dead-rail shape again.
+
 # Phase 5.5 — CRU pass: cross-reference inbound mail against open commitments (v3.14.5+, silent)
 
 Per `shared/scripts/cru_match.py` Path 4. Sister to past-meetings Phase 4.6 (transcript) but scoped to inbound email. The premise: when a counter-party emails the user, their message is often the delivery on something they owed ("here's the deck", "attached the report as promised"). Auto-detecting closes the loop on OWED-TO-YOU commitments without the user manually clicking `mark received`.
@@ -227,9 +281,11 @@ print('CRU inbox: closed=%s pending=%s updated=%s batch=%s'
 
 `thread_id` and `has_attachment` are what let a reply be recognized as the delivery rather than as words about it; omitting them is safe but leaves those checks inert, and the receipt says so. Never infer `has_attachment` from a body that says "attached" — it is the connector's flag or nothing. **`ts` is the one field where omitting is safe but MALFORMING is not (EVORDER).** Layer 3 refuses to close a commitment captured after the reply arrived. Absent `ts` leaves it inert; a present-but-unparseable `ts` (a display string, or date-only) fails SAFE and LOUD — the pass closes nothing at all and prints `RECONFENCE: inbound_ts=…` on stderr. Pass the connector's raw timestamp through unformatted. `n_stale_evidence_skipped` in the receipt counts what layer 3 refused; non-zero is the fence working, not an error.
 
-**The circularity fence (REPLYCLOSE §3).** Layer 1 needs no argument here — the helper derives each message's own ref internally and drops any commitment attributed to that very message. That matters most on THIS rail: this same skill stamps `data.source_ref: gmail:<message_id>` on the commitments it extracts from inbound mail, so without it the message that created a waiting-on item would be the message that closes it on the next scan. Layer 2 is `exclude_captured_since=fire_start`. Anything captured BEFORE the fire start stays fully matchable, so a reply that genuinely delivers on an earlier promise still closes it.
+**The circularity fence (REPLYCLOSE §3).** Layer 1 needs no argument here — the helper derives each message's own ref internally and drops any commitment attributed to that very message. That matters most on THIS rail: Phase 5.4 — the phase directly above, via `inbound_capture` — stamps `data.source_ref: <provider>:<message_id>` on the commitments it extracts from inbound mail, so without it the message that created a waiting-on item would be the message that closes it on the next scan. (Until INCAP1 that sentence described a writer that did not exist, and this fence guarded an empty population.) Layer 2 is `exclude_captured_since=fire_start`. Anything captured BEFORE the fire start stays fully matchable, so a reply that genuinely delivers on an earlier promise still closes it.
 
 **Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True. False means this pass did not actually run; append the `pack_run.data.errors[]` entry below and do not treat the zero as clean. Also read `receipt["signal_fields"]`: if messages were scored but neither the conversation nor the attachment field was present on any of them, the reply checks could not run at all and a zero closure count means nothing — `receipt["summary"]` carries a plain-language heads-up in exactly that state.
+
+**Graded is not closed.** Same pair the sent rail carries, on this rail's names. `n_graded_on_reply` is what the MATCHER proposed; `n_closed_on_reply` is what the closure path actually WROTE, recomputed from the post-write list so it can never exceed `n_closed`. When they differ, `n_graded_close_refused` says how many graded closes were refused and `close_refusals` names why, keyed by the refusal (`PendingReviewError`, `CommitmentIdError`, `OpenSubitemsError`, `SourceRefError`). **Every refusal is the system working**, so report it as a held item, never as a lost close. `n_proposed_on_reply` is likewise read off the written `pending` band, so a row the matcher graded as a close and something downgraded into the confirm band counts as the proposal it actually became. No refusal is reachable on this rail today — the matcher pre-empts each one — so a non-zero `n_graded_close_refused` here is new behavior worth reading, not noise. Reading only the graded half is how the sent rail's receipt came to say `n_closed_on_delivery: 1` beside `n_closed: 0`.
 
 **An unresolved user ABORTS this pass** — `reconcile_inbound_and_receipt` raises `PrimaryUserUnresolvedError`, writes no audit event, and closes nothing. Do NOT catch it and continue: direction is derived from owner vs the user, so with no user the reply bases are inert and a clean zero would be a lie. Check that the path passed is the WORKSPACE ROOT, not `_hq`.
 

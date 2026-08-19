@@ -194,7 +194,11 @@ The deal-signal detector (`shared/scripts/deal_signal_detector.py`) is the obser
 
 ### The weekly digest (`pipeline-digest` — optional scheduled chat, Part 2)
 
-Tuesday 8 AM by default, registered ONLY through the schedule machinery (change-schedule `add pipeline digest` / registration Phase 6 / the schedule-proposals nudge — gated on ≥1 open deal), never from here and never silently. The fire itself is `references/orchestrator-pipeline-digest.md` in enable-command-room-schedules: since-last-digest movement (opened / moved / closed / newly stalled, derived from `deal_*` events after the last digest receipt), the SAME tile band and ranked rows as the on-demand report (one computation path — this section, run verbatim), the top-3 moves, and — when deal-kind proposals are pending — ONE pending-count line pointing at `staff meeting` (FB-20: the Staff Meeting is the sole adjudication door; the digest never renders confirm rows). "send me the weekly digest" here sets `digest.enabled` + surfaces the registration proposal; "stop the digest" sets it false and offers the change-schedule pause.
+**RETIRED (SPEC TASKRET1, M's ruling 2026-08-17) — READINESS class.** The weekly Tuesday 8 AM chat is gone: the digest reports on tracked deals, and deal tracking is being rebuilt underneath it, so a weekly report against a baseline about to move is noise. `pipeline-digest` is out of `DEFAULT_SCHEDULES`, its `PROPOSAL_THRESHOLDS` row is deleted, and `references/orchestrator-pipeline-digest.md` is now a retirement stub. Never propose it, never register it, and never tell the customer it can be scheduled.
+
+**None of that touches the report itself.** The digest was always the SCHEDULED CALLER of one computation path — this section — and only the caller went. "Show me the pipeline" runs the identical tile band, ranked rows and top-3 moves on the spot, and the Staff Meeting remains the sole adjudication door (FB-20). If the customer asks for a weekly digest: say the scheduled version is off while deal tracking is rebuilt, that they can ask for the report any time, and what brings the chat back — `schedule_config.retirement_line("pipeline-digest")` is that sentence, verbatim.
+
+`digest.enabled` stays a PREFERENCE record that never registered anything and still doesn't. Leave any stored value alone; do not rewrite a customer's stored preference from a retirement, and do not read a stored `true` as licence to schedule.
 
 ## Executive Output Standard (EXEC1)
 
@@ -236,7 +240,7 @@ The complete trigger family and fences for this skill. The routing metadata is b
 > DOES NOT fire on 'stalled projects' (stalled-projects — non-deal threads; it excludes deal threads by fence).
 > DOES NOT fire on 'who owes me money' (deliberately unowned — AR is not pipeline; AR proper stays gated on an accounting connector).
 > DOES NOT fire on 'brief me on the' (catch-all topic brief).
-> DOES NOT fire on 'add pipeline digest' (change-schedule — the later-add registration path, same as 'add staff meeting'; this skill only records the digest PREFERENCE and surfaces the proposal).
+> DOES NOT fire on 'add pipeline digest' (change-schedule — which now REFUSES it warmly: the weekly digest chat is retired as of TASKRET1, and change-schedule owns that refusal so the wording comes from the registry. This skill never registered anything and still doesn't).
 > DOES NOT fire on a chart-verb ask — 'chart', 'graph', 'plot', 'visualize', 'visualise', 'trend' anywhere in the phrase (chart-on-demand — the chart verb makes it a chart ask, drawn via charts.py; the bare pipeline status stems here own the report ask, SPEC OUT3B §4; verb-level rather than exact-phrase per second-eyes 2026-07-19 — exact phrases left chart-revenue-in-play / visualize-the-pipeline colliding 2-ways, and quoting those phrase mentions here would leak them past the 400-char negative window as stray positives).
 > Never claims these bare tokens (deliberately NOT quoted triggers here; each stays with its owner or unowned): deal (singular), lost, move, update, kill, proposal, where are we with.
 

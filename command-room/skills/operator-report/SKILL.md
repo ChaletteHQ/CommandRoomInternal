@@ -183,11 +183,21 @@ Snapshot counts from `entities.json`:
 
 If `entities.json` is missing any of these fields, fall back to event-stream counts within the window.
 
+**Traceable closes (PROV1 — one line, REQUIRED when it returns non-empty).** Every commitment Command Room marked finished in the window either points back to the email, meeting, or message that finished it, points back to the surface and moment somebody closed it by hand, or is honestly marked as pointing at nothing. The helper reports the middle group separately (SPEC PROVMINT1) — that split is the honest half of the number, so never collapse it. Render the coverage line VERBATIM from the shared helper — never re-word it, never re-derive the percentage in prose, and never fill the gap with an estimate:
+
+```python
+from closure_index import pointer_coverage, pointer_coverage_line
+# `events` is the Step-2 org-scoped list; `since` is the window start, ISO-8601.
+line = pointer_coverage_line(pointer_coverage(events, since=window_start_iso))
+```
+
+`usage-report` renders the same sentence from the same helper, so the two surfaces can never disagree about the same measurement. Closes written before the pointer rule existed are reported separately by the helper and are NOT counted as failures — provenance is saved at write time or not at all, and history is never rewritten. Empty string back → omit the line, don't invent one.
+
 **Section 3: What got delivered without you asking**
 
 Pull scheduled-task fire records. `pack_run` events carry `data.task_id` (NOT `orchestrator` — that field name was the pre-v3.13.6 spec, never wired). **Back-compat (client migration):** a `pack_run` fire is identified by `data.task_id` OR `data.kind` OR `source_skill`; match by normalizing each through `source_skill_compat.normalize_source_skill` (so legacy `source_skill='cr-commitments'` history → `commitments`, `'cr-dont-forget'` → `pulse`). This mirrors the canonical `_is_for` matcher in `SHARED_CHAT_OUTPUT_PROTOCOL.md`. Never rewrite events.jsonl. Task ids per `enable-command-room-schedules/SKILL.md`:
 - Morning briefings generated — `pack_run` with `data.task_id: morning-brief`
-- Pre-meeting prep briefs — `pack_run` with `data.task_id: upcoming-meetings` AND yielded at least one brief
+- Pre-meeting prep briefs — post-BRIEFMERGE these ride the morning brief's own receipt: add `data.prep_leg.counts.ran` from each `data.task_id: morning-brief` `pack_run` (the leg preps today's meetings as the fire's first step). `reused` does NOT count — the brief already existed, so no work happened this run. Pre-BRIEFMERGE history only: `pack_run` with `data.task_id: upcoming-meetings` (a RETIRED taskId) AND yielded at least one brief. Both paths are implemented in `value_receipt.py`; read the counts from there rather than re-deriving them
 - Email drafts produced in user's voice (count `email_drafted` events)
 - cleanups run — `pack_run` with `data.task_id: cleanup` (cleanup runs as a scheduled task every Sunday, v3.17.0+). Every cleanup run also appends a `cleanup_run` event, so if no `pack_run` record exists (e.g. an on-demand run), count `cleanup_run` events instead.
 

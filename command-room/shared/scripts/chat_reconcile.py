@@ -744,10 +744,16 @@ def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str):
             "resolved_by": "chat_reconcile",
             "evidence": (row.get("evidence") or "matched a message you sent"),
             "primary_thread_id": row.get("primary_thread_id") or "",
+            # PROV1 — the pointer travels as a FIRST-CLASS argument now, so
+            # this leg stops depending on `extra_data` passthrough to carry
+            # the one field the close's auditability rests on.
+            "source_ref": _chat.source_ref_string(ref),
             # `pointer_fields` emits BOTH spellings of the one pointer, so a
             # writer physically cannot produce one half without the other.
             # `close_commitment` merges extra_data without letting it override
-            # the canonical closure keys.
+            # the canonical closure keys — the STRUCTURED half
+            # (`chat_source_ref`) is what `assert_pointer_or_refuse` verifies
+            # after the write, and only extra_data carries it.
             "extra_data": _chat.pointer_fields(ref),
         })
 

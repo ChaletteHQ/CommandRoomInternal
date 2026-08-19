@@ -43,7 +43,7 @@ EXACT VS FUZZY VS PHONETIC:
     org.legal_name (F-05, v4.8.1), org.aliases[], project.canonical_name.
     Confidence 1.0.
   - Fuzzy: difflib.SequenceMatcher ratio ≥ 0.85 against the same surfaces.
-    Confidence == the ratio (0.85 - 1.0). Catches typos like Mark→Marc.
+    Confidence == the ratio (0.85 - 1.0). Catches one-letter first-name typos.
   - Phonetic: Soundex code match against names that share a sound-alike key.
     Confidence 0.75 (constant — Soundex is binary match-or-not). Catches
     `Northstarr` ≈ `Northstar`, `Arya` ≈ `Aria`.

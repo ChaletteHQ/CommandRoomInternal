@@ -301,6 +301,18 @@ def apply_repairs(workspace_root, plan: dict) -> dict:
     so FX-2's read-modify-write class does not apply. What DID apply is the
     phantom-path class: a missing events.jsonl is now refused before anything
     is created.
+
+    PROV1 — a repair tombstone passes NO `source_ref`, deliberately. It
+    formalizes a HISTORIC dead-letter closure whose own provenance was never
+    written, and provenance cannot be retrofitted: inventing a pointer here
+    would fabricate an audit trail for a close nobody can trace. PROVMINT1 did
+    not change that judgement and deliberately wired no pointer in here. What
+    changed is the module's floor: these rows now land on the minted
+    `session:<REPAIR_SOURCE_SKILL>:<now>` receipt stamped `ref_grain:
+    "surface_minted"` rather than `provenance_missing: true`. That is still the
+    truth about them — it points at the repair pass that wrote the tombstone,
+    never at evidence the original close never had — and `data.repair_tier` /
+    `repaired_from_seq` still say where they came from.
     """
     from commitment_state import close_commitments
 

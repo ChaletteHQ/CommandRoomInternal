@@ -117,6 +117,7 @@ ALLOWED_ORG_FIELDS = {
     "domain",               # DEPRECATED (use domains[])
     "notes",                # free text
     "needs_enrichment",     # bool — provisional org from reactive discovery, awaiting CEO confirm (deep-audit #18). On-entity flag; cleared on confirm. Replaces the forbidden pending_review.
+    "account_owner",        # person id — who owns the RELATIONSHIP (ORGSCHEMA1 §4). Project-level owner_person_id is the per-engagement override, never the source of truth for the org. Outreach-ranking surfaces filter on it.
     "money",                # grouped account/revenue object (SPEC HIST1 Part A) — written ONLY via set_org_money(confirmed=True); inner keys mirror quantify._MONEY_FIELDS; never estimated (Bug #92)
 }
 
@@ -152,6 +153,8 @@ FORBIDDEN_ORG_FIELDS = {
     "industry":         "(remove — capture in notes or a future industry[] field if needed)",
     "tags":             "(remove — capture in notes)",
     "primary_user":     "(remove — workspace.user_id marks the workspace owner)",
+    "view_exclude":         "(use tier: 'passive' — one mechanism for 'keep the record, drop the line'; repair path migrates this)",
+    "view_exclude_reason":  "(preserved into notes by the repair path; the reason travels with the record)",
 }
 
 LEGACY_KEY_RENAMES = {
@@ -161,6 +164,33 @@ LEGACY_KEY_RENAMES = {
 }
 
 ORG_ID_RE = re.compile(r"^org_[a-z0-9_]+$")
+
+# ORGSCHEMA1 §2a: tier default when the caller names none — derived from
+# relationship_type via the SAME mapping build_workspace_map_input.py has
+# always applied to tierless records (keep the two in agreement).
+_EXTERNAL_REL_TYPES = frozenset({"vendor", "prospect", "service_provider"})
+
+
+def _default_tier(relationship_type: str | None, is_primary_focus: bool) -> str:
+    if is_primary_focus:
+        return "primary"
+    if relationship_type in _EXTERNAL_REL_TYPES:
+        return "external"
+    return "secondary"
+
+
+def outreach_eligible(org: dict, user_id: str | None) -> bool:
+    """ORGSCHEMA1 §4: is this org THIS operator's to chase?
+
+    Outreach-ranking surfaces (relationship-moves, dormant-customer-scan)
+    must not recommend another operator's accounts. An org with no
+    account_owner is everyone's (pre-ORGSCHEMA1 records); an org owned by
+    this operator — or by nobody identifiable — ranks. Only an explicit
+    OTHER owner excludes it."""
+    owner = org.get("account_owner")
+    if not owner or not user_id:
+        return True
+    return owner == user_id
 
 # Inner keys of the grouped `money` object (SPEC HIST1 Part A / D4).
 # The numeric names are EXACTLY quantify._MONEY_FIELDS entries so the grouped
@@ -441,6 +471,24 @@ def _normalize_legacy_keys(record: dict) -> dict:
                 f"(migrated {_today_iso()}{kept}",
             )
 
+    # ORGSCHEMA1 §3: locally-invented `view_exclude` migrates to the one
+    # sanctioned mechanism — `tier: passive` ("keep the record, drop the
+    # line"). The reason travels into notes. Same F-05 contract as
+    # `relationship` above: the validator flags these keys, so this repair
+    # rule must clear them or the record re-flags forever.
+    if "view_exclude" in out or "view_exclude_reason" in out:
+        excluded = out.pop("view_exclude", None)
+        if excluded and not out.get("tier"):
+            out["tier"] = "passive"
+        reason = out.pop("view_exclude_reason", None)
+        if isinstance(reason, str) and reason.strip():
+            _append_org_note(
+                out,
+                f"Legacy view_exclude carried reason {reason.strip()!r} "
+                f"(migrated {_today_iso()}; view_exclude="
+                f"{bool(excluded)} → tier {out.get('tier')!r}).",
+            )
+
     # Drop forbidden provenance keys whose home is events.jsonl.
     KEYS_TO_DROP = {
         "created_at",
@@ -547,6 +595,7 @@ def create_org(
     parent_org_id: str | None = None,
     is_primary_focus: bool = False,
     notes: str | None = None,
+    account_owner: str | None = None,
     inferred_from: list[str] | None = None,
     needs_enrichment: bool = False,
     org_id: str | None = None,
@@ -604,16 +653,24 @@ def create_org(
         record["domains"] = [d.strip().lower() for d in domains if isinstance(d, str) and d.strip()]
     if scope:
         record["scope"] = scope
-    if relationship_type:
-        record["relationship_type"] = relationship_type
-    if tier:
-        record["tier"] = tier
+    # ORGSCHEMA1 §2a: declared defaults LAND instead of the key going absent.
+    # Truthy-only writes meant the schema's `"default": "secondary"` never
+    # applied — all 21 orgs in the reference workspace had neither field, and
+    # the tier-driven Orgs Map renderer was starved of data. The tier default
+    # derives from relationship_type via the SAME mapping
+    # build_workspace_map_input has always used for tierless records, so the
+    # stored value matches what readers already inferred.
+    record["relationship_type"] = relationship_type or "other"
+    record["tier"] = tier or _default_tier(record["relationship_type"],
+                                           is_primary_focus)
     if parent_org_id:
         record["parent_org_id"] = parent_org_id
     if is_primary_focus:
         record["is_primary_focus"] = True
     if notes:
         record["notes"] = notes
+    if account_owner:
+        record["account_owner"] = account_owner
     if needs_enrichment:
         record["needs_enrichment"] = True
     if inferred_from:

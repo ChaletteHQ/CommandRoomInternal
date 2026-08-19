@@ -27,7 +27,7 @@ Every email read during triage from an **in-scope** account emits an inbound `in
 
 **Promote-queue (R8, ACCOUNT_SCOPE §8) — the mixed-account business-by-association loop.** A `mixed`-role account files by association: mail whose sender resolves to a known entity (person_ids/counterparty resolved) writes normally; a sender NOT in the entity graph is walled. For each such walled sender that *looks* business (a real human, business domain or business content — not bulk/newsletter), append ONE `person_proposal` event via `event_gate.append_event` with `data: {name, email, promote_queue: true, origin: "connector", account_address: <the mixed account>, provenance: <the read's provenance>, evidence: <one line>}` (the `promote_queue: true` flag is what makes the proposal writable despite the wall — it IS the review surface), deduped against open proposals for the same email. Surface it in the triage output as *"[Name] ([email]) on [account] looks like business — file them? (`file it` / `keep personal`)"*. On **`file it`**: hand to people-crm — it creates the person as a USER-CONFIRMED add (`create_person` WITHOUT provenance kwargs — the user is the authority; the record wall is for unconfirmed connector derivations) and future mail from that sender is in scope by association. On **`keep personal`**: write a per-sender override via `connector_config.set_sender_scope_override(root, <account>, <sender>, write_to_business=False, reason="user demoted")` so the proposal never re-fires. Never promote silently — the write dial stays fail-closed throughout (H-G).
 
-**Commitment extraction (v2.7.15+).** When an email body contains explicit commitment language — either an inbound promise from a counterparty ("I'll send the deck by Friday", "I owe you the contract") or an outbound promise the user is making in a draft ("I'll get back to you with…", "Will deliver by…") — emit a `type: commitment` event alongside the `interaction`, with **`data.origin: "connector"`** (it was extracted from a connector read — ACCOUNT_SCOPE §4a; the account-scope wall treats connector-origin commitments strictly). Schema and trigger conditions in `shared/COMMITMENT_SCHEMA.md`. See "Step: Extract Commitments" below for the recipe. This is the gmail-side counterpart to `meeting-notes`'s commitment extraction; together they're the only routine producers of new commitment events for typical CEO workflow (Slack-side extraction is a v2.7.16 candidate).
+**Commitment extraction (v2.7.15+; writer added INCAP1 v5.12.1).** When an email body contains explicit commitment language — an inbound promise from a counterparty ("I'll send the deck by Friday", "I owe you the contract"), an inbound ask the CEO is expected to answer (a warm intro, a direct question, a document request), or an outbound promise the user is making in a draft ("I'll get back to you with…", "Will deliver by…") — a `type: commitment` event lands alongside the `interaction`, carrying **`data.origin: "connector"`** (it was extracted from a connector read — ACCOUNT_SCOPE §4a; the account-scope wall treats connector-origin commitments strictly). **Compose it through `shared/scripts/inbound_capture.py` `capture_inbound_items` — never by hand.** That module is the writer for this lane; it is what stamps the `<provider>:<message_id>` source_ref both orchestrators' circularity fences read, and the `thread_ref` the reply gates need. Schema and trigger conditions in `shared/COMMITMENT_SCHEMA.md`; see "Step: Extract Commitments" below for the recipe and the direction table. This is the mail-side counterpart to `meeting-notes`' `meeting_capture` and `reconcile-sent`'s `sent_capture` — the same shared capture gate behind all three.
 
 ---
 
@@ -145,6 +145,8 @@ Optional modifiers:
 
    **The rule:** before asserting "needs reply" / "Reply Now" / "stalled" / "no reply in N days" / "awaiting them" / who-owes-the-reply for any thread, call the resolved **thread-fetch** tool (`discover_mail_thread_fetch_tool` / `discover_for_category("email","thread_fetch",…)`) requesting FULL message content, and read the LAST message in the returned `messages` array. Do NOT infer state from mail-search snippets or the search result's partial `messages` list. (On providers whose thread-fetch returns full content by default, the full-content request is a no-op; the point is: read the newest message, not a search snippet.)
 
+   **MAILTRUST1 (2026-07-29) — thread-fetch alone is NOT sufficient for a NEGATIVE claim.** On 2026-07-29 this rule was followed and still failed: the full-content thread-fetch was itself short by one message (5 returned, 6 existed), and a differently-shaped all-mail recency sweep (3-day window, the seam's recency intent) found the missing one immediately — a sender-scoped search had gone stale too. Any single read can only prove presence, never absence. So before asserting any NEGATIVE ("no reply", "stalled", "awaiting them", "went quiet"), corroborate the thread-fetch with a **broad recency sweep of a different shape** (an N-day recency window scoped across ALL mail — never a sender-scoped search), and run both reads through `shared/scripts/mail_absence.py::corroborate_absence(primary_read, sweep, thread_id=...)`. On `corroborated: False` you MUST NOT assert the negative — say the reads disagree and name what you could not confirm. Positive claims ("they replied, here's the newest message") still need only the thread-fetch: presence is provable from one read; absence never is. Do not edit this paragraph into a form that presents thread-fetch alone as sufficient for a negative — that exact reading is what failed.
+
    **Determining ball-in-court from the latest message:**
    - If the connector marks the newest message as SENT BY THE USER (the provider's sent-flag — a sent label, a sent-items folder membership, whatever the connector's message shape exposes; resolved per provider by the adapter, never a hardcoded field name) OR `sender == <the primary user's address>` (resolve the person_id via `shared/scripts/primary_user.py::resolve_primary_user(workspace_root)`, then read that person record's email(s) from entities.json — never hard-code an address): **the user has already replied → classify as "awaiting counterparty" / "owed-to-you"**, NOT "Reply Now" or "stalled on you".
    - Only classify "Reply Now" / "stalled on you" when the newest message is INBOUND (from the counterparty).
@@ -181,18 +183,22 @@ Optional modifiers:
 
 ## Step: Extract Commitments (MANDATORY in every triage run)
 
-After classifying each email but before writing the brief, scan each message body for **commitment language** — forward-looking promises about a specific deliverable made by an identifiable owner. For each match, append one `type: commitment` event to `_hq/data/events.jsonl` per the canonical schema in `shared/COMMITMENT_SCHEMA.md`.
+After classifying each email but before writing the brief, scan each message body for **commitment language** — forward-looking promises about a specific deliverable made by an identifiable owner, and inbound asks the CEO is expected to answer. Hand each match to the capture writer named below; it composes and appends the `type: commitment` events per the canonical schema in `shared/COMMITMENT_SCHEMA.md`.
 
 ### Direction matters — who owes whom
 
 | Pattern in email body | Direction | Owner |
 |---|---|---|
-| Inbound from counterparty: "I'll send X by Y" | They owe you | counterparty's `person_id` |
-| Inbound from counterparty: "I owe you the …" | They owe you | counterparty's `person_id` |
-| Inbound from counterparty: "Will deliver …" | They owe you | counterparty's `person_id` |
+| Inbound from counterparty: "I'll send X by Y" | They owe you — `waiting_on` | counterparty's `person_id` |
+| Inbound from counterparty: "I owe you the …" | They owe you — `waiting_on` | counterparty's `person_id` |
+| Inbound from counterparty: "Will deliver …" | They owe you — `waiting_on` | counterparty's `person_id` |
 | Outbound (draft user is sending): "I'll send X by Y" | You owe them | user's `person_id` |
 | Outbound: "I'll get back to you with …" | You owe them | user's `person_id` |
-| Inbound: "Can you …?" with no commitment back yet | Skip — not a commitment until accepted |
+| Inbound ask the CEO is expected to answer — a warm intro, a direct question, a document request ("Can you …?", "Connecting you two", "Could you send over …") | You owe them a reply — `reply_owed`, a **reply-shaped commitment** captured confirm-tier | user's `person_id` |
+
+**Why the last row is a capture and not a skip (INCAP1, v5.12.1).** It used to read *skip — not a commitment until accepted*, which sounded careful and was the single largest hole in the product: the most common thing in a mailbox is a message someone is waiting on a reply to, and it was the one thing never tracked. Three dogfood records found the same absence. A reply-shaped commitment is **proposed, not asserted** — it lands with `pending_review: true`, so it stays out of chase and out of every closure gate until the CEO adjudicates it, and it drops off the moment they reply. That is what "not until accepted" was reaching for; skipping it was never the way to get there.
+
+**Direction doctrine still holds, unchanged.** The CEO's OWN messages never create waiting-on-them items through this lane. Sent-mail promises are `reconcile-sent`'s lane (`shared/scripts/sent_capture.py`), on the sent rail's evidence. The writer refuses a message whose sender resolves to — or is named as — the primary user.
 
 ### Trigger phrases (non-exhaustive)
 
@@ -208,9 +214,40 @@ Vague phrases ("I'll think about it", "let's circle back", "we should consider")
 
 **Classify `data.kind` at capture (Stage D — REQUIRED; the gate rejects a kind-less commitment on the strict path):** email commitments almost always have a counterparty → `"promise"` (the sender or the user owes the other party); a self-note the user emails to themselves with no counterparty → `"task"`; scheduling intent ("I'll set up time with…") → `"scheduling"`; genuinely ambiguous → `"promise"` + `data.pending_review: true`. **Due-date nudge (S2):** propose `due` from the email language OR set explicit `data.no_due: true`.
 
+### The writer (MANDATORY — never hand-append)
+
+Every capture in this step goes through `shared/scripts/inbound_capture.py`. Build one extraction dict per qualifying item and hand the batch to `capture_inbound_items` — it runs the shared Stage-D / S2 / Stage-E capture gate, mints `source_ref` and `thread_ref` from the connector's real ids, dedups, applies the relevance gate and the per-fire volume cap, and lands the survivors in ONE locked append:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from inbound_capture import capture_inbound_items
+from primary_user import resolve_primary_user
+
+workspace_root = '<absolute path to the workspace root>'
+user_id = resolve_primary_user(workspace_root)   # deterministic — never guess (Bug #102)
+
+items = <[{'message_id', 'thread_id', 'ts', 'direction', 'sender_person_id'|'sender_name',
+           'title', 'kind', 'due'|'no_due', 'evidence', 'org_id', 'person_ids',
+           'classification_confidence'}, ...]>
+
+r = capture_inbound_items(workspace_root, items, user_person_id=user_id,
+                          source_skill='inbox-triage',
+                          provider='<the seam-resolved provider>')
+print(r['summary'])
+"
+```
+
+- **`direction` is required per item** and is never defaulted — it is the whole table above, and a wrong default writes the promise onto the wrong person's plate.
+- **Ids are the connector's real ones.** Never a draft id: the writer refuses `draft:`-shaped message and thread ids outright (F-22), because a row anchored to a draft can never be matched against the message that was actually sent.
+- **`thread_id` is what makes a capture closable.** It becomes `data.thread_ref`, which is the anchor the reply gates read when the counterparty (or the CEO) answers on that thread. Omitting it is safe and leaves those gates inert for that item — pass it whenever the connector returns one.
+- **Below-floor items are declared, not dropped silently.** An item that fails the Stage-D floor goes in the batch with `below_bar: True` + a `below_bar_reason`; the writer counts it and never writes it. That count is what separates "nothing cleared the floor" from "the capture step never ran".
+- **This step never closes anything.** Extraction is a WRITE. Reconciling a reply against an open item is the reconcile rails' job (`reconcile-sent` at 6:45, the inbox orchestrator's CRU pass); the writer refuses to compose any non-writer event.
+
 ### Field mapping
 
-For each qualifying email:
+The shape `capture_inbound_items` composes, for reference — read it to understand what lands, do not hand-build it:
 
 ```json
 {
@@ -221,25 +258,30 @@ For each qualifying email:
   "person_ids": ["<owner_id>", "<counterparty_id>", "<user_id>"],
   "ts": "<email send/receive ISO timestamp>",
   "data": {
-    "owner_id": "<resolved per the table above>",
+    "owner_id": "<resolved per the table above — empty string when the sender has no person record yet>",
+    "owner_external": "<the sender's free-text name — stamped INSTEAD of a resolved owner_id on a waiting_on item from an unrecognised sender, alongside pending_review: true. See Owner resolution below.>",
     "counterparty_id": "<person_id of who the deliverable is owed TO / who owes it — for email commitments this is almost always the OTHER party on the thread. MUST populate when determinable (Stage E receipts, F5): it feeds the CRU candidacy gate directly (Bug #103 fix). Retires requester_id for NEW writes — readers keep the alias chain forever.>",
     "counterparty_name": "<free-text fallback — SHOULD set when the counterparty is named but has no person record>",
     "title": "<short verb-phrase summarising the deliverable, ≤120 chars>",
     "kind": "promise" | "task" | "scheduling",
     "due": "<ISO date if explicit; empty if not — pair empty with no_due: true>",
     "status": "open" | "overdue",
-    "source_event_seq": <seq of the interaction event for this email>,
-    "source_ref": "gmail:<message_id>",
+    "source_ref": "<provider>:<message_id>",
+    "thread_ref": "<provider>:<thread_id> — present whenever the fetch carried a thread id",
     "evidence": "<quoted phrase from email body, ≤200 chars>"
   }
 }
 ```
 
-**Status:** if `due` is parsed and is in the past relative to today (UTC), set `"overdue"`. Otherwise `"open"`.
+**Status:** stamped by the writer — `"overdue"` when `due` parses and is in the past relative to today (UTC), otherwise `"open"`.
 
-**Owner resolution:** use `aliases.json` to canonicalize sender's display name / email to a `person_id`. If the email is from someone not yet in entities.json, surface a one-line suggestion in the brief ("💡 [Sender] isn't in your contacts yet — want me to add them?") but DO NOT skip the commitment — emit it with `owner_id: ""` so it's not lost.
+**No `source_event_seq` on this leg** (and don't add one back). The parent `interaction` event is not guaranteed to exist for a fetched thread, so — exactly as on the sent and Slack legs — the `source_ref` IS the provenance. A seq pointing at an event that may never be written is a dangling read, not a link.
 
-**Dedup:** Match on `(source_ref, title)`. The same email shouldn't produce two equivalent commitments across re-runs. Skip if `(gmail:<message_id>, title)` already exists for a `type: commitment` event in events.jsonl.
+**Owner resolution:** use `aliases.json` to canonicalize the sender's display name / email to a `person_id` and pass it as `sender_person_id`. If the sender is not yet in entities.json, surface a one-line suggestion in the brief ("💡 [Sender] isn't in your contacts yet — want me to add them?") and **still capture** — pass `sender_name` instead. The writer lands the item with an empty `owner_id`, the name in `data.owner_external`, and `pending_review: true`, so it is visible and one click from real rather than lost. It cannot close while unowned; that is the honest consequence of not knowing who someone is.
+
+**Dedup:** handled by the writer, two layers. Per-message identity `(source_ref, title)` — first 60 chars, case-insensitive, compared as canonical keys so one message under two provider labels is one identity — plus a cross-channel restatement match against the open set, so a promise already tracked from a meeting or from Slack MERGES instead of double-tracking. Re-fires over the same mailbox therefore write nothing; do not add a dedup pass of your own.
+
+**Volume:** one fire writes at most `inbound_capture.DEFAULT_CAPTURE_CAP` items. On a catch-up spanning months the remainder is DEFERRED, not dropped — nothing is marked captured, so the next fire takes the next slice — and `r['summary']` says how many are waiting. Never raise the cap to "get through the backlog" in one morning.
 
 > **Sent-mail reconciliation is NOT done here (v3.18.12 — Bug #98-v3).** Closing commitments the CEO completed by emailing directly is the dedicated silent `reconcile-sent` task's single job (it fires 6:45 AM). It was briefly folded into this triage pass (v3.18.11) and got skipped in real use — same structural reason the brief skipped it: an invisible substrate write loses to the visible deliverable. Don't re-add it here. Extract NEW commitments above; the `reconcile-sent` task closes the ones already sent.
 
@@ -251,7 +293,10 @@ Add one line to the brief output:
 ## Commitments I Caught
 - 3 they owe you (Aria will send pricing by Fri, Bowie will redline MSA, Carol will introduce VC)
 - 1 you owe (reply to Sam with Q3 plan by Mon)
+- 2 replies you're on the hook for (warm intro from Dana; document request from Ellis)
 ```
+
+The third line is the `reply_owed` captures — say "replies you're on the hook for", never the event vocabulary. Take the counts from `r['n_waiting_on']` / `r['n_reply_owed']`; do not re-tally them from your own notes. If `r['n_capped']` is non-zero, add one line — *"N more from the backlog will be picked up on the next pass"* — because a silently truncated catch-up is the one thing worse than a long list.
 
 If zero commitments captured, omit the section — don't print "0 commitments".
 

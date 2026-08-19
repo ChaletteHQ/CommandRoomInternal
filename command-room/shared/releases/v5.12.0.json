@@ -1,0 +1,13 @@
+{
+  "version": "5.12.0",
+  "headline": "Fewer already-done items reach your commitment list, and your decision log renders its titles and its superseded decisions again.",
+  "items": [
+    {
+      "id": "v5120_announce_capture_floor_and_decision_log",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two things changed in this release, and neither needs anything from you. First, your commitment list should get quieter. When you do something live on a call — send a file while screen-sharing, fire off an invite in the moment — that was still landing on your list as work you owed. The check meant to catch it was reading the sentence someone said, when the giveaway is actually in what gets said a few seconds later. It now reads the following turns, and duplicate captures of the same promise fold into one row. Second, your decision log: most rows had been rendering with no title at all, and decisions you had superseded were still showing as current. Both are fixed. The commitment change applies to new captures at the next scheduled run; the decision log corrects itself the next time it regenerates, or immediately if you say \"show my decision log\".",
+      "action": "announce_only"
+    }
+  ]
+}

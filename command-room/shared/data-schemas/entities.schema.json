@@ -675,11 +675,17 @@
         "relationship_type": {
           "type": "string",
           "enum": ["operating", "partner", "board", "advisory", "investment", "client", "portfolio_company", "beneficiary", "vendor", "prospect", "service_provider", "other"],
+          "default": "other",
           "description": "The CEO's role vs this org. 'operating' = runs it. 'partner' = co-founded/co-owned. 'board' = board seat. 'advisory' = advisor/consultant. 'investment' = holds equity, doesn't run. 'client' = paid engagement. 'portfolio_company' = portco of a fund the CEO runs. 'beneficiary' = family office beneficiary/grantor. 'vendor' = a third party who sells the CEO products/services (added v2.10.3). 'prospect' = a third party in active sales conversation, not yet a client (added v2.10.3). 'service_provider' = a vendor with ongoing relationship — accountant, lawyer, agency (added v2.10.3). 'other' = escape hatch with relationship_label."
         },
         "relationship_label": {
           "type": ["string", "null"],
           "description": "Free-text label when relationship_type='other'."
+        },
+        "account_owner": {
+          "type": ["string", "null"],
+          "pattern": "^person_[a-z0-9_]+$",
+          "description": "Person id of the operator who owns the RELATIONSHIP (ORGSCHEMA1). Ownership is a property of the org relationship, not of each project under it — project-level owner_person_id is the per-engagement override. Outreach-ranking surfaces (relationship-moves, dormant-customer-scan) exclude orgs whose account_owner is another operator; absent means unclaimed and ranks for everyone."
         },
         "tier": {
           "type": "string",

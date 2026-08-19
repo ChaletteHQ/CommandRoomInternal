@@ -98,6 +98,16 @@ _INFRA_TEXT_DIR_PARTS = frozenset(
         # they legitimately quote real org names inside fenced blocks and
         # would be pure false-positive noise if voice/leak-scanned.
         "handoffs",
+        # SPEC WALKSMALL1 Part A — same reasoning, same semantics, the build
+        # pipeline's INTAKE QUEUE (`Command Room/intake/**`). A capture is a
+        # bug report or a feature idea about this system: it quotes substrate
+        # shapes, event ids and skill internals because that is what makes it
+        # actionable, and nobody ever hands one to a client. The 2026-08-17
+        # walk produced ~14 gate FAILs (seq 9634 … 9704) whose artifacts were
+        # the walk's OWN capture files — seq 9675 is the gate failing on the
+        # capture that reported this. Internal build-pipeline material, not a
+        # deliverable.
+        "intake",
     }
 )
 # Filename stems (case-insensitive startswith) that mark a .md as context/memory.
@@ -367,7 +377,7 @@ def _scan_html_path(p: Path) -> dict:
 
 # Extension → per-format scanner registry (SPEC FU1 D6). This is the
 # "future formats join cheaply" seam. To add a format:
-#   1. add its extension tuple + `find_candidate_<fmt>` walker above, merged
+#   1. add its extension tuple + `find_candidate_<fmt>` walk helper above, merged
 #      into `find_candidate_deliverables`;
 #   2. add `scan_<fmt>_for_violations(path)` in `docx_leak_scanner.py`
 #      (same result dict, never raises — route its leak step through

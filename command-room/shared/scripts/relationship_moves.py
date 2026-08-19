@@ -117,6 +117,54 @@ def _personal_tie_ids(workspace_root) -> set:
         return set()
 
 
+def _other_operator_account_person_ids(workspace_root) -> set:
+    """person_ids attached to an org whose `account_owner` is ANOTHER operator
+    (ORGSCHEMA1 §4). Their accounts are not this operator's to chase — ranking
+    them produces confidently wrong weekly recommendations in any workspace
+    where more than one operator sells. Absent account_owner = unclaimed
+    (ranks for everyone); an unidentifiable workspace user excludes nobody
+    (mirrors org_writer.outreach_eligible). Defensive like _personal_tie_ids:
+    unreadable entities.json excludes nobody rather than crashing.
+
+    USERKEY1 — the user is resolved through THE shared seam, the same one
+    `_primary_user_id` above uses. This function used to run its own inline
+    person-flag loop: an unrouted twin, forty lines below a routed one, in the
+    module whose whole job is deciding who to leave alone. On a workspace that
+    stores only the canonical `workspace.user_id` pointer the loop found
+    nobody, every foreign account looked unclaimed, and another operator's
+    accounts ranked as this operator's to chase."""
+    try:
+        import json
+        from primary_user import resolve_primary_user_from_entities
+        p = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        entities = data.get("entities") if isinstance(data.get("entities"), dict) else data
+        people = entities.get("people") or []
+        user_id = resolve_primary_user_from_entities(data)
+        if not user_id:
+            return set()
+        foreign_orgs = {
+            o.get("id") for o in (entities.get("orgs") or [])
+            if isinstance(o, dict) and o.get("id")
+            and o.get("account_owner") and o["account_owner"] != user_id
+        }
+        if not foreign_orgs:
+            return set()
+        out = set()
+        for rec in people:
+            if not isinstance(rec, dict) or not rec.get("id"):
+                continue
+            refs = set(rec.get("affiliation_ids") or [])
+            for k in ("primary_org_id", "org_id"):
+                if rec.get(k):
+                    refs.add(rec[k])
+            if refs & foreign_orgs:
+                out.add(rec["id"])
+        return out
+    except Exception:
+        return set()
+
+
 def _recently_excluded(workspace_root, within_days: int = 7) -> set:
     """Persons to exclude: emailed / suggested in the window, or actively
     snoozed / dismissed."""
@@ -208,6 +256,7 @@ def compute_relationship_moves(
     ranked = score_candidates(signals, thread_totals or {}, commits, now=now)
 
     personal_ids = _personal_tie_ids(workspace_root)
+    foreign_account_ids = _other_operator_account_person_ids(workspace_root)
     excluded = _recently_excluded(workspace_root)
     # LIFECYCLE1 §7c — the CEO is never a candidate for outreach to himself.
     # The live 2026-08-03 pack suggested he nudge his own record, tagged
@@ -221,6 +270,7 @@ def compute_relationship_moves(
     ranked = [c for c in ranked
               if c["person_id"] not in excluded
               and c["person_id"] not in personal_ids
+              and c["person_id"] not in foreign_account_ids
               and (self_id is None or c["person_id"] != self_id)
               and c["score"] > 0]
     top = ranked[:top_n]

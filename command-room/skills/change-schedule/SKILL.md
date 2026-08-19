@@ -24,9 +24,8 @@ When the trigger is read-only (`list my schedules`, `show my scheduled chats`, `
 Your current Command Room schedule:
 
   Morning Brief       — 7 AM weekdays
-  Upcoming Meetings   — 6:30 AM weekdays
   Inbox               — 7:15 AM weekdays
-  Past Meetings       — 5 PM weekdays
+  End of Day          — 5 PM weekdays
   Friday Wrap         — 1 PM Fridays
 
 Background maintenance (runs quietly, no chat output):
@@ -40,10 +39,11 @@ Available, not added yet:
   Commitments         — say `add commitments` when you're ready
   Relationship Moves  — say `add relationship moves`
   Staff Meeting       — say `add staff meeting`
-  Pipeline Digest     — say `add pipeline digest`
 
 Say `change my schedule` to adjust any of these.
 ```
+
+**The "Available, not added yet" group is DERIVED from `later_add_task_ids()`, never from the sample above.** The sample is illustrative and it has drifted before — Pipeline Digest sat in it until TASKRET1 retired the task, at which point the line was offering an `add` no registration path would honour. A retired id can never appear in that group in any class (retirement takes the row out of `DEFAULT_SCHEDULES`, which is what the set derives from), and a still-registered retired task renders under "Registered" with its retirement line instead — see the retired-task rules below.
 
 **The maintenance parenthetical is DERIVED, never copied from the sample above.**
 Render it from the live registry — `maintenance_dispatcher.MAINTENANCE_JOBS`
@@ -83,11 +83,13 @@ except Exception:
 view = load_schedule_view(f'$WORKSPACE/_hq/data/entities.json', registered)
 for tid, spec in view.items():
     name = task_display_name(tid)
-    print(f'{tid}|{name}|{spec[\"label\"]}|{spec[\"enabled\"]}|{spec[\"registered\"]}|{spec[\"later_add\"]}|{spec[\"silent\"]}')
+    print(f'{tid}|{name}|{spec[\"label\"]}|{spec[\"enabled\"]}|{spec[\"registered\"]}|{spec[\"later_add\"]}|{spec[\"silent\"]}|{spec[\"served_by\"] or \"\"}')
 "
 ```
 
-Capture stdout — each line `taskId|display_name|label|enabled|registered|later_add|silent`.
+Capture stdout — each line `taskId|display_name|label|enabled|registered|later_add|silent|served_by`.
+
+`served_by` (EOD2) is empty on almost every row and almost every workspace. When it is NOT empty, this task is registered under a RENAMED PREDECESSOR's id — the row is live, and the name to render is `task_display_name(served_by)`, because that is the entry the customer can actually see in their Scheduled list. Rendering the successor's name for a row the sidebar calls something else is how a customer concludes a chat is missing and asks for a second one.
 
 **Vantage guard (v4.5.2 R3 — F-40):** the scheduler registry is MACHINE-LOCAL; a cloud/remote chat (or a different computer) reads it empty even when all tasks are live. Before rendering "nothing is registered" or an all-not-added view from an empty registered set, run `task_watchdog.detect_registry_vantage(ws, records)` with whatever `list_scheduled_tasks` returned. If it returns a finding, say its `line` ("I can't see your scheduler from this chat — … open a local (non-cloud) chat") and STOP — no schedule render, and absolutely no mutations: `update_scheduled_task` / registration from a blind vantage lands in the wrong scheduler and creates duplicates. Only a genuinely fresh workspace (guard returns None with no registration history) renders honestly as not-set-up.
 
@@ -101,8 +103,8 @@ Render the same three groups as read-only mode (Registered / Background maintena
 What would you like to change? Examples:
   · `set inbox to 8am`            move one task to a new time
   · `move inbox to noon mondays`  one task, specific day(s)
-  · `pause past meetings`         temporarily disable one task
-  · `resume past meetings`        re-enable a paused task
+  · `pause end of day`            temporarily disable one task
+  · `resume end of day`           re-enable a paused task
   · `add relationship moves`      turn on an available task
   · `everything daily`            run weekdays AND weekends for all
   · `back to defaults`            reset everything to shipped defaults
@@ -129,7 +131,7 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 - `<task> mon and fri` / `<task> mondays and fridays` → `1,5`
 
 **Combined time + day:**
-- `move past meetings to 8am mondays` → `0 8 * * 1` (after TZ conversion)
+- `move end of day to 8am mondays` → `0 8 * * 1` (after TZ conversion)
 - `inbox at 7am and 3pm weekdays` → `0 7,15 * * 1-5` (after TZ conversion)
 
 **Enable/disable:**
@@ -150,6 +152,20 @@ Membership is `schedule_config.RETIRED_TASKS`, never a name you remember. A reti
 - **`pause <retired task>` works normally** — a workspace that still has it registered must be able to switch it off, and that tap is the whole retirement path. `enabled: false`, same as any pause.
 - **Render a still-registered retired task under "Registered"**, because it IS registered and hiding it would be a lie about the customer's own Scheduled list — with the retirement line under it so the tap is obvious. Nothing here disables it on its own (SPEC LIFECYCLE1 §4: propose, never silent).
 
+**READINESS retirements are the third animal, and the update has already acted (SPEC TASKRET1, M's ruling 2026-08-17).** A retired row whose `schedule_config.retirement_class(task_id)` is `readiness` — `commitment-triage`, `balance`, `pipeline-digest` — came out because the product shipped it before its substrate could support it. The update bridge's readiness migration DISABLES a live registration itself and narrates it, so by the time this skill renders anything the tap has been taken. Three rules follow, and they are all about not asking for that tap twice:
+
+- **Never call it drift, and never tell the customer to `pause` it.** The BRIEFMERGE drift sentence is for the ELIMINATED class, where the registration is still live and the customer's tap is the whole retirement path. Here it is already off, and "say `pause balance`" reads as the product not knowing its own state.
+- **`add <readiness-retired task>` → refuse with `schedule_config.retirement_line(task_id)` verbatim, and register nothing.** The line is already worded for this class: it says the chat is off the schedule, why, which on-demand surface still does the work, and what brings it back. Do not add a "but I can add it anyway" — the ruling is that these do not fire on a schedule until their substrate is ready.
+- **The on-demand skill is NOT retired and must not be described as one.** `triage my commitments`, `balance check`, and the pipeline report all still work in full. If the customer's real ask is the work rather than the schedule, point at the phrase — that is the honest answer and it is usually the one they wanted.
+
+**RENAMED tasks are a different animal from eliminated ones (SPEC EOD2).** A retired row carrying `renamed_to` (`schedule_config.is_renamed_task(task_id)`; `past-meetings` → `end-of-day` is the first) was NOT eliminated — the chat is alive under a new id, both ids resolve to the same orchestrator, and the old registration keeps firing the current pack at the same hour for as long as the customer leaves it. Four rules follow:
+
+- **Never call it drift and never call it retired in the render.** It is the customer's evening chat, working. Render it under "Registered" with its live time, name it as End of Day's old name in one clause, and attach `schedule_config.retirement_line("past-meetings")` — which is already worded as a switch, not a removal.
+- **Never render the successor under "Available, not added yet" while the predecessor is registered.** Step 1's view already prevents this: `load_schedule_view` reports `registered: True` with `served_by: "past-meetings"` for a served successor. Read `served_by` and render ONE row, under the name the customer's Scheduled list actually shows — two rows for one 5 PM chat is how a customer ends up with two 5 PM chats.
+- **A custom time set on the OLD id still applies, and the view already shows it (EOD2 / REVIEW F-1).** `load_schedule_config` inherits a renamed predecessor's override onto the successor's row when the successor has none, so a workspace customised to 4 PM renders "4 PM weekdays" — not the shipped 5 PM default — on either id. Never render the default for a row whose predecessor carries an override, and never tell a customer their evening chat runs at 5 when their own config says otherwise.
+- **`add end of day` is the switch, and it is two operations.** Route to registration's Phase 6 add: register `end-of-day`, then disable `past-meetings` via `update_scheduled_task(enabled: false)`, then move any custom cron override from the old key to the new one (and DELETE the old key). Moving it is still correct even though the read side now inherits it: inheritance is the safety net for workspaces that never switch, not a licence to leave the key behind. Never do one half. **The disable half writes its config record like any other pause (SPEC SCHED1 §0-4)** — `log_schedule_config_change(<WORKSPACE>, [{'task_id': 'past-meetings', 'cron': None, 'enabled': False}], source_skill='change-schedule')`. This is the exact path the 2026-08-17 fold-in took: three `schedule_created` events written, and no record at all for the two chats it paused.
+- **`pause past meetings` on a workspace with no `end-of-day` registered is the one pause worth a sentence before it happens.** It would leave no evening chat at all. Say that, offer `add end of day` instead, and proceed only if the customer still wants the pause — they may genuinely want no 5 PM chat, and that is their call to make knowingly.
+
 **Bulk changes:**
 - `everything daily` — all enabled tasks → `* * *` day fields
 - `everything weekdays only` — all → `1-5`
@@ -167,7 +183,8 @@ Accept fuzzy matches and resolve to the **bare canonical taskId** (the key both 
 - `my plate` / `my-plate` / `plate` → `my-plate` (CTS1 Surface 2)
 - `commitments` / `commits` → the CTS1 pair: ask which of the two split surfaces they mean (`waiting-on` = things people owe them, `my-plate` = their own list) unless the request obviously covers both (e.g. "pause commitments" pauses both). The retired `commitments` taskId itself is disabled — never re-enable or re-anchor it.
 - `pulse` / `dont forget` / `don't forget` → `pulse` — **RETIRED (LIFECYCLE1, `schedule_config.RETIRED_TASKS`).** Resolve the name so a workspace that still has it registered can `pause pulse`, and NEVER offer, add or resume it: `add pulse` / `resume pulse` get the retirement line from `schedule_config.retirement_line("pulse")` verbatim and nothing else. Retired is not the same as available-not-added — see the retirement rule below.
-- `past meetings` / `past` / `meetings processed` → `past-meetings`
+- `end of day` / `eod` / `day close` / `evening chat` / `close out my day` → `end-of-day` (EOD2 — the 5 PM close)
+- `past meetings` / `past` / `meetings processed` → `past-meetings` — **RENAMED to `end-of-day` (EOD2, `schedule_config.RETIRED_TASKS` with `renamed_to`).** Resolve the name forever: a machine set up before the rename still has it registered and firing, and the customer will keep calling it Past Meetings for months. `pause` / `set to <time>` / `resume` all work on it normally — it is a live task. `add past meetings` gets `schedule_config.retirement_line("past-meetings")` verbatim and registers nothing, because the thing to add is End of Day. A request to move "when my meetings get processed" is a request to move whichever of the two ids this machine actually has — resolve it through Step 1's `served_by`, never by guessing.
 - `friday wrap` / `friday` / `weekly wrap` / `weekly recap` → `friday-wrap`
 - `maintenance` / `background maintenance` / `background tasks` → `maintenance` (the TASK — moving its time moves every slot; see the MAINT1 rules below)
 - `cleanup` / `clean up` / `weekly maintenance` → the `cleanup` JOB inside `maintenance` (job-level pause/resume only — see below)
@@ -215,7 +232,7 @@ Here's what I'll change:
 
   Inbox          7 AM weekdays  →  8 AM weekdays
   Pulse          [paused]       →  active, 9 AM weekdays
-  Past Meetings  5 PM weekdays  →  4:30 PM weekdays
+  End of Day     5 PM weekdays  →  4:30 PM weekdays
 
 Proceed? (yes / no / cancel)
 ```
@@ -233,8 +250,7 @@ cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
 from atomic_write import atomic_write_json
-from event_gate import append_event
-from schedule_config import cron_to_english
+from schedule_config import cron_to_english, log_schedule_config_change
 import datetime
 
 entities_path = f'$WORKSPACE/_hq/data/entities.json'
@@ -257,14 +273,11 @@ data['last_writer'] = 'change-schedule'
 data['last_updated'] = datetime.datetime.utcnow().isoformat() + 'Z'
 atomic_write_json(entities_path, data)
 
-# Audit event through the canonical gate (seq/ts auto-stamped inside the
-# writer lock — never hand-roll a next_seq + open-append; see WORKSPACE_API.md §3).
-events_path = f'$WORKSPACE/_hq/data/events.jsonl'
-append_event(events_path, {
-    'type': 'schedule_config_changed',
-    'source_skill': 'change-schedule',
-    'data': {'changes': [{'task_id': t, 'cron': c, 'enabled': e} for t, c, e in changes]},
-}, holder='change-schedule')
+# Audit event through the ONE writer (SCHED1) — it routes the canonical gate,
+# so seq/ts are auto-stamped inside the writer lock; never hand-roll a next_seq
+# + open-append, and never hand-roll this event shape either (see
+# WORKSPACE_API.md §3). Registration's pause paths call the same helper.
+log_schedule_config_change('$WORKSPACE', changes, source_skill='change-schedule')
 print('CONFIG_WRITTEN')
 "
 ```
@@ -286,7 +299,7 @@ One-line confirmation per change, only after Step 7's `update_scheduled_task` ca
 ```
 ✓ Inbox now runs at 8 AM weekdays.
 ✓ Pulse resumed.
-✓ Past Meetings now runs at 4:30 PM weekdays.
+✓ End of Day now runs at 4:30 PM weekdays.
 
 Your new schedule starts tomorrow morning.
 ```
@@ -305,7 +318,7 @@ Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 
 **User asks for an invalid cron value (e.g., `set inbox to 25am`).** Surface the parse error in plain English. Don't write. Ask again.
 
-**User wants to add a task that exists in DEFAULT_SCHEDULES but isn't registered.** That's the `add <task>` flow (Step 3) — route through the registration skill's Phase 6 add path. **User wants a task that doesn't exist in DEFAULT_SCHEDULES at all** — reject: this skill customizes any task in `DEFAULT_SCHEDULES` (currently 13, `balance` included) plus the job-level pause/resume inside `maintenance`; brand-new taskIds ship via plugin updates, not user customization.
+**User wants to add a task that exists in DEFAULT_SCHEDULES but isn't registered.** That's the `add <task>` flow (Step 3) — route through the registration skill's Phase 6 add path. **User wants a task that doesn't exist in DEFAULT_SCHEDULES at all** — reject: this skill customizes any task in `DEFAULT_SCHEDULES` (count it from the registry at run time — never from a number typed here) plus the job-level pause/resume inside `maintenance`; brand-new taskIds ship via plugin updates, not user customization. **A RETIRED id is a different rejection with a different sentence** — it is not an unknown task, it is a known one that is gone, so answer it with `schedule_config.retirement_line(task_id)` per the retired-task rules above rather than with this generic reject.
 
 **User says `everything daily` while one task is paused.** Apply the cron change but leave the paused task paused. They'd say `resume everything` separately to reactivate.
 
@@ -324,4 +337,4 @@ Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Customize when each Command Room scheduled chat fires. Reads current schedule from entities.json merged with defaults AND the registered-task set (so only tasks that actually exist in Cowork's scheduler render as scheduled — Phase 3/R1), shows it in plain English, accepts changes (move time, switch days, pause/resume, disable/enable), atomic-writes the config, and pushes the new cadence to the live tasks itself via update_scheduled_task (Phase 3/P0.1 — cron re-anchoring is THIS skill's job). Triggers: 'change my schedule', 'change schedule', 'update my schedule', 'configure schedules', 'configure my schedules', 'customize my schedules', 'set [task] to [time]', 'move [task] to [time]', 'pause [task]', 'resume [task]', 'disable [task]', 'enable [task]', 'add staff meeting', 'add relationship moves', 'add commitments', 'add pulse', 'add commitment triage', 'add balance', 'add pipeline digest' (the later-add turn-on phrases — each routes to the registration skill's Phase 6 add, this skill never builds a second registration mechanism), 'list my schedules', 'show my scheduled chats', 'when do my chats fire', 'when do my chats run'. Use when the user wants daily/weekly/cadence customization per task. DOES NOT fire on 'set up command room schedules' (that's the registration skill — change-schedule modifies the config that registration reads), 'what's my schedule' / 'show my schedule' / 'what's on my calendar' (a calendar read — morning-briefing covers today; the calendar itself covers the rest; this skill only manages Command Room's scheduled chats).
+> Customize when each Command Room scheduled chat fires. Reads current schedule from entities.json merged with defaults AND the registered-task set (so only tasks that actually exist in Cowork's scheduler render as scheduled — Phase 3/R1), shows it in plain English, accepts changes (move time, switch days, pause/resume, disable/enable), atomic-writes the config, and pushes the new cadence to the live tasks itself via update_scheduled_task (Phase 3/P0.1 — cron re-anchoring is THIS skill's job). Triggers: 'change my schedule', 'change schedule', 'update my schedule', 'configure schedules', 'configure my schedules', 'customize my schedules', 'set [task] to [time]', 'move [task] to [time]', 'pause [task]', 'resume [task]', 'disable [task]', 'enable [task]', 'add staff meeting', 'add relationship moves', 'add commitments', 'add pulse', 'add commitment triage', 'add balance', 'add pipeline digest' (the later-add turn-on phrases — each routes to the registration skill's Phase 6 add, this skill never builds a second registration mechanism), 'add end of day' (SPEC EOD2 — the RENAME SWITCH, and the exact phrase the retirement line hands a customer still on the old id; it routes to the same Phase 6 add, which registers the new taskId AND disables the predecessor in one step. `add past meetings` is deliberately NOT declared: claiming it would give this skill a claim on every past-meetings utterance, the unowned `regenerate past meetings` included, so that refusal rides the generic retired-task rule in the body instead of a trigger of its own. Nothing in this paragraph may quote a bare taskId — the mechanical matcher reads quoted strings here as owned triggers, which is exactly how that hijack got in), 'list my schedules', 'show my scheduled chats', 'when do my chats fire', 'when do my chats run'. Use when the user wants daily/weekly/cadence customization per task. DOES NOT fire on 'set up command room schedules' (that's the registration skill — change-schedule modifies the config that registration reads), 'what's my schedule' / 'show my schedule' / 'what's on my calendar' (a calendar read — morning-briefing covers today; the calendar itself covers the rest; this skill only manages Command Room's scheduled chats).

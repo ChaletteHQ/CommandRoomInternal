@@ -20,10 +20,11 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
 5. **Contract layer — read from the FILES, not the prompts:** for each taskId in `ORCHESTRATOR_MAP`, read the on-disk `references/orchestrator-<name>.md` and confirm it carries the `OUTPUT CONTRACT` marker in its first 1500 chars (same assertion Step 1.A applies at registration). That is where the contract lives in the bootloader era; a registered prompt was never the right place to look for it.
 6. **Silent tasks:** verify the registered prompt matches the current composed prompt from `compose_silent_task_prompt()` (hash compare) — match → current; differ → "refresh needed"; missing → "not registered — say `set up command room schedules`".
 
-6b. **RETIRED tasks — report them as retired, never as stale or missing (SPEC BRIEFMERGE §E / LIFECYCLE1).** Membership is `schedule_config.RETIRED_TASKS`, read at run time — never a name typed here. Two branches, and neither is a failure:
+6b. **RETIRED tasks — report them as retired, never as stale or missing (SPEC BRIEFMERGE §E / LIFECYCLE1 / EOD2).** Membership is `schedule_config.RETIRED_TASKS`, read at run time — never a name typed here. Three branches, and none is a failure:
 
-   - **Still registered on this machine** (`upcoming-meetings` on any workspace set up before the merge) → the row reads `retired`, carries `schedule_config.retirement_line(task_id)` so the customer can see where the work went, and is EXCLUDED from the current/stale tally. Verify mode never proposes refreshing it and never disables it — the retirement offer belongs to the update bridge and the customer's own `pause` (propose, never silent).
-   - **Not registered** → say nothing at all. A retired task's absence is normal, permanently.
+   - **ELIMINATED and still registered on this machine** (`upcoming-meetings` on any workspace set up before the merge; `pulse` since LIFECYCLE1) → the row reads `retired`, carries `schedule_config.retirement_line(task_id)` so the customer can see where the work went, and is EXCLUDED from the current/stale tally. Verify mode never proposes refreshing it and never disables it — the retirement offer belongs to the update bridge and the customer's own `pause` (propose, never silent).
+   - **RENAMED and still registered** (`past-meetings` since EOD2 — its row carries `renamed_to`; test with `schedule_config.is_renamed_task(task_id)`) → this one is a LIVE chat wearing an old name, so grade it like any live chat: check its bootloader, COUNT it in the tally, and say `refresh needed` when it is stale. Refreshing it is correct and load-bearing — it is what keeps the evening close current on a machine that has not taken the rename. Carry `retirement_line(task_id)` beside the row so the new name is visible, and never disable it.
+   - **Not registered** → say nothing at all. A retired task's absence is normal, permanently. That includes `end-of-day` reading as absent on a machine whose `past-meetings` is registered — that machine HAS its evening chat, under the predecessor id. `schedule_config.is_task_served("end-of-day", registered_ids)` is the check to use; a bare `"end-of-day" in registered_ids` would report a missing chat that fires tonight.
 
    ```
    Command Room scheduled-task verification:
@@ -33,6 +34,7 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
    ✓ morning-brief           bootloader current (registered under v[X])
    ✓ inbox                   bootloader current (registered under v[X])
    ✗ past-meetings           bootloader stale — refresh needed
+                             (your End of Day chat, under its old name)
    ✓ maintenance             background prompt current
    ⊘ upcoming-meetings       retired — its meeting prep now runs inside your Morning Brief
 
@@ -55,7 +57,7 @@ Verification mode is the diagnostic version of the install ritual — explicit v
 
 The schedule-setup skill. Configures **7 topic-specific persistent chats** + a one-time **historical backfill** sweep via `mcp__scheduled-tasks__create_scheduled_task`. Each chat = 1 stable taskId = 1 persistent thread in Cowork's Scheduled sidebar section, accumulating turns over time.
 
-**On a fresh-install workspace only the `FIRST_INSTALL_TASK_IDS` subset fires automatically** — `morning-brief`, `past-meetings`, `inbox`, `friday-wrap` (plus the silent `maintenance` task, registered via Step 1.D). The rest (`waiting-on`, `my-plate`) get added later via operator-driven follow-up sessions when accumulated workspace signal makes them useful. Read the set from `schedule_config.FIRST_INSTALL_TASK_IDS` rather than this sentence — it is the registry that decides. (`pulse` was in the later-add group until LIFECYCLE1 retired it, and `upcoming-meetings` was first-install until BRIEFMERGE retired it — see the RETIRED rows in `ORCHESTRATOR_MAP`.) (CTS1: `waiting-on` + `my-plate` are the split successors of the retired `commitments` chat — an existing customer with `commitments` registered gets both via the Phase 1 migration table, never a fresh-install auto-add.)
+**On a fresh-install workspace only the `FIRST_INSTALL_TASK_IDS` subset fires automatically** — `morning-brief`, `end-of-day`, `inbox`, `friday-wrap` (plus the silent `maintenance` task, registered via Step 1.D). The rest (`waiting-on`, `my-plate`) get added later via operator-driven follow-up sessions when accumulated workspace signal makes them useful. Read the set from `schedule_config.FIRST_INSTALL_TASK_IDS` rather than this sentence — it is the registry that decides. (`pulse` was in the later-add group until LIFECYCLE1 retired it, and `upcoming-meetings` was first-install until BRIEFMERGE retired it — see the RETIRED rows in `ORCHESTRATOR_MAP`.) (CTS1: `waiting-on` + `my-plate` are the split successors of the retired `commitments` chat — an existing customer with `commitments` registered gets both via the Phase 1 migration table, never a fresh-install auto-add.) (EOD2: `end-of-day` is `past-meetings` RENAMED — it inherits the slot rather than adding one, so the fresh-install chat count is still 4. An existing workspace's `past-meetings` is never auto-swapped; see the Phase 3 rename fence.)
 
 ## Phase 0.5 — Substantive explainer (first-time schedule setup)
 
@@ -89,7 +91,7 @@ Read `workspace.brain_name` from the customer's entities.json if available — s
 >
 > *• Morning Brief (7 AM weekdays — it preps today's meetings first, then writes)*
 > *• Inbox (7:15 AM weekdays)*
-> *• Past Meetings (5 PM weekdays)*
+> *• End of Day (5 PM weekdays)*
 > *• Friday Wrap (1 PM Fridays)*
 >
 > *These times are the defaults — say `change my schedule` to move any of them.*
@@ -97,9 +99,9 @@ Read `workspace.brain_name` from the customer's entities.json if available — s
 > *...registering...*
 > *Registered. They appear in your Cowork 'Scheduled' section now and will run on their own on the cadence above. Want to see one in action right now? Open any of them and hit Run Now — you'll get real output immediately, exactly what it'll produce on schedule."*
 
-**Customer-facing task-name vs registered taskId mapping.** The customer reads the DISPLAY names above — the same names the Cowork sidebar shows. The actual registered taskIds are: `morning-brief` ("Morning Brief - Command Room") / `past-meetings` ("Past Meetings - Command Room") / `inbox` ("Inbox - Command Room") / `friday-wrap` ("Friday Wrap - Command Room"). Never surface a taskId or internal skill ID (`inbox-triage`, `weekly-recap`) in customer copy; the canonical taskIds stay back-compat-stable in the registration layer only. (The bullet list is illustrative — render the names and times from `load_schedule_config()` over the set this run actually registers, per the anti-drift note below.)
+**Customer-facing task-name vs registered taskId mapping.** The customer reads the DISPLAY names above — the same names the Cowork sidebar shows. The actual registered taskIds are: `morning-brief` ("Morning Brief - Command Room") / `end-of-day` ("End of Day - Command Room") / `inbox` ("Inbox - Command Room") / `friday-wrap` ("Friday Wrap - Command Room"). Never surface a taskId or internal skill ID (`inbox-triage`, `weekly-recap`) in customer copy; the canonical taskIds stay back-compat-stable in the registration layer only. (The bullet list is illustrative — render the names and times from `load_schedule_config()` over the set this run actually registers, per the anti-drift note below.)
 
-**Render the explainer fire-times FROM `load_schedule_config()` — do not trust the hardcoded copy.** The bullet list above shows the current `DEFAULT_SCHEDULES` values (`shared/scripts/schedule_config.py`) for reference, but before speaking them, call `load_schedule_config(entities_json_path)` and read each task's `label` (e.g. `"7 AM weekdays"`) so the times you state ALWAYS match what Phase 2 actually registers — including any per-workspace `schedule_config` overrides the operator has already set. This is the anti-drift contract: the explainer copy and the registered cron can never disagree because both come from the same source. (Pre-FIX1 hand-maintained copy drifted — see references/HISTORY.md § Pre-FIX1.)
+**Render the explainer fire-times FROM `load_schedule_config()` — do not trust the hardcoded copy.** The bullet list above shows the current `DEFAULT_SCHEDULES` values (`shared/scripts/schedule_config.py`) for reference, but before speaking them, call `load_schedule_config(entities_json_path)` and read each task's `label` (e.g. `"7 AM weekdays"`) so the times you state ALWAYS match what Phase 2 actually registers — including any per-workspace `schedule_config` overrides the operator has already set. Names come from `task_display_name()` for the same reason. This is the anti-drift contract: the explainer copy and the registered cron can never disagree because both come from the same source. (Pre-FIX1 hand-maintained copy drifted — see references/HISTORY.md § Pre-FIX1.) **EOD2 is the reason this is a contract and not a nicety:** the sample bullets said "Past Meetings (5 PM weekdays)" for many releases, and a hand-maintained bullet list is exactly what would have kept saying it after the registry stopped agreeing. A pin over these bullets vs the registry lives in `tests/run_eod2_registration_test.py`.
 
 **OPERATOR (verbal, if present when the explainer lands):** *"Take a minute on that. The 'full context loaded' point is the most important thing here — it's why this stack is different from any of the AI tools you've tried. Anything jump out?"*
 
@@ -181,7 +183,7 @@ Three branches based on candidate count:
 - File doesn't exist.
 - File exists but `registered_taskIds` is missing, null, or `[]`.
 
-If first-install, set the local variable `FIRST_INSTALL = True` and use `FIRST_INSTALL_TASK_IDS` (from `shared/scripts/schedule_config.py` — read the frozenset, never a literal typed here; as of BRIEFMERGE 2026-08-08 it is the chats `morning-brief` / `past-meetings` / `inbox` / `friday-wrap` plus the silent `maintenance`, `upcoming-meetings` having retired into the morning-brief fire) as the registration set. The remaining default tasks are SKIPPED on first install — they get added later through operator-led follow-up sessions once accumulated workspace signal makes them useful.
+If first-install, set the local variable `FIRST_INSTALL = True` and use `FIRST_INSTALL_TASK_IDS` (from `shared/scripts/schedule_config.py` — read the frozenset, never a literal typed here; as of EOD2 2026-08-16 it is the chats `morning-brief` / `end-of-day` / `inbox` / `friday-wrap` plus the silent `maintenance` — `upcoming-meetings` having retired into the morning-brief fire, and `past-meetings` having been renamed `end-of-day`) as the registration set. The remaining default tasks are SKIPPED on first install — they get added later through operator-led follow-up sessions once accumulated workspace signal makes them useful.
 
 If NOT first-install (`registered_taskIds` is populated), set `FIRST_INSTALL = False`. The skill enters Phase 6 management flow (`add` / `change` / `remove` / `reset`) — do NOT silently delete or disable tasks the customer already has. Existing customers with all 5, 6, or 7 registered keep what they have.
 
@@ -193,7 +195,7 @@ After detection, write or update `<chosen_workspace>/_hq/workspace_config.json`:
   "workspace_basename": "<BASENAME>",
   "registered_at": "<ISO timestamp>",
   "first_install": true,
-  "registered_taskIds": ["morning-brief", "past-meetings", "inbox", "friday-wrap", "maintenance"]
+  "registered_taskIds": ["morning-brief", "end-of-day", "inbox", "friday-wrap", "maintenance"]
 }
 ```
 
@@ -215,6 +217,8 @@ The customer-facing flow for switching to a new workspace is just: re-run `set u
 
 For each legacy taskId found in the user's existing schedule, DISABLE it via `update_scheduled_task(enabled: false)` and surface in the install summary as "migrated to [new name]":
 
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+
 | Legacy taskId | Action | New taskId |
 |---|---|---|
 | `cr-meetings-today` | **disable only** (BRIEFMERGE — `upcoming-meetings`, its successor, is retired; there is nothing to register) | — |
@@ -230,6 +234,7 @@ For each legacy taskId found in the user's existing schedule, DISABLE it via `up
 | `cr-commitments` | **disable** (v2.14.27 — taskId rename) | `commitments` |
 | `cr-dont-forget` | **disable** (v2.14.27 — taskId rename to align with display name "Pulse"; events.jsonl history at source_skill='cr-dont-forget' preserved as append-only history) | `pulse` |
 | `cr-past-meetings` | **disable** (v2.14.27 — taskId rename) | `past-meetings` |
+| `past-meetings` | **renamed, do NOT auto-disable and do NOT auto-replace** (EOD2, RULED 2026-08-16 — the 5 PM chat became the day's CLOSE in EOD1 and the id kept saying "meetings". Membership is `schedule_config.RETIRED_TASKS` with `renamed_to: "end-of-day"`. **Unlike every other row in this table there is nothing to migrate:** both ids map to the SAME orchestrator file, so a still-registered `past-meetings` keeps firing the real End of Day pack forever, at the same hour, with no degradation and no stub. Its prompt IS refreshed on a re-run — that is what keeps it current. `schedule_config.registration_target_set()` removes `end-of-day` from this run's target set while `past-meetings` is registered, so the successor is NEVER silently added beside it; the switch is offered once by the update bridge (`retirement_line("past-meetings")`) and taken by the customer's own `add end of day`, which registers the new id AND disables the old one in the same step. Registration never adds `past-meetings` back on any path.) | `end-of-day` (by PROPOSAL only) |
 | `cr-folder-bind-test` | **disable** (v2.14.27 — Cowork diagnostic test task left over from 2026-05-06 Q10/Q11 round; safe to disable, never intended to fire) | (none — diagnostic artifact) |
 | `cr-folder-bind-test-2` | **disable** (v2.14.27 — Cowork diagnostic test task left over from 2026-05-06 Q10/Q11 round; safe to disable, never intended to fire) | (none — diagnostic artifact) |
 | `commitments` | **disable + register** (CTS1 §10.3, RULED 2026-07-16 — the daily Commitments chat split into two surfaces on fresh taskIds, the v2.14.27 pattern: Cowork derives the sidebar title FROM the taskId, so re-scoping would have left the sidebar saying "Commitments" forever. Register BOTH successors: `waiting-on` inherits the 8:30 slot AND any custom cron override the customer had on `commitments` — MOVE the override (write it under `waiting-on` in `workspace.schedule_config` and REMOVE the `commitments` key: `commitments` is no longer in DEFAULT_SCHEDULES, so a leftover key trips the watchdog's orphan-override scan forever); `my-plate` takes the 8:45 default. Surface the three §10.3 costs in the install summary: the old entry stays visible as a disabled sidebar item (no delete API), old chat history stays in the old thread, and each new chat needs one first-fire Run Now.) | `waiting-on` + `my-plate` |
@@ -240,6 +245,8 @@ For each legacy taskId found in the user's existing schedule, DISABLE it via `up
 | `session-sweep` | disable + register (MAINT1 — now a job, served once daily at the first fire) | `maintenance` |
 
 **MAINT1 migration notes (idempotent, never deletes):** the five rows above are driven by the `SUPERSEDED_BY` map in `shared/scripts/schedule_config.py` — disable each superseded taskId found registered+enabled via `update_scheduled_task(enabled: false)`, register `maintenance` once via Step 1.D. Re-runs converge on the same end state (disabling an already-disabled task is a no-op; a registered `maintenance` with a matching prompt is skipped). Custom cron overrides on the OTHER four old taskIds (`workspace.schedule_config`) cannot map onto a single task cron — leave the override in place (parity ignores superseded ids) and tell the customer in plain English which old time can't carry over (e.g. *"Your cleanup used to run at a custom time — the background upkeep now runs as one task; say `change my schedule` if you want to move it."*). Surface ONE plain-English migration line in the install summary: *"Your background upkeep now runs as one 'Maintenance' entry in the Scheduled section — authorize it once with Run Now. The old background entries are switched off."*
+
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
 
 (No delete API exists in the scheduled-tasks MCP; disable is the safe operation. Disabled tasks remain in the user's Scheduled section as historical reference but won't fire. v2.14.27 customers running `set up command room schedules` will see ~13 disabled tasks accumulate in their sidebar — surface this in the install summary so it's not a surprise. Filesystem surgery is the only way to make the sidebar truly clean: quit Cowork, edit `scheduled-tasks.json` to remove disabled entries, optionally delete the corresponding `Documents/Claude/Scheduled/<taskId>/` folders, restart.)
 
@@ -255,17 +262,23 @@ ORCHESTRATOR_MAP = {
     "waiting-on":        "orchestrator-commitments.md",  # CTS1 Surface 1 — the re-scoped daily (things people owe the user + the confirm tail). Filename kept for events.jsonl source_skill back-compat (events keep source_skill='commitments' — same pattern as pulse below). NOT first-install; successor of the retired `commitments` taskId (Phase 1 migration table).
     "my-plate":          "orchestrator-my-plate.md",     # CTS1 Surface 2 — the owner-me act-list (Promised + Personal groups, one chat). NOT first-install; registers alongside waiting-on in the commitments migration.
     "pulse":             "orchestrator-dont-forget.md",   # RETIRED (LIFECYCLE1) — NEVER register, NEVER offer, NEVER count as missing. The row stays ONLY so a workspace that registered it before the retirement still resolves its bootloader; the file it points at is a retirement stub that explains itself and stops. `schedule_config.RETIRED_TASKS` is the membership test — never a name you remember. Historical events (source_skill='cr-dont-forget' / 'pulse') stay valid append-only history.
-    "past-meetings":     "orchestrator-past-meetings.md",
+    "past-meetings":     "orchestrator-past-meetings.md",  # RENAMED to `end-of-day` (EOD2) — NOT eliminated. Never register it fresh, never offer it, never count it as missing. The row stays so a pre-rename registration resolves its bootloader, and the file it names is the LIVE End of Day orchestrator (not a stub): a workspace that ignores the offer keeps a fully working evening chat forever. `schedule_config.RETIRED_TASKS` is the membership test; `renamed_to` is what distinguishes this from pulse/upcoming-meetings. Historical events (source_skill='cr-past-meetings' / 'past-meetings') stay valid append-only history, and `end_of_day.TASK_ID` still WRITES this id so the day-close receipt series is continuous across the rename.
+    "end-of-day":        "orchestrator-past-meetings.md",  # EOD2 — the successor id, deliberately pointed at the SAME file. The filename is baked into each registered prompt at registration time, so renaming the file would break every live `past-meetings` bootloader at its next fire, and a second file would fork one pack into two. One file, two ids, one pack. First-install; on an EXISTING workspace it is fenced out of the target set while `past-meetings` is still registered (see Phase 3).
     "friday-wrap":       "orchestrator-friday-wrap.md",   # NEW v3.11.0. Wraps the weekly-recap skill. Registered on first install. First weekly-rhythm task.
     "relationship-moves": "orchestrator-relationship-moves.md",  # REL1 — weekly Sunday outreach pack. NOT first-install (needs accumulated substrate).
-    "commitment-triage": "orchestrator-commitment-triage.md",  # Phase 2 Stage D (S4) — weekly Friday housekeeping chat. NOT first-install. (Row restored to this mirror 2026-07-14 — the JSON had it, the dict had drifted.)
+    "commitment-triage": "orchestrator-commitment-triage.md",  # RETIRED — READINESS class (TASKRET1, M's ruling 2026-08-17). NEVER register, NEVER offer, NEVER count as missing. The row stays ONLY so a workspace that registered it before the retirement still resolves its bootloader until the update reaches it; the file it points at is a retirement stub that explains itself and stops. `schedule_config.RETIRED_TASKS` is the membership test, `retirement_class` the class test — never a name you remember. The ON-DEMAND skill (`triage my commitments`) is untouched and fully live.
     "staff-meeting":     "orchestrator-staff-meeting.md",  # LB1 R3 — weekly Monday Living Brain review. NOT first-install; propose-only later-add (never silently registered).
-    "balance":           "orchestrator-balance.md",  # BAL1 — weekly Sunday-8AM personal white-space surface (m_facing only). NOT first-install; opt-in later-add gated on a declared personal calendar (workspace.personal_calendars) — with none declared the fire refuses honestly.
-    "pipeline-digest":   "orchestrator-pipeline-digest.md",  # PIPE1 Part 2 — weekly Tuesday-8AM deal review (movement since last digest + the pipeline report + top-3 moves). NOT first-install; proposed only when >=1 open tracked deal exists (schedule_proposals); adjudication of deal suggestions stays in the Staff Meeting (FB-20).
+    "balance":           "orchestrator-balance.md",  # RETIRED — READINESS class (TASKRET1). Same rules as commitment-triage above: never register, never offer, never count as missing; the file is a retirement stub. BAL1 had already gated it on a declared personal calendar most workspaces never had, which is precisely the shape this class retires. The ON-DEMAND surface (`balance check`) is untouched and fully live.
+    "pipeline-digest":   "orchestrator-pipeline-digest.md",  # RETIRED — READINESS class (TASKRET1). Same rules; the file is a retirement stub. It was the only one of the three with an automated offer path, and that path (`schedule_proposals.PROPOSAL_THRESHOLDS`) is deleted rather than gated. The ON-DEMAND pipeline report (`skills/pipeline-tracker/`) is untouched and fully live.
 }
-# Every row is a user-facing chat, and TWO of them are retired rows kept only so a pre-retirement registration still resolves its bootloader (`pulse`, LIFECYCLE1; `upcoming-meetings`, BRIEFMERGE). The live set is `DEFAULT_SCHEDULES` minus `RETIRED_TASKS` — derive it, never count these lines. v2.14.27+ uses bare taskIds (no `cr-` prefix) so Cowork's sidebar title formatting renders cleanly: `inbox` → "Inbox", `waiting-on` → "Waiting on", etc. Pre-v2.14.27 used `cr-*` prefix which displayed as "Cr inbox" / "Cr commitments" — the cr- prefix looked like a typo in the title. cr-refresh-workspace-map was REMOVED in v2.14.25. friday-wrap ADDED in v3.11.0 — first weekly-rhythm scheduled task. CTS1: `commitments` RETIRED (disable per the Phase 1 migration table) and split into `waiting-on` + `my-plate`.
+# Every row is a user-facing chat, and SIX of them are retired rows kept so a pre-retirement registration still resolves its bootloader. THREE CLASSES, and `schedule_config.retirement_class(task_id)` is the only correct way to tell them apart:
+#   * ELIMINATED — `pulse` (LIFECYCLE1), `upcoming-meetings` (BRIEFMERGE). Files are retirement stubs. The removal is PROPOSED; the customer's `pause` is what switches it off.
+#   * RENAMED — `past-meetings` (EOD2). Its file is the LIVE End of Day orchestrator, shared with the successor row — never a stub. The switch is PROPOSED; ignoring it costs nothing.
+#   * READINESS — `commitment-triage`, `balance`, `pipeline-digest` (TASKRET1). Files are retirement stubs. This class is the ONE the update bridge APPLIES: it disables a live registration itself and says so in the update ack, because M ruled that asking per-task here would rebuild the register-then-nag pattern the retirement exists to end. The rationale is in the class block above `RETIRED_TASKS` in `shared/scripts/schedule_config.py`; nothing in it weakens the other two classes.
+# Every retirement stub must carry the literal `OUTPUT CONTRACT` inside its first 2000 bytes — the bootloader's Step 2 grep window. A stub without it aborts the fire with a false "plugin may be partially installed or corrupted, please reinstall" message (BUG-9517); the `pulse` and `upcoming-meetings` stubs are the two shipped instances, and SPEC_RETIREGATE1 owns the general gate.
+# The live set is `DEFAULT_SCHEDULES` minus `RETIRED_TASKS` — derive it, never count these lines. v2.14.27+ uses bare taskIds (no `cr-` prefix) so Cowork's sidebar title formatting renders cleanly: `inbox` → "Inbox", `waiting-on` → "Waiting on", etc. Pre-v2.14.27 used `cr-*` prefix which displayed as "Cr inbox" / "Cr commitments" — the cr- prefix looked like a typo in the title. cr-refresh-workspace-map was REMOVED in v2.14.25. friday-wrap ADDED in v3.11.0 — first weekly-rhythm scheduled task. CTS1: `commitments` RETIRED (disable per the Phase 1 migration table) and split into `waiting-on` + `my-plate`.
 #
-# First-install gating: on a FRESH workspace (workspace_config.json missing or empty registered_taskIds), only the subset in `shared/scripts/schedule_config.py FIRST_INSTALL_TASK_IDS` registers — read the frozenset at run time. The remaining later-add entries above (waiting-on, my-plate) stay in the map for re-runs / management flows but are NOT auto-registered day 1, and the retired rows (pulse, upcoming-meetings) are never registered by any path. See Phase 3 first-install branching. (The silent background work — the `maintenance` task, MAINT1 — is ALSO in FIRST_INSTALL_TASK_IDS and registers on first install, but via **Step 1.D below** as one loop over the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`, because it is not a chat-orchestrator and is intentionally absent from this ORCHESTRATOR_MAP.)
+# First-install gating: on a FRESH workspace (workspace_config.json missing or empty registered_taskIds), only the subset in `shared/scripts/schedule_config.py FIRST_INSTALL_TASK_IDS` registers — read the frozenset at run time. The remaining later-add entries above (waiting-on, my-plate) stay in the map for re-runs / management flows but are NOT auto-registered day 1, and the retired rows (pulse, upcoming-meetings, commitment-triage, balance, pipeline-digest) are never registered by any path. See Phase 3 first-install branching. (The silent background work — the `maintenance` task, MAINT1 — is ALSO in FIRST_INSTALL_TASK_IDS and registers on first install, but via **Step 1.D below** as one loop over the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`, because it is not a chat-orchestrator and is intentionally absent from this ORCHESTRATOR_MAP.)
 ```
 
 **Critical mismatch warnings:**
@@ -328,7 +341,8 @@ ORCHESTRATOR_MAP = {
     'waiting-on': 'orchestrator-commitments.md',  # CTS1 — filename kept for source_skill back-compat
     'my-plate': 'orchestrator-my-plate.md',       # CTS1
     'pulse': 'orchestrator-dont-forget.md',  # RETIRED (LIFECYCLE1) — resolvable, never registered
-    'past-meetings': 'orchestrator-past-meetings.md',
+    'past-meetings': 'orchestrator-past-meetings.md',  # RENAMED to end-of-day (EOD2) — resolvable AND still firing the live pack; never registered fresh
+    'end-of-day': 'orchestrator-past-meetings.md',     # EOD2 — same file on purpose; see the map comment above
     'friday-wrap': 'orchestrator-friday-wrap.md',  # NEW v3.11.0 — weekly recap
     'relationship-moves': 'orchestrator-relationship-moves.md',  # REL1 — weekly Sunday outreach
 }
@@ -387,6 +401,8 @@ The silent background tasks are NOT chat-orchestrators (no widget, no `orchestra
 As of MAINT1 (2026-07) the registry holds exactly one task: `maintenance` (`45 6,12,17 * * *` daily). It carries the seven silent JOBS — reconcile-sent (first at 6:45, BEFORE the 7:00 morning brief, Bug #98-v3's load-bearing ordering), session-sweep, cleanup, weekly-insights, deal-signals (LB1 — Sunday, after insights), identity-reconcile (PID1 — Sunday, after deal-signals), monthly-report — dispatched per fire by `shared/scripts/maintenance_dispatcher.py` (`due_jobs()` decides in code from receipts; the prompt never judges due-ness). One taskId means ONE Run Now grant ever: a future silent job lands inside the already-authorized task instead of creating a new fleet-wide permission gap per release (`task_watchdog`'s `never_authorized` class).
 
 **Supersede step (MAINT1, D5 — data-driven):** after registering each registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py`; every listed taskId still registered+enabled is disabled via `update_scheduled_task(enabled: false)`. Idempotent, never deletes (no delete API exists — disable is the only removal). This is the same disable-don't-delete pattern as the Phase 1 legacy migration table; the map is data so the bridge's Phase 4.7 loop applies the identical migration with zero prose duplication.
+
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
 
 Compose every silent task's registration parameters in one pass:
 
@@ -449,18 +465,22 @@ Returned shape: `{taskId: {cron, label, enabled}, ...}` for every default task. 
 
 **Disabled tasks:** if `config[taskId].enabled` is `false`, skip the registration entirely (or call `update_scheduled_task` with `enabled: false` if currently registered). Disabled tasks remain in the user's Scheduled section as historical reference but won't fire.
 
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+
 **Defaults (built-in fallbacks if config absent):**
 - **Time zone:** detected from entities.json primary user (`person.time_zone` field if set), else system time zone
 - **Per-chat times:** read them from `shared/scripts/schedule_config.py` `DEFAULT_SCHEDULES` — that dict is the only list of times, and a second copy in this file is a second thing to forget (the pre-FIX1 drift class). Retired ids (`pulse`, `upcoming-meetings`) are not in it and have no time.
 
 ## Phase 3 — Register or refresh the 7 orchestrators (6 daily widgets + 1 weekly recap)
 
-**Later-add fence (MAINT1 / D7 — BINDING, before anything registers):** the registration set is NEVER expanded by trigger phrasing; "set up ALL command room scheduled tasks" registers the same first-install set, and every task in `later_add_task_ids()` is PROPOSED (one line each, register only on explicit per-task yes). The later-add chats (`commitments`, `pulse`, `relationship-moves`, `commitment-triage`, `staff-meeting`, `balance`, `pipeline-digest`) are deliberately not first-install because they need accumulated workspace signal to fire well — an "all"-shaped request is enthusiasm, not consent to register tasks that will fire badly on day 1 (the observed 2026-07 field failure: a fresh client said "set up all command room scheduled tasks" and got all four later-add chats registered day 1, against the substrate gating). **`balance` carries one EXTRA proposal gate (BAL1):** propose it ONLY when `entities.json` `workspace.personal_calendars` is declared and non-empty — it is opt-in AND calendar-gated; with no personal calendar its proposal line is replaced by nothing (the feature turns on later via "connect a personal calendar to turn on Balance" → `add balance`). **`pipeline-digest` carries the same shape of EXTRA gate (PIPE1 Part 2):** propose it ONLY when the workspace has ≥1 OPEN tracked deal (`deal_state.list_open_deals` non-empty — the `schedule_proposals` qualifier enforces it in code); a digest over an empty pipeline is noise, and the pipeline-tracker skill's own `digest.enabled` preference never registers anything by itself.
+**Later-add fence (MAINT1 / D7 — BINDING, before anything registers):** the registration set is NEVER expanded by trigger phrasing; "set up ALL command room scheduled tasks" registers the same first-install set, and every task in `later_add_task_ids()` is PROPOSED (one line each, register only on explicit per-task yes). **Read the set from `later_add_task_ids()` at run time — never from a list typed into this sentence.** The later-add chats are deliberately not first-install because they need accumulated workspace signal to fire well; an "all"-shaped request is enthusiasm, not consent to register tasks that will fire badly on day 1 (the observed 2026-07 field failure: a fresh client said "set up all command room scheduled tasks" and got every later-add chat registered day 1, against the substrate gating).
+
+**A RETIRED task is never in that set and is never proposed by this or any other path.** `later_add_task_ids()` derives from `DEFAULT_SCHEDULES`, and retirement takes the row out, so this is structural rather than a rule to remember. TASKRET1 (M's ruling 2026-08-17) is what made the distinction load-bearing: `commitment-triage`, `balance` and `pipeline-digest` were later-adds the week before, each carrying its own extra proposal gate — Balance on a declared `workspace.personal_calendars`, the digest on ≥1 open tracked deal. Those gates are gone with the offers, because a gate that was almost never satisfied is the diagnosis, not the fix: a surface most workspaces could never turn on usefully should not have been offered weekly in the first place. Nothing here proposes them, and `add balance` / `add pipeline digest` / `add commitment triage` are refused warmly with `schedule_config.retirement_line(task_id)` (see the Phase 6 rules below). The on-demand skills of all three names are untouched and fully live.
 
 **First-install gate (M1 / 2026-05-23+):** before iterating ORCHESTRATOR_MAP, decide which subset of taskIds gets registered:
 
 ```python
-from schedule_config import FIRST_INSTALL_TASK_IDS
+from schedule_config import FIRST_INSTALL_TASK_IDS, registration_target_set
 
 if FIRST_INSTALL:
     # Fresh workspace per Phase 0.C detection. Register ONLY the 5 M1 first-install tasks.
@@ -480,23 +500,38 @@ else:
     # A RETIRED task (schedule_config.RETIRED_TASKS) is likewise never auto-disabled
     # here — retirement is PROPOSED by the update bridge and executed by the
     # customer's own `pause`, never by this skill (LIFECYCLE1 §4). It is also never
-    # ADDED: filter it out of target_set so a re-run cannot resurrect it.
+    # ADDED: a retired id can only be in the target set because it is already
+    # registered, and then it is there to have its PROMPT refreshed, nothing more.
     # AND make sure the M1 first-install set lands so pre-M1 customers get inbox added
     # on their next re-run. The union behavior is intentional: we add new defaults but
     # never silently remove what the customer has.
+    #
+    # THE RENAME FENCE IS IN THE HELPER, NOT IN THIS PROSE (EOD2). Call
+    # `registration_target_set()` — do NOT hand-roll `existing | FIRST_INSTALL_TASK_IDS`
+    # here. The helper subtracts any first-install task whose RENAMED PREDECESSOR is
+    # still registered on this machine, which is the only thing standing between the
+    # fleet and a second 5 PM chat appearing beside every customer's Past Meetings
+    # entry on their next registration run. A rename is PROPOSED (update bridge →
+    # `schedule_config.retirement_line("past-meetings")`) and taken by the customer's
+    # own `add end of day`; it is never applied by a refresh.
     existing_registered = set(load_registered_taskIds())  # from workspace_config.json
-    target_set = existing_registered | FIRST_INSTALL_TASK_IDS  # ensure the M1 set lands
+    target_set = registration_target_set(existing_registered)
     tasks_to_register = {
         tid: fname for tid, fname in ORCHESTRATOR_MAP.items() if tid in target_set
     }
 ```
 
 The migration semantics:
-- Fresh install → exactly the `FIRST_INSTALL_TASK_IDS` set (the chats `morning-brief` / `past-meetings` / `inbox` / `friday-wrap`, plus the silent `maintenance` via Step 1.D).
+- Fresh install → exactly the `FIRST_INSTALL_TASK_IDS` set (the chats `morning-brief` / `end-of-day` / `inbox` / `friday-wrap`, plus the silent `maintenance` via Step 1.D).
 - Existing pre-M1 customer who re-runs the skill → gets their existing tasks refreshed PLUS `inbox` added (because it's now in the M1 first-install set). They never lose tasks they had.
 - Existing customer with `upcoming-meetings` registered → the task is left ALONE here (never auto-disabled) and never refreshed into the live set; its prompt IS refreshed if it is still registered, because that is what makes the next fire explain itself instead of replaying the retired chat. The offer to switch it off comes from the update bridge, and `change-schedule` accepts `pause upcoming meetings` (BRIEFMERGE §E).
+- **Existing customer with `past-meetings` registered → NOTHING changes on this run (EOD2).** `registration_target_set()` has already removed `end-of-day` from the target set, so no second evening chat is created; `past-meetings` stays registered, stays enabled, and has its PROMPT refreshed like any live task — which is all it needs, because its bootloader names the same orchestrator file `end-of-day` does and it therefore keeps firing the current End of Day pack at 5 PM. Do not disable it, do not "migrate" it, and do not mention a rename here at all: the ONE offer is the update bridge's, and it is suppressed for six weeks after it lands.
 - Customer says `add waiting on` / `add my plate` in Phase 6 management flow → those taskIds get registered individually (`add commitments` maps to registering BOTH `waiting-on` and `my-plate` — the split successors).
-- Customer says `add pulse` or `add upcoming meetings` → **refuse**, with `schedule_config.retirement_line(task_id)` verbatim. A retired task is never registered by any path, including an explicit ask (LIFECYCLE1 / BRIEFMERGE).
+- **Customer says `add end of day` → this is the RENAME SWITCH, and it is the only path that applies it (EOD2).** Register `end-of-day` through the normal Phase 6 add (bootloader composed from `ORCHESTRATOR_MAP["end-of-day"]`, cron from `load_schedule_config()`, `schedule_created` event per FS-07) AND, in the same step, disable a still-registered `past-meetings` via `update_scheduled_task(enabled: false)`. Both halves or neither: registering the new id while leaving the old one enabled gives the customer two 5 PM chats, and disabling the old one without registering the new gives them none. Confirm in one line — *"✓ Your evening chat is now End of Day, same 5 PM. The old Past Meetings entry is switched off."* Carry any custom cron override the customer had on `past-meetings` onto `end-of-day` (write it under the new key in `workspace.schedule_config` and REMOVE the old key — a leftover override for an id that is no longer in `DEFAULT_SCHEDULES` trips the watchdog's orphan-override scan forever, the same trap the CTS1 row calls out). Costs to surface, same three as CTS1 §10.3: the old entry stays visible as a disabled sidebar item (no delete API), its chat history stays in the old thread, and the new chat needs one first-fire Run Now.
+
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+- Customer says `add pulse` or `add upcoming meetings` → **refuse**, with `schedule_config.retirement_line(task_id)` verbatim. An ELIMINATED task is never registered by any path, including an explicit ask (LIFECYCLE1 / BRIEFMERGE). Customer says `add past meetings` → also refuse, also with `retirement_line("past-meetings")` verbatim — but note the line reads differently on purpose: it is a rename, so it names End of Day rather than offering a `pause`.
+- **Customer says `add commitment triage`, `add balance` or `add pipeline digest` → refuse, same way, same helper (TASKRET1).** These are READINESS retirements, and the registry has already worded the line for that class: it says the chat is off the schedule, names what is missing, points at the on-demand surface that still does the work, and states what brings the chat back. Surface it verbatim and register nothing. **Do not soften the refusal into "I can add it anyway if you want"** — the whole ruling is that these surfaces do not fire on a schedule until their substrate is ready, and one hand-registered exception is a workspace that will be firing an empty chat weekly with no record of why. **Do not offer a `pause` either** — the update bridge's readiness migration has already disabled any live registration, so a pause is a tap that no longer exists to take. `add end of day` stays the ONE exception where an `add` phrase for a retired id does something, because that one is a rename with a live successor.
 
 Per Phase 1's `ORCHESTRATOR_MAP`, each taskId in `tasks_to_register` goes through one of three paths based on detection:
 
@@ -575,13 +610,19 @@ Where the work went: prep generation is the morning-brief fire's FIRST leg (`sha
 - `notifyOnCompletion: true`
 - `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-dont-forget.md`.
 
-### Schedule 5 — Past Meetings
+### Schedule 5 — End of Day (EOD2 rename of Past Meetings)
 
-- `taskId: "past-meetings"` (v2.14.27+ — bare taskId; prior cr-past-meetings → migration disabled)
-- `description`: **`"Past Meetings - Command Room"`** (v2.14.25+ canonical display name)
-- `cronExpression`: from config (default `"0 17 * * 1-5"`)
+- `taskId: "end-of-day"` (EOD2 — the successor id. Register THIS on a fresh install.)
+- `description`: **`"End of Day - Command Room"`** (v2.14.25+ canonical display name)
+- `cronExpression`: from config (default `"0 17 * * 1-5"` — Decision 1's hour, inherited unchanged from `past-meetings`)
 - `notifyOnCompletion: true`
 - `prompt`: bootloader composed from template; orchestrator body at `references/orchestrator-past-meetings.md`.
+
+**The filename above is not a mistake and must not be "fixed."** The registered prompt bakes `<ORCHESTRATOR_FILENAME>` in at registration time, so every live `past-meetings` bootloader on the fleet already names `orchestrator-past-meetings.md`. Renaming the file would break every one of them at their next fire; giving `end-of-day` its own file would fork one pack into two and let the two ids drift. Both ids map to that one file — that is the mechanism by which "both ids serve the same pack" is true structurally rather than by discipline. (Same pattern as `waiting-on` → `orchestrator-commitments.md` and `pulse` → `orchestrator-dont-forget.md`.)
+
+The predecessor, for auditors recognising an existing registration — a description of what IS, never an instruction to create one:
+
+- `taskId: "past-meetings"` (v2.14.27+ — bare taskId; prior cr-past-meetings → migration disabled). **RENAMED, not eliminated (EOD2).** Still registered on every workspace set up before the rename, still enabled, still firing the current End of Day pack at 5 PM through the very same orchestrator file, and it will keep doing so for as long as the customer leaves it alone. Never register it fresh; never auto-disable it. `description`: `"Past Meetings - Command Room"` — leave it as it is, since Cowork derives the sidebar title from the taskId anyway and a description edit would only make the row confusing.
 
 ### Schedule 6 — Friday Wrap (v3.11.0+, NEW)
 
@@ -598,6 +639,8 @@ The v2.14.11+ daily auto-refresh scheduled task `cr-refresh-workspace-map` is RE
 **What remains:** the Workspace Map artifact itself stays fully functional. Customers install via `enable workspace map` / `install workspace map`; the artifact's manual `↻ Refresh` button still triggers an ad-hoc rebuild on click; on-demand commands like `rebuild workspace map` still work. Only the daily auto-refresh cron at 4 PM weekdays is gone.
 
 **Migration for existing customers (anyone with the task already registered):** Phase 1's legacy-taskId migration list (above) now includes `cr-refresh-workspace-map`. On next `set up command room schedules` run, the task is DISABLED via `update_scheduled_task(enabled: false)` and surfaced in the install summary as: *"Removed the daily Workspace Map auto-refresh — the `↻ Refresh` button on your Workspace Map still works."*
+
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
 
 For each created schedule, log a `schedule_created` event (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
 ```jsonl
@@ -691,7 +734,8 @@ for task_id, fname in tasks_to_register.items():
 - `waiting-on` → `"Waiting On - Command Room"` (CTS1; the retired `commitments` task keeps whatever description it had — it's disabled, never renamed)
 - `my-plate` → `"My Plate - Command Room"` (CTS1)
 - `pulse` → `"Pulse - Command Room"` (RETIRED — the description is for renders of a task already registered; never create one)
-- `past-meetings` → `"Past Meetings - Command Room"`
+- `end-of-day` → `"End of Day - Command Room"` (EOD2)
+- `past-meetings` → `"Past Meetings - Command Room"` (RENAMED, EOD2 — the description is for a task already registered; never create one, and never rewrite an existing one to the new name: the sidebar title comes from the taskId, so a renamed description on an unrenamed id reads as two different chats)
 - `friday-wrap` → `"Friday Wrap - Command Room"` (NEW v3.11.0)
 
 If the description doesn't match, call `update_scheduled_task(taskId, description=<canonical>)` to fix in place. Display-name drift is a regression class on its own.
@@ -767,7 +811,7 @@ Command Room schedules registered:
 Your daily and weekly chats:
 ✓ Morning Brief        (7 AM weekdays — preps today's meetings, then runs before your workday)
 ✓ Inbox                (7:15 AM weekdays — clears your inbox before the day starts)
-✓ Past Meetings        (5 PM weekdays — processes the day's calls)
+✓ End of Day           (5 PM weekdays — closes out the day and processes the day's calls)
 ✓ Friday Wrap          (1 PM Fridays — wraps your week into a recap)
 
 Working quietly in the background (no chat output unless something needs you):
@@ -835,6 +879,12 @@ The old entries are switched off — your scheduled chats now live under the new
 [If `upcoming-meetings` is still registered on this machine, surface the
 retirement OFFER once — never a silent disable (BRIEFMERGE §E). Render it from
 `schedule_config.retirement_line("upcoming-meetings")`, verbatim.]
+
+[EOD2 — say NOTHING here about `past-meetings`. It is renamed, not broken: it
+is registered, enabled, and firing the current End of Day pack, so an install
+summary has no news to report about it. The rename offer belongs to the update
+bridge, ONCE, with a six-week suppression window — repeating it in every
+registration re-run is the weekly nag the suppression exists to prevent.]
 
 [If migrating from a v2.14.20 broken state where cr-pulse or cr-dont-forget was registered, add:]
 Fixed an older setup issue — your Pulse chat has been re-registered fresh.
@@ -906,7 +956,7 @@ The chat-emitting orchestrator prompts live in `references/` (workspace-map refr
 - `orchestrator-commitments.md` (taskId `waiting-on`; display "Waiting On" — CTS1: filename kept for backward compat with events.jsonl `source_skill='commitments'` history, same pattern as pulse below)
 - `orchestrator-my-plate.md` (taskId `my-plate`; display "My Plate" — CTS1 Surface 2)
 - `orchestrator-dont-forget.md` (taskId `pulse` — **RETIRED, LIFECYCLE1**; the file is a retirement stub kept so a pre-retirement registration's bootloader still resolves. Never register it.)
-- `orchestrator-past-meetings.md` (taskId `past-meetings`)
+- `orchestrator-past-meetings.md` (taskIds `end-of-day` AND `past-meetings`; display "End of Day" — EOD2: ONE file serves both ids. The filename keeps the old name for the same reason `orchestrator-commitments.md` and `orchestrator-dont-forget.md` do: it is baked into every already-registered bootloader, and events written from it keep `source_skill='past-meetings'`.)
 - `orchestrator-friday-wrap.md` (taskId `friday-wrap`; display "Friday Wrap"; NEW v3.11.0 — wraps the `weekly-recap` skill; first weekly-rhythm scheduled task)
 
 `orchestrator-refresh-workspace-map.md` exists in the references folder as a historical artifact only; it's not in `ORCHESTRATOR_MAP` and never registered.
@@ -943,4 +993,4 @@ Plus shared specs:
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Sets up Cowork scheduled tasks for Command Room — daily + weekly action chats that produce drafts and surface decisions for review. On a fresh-install workspace, registers the `FIRST_INSTALL_TASK_IDS` set (`morning-brief`, `past-meetings`, `inbox`, `friday-wrap`, plus the silent `maintenance`) — the chats that establish the customer's daily and weekly rhythm. The later-add defaults get added via operator-driven follow-up sessions once enough workspace signal exists for them to fire well; the retired ids (`pulse`, `upcoming-meetings`) are never registered by any path. On re-runs against an already-configured workspace, the existing Phase 6 (`change` / `add` / `remove` / `reset`) management flow handles task adjustments. Each chat = 1 scheduled task = 1 persistent thread in Cowork's Scheduled section. **Phase 0.5 opens with a substantive vanilla-vs-Command-Room explainer** before any registration happens — customers learn why scheduled tasks loaded with their substrate beat vanilla scheduled tasks before they authorize them. Triggers: 'set up command room schedules', 'enable schedules', 'register my scheduled chats', 'verify command room prompts', 'check my command room version', 'which version are my tasks on'. The registration set is NEVER expanded by trigger phrasing — "set up ALL command room scheduled tasks" registers the same first-install set, and later-add tasks are only ever proposed, never auto-registered (MAINT1 / D7 fence). DOES NOT fire on 'configure my schedules' / 'change my schedule' / 'customize my schedules' (change-schedule — cadence customization of already-registered chats; this skill registers them). Also called silently by `command-room-update-bridge` post-install + by `command-room-onboarding` for the historical-backfill registration (onboarding does NOT pass `--with-backfill` on the M1 first-install flow). Idempotent: re-runs surface the current set instead of duplicating.
+> Sets up Cowork scheduled tasks for Command Room — daily + weekly action chats that produce drafts and surface decisions for review. On a fresh-install workspace, registers the `FIRST_INSTALL_TASK_IDS` set (`morning-brief`, `end-of-day`, `inbox`, `friday-wrap`, plus the silent `maintenance`) — the chats that establish the customer's daily and weekly rhythm. The later-add defaults get added via operator-driven follow-up sessions once enough workspace signal exists for them to fire well; every id in `schedule_config.RETIRED_TASKS` (`pulse`, `upcoming-meetings`, `past-meetings`, and the readiness retirements `commitment-triage`, `balance`, `pipeline-digest`) is never registered by any path, and `end-of-day` is fenced out of an existing workspace's target set while its renamed predecessor `past-meetings` is still registered there. On re-runs against an already-configured workspace, the existing Phase 6 (`change` / `add` / `remove` / `reset`) management flow handles task adjustments. Each chat = 1 scheduled task = 1 persistent thread in Cowork's Scheduled section. **Phase 0.5 opens with a substantive vanilla-vs-Command-Room explainer** before any registration happens — customers learn why scheduled tasks loaded with their substrate beat vanilla scheduled tasks before they authorize them. Triggers: 'set up command room schedules', 'enable schedules', 'register my scheduled chats', 'verify command room prompts', 'check my command room version', 'which version are my tasks on'. The registration set is NEVER expanded by trigger phrasing — "set up ALL command room scheduled tasks" registers the same first-install set, and later-add tasks are only ever proposed, never auto-registered (MAINT1 / D7 fence). DOES NOT fire on 'configure my schedules' / 'change my schedule' / 'customize my schedules' (change-schedule — cadence customization of already-registered chats; this skill registers them). Also called silently by `command-room-update-bridge` post-install + by `command-room-onboarding` for the historical-backfill registration (onboarding does NOT pass `--with-backfill` on the M1 first-install flow). Idempotent: re-runs surface the current set instead of duplicating.

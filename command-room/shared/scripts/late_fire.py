@@ -39,7 +39,12 @@ a slot the change itself created. The contract now:
   - The slot being served must be UNSERVED: the task's newest substrate
     receipt (via the R1 receipt reader — all legacy shapes) is the
     served-slot marker. A slot with a receipt after it is SERVED; there is
-    never a second late_fire for it.
+    never a second late_fire for it — and, since SCHED1 (2026-08-17), never
+    a second DELIVERY of it either. A scheduled-context fire for a served
+    slot returns `directive: "skip_render"` and an ack line, and writes an
+    honest `skipped` receipt instead of re-rendering the surface. Detecting
+    the duplicate and then rendering it anyway is what this module did for
+    three full deliveries in one day.
   - A slot older than the task's most recent `schedule_config_changed`
     event was minted retroactively by the change (the F-51 phantom) — never
     scored. Schedule changes do not create missed slots.
@@ -57,7 +62,8 @@ TIER CONTRACT (thresholds tunable in LATENESS_TIERS — one shared constant):
              No banner, no degradation, no event.
   none     — < 3h late, or the slot was already served / minted by a
              schedule change (`suppressed` says which). Run normally,
-             no mention.
+             no mention — EXCEPT on the served-slot skip, where `directive`
+             is `skip_render` and the tier is not the thing to read (SCHED1).
   note     — 3h–24h late. Run normally; the output OPENS with the one
              plain-English `banner` line.
   degrade  — > 24h late. Do NOT render the full stale surface. The run
@@ -134,6 +140,7 @@ from schedule_config import (  # noqa: E402
     CronParseError,
     is_silent_task,
     load_schedule_config,
+    schedule_task_id,
     task_display_name,
 )
 
@@ -287,6 +294,14 @@ def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:
 SUPPRESSED_PRE_REGISTRATION = "slot_predates_registration"
 PRE_REGISTRATION_SKIP_REASON = "slot predates registration"
 
+# SCHED1 — the served-slot suppression, its skip receipt's reason string, and
+# THE DIRECTIVE. The suppression string is unchanged from pre-SCHED1 (it is
+# already in the live ledger under this spelling); what is new is that the
+# return says what to DO about it.
+SUPPRESSED_SLOT_SERVED = "slot_already_served"
+SERVED_SLOT_SKIP_REASON = "slot already served"
+DIRECTIVE_SKIP_RENDER = "skip_render"
+
 # WALKFIX1 Item H — the two fields that make an off-slot fire self-explaining.
 SLOT_DELTA_FIELD = "slot_delta_minutes"
 OFFSLOT_FIELD = "fired_offslot"
@@ -336,7 +351,12 @@ def slot_provenance(workspace_root, task_id, *, now=None,
     try:
         now = now or _now_local(workspace_root)
         entities = Path(workspace_root) / "_hq" / "data" / "entities.json"
-        spec = load_schedule_config(entities).get(normalize_task_id(task_id))
+        # EOD2: resolve a RENAMED predecessor to the successor that carries
+        # the cron. A still-registered `past-meetings` fires on the
+        # `end-of-day` row's cadence — they are one chat — and without this
+        # the row is simply absent and the provenance goes quiet.
+        spec = load_schedule_config(entities).get(
+            schedule_task_id(normalize_task_id(task_id)))
         if not spec or not spec.get("cron"):
             return {}
         fires = expected_fires(spec["cron"], now=now, count=1)
@@ -374,6 +394,86 @@ def _log_pre_registration_skip(workspace_root, task_id, *, scheduled,
                 "scheduled_for": scheduled.isoformat(),
                 "registered_at": registered_at.isoformat(),
             },
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _log_served_slot_skip(workspace_root, task_id, *, scheduled,
+                          served_at) -> bool:
+    """Write the honest SKIPPED receipt for a slot a receipt already served.
+
+    Deliberately the SAME shape as the registration-floor skip above (SCHED1
+    §4-2): one skip vocabulary, so `usage-report`, the watchdog and
+    `served_slot_markers` itself read both suppressions with the reader they
+    already have, and no new event type ships with this fix.
+
+    Best-effort — a receipt write must never block a fire (RELIABILITY.md), and
+    routed through the canonical `receipts.log_receipt` rather than a
+    hand-rolled event (the F-49/F-50 vocabulary-drift class).
+
+    ⚠ IT CARRIES `window_incomplete_before`, AND THAT IS NOT DECORATION. This
+    build's own harness caught the regression: `catchup.last_successful_point`
+    reads the NEWEST receipt of any status as "how far processing has actually
+    reached", so a skip receipt — which processes nothing — would otherwise
+    advance the catch-up basis to the moment of the duplicate. Reproduced on a
+    fixture: an evening slot served Friday 17:05, a scheduled duplicate on
+    Monday midday, and the REAL Monday evening fire then computed its window
+    from Monday midday and dropped the entire Friday-to-Sunday span. Before
+    this fix the duplicate at least DID the work while it re-rendered; the
+    honest skip does not, so it has to say where processing really reached.
+    `catchup` already owns the mechanism for exactly this (the marker wins over
+    the receipt's own timestamp) — the skip just has to fill it in with the
+    reach measured BEFORE the skip lands.
+
+    ⚠⚠ AND THE MARKER IS SEEDED BEFORE ANY COMPUTATION THAT CAN FAIL (fix
+    round, REVIEW_SCHED1 N-1). The first cut computed the marker inside
+    `try: … except Exception: pass` and wrote the receipt either way, so a
+    failed computation shipped an UNMARKED skip — and an unmarked skip is
+    precisely the regression above, back through the fallback path with a
+    healthy-looking receipt in front of it. It is reachable:
+    `last_successful_point` lets a substrate read failure propagate by
+    contract (a locked or half-written ledger, a multi-machine sync
+    collision), which is the flakiness class everything around it already
+    defends against. So `served_at` — already in hand, and the answer
+    `last_successful_point` returns whenever the served receipt carries no
+    inherited marker — goes in FIRST as the floor, and the computation only
+    ever REFINES it downward to an inherited marker. There is no path from
+    here that writes a skip receipt claiming reach it does not have.
+
+    Imported lazily on purpose: `catchup` imports this module at module level.
+    """
+    extra = {
+        "skipped_reason": SERVED_SLOT_SKIP_REASON,
+        "scheduled_for": scheduled.isoformat(),
+        "served_at": served_at.isoformat(),
+    }
+    try:
+        from catchup import WINDOW_INCOMPLETE_FIELD, last_successful_point
+    except Exception:  # noqa: BLE001 — no catchup module, nothing to name
+        WINDOW_INCOMPLETE_FIELD = None
+        last_successful_point = None
+    if WINDOW_INCOMPLETE_FIELD:
+        # THE FLOOR. Never later than the fire that actually did the work.
+        extra[WINDOW_INCOMPLETE_FIELD] = served_at.isoformat()
+        try:
+            reach = last_successful_point(workspace_root, task_id).get("dt")
+            if reach is not None:
+                extra[WINDOW_INCOMPLETE_FIELD] = reach.isoformat()
+        except Exception:  # noqa: BLE001 — a failed refinement keeps the
+            pass          # floor; it never costs the marker itself
+
+    try:
+        from receipts import log_receipt
+
+        log_receipt(
+            workspace_root,
+            task_id,
+            status="skipped",
+            fired_via="scheduled",
+            surfaced=0,
+            extra_data=extra,
         )
         return True
     except Exception:
@@ -502,9 +602,26 @@ def check_lateness(
        "unrecognized_run_mode" | "slot_already_served" |
        "slot_created_by_schedule_change"), lateness_minutes,
        scheduled_for (ISO, machine-local), banner (note tier),
-       degrade_notice (degrade tier), event_logged (bool),
+       degrade_notice (degrade tier), directive (SCHED1: None | "skip_render"),
+       served_at + ack + skip_receipt_logged (skip_render only),
+       event_logged (bool),
        clock (CLOCK1: {untrusted, direction, notice, today, machine_now,
        corroborated_now, source, skew_seconds, anomaly})}
+
+    `directive` IS THE RENDER DECISION (SCHED1, 2026-08-17), and it is present
+    on every tier so there is one unconditional thing to read. `skip_render`
+    means: the slot this fire is serving was ALREADY delivered (a receipt
+    exists after it), so post `ack` — one line, no surface, no widget, no
+    other output — and stop. The honest `skipped` receipt is already written by
+    the time you see it; do not write a second receipt for the same fire. That
+    promise is kept in code, not asserted: the directive is emitted ONLY when
+    the skip receipt actually landed (fix round, N-5), so a fire that renders
+    nothing has always recorded something.
+    That last sentence is the fix: pre-SCHED1 this path returned tier `none`
+    ("run normally"), the fire re-rendered the full surface, and the ledger
+    ended a day with three duplicate deliveries whose duplication it had
+    detected each time. A `manual` fire never reaches this branch — a human who
+    asks for a surface gets the surface.
 
     `clock` is present on EVERY tier including `manual` — a clock that cannot
     be trusted is a fact about the run, not about the lateness verdict, and a
@@ -539,6 +656,11 @@ def check_lateness(
         "scheduled_for": None,
         "banner": None,
         "degrade_notice": None,
+        # SCHED1 — present on EVERY tier, None on all but the served-slot skip.
+        # Always-present rather than added-when-set so orchestrator prose has
+        # one unconditional thing to read, and so a test can pin its ABSENCE
+        # on the paths that must keep rendering.
+        "directive": None,
         "clock": clock,
         "event_logged": False,
     }
@@ -562,7 +684,13 @@ def check_lateness(
     try:
         entities = Path(workspace_root) / "_hq" / "data" / "entities.json"
         config = load_schedule_config(entities)
-        spec = config.get(task_id)
+        # EOD2 — same resolution as `slot_provenance` above, and this is the
+        # one that matters most: a `past-meetings` fire on an un-renamed
+        # machine must still be scored against the 5 PM slot it serves.
+        # Returning `unknown` here would switch lateness detection off for
+        # the entire un-renamed fleet on the day the rename shipped, with no
+        # symptom anywhere.
+        spec = config.get(schedule_task_id(task_id))
         if not spec:
             out["tier"] = "unknown"
             return out
@@ -621,9 +749,58 @@ def check_lateness(
     if last_receipt is not None and last_receipt >= scheduled:
         # The slot was served — a receipt exists after it. This fire is a
         # re-run / second delivery, not a late first serve (F-47 triggers
-        # 1 and 2). Tier none, no event, run normally.
-        out["suppressed"] = "slot_already_served"
+        # 1 and 2).
+        #
+        # SCHED1 (2026-08-17) — WHAT CHANGED, AND WHY IT HAD TO. Pre-SCHED1
+        # this branch set the suppression, returned tier `none`, and tier
+        # `none` means "run normally, no mention" — so the guard detected the
+        # duplicate and the fire re-rendered the whole surface anyway. Three
+        # full duplicate deliveries in one day rode exactly this path (plus a
+        # friday-wrap pair on 07-24), and one of them became the anchor a
+        # later surface counted its wins from. The evidence was in hand every
+        # time; nothing acted on it.
+        #
+        # WHY A DIRECTIVE AND NOT JUST A RECEIPT. WALKFIX1's registration
+        # floor is the precedent and the warning: it writes an honest skip
+        # receipt and then lets the fire run, observed live as skip-then-
+        # full-run. A receipt is a record, not an instruction. So the return
+        # carries `directive` — the one field orchestrator prose branches on —
+        # plus the ack line to post in place of the surface.
+        #
+        # THE RESIDUAL, STATED HONESTLY (spec §0-2). Run mode is
+        # self-reported: Cowork replays one byte-identical prompt for a cron
+        # fire and a Run Now press, so this module cannot attest that a fire
+        # calling itself `scheduled` really was. A manual fire that
+        # mislabels itself degrades to a skip plus an ack — cheap, honest, and
+        # recoverable by asking again, which classifies manual. The reverse
+        # (a scheduled duplicate that calls itself manual) renders, which is
+        # the same direction of failure the whole run-mode contract chose.
+        #
+        # THE DIRECTIVE FOLLOWS THE RECEIPT, NOT THE OTHER WAY AROUND (fix
+        # round, REVIEW_SCHED1 N-5). The clause the orchestrators carry states
+        # as FACT that the honest `skipped` receipt is already written and
+        # forbids the fire from writing a second one. If the write failed and
+        # the directive went out anyway, the fire would render nothing AND
+        # record nothing — a false zero, the worse of the two failures. So a
+        # failed write degrades to the pre-SCHED1 shape: no directive, no ack,
+        # the fire renders, and the day is at least on the record. Not
+        # reachable on today's fleet (`pack_run` is valid for every task in
+        # `orchestrator-map.json`), which is exactly when a fence is cheap.
+        out["suppressed"] = SUPPRESSED_SLOT_SERVED
         out["lateness_minutes"] = 0
+        out["served_at"] = last_receipt.isoformat()
+        logged = True
+        if emit:
+            logged = _log_served_slot_skip(
+                workspace_root, task_id, scheduled=scheduled,
+                served_at=last_receipt)
+            out["skip_receipt_logged"] = logged
+        if logged:
+            out["directive"] = DIRECTIVE_SKIP_RENDER
+            out["ack"] = (
+                f"Your {display} already ran at {_human_time(last_receipt)}, "
+                f"so I'm not sending it twice."
+            )
         return out
     if last_change is not None and last_change > scheduled:
         # The slot predates the task's latest schedule change — it only
@@ -742,6 +919,9 @@ __all__ = [
     "SCHEDULED_CONTEXT",
     "CHRONIC_WINDOW_WEEKS",
     "CHRONIC_MIN_LATE_WEEKS",
+    "DIRECTIVE_SKIP_RENDER",
+    "SUPPRESSED_SLOT_SERVED",
+    "SERVED_SLOT_SKIP_REASON",
     "check_lateness",
     "detect_chronic_lateness",
     "served_slot_markers",

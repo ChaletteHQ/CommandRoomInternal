@@ -195,9 +195,16 @@ On dispatch:
        }],
    )
    # Stage B (F2): auto_resolve → close_commitment(workspace_root, r["commitment_id"],
-   #   resolved_by=<user>, evidence=r["evidence"], source_skill="calendar-writer")
+   #   resolved_by=<user>, evidence=r["evidence"], source_skill="calendar-writer",
+   #   source_ref=f"gcal:{calendar_event_id}")
    #   — THE closure path (catch CommitmentIdError/PendingReviewError → treat as
    #   not-closed and fall through to the Phase 2.7 backstop). Matching unchanged.
+   # PROVMINT1 — FORWARD THE EVENT ID. This leg already built `calendar_event_id`
+   # three lines above and handed it to the matcher; the calendar event IS the
+   # artifact that closed the commitment, so it is a strictly better pointer than
+   # the receipt the writer would otherwise mint. Dropping a ref you are already
+   # holding is the exact class the walk found on three independent auto-resolve
+   # rails. Omit it only if the connector returned no event id.
    # pending_review → build_pending_review_event(source_skill="calendar-writer", ...)
    # Capture each auto_resolved commitment's {title, due} so Phase 7 can surface it.
    ```

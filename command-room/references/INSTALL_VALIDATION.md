@@ -67,7 +67,7 @@ Validate the seeded JSON matches the schemas.
 Validate the customer has identified themselves and at least one primary-focus org. The v1.8 `type: "home"` field was retired in v2.2; the canonical signal is now `is_primary_focus: true` on org records (per `references/DATA_CONTRACT.md` and `references/ORG_AND_THREAD_MODEL.md`).
 
 - [ ] `entities.json` has at least one `org` record with `is_primary_focus: true` (no parent_org_id, OR holding-level org with operating-children that carry is_primary_focus).
-- [ ] `entities.json` has at least one `person` record flagged as the primary user (`is_primary_user: true`).
+- [ ] `entities.json` identifies the primary user: `workspace.user_id` is set to a `person_id` (the canonical pointer, SPEC USERKEY1). A legacy `is_primary_user: true` person flag also satisfies the resolver, and so do the older pointer spellings some workspaces were provisioned with — the resolver reads those, deliberately, so that no existing install has to be migrated (SPEC USERKEY2). None of that changes what to SET: new installs should write `workspace.user_id`, the only pointer the schema defines. (Nothing in Command Room writes it for you — this item is a hand-check, and the legacy person flag satisfies the resolver in the meantime.) Verify with `python shared/scripts/primary_user.py <WORKSPACE>` — it prints the resolved id, or `None` if the workspace cannot identify its own user.
 - [ ] The primary user's `workspace.user_timezone` is set in `entities.json` (required for `shared/scripts/tz.py` per the v3.11.3 contract — no silent UTC fallback).
 - [ ] `BUSINESS_CONTEXT.md` has a filled-in "Primary focus" section (not a template placeholder).
 - [ ] `BUSINESS_CONTEXT.md` has a "User" / "CEO name" or equivalent identity section.

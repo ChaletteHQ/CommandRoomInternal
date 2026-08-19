@@ -59,9 +59,24 @@ If a CEO types something matching this pattern manually (rare), this skill still
 4. If already resolved → respond with a one-line `"that one was already closed"` and stop. (Do NOT reply with the bare string "already done": since DONE1 that is a registered WIRE ID — the needs-your-call queue's `already done` verb — and an ack that reads back as a verb is the F-13 label-collision class.)
 5. If not yet resolved → append events per the kind:
    - **For `<kind> == "commitment"`:** the close_commitment call below (plus the back-compat `thread_resolved`).
-   - **For all other kinds:** append a single `thread_resolved` event through the locked writer — `atomic_append_jsonl(events_path, [event], holder="log-resolution")` from `shared/scripts/atomic_write.py`. OMIT `seq` — the gate auto-stamps it inside the lock. Never hand-roll an `open('a')` append or a raw `>>`:
+   - **For all other kinds:** write through **`commitment_state.resolve_thread()`** — THE `thread_resolved` writer (PROV1). It owns the envelope this skill used to hand-compose, appends through the gate (which auto-stamps `seq`/`ts` inside the writer lock), and stamps the close-family source pointer. Never hand-roll the JSON, never `open('a')`, never a raw `>>`:
+     ```python
+     from commitment_state import resolve_thread
+     resolve_thread(
+         workspace_root, "<id>",
+         source_skill="log-resolution",
+         kind="<kind-or-unknown>",
+         source_artifact="<artifact-or-None>",
+         # PROV1 — the ✓ click's receipt. A dashboard click has no message
+         # behind it, so the pointer is the session/artifact it fired from.
+         # Pass nothing and the event still lands, marked as pointing at
+         # nothing — a close is never blocked for want of a pointer.
+         source_ref="session:<session-or-artifact-id>",
+     )
+     ```
+     Resulting event shape (unchanged apart from the additive pointer field):
      ```json
-     {"type":"thread_resolved","ts":"<ISO-now>","data":{"id":"<id>","kind":"<kind-or-unknown>","source_artifact":"<artifact-or-null>"}}
+     {"type":"thread_resolved","ts":"<ISO-now>","data":{"id":"<id>","kind":"<kind-or-unknown>","source_artifact":"<artifact-or-null>","source_ref":"session:<id>"}}
      ```
 6. Respond with a one-line `"✓ done"` confirmation. **No verbose summary, no tangent, no follow-up question.**
 
@@ -99,6 +114,14 @@ Procedure for `<kind> == "commitment"`:
        evidence="manual close via dashboard",
        source_skill="log-resolution",
        user_confirmed=True,   # explicit ✓ click
+       # PROV1 — a dashboard close has no message id; its pointer is the
+       # click's session / artifact receipt. Omit it and the close still
+       # lands: since SPEC PROVMINT1 the writer mints
+       # `session:log-resolution:<now>` marked `surface_minted`, which is the
+       # true grain of a dashboard click and not the bare marker any more.
+       # Pass the real receipt when you have one — minted refs count apart
+       # from artifact-backed ones in the coverage split.
+       source_ref="session:<session-or-artifact-id>",
    )
    ```
 3. `result["status"] == "already_resolved"` → `"that one was already closed"` (never the bare string "already done" — that is the DONE1 wire id), stop. `"closed"` → ALSO append the `thread_resolved` event the rest of this skill emits (kept for backwards-compat with v2.7.x consumers that still read `thread_resolved`).

@@ -62,9 +62,35 @@ def _name(obj: dict[str, Any]) -> str:
     return obj.get("name") or obj.get("canonical_name") or obj.get("id", "")
 
 
-def _is_primary_user(person: dict[str, Any]) -> bool:
-    """Schema A uses 'is_user', schema B uses 'is_primary_user'."""
-    return bool(person.get("is_user") or person.get("is_primary_user"))
+def _primary_user_id(entities: dict[str, Any]) -> str:
+    """The primary user's person_id, through THE shared seam (SPEC USERKEY1).
+
+    This module used to answer "is this the user?" with its own inline
+    person-flag predicate. The flags are only the flag fallback of the seam's
+    chain, after every pointer spelling it reads: on a workspace that stores
+    the schema-canonical `workspace.user_id`
+    pointer and no flags, the predicate answered False for everyone — so the
+    map listed the user as one of his own contacts, with no CEO name on it.
+    Defensive: unresolvable returns "" and every caller degrades exactly as it
+    did when the predicate found nobody."""
+    try:
+        from primary_user import resolve_primary_user_from_entities
+        return resolve_primary_user_from_entities(entities) or ""
+    except Exception:
+        return ""
+
+
+def _is_primary_user(person: dict[str, Any], primary_id: str) -> bool:
+    """Is this person the resolved primary user? `primary_id` comes from
+    `_primary_user_id` — the seam covers both legacy flag spellings ('is_user'
+    schema A, 'is_primary_user' schema B) as its flag fallback, after every
+    pointer spelling it reads, so a flags-only
+    workspace answers exactly as this predicate used to. It is NOT "strictly
+    more resolution": on a workspace carrying the canonical `workspace.user_id`
+    pointer AND a flag on a DIFFERENT person, the pointer wins and the person
+    this returns True for CHANGES. That is the schema's stated precedence, and
+    it is pinned in run_userkey1_canonical_pointer_test.py §3b."""
+    return bool(primary_id and person.get("id") == primary_id)
 
 
 def _projects_array(entities: dict[str, Any]) -> list[dict[str, Any]]:
@@ -370,8 +396,9 @@ def _aggregate_commitments(
 # ----- top-level projections -----
 
 
-def _project_orgs(entities: dict[str, Any]) -> list[dict[str, Any]]:
-    """Top-level orgs (parent_org_id is null) with sub-orgs nested under `children`.
+def _project_orgs(entities: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """Top-level orgs (parent_org_id is null) with sub-orgs nested under `children`,
+    plus the count of tier-passive orgs suppressed from the roster (ORGSCHEMA1 §3).
 
     Also attaches `engagements` (non-ownership edges from entities.engagements[])
     as a sibling of `children` on each shaped org. Engaged orgs are NOT removed
@@ -451,14 +478,25 @@ def _project_orgs(entities: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     result: list[dict[str, Any]] = []
+    passive_hidden = 0
     for o in top_level:
         shaped = shape(o)
         children = by_parent.get(o["id"], [])
         if children:
             children.sort(key=lambda c: _name(c).lower())
-            shaped["children"] = [shape(c) for c in children]
+            shaped_children = [shape(c) for c in children]
+            passive_hidden += sum(
+                1 for c in shaped_children if c["tier"] == "passive")
+            shaped["children"] = [
+                c for c in shaped_children if c["tier"] != "passive"]
+        # ORGSCHEMA1 §3: passive is SUPPRESSED from the map roster, not merely
+        # collapsed the way external is — "keep the record, drop the line".
+        # The renderer shows only a count so hidden never reads as deleted.
+        if shaped["tier"] == "passive":
+            passive_hidden += 1
+            continue
         result.append(shaped)
-    return result
+    return result, passive_hidden
 
 
 def _project_projects(
@@ -506,8 +544,9 @@ def _project_people(
     merged = {p: max(threads_by_person.get(p, 0), owes_by_person.get(p, 0)) for p in set(threads_by_person) | set(owes_by_person)}
 
     out: list[dict[str, Any]] = []
+    primary_id = _primary_user_id(entities)
     for p in entities.get("people", []):
-        if _is_primary_user(p):
+        if _is_primary_user(p, primary_id):
             continue
         age_str, age_h = _humanize_age(_person_last_interaction(p), now)
         tone: str | None = None
@@ -540,8 +579,9 @@ def _project_people(
 
 
 def _ceo_display_name(entities: dict[str, Any]) -> str:
+    primary_id = _primary_user_id(entities)
     for p in entities.get("people", []):
-        if _is_primary_user(p):
+        if _is_primary_user(p, primary_id):
             name = _name(p).strip()
             if name:
                 return name.split()[0]
@@ -549,10 +589,10 @@ def _ceo_display_name(entities: dict[str, Any]) -> str:
 
 
 def _user_id(entities: dict[str, Any]) -> str:
-    for p in entities.get("people", []):
-        if _is_primary_user(p):
-            return p.get("id", "")
-    return ""
+    """The primary user's id. A pointer the seam honours without a matching
+    person record still answers here — the map's owes-attribution wants the id,
+    not the record."""
+    return _primary_user_id(entities)
 
 
 def main() -> int:
@@ -620,7 +660,7 @@ def main() -> int:
     except Exception:
         activity = {}
 
-    orgs = _project_orgs(entities)
+    orgs, passive_hidden = _project_orgs(entities)
     projects = _project_projects(entities, aggregates["owes_by_project"], now,
                                  activity=activity)
     people = _project_people(entities, aggregates["threads_records"], aggregates["owes_by_person"], now)
@@ -647,6 +687,7 @@ def main() -> int:
         "THREADS_JSON": json.dumps(threads, ensure_ascii=False),
         "COMMITMENTS_JSON": json.dumps(commitments, ensure_ascii=False),
         "OWES_BY_ORG_JSON": json.dumps(owes_by_org, ensure_ascii=False),
+        "PASSIVE_HIDDEN_COUNT": json.dumps(passive_hidden),
     }
 
     payload = json.dumps(output_values, ensure_ascii=False, indent=2)

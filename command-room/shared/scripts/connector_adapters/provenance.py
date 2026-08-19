@@ -20,6 +20,23 @@ drift spellings already on disk (R16):
   - both Slack spellings  `slack:<permalink>` and `slack:<team>/<chan>/<ts>` → `slack:<chan>:<ts>`
   - bare meeting ids (meeting_capture historical) via default_provider="granola"
 
+TWO CONTRACTS, ONE DERIVATION (SPEC PROV2, 2026-08-16). The canonical key
+above answers "is this the same artifact?" and stays lowercased forever. It is
+NOT the same thing as the resolvable POINTER a close stores — that answers
+"what do I hand back to the connector to open this?", and a lowercased answer
+is simply wrong wherever native ids are case-sensitive. So the module carries
+two spellings of one pointer and exactly one direction between them:
+
+  - `canonical_dedup_key(...)`  → IDENTITY. Lowercased. Unchanged.
+  - `canonical_source_ref(...)` → POINTER. The provider half is normalized
+    (lowercase, `gcalendar`→`gcal`, Slack reduction unchanged in structure);
+    the NATIVE half keeps its case VERBATIM, for EVERY provider — a uniform
+    rule, not a per-provider table somebody has to remember to extend.
+  - `dedup_key_of(stored_ref)`  → the derivation, one way. A pointer folds to
+    its identity key; nothing ever uppercases back. A legacy lowercased row
+    folds to itself, so pre- and post-PROV2 rows for one artifact land on ONE
+    identity with no migration, no backfill, no history rewrite.
+
 READ BACK-COMPAT (never a history rewrite): legacy rows carry no `account_id`;
 readers treat a missing `account_id` as IN scope (ACCOUNT_SCOPE §4b). The
 normalizer resolves `account_id` for NEW writes from the account map (R3).
@@ -119,6 +136,351 @@ def canonical_dedup_key(source_ref: Optional[str] = None, *,
     if source_ref:
         return _canon_from_source_ref(source_ref, default_provider)
     return None
+
+
+# ---------------------------------------------------------------------------
+# PROV2 — the POINTER form: case-preserving in the native half
+# ---------------------------------------------------------------------------
+#
+# MEASURED (REVIEW_PROV1 F-1, 2026-08-16): the lowercased dedup key was being
+# reused as the stored, resolvable pointer. `outlook:AAMkAGI2TG93AAA=` landed
+# on disk as `outlook:aamkagi2tg93aaa=` and `drive:1AbCdEf…` as
+# `drive:1abcdef…`. Both providers sit in LEGACY_PREFIXES, both native-id forms
+# are case-sensitive, so the stored pointer resolved to nothing — permanently,
+# because provenance is saved at write time or it is gone. Nothing went red:
+# gmail / granola / `session:` ids are case-insensitive in practice, so a
+# Gmail-backed workspace shows no damage at all.
+#
+# The functions below are the POINTER twins of the identity functions above.
+# They make the same SHAPE decisions (provider normalization, the Slack
+# reduction, the `default_provider` prefix) and differ in exactly one thing:
+# the native half is trimmed, never folded.
+
+
+def _keep(s) -> str:
+    """The native half of a POINTER: whitespace trimmed, case VERBATIM.
+
+    `_norm`'s deliberate twin. The whole PROV2 split is these two spellings of
+    the same trim — one that folds because it is building an identity, one that
+    does not because it is building something a connector has to resolve."""
+    return (s or "").strip()
+
+
+def _pointer_slack(rest: str) -> str:
+    """`_canon_slack`'s pointer twin: the SAME two reductions (a permalink and
+    the `<team>/<channel>/<ts>` triple both collapse to `<channel>:<ts-digits>`)
+    with the channel id's case preserved. The reduction is STRUCTURAL — two
+    spellings of one message — and is unchanged here; only the fold moves."""
+    r = (rest or "").strip()
+    m = _SLACK_PERMALINK_RE.search(r)
+    if m:
+        return f"slack:{m.group(1)}:{m.group(2)}"
+    m = _SLACK_TRIPLE_RE.match(r)
+    if m:
+        ts_digits = m.group(3).replace(".", "")
+        return f"slack:{m.group(2)}:{ts_digits}"
+    return "slack:" + _keep(r)
+
+
+def _pointer_from_source_ref(source_ref: str,
+                             default_provider: Optional[str]) -> Optional[str]:
+    """`_canon_from_source_ref`'s pointer twin — identical shape decisions,
+    native half unfolded."""
+    s = (source_ref or "").strip()
+    if not s:
+        return None
+    if ":" in s:
+        provider, rest = s.split(":", 1)
+        provider = provider.strip().lower()
+        rest = rest.strip()
+        if provider == "slack":
+            return _pointer_slack(rest)
+        # gcalendar → gcal normalization (both spellings seen) — a PROVIDER
+        # vocabulary fact, so it survives the split untouched.
+        if provider == "gcalendar":
+            provider = "gcal"
+        return f"{provider}:{_keep(rest)}"
+    if default_provider:
+        return f"{default_provider.strip().lower()}:{_keep(s)}"
+    return _keep(s)
+
+
+def _pointer_from_ref_dict(ref: Dict[str, Any]) -> Optional[str]:
+    """`_canon_from_ref_dict`'s pointer twin.
+
+    The chat adapter's `normalize_message_id` is ALREADY case-preserving (its
+    own `_norm` only trims; `chat_ref_key` lowercases afterwards), so the
+    message-id reduction is borrowed rather than re-derived here — one
+    reduction, two case postures, and no second place for Slack's dotless-ts
+    rule to drift."""
+    provider = _norm(ref.get("provider"))
+    if not provider:
+        return None
+    room = _keep(ref.get("chat_or_channel_id"))
+    message_id = _keep(ref.get("message_id"))
+    if room and message_id:
+        try:
+            from connector_adapters.chat import normalize_message_id
+        except Exception:  # pragma: no cover — direct-path / partial install
+            normalize_message_id = None
+        mid = (normalize_message_id(provider, message_id)
+               if normalize_message_id is not None else message_id)
+        return f"{provider}:{room}:{mid}" if mid else None
+    native_id = _keep(ref.get("native_id")) or message_id
+    if native_id:
+        return f"{provider}:{native_id}"
+    return None
+
+
+def dedup_key_of(stored_ref: Any = None, *,
+                 default_provider: Optional[str] = None) -> Optional[str]:
+    """The IDENTITY form of a pointer that is ALREADY STORED (SPEC PROV2 §2.3).
+
+    ONE DIRECTION. The pointer is the richer form and the dedup key is always
+    computable from it; nothing ever "uppercases back". A legacy lowercased row
+    case-folds to itself and a post-PROV2 case-preserved row folds onto the same
+    key, so one artifact keeps one identity across the boundary — which is why
+    PROV2 needs no migration, no backfill and no history rewrite.
+
+    TOTAL AND SILENT, deliberately. `canonical_source_ref` REFUSES malformed
+    input because it runs at WRITE time, before anything lands, where a garbage
+    ref is worse than none. This runs on rows that are already history: a
+    reader that raises on a bad row cannot even measure it. Anything unusable
+    returns None.
+
+    EVERY identity comparison of stored `source_ref` strings routes through
+    here (guard G30). A raw `==` between two stored refs is wrong the moment
+    the substrate spans the PROV2 boundary, and wrong silently — no exception,
+    no red, just a fence that quietly stops firing."""
+    if stored_ref is None:
+        return None
+    if isinstance(stored_ref, dict):
+        try:
+            return _canon_from_ref_dict(stored_ref)
+        except Exception:  # pragma: no cover — a stored row is never an input
+            return None
+    if not isinstance(stored_ref, str):
+        return None
+    try:
+        return _canon_from_source_ref(stored_ref, default_provider)
+    except Exception:  # pragma: no cover
+        return None
+
+
+# ---------------------------------------------------------------------------
+# PROV1 — the close-family source pointer
+# ---------------------------------------------------------------------------
+
+# The data key stamped on a close whose writer had no pointer to give. Absence
+# of provenance must be VISIBLE: a close with neither `source_ref` nor this
+# marker would be indistinguishable from a legacy row, and "we cannot tell"
+# is the state PROV1 exists to end. Named here (not inlined at the writers) so
+# the marker has one spelling and one home.
+PROVENANCE_MISSING_KEY = "provenance_missing"
+
+# The close-family data key that holds the canonical pointer.
+SOURCE_REF_KEY = "source_ref"
+
+# SPEC PROVMINT1 — the GRAIN of a stored pointer, and the ONE value it takes.
+#
+# PROV1 made the pointer optional at the caller and honest when absent. The
+# 2026-08-17 walk measured what that produces in practice: on the human rails
+# the marker had become the normal outcome, because the pointer was something
+# PROSE asked a caller to supply and prose is the layer that flattens. So the
+# writers mint a surface receipt (`session:<surface>:<instant>`) when nothing
+# reaches them — and stamp this key, because a mint that is indistinguishable
+# from a caller-passed artifact pointer would silently inflate
+# `closure_index.pointer_coverage`, the exact metric PROV1 exists to produce.
+#
+# PRESENCE IS THE SIGNAL. The key is written ONLY on a minted ref; a
+# caller-passed pointer carries no grain key at all, and neither does any row
+# written before this spec. That asymmetry is deliberate — it means no backfill
+# exists and no historic row is silently reclassified: absent = caller-passed,
+# exactly as every reader already treated it.
+REF_GRAIN_KEY = "ref_grain"
+REF_GRAIN_SURFACE_MINTED = "surface_minted"
+
+
+class SourceRefError(ValueError):
+    """A source pointer that cannot be canonicalized.
+
+    Raised at WRITE time, before anything lands. The rule is narrow on
+    purpose: an ABSENT pointer never blocks a close (it stamps
+    `provenance_missing`), but a MALFORMED one is refused loudly rather than
+    stored — a garbage ref in `data.source_ref` is worse than no ref, because
+    every reader downstream treats that key as resolvable evidence."""
+
+
+def canonical_source_ref(source_ref: Any = None, *,
+                         default_provider: Optional[str] = None) -> Optional[str]:
+    """Canonicalize ANY accepted source-pointer spelling to the stored POINTER.
+
+    SPEC PROV2: the provider half is normalized (lowercase, `gcalendar` →
+    `gcal`, both Slack spellings still reducing to one shape) and the NATIVE
+    half keeps its case VERBATIM, for every provider. That is what makes the
+    stored ref RESOLVABLE — an Outlook immutable id and a Drive file id are
+    case-sensitive, so the lowercased form this used to return pointed at
+    nothing. `dedup_key_of()` derives the identity key from whatever this
+    returns; identity semantics did not move.
+
+    The API is FROZEN (PROV1) — signature, acceptances and refusals are exactly
+    as they were. Only the canonicalization inside moved.
+
+    Accepts:
+      - a prefixed string (`gmail:<id>`, `granola:<meeting>`, `session:<id>`,
+        either Slack spelling, `gcalendar:` → `gcal:`) → the canonical pointer;
+      - a structured chat pointer dict (`{provider, chat_or_channel_id,
+        message_id, …}`) or a `{provider, native_id}` dict → the same pointer
+        the string form of that pointer reduces to;
+      - None / blank → None (the caller stamps `provenance_missing`).
+
+    Refuses (SourceRefError):
+      - a non-string, non-dict value — an int seq or a list is not a pointer;
+      - a dict that names no resolvable artifact;
+      - a string with an empty provider or an empty native half (`":"`,
+        `"gmail:"`, `":abc"`) — a half-pointer resolves to nothing;
+      - a bare token with no provider and no `default_provider` — a pointer
+        that does not say WHICH system it points into cannot be followed back.
+        Callers that genuinely know the provider pass `default_provider`.
+    """
+    if source_ref is None:
+        return None
+    if isinstance(source_ref, bool) or isinstance(source_ref, (int, float)):
+        raise SourceRefError(
+            f"source_ref {source_ref!r} is not a pointer — a bare number names "
+            "no artifact. Pass a `provider:native_id` string (or None, which "
+            f"lands the close with {PROVENANCE_MISSING_KEY!r})."
+        )
+    if isinstance(source_ref, dict):
+        key = _pointer_from_ref_dict(source_ref)
+        if not key:
+            raise SourceRefError(
+                "source_ref dict names no resolvable artifact — a structured "
+                "pointer needs provider + (chat_or_channel_id + message_id) or "
+                f"provider + native_id; got keys {sorted(source_ref)!r}"
+            )
+        return key
+    if not isinstance(source_ref, str):
+        raise SourceRefError(
+            f"source_ref must be a string pointer or a structured pointer dict, "
+            f"got {type(source_ref).__name__}"
+        )
+    raw = source_ref.strip()
+    if not raw:
+        return None
+    if ":" not in raw and not default_provider:
+        raise SourceRefError(
+            f"source_ref {raw!r} carries no provider prefix — a pointer that "
+            "does not say which system it points into cannot be followed "
+            f"back. Use one of {', '.join(LEGACY_PREFIXES)} (e.g. "
+            f"'gmail:{raw}'), or pass default_provider when the caller knows "
+            "the provider."
+        )
+    key = _pointer_from_source_ref(raw, default_provider)
+    if not key:
+        raise SourceRefError(f"source_ref {source_ref!r} canonicalized to nothing")
+    provider_half, _, native_half = key.partition(":")
+    if not provider_half.strip() or not native_half.strip():
+        raise SourceRefError(
+            f"source_ref {source_ref!r} is a half-pointer (canonicalizes to "
+            f"{key!r}) — both the provider and the native id are required"
+        )
+    return key
+
+
+def _canon_from_ref_dict(ref: Dict[str, Any]) -> Optional[str]:
+    """The canonical key for a structured pointer dict. Chat pointers reduce to
+    the same three-segment key `chat.chat_ref_key` builds, so a message reached
+    by the capture leg and by the closure leg is ONE key."""
+    provider = _norm(ref.get("provider"))
+    if not provider:
+        return None
+    room = _norm(ref.get("chat_or_channel_id"))
+    message_id = _norm(ref.get("message_id"))
+    if room and message_id:
+        # Delegate to the chat adapter so the closure leg and the capture leg
+        # produce ONE key for one message (its `normalize_message_id` strips
+        # Slack's ts dots exactly as `_canon_slack` does). The local spelling
+        # below is the fallback for a caller that reaches this module without
+        # the chat adapter importable.
+        try:
+            from connector_adapters.chat import chat_ref_key as _chat_ref_key
+        except Exception:  # pragma: no cover — direct-path / partial install
+            _chat_ref_key = None
+        if _chat_ref_key is not None:
+            key = _chat_ref_key(ref)
+            if key:
+                return key
+        return f"{provider}:{room}:{message_id}"
+    native_id = _norm(ref.get("native_id")) or message_id
+    if native_id:
+        return f"{provider}:{native_id}"
+    return None
+
+
+def close_provenance_fields(source_ref: Any = None, *,
+                            default_provider: Optional[str] = None) -> Dict[str, Any]:
+    """The `data` fragment EVERY close-family writer merges in (PROV1).
+
+    Exactly one of three shapes, never two and never none (PROVMINT1 added the
+    middle one; this function still returns only the outer two, because minting
+    is a WRITER decision and this is the shape layer):
+      - `{"source_ref": "<canonical pointer>"}` — a caller-passed pointer,
+        canonicalized here so no reader downstream has to re-normalize a raw
+        spelling. PROV2: the native half's case is preserved, so readers hand
+        this to a resolver BYTE-IDENTICAL and identity comes from
+        `dedup_key_of`, never from a raw string comparison;
+      - `{"source_ref": "session:<surface>:<instant>", "ref_grain":
+        "surface_minted"}` — the module-side FLOOR (PROVMINT1): nothing reached
+        the writer, so it minted a receipt for the act itself and said so. Built
+        by `commitment_state._minted_pointer_fields`, which composes this
+        function's first shape with `REF_GRAIN_KEY`;
+      - `{"provenance_missing": True}` — an honest "this close cites nothing".
+        Still reachable from writers OUTSIDE PROVMINT1's three (the merge and
+        thread-resolve writers), and from any legacy caller of this function.
+
+    THE CONTRACT IS UNCHANGED for callers: signature, acceptances and refusals
+    are exactly as PROV1 froze them. Never blocks a close — a human/chat close
+    with no message id passes its `session:` receipt, and a machine close with
+    nothing in hand still lands. Only a MALFORMED pointer raises
+    (SourceRefError)."""
+    key = canonical_source_ref(source_ref, default_provider=default_provider)
+    if key is None:
+        return {PROVENANCE_MISSING_KEY: True}
+    return {SOURCE_REF_KEY: key}
+
+
+def has_source_pointer(event_or_data: Optional[dict]) -> bool:
+    """True when a close-family event (or its `data`) carries a usable pointer.
+    The read side of `close_provenance_fields`, used by the coverage metric and
+    by any reader that must tell a pointered close from a marked one. Legacy
+    rows carry neither key and read False — absent, never an error."""
+    if not isinstance(event_or_data, dict):
+        return False
+    data = event_or_data.get("data")
+    data = data if isinstance(data, dict) else event_or_data
+    ref = data.get(SOURCE_REF_KEY)
+    if isinstance(ref, str) and ref.strip():
+        return True
+    if isinstance(ref, dict) and _canon_from_ref_dict(ref):
+        return True
+    return False
+
+
+def is_surface_minted(event_or_data: Optional[dict]) -> bool:
+    """True when a close-family event's pointer was MINTED by its writer rather
+    than passed by its caller (SPEC PROVMINT1).
+
+    The read side of `REF_GRAIN_KEY`, and the reason the coverage metric can
+    split "points at an email, meeting or message" from "points at the moment
+    someone closed it" instead of reporting one flattering number. Absence of
+    the key means caller-passed — which is what every pre-PROVMINT1 row is, and
+    why no backfill exists."""
+    if not isinstance(event_or_data, dict):
+        return False
+    data = event_or_data.get("data")
+    data = data if isinstance(data, dict) else event_or_data
+    return data.get(REF_GRAIN_KEY) == REF_GRAIN_SURFACE_MINTED
 
 
 # The provenance prefix every pre-connector-agnostic mail row on disk carries.
@@ -381,10 +743,20 @@ def resolve_account_id(*, event: Optional[dict] = None, address: Optional[str] =
 __all__ = [
     "LEGACY_PREFIXES",
     "LEGACY_MAIL_PROVIDER",
+    "PROVENANCE_MISSING_KEY",
+    "REF_GRAIN_KEY",
+    "REF_GRAIN_SURFACE_MINTED",
+    "SOURCE_REF_KEY",
+    "SourceRefError",
     "is_same_artifact",
+    "is_surface_minted",
     "build_email_drafted_provenance",
     "build_email_sent_provenance",
     "canonical_dedup_key",
+    "canonical_source_ref",
+    "close_provenance_fields",
+    "dedup_key_of",
+    "has_source_pointer",
     "native_draft_id_from_data",
     "normalize_provenance",
     "primary_artifact_key",

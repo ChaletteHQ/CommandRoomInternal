@@ -159,6 +159,34 @@ def _find_existing_note(events, kind, target_id, source_event_seq, text):
     return None
 
 
+# APPLYAUDIT1 part 2 — THE RESULT KEY IS `status`, WITH `outcome` AS A
+# DEPRECATED ALIAS FOR ONE RELEASE.
+#
+# WHY THE KEY CHANGED. This helper answers `add to my list`, and it was the one
+# writer on the whole apply-choices rail returning `outcome` instead of
+# `status`. `apply_audit.derive_outcome` reads `status`, found nothing, and
+# took the never-optimistic default: every one of the defect register's 22
+# `add to my list` dispatches audited "error" — the successful captures
+# included — and page_snapshot then kept re-offering rows whose note was
+# already on disk. The mismatch was a CONTRACT bug, so it is fixed in the
+# helper rather than adapted at the call site (fence-tests-the-helper: a
+# call-site adapter fixes one caller and leaves the next to rediscover this).
+#
+# WHY THE ALIAS SURVIVES ONE RELEASE. The census of `outcome` readers found no
+# production Python — only this module's own suites and the apply-choices
+# prose, all updated in the same change. The window the alias covers is the
+# plugin UPDATE: an in-flight session holds the OLD SKILL.md text (which reads
+# `result["outcome"]`) in context while the NEW module is already on disk. Both
+# keys carry the same word, so that session stays correct. DELETE `outcome` in
+# the release after this one — a deliberate act, not a drift.
+#
+# The three words are written as literals in each return below rather than
+# through a shared result-builder ON PURPOSE: the FS-18 census reads
+# `{"status": "<literal>"}` out of the source, and routing them through a
+# helper would hide this module's whole vocabulary from the fence that exists
+# to find it.
+
+
 def reroute_orphan_note(
     workspace_root,
     context_text: str,
@@ -168,22 +196,28 @@ def reroute_orphan_note(
 ) -> dict:
     """Route an orphan note to its resolved person/thread, or decline.
 
-    Three outcomes, all honest:
-      {"outcome": "noted", "target_kind": ..., "target_id": ...} — appended
+    Three outcomes, all honest — each carries `status` (the key of record)
+    and the deprecated `outcome` alias with the same value, spelled as a
+    literal in each return for the census reason in the module comment above:
+      {"status": "noted", "target_kind": ..., "target_id": ...} — appended
         ONE `note` event via the gated writer.
-      {"outcome": "already_noted", "target_kind": ..., "target_id": ...,
+      {"status": "already_noted", "target_kind": ..., "target_id": ...,
        "seq": <the existing note's seq>} — this exact note is already on
         disk (same target, same source row, same text). NOTHING written.
         The caller must ack this as a no-op, never as a fresh capture.
-      {"outcome": "declined", "line": DECLINE_LINE} — nothing resolved,
+      {"status": "declined", "line": DECLINE_LINE} — nothing resolved,
         NOTHING written.
+
+    The three words are classified in `apply_audit` as OK / no-op / refusal
+    respectively, so the Apply receipt now says what actually happened.
 
     Never writes a `commitment_to_discuss` — the list is retired (MLK1).
     """
     ws = Path(workspace_root)
     text = str(context_text or "").strip()
     if not text:
-        return {"outcome": "declined", "line": DECLINE_LINE}
+        return {"status": "declined", "outcome": "declined",
+                "line": DECLINE_LINE}
 
     entities_raw = _load_json(ws / "_hq" / "data" / "entities.json")
     entities = unwrap_entities(entities_raw) if isinstance(entities_raw, dict) else {}
@@ -198,7 +232,8 @@ def reroute_orphan_note(
 
     kind, target_id = _resolve_target(source_ev, entities)
     if kind is None:
-        return {"outcome": "declined", "line": DECLINE_LINE}
+        return {"status": "declined", "outcome": "declined",
+                "line": DECLINE_LINE}
 
     # Idempotency: THIS note already landed. Identity only — nothing here
     # reads a clock, so the answer cannot change with when the call happens.
@@ -207,9 +242,9 @@ def reroute_orphan_note(
     # actually went.
     existing = _find_existing_note(events, kind, target_id, source_event_seq, text)
     if existing is not None:
-        return {"outcome": "already_noted", "target_kind": kind,
-                "target_id": target_id, "seq": existing.get("seq"),
-                "summary": text}
+        return {"status": "already_noted", "outcome": "already_noted",
+                "target_kind": kind, "target_id": target_id,
+                "seq": existing.get("seq"), "summary": text}
 
     note_ev = {
         "type": "note",
@@ -227,7 +262,8 @@ def reroute_orphan_note(
         note_ev["primary_thread_id"] = target_id
     append_event(ws / "_hq" / "data" / "events.jsonl", note_ev,
                  holder="orphan_note")
-    return {"outcome": "noted", "target_kind": kind, "target_id": target_id}
+    return {"status": "noted", "outcome": "noted",
+            "target_kind": kind, "target_id": target_id}
 
 
 __all__ = ["DECLINE_LINE", "reroute_orphan_note"]

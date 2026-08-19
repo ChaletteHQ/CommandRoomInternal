@@ -288,11 +288,50 @@ WORKSPACE_MIGRATIONS = [
     type: "calibration_question",                              // PROPOSE-AND-CONFIRM. NEVER a silent rewrite: their registered chat is theirs
     blocking: false,
     apply_once: true                                           // one ask, ever — answered or declined, it never asks twice
+  },
+  {
+    id: "readiness_retirement_v1",                             // SPEC TASKRET1 (M's ruling 2026-08-17). Read the id from `schedule_proposals.READINESS_RETIREMENT_MIGRATION_ID` — the event this migration writes carries the same constant, so the id the gate suppresses on and the id in the record can never be two strings
+    target_file: null,                                         // NOT a file migration — the target is the LIVE scheduler, read via the FS-16 registered-set readback
+    marker: null,                                              // live schedule state — the adjudication gate + the readback's own `enabled` flag are the gates (see the section)
+    type: "auto_apply",                                        // APPLIED, then NARRATED — the one migration type that acts on live schedule config without asking. M's ruling is the authority; §0 rationale lives in the class block above `schedule_config.RETIRED_TASKS`. NEVER downgrade this to calibration_question: "I will NOT manually pause" is the ruling, and a per-task question here rebuilds the register-then-nag pattern the retirement removes
+    blocking: false,
+    apply_once: true                                           // one application, ever
   }
 ]
 ```
 
 **`connector_agnostic_account_map_v1` (N1) — additive, never a prompt.** Detection: JSON-load entities.json; pending iff `workspace.accounts` is absent entirely. Apply: seed an EMPTY map — `workspace.accounts = []` — via the delegated setter path (write through `connector_config.py` conventions / the locked entities writer; update-bridge is a declared delegate, NEVER a raw editor of the block), and emit ONE nudge line in the update summary: *"New: you can tell me which email accounts are business vs personal — say 'what accounts do I have' to see them, or '[address] is my personal account' to wall one off."* **An empty map is a NO-OP by design (R4)** — the live workspace behaves byte-identically until the user classifies an account. NEVER ask a blocking classification question from the bridge; classification is the user's move (workspace-manager verbs) or onboarding's account-enumeration gate on fresh installs.
+
+**`readiness_retirement_v1` — the readiness retirement (SPEC TASKRET1, M's ruling 2026-08-17).** The one migration that switches off a chat the customer can see, without asking. Everything about it is scoped to CLASS, never to a task name.
+
+Run it on the full-update intent path, after the FS-16 registered-set readback (the same readback the proposal blocks quote). Nothing here reads or writes a workspace file:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
+from schedule_proposals import plan_readiness_retirements, log_readiness_retirement
+from schedule_config import readiness_retirement_summary
+plan = plan_readiness_retirements(registered_ids=<the quoted readback>,
+                                  task_records=<the RAW list_scheduled_tasks records>)
+```
+
+**`plan == []` is the answer on the overwhelming majority of workspaces, and it means SAY NOTHING.** All three of these were later-adds, so most installs never registered any of them; a line about a chat the customer never had is noise about a feature they never saw. No summary, no "nothing to do" note, no mention in the recap.
+
+On a non-empty plan, for EACH entry, in order:
+
+1. Call `mcp__scheduled-tasks__update_scheduled_task(taskId=<entry["task"]>, enabled=False)`. **Never pass `prompt`** — the registered bootloader is registration's property, and a retired task's prompt still needs to resolve its stub for any fire that beats this migration to the customer.
+2. Only after that call SUCCEEDED, write the substrate record: `log_readiness_retirement(WORKSPACE_ROOT, entry["task"])`. It is a thin wrapper over `schedule_config.log_schedule_config_change` — THE one config-event writer (SPEC SCHED1 §0-4) — so this pause lands in exactly the shape every other pause lands in, annotated with the migration id. **Never hand-roll the event here and never call the writer directly instead:** the wrapper is what keeps the annotation and the adjudication gate reading one constant. Order matters: an event claiming a task is off while it still fires is worse than no event, and `late_fire` reads these records to refuse scoring slots older than the change — which is exactly right here, since the slots this task will now never fire were minted by this migration (F-51).
+
+Then surface **exactly ONE line**, built by the registry, never composed here:
+
+```python
+summary = readiness_retirement_summary([e["task"] for e in plan])   # "" when the plan was empty
+```
+
+That line is the whole difference between this class and the silent `SUPERSEDED_BY` disable above. It names what was switched off, why it needed groundwork first, and — the clause only this class carries — what brings each chat back (`reoffer_when`). **Do not drop the comes-back clauses to shorten it, and do not paraphrase.** A retirement the customer is told about but not told the terms of is a deletion with better manners; the promise of return is what makes acting-without-asking legitimate here.
+
+**Pass `task_records`, not just the ids.** The raw records carry `enabled`, and an entry already disabled is dropped from the plan — that is the fence that stops a workspace whose adjudication record was lost from re-writing a `schedule_config_changed` event on every update forever. The adjudication gate (keyed on the migration id) is the other fence, and both are deliberate: idempotency here has to survive losing either one.
+
+**Do NOT touch anything else.** No `schedule_config` override key is deleted (an override for a retired id is expected history, and the customer's chosen hour is theirs to keep if the surface ever returns), no on-demand skill is disabled, and no other retirement class is applied — eliminations and renames still go through the propose blocks above. If you are about to disable a task that `schedule_config.is_readiness_retirement` does not return True for, stop: that is the add-without-asking violation with the sign flipped.
 
 **`email_exclusion_rules_to_sender_scope_v1` — the structured-scope migration** (PASSIVE_CAPTURE § Privacy Surface): if the workspace CLAUDE.md carries an `email_exclusion_rules` prose list, convert each SENDER-shaped rule (an address or domain-address) to `connector_config.set_sender_scope_override(root, <business-primary account — or the sole account>, <sender>, write_to_business=False, reason="migrated from email_exclusion_rules")`. Append a one-line `<!-- migrated to sender scope YYYY-MM-DD -->` note next to the prose section — NEVER delete the user's prose (readers honor both during the transition; conservative wins). Pattern-shaped rules (subject regexes) stay prose and are skipped with a note in the summary. Skip the whole migration silently when the account map is empty (nothing to key overrides to yet — re-checked on the next bridge run after classification).
 
@@ -853,6 +892,8 @@ A `null` plan (no standalone relationship-moves registration) → skip SILENTLY 
 2. Remove the relationship-moves registration (`update_scheduled_task(enabled: false)` or delete per the scheduler MCP's canonical removal path).
 3. Receipt BOTH steps in the confirmation line; the RM skill itself, its orchestrator, and Pulse are untouched — only the registration moves.
 
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+
 **⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK** (v4.5.2 R2 / F-51 — binding here exactly as in the cadence migration): no catch-up staff meeting, no lateness math, no "you missed one" narration.
 
 Narrate completion in one line:
@@ -883,7 +924,7 @@ Determine intent from the trigger phrase that fired this skill:
 
 ### Full-update intent (Phase 4.7 runs)
 
-Check whether Cowork scheduled tasks for Command Room are configured (i.e., look for `schedule_created` events in events.jsonl matching current taskIds: `morning-brief`, `upcoming-meetings`, `inbox`, `waiting-on`, `my-plate`, `pulse`, `past-meetings`, `friday-wrap`). If NOT, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table performs the disable-and-register (`commitments` → `waiting-on` + `my-plate`). Until that runs, the still-registered `commitments` task fires the re-scoped Waiting On orchestrator and the owner-me direction has no daily chat — the split must land at the first post-update opportunity, not "eventually". The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the M1 first-install set of 5 tasks (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`); on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
+Check whether Cowork scheduled tasks for Command Room are configured (i.e., look for `schedule_created` events in events.jsonl matching any taskId in `schedule_config.DEFAULT_SCHEDULES` **or** `schedule_config.RETIRED_TASKS`). Read both from the registry rather than hand-typing them here — the list that used to sit in this sentence still named `upcoming-meetings` and `pulse` as *current*, long after they were retired. Retired ids belong in the DETECTION set specifically: a workspace that registered one before its retirement is configured, and re-running registration over it would be wrong. Nothing offers a retired task; this check only recognises it. If NOT configured, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table performs the disable-and-register (`commitments` → `waiting-on` + `my-plate`). Until that runs, the still-registered `commitments` task fires the re-scoped Waiting On orchestrator and the owner-me direction has no daily chat — the split must land at the first post-update opportunity, not "eventually". The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the first-install set — `schedule_config.FIRST_INSTALL_TASK_IDS`, never a list retyped here; on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
 
 **Render the chat names from what actually registers** (display names from the registration set via `task_display_name()`), never a hardcoded list. Shape (names illustrative only):
 
@@ -905,6 +946,8 @@ Detection logic (extracted to a helper so future "add missing canonical task" ca
 
 **Supersede step (MAINT1, D5 — this loop is the auto-migration vehicle for existing installs):** after registering a registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py` and disable every listed taskId still registered+enabled via `update_scheduled_task(enabled: false)`. Idempotent and never deletes — re-running the bridge converges on the same end state (the five old silent tasks off, one `maintenance` task on). A custom cron override the customer had on the old `reconcile-sent` task migrates onto the `maintenance` task cron (the one 1:1 cadence mapping); overrides on the other four can't map onto a single task cron — leave them in place (parity ignores superseded ids) and note the old time couldn't carry over in the same line. Surface exactly ONE plain-English migration line:
 
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+
 > *"Your background upkeep now runs as one 'Maintenance' entry in the Scheduled section — authorize it once with Run Now there. The old background entries are switched off."*
 
 No question (CONTRACT.md Rule 28 — default-task registration isn't a customer decision). A future silent JOB ships inside the already-authorized `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`) with no registration change at all, and a future silent TASK added to the registry is covered by this loop with zero edits to this file. The legacy per-task detectors (`release_detectors.v3_18_2_cleanup_missing`, `v3_18_12_reconcile_sent_missing`) remain valid as detection helpers for pre-MAINT1 workspaces; the inline check — taskId absent from the registered set AND a prior `schedule_created` event exists — is the canonical shape. **Self-heals ride along:** the maintenance task's first fire runs every job the dispatcher reports due, so the reconcile backlog clears from the stored cursor forward and stale analytical views recompute (once the workspace has ≥14 days of events) without any extra step.
@@ -915,23 +958,32 @@ No question (CONTRACT.md Rule 28 — default-task registration isn't a customer 
 
 Then log the suppression record via `schedule_proposals.log_proposal(ws, "staff-meeting")`. **This deliberately breaks from the Friday-Wrap silent-add shape:** the Staff Meeting is opt-in by M ruling (2026-07-14) — an accept ("add staff meeting", or any yes-shaped reply to this line) routes through change-schedule / registration Phase 6 `add`; silence registers nothing and the proposal stays quiet for 6 weeks. Do NOT propose the standalone `relationship-moves` chat anywhere in this flow anymore (R4 — the Staff Meeting absorbs it as its "This week's moves" section); workspaces with relationship-moves ALREADY registered are handled by the `rm_supersede_v1` calibration migration (LB2 §3d — propose-and-confirm, never silent), NOT by this later-add block.
 
-**Balance later-add PROPOSAL (SPEC BAL1 — same propose-never-register shape as the Staff Meeting block above, with one EXTRA gate):** run the same FS-16 registered-set readback and quote its verdict; the proposal fires ONLY when `balance` is quoted-ABSENT, the workspace is past M1 install, no `schedule_add_proposed` event for `balance` exists within the last 6 weeks, **AND `entities.json` `workspace.personal_calendars` is declared and non-empty** — Balance is gated on a connected personal calendar (skills/balance/SKILL.md Step 0; proposing it to a workspace that can't run it is noise). With no personal calendar declared, surface NOTHING here — the feature is discoverable via the release notes and turns on when the user connects a calendar. On a passing gate, surface exactly ONE proposal line:
+**The Balance later-add PROPOSAL is DELETED (SPEC TASKRET1, M's ruling 2026-08-17).** BAL1 shipped a hand-written propose block here, gated on `entities.json` `workspace.personal_calendars` being declared and non-empty. Balance is now READINESS-retired, so there is nothing to propose: the taskId is out of `DEFAULT_SCHEDULES` and no registration path will create it. Do not surface a Balance proposal, do not reconstruct one from the release notes, and do not treat a workspace that has since connected a personal calendar as newly qualified — the calendar gate is not what came back. The readiness migration below is what this workspace hears about Balance, if anything. (`commitment-triage` never had an automated offer path, and `pipeline-digest`'s lived in `schedule_proposals.PROPOSAL_THRESHOLDS`, which is deleted there.)
 
-> *"New in this update: Balance — a Sunday-morning check that watches your personal side (family time, the people who matter outside work) and flags when it's gone quiet, with a real open evening attached. It's private to you — nothing from it ever appears in reports or client-facing output. Say `add balance` and it runs [config label time]."*
+**Retired-task PROPOSAL (SPEC LIFECYCLE1 §4 — propose the removal, NEVER disable it silently):** on the full-update intent path, run the same FS-16 registered-set readback and quote its verdict. This block is the mirror of the later-add proposal above, with the gate inverted: it fires only when a task in `schedule_config.RETIRED_TASKS` is quoted-PRESENT in the registered set. On the overwhelming majority of workspaces that set is empty and this whole block is a silent no-op — say nothing about a chat the customer never had.
 
-Then log the suppression record via `schedule_proposals.log_proposal(ws, "balance")`. An accept ("add balance" or any yes-shaped reply) routes through change-schedule / registration Phase 6 `add`; silence registers nothing.
-
-**Retired-task PROPOSAL (SPEC LIFECYCLE1 §4 — propose the removal, NEVER disable it silently):** on the full-update intent path, run the same FS-16 registered-set readback and quote its verdict. This block is the mirror of the two later-add proposals above, with the gate inverted: it fires only when a task in `schedule_config.RETIRED_TASKS` is quoted-PRESENT in the registered set. On the overwhelming majority of workspaces that set is empty and this whole block is a silent no-op — say nothing about a chat the customer never had.
+**This block covers the ELIMINATION and RENAME classes ONLY (SPEC TASKRET1).** `propose_task_retirements` already filters the READINESS class out, so you cannot surface a readiness offer from here even by accident — but know why, because the two blocks fire on the same readback in the same run: a readiness retirement is APPLIED by the migration below, and offering to `pause` a chat that the same update already switched off is the one combination that would read as the product not knowing its own state. If you find yourself about to offer a pause for one of the readiness-retired ids, something upstream is wrong; stop and check `schedule_config.retirement_class`. (Deliberately phrased without quoting the command: an advertised-command guard reads a quoted pause phrase as a live offer, and it is right to — even inside a sentence forbidding it.)
 
 ```python
 import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
 from schedule_proposals import propose_task_retirements, log_retire_proposal
-offers = propose_task_retirements(WORKSPACE_ROOT, registered_ids=<the quoted readback>)
+offers = propose_task_retirements(WORKSPACE_ROOT,
+                                  registered_ids=<the quoted readback>,
+                                  task_records=<the RAW list_scheduled_tasks records>)
 ```
+
+**Pass `task_records`, not just the ids (EOD2 / REVIEW F-2).** Neither accept path removes a task — there is no delete API, so both `pause` and the rename switch DISABLE, and the id stays in the registered set forever. Ids alone therefore cannot tell "hasn't acted" from "already acted", and the offer repeats every six weeks for the life of the workspace. The raw records carry `enabled`, which is the difference. Without them the helper still catches the renamed case (successor registered), but the disabled signal is simply unavailable — so pass them whenever the readback is in hand, which on this path it always is.
 
 For each returned offer, surface its `line` VERBATIM (one line, built from the registry so the wording cannot drift between here, change-schedule and system-health), then log the suppression record with `log_retire_proposal(WORKSPACE_ROOT, offer["task"])`. The helper already honors the 6-week window, so a customer who ignored the offer is not asked again next update.
 
 **Never disable it yourself.** The customer's `pause <name>` is what switches it off, routed through change-schedule exactly like every other schedule change. This deliberately does NOT use the MAINT1 `SUPERSEDED_BY` mechanism above — that one disables silently, which is correct for FIVE background tasks the customer never saw and wrong for a chat sitting visibly in their Scheduled list. Silence and a vanished chat are the same posture violation as a chat that registered itself. Silence registers nothing and un-registers nothing; the offer simply goes quiet for 6 weeks.
+
+**RENAME offers are the same machinery and one different accept path (SPEC EOD2).** An offer whose task is a RENAME rather than an elimination (`schedule_config.is_renamed_task(offer["task"])` — `past-meetings` → `end-of-day` is the first) reaches you through the exact same call and gets surfaced the exact same way; the registry has already worded the line as a switch rather than a removal, so do not re-word it and do not add a "your chat is going away" sentence to it. Two things differ, and both are about what an ACCEPT means:
+
+- **The accept is `add end of day`, not `pause past meetings`.** It routes to registration's Phase 6 add, which registers the successor AND disables the predecessor in one step (both halves or neither — see that skill's migration semantics). A bare `pause` here would leave the customer with no evening chat at all, which is the one outcome a rename must never produce. If the customer replies with a pause, say what it would cost and offer the switch instead.
+- **Silence costs the customer nothing, and say so if asked.** An ignored elimination offer leaves a chat that only explains itself; an ignored RENAME offer leaves a chat that keeps working perfectly — both ids read the same orchestrator file, so `past-meetings` fires the current End of Day pack at 5 PM indefinitely. That is why nothing here is allowed to auto-apply: there is no degradation to race, and M's Decision 9 puts his own machines under exactly the same rule as every client's.
+
+**Do not confuse this with a missing chat.** `end-of-day` is a first-install id, so the "is this workspace's schedule complete?" reflex will want to register it. It is already served — `schedule_config.is_task_served("end-of-day", registered_ids)` is the check — and registration's `registration_target_set()` fences it out of the silent-invoke path above for exactly this reason. Never register `end-of-day` from this skill.
 
 **Unconditional prompt refresh (Phase 3 / W4):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1 hash-compare against every registered prompt — never skip it because "the tasks look registered." Bootloaders are stamped with the plugin version at registration (Phase 1.B `<PLUGIN_VERSION>` substitution), so after any plugin upgrade the composed bootloader's hash differs from the registered one and the refresh lands automatically; the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) is the detector for prompts this refresh hasn't reached yet. This replaces hoping Rule 16 was obeyed.
 
@@ -991,22 +1043,20 @@ Triggered when `_hq/data/entities.json` has no `workspace.shape` field at the to
 
 ---
 
-### Migration: `org_reclassification_v2_10_3` (v2.10.5, only for upgraders from <v2.10.3; v3.14.4+ — silent auto-apply per Rule 28)
+### Migration: `org_tier_backfill_orgschema1` (ORGSCHEMA1 §2c — supersedes `org_reclassification_v2_10_3`; silent auto-apply per Rule 28)
 
-Closes the org-tier-leak from pre-v2.10.3 onboarding by re-running the volume-tier inference against the user's existing orgs and applying the inferred values directly. Pre-v3.14.4 this surfaced a per-org confirm/edit/keep widget; v3.14.4+ runs silently per the non-technical-customer principle — the customer doesn't need to think about org-tier taxonomy, and the `tier_change` audit events make every applied value reviewable later.
+Closes the untiered-org leak on EVERY install, not just pre-v2.10.3 upgraders. The old migration's `from_version < 2.10.3` gate meant it silently no-oped on current installs while post-onboarding paths kept creating untiered orgs — in the reference workspace all 21 org records had neither `tier` nor `relationship_type`. The gate is now keyed on the data, not the version, and the whole flow is a script so the gate is testable (`tests/run_orgschema1_test.py` pins it firing on a current install).
 
-**Trigger gate:** only fires if `from_version < 2.10.3` AND no org in `_hq/data/entities.json` has an explicit `tier` field set. Skip silently otherwise.
+**Trigger gate:** fires whenever at least one org in `_hq/data/entities.json` is missing `tier` or still carries the legacy `view_exclude` key. Orgs with an explicit `tier` are never touched. Skip silently when no org qualifies. (No version check — the writer now defaults `tier`/`relationship_type` at creation, so this backfill converges to a no-op on healthy workspaces.)
 
-**Silent auto-apply flow:**
+**Silent auto-apply flow — run the script, do not hand-derive:**
 
-1. Read entities.json. For each org, compute the v2.10.3 inferred `tier` + `relationship_type` per the volume-tier rules in `references/ORG_AND_THREAD_MODEL.md` "Discovery" section. Use last 90 days of events.jsonl signal as the volume input.
-2. For every org, atomic-write the inferred values to entities.json:
-   - Set `tier` = inferred value
-   - If org's current `relationship_type` is unset OR matches the back-compat fallback (i.e., never explicitly configured): also set `relationship_type` = inferred value
-   - If org's current `relationship_type` is explicitly set to something other than the back-compat fallback: keep the customer's choice, only set `tier`
-3. Per atomic-write: bump entities.json `version`, set `last_writer: "command-room-update-bridge"`, set `last_updated`.
-4. Log one `tier_change` event per modified org with `triggered_by: "auto_applied_org_reclassification_v3_14_4"` and `{previous_tier, new_tier, previous_relationship_type, new_relationship_type, inference_signal_summary}`. The events are the audit trail; customers don't see them but the `cleanup` flow reads from them.
-5. Log a single `workspace_migration_applied` event with `migration_id: "org_reclassification_v2_10_3"` and `{orgs_examined, orgs_retiered, orgs_aligned_no_change}`.
+```
+python3 shared/scripts/backfill_org_tiers.py <workspace_root>          # dry-run, review counts
+python3 shared/scripts/backfill_org_tiers.py <workspace_root> --apply
+```
+
+The script owns the whole contract: volume-tier inference per `references/ORG_AND_THREAD_MODEL.md` "Discovery" Stage 2 over the last 90 days of events.jsonl (zero-signal orgs land `external`, never `passive` — an automated pass must not make records invisible); `relationship_type` written only when unset (an explicit customer value is never overwritten); legacy `view_exclude`/`view_exclude_reason` migrated to `tier: passive` with the reason preserved into `notes`; atomic locked write with `version` bump + `last_writer`; one `tier_change` event per modified org with `triggered_by: "org_tier_backfill_orgschema1"`; one `workspace_migration_applied` event with `migration_id: "org_tier_backfill_orgschema1"` and `{orgs_examined, orgs_retiered, orgs_skipped}`.
 
 **Customer-facing surface (one plain-English line, no question):**
 

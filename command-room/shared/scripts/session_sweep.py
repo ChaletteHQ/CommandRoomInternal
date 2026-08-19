@@ -293,11 +293,11 @@ def _sweep(
         "window": window_desc,
     }
     try:
-        from receipts import _machine_name
+        # SCHED1 — the shared stamp helper, so the machine token and its
+        # not-persisted flag land the same way here as on every other receipt.
+        from receipts import machine_fields
 
-        machine = _machine_name()
-        if machine:
-            receipt_data["machine"] = machine
+        receipt_data.update(machine_fields())
     except Exception:
         pass
     if extra_receipt:

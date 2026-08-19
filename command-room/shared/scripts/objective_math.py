@@ -34,6 +34,16 @@ import datetime
 import re
 from typing import Any, Iterable, Optional
 
+# SPEC PROV2 — identity comparisons on STORED source pointers route through
+# Layer A4's derivation, never a raw `==` (guard G30).
+try:
+    from connector_adapters.provenance import dedup_key_of
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_pv
+    from pathlib import Path as _Path_pv
+    _sys_pv.path.insert(0, str(_Path_pv(__file__).resolve().parent))
+    from connector_adapters.provenance import dedup_key_of
+
 DIRECTIONAL = ("on_track", "at_risk", "off_track", "blocked")
 
 DEFAULT_CONFIG = {
@@ -174,9 +184,13 @@ def forum_instances(meeting_events: Iterable[dict], binding: dict,
             continue
         ref = ((e.get("data") or {}).get("source_ref")
                or e.get("source_ref") or f"ts:{ts.isoformat()}")
-        if ref in seen:
+        # PROV2 — dedup on the DERIVED identity, so a `meeting` and its
+        # `meeting_processed` receipt spelled with different case still count
+        # as ONE forum instance rather than two review cycles.
+        key = dedup_key_of(ref) or str(ref).strip()
+        if key in seen:
             continue
-        seen.add(ref)
+        seen.add(key)
         out.append(e)
     return out
 
@@ -611,6 +625,7 @@ def load_objective_inputs(workspace_root) -> dict:
     import objective_state
     from cru_match import (load_events_defensively, load_open_commitments,
                            split_pending_review)
+    from primary_user import resolve_primary_user_from_entities
     from thread_activity import apply_reclassifications, derive_from_events
 
     ws = _Path(workspace_root)
@@ -648,22 +663,16 @@ def load_objective_inputs(workspace_root) -> dict:
         for t in (container.get("threads") or container.get("projects") or []):
             if isinstance(t, dict) and t.get("id"):
                 threads_by_id[t["id"]] = t
-        # TZFIX v5.9.4 (same class as tz.py): merge, don't first-truthy-pick —
-        # a truthy inner block must not shadow a top-level one that still holds
-        # the key. Inner wins on conflict (unchanged precedence; nothing in the
-        # codebase writes `workspace.user_id`, so the two never disagree today).
-        _inner_ws = container.get("workspace")
-        _top_ws = data.get("workspace")
-        ws_settings = {
-            **(_top_ws if isinstance(_top_ws, dict) else {}),
-            **(_inner_ws if isinstance(_inner_ws, dict) else {}),
-        }
-        primary_user_id = ws_settings.get("user_id")
-        if not primary_user_id:
-            for p in container.get("people") or []:
-                if isinstance(p, dict) and p.get("is_primary_user"):
-                    primary_user_id = p.get("id")
-                    break
+        # USERKEY1 — routed through THE shared seam. This used to be an inline
+        # resolver: canonical `user_id`, then an `is_primary_user` loop. It was
+        # right about the key and wrong about everything else — it missed the
+        # `is_user` spelling and the `user_first_name` fallback, so a workspace
+        # the rest of the product could resolve still produced unattributed
+        # objectives ownership moves here. The seam owns the order now; the
+        # shape merge that used to live here (TZFIX v5.9.4: merge, don't
+        # first-truthy-pick) moved into it too, so handing it the RAW file dict
+        # keeps the top-level/inner `workspace` coverage this block had.
+        primary_user_id = resolve_primary_user_from_entities(data)
     except (OSError, ValueError):
         pass
 

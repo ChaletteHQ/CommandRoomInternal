@@ -421,6 +421,42 @@ Hard rules:
 - **One chart per event.** Compound asks split into sequential asks, one
   `chart_render` each.
 
+## Day-intent lane (SPEC BK1, Daily Bookends, 2026-08-16)
+
+A tiny typed record of what ONE day is about. Written ONLY through
+`shared/scripts/day_intent.py` (`write_day_intent` / `reverse_day_intent`);
+read ONLY through `day_intent.load_day_intent` — every surface reads through
+it, nobody greps. Payload shape in `event-payloads.schema.json`.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `day_intent` | `day_intent.write_day_intent` — BK1 ships ONE caller, the workspace-manager chat path ("tomorrow is about X", `origin="manual"`); the end-of-day chat's one-tap confirm (`origin="wrap"`) and its auto-draft (`origin="proposed"`) are EOD1's callers of the same function, wired by nothing today. `day_intent.reverse_day_intent` appends the additive restore/retraction | `day_intent.load_day_intent` (THE reader — the morning surface's "what today is about" line, the end-of-day chat's own read-back), `brain_undo` (the `day_intent` reverser + the bare-`undo` batch listing) |
+
+Hard rules:
+
+- **Latest wins, per `for_date`.** Append-only supersession (the OBJ2
+  posture): changing your mind appends a NEW record for the same day and the
+  reader returns the last one. Nothing is edited, nothing is deleted, and
+  every earlier record stays readable as the history of what you thought when.
+- **The date is workspace-LOCAL.** `for_date` resolves through
+  `shared/scripts/tz.py`, never UTC. At 9pm Pacific the UTC calendar has
+  already rolled over — which is exactly when an end-of-day chat fires — so a
+  UTC-derived "tomorrow" files the intent under the day after the one the CEO
+  meant. An unresolvable timezone RAISES; it never degrades to UTC.
+- **A guess never renders as fact.** `origin="proposed"` is an auto-draft
+  awaiting a tap. `load_day_intent` SKIPS proposed rows by default, so no
+  surface can render one as the CEO's stated intent by forgetting a flag; the
+  end-of-day chat asks for it explicitly (`include_proposed=True`) and reads
+  the returned `stated` flag. A proposed row never displaces a stated one.
+- **Empty means reversed, never stated.** The writer refuses an empty item
+  list. The ONLY record carrying `items: []` is the reversal's retraction
+  (`data.retracted: true`), which the reader answers as None.
+- **Born with provenance + an undo handle.** Every write carries a PROV1
+  `source_ref` (a chat write's `session:` receipt) or `provenance_missing`,
+  and a `brain_batch_id` + `brain_change_class: day_intent` pair so
+  `brain_undo.undo_batch` can reverse it. The reversal itself is unstamped —
+  an undo is not its own undoable change class.
+
 ## Coach lane (SPEC COACH1 §4.5, 2026-07-24) — coach-pack repos only
 
 The Business Coach Pack's whole vocabulary, **registered in one pass up front**
@@ -503,6 +539,18 @@ Hard rules:
   surfaces (Waiting On / My Plate) are read-side filters
   (`shared/scripts/surface_split.py`) over the projected open set, and every
   kind change rides the existing additive `commitment_reclassified` marker.
+  **Routine writers (the capture legs, all four through the ONE shared gate
+  `capture_gate.gate_commitment_data`):** `meeting_capture` (transcripts),
+  `sent_capture` (the user's own sent mail — owner is always the user),
+  `slack_capture` (Slack), and — INCAP1 v5.12.1 — `inbound_capture` (inbound
+  mail; the only leg that writes BOTH directions, owner = the sender for a
+  counterparty's promise and owner = the user for a reply-shaped commitment
+  the CEO owes an answer on). INCAP1 introduces NO new event types: it is the
+  missing WRITER for the existing `commitment` / `commitment_observed` shapes,
+  and it is the only routine producer of `data.thread_ref` on items the user
+  does not own — the population REPLYCLOSE's reply bases read. It never writes
+  a closure of any kind (`inbound_capture.assert_writer_only` enforces that on
+  the composed batch).
 - `type: commitment_resolved` — MUST carry a readable id in one of
   `data.commitment_id` (preferred), `data.id`, `data.target_id` (legacy),
   `data.commitment_seq`, `data.source_event_seq`. An id-less closure is
@@ -512,6 +560,16 @@ Hard rules:
   `close_commitment`'s idempotency both resolve `commitment_seq` /
   `source_event_seq` → the commitment at that seq (F3 amnesty; ~252 historic
   dead letters recovered read-side, no history rewrite).
+- **The title SNAPSHOT on a close (EODFIX1, 2026-08-17) — ADDITIVE and
+  OPTIONAL.** `close_commitment` stamps `data.title` — what the commitment was
+  CALLED at the moment it closed — onto the parent tombstone and every cascade
+  child. Never required and never backfilled: every close already on disk
+  predates it, and a later retitle does not rewrite history. Readers must still
+  join by id when it is absent (`end_of_day.compute_wins` /
+  `closures_since` do). It exists because a tombstone that names only an id is
+  a tombstone every downstream surface has to re-join the log to render, which
+  is how the End of Day's wins block ended up structurally blind to the one
+  thing this product writes most of.
 - **Writing closures (Phase 2 Stage B):** `commitment_resolved` is written
   ONLY through `commitment_state.close_commitment()` — the single closure
   path (legacy-id normalization via seq lookup, loud `CommitmentIdError` on
@@ -519,6 +577,69 @@ Hard rules:
   floor, `data.resolution` in done | dropped | superseded).
   `cru_match.build_commitment_resolved_event` is a legacy shape helper —
   construction-only, never build-and-append in new code.
+- **Source pointers on the close family (PROV1, 2026-08-16) — ADDITIVE and
+  OPTIONAL.** Every close-family writer — `close_commitment` (and its cascade
+  child-closer), `supersede_commitment`, `split_commitment`, `resolve_thread`,
+  plus the `commitment_updated` / `commitment_partial_received` writes that
+  assert an EXTERNAL fact — takes a `source_ref` keyword and stamps exactly
+  one additive `data` key: `source_ref` (the canonical Layer A4
+  `provider:native_id` key, canonicalized by the writer via
+  `connector_adapters/provenance.py`) or `provenance_missing: true`. A close
+  is NEVER blocked for want of a pointer — a human/chat close passes its
+  `session:<receipt>` and a machine close with nothing in hand lands marked —
+  but a MALFORMED pointer is refused loudly (`provenance.SourceRefError`)
+  before anything is written; in the batch path the refusal is per-row.
+  **PROV2 (2026-08-16):** the stored pointer preserves the native id's case
+  (the provider half is still normalized), because Outlook and Drive ids are
+  case-sensitive and a lowercased pointer resolved to nothing on those
+  backends. Readers hand it to a resolver byte-identical and NEVER compare two
+  stored refs raw — identity comes from `provenance.dedup_key_of`, so a legacy
+  lowercased row and a case-preserved one are one artifact with no migration.
+  **Carve-out — the chat lane.** `chat_reconcile` mints its pointer as
+  `chat.source_ref_string` = `chat_ref_key`, which case-folds the room id AND
+  the message id before the writer sees it, and `canonical_source_ref` cannot
+  un-lowercase what it is handed. So on a chat-evidenced close the primary
+  `data.source_ref` is the REDUCED dedup-form key, not a resolvable pointer,
+  and the byte-identical-pass-through rule does not apply to it. The
+  case-preserving resolvable form on that lane is `data.chat_source_ref`,
+  written alongside by `chat.pointer_fields` and guaranteed present —
+  `chat_reconcile.assert_pointer_or_refuse` raises without it, on both the
+  close and the proposal branch. Resolve chat rows from `chat_source_ref`; use
+  `source_ref` there for identity only. Every other lane's `source_ref` is
+  case-preserved. (Minting the chat string half case-preserving is a sequenced
+  writer change, owed before any Teams/M365-backed promote.)
+  **PROVMINT1 (2026-08-17) — the module-side floor and the `ref_grain` field.**
+  Three writers no longer leave a close unsourced: `close_commitment` (with its
+  cascade child-closer and the `close_commitments` batch), `clear_review_flags`
+  and `reopen_commitment` MINT `session:<source_skill>:<now to the second>` when
+  nothing reaches them, and stamp the additive `data.ref_grain:
+  "surface_minted"` beside it. `provenance_missing` is UNREACHABLE from those
+  three; `supersede_commitment` and `resolve_thread` are deliberately outside
+  the set and still stamp the marker. `ref_grain` is written ONLY on a mint, so
+  its ABSENCE means caller-passed — which every pre-PROVMINT1 row is, so the
+  boundary needs no backfill and reclassifies nothing. Readers that must tell
+  the two apart use `provenance.is_surface_minted`; the coverage metric splits
+  on it (`caller_passed` / `surface_minted`, summing to `with_pointer`) so the
+  headline number cannot climb to a fake 100% just because the mint shipped.
+  Two writers pass NO pointer BY DESIGN and keep doing so — `watch_gate.
+  close_as_assumed` (an expiry close has nothing to cite) and
+  `repair_commitment_closures.apply_repairs` (provenance cannot be
+  retrofitted); they land on the minted floor, which points at the act that
+  wrote them and never claims evidence they never had.
+  `clear_review_flags` / `reopen_commitment` gained `source_ref` here: they
+  structurally could not carry one before, which is why the walk found six
+  unmarked `commitment_updated` events.
+  **Legacy rows carry neither key and are never an error** (same posture as
+  Layer A4's missing `account_id`); provenance is saved at write time or it is
+  gone, so no backfill exists. Full contract:
+  `shared/COMMITMENT_SCHEMA.md` § Resolution. Coverage metric:
+  `closure_index.pointer_coverage` / `pointer_coverage_line`, rendered by
+  usage-report and operator-report. NO new event type — `source_ref` and
+  `ref_grain` are data fields, not types.
+- `thread_resolved` — written through `commitment_state.resolve_thread()`
+  (PROV1), which owns the envelope log-resolution used to hand-compose
+  (`data.id` / `data.kind` / `data.source_artifact`) and carries the pointer
+  contract above. Commitments still close through `close_commitment`.
 - `commitment_superseded` — the MERGE closer (v4.6.0 C4) and the SPLIT closer
   (v4.6.0 S4). Written ONLY through
   `commitment_state.supersede_commitment()` (merge: closes a duplicate in
@@ -564,8 +685,11 @@ Hard rules:
   `scan-for-commitments`; full contract in `COMMITMENT_SCHEMA.md`
   § Observed tier.
 - `commitment_update` is drift; the gate rewrites it to `commitment_updated`.
-- `commitment_updated` — writers: the Commitments orchestrator `push to [date]`
-  verb (`data: {commitment_id, new_due, reason}`), the CRU schedule-shift
+- `commitment_updated` — writers: the `push to [date]` verb via
+  `commitment_state.apply_later`'s defer leg
+  (`data: {commitment_id, new_due, pushed_by, reason}`) — THE writer for that
+  verb since APPLYAUDIT1, which retired the per-surface hand-appends that
+  preceded it (their shape carried no `pushed_by`), the CRU schedule-shift
   path (`cru_match.build_commitment_updated_event`,
   `data: {commitment_id, change_summary, evidence}`), and the S4 `fix wording`
   verb (`commitment_state.edit_commitment_wording`,
@@ -600,7 +724,14 @@ Hard rules:
   attachment fields on the fetch, counted separately from their truth) and
   `coverage` answers "how much of the open set can this rail reach at all"
   (items with no resolvable owner can never be closed by a reply, and the
-  receipt says so rather than implying full coverage). This is an AUDIT TRACE,
+  receipt says so rather than implying full coverage). On BOTH mail rails the
+  basis counters inside `signal_fields` come in PAIRS: `n_graded_on_*` is what
+  the matcher PROPOSED, `n_closed_on_*` is what the closure path actually
+  WROTE, and `n_graded_close_refused` + `close_refusals` name the gap. Reading
+  only the graded half is how a receipt came to carry `n_closed_on_delivery: 1`
+  beside `n_closed: 0` (live `sent_reconcile` seq 9561/9617) — which reads as a
+  lost write and is really the pending-review floor doing its job.
+  This is an AUDIT TRACE,
   not a task receipt: it carries no `task_id`, `receipts.count_runs` never
   sees it, and the host task still writes its own `pack_run`.
 - `backlog_sweep` (SWEEPBACK, 2026-07-30) — **writer:**
@@ -652,6 +783,15 @@ top of this registry: canonical task_id spellings, the `late_tier` field name,
 `shared/RECEIPT_CONTRACT.md` + `shared/scripts/receipts.py`. Writers call
 `log_receipt()` — never hand-rolled receipt JSON; readers go through
 `iter_receipts()` / `count_runs()` — never per-reader matchers.
+
+**`pack_run.data.receipt_id` (EODFIX1, 2026-08-17) — ADDITIVE and OPTIONAL.**
+The End of Day's receipt carries an id of its own, minted by
+`end_of_day.mint_receipt_id` as `eod_<UTC to the second>-<8 hex>` (the `swb_` /
+`di_` shape). Every one-tap gesture resolved against that fire points at it —
+`session:<receipt_id>:<gesture>` — so two acts of one evening cannot share a
+pointer. Receipts written before EODFIX1 carry none, and `end_of_day.choice_map`
+falls back to `session:end-of-day:<the receipt's own timestamp>` rather than a
+null pointer. No other receipt writer mints one today; nothing requires it.
 
 ### `chat_reconcile` (SPEC CHATSCAN1 §B, 2026-08-08)
 

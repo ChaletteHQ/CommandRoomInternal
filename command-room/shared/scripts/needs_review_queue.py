@@ -761,6 +761,10 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
 
     pending = _pending_by_id(workspace_root)
     cleared_by = _resolve_user(workspace_root)
+    # PROVMINT1 — this call IS one gesture, so its minted receipt is read from
+    # the clock ONCE and handed to every write below. Minting per row would
+    # hand the coverage metric N distinct pointers for one decision.
+    _gesture_iso = _now_iso()
     results: list[dict] = []
     n_confirmed = n_not_pending = n_held = n_failed = 0
 
@@ -794,6 +798,10 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
                 workspace_root, cid, cleared_by=cleared_by,
                 source_skill=source_skill,
                 note="confirmed from the needs-your-call queue",
+                # PROVMINT1 — one gesture, one receipt: the clock is read once
+                # for the whole batch above, so N confirms in one answer carry
+                # ONE pointer rather than N a second apart.
+                mint_now_iso=_gesture_iso,
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
@@ -838,6 +846,10 @@ def confirm_satisfied_reasons(workspace_root, *,
     events_path = _events_path(Path(workspace_root))
     opens = load_open_commitments(events_path, workspace_root=workspace_root)
     cleared_by = _resolve_user(workspace_root)
+    # PROVMINT1 — this call IS one gesture, so its minted receipt is read from
+    # the clock ONCE and handed to every write below. Minting per row would
+    # hand the coverage metric N distinct pointers for one decision.
+    _gesture_iso = _now_iso()
     results: list[dict] = []
     n_cleared = n_failed = 0
     for ev in opens:
@@ -850,6 +862,7 @@ def confirm_satisfied_reasons(workspace_root, *,
                 workspace_root, cid, cleared_by=cleared_by,
                 source_skill=source_skill,
                 note=f"review reason satisfied — {str(d.get('review_reason') or '')[:120]}",
+                mint_now_iso=_gesture_iso,   # PROVMINT1 — one pass, one receipt
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
@@ -949,7 +962,8 @@ def _checked_now_iso(now_iso) -> str:
 
 def done_items(workspace_root, ids, *, resolved_by: str,
                source_skill: str = SOURCE_SKILL,
-               attested_ids=(), now_iso: str | None = None) -> dict:
+               attested_ids=(), now_iso: str | None = None,
+               source_ref=None) -> dict:
     """`already done` — the user attests they already did this one (DONE1).
 
     THE PROBLEM THIS FIXES. Until now the queue's only answers were confirm
@@ -1041,6 +1055,13 @@ def done_items(workspace_root, ids, *, resolved_by: str,
     `drop_items` handles them — reported per item with the writer's own
     message, never swallowed, never auto-cascaded.
 
+    PROV1 — a Done is a HUMAN close with no message behind it, which is
+    precisely the case §3.2 says must never be blocked: its pointer is the
+    surface receipt (`session:<surface>:<now>`), derived from the same two
+    checked values the evidence sentence is built from, so the pointer cannot
+    disagree with the prose. A caller holding a truer receipt id passes
+    `source_ref` and it wins.
+
     Returns {"results": [...], "n_done": int, "n_not_pending": int,
              "n_held": int, "n_refused": int, "n_failed": int}.
     """
@@ -1065,6 +1086,13 @@ def done_items(workspace_root, ids, *, resolved_by: str,
         "attested_at": now_iso,
         "attested_on_surface": source_skill,
     }
+    # PROV1 — the surface receipt for a human attestation. PROVMINT1 moved the
+    # MINT into `commitment_state` (one helper, one home — this file used to
+    # spell the string itself, and a shape spelled in three places is three
+    # shapes waiting to drift). What stays here is the thing only this caller
+    # knows: the gesture's own instant, already checked above, so the receipt
+    # can never name a surface or a time the evidence sentence does not — and
+    # so BOTH writes of this one gesture carry ONE receipt.
 
     # THE fence, over the rows this queue can actually answer — the same call
     # `confirm_items` makes, with the same row shape and the same override
@@ -1123,6 +1151,11 @@ def done_items(workspace_root, ids, *, resolved_by: str,
                 confirmed = clear_review_flags(
                     workspace_root, cid, cleared_by=resolved_by,
                     source_skill=source_skill, note=DONE_CONFIRM_NOTE,
+                    # PROVMINT1 §0-2 — the confirm leg of a Done is half of one
+                    # gesture and owes the same pointer the close leg carries.
+                    # This write is the one that produced the walk's six
+                    # unmarked `commitment_updated` events.
+                    source_ref=source_ref, mint_now_iso=now_iso,
                 )
             except CommitmentIdError as exc:
                 results.append({"commitment_id": cid, "status": "not_found",
@@ -1143,6 +1176,7 @@ def done_items(workspace_root, ids, *, resolved_by: str,
                     evidence=evidence, source_skill=source_skill,
                     resolution="done", user_confirmed=True,
                     extra_data=dict(stamp),
+                    source_ref=source_ref, mint_now_iso=now_iso,
                 )
             except (CommitmentIdError, OpenSubitemsError) as exc:
                 # (a) landed, (b) did not: the item is a confirmed OPEN
@@ -1171,7 +1205,7 @@ def done_items(workspace_root, ids, *, resolved_by: str,
 
 
 def not_mine_items(workspace_root, ids, *, resolved_by: str,
-                   source_skill: str = SOURCE_SKILL) -> dict:
+                   source_skill: str = SOURCE_SKILL, source_ref=None) -> dict:
     """`not mine` — the same closure `drop` writes, with the reason that says
     what actually happened: the capture was real, it just was not the user's.
 
@@ -1181,12 +1215,14 @@ def not_mine_items(workspace_root, ids, *, resolved_by: str,
     `commitment_state.reassign_commitment` instead — reassignment is a
     different question and this queue does not guess at it."""
     return drop_items(workspace_root, ids, resolved_by=resolved_by,
-                      evidence=NOT_MINE_EVIDENCE, source_skill=source_skill)
+                      evidence=NOT_MINE_EVIDENCE, source_skill=source_skill,
+                      source_ref=source_ref)
 
 
 def drop_items(workspace_root, ids, *, resolved_by: str,
                evidence: str = DROP_EVIDENCE,
-               source_skill: str = SOURCE_SKILL) -> dict:
+               source_skill: str = SOURCE_SKILL,
+               source_ref=None) -> dict:
     """Drop unconfirmed extractions: closed with `resolution="dropped"`.
 
     Through `commitment_state.close_commitment` — THE closure path — with
@@ -1206,6 +1242,16 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
     contracts. Ids that are already closed still flow through, so a re-drop
     keeps its honest `already_resolved` no-op ack.
 
+    PROV1 — a drop is a human decision on a surface, so its pointer is that
+    surface's receipt (`session:<surface>:<now>`), same posture and the same
+    minted SHAPE as `done_items`. The time component is load-bearing, not
+    decoration: without it every drop the surface ever performs carries one
+    identical string, which resolves to nothing and still counts as
+    `with_pointer` in `closure_index.pointer_coverage` — i.e. a constant
+    inflates the very metric PROV1 exists to produce. Minted ONCE per call, so
+    one gesture over many ids reads as one act (again as `done_items` does).
+    A caller holding a truer receipt id passes `source_ref` and it wins.
+
     Returns {"results": [...], "n_dropped": int, "n_already": int,
              "n_refused": int, "n_failed": int}.
     """
@@ -1214,6 +1260,15 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
     from cru_match import load_open_commitments, split_pending_review
 
     ws = Path(workspace_root)
+    # PROV1 — the instant of THIS drop gesture, read from the clock ONCE here so
+    # the receipt names when the decision was made instead of being one string
+    # every drop shares forever, and so one gesture over many ids reads as one
+    # act. Same resolution as `done_items` (whole seconds), so two gestures
+    # inside one second still collide — parity with the Done path, deliberately,
+    # not an oversight. PROVMINT1: the receipt STRING is minted by
+    # `commitment_state` (one helper, one home); what belongs here is the clock
+    # read, which is the only part this surface knows.
+    drop_mint_iso = _now_iso()
     confirmed_open = {
         _commitment_id(ev)
         for ev in split_pending_review(load_open_commitments(
@@ -1236,6 +1291,7 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
                 workspace_root, cid, resolved_by=resolved_by,
                 evidence=evidence, source_skill=source_skill,
                 resolution="dropped", user_confirmed=True,
+                source_ref=source_ref, mint_now_iso=drop_mint_iso,
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
@@ -1663,6 +1719,10 @@ def undo_done_items(workspace_root, ids, *, restored_by: str,
             seq, bool) else None
     closures = _latest_closure_map(workspace_root, targets)
 
+    # PROVMINT1 — this call IS one gesture, so its minted receipt is read from
+    # the clock ONCE and handed to every write below. Minting per row would
+    # hand the coverage metric N distinct pointers for one decision.
+    _gesture_iso = _now_iso()
     results: list[dict] = []
     n_undone = n_already = n_refused = n_failed = 0
     for raw in ids or []:
@@ -1699,6 +1759,7 @@ def undo_done_items(workspace_root, ids, *, restored_by: str,
                 reopened = reopen_commitment(
                     workspace_root, cid, reopened_by=restored_by,
                     reason=UNDO_DONE_REASON, source_skill=source_skill,
+                    mint_now_iso=_gesture_iso,   # PROVMINT1 — one undo, one receipt
                 )
             except Exception as exc:
                 # Includes CommitmentIdError. The item stays CLOSED and nothing

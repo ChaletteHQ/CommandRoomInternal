@@ -836,6 +836,23 @@ def route_expiry(rows, *, now_iso: str, posture_level: int,
 # ---------------------------------------------------------------------------
 
 
+def _prefixed_ref(value) -> Optional[str]:
+    """`value` when it is a `provider:native_id`-shaped pointer, else None.
+
+    PROV1's canonicalizer REFUSES a prefix-less token, which is right at a
+    writer that knows what it holds and wrong at a passthrough that does not.
+    This is the passthrough guard: a ref that already names its system flows
+    to the close, anything else is left to the caller's own receipt rather
+    than turned into a raised exception on a live confirm path."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    provider, sep, native = v.partition(":")
+    if sep and provider.strip() and native.strip():
+        return v
+    return None
+
+
 def dual_evidence(original: str, signal: dict) -> str:
     """The evidence string a self-confirm writes: BOTH halves, always. The
     original guess is named so the record never claims more certainty than it
@@ -847,7 +864,7 @@ def dual_evidence(original: str, signal: dict) -> str:
 
 def self_confirm(workspace_root, commitment_id, *, signal: dict,
                  resolved_by: str, source_skill: str,
-                 watch: Optional[dict] = None) -> dict:
+                 watch: Optional[dict] = None, source_ref=None) -> dict:
     """Corroboration inside the window closes the item — silently.
 
     `signal` is `{"kind": <one of CORROBORATION_KINDS>, "detail": str,
@@ -862,6 +879,13 @@ def self_confirm(workspace_root, commitment_id, *, signal: dict,
     saying otherwise would launder it. An item that is ALSO an unconfirmed
     extraction therefore refuses to close and is reported, not written: a
     guess never self-closes off another guess.
+
+    PROV1 — `dual_evidence` names the corroborating signal "so the close can
+    be audited", and PROSE is exactly what does not survive an audit. The
+    pointer to the corroborating artifact rides `signal["source_ref"]` (or the
+    explicit argument, which wins): the sent message, the calendar event, the
+    transcript that corroborated. A caller whose backend gave it no id passes
+    none and the close lands marked — visible, never blocked.
     """
     from commitment_state import (CommitmentIdError, OpenSubitemsError,
                                   PendingReviewError, close_commitment)
@@ -880,6 +904,7 @@ def self_confirm(workspace_root, commitment_id, *, signal: dict,
             source_skill=source_skill, resolution="done",
             extra_data={"watch_resolution": "self_confirmed",
                         "corroboration_kind": kind},
+            source_ref=source_ref or (signal or {}).get("source_ref"),
         )
     except PendingReviewError as exc:
         return {"status": "held_pending_review",
@@ -894,7 +919,18 @@ def close_as_assumed(workspace_root, commitment_id, *, resolved_by: str,
                      source_skill: str) -> dict:
     """The low-stakes expiry close. Recorded as ASSUMED, never as verified —
     the evidence string says so in the words a person would use, and
-    `data.assumed_done` lets any surface badge it honestly."""
+    `data.assumed_done` lets any surface badge it honestly.
+
+    PROV1 — this close passes NO `source_ref` and that is the correct answer,
+    not an oversight: an expiry close is by definition the one with nothing to
+    point at. PROVMINT1 did not change that judgement and deliberately did not
+    wire a pointer in here; what changed is what the module does with the
+    silence. The close now lands on the module floor — `session:<surface>:<now>`
+    stamped `ref_grain: "surface_minted"` — instead of `provenance_missing:
+    true`. Both spellings say the same true thing about this close (nobody
+    cited anything; the watching surface let it expire at that instant), and
+    the grain marker is what keeps it out of the artifact-backed number the
+    coverage line reports."""
     from commitment_state import (CommitmentIdError, OpenSubitemsError,
                                   PendingReviewError, close_commitment)
     try:
@@ -1050,6 +1086,26 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
                 DEFAULT_ORIGINAL_EVIDENCE,
                 source_skill=source_skill, resolution="done",
                 user_confirmed=True,
+                # PROV1 — this callsite is a HUMAN bulk answer, so its pointer
+                # is the confirm's own receipt (surface + apply moment), the
+                # same two facts the fence screened on. A row that carries a
+                # `matched_ref` names the artifact the proposal rested on and
+                # wins — but ONLY when that ref carries a provider prefix. No
+                # writer populates `matched_ref` today (it rides the PARK path
+                # as free text), so accepting an unprefixed value here would
+                # hand an unresolvable string to a canonicalizer that refuses
+                # loudly, and a bulk confirm is the last path that should
+                # start raising on a field nobody fills in.
+                #
+                # PROVMINT1 GENERALIZED THIS SHAPE. The prefer-the-better-ref-
+                # then-mint decision that used to live on this line is now the
+                # module's own (`commitment_state._close_pointer_fields`), so
+                # every writer answers "what pointer does this carry" the same
+                # way. What stays here is the half only this caller knows: the
+                # untrusted field to prefer, and the BATCH's instant — read
+                # once above, so one bulk answer is one act.
+                source_ref=_prefixed_ref(row.get("matched_ref")),
+                mint_now_iso=now,
             )
         except (CommitmentIdError, OpenSubitemsError, PendingReviewError) as exc:
             results.append({"id": rid, "commitment_id": cid,

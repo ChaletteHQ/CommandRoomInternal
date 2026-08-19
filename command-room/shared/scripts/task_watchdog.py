@@ -113,6 +113,7 @@ from schedule_config import (  # noqa: E402
     CronParseError,
     load_schedule_config,
     parse_cron,
+    serving_task_ids,
     task_display_name,
 )
 
@@ -494,9 +495,29 @@ def check_tasks(
         config = load_schedule_config(entities)
 
     enabled = {tid: spec for tid, spec in config.items() if spec.get("enabled")}
-    receipts = last_receipts(workspace_root, enabled.keys())
+    # EOD2 — a RENAMED task is served by whichever of its ids this machine
+    # actually has registered, and its fire history spans both. So every
+    # question below ("is it registered?", "when did it last fire?") is asked
+    # of the SERVING set, not the successor id alone. `past-meetings` left
+    # DEFAULT_SCHEDULES, so it is not reported as a task of its own — that is
+    # what makes a still-registered retired id structurally silent — but it
+    # is precisely what proves `end-of-day` healthy on the same machine.
+    # Without this, EOD2's ship day turns every fleet workspace's evening
+    # chat into a "missing from the schedule" finding on a chat that fires
+    # tonight.
+    # `serving_task_ids`, not an inlined `(tid,) + renamed_predecessors(tid)`:
+    # two spellings of one derivation is how they drift (REVIEW N-2 — the
+    # registry helper was uncalled by the code that most needs it).
+    serving: dict[str, tuple] = {tid: serving_task_ids(tid) for tid in enabled}
+    receipt_ids = sorted({t for ids in serving.values() for t in ids})
+    receipts_by_id = last_receipts(workspace_root, receipt_ids)
+    receipts = {
+        tid: max((d for d in (receipts_by_id.get(t) for t in ids) if d is not None),
+                 default=None)
+        for tid, ids in serving.items()
+    }
     try:
-        signals = late_signals(workspace_root, enabled.keys())
+        signals = late_signals(workspace_root, receipt_ids)
     except Exception:
         signals = {}
     registered_at = parse_ts(ws_config.get("registered_at") or "")
@@ -504,8 +525,23 @@ def check_tasks(
 
     reports = []
     for tid, spec in enabled.items():
+        # The record / registration answer comes from whichever SERVING id
+        # this machine has (EOD2). `served_by` is the predecessor when that
+        # is what is registered — None on every workspace that has the
+        # current id, which is every workspace with no rename outstanding.
+        served_by = None
         rec = records_by_id.get(tid)
-        is_registered = tid in registered_ids or rec is not None
+        for alt in serving[tid][1:]:
+            if rec is None and alt in records_by_id:
+                rec = records_by_id[alt]
+            if alt in registered_ids or alt in records_by_id:
+                served_by = served_by or alt
+        is_registered = (
+            tid in registered_ids or records_by_id.get(tid) is not None
+            or served_by is not None
+        )
+        if tid in registered_ids or records_by_id.get(tid) is not None:
+            served_by = None
         last_fired = receipts.get(tid)
         last_run_at = _to_local_naive(parse_ts((rec or {}).get("lastRunAt") or ""))
         try:
@@ -550,7 +586,20 @@ def check_tasks(
         # can come from the view-mtime fallback (weekly-insights), so the
         # receipt-borne signals are gated on the receipt actually BEING the
         # newest fire (within dispatch grace).
-        sig = signals.get(tid) or {}
+        # Same serving-set read as the receipts above: on a machine still
+        # firing the predecessor, the late/catch-up evidence for this slot is
+        # filed under the OLD id. Newest receipt_dt wins.
+        sig = {}
+        for alt in serving[tid]:
+            cand = signals.get(alt) or {}
+            if not cand:
+                continue
+            if not sig or (
+                cand.get("receipt_dt") is not None
+                and (sig.get("receipt_dt") is None
+                     or cand["receipt_dt"] > sig["receipt_dt"])
+            ):
+                sig = cand
         lf = sig.get("late_fire")
         last_fired_via = None
         caught_up = False
@@ -600,6 +649,11 @@ def check_tasks(
             "last_fired_via": last_fired_via,
             "caught_up": caught_up,
             "catchup": catchup_info,
+            # EOD2 — the retired id this machine is actually running, when
+            # that is what serves the row. None everywhere else, which is
+            # every workspace with no rename outstanding. Renders that name
+            # the task must say the name the customer's Scheduled list shows.
+            "served_by": served_by,
         })
     return reports
 
@@ -990,10 +1044,24 @@ def detect_registry_vantage(workspace_root, task_records, *, now=None) -> Option
     }
 
 
+def _spoken_name(r: dict) -> str:
+    """The name to SAY for a task report (EOD2).
+
+    On a machine running a renamed predecessor, the registry's display name
+    is not the name in the customer's Scheduled list. Every sentence about
+    that row has to use the name they can find, or the action it recommends
+    points at a row that is not there. `served_by` is None on every row of
+    every workspace with no rename outstanding, so this is the identity
+    function almost everywhere."""
+    if r.get("served_by"):
+        return task_display_name(r["served_by"])
+    return r["display_name"]
+
+
 def _caught_up_line(r: dict, now=None) -> str:
     """Dated catch-up render (F-43 P2c's fix): name WHEN it caught up and
     which slot it served — facts only, no cause."""
-    name = r["display_name"]
+    name = _spoken_name(r)
     fired = _human_time(_dt.datetime.fromisoformat(r["last_fired"]), now=now)
     sched_iso = (r.get("catchup") or {}).get("scheduled_for")
     if sched_iso:
@@ -1014,7 +1082,7 @@ def _caught_up_line(r: dict, now=None) -> str:
 def _first_run_line(r: dict, now=None) -> str:
     """never_fired render (F-43 P1a's fix): a task with zero receipts has NO
     fire history to speak of — say so, and name the real next fire time."""
-    name = r["display_name"]
+    name = _spoken_name(r)
     if r.get("next_fire"):
         try:
             nxt = _human_time(_dt.datetime.fromisoformat(r["next_fire"]), now=now)
@@ -1123,7 +1191,12 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
     # problems bucket are excluded — their task-level line exists.
     failure_findings, failure_lines = check_task_failures(
         workspace_root, now=now, reports=reports,
-        exclude_tasks={r["task"] for r in problems},
+        # A failure event names the id that FAILED, which on a machine
+        # running a renamed predecessor is the predecessor (EOD2). Exclude
+        # both spellings, or a task already carrying a problem line collects
+        # a second one under its other name.
+        exclude_tasks={r["task"] for r in problems}
+                      | {r["served_by"] for r in problems if r.get("served_by")},
     )
     lines += failure_lines
 
@@ -1278,15 +1351,24 @@ def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
     # expected history, never drift. Same for the `maintenance_jobs` sub-dict
     # (change-schedule's job-level pause store), which shares the
     # schedule_config namespace but is not a taskId.
-    from schedule_config import SUPERSEDED_BY
+    from schedule_config import RETIRED_TASKS, SUPERSEDED_BY
 
     superseded = {t for ids in SUPERSEDED_BY.values() for t in ids}
+    # EOD2 / REVIEW F-1 — a RENAMED predecessor's override key is not an
+    # orphan: `load_schedule_config` inherits it onto the successor's row, so
+    # it is still doing its job whether or not the customer has switched. The
+    # pre-fix code only stayed quiet about it by accident (the second clause,
+    # `tid not in registered_ids`), which is exactly why F-1 was silent — and
+    # that accident stops holding the moment the customer takes the rename.
+    # Flagging a LIVE override as drift would send them to delete their own
+    # schedule.
+    renamed = {t for t, spec in RETIRED_TASKS.items() if spec.get("renamed_to")}
     orphans = []
     try:
         data = json.loads(entities.read_text(encoding="utf-8"))
         overrides = ((data.get("workspace") or {}).get("schedule_config") or {})
         for tid in overrides:
-            if tid == "maintenance_jobs" or tid in superseded:
+            if tid == "maintenance_jobs" or tid in superseded or tid in renamed:
                 continue
             if tid not in DEFAULT_SCHEDULES and tid not in registered_ids:
                 orphans.append(tid)
@@ -1359,7 +1441,11 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> l
             "say 'set up command room schedules' once and I'll re-bind everything."
         )
     for r in reports:
-        name = r["display_name"]
+        # EOD2 — say the name the customer's own Scheduled list shows. On a
+        # machine still running the renamed predecessor, "your End of Day
+        # task hasn't run" names a row they cannot find; the honest sentence
+        # names the entry that is actually there.
+        name = _spoken_name(r)
         stamp_phrase = ""
         if r.get("last_run_at"):
             try:

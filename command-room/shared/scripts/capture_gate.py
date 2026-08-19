@@ -156,6 +156,14 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from event_types import KIND_VALUES  # noqa: E402
+# REVAMN1 §0-3 — the lapse-vs-dismissal test, imported not restated. See
+# `event_types.is_non_dismissal_closure`.
+from event_types import is_non_dismissal_closure as _is_non_dismissal  # noqa: E402
+
+# SPEC PROV2 — identity comparisons on STORED source pointers route through
+# Layer A4's derivation, never a raw `==` (guard G30). Stored pointers preserve
+# the native id's case now, so two spellings of one artifact coexist on disk.
+from connector_adapters.provenance import dedup_key_of  # noqa: E402
 
 try:
     from confidence import CONFIDENCE_SURFACE_MIN  # noqa: E402
@@ -393,6 +401,9 @@ TUNING_CAP = 3
 TUNING_WINDOW_DAYS = 30
 
 # Dismiss-family resolutions: the CEO saying "this wasn't mine to track."
+# NOT sufficient on its own since REVAMN1 — a `dropped` carrying a review-tier
+# `resolution_reason` is a bulk lapse nobody adjudicated, and the reader below
+# pairs this set with `event_types.is_non_dismissal_closure` to tell them apart.
 _DISMISS_RESOLUTIONS = frozenset({"dropped", "not_mine", "not mine"})
 
 # The caution rail's money detector — deliberately conservative: a currency
@@ -891,7 +902,11 @@ def corroborates(observed_ev: dict, candidate_ev: dict) -> bool:
     c_data = candidate_ev.get("data") if isinstance(candidate_ev.get("data"), dict) else {}
     o_ref = str(o_data.get("source_ref") or "").strip()
     c_ref = str(c_data.get("source_ref") or "").strip()
-    if not c_ref or c_ref == o_ref:
+    # PROV2 — "DIFFERENT source_ref" is an IDENTITY question, so it is asked of
+    # the derived key. Two case-variant spellings of one artifact (a legacy
+    # lowercased row and a post-PROV2 case-preserved one) are ONE source, and
+    # one source seen twice corroborates nothing.
+    if not c_ref or dedup_key_of(c_ref) == dedup_key_of(o_ref):
         return False
     o_ts, c_ts = _ev_time(observed_ev), _ev_time(candidate_ev)
     if not o_ts or not c_ts or c_ts <= o_ts:
@@ -1243,7 +1258,13 @@ def propose_gate_directives(
         elif t == "commitment_resolved":
             res = str(d.get("resolution") or "").strip().lower()
             cid = d.get("commitment_id") or d.get("id")
-            if cid and res in _DISMISS_RESOLUTIONS:
+            # REVAMN1 §0-3 — a bulk LAPSE is not a dismissal. The review-tier
+            # verbs close a pile nobody adjudicated row by row, so counting
+            # them here would propose suppressing a counterparty the user
+            # never complained about — and would defeat the ruling that a
+            # re-mention after an expiry is fresh evidence. The reason set
+            # lives in `event_types`, spelled once for both learners.
+            if cid and res in _DISMISS_RESOLUTIONS and not _is_non_dismissal(d):
                 dismissed_ids.add(str(cid))
         elif t == "commitment_reassigned":
             cid = d.get("commitment_id") or d.get("target_id")

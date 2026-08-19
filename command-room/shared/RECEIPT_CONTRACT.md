@@ -31,9 +31,33 @@ every writer calls one helper; every reader goes through one parser.
    post-wake catch-up is `catchup` — never a fabricated late scheduled
    fire). Legacy values (`user-trigger`, `scheduled_late_refire`) normalize
    read-side.
-4. **`machine`** (hostname) rides on every receipt — schedules are
-   per-machine (F-38); without it readers can't tell two machines from a
-   double-registration bug.
+4. **`machine`** (a stable per-machine token) rides on every receipt —
+   schedules are per-machine (F-38); without it readers can't tell two
+   machines from a double-registration bug. **It is NOT the hostname
+   (SPEC SCHED1, 2026-08-17).** It was — `platform.node()` — and inside
+   Cowork's sandbox that returns the same string on every physical machine,
+   so 840 receipts written from two computers all carried one value and the
+   field answered its own question with a constant. Every other
+   sandbox-visible name has the same defect: they describe the sandbox, not
+   the computer under it. The token now comes from
+   `shared/scripts/machine_identity.py::machine_id()`, which reads a
+   machine-local marker at `~/.command-room/machine_id` (home is not
+   Drive-synced; a token stored beside the ledger would sync to the other
+   machine and confidently name the wrong one), minting `<name>-<4 hex>` on
+   first use. **Writers call `receipts.machine_fields()`, never a private
+   copy of the stamp.** The user may overwrite the marker with a friendly
+   name (`office-laptop`) and receipts carry that instead; the file is read
+   on every call, so a rename takes effect on the next fire. The value stays
+   a plain string — no schema change, and every existing reader is unaffected.
+   `machine_id_fallback: true` appears (only when true) when the token could
+   not be persisted, meaning "this run's best guess, not a durable identity".
+   **What the flag does NOT cover, stated plainly:** the four hex are derived
+   from the node name plus the host hardware address, so if a sandbox presents
+   the SAME hardware address on two computers, both mint the identical token,
+   persist it, and carry no flag — the field then tells a reader as little as
+   the hostname did, silently. Nothing in the repo can settle that; comparing
+   `~/.command-room/machine_id` on two machines after a fire is the only test,
+   and until it is run this field is `probably` per-machine, not `known` to be.
 5. **Readers parse ALL legacy shapes forever.** events.jsonl is append-only
    history. Back-compat lives read-side; history is NEVER migrated in place.
 6. **Writers never hand-roll receipt JSON.** An orchestrator's final phase is

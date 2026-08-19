@@ -241,6 +241,7 @@
         "objective_report",
         "objective_completed",
         "objective_archived",
+        "day_intent",
         "brain_proposal",
         "brain_proposal_resolved",
         "brain_proposal_expired",

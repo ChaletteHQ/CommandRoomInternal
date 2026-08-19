@@ -105,7 +105,20 @@ CAPTURE_SKILLS = frozenset(
 
 # pack_run task ids that represent a delivered briefing artifact.
 MORNING_BRIEF_TASK_IDS = frozenset({"morning-brief"})
+
+# LEGACY ONLY — pre-BRIEFMERGE history, when prep briefs came from a separate
+# `upcoming-meetings` fire that produced one brief per run. That task is RETIRED
+# (schedule_config.RETIRED_TASKS): the morning brief now preps today's meetings
+# itself as its first leg. Kept so a report window reaching back before the
+# retirement still counts what those fires produced; post-retirement fires are
+# counted from the morning-brief receipt's prep_leg block instead.
 PREP_BRIEF_TASK_IDS = frozenset({"upcoming-meetings"})
+
+# The prep-leg outcome that means a brief was actually PRODUCED by this fire.
+# `reused` is deliberately excluded: it records that a prep already existed, so
+# no work happened on this run and the minutes were already credited when it was
+# made. Counting it would double-claim — the rubric under-claims by design.
+PREP_LEG_PRODUCED_OUTCOME = "ran"
 
 # "Other deliverables" rolled into one documents-produced line (SPEC C1 D4).
 DOCUMENT_EVENT_TYPES = frozenset(
@@ -302,6 +315,20 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
                 d = _parse_dt(ts)
                 if d is not None:
                     morning_pack_dates.add(d.date())
+                # SPEC BRIEFMERGE — the prep leg runs INSIDE this fire, so the
+                # briefs it produced are recorded on this receipt rather than on
+                # a separate `upcoming-meetings` one. Reading only the retired
+                # task id meant every prep brief made after the merge went
+                # uncounted: the "pre-meeting prep briefs" line vanished from a
+                # customer-facing report and the hours silently lost 20 minutes
+                # per brief. A fire that predates the merge has no prep_leg
+                # block and contributes 0 here, so history is unchanged.
+                prep_leg = (ev.get("data") or {}).get("prep_leg") or {}
+                counts = prep_leg.get("counts") or {}
+                produced = counts.get(PREP_LEG_PRODUCED_OUTCOME)
+                if isinstance(produced, bool) or not isinstance(produced, int):
+                    produced = 0
+                prep_briefs += max(0, produced)
             elif task_id in PREP_BRIEF_TASK_IDS:
                 prep_briefs += 1
             elif task_id == "objectives":

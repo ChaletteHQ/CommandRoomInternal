@@ -106,6 +106,14 @@ except ImportError:  # direct-path import (tests, bash one-liners)
     )
     from event_time import event_time
 
+# SPEC PROV2 — identity comparisons on STORED source pointers route through
+# Layer A4's derivation, never a raw `==` (guard G30).
+try:
+    from connector_adapters.provenance import dedup_key_of
+except ImportError:  # pragma: no cover — direct-path fallback
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from connector_adapters.provenance import dedup_key_of
+
 # Only open commitments captured this recently are duplicate candidates. The
 # real cross-writer pairs land hours-to-days apart (meeting -> follow-up email
 # -> nightly sweep); a same-title item from months ago is far more likely a
@@ -505,7 +513,12 @@ def auto_merge_eligible(
     new_ref = str(new_data.get("source_ref") or "").strip()
     open_ref = str(d_open.get("source_ref") or
                    open_ev.get("source_ref") or "").strip()
-    if not new_ref or not open_ref or new_ref == open_ref:
+    # PROV2 — the "DIFFERENT source_refs" bar is about INDEPENDENCE, so it is
+    # measured on the derived identity. Post-PROV2 pointers preserve the native
+    # id's case while pre-PROV2 rows are lowercased, and a raw `==` would read
+    # one artifact observed twice as two independent systems corroborating.
+    if (not new_ref or not open_ref
+            or dedup_key_of(new_ref) == dedup_key_of(open_ref)):
         return None
 
     # Re-score at the auto bar. `base["score"]` was computed against the
@@ -852,6 +865,11 @@ def apply_auto_merges(workspace_root, *, source_skill: str,
                     "brain_change_class": "commitment_merge",
                     "merged_from_writer": d.get("source_ref") or "",
                 },
+                # PROV1 — an auto-merge is a MACHINE decision taken inside one
+                # gate run, so its pointer is that run's receipt. The absorbed
+                # capture's own ref stays where it belongs, on
+                # `merged_from_writer` / `merged_source_refs`.
+                source_ref=f"session:{batch_id}",
             )
             resolve_proposal(ws, res["proposal_id"], "applied",
                              resolved_by=source_skill,

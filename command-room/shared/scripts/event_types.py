@@ -68,6 +68,52 @@ COMMITMENT_CLOSURE_ID_FIELDS = tuple(
     field for scope, field in COMMITMENT_CLOSURE_ID_CHAIN if scope == "data"
 ) + COMMITMENT_CLOSURE_SEQ_FIELDS
 
+# THE non-dismissal closure reasons (SPEC REVAMN1 §0-3). Same one-list-not-two
+# reasoning as the chain above, for a different pair of readers.
+#
+# WHAT `dropped` MEANS TO A LEARNER. Two passes mine closed commitments for a
+# per-counterparty suppression signal — `capture_gate.propose_gate_directives`
+# (proposes an observed-only override for a whole org) and
+# `commitment_noise.analyze_noise` (proposes a never-track rule for a source).
+# Both read `resolution == "dropped"` as the user saying "this was not worth
+# tracking", and at enough of them they propose to STOP CAPTURING that
+# counterparty. That inference is sound for the per-row Drop verb, where the
+# user looked at one item and let it go.
+#
+# It is NOT sound for a bulk lapse. The review-tier verbs close a pile the user
+# never adjudicated row by row: an expiry closes what nobody answered inside the
+# window, and an ingest kill closes a cluster because ONE INGEST was bad. Read as
+# dismissals they would teach the workspace to stop hearing a counterparty it has
+# no complaint about — and REVAMN1 §0-3 rules the opposite way: a re-mention
+# after an expiry is fresh evidence and must be captured again.
+#
+# So a `dropped` closure carrying one of these reasons is a lapse, not a
+# dismissal. Everything else — including a hand Drop and the confirmed-tier
+# age-out — is unchanged.
+RESOLUTION_REASON_KEY = "resolution_reason"
+REVIEW_EXPIRY_REASON = "review_expired"
+INGEST_KILL_REASON = "ingest_killed"
+NON_DISMISSAL_RESOLUTION_REASONS: FrozenSet[str] = frozenset({
+    REVIEW_EXPIRY_REASON,
+    INGEST_KILL_REASON,
+})
+
+
+def is_non_dismissal_closure(data) -> bool:
+    """True when this `commitment_resolved` event's data marks a LAPSE rather
+    than a dismissal — i.e. a suppression learner must not count it.
+
+    Takes the event's `data` dict so neither the KEY nor the values are ever
+    hand-spelled at a call site: a reader that spells `resolution_reason`
+    itself is a reader that can drift from the writer by one character and
+    still be green.
+    """
+    if not isinstance(data, dict):
+        return False
+    reason = str(data.get(RESOLUTION_REASON_KEY) or "").strip().lower()
+    return reason in NON_DISMISSAL_RESOLUTION_REASONS
+
+
 # Legacy seq-alias id spellings (F2/F3): bare int 86, "86", "seq_86",
 # "event_086", "commitment_seq_86" — all resolved read-side as "the commitment
 # event at seq N". Lives here (the shared vocabulary home) because BOTH sides
@@ -167,6 +213,11 @@ __all__ = [
     "LEGACY_SEQ_ID_RE",
     "COMMITMENT_CLOSURE_ID_FIELDS",
     "PRE_REGISTRY_FOSSILS",
+    "RESOLUTION_REASON_KEY",
+    "REVIEW_EXPIRY_REASON",
+    "INGEST_KILL_REASON",
+    "NON_DISMISSAL_RESOLUTION_REASONS",
+    "is_non_dismissal_closure",
     "load_event_types",
     "is_known_type",
     "is_pre_registry_fossil",

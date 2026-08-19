@@ -15,7 +15,12 @@ Key namespaces (absorbs the documented hash drift — skills disagree on which
 value they compute, so we index all three):
   - `h:<dedup_hash>`  the PASSIVE_CAPTURE 12-hex hash (`data.dedup_hash` or the
                       top-level `source_ref_hash` in the WORKSPACE_API shape)
-  - `r:<sha256(normalized source_ref)[:16]>`  the raw `data.source_ref` string
+  - `r:<sha256(dedup-key form of source_ref)[:16]>`  the `data.source_ref`
+                      string. SPEC PROV2: stored pointers preserve the native
+                      id's case, so this namespace keys on the ref's IDENTITY
+                      form — derived through Layer A4, never a local fold —
+                      and a case-variant re-observation of an already-appended
+                      artifact still dedups instead of double-appending.
   - `c:<canonical_dedup_key>`  (R15/H-K, connector-agnostic-v1) the
                       provider:native_id canonical key from
                       connector_adapters.provenance — bridges a legacy
@@ -53,8 +58,57 @@ def _events_path(workspace_root) -> Path:
     return _data_dir(workspace_root) / "events.jsonl"
 
 
+def _dedup_key_of():
+    """Layer A4's identity derivation, or None when it cannot be imported."""
+    try:
+        from connector_adapters.provenance import dedup_key_of
+        return dedup_key_of
+    except Exception:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from connector_adapters.provenance import dedup_key_of
+            return dedup_key_of
+        except Exception:
+            return None
+
+
+def _dedup_form(source_ref) -> str:
+    """The identity form of a STORED source pointer — SPEC PROV2 §3.
+
+    THE ONE FOLD. Both namespaces route through Layer A4's `dedup_key_of`, so
+    the index has exactly one case-fold and it lives where identity is defined.
+    There is deliberately NO local `.lower()` fallback: a second, independent
+    fold here would make the index dedup case-variants by LUCK rather than by
+    derivation, and a fence that removed the derivation would stay green while
+    the property it pins had gone. When Layer A4 cannot be imported the index
+    degrades to the raw namespace — which is the same state the `c:` namespace
+    is already in on that failure, since `_canonical_key` returns None there.
+
+    Never raises: this runs inside `atomic_append`'s writer lock, and an index
+    hiccup must never fail an event write."""
+    fn = _dedup_key_of()
+    if fn is None:
+        return (source_ref or "").strip()
+    try:
+        return fn(source_ref) or (source_ref or "").strip()
+    except Exception:
+        return (source_ref or "").strip()
+
+
 def _norm_source_ref(s: str) -> str:
-    return (s or "").strip().lower()
+    """The `r:` namespace's key material.
+
+    PROV2 moved this from a local lowercase to the DEDUP-KEY form. For every
+    already-lowercase spelling — which is every `r:` key an index on disk can
+    contain for gmail / granola / session / outlook / drive rows — the bytes
+    are unchanged, so a prior release's index is not invalidated. The two forms
+    diverge only where Layer A4 REDUCES rather than folds: a Slack permalink or
+    triple, and `gcalendar:` → `gcal:`. Those rows' old `r:` keys go stale
+    until cleanup's `verify` → `rebuild` pass, and the `c:` namespace (whose
+    value is unchanged) covers them meanwhile, so no duplicate can slip through
+    the transition."""
+    return _dedup_form(s)
 
 
 def _r_key(source_ref: str) -> str:

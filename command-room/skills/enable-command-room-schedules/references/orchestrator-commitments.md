@@ -55,6 +55,8 @@ print(json.dumps(check_lateness('<workspace_root>', 'waiting-on', fired_via='<sc
 - **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
 
 
+**Read `directive` BEFORE the tier — it is the render decision (SPEC SCHED1).** If `directive` is `skip_render`, the slot this fire is serving was ALREADY delivered: a receipt for it is on the ledger, and the helper has already written the honest `skipped` receipt for this fire. Post the returned `ack` line, exactly as returned, as the ENTIRE output of this fire — no surface, no widget, no sections, no Sources block, and no receipt of your own — then STOP. Do not re-derive whether it "really" ran, do not render a shortened version, and do not read the tier as the decision: on this path the tier is `none`, `none` means "run normally", and that reading is what delivered three duplicate full surfaces in one day. `directive` is present on every tier and is `null` on all the others, so this is one unconditional check rather than a special case to remember. A `manual` fire never carries it — a human who asks for the surface gets the surface.
+
 Branch on `tier` (this does not weaken the anti-improvisation contract — every phase below still executes verbatim; the tier only governs what is RENDERED):
 
 - **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
@@ -190,6 +192,12 @@ for send in <list of sends since window>:
                     resolved_by='<user person_id>',
                     evidence=evidence,
                     source_skill='commitments',
+                    # PROVMINT1 — the send that closed it. The same artifact key
+                    # is already built for the layer-1 fence above; forward it
+                    # instead of letting the writer fall back to a surface
+                    # receipt. (Building a good ref for MATCHING and dropping it
+                    # at the CLOSE is the walk's dominant defect class.)
+                    source_ref=primary_artifact_key(provider, send['message_id']),
                 )
                 if res['status'] == 'closed':
                     n_resolved += 1
@@ -277,23 +285,28 @@ receipt = reconcile_inbound_and_receipt(
     fired_via='scheduled',              # 'manual' on a chat-phrase / Run Now fire
     exclude_captured_since=fire_start,  # from Phase 2 — the fence, layer 2
     provider='<the seam-resolved provider>',
+    uncorroborated_thread_ids=uncorroborated,  # MAILTRUST1 — see below
     # TRAINFIX F-4 — leave None on a real read. Set it to the plain-English
     # reason when the inbound read could not happen at all (paragraph below).
     fetch_blocked=None,
 )
-print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s batch=%s'
-      % (receipt['n_auto_closed'], receipt['n_pending'],
-         receipt['n_updated'], receipt['batch_id']))
+print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s held=%s batch=%s'
+      % (receipt['n_auto_closed'], receipt['n_pending'], receipt['n_updated'],
+         receipt['n_held_uncorroborated'], receipt['batch_id']))
 "
 ```
 
-**The circularity fence (REPLYCLOSE §3, plus EVORDER layer 3).** Layer 1 needs no argument — the helper derives each message's own ref internally and drops any commitment attributed to that very message, which is what stops the inbound message that CREATED a waiting-on item from being the message that closes it on a later scan (inbox-triage stamps `data.source_ref: gmail:<message_id>` on exactly those captures). Layer 2 is `exclude_captured_since=fire_start` — commitments this same fire captured are one source with the evidence, not two. Anything captured before the fire start stays fully matchable.
+**MAILTRUST1 — corroborate before anything closes (mandatory).** Any single mail read can only prove presence, never absence — on 2026-07-29 a full-content thread-fetch was itself one message short, and v5.6.0's reply-closure turned that class of stale read from a wrong statement into a wrong write. Before the reconcile call: for each distinct `thread_id` in `inbound_messages`, fetch that thread via the seam-resolved thread-fetch tool and run `shared/scripts/mail_absence.py::corroborate_absence(thread_fetch_result, <the batch messages carrying that thread_id>, thread_id=tid)` — the sweep and the fetch are the two differently-shaped reads. Collect every `tid` where `corroborated` came back False into `uncorroborated` and pass it as `uncorroborated_thread_ids`. Matches on those threads land in `receipt["held"]` — neither closed nor declined, with the disagreement named in `receipt["summary"]`; surface that sentence rather than dropping it. A degraded run with no thread-fetch tool passes `uncorroborated=set()` and proceeds (search-only was the pre-MAILTRUST1 behavior); never fake corroboration by comparing a read against itself.
+
+**The circularity fence (REPLYCLOSE §3, plus EVORDER layer 3).** Layer 1 needs no argument — the helper derives each message's own ref internally and drops any commitment attributed to that very message, which is what stops the inbound message that CREATED a waiting-on item from being the message that closes it on a later scan (the inbox fire's capture phase stamps `data.source_ref: <provider>:<message_id>` on exactly those captures, via `shared/scripts/inbound_capture.py` — INCAP1 v5.12.1; before it existed this fence guarded a population nothing could produce). Layer 2 is `exclude_captured_since=fire_start` — commitments this same fire captured are one source with the evidence, not two. Anything captured before the fire start stays fully matchable.
 
 **Layer 3 needs no argument either, but it needs each message's `ts`** — it refuses to close a commitment captured AFTER the reply arrived (the F-11 class: layer 2 fences against the start of THIS FIRE, so an item captured before the fire but after the message sails straight through it). Each `inbound_messages` entry must therefore carry the connector's raw ISO-8601 `ts`, never a reformatted display date. Absent `ts` leaves layer 3 inert, which is safe. A present-but-unparseable `ts` fails SAFE and LOUD: the pass closes nothing at all and prints `RECONFENCE: inbound_ts=…` on stderr. `receipt['signal_fields']['n_stale_evidence_skipped']` counts what layer 3 refused — non-zero is the fence working, not an error.
 
 **If the inbound read cannot happen at all — no mail connector resolves, the connector budget is exhausted, or every account is still unclassified — do NOT call this helper with an empty list and let it write a clean zero (TRAINFIX F-4).** A fire that read nothing and a fire that read everything and found nothing produce the identical `inbound_scanned_count: 0` audit, and the first is a dead rail wearing the second's receipt. Call it with `inbound_messages=[]` AND `fetch_blocked="<what was missing, in plain language>"`: the audit lands stamped blocked with the reason, nothing closes, no confirm is queued, and `validate_inbound_reconcile_ran` refuses it. Silent to the CEO, loud in the substrate.
 
 **Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True, or this pass did not actually run and its zero means nothing. Also read `receipt["signal_fields"]`: messages scored with neither the conversation nor the attachment field present means the reply checks could not run at all; `receipt["summary"]` says so in plain language in exactly that state, and `receipt["coverage"]` reports how many open items have no resolvable owner and therefore can never be closed by any reply.
+
+**Graded is not closed.** Same pair the sent rail carries, on this rail's names. `n_graded_on_reply` is what the MATCHER proposed; `n_closed_on_reply` is what the closure path actually WROTE, recomputed from the post-write list so it can never exceed `n_closed`. When they differ, `n_graded_close_refused` says how many graded closes were refused and `close_refusals` names why, keyed by the refusal (`PendingReviewError`, `CommitmentIdError`, `OpenSubitemsError`, `SourceRefError`). **Every refusal is the system working**, so report it as a held item, never as a lost close. `n_proposed_on_reply` is likewise read off the written `pending` band, so a row the matcher graded as a close and something downgraded into the confirm band — SUB1's open-sub-items rule, the one-reply-one-delivery guard — counts as the proposal it actually became. No refusal is reachable on this rail today, so a non-zero `n_graded_close_refused` here is new behavior worth reading, not noise. Reading only the graded half is how the sent rail's receipt came to say `n_closed_on_delivery: 1` beside `n_closed: 0`.
 
 **An unresolved user ABORTS this pass** (`PrimaryUserUnresolvedError`) — no audit event, nothing closed. Do not catch it and continue: direction is derived from owner vs the user, so with no user every reply basis is inert and a clean zero would be a lie.
 
@@ -378,6 +391,12 @@ for r in results:
                 resolved_by=r['owner_id'],  # the user — they scheduled it
                 evidence=r['evidence'],
                 source_skill='commitments',
+                # PROVMINT1 — the CALENDAR EVENT is what closed it, and the
+                # matcher echoes its id back on every result row. Forward it;
+                # fall through to the writer's minted receipt only when the row
+                # genuinely carries none.
+                source_ref=(f\"gcal:{r['calendar_event_id']}\"
+                            if r.get('calendar_event_id') else None),
             )
             if res['status'] == 'closed':
                 n_resolved += 1
@@ -595,7 +614,7 @@ The reliability spec's W5 waiting-on chase, riding this orchestrator's Tue/Thu f
 3. That latest outbound touch is ≥ 3 weekdays old (machine-local, same clock as Phase 2.9).
 4. The item is NOT already rendering as an actionable row in today's main WAITING ON sections (no double-surfacing — NUDGED — NO REPLY exists for the quiet tail, not to echo the main list), and no `chat_dismissal` for it is live.
 
-**Render:** one extra section after the main date buckets, title `⏳ NUDGED — NO REPLY`, cap 5 (oldest outbound first; the rest ride the next Tue/Thu fire). Each item: title + counterparty + one plain-English age line ("you nudged Sam last Tuesday — nothing back"). Actions reuse the standard WAITING ON cluster verbatim — `send` / `draft` on a pre-staged nudge email + `mark received` + `snooze 3d` — NO new verbs (`CANONICAL_ACTIONS` untouched; apply-choices dispatches these through the existing commitments handlers on this orchestrator's `src`).
+**Render:** one extra section after the main date buckets, title `⏳ NUDGED — NO REPLY`, cap 5 (oldest outbound first; the rest ride the next Tue/Thu fire). Each item: title + counterparty + one plain-English age line ("you nudged Sam last Tuesday — nothing back"). **MAILTRUST1 caveat on the age line:** "nothing back" is a NEGATIVE claim riding the inbound leg's reads. If today's Phase 2.6 receipt held anything on this item's thread (`receipt["held"]`, reason `uncorroborated_read`), do not render "nothing back" for it — render "my mail reads disagreed on this thread; check it directly" instead. A quiet chased tail built on a short read is the exact 2026-07-29 failure shape. Actions reuse the standard WAITING ON cluster verbatim — `send` / `draft` on a pre-staged nudge email + `mark received` + `snooze 3d` — NO new verbs (`CANONICAL_ACTIONS` untouched; apply-choices dispatches these through the existing commitments handlers on this orchestrator's `src`).
 
 **The nudge draft** goes through email-writer's lazy-draft path exactly like Phase 7's chase drafts, with the Phase 5 severity tier bumped one level (a re-nudge is never `friendly`), and the repeat-chase suppression in Phase 5 applies unchanged — a WAITING ON send writes the same `outreach_sent` receipt, which resets this phase's 3-weekday clock.
 

@@ -130,9 +130,34 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # are retired through the RETIRED_TASKS proposal below — never silently.
     # The lifecycle work it carried is `maintenance_dispatcher`'s `lifecycle`
     # job; the dormancy question it asked is `stalled projects`.
-    "past-meetings": {
+    #
+    # `past-meetings` is GONE from the default set (EOD2, M's Decision 4
+    # 2026-08-16 — the 5 PM chat became the day's CLOSE in EOD1 and the id
+    # kept saying "meetings"). This is a RENAME, not an elimination, and that
+    # makes it the third shape of retirement this registry carries:
+    #
+    #   * `pulse` / `upcoming-meetings` — ELIMINATED. Their orchestrator files
+    #     are retirement stubs; a still-registered task explains itself and
+    #     stops.
+    #   * `past-meetings` — RENAMED. Its `RETIRED_TASKS` row carries
+    #     `renamed_to: "end-of-day"`, and BOTH ids map to the SAME orchestrator
+    #     file, so a workspace that never takes the offer keeps a fully working
+    #     evening chat FOREVER. Nothing here is a stub and nothing degrades.
+    #
+    # Everything the other two retirements get, this gets too: the row leaves
+    # DEFAULT_SCHEDULES so nothing offers or registers it again, the
+    # DISPLAY_NAMES row stays forever, the receipt vocabulary stays parseable
+    # (the fire still writes its `pack_run` under `past-meetings` —
+    # `end_of_day.TASK_ID`, deliberately unchanged, so pre- and post-rename
+    # history is ONE continuous series), and an existing registration is
+    # retired through the RETIRED_TASKS proposal below — never silently.
+    "end-of-day": {
+        # EOD2 — the day's close. Inherits `past-meetings`' slot and its
+        # first-install membership: Decision 1's hour, unchanged, so no
+        # customer's evening moves under them and the fresh-install chat
+        # count stays 4.
         "cron": "0 17 * * 1-5",
-        "label": "5 PM weekdays",
+        "label": "5 PM weekdays",  # == cron_to_english(cron); lockstep-pinned
         "enabled": True,
     },
     # v3.11.0 — Friday Wrap: weekly recap via weekly-recap skill. First
@@ -183,18 +208,19 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
         "label": "5 PM Sundays",
         "enabled": True,
     },
-    # Phase 2 Stage D (S4) — Commitment Triage: weekly full-open-set
-    # housekeeping chat (done / defer / drop / not mine / make task / promote /
-    # never-track + undo). Fires 3 PM Fridays — AFTER friday-wrap (13:00), so
-    # the wrap reads the week as it was and triage cleans the list before the
-    # weekend; S5's 30-day task staleness sweeps in here. NOT first-install —
-    # a fresh workspace's open set hasn't aged; registers via change-schedule /
-    # Phase 6 add / update-bridge, same later-add posture as relationship-moves.
-    "commitment-triage": {
-        "cron": "0 15 * * 5",
-        "label": "3 PM Fridays",
-        "enabled": True,
-    },
+    # `commitment-triage` is GONE from the default set (TASKRET1, M's ruling
+    # 2026-08-17) — the first of the THREE READINESS retirements this registry
+    # now carries. The mechanics of the removal are LIFECYCLE1's, unchanged:
+    # the row leaves DEFAULT_SCHEDULES so nothing offers or registers it again,
+    # the DISPLAY_NAMES row stays forever, and the receipt vocabulary stays
+    # parseable. What is NEW is the removal PATH — a readiness retirement is
+    # applied by the update bridge instead of proposed, because M refused
+    # per-task proposals for this class. The reasoning lives in one place: the
+    # `retirement_class` block below RETIRED_TASKS.
+    #
+    # The ON-DEMAND surface is untouched. `triage my commitments` still runs
+    # the identical full-open-set pass (`skills/commitment-triage/SKILL.md`);
+    # only the weekly Friday 3 PM fire is gone.
     # LB1 R3 — Staff Meeting: the Living Brain's weekly review chat. The
     # COMPLETE pending-proposal queue (paginated, exempt from daily dedup) +
     # the change feed since the last staff meeting + "This week's moves"
@@ -221,38 +247,22 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
                                         # lockstep guard in the FB-20 test
         "enabled": True,
     },
-    # PIPE1 Part 2 (2026-07) — Pipeline Digest: the weekly deal-review chat
-    # (since-last-digest movement + the report's own tile band and ranked
-    # rows + top-3 moves + a pending-count pointer at the Staff Meeting —
-    # FB-20: adjudication stays there; the digest renders NO confirm rows).
-    # Tuesday 8 AM per the backlog's SPEC-10 slot — Monday already carries
-    # the Staff Meeting (9 AM Mon/Wed/Fri) and the Sunday-evening
-    # deal-signals job has just refilled the proposal queue. NOT
-    # first-install — proposed by schedule_proposals ONLY when >=1 open
-    # tracked deal exists (a digest over an empty pipeline is noise);
-    # registers via change-schedule `add pipeline digest` / Phase 6 add /
-    # update-bridge proposal, never silently (the pipeline-tracker skill's
-    # digest.enabled config records the PREFERENCE only — it never
-    # registers).
-    "pipeline-digest": {
-        "cron": "0 8 * * 2",
-        "label": "8 AM Tuesdays",
-        "enabled": True,
-    },
-    # BAL1 (2026-07, §0 RULED Sunday 8AM) — Balance: the weekly personal
-    # white-space surface (m_facing ONLY — the personal lane never reaches an
-    # org output). 8 AM Sunday is a reflective moment before the week loads;
-    # the slot was empty (relationship-moves holds 17:00, cleanup-era work
-    # 18:00). NOT first-install — needs accumulated substrate AND a declared
-    # personal calendar (workspace.personal_calendars); with none declared the
-    # fire refuses honestly instead of rendering an all-clear. Registers via
-    # change-schedule / Phase 6 add / update-bridge proposal, the same
-    # later-add posture as relationship-moves.
-    "balance": {
-        "cron": "0 8 * * 0",
-        "label": "8 AM Sundays",
-        "enabled": True,
-    },
+    # `pipeline-digest` is GONE from the default set (TASKRET1, M's ruling
+    # 2026-08-17) — the second READINESS retirement. It is the only one of the
+    # three that had an AUTOMATED offer path, so its removal is two edits, not
+    # one: this row, and the `pipeline-digest` entry in
+    # `schedule_proposals.PROPOSAL_THRESHOLDS` (deleted there, pinned absent by
+    # test, so a re-add is a deliberate act rather than a merge artifact).
+    # The on-demand pipeline report is untouched (`skills/pipeline-tracker/`);
+    # only the weekly Tuesday 8 AM fire is gone.
+    #
+    # `balance` is GONE from the default set (TASKRET1, same ruling) — the
+    # third READINESS retirement, and the one whose gate was already written
+    # down: BAL1 shipped it needing accumulated substrate AND a declared
+    # personal calendar, and shipping a chat behind a gate most workspaces
+    # cannot clear is exactly what this retirement class exists to undo. The
+    # on-demand surface is untouched (`balance check` / `skills/balance/`);
+    # only the weekly Sunday 8 AM fire is gone.
     # cr-refresh-workspace-map removed v2.14.25. The five silent-task rows
     # (cleanup 18:00 Sun / reconcile-sent 6:45,12:45,17:45 weekdays /
     # monthly-report 7:00 on the 1st / weekly-insights 19:00 Sun /
@@ -272,12 +282,15 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
 # BRIEFMERGE (2026-08-08) drops `upcoming-meetings`: its prep generation is now
 # the morning brief's first leg, so the fresh-install chat set is 4 (the fifth
 # entry, `maintenance`, is the silent background task).
+# EOD2 (2026-08-16) swaps `past-meetings` for `end-of-day` — a RENAME, so the
+# successor inherits the slot rather than adding one. The fresh-install chat
+# count is still 4.
 # The remaining defaults (waiting-on, my-plate — CTS1 split the old
 # commitments chat into the two) stay deferred — both benefit from
 # accumulated workspace signal before they fire well.
 FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "morning-brief",
-    "past-meetings",
+    "end-of-day",    # EOD2 — inherits `past-meetings`' first-install slot (rename, not an addition)
     "inbox",         # M1 — promoted into first-install set; surfaced to customer as `inbox-triage`
     "friday-wrap",   # v3.11.0 weekly rhythm; surfaced to customer as `weekly-recap`
     "maintenance",   # MAINT1 — THE silent background task; the five pre-MAINT1 silent taskIds (cleanup / reconcile-sent / monthly-report / weekly-insights / session-sweep) run as its jobs and are disabled on migration (SUPERSEDED_BY).
@@ -464,6 +477,54 @@ SUPERSEDED_BY: dict[str, list[str]] = {
 # to forget one). `replacement` is customer-facing plain English naming where
 # the work went, so the retirement line never reads as a feature being taken
 # away.
+#
+# TWO KINDS OF RETIREMENT (EOD2, 2026-08-16). An entry carrying `renamed_to`
+# is a RENAME: the task was not eliminated, it was re-identified. The
+# difference is not cosmetic and it changes three behaviours:
+#
+#   1. The successor is a REAL registry task (`end-of-day` is in
+#      DEFAULT_SCHEDULES and FIRST_INSTALL_TASK_IDS), where an eliminated
+#      task's work went to a DIFFERENT existing surface.
+#   2. Both ids resolve to the SAME orchestrator file, so a still-registered
+#      predecessor keeps firing the real pack forever — it never degrades to
+#      a stub, and system-health never has anything to say about it.
+#   3. The successor must NOT auto-register on a workspace whose predecessor
+#      is still registered — that would silently hand the customer TWO 5 PM
+#      chats. `registration_target_set()` is the fence; the offer is the
+#      only path in.
+#
+# THREE KINDS, AND WHY THE THIRD EXISTS (SPEC TASKRET1, M's ruling 2026-08-17).
+# Read `retirement_class(task_id)`, never a name you remember. The classes are
+# distinguished by what a customer's LIVE registration experiences on update:
+#
+#   * ELIMINATION (`pulse`, `upcoming-meetings`) — PROPOSE, NEVER SILENT. The
+#     chat is gone; the customer is OFFERED `pause <name>` and nothing is
+#     disabled until they take it. Correct for a chat sitting visibly in their
+#     Scheduled list whose removal is a judgement call they may disagree with.
+#   * RENAME (`past-meetings` → `end-of-day`) — PROPOSE, NEVER SILENT, and the
+#     accept is an `add`, not a `pause`. Nothing degrades while they ignore it.
+#   * READINESS (`commitment-triage`, `pipeline-digest`, `balance`) — APPLIED
+#     ON UPDATE, and NARRATED. The bridge's readiness migration disables the
+#     live registration itself and says so in one line of the update ack; the
+#     customer is told what happened and why, not asked.
+#
+# The third class is deliberate, and it is not a softening of the second. The
+# product shipped these three surfaces BEFORE the substrate that makes them
+# say anything true existed. A surface that fires weekly with nothing honest
+# to say does not merely waste a slot — it teaches the operator to ignore that
+# slot, permanently, and that lesson survives the fix. M's ruling is the
+# authority for acting rather than asking ("I will NOT manually pause"):
+# register-then-nag is the failure mode being removed, so a per-task proposal
+# would reproduce it under a new name.
+#
+# What keeps this honest rather than silent is `reoffer_when` — every readiness
+# entry names, in the customer's own language, the condition under which the
+# surface comes BACK. That is the difference between this and
+# `SUPERSEDED_BY` (which is silent, and correct for background tasks the
+# customer never saw): a readiness retirement is a loan, not a deletion, and
+# the update ack says so. Nothing here weakens the ELIMINATION/RENAME
+# contract — those two still propose, and a test pins that the two paths
+# diverge on class rather than on which registry row happens to be first.
 RETIRED_TASKS: dict[str, dict] = {
     "pulse": {
         "retired_in": "LIFECYCLE1",
@@ -489,6 +550,90 @@ RETIRED_TASKS: dict[str, dict] = {
             "after it runs is one ask away: say 'prep me for my 2pm'"
         ),
     },
+    "past-meetings": {
+        "retired_in": "EOD2",
+        # THE RENAME MARKER. Its presence is what makes this a rename rather
+        # than an elimination — read it, never a name you remember.
+        "renamed_to": "end-of-day",
+        # For a rename, `reason` is the clause that follows the em dash in the
+        # customer line, so it says what is UNCHANGED. The hour is NOT typed
+        # here: `retirement_line` derives it from the successor's own cron, so
+        # moving the default can never leave this sentence quoting a time the
+        # task no longer fires at.
+        "reason": "same {time} close, same chat, one tap to switch",
+        "replacement": (
+            "Say `add end of day` and I'll register it and switch Past "
+            "Meetings off in the same step; leave it and your evening chat "
+            "keeps firing exactly as it does today"
+        ),
+    },
+    # ---- READINESS retirements (SPEC TASKRET1, M's ruling 2026-08-17) -------
+    # Each carries `retirement_class: "readiness"` — THE class marker, and the
+    # thing every caller reads. No `renamed_to`: nothing here was
+    # re-identified, so a rename-shaped line would be a lie about a chat that
+    # is not coming back under another name.
+    #
+    # `reoffer_when` is the field this class adds, and it is CUSTOMER-FACING —
+    # it is quoted verbatim into the update ack. Keep it plain English. The
+    # internal build ids that actually gate each re-offer are recorded in the
+    # comment above each entry, deliberately NOT in the string: a customer
+    # reading "back when REVAMN1 ships" has learned nothing.
+    "commitment-triage": {
+        "retired_in": "TASKRET1",
+        "retirement_class": "readiness",
+        # Re-offer gate (internal): the review-tier backlog model sound —
+        # REVAMN1 shipped + the PREC1 precision verdicts filled in.
+        "reason": (
+            "a weekly pass over the whole list only helps once the list is "
+            "trustworthy, and the sorting that decides what belongs on it is "
+            "still being built"
+        ),
+        "reoffer_when": (
+            "the backlog sorts itself well enough that a weekly review is "
+            "reading a real list"
+        ),
+        "replacement": (
+            "Nothing is lost — say `triage my commitments` any time and the "
+            "same full review runs on the spot"
+        ),
+    },
+    "pipeline-digest": {
+        "retired_in": "TASKRET1",
+        "retirement_class": "readiness",
+        # Re-offer gate (internal): the deal-tracking rework / PIPE1 successor.
+        "reason": (
+            "it reports on tracked deals every week, and deal tracking itself "
+            "is being rebuilt underneath it"
+        ),
+        "reoffer_when": (
+            "deal tracking has been rebuilt and the weekly report has "
+            "something steady to read"
+        ),
+        "replacement": (
+            "Nothing is lost — ask for the pipeline any time and you get the "
+            "same report on the spot"
+        ),
+    },
+    "balance": {
+        "retired_in": "TASKRET1",
+        "retirement_class": "readiness",
+        # Re-offer gate (internal): accumulated personal-lane substrate AND a
+        # declared `workspace.personal_calendars` — BAL1's own shipped gate,
+        # which most workspaces have never been able to clear.
+        "reason": (
+            "it needs a connected personal calendar and months of history "
+            "behind it before it can say anything true about your time, and "
+            "without those it fires weekly with nothing to tell you"
+        ),
+        "reoffer_when": (
+            "there's a personal calendar connected and enough history behind "
+            "it to be honest about what has gone quiet"
+        ),
+        "replacement": (
+            "Nothing is lost — say `balance check` any time and it runs on "
+            "the spot"
+        ),
+    },
 }
 
 # The 6-week suppression window a retirement proposal honors, mirroring
@@ -498,23 +643,277 @@ RETIRE_SUPPRESSION_WEEKS = 6
 
 
 def is_retired_task(task_id: str) -> bool:
-    """True when `task_id` names an ELIMINATED task. Class membership is the
-    RETIRED_TASKS registry — never a hardcoded name list. system-health treats
-    this class as "retired, quiet": its absence is never a finding."""
+    """True when `task_id` is OUT of the live set — eliminated OR renamed.
+    Class membership is the RETIRED_TASKS registry, never a hardcoded name
+    list. What every caller needs from this class is the same regardless of
+    which kind it is: never offer it, never register it fresh, and never
+    report its absence — system-health treats it as "retired, quiet".
+
+    Use `is_renamed_task` to tell the two kinds apart where the difference
+    matters: an ELIMINATED task's orchestrator is a retirement stub and its
+    work moved to another surface, while a RENAMED task's orchestrator is the
+    live successor's file and the old registration keeps firing the real pack
+    (EOD2)."""
     return task_id in RETIRED_TASKS
 
 
+def is_renamed_task(task_id: str) -> bool:
+    """True when `task_id` was RENAMED into a live successor rather than
+    eliminated. Membership is the `renamed_to` field on the RETIRED_TASKS
+    row — never a name list."""
+    return bool((RETIRED_TASKS.get(task_id) or {}).get("renamed_to"))
+
+
+# The three retirement classes. `retirement_class()` returns one of these for
+# a retired id and "" for a live one — callers branch on the RETURN VALUE,
+# never on a name they remember.
+RETIREMENT_CLASS_ELIMINATION = "elimination"
+RETIREMENT_CLASS_RENAME = "rename"
+RETIREMENT_CLASS_READINESS = "readiness"
+
+
+def retirement_class(task_id: str) -> str:
+    """Which KIND of retirement `task_id` is — the one dispatch point.
+
+    Returns `""` for a task that is not retired, else one of
+    `RETIREMENT_CLASS_ELIMINATION` / `_RENAME` / `_READINESS`.
+
+    Derivation order matters. An explicit `retirement_class` field on the row
+    WINS, because the readiness class is a deliberate posture choice that no
+    other field implies. Absent that field the class is derived exactly as it
+    always was — `renamed_to` present means rename, absent means elimination —
+    so the pre-TASKRET1 rows keep their behaviour without being re-annotated,
+    and a future row that forgets the field degrades to the SAFE class
+    (elimination = propose, never silent) rather than to the acting one.
+
+    That default direction is the whole safety property here: a typo in the
+    class marker costs a customer one proposal they can ignore, never a chat
+    disabled without being asked.
+    """
+    spec = RETIRED_TASKS.get(task_id)
+    if not spec:
+        return ""
+    declared = (spec.get("retirement_class") or "").strip()
+    if declared:
+        return declared
+    return (RETIREMENT_CLASS_RENAME if spec.get("renamed_to")
+            else RETIREMENT_CLASS_ELIMINATION)
+
+
+def is_readiness_retirement(task_id: str) -> bool:
+    """True when `task_id` came out because its SUBSTRATE wasn't ready
+    (SPEC TASKRET1) — the class the update bridge APPLIES rather than
+    proposes. Membership is `retirement_class`, never a name list."""
+    return retirement_class(task_id) == RETIREMENT_CLASS_READINESS
+
+
+def readiness_retired_task_ids() -> frozenset[str]:
+    """Every readiness-retired id. DERIVED from the registry so the bridge
+    migration, the tests and any future surface all read one list."""
+    return frozenset(t for t in RETIRED_TASKS if is_readiness_retirement(t))
+
+
+def reoffer_condition(task_id: str) -> str:
+    """The customer-facing condition under which a readiness-retired surface
+    COMES BACK. Empty string for every other class — nothing else makes this
+    promise, and inventing one would be a commitment the product hasn't made.
+
+    This is the field that separates a readiness retirement from a silent
+    `SUPERSEDED_BY` disable: the customer is told the surface is on loan, not
+    deleted, and told what redeems it."""
+    if not is_readiness_retirement(task_id):
+        return ""
+    return (RETIRED_TASKS.get(task_id) or {}).get("reoffer_when", "")
+
+
+def renamed_predecessors(task_id: str) -> tuple[str, ...]:
+    """The retired ids that were RENAMED INTO `task_id` — the inverse of
+    `renamed_to`, derived so there is no second map to keep in step.
+
+    A registered predecessor SERVES its successor: same orchestrator file,
+    same pack, same receipt series. Callers use this to answer "is this task
+    covered on this machine?" without asking the customer to re-register
+    anything (`serving_task_ids` is the convenience wrapper)."""
+    return tuple(sorted(
+        tid for tid, spec in RETIRED_TASKS.items()
+        if spec.get("renamed_to") == task_id
+    ))
+
+
+def schedule_task_id(task_id: str) -> str:
+    """The id whose DEFAULT_SCHEDULES row governs `task_id`'s CADENCE.
+
+    Identity for every live id, and for a retired id that was eliminated (it
+    has no cadence — nothing should be asking). For a RENAMED retired id it
+    is the SUCCESSOR: the predecessor left DEFAULT_SCHEDULES, but the task it
+    names is still registered and still firing, on the successor's cron,
+    because they are the same chat at the same hour.
+
+    Anything that asks "when should this have fired?" must resolve through
+    here. `late_fire` is the case that proved it: on the day EOD2 shipped,
+    every un-renamed machine's evening fire would have looked up
+    `past-meetings`, found no row, and returned tier `unknown` — lateness
+    detection and the catch-up banner silently off for the whole fleet, on
+    the one chat that fires last thing every weekday.
+    """
+    successor = (RETIRED_TASKS.get(task_id) or {}).get("renamed_to")
+    if successor and successor in DEFAULT_SCHEDULES:
+        return successor
+    return task_id
+
+
+def serving_task_ids(task_id: str) -> tuple[str, ...]:
+    """`task_id` plus every registered-id that would serve it — itself first.
+
+    The order matters for readers that take the first match: the current id
+    wins, a renamed predecessor is the fallback."""
+    return (task_id,) + renamed_predecessors(task_id)
+
+
+def is_task_served(task_id: str, registered_ids) -> bool:
+    """True when `task_id`'s work is covered by what is REGISTERED here —
+    either under its own id or under a renamed predecessor's.
+
+    This is the check that keeps a rename from reading as breakage. A
+    workspace still running `past-meetings` has an evening close; saying its
+    `end-of-day` chat is "missing from the schedule" would be false, and
+    acting on it would register a second 5 PM chat."""
+    registered = set(registered_ids or ())
+    return any(tid in registered for tid in serving_task_ids(task_id))
+
+
+def cron_time_phrase(expr: str) -> str:
+    """The clock half of a cron's English label — "5 PM" from
+    `0 17 * * 1-5`. Empty string when the expression doesn't parse or names
+    more than one time.
+
+    Exists so customer copy can quote a task's hour without typing it: a
+    hand-typed hour in a retirement sentence is a second copy of the cron,
+    and it goes stale the first time the default moves."""
+    try:
+        minute_set, hour_set, _dom, _month, _dow = parse_cron(expr)
+    except CronParseError:
+        return ""
+    if len(hour_set) != 1 or len(minute_set) != 1:
+        return ""
+    return _format_time(next(iter(hour_set)), next(iter(minute_set)))
+
+
+def retirement_reason(task_id: str) -> str:
+    """The retired task's `reason`, with any registry placeholder resolved.
+
+    A RENAME entry's reason carries `{time}` so the hour is read from the
+    successor's own cron rather than typed twice. Callers that surface the
+    reason on its own (the proposal record, telemetry) must go through here
+    — handing a raw `{time}` to a customer-facing string is the failure this
+    exists to prevent."""
+    spec = RETIRED_TASKS.get(task_id)
+    if not spec:
+        return ""
+    reason = spec.get("reason", "")
+    successor = spec.get("renamed_to")
+    if successor and "{time}" in reason:
+        phrase = cron_time_phrase(
+            (DEFAULT_SCHEDULES.get(successor) or {}).get("cron", "")
+        ) or "same-time"
+        reason = reason.replace("{time}", phrase)
+    return reason
+
+
 def retirement_line(task_id: str) -> str:
-    """The ONE customer-facing sentence offering to switch a retired task off.
+    """The ONE customer-facing sentence for a retired task.
+
     Built from the registry so the wording cannot drift between the bridge,
-    change-schedule and system-health. Empty string for a task that is not
-    retired — callers surface nothing rather than inventing a line."""
+    change-schedule, registration and system-health. Empty string for a task
+    that is not retired — callers surface nothing rather than inventing a
+    line.
+
+    THREE SHAPES, and the registry picks (EOD2, extended by TASKRET1):
+
+      * ELIMINATED (`pulse`, `upcoming-meetings`) — the chat is gone and the
+        line offers the `pause` that clears it.
+      * RENAMED (`past-meetings` → `end-of-day`) — the chat is NOT gone, so a
+        "your chat is retired" sentence would be a lie about a task that
+        fires tonight. The line says what it is called now, quotes the hour
+        FROM the successor's own cron, and offers the switch.
+      * READINESS (`commitment-triage`, `pipeline-digest`, `balance`) — the
+        update has ALREADY switched it off, so the line must not ask for a
+        `pause` the customer no longer has to perform; offering one would be
+        the product asking for a tap it already took. It states what
+        happened, why, where the same work still lives on demand, and — the
+        clause only this class carries — what brings the chat back.
+
+    The readiness branch reads its optional clauses with `.get`, never
+    `[...]`. This is the ONE customer-facing renderer, and it is reached from
+    four places (the three stubs, change-schedule's `add` refusal, the bridge
+    ack, and every `plan_readiness_retirements` entry's `line`). A row that
+    forgets `replacement` or `reoffer_when` must therefore DEGRADE to a
+    shorter sentence that is still true, not raise `KeyError` in front of a
+    customer — the same discipline the suite applies to its own reads. A
+    complete row renders byte-identically to the hardcoded form.
+    """
     spec = RETIRED_TASKS.get(task_id)
     if not spec:
         return ""
     name = DISPLAY_NAMES.get(task_id, task_id)
+    kind = retirement_class(task_id)
+    if kind == RETIREMENT_CLASS_READINESS:
+        # `retirement_reason`, not the raw field — identical output today
+        # (readiness rows carry no placeholder), and the ONE place a future
+        # placeholder gets resolved rather than handed to a customer raw.
+        reason = (retirement_reason(task_id) or "").strip()
+        replacement = (spec.get("replacement") or "").strip()
+        reoffer = (spec.get("reoffer_when") or "").strip()
+        line = (f"Your {name} chat is off the schedule — {reason}."
+                if reason else f"Your {name} chat is off the schedule.")
+        if replacement:
+            line += f" {replacement}."
+        if reoffer:
+            line += f" It comes back when {reoffer}."
+        return line
+    successor = spec.get("renamed_to")
+    if successor:
+        new_name = DISPLAY_NAMES.get(successor, successor)
+        return (f"Your {name} chat is now {new_name} — "
+                f"{retirement_reason(task_id)}. {spec['replacement']}.")
     return (f"Your {name} chat is retired — {spec['reason']}. Say "
             f"`pause {name.lower()}` and I'll switch it off; {spec['replacement']}.")
+
+
+def readiness_retirement_summary(task_ids) -> str:
+    """The ONE line the update bridge posts after the readiness migration
+    disabled something (SPEC TASKRET1 §2.4). Empty string for an empty list —
+    a workspace that had none of the three hears NOTHING, which is the
+    behaviour on the overwhelming majority of installs.
+
+    Composed here rather than typed in the bridge for the reason every other
+    retirement string is: the wording has to be identical wherever it appears,
+    and a sentence hand-typed into a SKILL.md is a second copy that drifts on
+    the first edit. The per-task `reoffer_when` clauses are what make this an
+    ACK rather than a silent disable — drop them and this class becomes
+    `SUPERSEDED_BY` with extra steps.
+
+    Ids that are not readiness retirements are ignored, not rendered: this
+    line promises a return, and only this class has one to promise.
+    """
+    ids = [t for t in (task_ids or []) if is_readiness_retirement(t)]
+    if not ids:
+        return ""
+    names = [DISPLAY_NAMES.get(t, t) for t in ids]
+    if len(names) == 1:
+        listed = names[0]
+    elif len(names) == 2:
+        listed = f"{names[0]} and {names[1]}"
+    else:
+        listed = ", ".join(names[:-1]) + f" and {names[-1]}"
+    noun = "chat" if len(ids) == 1 else "chats"
+    head = (f"Switched off {len(ids)} scheduled {noun} that need more "
+            f"groundwork first: {listed}.")
+    tail = " ".join(
+        f"{DISPLAY_NAMES.get(t, t)} comes back when {reoffer_condition(t)}."
+        for t in ids
+    )
+    return f"{head} {tail}"
 
 
 def is_silent_task(task_id: str) -> bool:
@@ -555,18 +954,26 @@ DISPLAY_NAMES: dict[str, str] = {
     "waiting-on": "Waiting On",  # CTS1 Surface 1 — things people owe the user (the re-scoped daily; owns the unowned/unconfirmed confirm tail)
     "my-plate": "My Plate",      # CTS1 Surface 2 — things the user does (Promised group + Personal group, one chat)
     "pulse": "Pulse",  # LIFECYCLE1 — RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever so pre-retirement receipts and any still-registered task render with a name, never a bare id)
-    "past-meetings": "Past Meetings",
+    "past-meetings": "Past Meetings",  # EOD2 — RENAMED taskId (out of DEFAULT_SCHEDULES; row kept FOREVER so pre-rename receipts and any still-registered task render with a name, never a bare id). Its `pack_run` receipts are the SAME series `end-of-day` continues — see end_of_day.TASK_ID.
+    "end-of-day": "End of Day",  # EOD2 — the 5 PM close; successor id of `past-meetings` (same orchestrator file, same pack, same receipt series)
     "friday-wrap": "Friday Wrap",  # v3.11.0
     "cleanup": "Cleanup",  # v3.17.0 — silent weekly self-maintenance (not a CEO-facing chat)
     "reconcile-sent": "Reconcile Sent",  # v3.18.12 — silent daily sent-mail reconciliation (not a CEO-facing chat)
     "relationship-moves": "Relationship Moves",  # REL1 — weekly Sunday outreach action pack
-    "commitment-triage": "Commitment Triage",  # Phase 2 Stage D (S4) — weekly Friday full-open-set housekeeping chat
+    "commitment-triage": "Commitment Triage",  # TASKRET1 — READINESS-RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever so pre-retirement receipts and any still-registered task render with a name, never a bare id). The on-demand skill of the same name is untouched.
     "monthly-report": "Monthly Report",  # C1 — silent monthly operator-report + value-receipt fire (not a CEO-facing chat)
     "weekly-insights": "Weekly Insights",  # v4.2.0 — silent weekly analytical-view synthesis (not a CEO-facing chat); a maintenance JOB as of MAINT1
     "session-sweep": "Session Sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (not a CEO-facing chat); a maintenance JOB as of MAINT1
     "maintenance": "Maintenance",  # MAINT1 — THE silent background dispatcher task (not a CEO-facing chat). cleanup / reconcile-sent / monthly-report keep their rows above for job-level renders.
     "staff-meeting": "Staff Meeting",  # LB1 R3 — weekly Monday Living Brain review chat (opt-in later-add)
-    "balance": "Balance",  # BAL1 — weekly Sunday personal white-space surface (opt-in later-add; m_facing only)
+    "balance": "Balance",  # TASKRET1 — READINESS-RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever for legacy renders). The on-demand `balance check` surface is untouched.
+    # TASKRET1 — pipeline-digest had NO row here before it was retired, and
+    # `retirement_line` reads THIS dict rather than `task_display_name`, so it
+    # would have rendered the bare taskId into a customer sentence ("Your
+    # pipeline-digest chat is off the schedule"). Every RETIRED_TASKS id needs
+    # a row here for exactly that reason; a test pins the invariant so the next
+    # retirement cannot reintroduce it.
+    "pipeline-digest": "Pipeline Digest",  # PIPE1 Part 2 → TASKRET1 READINESS-RETIRED taskId (row kept forever for legacy renders). The on-demand pipeline report is untouched.
     "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
 }
 
@@ -769,6 +1176,24 @@ def load_schedule_config(entities_json_path: str | Path) -> dict[str, dict]:
 
     Tasks not in DEFAULT_SCHEDULES are NOT included — caller is responsible
     for tasks they introduce post v2.14.10.
+
+    **A RENAMED predecessor's override is INHERITED (EOD2 / REVIEW F-1).** The
+    override store is keyed by taskId, and a renamed predecessor's key is no
+    longer a DEFAULT_SCHEDULES key — so without this the customer's own hour
+    is silently dropped from the merged view, and `schedule_task_id` then
+    resolves the predecessor to the successor's SHIPPED DEFAULT. A workspace
+    customised to 4 PM that has not taken the rename would be scored against
+    the 5 PM default: ~23 hours "late" on every evening fire, a false
+    catch-up banner, and `change-schedule` rendering "5 PM weekdays" for a
+    chat that fires at 4. Silent, because the orphan-override scan skips a
+    key whose id is still registered.
+
+    D-3 carried the ID across the rename; this carries the OVERRIDE KEY, and
+    it is the same defect one layer down. The successor's OWN override always
+    wins — this only fills a gap, and it is the read-side mirror of the "move
+    the override" instruction `change-schedule` already gives the accept path.
+    The whole override dict travels (cron, label AND enabled), because a
+    customer who PAUSED the old id has equally not asked for it to come back.
     """
     config_overrides = {}
     path = Path(entities_json_path)
@@ -785,6 +1210,12 @@ def load_schedule_config(entities_json_path: str | Path) -> dict[str, dict]:
     merged = {}
     for task_id, default in DEFAULT_SCHEDULES.items():
         override = config_overrides.get(task_id) or {}
+        if not override:
+            for pred in renamed_predecessors(task_id):
+                inherited = config_overrides.get(pred) or {}
+                if inherited:
+                    override = inherited
+                    break
         merged[task_id] = {
             "cron": override.get("cron", default["cron"]),
             "label": override.get("label") or cron_to_english(
@@ -798,18 +1229,60 @@ def load_schedule_config(entities_json_path: str | Path) -> dict[str, dict]:
 
 
 def later_add_task_ids() -> frozenset:
-    """Default tasks that are deliberately NOT first-install (commitments /
-    pulse / relationship-moves as of Phase 3) — they need accumulated
-    workspace signal before they fire well, and register via the existing
-    later-add paths (change-schedule Phase 6 `add` / update-bridge).
+    """Default tasks that are deliberately NOT first-install — they need
+    accumulated workspace signal before they fire well, and register via the
+    existing later-add paths (change-schedule Phase 6 `add` / update-bridge).
 
     DERIVED, never duplicated: a DEFAULT_SCHEDULES entry outside
     FIRST_INSTALL_TASK_IDS is a later-add by definition. A default entry
     does NOT imply registration — that's the R1 ghost-task lesson
     (relationship-moves rendered as an enabled Sunday task on workspaces
     where it was never added).
+
+    A RETIRED task can never appear here, in any class: retirement takes the
+    row OUT of DEFAULT_SCHEDULES, and "not yet added" is the one thing a
+    retired surface is not. TASKRET1 is the case that made the distinction
+    load-bearing — `commitment-triage`, `pipeline-digest` and `balance` were
+    all later-adds the week before, so every surface that treats this set as
+    "things worth offering" stops offering them for free.
     """
     return frozenset(DEFAULT_SCHEDULES) - FIRST_INSTALL_TASK_IDS
+
+
+def registration_target_set(existing_registered) -> frozenset[str]:
+    """The set an EXISTING workspace's registration re-run may register
+    (`enable-command-room-schedules` Phase 3's non-first-install branch).
+
+    The union `existing | FIRST_INSTALL_TASK_IDS` is what makes a pre-M1
+    customer pick up `inbox` on their next re-run without losing anything
+    they already have. EOD2 puts one fence around it, and the fence is the
+    whole propose-never-auto-apply posture in code:
+
+    **A first-install task whose RENAMED PREDECESSOR is still registered here
+    is REMOVED from the target set.** Without it, `end-of-day` — a first-
+    install id from the moment EOD2 ships — would auto-register on the next
+    registration run of every workspace in the fleet, silently handing each
+    customer a SECOND 5 PM chat beside the `past-meetings` one they can see
+    in their Scheduled list. That is the add-without-asking violation with a
+    new name on it, and it is exactly what M's Decision 9 forbids.
+
+    The rename reaches a workspace one way only: the customer takes the offer
+    (`schedule_proposals.propose_task_retirements` →
+    `retirement_line("past-meetings")` → `add end of day`). Then the id IS in
+    `existing` and this function stops fencing it.
+
+    A retired id already in `existing` stays in the target set on purpose —
+    that is what keeps its registered prompt refreshed, and for a RENAMED id
+    it is what keeps the old task firing the real pack. A retired id that is
+    NOT registered can never enter: retired ids are never in
+    FIRST_INSTALL_TASK_IDS.
+    """
+    existing = frozenset(existing_registered or ())
+    target = set(existing | FIRST_INSTALL_TASK_IDS)
+    for task_id in FIRST_INSTALL_TASK_IDS - existing:
+        if any(pred in existing for pred in renamed_predecessors(task_id)):
+            target.discard(task_id)
+    return frozenset(target)
 
 
 def load_schedule_view(
@@ -834,18 +1307,34 @@ def load_schedule_view(
         then renders as available/not-added, which is the honest answer.
 
     Returns {task_id: {cron, label, enabled, registered: bool,
-    later_add: bool, silent: bool}}. NO task should be rendered as a live
-    scheduled task unless `registered` is True.
+    later_add: bool, silent: bool, served_by: str|None}}. NO task should be
+    rendered as a live scheduled task unless `registered` is True.
+
+    `registered` is TRUE for a task served by a renamed predecessor (EOD2):
+    a workspace running `past-meetings` HAS its evening close, and rendering
+    `end-of-day` under "Available, not added yet" would invite the customer
+    to register a second 5 PM chat. `served_by` names that predecessor when
+    it is what the machine actually has, and is None otherwise — renders use
+    it to say "registered as Past Meetings" instead of claiming a taskId the
+    Scheduled list does not show.
     """
     registered = set(registered_ids or ())
     later = later_add_task_ids()
     view = {}
     for task_id, spec in load_schedule_config(entities_json_path).items():
+        own = task_id in registered
+        served_by = None
+        if not own:
+            for pred in renamed_predecessors(task_id):
+                if pred in registered:
+                    served_by = pred
+                    break
         view[task_id] = {
             **spec,
-            "registered": task_id in registered,
+            "registered": own or served_by is not None,
             "later_add": task_id in later,
             "silent": task_id in SILENT_TASKS,
+            "served_by": served_by,
         }
     return view
 
@@ -889,6 +1378,113 @@ def task_display_name(task_id: str) -> str:
     if task_id in DISPLAY_NAMES:
         return DISPLAY_NAMES[task_id]
     return task_id.removeprefix("cr-").replace("-", " ").title()
+
+
+SCHEDULE_CONFIG_CHANGED = "schedule_config_changed"
+
+
+def log_schedule_config_change(workspace_root, changes, *,
+                               source_skill: str,
+                               extra_data: dict | None = None) -> dict | None:
+    """THE writer for `schedule_config_changed`. Returns the event, or None.
+
+    THE FINDING (SPEC SCHED1 §0-4, 2026-08-17). Every path that ENABLES,
+    DISABLES or PAUSES a scheduled task has to leave a record, because the
+    lateness ledger reads that record: `served_slot_markers` treats a slot
+    older than the newest `schedule_config_changed` as retroactively minted by
+    the change and never scores it (the F-51 phantom). `change-schedule` writes
+    one. The registration flow's own pause paths did not — the 2026-08-17
+    fold-in wrote three `schedule_created` events and NO record for the two
+    chats it paused, so from the ledger's side those pauses never happened and
+    the newest config change on file was a week old.
+
+    WHY A HELPER AND NOT A PARAGRAPH PER SITE. There are five prose sites that
+    pause or disable a task across two skills, and a mandate repeated five
+    times is a mandate presumed skipped (the Bug #98 class this repo keeps
+    re-learning). One call, one shape, one place to fix.
+
+    `changes` is an iterable of dicts or `(task_id, cron, enabled)` tuples;
+    every row is normalized to `{task_id, cron, enabled}` so the read side —
+    which already accepts both the list shape and the flat single-task shape —
+    only ever meets one of them from new writers. The task id is normalized
+    for SPELLING only: a renamed predecessor keeps its own name here, because
+    this is a record of what the customer did, not a question about cadence.
+
+    `extra_data` (TASKRET1 main-merge, 2026-08-17) lets a caller annotate WHY
+    the change happened — the readiness-retirement migration rides its
+    `migration_id` here, and the bridge's adjudication gate suppresses on that
+    id. It exists so a pause path with something extra to say still routes THIS
+    writer instead of hand-rolling an event beside it: a second writer is how
+    the shape drifts, and the whole point of this function is that
+    `served_slot_markers` can read back everything that claims to be a config
+    change. Annotations ride ALONGSIDE `changes` and can never replace it —
+    the row shape is the contract, not the caller's to redefine.
+
+    Best-effort by design: a registration that succeeded must not be reported
+    as failed because its audit event could not be appended (RELIABILITY.md).
+    Returns None when there is nothing to record or the append failed.
+    """
+    # SPELLING normalization only, never rename RESOLUTION. `schedule_task_id`
+    # answers "whose cron governs this?" and maps a renamed predecessor onto
+    # its successor — correct for cadence, a falsehood in an audit record: a
+    # customer who paused `past-meetings` did not pause `end-of-day`, and the
+    # ledger's reader already folds predecessors in on the READ side.
+    try:
+        from receipts import normalize_task_id as _norm
+    except Exception:  # noqa: BLE001
+        def _norm(value):
+            return value
+
+    rows = []
+    try:
+        iter(changes)
+    except TypeError:
+        return None
+    for change in changes or []:
+        if isinstance(change, dict):
+            task_id = change.get("task_id") or change.get("taskId")
+            cron = change.get("cron")
+            enabled = change.get("enabled")
+        elif isinstance(change, (list, tuple)) and len(change) == 3:
+            task_id, cron, enabled = change
+        else:
+            continue
+        if not isinstance(task_id, str) or not task_id.strip():
+            continue
+        rows.append({
+            "task_id": _norm(task_id.strip()) or task_id.strip(),
+            "cron": cron if isinstance(cron, str) and cron.strip() else None,
+            "enabled": bool(enabled) if enabled is not None else None,
+        })
+    if not rows:
+        return None
+
+    data: dict = {"changes": rows}
+    # `setdefault`, not `update`: an annotation never overwrites `changes`, and
+    # never overwrites a field this writer already owns. A caller that wants a
+    # different row shape wants a different event type.
+    for key, value in (extra_data or {}).items():
+        if isinstance(key, str) and key.strip():
+            data.setdefault(key, value)
+
+    event = {
+        "type": SCHEDULE_CONFIG_CHANGED,
+        "source_skill": str(source_skill or "").strip() or "change-schedule",
+        "data": data,
+    }
+    try:
+        import sys as _sys
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from event_gate import append_event
+
+        events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        append_event(events_path, event, holder=f"schedule:{event['source_skill']}")
+        return event
+    except Exception:  # noqa: BLE001 — the audit event never blocks the change
+        return None
 
 
 def rm_supersede_plan(registered_tasks: list) -> dict | None:
@@ -949,10 +1545,26 @@ __all__ = [
     "RETIRED_TASKS",
     "RETIRE_SUPPRESSION_WEEKS",
     "is_retired_task",
+    "is_renamed_task",
+    "RETIREMENT_CLASS_ELIMINATION",
+    "RETIREMENT_CLASS_RENAME",
+    "RETIREMENT_CLASS_READINESS",
+    "retirement_class",
+    "is_readiness_retirement",
+    "readiness_retired_task_ids",
+    "reoffer_condition",
+    "readiness_retirement_summary",
+    "renamed_predecessors",
+    "schedule_task_id",
+    "serving_task_ids",
+    "is_task_served",
+    "cron_time_phrase",
+    "retirement_reason",
     "retirement_line",
     "is_silent_task",
     "compose_silent_task_prompt",
     "later_add_task_ids",
+    "registration_target_set",
     "load_schedule_view",
     "workspace_time_to_machine",
     "DISPLAY_NAMES",
@@ -961,4 +1573,6 @@ __all__ = [
     "cron_to_english",
     "load_schedule_config",
     "task_display_name",
+    "SCHEDULE_CONFIG_CHANGED",
+    "log_schedule_config_change",
 ]

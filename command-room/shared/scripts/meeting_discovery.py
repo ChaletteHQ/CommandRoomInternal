@@ -96,6 +96,14 @@ except ImportError:  # pragma: no cover — direct-path import (tests, one-liner
         _name_matches,
     )
 
+# SPEC PROV2 — identity comparisons on STORED source pointers route through
+# Layer A4's derivation, never a raw `==` (guard G30).
+try:
+    from connector_adapters.provenance import dedup_key_of
+except ImportError:  # pragma: no cover — direct-path fallback
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from connector_adapters.provenance import dedup_key_of
+
 
 # ---------------------------------------------------------------------------
 # §A — attendance classification
@@ -371,9 +379,30 @@ def _ledger_rows(raw) -> tuple:
     return [], LEDGER_SHAPE_UNKNOWN
 
 
+# The event types that mean a meeting has been HANDLED, and the one that only
+# means it HAPPENED (SPEC EODFIX1 §2-4).
+#
+# `meeting` is a RECORD, not a receipt. It says the meeting exists; it says
+# nothing about whether anything was extracted from it. Treating it as
+# processed is the F-50 hazard `meeting_capture.already_processed` was written
+# to close, and it is why the same meeting could be invisible to the evening
+# fire's window and "unprocessed" to the manual path at the same moment.
+PROCESSED_RECEIPT_TYPES = ("meeting_processed", "meeting_skipped")
+RECORD_TYPE = "meeting"
+
+
 def processed_index(workspace_root=None, *, events_path=None,
-                    ledger_path=None) -> List[dict]:
+                    ledger_path=None,
+                    include_bare_meetings: bool = True) -> List[dict]:
     """The already-processed meetings, as normalized records.
+
+    `include_bare_meetings` (SPEC EODFIX1 §2-4) decides whether a bare
+    `meeting` RECORD counts as processed. It defaults to True because the
+    shadow lane (`run_shadow_pass`) dedups against this same index and was not
+    asked to change; the End of Day catch-up leg passes False and gets the
+    RECEIPT-only answer — the same definition `meeting_capture
+    .already_processed` has always used. Flipping the shared default was the
+    tempting move and the wrong one: two callers, two questions.
 
     TWO sources, both READ-ONLY:
 
@@ -402,9 +431,15 @@ def processed_index(workspace_root=None, *, events_path=None,
 
     def _add(rec: dict) -> None:
         ref = rec.get("source_ref") or rec.get("doc_id")
-        if not ref or ref in seen:
+        if not ref:
             return
-        seen.add(ref)
+        # PROV2 — the seen-set is an IDENTITY set, so it keys on the derived
+        # form: one meeting spelled two ways (a legacy lowercased ref and a
+        # case-preserved pointer) must not land as two processed records.
+        key = dedup_key_of(ref) or str(ref).strip()
+        if key in seen:
+            return
+        seen.add(key)
         out.append(rec)
 
     try:
@@ -413,14 +448,17 @@ def processed_index(workspace_root=None, *, events_path=None,
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from events_io import iter_events
 
+    wanted_types = set(PROCESSED_RECEIPT_TYPES)
+    if include_bare_meetings:
+        wanted_types.add(RECORD_TYPE)
+
     if events_path and Path(events_path).exists():
         try:
             for ev in iter_events(str(events_path)):
                 if not isinstance(ev, dict):
                     continue
                 etype = ev.get("type")
-                if etype not in ("meeting", "meeting_processed",
-                                 "meeting_skipped"):
+                if etype not in wanted_types:
                     continue
                 data = ev.get("data") or {}
                 ref = str(data.get("source_ref") or data.get("meeting_id")
@@ -473,6 +511,236 @@ def processed_index(workspace_root=None, *, events_path=None,
             pass
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# §A3 — the receipt-based catch-up sweep (SPEC EODFIX1 §2-4)
+# ---------------------------------------------------------------------------
+
+# CATCHUP1's ceiling, read here rather than re-declared: a machine off for a
+# quarter must not make one fire re-read a quarter of history.
+try:  # pragma: no cover — trivial import guard
+    from catchup import DEFAULT_CAP_DAYS as BACKLOG_CAP_DAYS
+except ImportError:  # pragma: no cover
+    BACKLOG_CAP_DAYS = 30
+
+# How many meetings one fire will take off the backlog. The prose cap the
+# past-meetings fire has always run, named here so the honest counter and the
+# cap live in one place.
+DEFAULT_BACKLOG_LIMIT = 5
+
+
+def has_transcript_ref(ref, prefix: str = SOURCE_REF_PREFIX) -> bool:
+    """Does this `meeting` record's ref name something with a TRANSCRIPT?
+
+    The sweep's rows go to a pipeline whose first step is "fetch transcript",
+    so a record whose ref names another namespace has nothing for it to fetch.
+    `meeting` events are written by several skills (workspace-manager,
+    weekly-recap, people-crm, workspace-ingest, …) and not all of them are
+    transcript captures — a calendar-scheme ref is a real meeting record and
+    still not a transcript.
+
+    A BARE id counts as transcript-scheme: `meeting_capture` normalizes a
+    scheme-less meeting id into `<prefix>:<id>` on write, so the two spellings
+    are the same namespace and the sweep must not strand the bare one.
+
+    Whitelist, not denylist, keyed on the same `SOURCE_REF_PREFIX` seam the
+    rest of this module uses — a workspace on another transcript backend
+    overrides the prefix and keeps its own rows.
+    """
+    s = str(ref or "").strip()
+    if not s:
+        return False
+    if ":" not in s:
+        return True
+    return s.split(":", 1)[0].strip().lower() == str(prefix).strip().lower()
+
+
+def _meeting_ref_keys(ref) -> set:
+    """The membership keys for one meeting reference — the SAME derivation
+    `meeting_capture.already_processed` uses, imported rather than restated so
+    the two answers cannot drift apart (that drift IS this bug)."""
+    try:
+        from meeting_capture import meeting_ref_keys
+        return meeting_ref_keys(ref)
+    except Exception:  # noqa: BLE001 — a read never breaks a fire
+        s = str(ref or "").strip().lower()
+        return {s} if s else set()
+
+
+def _instant_candidates(value, workspace_root=None) -> tuple:
+    """`(instants, naive)` — every UTC instant a stored start could name.
+
+    A start that carries an offset (or `Z`) names ONE instant and returns one.
+
+    A NAIVE start names one of two, and nothing on the row says which: read as
+    UTC (this module's documented default) or read as the workspace's own wall
+    clock. That ambiguity is worth a whole rule because it is worth a whole
+    bug — the LATETZ class found in Stage 0, where a 3:00 PM meeting sat 18
+    minutes outside a window under one reading and comfortably inside it under
+    the other, and was silently stranded.
+
+    A window comparison therefore takes BOTH and asks whether EITHER lands
+    inside. The bias is deliberate: sweeping a meeting that was already handled
+    costs one dedup hit (the receipt check catches it immediately); NOT
+    sweeping one that needed handling costs the meeting, permanently and
+    silently. Only the WINDOW widens — nothing else in this module changes how
+    it reads a timestamp.
+    """
+    base = _parse_instant(value)
+    if base is None:
+        return (), False
+    raw = value if isinstance(value, str) else ""
+    aware_spelling = bool(raw) and (raw.strip().endswith("Z")
+                                    or _OFFSET_RE.search(raw.strip()[10:] or ""))
+    if isinstance(value, _dt.datetime) and value.tzinfo is not None:
+        aware_spelling = True
+    if aware_spelling:
+        return (base,), False
+
+    out = [base]
+    try:
+        from tz import load_workspace_tz
+        zone = load_workspace_tz(workspace_root)
+        naive = base.replace(tzinfo=None)
+        local = naive.replace(tzinfo=zone).astimezone(_dt.timezone.utc)
+        if local != base:
+            out.append(local)
+    except Exception:  # noqa: BLE001 — no zone: the UTC reading stands alone
+        pass
+    return tuple(out), True
+
+
+_OFFSET_RE = re.compile(r"[+-]\d{2}:?\d{2}$")
+
+
+def unprocessed_backlog(workspace_root, *, now=None, events_path=None,
+                        window_start=None,
+                        cap_days: float = BACKLOG_CAP_DAYS,
+                        transcript_prefix: str = SOURCE_REF_PREFIX,
+                        limit: Optional[int] = DEFAULT_BACKLOG_LIMIT) -> dict:
+    """Every meeting with a RECORD and no processing RECEIPT, oldest first.
+
+    THE RULING THIS IMPLEMENTS (M, 2026-08-17). The End of Day inherits
+    past-meetings' FULL catch-up: sweep every meeting lacking a processing
+    receipt, never a 24-hour window, and never keyed on record existence —
+    bounded by CATCHUP1's 30-day ceiling.
+
+    A RECORD IS NOT A RECEIPT. A `meeting` event says the meeting happened. A
+    `meeting_processed` receipt says work was extracted from it. Counting the
+    first as the second is what made a pair of 2026-08-16 meetings invisible to
+    the evening fire (records seq 9462/9468) while still "unprocessed" to the
+    manual path (receipts seq 9680/9681, a day later). `meeting_skipped` DOES
+    retire a meeting: a deliberate exclusion is handled, not owed.
+
+    Returns:
+      `rows`                   the selected meetings, OLDEST FIRST, refs and
+                               instants only — never a title (the same
+                               discipline the meeting receipts keep);
+      `n_candidates`           every unhandled meeting inside the window;
+      `n_selected`             how many this fire takes;
+      `n_backlog_remaining`    how many it does NOT (§0-5 — a cap is never
+                               silent, and a truncated sweep that reports zero
+                               remaining is the orphaning bug with a green
+                               receipt on it);
+      `n_no_transcript`        unhandled in-window records this sweep did NOT
+                               return because their ref names no transcript
+                               (review N-4). An exclusion is a number here,
+                               never a silence — a growing count is how a
+                               workspace on another backend finds out its
+                               prefix needs overriding;
+      `oldest_unhandled`       the start of the oldest meeting left over, as
+                               stored — what `catchup.receipt_window_marker`
+                               resumes from;
+      `window_start` / `cap_days` / `capped`.
+
+    Read-only. Nothing here writes, and nothing here fetches: the caller
+    processes what this returns through the pipeline it already has.
+    """
+    root = Path(workspace_root)
+    if events_path is None:
+        events_path = root / "_hq" / "data" / "events.jsonl"
+
+    end = _parse_instant(now) or _dt.datetime.now(_dt.timezone.utc)
+    start = _parse_instant(window_start) if window_start else None
+    if start is None:
+        start = end - _dt.timedelta(days=float(cap_days))
+
+    try:
+        from events_io import iter_events
+    except ImportError:  # pragma: no cover
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from events_io import iter_events
+
+    records: Dict[str, dict] = {}
+    handled: set = set()
+    try:
+        rows = list(iter_events(str(events_path))) \
+            if Path(events_path).exists() else []
+    except Exception:  # noqa: BLE001
+        rows = []
+    for ev in rows:
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("type")
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ref = str(data.get("source_ref") or data.get("meeting_id") or "").strip()
+        if not ref:
+            continue
+        if etype in PROCESSED_RECEIPT_TYPES:
+            handled |= _meeting_ref_keys(ref)
+            continue
+        if etype != RECORD_TYPE:
+            continue
+        raw_start = (data.get("start") or data.get("meeting_date")
+                     or ev.get("ts"))
+        instants, naive = _instant_candidates(raw_start, root)
+        if not instants:
+            continue
+        key = dedup_key_of(ref) or ref.lower()
+        prev = records.get(key)
+        if prev is None or min(instants) < min(prev["instants"]):
+            records[key] = {"source_ref": ref, "start": raw_start,
+                            "instants": instants, "start_naive": naive,
+                            "keys": _meeting_ref_keys(ref)}
+
+    candidates = []
+    n_no_transcript = 0
+    for rec in records.values():
+        if rec["keys"] & handled:
+            continue
+        # EITHER reading inside the window is inside the window (see
+        # `_instant_candidates`). One spelling must never strand a meeting.
+        if not any(start <= i <= end for i in rec["instants"]):
+            continue
+        # Counted AFTER the handled/window tests, so the number means "owed
+        # work this sweep cannot hand to a transcript pipeline" rather than a
+        # census of every non-transcript record on disk.
+        if not has_transcript_ref(rec["source_ref"], transcript_prefix):
+            n_no_transcript += 1
+            continue
+        candidates.append(rec)
+    candidates.sort(key=lambda r: (min(r["instants"]), r["source_ref"]))
+
+    n_candidates = len(candidates)
+    selected = candidates[:limit] if limit else candidates
+    leftover = candidates[len(selected):]
+
+    return {
+        "rows": [{"source_ref": r["source_ref"], "start": r["start"],
+                  "start_utc": min(r["instants"]).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "start_naive": r["start_naive"]}
+                 for r in selected],
+        "n_candidates": n_candidates,
+        "n_selected": len(selected),
+        "n_no_transcript": n_no_transcript,
+        "n_backlog_remaining": len(leftover),
+        "oldest_unhandled": leftover[0]["start"] if leftover else None,
+        "window_start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "window_end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "cap_days": cap_days,
+        "capped": bool(leftover),
+    }
 
 
 def dedup_meetings(meetings, *, processed=(),
@@ -1150,6 +1418,13 @@ __all__ = [
     "LEDGER_SHAPE_UNKNOWN",
     "processed_index",
     "dedup_meetings",
+    # §A3 — the receipt-based catch-up sweep (EODFIX1)
+    "PROCESSED_RECEIPT_TYPES",
+    "RECORD_TYPE",
+    "BACKLOG_CAP_DAYS",
+    "DEFAULT_BACKLOG_LIMIT",
+    "has_transcript_ref",
+    "unprocessed_backlog",
     # §B
     "SHADOW_MODE",
     "shadow_mode_enabled",

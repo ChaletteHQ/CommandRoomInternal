@@ -149,16 +149,34 @@ For each item: per-recipient draft of either a status-update email (YOU OWE) or 
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-commitments.md`.
 
-### 4. past-meetings (cron 9:00 AM weekdays)
+### 4. end-of-day (cron 5:00 PM weekdays) — RENAMED from `past-meetings` (SPEC EOD2, M's Decision 4, 2026-08-16)
 
-Processes meeting transcripts from everything since its last successful run — floored at the nominal 24 hours, ceilinged at 30 days (`shared/scripts/catchup.py` `catchup_window`, SPEC CATCHUP1). A machine closed for three days does not lose those three days of meetings. For each transcript:
+**Two taskIds, one file, one pack.** EOD1 turned this 5 PM fire from a
+transcript-processing job into the day's CLOSE; EOD2 minted the `end-of-day`
+id for it and left the predecessor working. `past-meetings` is out of
+`DEFAULT_SCHEDULES` and listed in `schedule_config.RETIRED_TASKS` — but with
+`renamed_to: "end-of-day"`, which makes it a different class from the two
+eliminations below: **its orchestrator file is not a stub, it is the live
+End of Day orchestrator, shared with the successor row.** A workspace that
+still has `past-meetings` registered keeps a fully working evening chat
+indefinitely, at the same hour, with no degradation — so the rename is
+offered ONCE (update bridge → `add end of day`, which registers the new id
+and disables the old one in one step) and never auto-applied. Registration's
+`schedule_config.registration_target_set()` is the fence that stops the
+successor from silently appearing beside the predecessor on an existing
+workspace, and the watchdog answers "is End of Day registered / when did it
+last fire" over BOTH ids so a served row is never reported as missing. The
+fire's receipt keeps the `past-meetings` task_id on both ids
+(`end_of_day.TASK_ID`) so the day-close history is one continuous series.
+
+Its capture leg processes meeting transcripts from everything since its last successful run — floored at the nominal 24 hours, ceilinged at 30 days (`shared/scripts/catchup.py` `catchup_window`, SPEC CATCHUP1). A machine closed for three days does not lose those three days of meetings. For each transcript:
 1. Invokes `meeting-notes` silently to extract decisions, commitments, action items.
 2. Invokes `follow-up-ritual` silently to draft per-attendee follow-up emails.
 3. Runs the CRU pass (`cru_match`) to auto-resolve open commitments closed by completion language in the transcript.
 4. Runs the decision-CRU pass (v3.4.5+) to auto-close decisions executed or superseded by the transcript.
 5. Renders a widget per meeting: brief link + action items + draft follow-up emails.
 
-**The producer side of cr-past-meetings**: this is where most commitment events get written. It's also where the `owner_person_id-variant` shape was traced from (the v3.4.4 audit finding).
+**The producer side of the evening fire**: this is where most commitment events get written (events still carry `source_skill='past-meetings'`, unchanged by the rename). It's also where the `owner_person_id-variant` shape was traced from (the v3.4.4 audit finding).
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md`.
 
@@ -340,7 +358,7 @@ About 47 skills total in `skills/`. Organized here by user intent so you can fin
 5. **Training prompts** — customer fires 3 hands-on commands in 3 new chats (`prep me for [meeting]`, `tell me about [person]`, `draft a check-in to [person]`).
 6. **Coach handoff** — accomplishment summary (which points the customer to `set up command room schedules` and `weekly-recap`); Chat 4 becomes the customer's permanent home with their AI via the `command-room-coach` skill.
 
-Day-1 customers register **no** scheduled tasks during onboarding. When ready, they opt in via `set up command room schedules`, which registers the 5 first-install tasks (`morning-brief`, `upcoming-meetings`, `past-meetings`, `inbox`, `friday-wrap`) per `FIRST_INSTALL_TASK_IDS`. The remaining 2 (`commitments`, `pulse`) get added later in operator-driven follow-up sessions once accumulated workspace signal makes them useful.
+Day-1 customers register **no** scheduled tasks during onboarding. When ready, they opt in via `set up command room schedules`, which registers the first-install set defined by `schedule_config.FIRST_INSTALL_TASK_IDS` — as of EOD2 that is the four chats `morning-brief`, `end-of-day`, `inbox` (surfaced as *Inbox Triage*) and `friday-wrap` (surfaced as *Weekly Recap*), plus the silent background `maintenance` task the customer never sees as a chat. **The frozenset is the authority, not this sentence:** the copy that used to sit here named `upcoming-meetings` and `pulse` long after both were retired, and omitted `maintenance` entirely. Everything else in `DEFAULT_SCHEDULES` is a later-add — `schedule_config.later_add_task_ids()` — offered in operator-driven follow-up sessions once accumulated workspace signal makes it fire well, never auto-registered on day 1.
 
 ### Plugin updates
 
@@ -428,7 +446,7 @@ command-room/
 │   │       ├── orchestrator-morning-brief.md
 │   │       ├── orchestrator-commitments.md
 │   │       ├── orchestrator-inbox.md
-│   │       ├── orchestrator-past-meetings.md
+│   │       ├── orchestrator-past-meetings.md   # End of Day — serves BOTH `end-of-day` and `past-meetings`
 │   │       ├── orchestrator-upcoming-meetings.md
 │   │       ├── orchestrator-dont-forget.md       # Pulse
 │   │       └── orchestrator-friday-wrap.md       # NEW v3.11.0 — weekly recap

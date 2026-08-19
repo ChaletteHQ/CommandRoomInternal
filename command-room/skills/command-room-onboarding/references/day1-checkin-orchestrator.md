@@ -40,6 +40,8 @@ Then disable this one-shot so it never re-fires:
 mcp__scheduled-tasks__update_scheduled_task(taskId="cr-day1-checkin", enabled=false)
 ```
 
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused. (These three onboarding one-shots are not in the lateness ledger today — their taskIds are in no `schedule_config`, `orchestrator-map.json` or `receipts.CANONICAL_TASK_IDS` row, so no lateness verdict is ever computed against them. The record is still written: the rule is "any path that pauses a task", the id set is not frozen, and a pause visible in the customer's Scheduled list with nothing on the ledger is the exact gap SCHED1 §0-4 closes. Cheap, and it cannot go stale.)
+
 ## Failure modes
 
 - **Workspace not resolvable** → exit quietly; do not post a broken message. (Self-disable still attempted.)

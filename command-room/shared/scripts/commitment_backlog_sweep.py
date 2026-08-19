@@ -96,6 +96,14 @@ from reconcile_sent_commitments import reconcile_sent  # noqa: E402
 from reconcile_inbound_commitments import reconcile_inbound  # noqa: E402
 from connector_adapters.provenance import resolve_mail_provider  # noqa: E402
 from event_time import event_time, parse_ts  # noqa: E402
+# REVAMN1 §0-3 — the two review-tier closure reasons. They live in
+# `event_types` (the shared vocabulary home) rather than here, because the two
+# suppression learners that must IGNORE them cannot import this module: it
+# pulls in both reconcile rails. One spelling, three readers.
+from event_types import (  # noqa: E402
+    INGEST_KILL_REASON,
+    REVIEW_EXPIRY_REASON,
+)
 
 
 SOURCE_SKILL = "commitment-backlog-sweep"
@@ -694,7 +702,7 @@ def scan(
             "the user, so every basis would be inert and this run would report "
             "an empty backlog. No audit event written. Fix: pass the WORKSPACE "
             "ROOT (not _hq) to resolve_primary_user, or set "
-            "workspace.user_person_id in entities.json (Bug #102)."
+            "workspace.user_id in entities.json (Bug #102)."
         )
         print(msg, file=sys.stderr)
         raise PrimaryUserUnresolvedError(msg)
@@ -882,12 +890,29 @@ def scan(
 
 
 def _close_rows(workspace_root, rows, *, batch_id, source_skill, resolution,
-                extra=None) -> list:
+                extra=None, user_confirmed: bool = False) -> list:
     """Close a list of rows through `close_commitments` — THE single closure path.
 
     Every closure carries its evidence and the two undo stamps, so `undo` lists
     and reverses a sweep run through the already-registered `commitment_close`
     reverser. No new reverser, no new batch kind, no hand-rolled append.
+
+    PROV1 — a sweep close has no message behind it; it is the USER's decision
+    inside one sweep run, so its pointer is that run's receipt
+    (`session:<batch_id>`, the same batch id the undo handle is keyed on).
+    Per-row pointers would be a lie here: every row in the batch was closed by
+    the same act.
+
+    REVAMN1 — `user_confirmed` defaults to False and STAYS False for every
+    confirmed-tier caller, unchanged. It is True on exactly one path: the
+    review-tier verbs, whose whole population is `pending_review` rows that
+    `close_commitment` refuses to close without it. That refusal is the floor
+    "no path may AUTO-resolve an unconfirmed extraction", and the review verbs
+    clear it the same way `needs_review_queue.drop_items` does — by being
+    reached only from a preview-and-confirm ritual the user answered out loud.
+    Passing it here rather than defaulting it True module-wide is deliberate:
+    an amnesty over the CONFIRMED pile must keep hitting that floor, which is
+    what stops a smuggled review row closing inside an amnesty batch.
     """
     from commitment_state import close_commitments
     closures = []
@@ -910,6 +935,8 @@ def _close_rows(workspace_root, rows, *, batch_id, source_skill, resolution,
             "primary_thread_id": row.get("primary_thread_id") or "",
             "resolution": resolution,
             "extra_data": data,
+            "source_ref": f"session:{batch_id}",
+            "user_confirmed": bool(user_confirmed),
         })
     return [dict(r, commitment_id=str(r.get("commitment_id")))
             for r in close_commitments(workspace_root, closures,
@@ -962,10 +989,10 @@ def _write_audit(workspace_root, events_path, receipt, *, source_skill) -> None:
         },
     }
     try:
-        from receipts import _machine_name
-        machine = _machine_name()
-        if machine:
-            event["data"]["machine"] = machine
+        # SCHED1 — the shared stamp helper, so the machine token and its
+        # not-persisted flag land the same way here as on every other receipt.
+        from receipts import machine_fields
+        event["data"].update(machine_fields())
     except Exception:
         pass
     _append(events_path, [event])
@@ -1257,6 +1284,13 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
       * `age_out` + `drop`        -> `close_commitments`, resolution `dropped`
         plus `resolution_reason: "aged_out"`. Nothing is deleted; the item is
         closed, reversibly, and the reason distinguishes it from a user's own drop;
+      * `review_expiry` + `expire` and `ingest_kill` + `kill` (REVAMN1)
+        -> `close_commitments`, resolution `dropped` plus the verb's own
+        `resolution_reason` (`review_expired` / `ingest_killed`) and
+        `user_confirmed=True`. These two are the ONLY buckets that reach the
+        UNCONFIRMED-EXTRACTION tier, and the reason is not caller-supplied: it
+        is looked up from the bucket, so a row cannot arrive wearing a stamp of
+        its own choosing;
       * `merge`                   -> `supersede_commitment(user_confirmed=True)`
         per absorbed item, folding into the OLDEST item as the survivor. That
         writer already unions both sides' provenance into `merged_source_refs`,
@@ -1279,6 +1313,9 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
     drops: list = []
     merges: list = []
     skipped: list = []
+    # REVAMN1 — the review-tier rows, kept per BUCKET so each carries its own
+    # reason stamp. Two verbs, two piles, one closure path.
+    review: dict = {b: [] for b in REVIEW_TIER_BUCKETS}
     for d in decisions or []:
         action = str(d.get("action") or "").strip().lower()
         bucket = str(d.get("bucket") or "").strip().lower()
@@ -1292,6 +1329,9 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
             drops.append(d)
         elif bucket == "merge" and action == "merge":
             merges.append(d)
+        elif (bucket in REVIEW_TIER_BUCKETS
+                and action == REVIEW_TIER_BUCKETS[bucket]["action"]):
+            review[bucket].append(d)
         else:
             skipped.append({"commitment_id": d.get("commitment_id"),
                             "action": action, "why": "not a sweep verb"})
@@ -1326,6 +1366,27 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
             resolution=AGE_OUT_RESOLUTION,
             extra={"resolution_reason": AGE_OUT_REASON,
                    "user_confirmed_from": "backlog-sweep"})
+    # REVAMN1 — the review tier. Same closure path, same batch, same undo; the
+    # two differences are the reason stamp (looked up from the bucket, never
+    # read off the row) and `user_confirmed=True`, which is what lets an
+    # unconfirmed extraction close at all.
+    for bucket, rows in review.items():
+        if not rows:
+            continue
+        spec = REVIEW_TIER_BUCKETS[bucket]
+        results += _close_rows(
+            workspace_root,
+            [{"commitment_id": c.get("commitment_id"),
+              "title": c.get("title") or "",
+              "owner_id": c.get("owner_id") or user_person_id,
+              "primary_thread_id": c.get("primary_thread_id") or "",
+              "evidence": c.get("evidence") or spec["evidence"]}
+             for c in rows],
+            batch_id=batch_id, source_skill=source_skill,
+            resolution=REVIEW_TIER_RESOLUTION,
+            extra={"resolution_reason": spec["reason"],
+                   "user_confirmed_from": "backlog-sweep"},
+            user_confirmed=True)
 
     merged: list = []
     for group in merges:
@@ -1340,6 +1401,10 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
                     user_confirmed=True,
                     brain_batch_id=batch_id,
                     brain_change_class=MERGE_CHANGE_CLASS,
+                    # PROV1 — the merge DECISION's pointer is this sweep run's
+                    # receipt (the absorbed items keep their own capture refs
+                    # in `merged_source_refs`).
+                    source_ref=f"session:{batch_id}",
                 )
                 merged.append({"survivor_id": survivor,
                                "commitment_id": absorbed,
@@ -1369,6 +1434,30 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
     }
 
 
+def _amnesty_summary(n_planned, n_applied, threshold_days) -> str:
+    """The plain-English ack for a bulk clear. Rule 4: no field names, no jargon.
+
+    DRIFT IS SAID OUT LOUD, never folded into the total. `n_planned` is what the
+    re-derivation lined up a moment before the write; `n_applied` is what the
+    closure path actually closed. They differ when something in the pile was
+    settled between the two — another surface closing it, a second window, the
+    same person answering an email. Reporting only the applied count would make a
+    partial run read as a whole one, and the whole point of re-deriving is that
+    the pile is allowed to move under us.
+    """
+    n_applied = int(n_applied)
+    n_planned = int(n_planned)
+    line = (f"Cleared {n_applied} item{'' if n_applied == 1 else 's'} that had "
+            f"gone quiet for {threshold_days}+ days.")
+    drift = n_planned - n_applied
+    if drift > 0:
+        line += (f" {drift} of the {n_planned} I lined up had already been "
+                 f"settled by the time I got to them, so "
+                 f"{'that one' if drift == 1 else 'those'} stayed as "
+                 f"{'it was' if drift == 1 else 'they were'}.")
+    return line + " Say `undo` if that was wrong — it reopens the whole batch."
+
+
 def _apply_summary(n_closed, n_merged, n_skipped) -> str:
     bits = []
     if n_closed:
@@ -1383,6 +1472,1056 @@ def _apply_summary(n_closed, n_merged, n_skipped) -> str:
             + ". Say `undo` if any of that was wrong.")
 
 
+# ---------------------------------------------------------------------------
+# AMNESTY — the quiet pile cleared in ONE confirm (SPEC_AMNESTY1, 2026-08-16)
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS NOT "REPLAY THE DIGEST". The `backlog_sweep` audit event does not
+# persist the age-out rows — `_write_audit`'s `_slim` runs over `auto_closed`
+# and nothing else — so a later-turn amnesty CANNOT be composed from
+# `last_scan()`. That is not a gap to patch; it is the right shape. The quiet
+# pile is a QUESTION ABOUT THE PRESENT ("what has had no movement for N days?"),
+# and `age_out_candidates` answers it from `events.jsonl` alone: no mail read,
+# no connector, no cursor. So amnesty re-derives, every time, and an item that
+# stopped being quiet between the offer and the yes simply is not in the answer.
+#
+# WHY THE FENCE LIVES HERE AND NOT IN SKILL PROSE. The caller-side-fence lesson:
+# a rail whose only guard is a sentence in a SKILL.md is a rail with no guard,
+# because prose is advice and a module is a contract. `apply_amnesty` therefore
+# takes NO row list at all — there is no parameter through which a caller could
+# hand it a `proposed` row, a `merge` group, or a stale pile from ten minutes
+# ago. It re-derives, stamps the bucket and the verb from module constants, and
+# refuses anything that arrives wearing a different one.
+
+# The distinguishable stamp on a bulk clear (§0-4). Zero new event types and
+# zero new writers: the close events are already told apart by
+# `resolution_reason: "aged_out"` PLUS this source_skill, and `undo` reverses
+# them through the reverser that is already registered.
+AMNESTY_SOURCE_SKILL = f"{SOURCE_SKILL}:amnesty"
+
+# The ONLY bucket and verb amnesty may compose. Constants, not caller input —
+# see `_amnesty_decisions`.
+AMNESTY_BUCKET = "age_out"
+AMNESTY_ACTION = "drop"
+
+# The hard floor, in days (§0-3). Below this the phrase stops meaning "clear the
+# rot" and starts meaning "close this week's work", which is a different act and
+# nobody asks for it in one confirm. Refused with an honest line, no writes.
+AMNESTY_MIN_DAYS = 7
+
+# How many rows the prose preview names before it starts counting. A confirm the
+# user cannot read is a confirm they cannot give.
+AMNESTY_PREVIEW_ROWS = 8
+
+# The digest offers the bulk verb once the quiet pile is big enough that working
+# it row by row is the thing nobody will do (§0-1). The number lives here so the
+# skill text and any future surface read it from ONE place.
+AMNESTY_OFFER_AT = 10
+
+# ACCEPT-ALL (§0-5) — the post-digest bulk verb for the "looks handled" pile.
+# `ACCEPT_SOURCE_KEY` is THE fence: the receipt carries four lists and exactly
+# one of them is composable here. Point it anywhere else and a quiet item closes
+# as `done` — a false completion, which is the specific harm this key prevents.
+ACCEPT_SOURCE_KEY = "proposed"
+ACCEPT_BUCKET = "proposed"
+ACCEPT_ACTION = "mark done"
+
+
+def _configured_age_out_days(workspace_root) -> Optional[int]:
+    """The workspace's own `age_out_days`, or None — the SAME config key the
+    sweep reads (§0-3), unwrapped the way every other reader unwraps it.
+
+    `load_skill_config` returns the whole envelope (`schema_version`,
+    `configured_at`, `skill_name`, `config`), so the value lives one level down;
+    reading the envelope directly is the mistake that makes a configured
+    workspace silently fall back to the default. Tolerates the flat shape too,
+    and never raises — an unreadable config is "not configured", not an abort.
+    """
+    try:
+        from skill_config_writer import load_skill_config
+        saved = load_skill_config(workspace_root, SOURCE_SKILL)
+    except Exception:
+        return None
+    if not isinstance(saved, dict):
+        return None
+    cfg = saved.get("config") if isinstance(saved.get("config"), dict) else saved
+    try:
+        return int((cfg or {}).get("age_out_days"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _amnesty_preview(rows, threshold_days) -> str:
+    """The short prose list under the confirm — oldest first, titles and days."""
+    if not rows:
+        return f"Nothing has gone quiet for {threshold_days}+ days."
+    head = list(rows)[:AMNESTY_PREVIEW_ROWS]
+    lines = [f"- {(r.get('title') or '(untitled)')} — quiet "
+             f"{r.get('days_quiet')} days" for r in head]
+    rest = len(rows) - len(head)
+    if rest > 0:
+        lines.append(f"- ...and {rest} more")
+    return "\n".join(lines)
+
+
+def _amnesty_confirm(n, threshold_days) -> str:
+    """THE confirm line (§0-2) — prose, not a widget button.
+
+    Count, threshold, reversibility and the undo handle all ride ONE sentence,
+    because a bulk verb the user says yes to from memory is a bulk verb whose
+    consequences were never on screen. A widget button would need a new verb in
+    the renderer's action taxonomy mid-cycle; a section-level bulk-arm control in
+    the digest is a follow-up, not this build.
+    """
+    if not n:
+        return (f"Nothing has gone quiet for {threshold_days}+ days — there is "
+                f"nothing to clear.")
+    return (f"Drop all {n} item{'' if n == 1 else 's'} quiet for "
+            f"{threshold_days}+ days? They close reversibly as aged-out — "
+            f"nothing is deleted — and one `undo` reopens all {n}.")
+
+
+def amnesty_plan(workspace_root, *, older_than_days=None, now_iso=None) -> dict:
+    """The quiet pile, derived LIVE. Writes nothing, reads no mail.
+
+    Same opens-loading and eligibility chain `scan()` uses, in the same order:
+    `load_open_commitments` (workspace threaded, F-28) -> `split_pending_review`
+    -> `age_out_candidates` (which applies `cru_eligible` itself, and drops any
+    item whose activity cannot be dated — age-out is an argument from silence,
+    and silence you cannot measure is not evidence).
+
+    THE SPLIT IS THE FENCE, AND IT NOW CUTS BOTH WAYS (REVAMN1). There are two
+    piles under `load_open_commitments` and two bulk verbs, one per pile, and
+    neither verb may ever reach the other's rows:
+
+      * CONFIRMED work — this function's pile. `amnesty` clears the quiet half
+        of it. An unconfirmed extraction is not open work and is never in here;
+        it was nobody's promise until somebody said so.
+      * UNCONFIRMED EXTRACTIONS (`data.pending_review`) — the needs-your-call
+        queue's pile, and the review tier's. `review expiry` lapses the ones
+        nobody answered inside the window and `ingest kill` clears one bad
+        ingest's cluster, both under their own stamps, both closing as an
+        expiry rather than as the CEO's own Drop. See the REVAMN1 section.
+
+    Until REVAMN1 the second pile had no bulk verb at all and this docstring
+    said so ("must never be cleared in bulk by anyone"). What has changed is
+    that the review tier now has ITS OWN verb, not that this one reaches it:
+    `amnesty` still cannot touch a `pending_review` row, and the disjointness
+    is proved from both ends — by REMOVING each fence in turn — in
+    `tests/run_revamn1_review_amnesty_test.py`.
+
+    Threshold resolution, in order: the caller's `older_than_days` ("amnesty
+    everything past 90 days"), else the workspace's configured `age_out_days`,
+    else `DEFAULT_AGE_OUT_DAYS`. Below `AMNESTY_MIN_DAYS` the plan is REFUSED
+    (`ok: False`) carrying the honest line — refusing in the PLAN is what makes
+    the floor real for `apply_amnesty` too, which re-derives through here.
+
+    Returns `{ok, refused, reason, threshold_days, rows, n, preview, confirm}`.
+    `rows` are `age_out_candidates` rows verbatim, oldest first.
+    """
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    if older_than_days is None:
+        threshold = _configured_age_out_days(workspace_root)
+        if threshold is None:
+            threshold = DEFAULT_AGE_OUT_DAYS
+    else:
+        threshold = int(older_than_days)
+
+    if threshold < AMNESTY_MIN_DAYS:
+        reason = (
+            f"I will not clear things in bulk at {threshold} days — the floor is "
+            f"{AMNESTY_MIN_DAYS}. Under a week is this week's work, not a "
+            f"backlog, and one confirm is the wrong shape for it. Nothing was "
+            f"changed. Say a longer window and I will show you the pile.")
+        return {"ok": False, "refused": "threshold_below_floor",
+                "reason": reason, "threshold_days": threshold,
+                "rows": [], "n": 0, "preview": reason, "confirm": reason}
+
+    opens_raw = load_open_commitments(str(events_path),
+                                      workspace_root=workspace_root)
+    opens, needs_review = split_pending_review(opens_raw)
+    rows = age_out_candidates(opens, events_path=events_path, now_iso=now_iso,
+                              age_out_days=threshold)
+    return {
+        "ok": True,
+        "refused": None,
+        "reason": "",
+        "threshold_days": threshold,
+        "rows": rows,
+        "n": len(rows),
+        "n_needs_review": len(needs_review),
+        "preview": _amnesty_preview(rows, threshold),
+        "confirm": _amnesty_confirm(len(rows), threshold),
+    }
+
+
+def _amnesty_decisions(rows) -> list:
+    """Plan rows -> the `apply_decisions` payload. THE quiet-pile fence.
+
+    Two things happen here and both are load-bearing:
+
+      * every composed row is stamped `AMNESTY_BUCKET` / `AMNESTY_ACTION` from
+        the module constants, so amnesty cannot compose a `mark done` or a
+        `merge` even if some future caller wanted one;
+      * a row that ARRIVES already wearing a different bucket or verb is
+        DROPPED, not restamped. Restamping would be the bug: it would take a
+        "looks handled" row — which needs mail evidence and a per-row yes — and
+        launder it into the bulk drop the user actually confirmed. Refusing is
+        the only honest answer, because the row is not what this plan is about.
+
+    Removing the bucket/verb comparison below is the mutation the suite runs: a
+    smuggled `proposed` row then closes inside an amnesty batch.
+    """
+    out: list = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        bucket = str(r.get("bucket") or AMNESTY_BUCKET).strip().lower()
+        action = str(r.get("action") or AMNESTY_ACTION).strip().lower()
+        if bucket != AMNESTY_BUCKET or action != AMNESTY_ACTION:
+            continue
+        cid = str(r.get("commitment_id") or "").strip()
+        if not cid:
+            continue
+        out.append({
+            "commitment_id": cid,
+            "bucket": AMNESTY_BUCKET,
+            "action": AMNESTY_ACTION,
+            # The item's own thread rides along so the close lands on it rather
+            # than on the closer's default. Nothing else from the plan row is
+            # carried: the evidence line for an age-out is not the row's, it is
+            # the ACT's, and `apply_decisions` writes that one.
+            "primary_thread_id": r.get("primary_thread_id") or "",
+        })
+    return out
+
+
+def apply_amnesty(workspace_root, *, user_person_id, older_than_days=None,
+                  batch_id=None, now_iso=None) -> dict:
+    """Clear the quiet pile in ONE undoable batch. Re-derives; trusts no caller.
+
+    There is deliberately no `rows` / `plan` / `decisions` parameter. TOCTOU: the
+    pile is derived at offer time and confirmed a turn later, and in between an
+    item can be closed by any other surface. A caller-passed list would re-close
+    it (a duplicate tombstone) or, worse, close something the user never saw
+    because the list was stale in the other direction. Re-deriving means an item
+    that stopped being quiet silently falls out — which is the correct behaviour
+    and needs no special case anywhere.
+
+    Every write goes through `apply_decisions` unchanged — same closure path,
+    same `dropped` + `aged_out` stamps, same reversibility — under
+    `AMNESTY_SOURCE_SKILL` so a bulk clear is distinguishable from the per-row
+    drop, and inside ONE `swb_` batch so one `undo` covers all N.
+
+    Refuses, writing NOTHING, in exactly two cases: the threshold is under the
+    floor, and the plan is empty. Both return an honest line rather than a clean
+    zero — "cleared 0" and "there was nothing to clear" are different facts.
+
+    Returns the `apply_decisions` receipt plus `n_planned` / `n_applied` /
+    `n_drifted`, so a partial run reports the gap instead of hiding it.
+    """
+    plan = amnesty_plan(workspace_root, older_than_days=older_than_days,
+                        now_iso=now_iso)
+    threshold = plan.get("threshold_days")
+    if not plan.get("ok"):
+        return {"ran": False, "applied": False,
+                "refused": plan.get("refused"), "reason": plan.get("reason"),
+                "threshold_days": threshold, "batch_id": batch_id,
+                "n_planned": 0, "n_applied": 0, "n_drifted": 0, "n_closed": 0,
+                "closed": [], "merged": [], "skipped": [],
+                "summary": plan.get("reason")}
+
+    decisions = _amnesty_decisions(plan.get("rows"))
+    n_planned = len(decisions)
+    if not n_planned:
+        reason = (f"Nothing has gone quiet for {threshold}+ days, so there is "
+                  f"nothing to clear. Nothing was changed.")
+        return {"ran": False, "applied": False, "refused": "empty_plan",
+                "reason": reason, "threshold_days": threshold,
+                "batch_id": batch_id,
+                "n_planned": 0, "n_applied": 0, "n_drifted": 0, "n_closed": 0,
+                "closed": [], "merged": [], "skipped": [], "summary": reason}
+
+    out = dict(apply_decisions(workspace_root, decisions,
+                               user_person_id=user_person_id,
+                               batch_id=batch_id,
+                               source_skill=AMNESTY_SOURCE_SKILL,
+                               now_iso=now_iso))
+    n_applied = int(out.get("n_closed") or 0)
+    out.update({
+        "applied": True,
+        "refused": None,
+        "reason": "",
+        "threshold_days": threshold,
+        "n_planned": n_planned,
+        "n_applied": n_applied,
+        "n_drifted": n_planned - n_applied,
+        "summary": _amnesty_summary(n_planned, n_applied, threshold),
+    })
+    return out
+
+
+def accept_handled_decisions(receipt) -> list:
+    """The "looks handled" pile -> `mark done` rows, each with its OWN evidence.
+
+    POST-DIGEST ONLY, and that is a property of the data, not a preference. The
+    proposed rows are built from MAIL, and mail evidence is persisted nowhere:
+    `_write_audit` slims `auto_closed` alone, so nothing on disk can rebuild this
+    pile. It exists while a receipt is in hand and not one turn longer — a fresh
+    sweep re-creates it. That is why this function takes a RECEIPT and not a
+    workspace path: there is no derivation to re-run.
+
+    THE FENCE is `ACCEPT_SOURCE_KEY`. A sweep receipt carries four lists, and
+    exactly one of them may be composed here. `age_out` rows are quiet, not
+    delivered — closing one as `done` writes a completion that never happened,
+    and every count and recap downstream reads it back as work finished.
+    `merge_candidates` are a judgment call about two rows being one, which no
+    bulk verb gets to make. `auto_closed` is already closed. So: `proposed`,
+    nothing else, and a row arriving with a foreign bucket or verb is refused
+    rather than restamped.
+
+    Returns `[]` on an empty or missing pile — the caller says so and applies
+    nothing, which is different from applying an empty list and reporting a
+    successful run of zero. The caller hands the result to `apply_decisions`
+    with the DIGEST'S OWN `batch_id`, so one `undo` covers the run's auto-closes,
+    its accept-alls and its amnesty drops alike. `already_resolved` rows no-op
+    honestly, per the existing apply contract.
+    """
+    rows = receipt.get(ACCEPT_SOURCE_KEY) if isinstance(receipt, dict) else None
+    out: list = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        bucket = str(r.get("bucket") or ACCEPT_BUCKET).strip().lower()
+        action = str(r.get("action") or ACCEPT_ACTION).strip().lower()
+        if bucket != ACCEPT_BUCKET or action != ACCEPT_ACTION:
+            continue
+        cid = str(r.get("commitment_id") or "").strip()
+        if not cid:
+            continue
+        out.append({
+            "commitment_id": cid,
+            "bucket": ACCEPT_BUCKET,
+            "action": ACCEPT_ACTION,
+            # THE ROW'S OWN evidence — never a shared line. Each of these closes
+            # on a different message, and one sentence stamped across all of them
+            # would be a plausible-looking lie on all but the first.
+            "evidence": r.get("evidence") or "",
+            "title": r.get("title") or "",
+            "owner_id": r.get("owner_id") or "",
+            "primary_thread_id": r.get("primary_thread_id") or "",
+            "close_basis": r.get("close_basis") or "",
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# REVAMN1 — the REVIEW TIER: aging + two bulk verbs for the unconfirmed pile
+# ---------------------------------------------------------------------------
+#
+# WHAT THE TIER IS (§0-1, ruled). `data.pending_review` — the whole flag, one
+# definition, the same one `cru_match.split_pending_review` draws and the
+# needs-your-call queue renders. Not a narrower "eligible" subset: a second
+# definition of the same pile is how two surfaces come to disagree about one
+# number, and this pile is already the biggest number in the workspace.
+#
+# WHY IT NEEDS VERBS AT ALL. An unconfirmed extraction is a GUESS. It costs
+# nothing to write and it is barred from auto-close and chase, so nothing in
+# the system ever retires one — the pile only grows, and a pile nobody can
+# answer is a pile nobody opens. The queue's per-row verbs are correct and
+# unchanged; they are simply not a plan for hundreds of rows.
+#
+# THE TWO VERBS, AND WHY THEY ARE NOT ONE:
+#
+#   review expiry   time. A guess nobody answered inside the window has
+#                   lapsed. Nothing is asserted about whether it was real.
+#   ingest kill     provenance. One ingest went wrong and wrote a cluster of
+#                   junk; the user names THAT ingest and the cluster goes.
+#                   Safer than age, because it targets a defect rather than a
+#                   date, which is why it carries no threshold and no floor.
+#
+# THREE THINGS BOTH VERBS ARE NOT:
+#
+#   * NOT a Drop. A Drop is the CEO looking at one row and letting it go, and
+#     two learners read it as a per-counterparty suppression signal. A lapse
+#     carries no such judgment, so neither verb feeds them (§0-3 — the reason
+#     set lives in `event_types`, and `run_revamn1_review_amnesty_test` pins
+#     that an expiry proposes no suppression where a Drop would).
+#   * NOT a delete, and NOT a bar on re-capture. The capture stays in history,
+#     one `undo` reopens the batch, and a later re-mention is FRESH EVIDENCE
+#     that gets captured normally (§0-3).
+#   * NOT the fix for the inflow. Expiry drains the STOCK. What stops the pile
+#     refilling is the capture side deciding better which extractions to
+#     commit and which to surface — a different build. The skill says both, in
+#     those words, because a client told only the first half will clear the
+#     pile once and conclude the product does not work.
+#
+# THE SHAPE IS AMNESTY1's, DELIBERATELY: plan -> verbatim prose confirm ->
+# apply that re-derives and takes no row list. Every write still goes through
+# `apply_decisions`; this section adds no writer, no event type and no
+# reverser, and its closes ride the same `swb_` batch family so one `undo`
+# covers a review run exactly as it covers an amnesty.
+
+# The stamp that tells a review-tier bulk clear from everything else. ONE
+# source_skill for the verb family — the per-verb distinction is the
+# `resolution_reason`, which is on every row, so a reader never has to join two
+# fields to answer "what closed this".
+REVIEW_SOURCE_SKILL = f"{SOURCE_SKILL}:review-amnesty"
+
+# WHY `dropped` AND NOT `done`. Same reasoning as the age-out above, and
+# sharper here: nobody ever agreed this item was real, so `done` would claim a
+# completion of something that may never have been a promise. `superseded` is
+# the merge word. `dropped` plus the reason is the honest pair, and
+# `VALID_RESOLUTIONS` is not this module's to widen.
+REVIEW_TIER_RESOLUTION = "dropped"
+
+# §0-2 — the expiry window, in days. Unconfirmed extractions age much faster
+# than confirmed work does (45 days there): a guess nobody answered in two
+# weeks is a guess whose context has gone, and the answer will not improve by
+# waiting. Overridable per run ("expire the review pile past 30 days") and
+# configurable per workspace — see `_configured_review_expiry_days`.
+REVIEW_EXPIRY_DAYS = 14
+
+# §1 — the hard floor, in days. Under three days the phrase stops meaning
+# "clear what has gone stale" and starts meaning "clear what I heard this
+# morning", which is a different act. Refused with an honest line, no writes.
+REVIEW_EXPIRY_MIN_DAYS = 3
+
+# How many rows the preview names PER GROUP before it starts counting. Per
+# group and not per pile, deliberately (§0-5): the whole point of the split is
+# that the user sees their own promises and other people's separately, and a
+# global cap would hide one group behind the other.
+REVIEW_PREVIEW_ROWS = 8
+
+# The buckets and verbs, and the reason each one stamps. THE TABLE IS THE
+# FENCE: `apply_decisions` looks the reason up from the bucket, so a row can
+# never carry a stamp of its own choosing, and a bucket with no row here is
+# not a review verb at all.
+REVIEW_EXPIRY_BUCKET = "review_expiry"
+REVIEW_EXPIRY_ACTION = "expire"
+INGEST_KILL_BUCKET = "ingest_kill"
+INGEST_KILL_ACTION = "kill"
+
+REVIEW_TIER_BUCKETS = {
+    REVIEW_EXPIRY_BUCKET: {
+        "action": REVIEW_EXPIRY_ACTION,
+        "reason": REVIEW_EXPIRY_REASON,
+        "evidence": "nobody answered this unconfirmed capture inside the "
+                    "review window — you let the pile lapse",
+    },
+    INGEST_KILL_BUCKET: {
+        "action": INGEST_KILL_ACTION,
+        "reason": INGEST_KILL_REASON,
+        "evidence": "you cleared everything this ingest captured",
+    },
+}
+
+
+def _configured_review_expiry_days(workspace_root) -> Optional[int]:
+    """The workspace's own `review_expiry_days`, or None (§0-6).
+
+    Same envelope-unwrapping as `_configured_age_out_days`, and the same
+    never-raise posture: an unreadable config is "not configured", not an
+    abort. A separate key from `age_out_days` on purpose — the two piles age
+    at different speeds and one number for both would silently move whichever
+    was tuned second.
+    """
+    try:
+        from skill_config_writer import load_skill_config
+        saved = load_skill_config(workspace_root, SOURCE_SKILL)
+    except Exception:
+        return None
+    if not isinstance(saved, dict):
+        return None
+    cfg = saved.get("config") if isinstance(saved.get("config"), dict) else saved
+    try:
+        return int((cfg or {}).get("review_expiry_days"))
+    except (TypeError, ValueError):
+        return None
+
+
+def review_tier(workspace_root) -> list:
+    """THE review tier: every open `data.pending_review` row, as events.
+
+    One definition, one caller-visible function, so the plan builders, the
+    apply-side membership fence and any future surface cannot drift apart
+    (§0-1). Deliberately NOT narrowed by `cru_eligible`: that filter answers
+    "can a mail matcher reach this", which is the wrong question for a pile
+    nobody has agreed is real work yet, and applying it here would leave
+    task-kind and sub-item guesses in a queue with no way out.
+    """
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    opens_raw = load_open_commitments(str(events_path),
+                                      workspace_root=workspace_root)
+    return split_pending_review(opens_raw)[1]
+
+
+def _owner_id(ev) -> str:
+    from cru_match import _commitment_field
+    return str(_commitment_field(ev, "owner_id") or "")
+
+
+def _source_ref(ev) -> str:
+    from cru_match import _commitment_field
+    return str(_commitment_field(ev, "source_ref") or "").strip()
+
+
+def _review_row(ev, *, user_person_id, seen=None, now=None) -> dict:
+    """One plan row. `seen` is the item's newest movement, or None."""
+    owner = _owner_id(ev)
+    days = None
+    if seen is not None and now is not None:
+        days = int((now - seen).total_seconds() // 86400)
+    return {
+        "commitment_id": _cid(ev),
+        "title": _title(ev),
+        "primary_thread_id": ev.get("primary_thread_id") or "",
+        "owner_id": owner,
+        # §0-5 — the pre-sort. `mine` is TRUE only when the record says the
+        # user owns it; an unattributed capture is not claimed for them, which
+        # is why the surface says "not yours" rather than "theirs".
+        "mine": bool(owner) and owner == str(user_person_id or ""),
+        "source_ref": _source_ref(ev),
+        "source_kind": _source_kind(ev),
+        "last_activity": (seen.isoformat().replace("+00:00", "Z")
+                          if seen is not None else ""),
+        "days_quiet": days,
+    }
+
+
+def review_expiry_candidates(rows, *, events_path, user_person_id,
+                             now_iso=None,
+                             older_than_days: Optional[int] = None) -> list:
+    """Review-tier rows with no movement for N days, oldest first.
+
+    Movement comes from `last_activity_map` — the SAME baseline the
+    confirmed-tier age-out measures, seeded with each item's own capture ts,
+    so a guess that has never moved is measured from when it was written.
+
+    An item whose activity cannot be dated is NOT a candidate, exactly as it
+    is not one for the confirmed pile: an expiry is an argument from silence,
+    and silence you cannot measure is not evidence.
+    """
+    days = REVIEW_EXPIRY_DAYS if older_than_days is None else int(older_than_days)
+    now = _now_dt(now_iso)
+    cutoff = now - _dt.timedelta(days=max(1, days))
+    activity = last_activity_map(events_path)
+    out: list = []
+    for ev in rows or []:
+        cid = _cid(ev)
+        if not cid:
+            continue
+        seen = activity.get(cid)
+        if seen is None or seen > cutoff:
+            continue
+        out.append(_review_row(ev, user_person_id=user_person_id,
+                               seen=seen, now=now))
+    out.sort(key=lambda r: (-(r["days_quiet"] or 0), r["commitment_id"]))
+    return out
+
+
+def ingest_kill_candidates(rows, *, source_ref, events_path, user_person_id,
+                           now_iso=None) -> list:
+    """Review-tier rows captured from ONE ingest, newest movement first.
+
+    Membership is the normalized ref key set (`granola:<id>` and the bare
+    `<id>` are one meeting — the spelling drift is live in real substrate), so
+    the user can name the ingest the way their own surface showed it.
+
+    NO age threshold and no undated exclusion, unlike the expiry: this verb
+    argues from PROVENANCE, not from silence. A cluster written by a bad
+    ingest an hour ago is exactly the case it exists for, and a row whose
+    movement cannot be dated is still unambiguously from that ingest.
+    """
+    # THE PUBLIC name for that derivation, deliberately: `meeting_ref_keys` is
+    # exported (EODFIX1 §2-4) precisely so a second module can ask "is this the
+    # same meeting" and get the SAME answer, and its own docstring says a
+    # private name would have guaranteed a second copy. Reaching past it to
+    # `_norm_ref_keys` would take that guarantee back for no gain.
+    from meeting_capture import meeting_ref_keys
+    wanted = meeting_ref_keys(source_ref)
+    if not wanted:
+        return []
+    now = _now_dt(now_iso)
+    activity = last_activity_map(events_path)
+    out: list = []
+    for ev in rows or []:
+        cid = _cid(ev)
+        if not cid or not (meeting_ref_keys(_source_ref(ev)) & wanted):
+            continue
+        out.append(_review_row(ev, user_person_id=user_person_id,
+                               seen=activity.get(cid), now=now))
+    out.sort(key=lambda r: (-(r["days_quiet"] or 0), r["commitment_id"]))
+    return out
+
+
+def _owner_split(rows) -> tuple:
+    """(mine, not-mine) — §0-5's pre-sort, applied once so every caller of a
+    plan sees the same two halves in the same order."""
+    mine = [r for r in rows or [] if r.get("mine")]
+    theirs = [r for r in rows or [] if not r.get("mine")]
+    return mine, theirs
+
+
+def _review_group_lines(rows, label) -> list:
+    if not rows:
+        return []
+    head = list(rows)[:REVIEW_PREVIEW_ROWS]
+    lines = [f"{label} ({len(rows)}):"]
+    for r in head:
+        days = r.get("days_quiet")
+        age = f" — quiet {days} days" if isinstance(days, int) else ""
+        lines.append(f"- {(r.get('title') or '(untitled)')}{age}")
+    rest = len(rows) - len(head)
+    if rest > 0:
+        lines.append(f"- ...and {rest} more")
+    return lines
+
+
+def _review_preview(rows, *, empty_line) -> str:
+    """The pile as prose, YOURS first and NOT YOURS second (§0-5).
+
+    The split is on screen rather than folded into a total because roughly
+    half of a real queue page is other people's promises, captured because
+    they were said in the user's meeting. Someone deciding whether to clear
+    hundreds of rows needs to see which half is which BEFORE they say yes;
+    a single number hides exactly the fact that changes the answer.
+    """
+    if not rows:
+        return empty_line
+    mine, theirs = _owner_split(rows)
+    lines = _review_group_lines(mine, "Yours")
+    other = _review_group_lines(theirs, "Not yours")
+    if lines and other:
+        lines.append("")
+    return "\n".join(lines + other)
+
+
+def _split_clause(n, n_mine) -> str:
+    """" (4 yours, 7 other people's.)" — the §0-5 split inside the confirm.
+
+    Omitted when the pile is all one side: "0 other people's" is noise, and a
+    parenthetical that restates the count the sentence just gave makes a long
+    sentence longer without making it truer.
+    """
+    theirs = int(n) - int(n_mine)
+    if not n_mine or not theirs:
+        return ""
+    return f" ({n_mine} yours, {theirs} other people's.)"
+
+
+def _review_expiry_confirm(n, threshold_days, n_mine) -> str:
+    """THE expiry confirm line — prose, and it carries the whole consequence.
+
+    Count, the split, the bar, reversibility, the undo handle, AND the fact
+    that clearing does not stop a re-mention being captured again (§0-3): a
+    user who thinks an expiry means "never hear about this again" is being
+    asked to say yes to something the system will not do.
+    """
+    if not n:
+        return (f"Nothing in the unconfirmed pile has sat unanswered for "
+                f"{threshold_days}+ days — there is nothing to clear.")
+    return (f"Clear all {n} unconfirmed capture{'' if n == 1 else 's'} nobody "
+            f"has answered in {threshold_days}+ days?"
+            f"{_split_clause(n, n_mine)} They close reversibly — nothing is "
+            f"deleted, and if any of them comes up again I will capture it "
+            f"fresh — and one `undo` puts all {n} back in the queue.")
+
+
+def _ingest_kill_confirm(n, label, n_mine) -> str:
+    if not n:
+        return (f"Nothing unconfirmed is left from {label} — there is nothing "
+                f"to clear.")
+    return (f"Clear all {n} unconfirmed capture{'' if n == 1 else 's'} from "
+            f"{label}?{_split_clause(n, n_mine)} They close reversibly — "
+            f"nothing is deleted, and anything real from that conversation "
+            f"will be captured again the next time it comes up — and one "
+            f"`undo` puts all {n} back in the queue.")
+
+
+def _drift_causes(results) -> dict:
+    """Why each lined-up row did not close, counted by cause (REVIEW_REVAMN1
+    F-2). Read off the closure path's OWN per-row results — never guessed.
+
+    `close_commitments` reports each row as `closed`, `already_resolved`, or
+    `{"status": "error", "error": "<ExceptionName>"}`. Three causes matter to
+    a person reading an ack, and they are three different facts:
+
+      * `answered`  — someone settled it between the offer and the yes. The
+        only cause the ack used to name, and the reason F-2 was a lie: it was
+        asserted for every drift, whatever actually happened.
+      * `held`      — `OpenSubitemsError`. The row owns open sub-items, and
+        closing the parent would close them too, so the closure path refuses.
+        The user is not told this anywhere else, and it is not a race: it will
+        happen again on every run until the sub-items are dealt with, so an
+        ack that calls it "already answered" sends them back to a queue where
+        nothing looks wrong.
+      * `refused`   — any other refusal. Named as a refusal WITHOUT a story,
+        because inventing one is how F-2 happened in the first place.
+    """
+    out = {"answered": 0, "held": 0, "refused": 0}
+    for r in results or []:
+        if not isinstance(r, dict):
+            continue
+        status = str(r.get("status") or "")
+        if status == "closed":
+            continue
+        if status == "already_resolved":
+            out["answered"] += 1
+        elif str(r.get("error") or "") == "OpenSubitemsError":
+            out["held"] += 1
+        else:
+            out["refused"] += 1
+    return out
+
+
+def _review_summary(n_planned, n_applied, *, verb, results=None) -> str:
+    """The plain-English ack. Drift is said out loud AND attributed.
+
+    `n_planned` is what the re-derivation lined up, `n_applied` is what
+    actually closed, and reporting only the second would make a partial run
+    read as a whole one.
+
+    F-2 (REVIEW_REVAMN1): this used to render every gap as "had already been
+    answered", which is a claim about the user's own queue and is false for the
+    one drift case this tier can produce that the confirmed tier cannot — an
+    unconfirmed PARENT owning an open sub-item, where the closure path refuses
+    and nothing is written. Telling someone their row was answered when it was
+    refused sends them looking for an answer that is not there. Causes now come
+    off the writer's own results.
+
+    The undo offer is likewise conditional: `undo` on an empty batch reverses
+    nothing, and offering it is a second small lie in the same sentence.
+    """
+    n_applied, n_planned = int(n_applied), int(n_planned)
+    causes = _drift_causes(results)
+    unattributed = max(0, (n_planned - n_applied) - sum(causes.values()))
+    if unattributed:
+        # Never silently absorb a gap the results cannot explain — an
+        # unexplained row is a refusal we have no story for, which is exactly
+        # what `refused` says.
+        causes["refused"] += unattributed
+
+    if n_applied:
+        line = (f"Cleared {n_applied} unconfirmed capture"
+                f"{'' if n_applied == 1 else 's'} {verb}.")
+    else:
+        line = "Nothing was cleared."
+
+    def _n(k):
+        return f"{causes[k]} of the {n_planned} I lined up"
+
+    if causes["answered"]:
+        one = causes["answered"] == 1
+        line += (f" {_n('answered')} had already been answered by the time I "
+                 f"got to them, so {'that one' if one else 'those'} stayed as "
+                 f"{'it was' if one else 'they were'}.")
+    if causes["held"]:
+        one = causes["held"] == 1
+        line += (f" {_n('held')} still {'has' if one else 'have'} smaller "
+                 f"pieces open underneath {'it' if one else 'them'} — clearing "
+                 f"the top one would have closed that work too, so I left "
+                 f"{'it' if one else 'them'} alone. Deal with the smaller "
+                 f"pieces first and this will go through.")
+    if causes["refused"]:
+        one = causes["refused"] == 1
+        line += (f" {_n('refused')} refused to close and I have no reason to "
+                 f"give you for {'it' if one else 'them'}, so nothing about "
+                 f"{'it' if one else 'them'} changed.")
+
+    if n_applied:
+        line += " Say `undo` if that was wrong — it reopens the whole batch."
+    return line
+
+
+def _no_user_refusal(kind) -> dict:
+    """Refuse, writing nothing, when the primary user is unresolved.
+
+    §0-5 makes the owner split part of the contract, and "yours vs not yours"
+    computed against nobody is not a smaller answer — it is a wrong one that
+    would label the user's own promises as other people's on the exact screen
+    where they decide to clear hundreds of rows. Same posture as `scan()`'s
+    abort, returned as a refusal because every function in this family reports
+    refusals in its return value rather than by raising.
+    """
+    reason = (
+        "I could not work out whose workspace this is, so I cannot tell your "
+        "own captures from other people's — and that split is the whole point "
+        "of this screen. Nothing was changed. Fix: set the workspace's primary "
+        "user, then ask again.")
+    print(f"[backlog-sweep] {kind} ABORTED: primary user unresolved",
+          file=sys.stderr)
+    return {"ok": False, "refused": "primary_user_unresolved", "reason": reason,
+            "rows": [], "n": 0, "n_mine": 0, "n_not_mine": 0,
+            "preview": reason, "confirm": reason}
+
+
+def review_expiry_plan(workspace_root, *, user_person_id,
+                       older_than_days=None, now_iso=None) -> dict:
+    """The lapsed half of the unconfirmed pile, derived LIVE. Writes nothing.
+
+    Threshold resolution, in order: the caller's `older_than_days` ("expire
+    the review pile past 30 days"), else the workspace's configured
+    `review_expiry_days`, else `REVIEW_EXPIRY_DAYS`. Below
+    `REVIEW_EXPIRY_MIN_DAYS` the plan is REFUSED carrying the honest line —
+    refusing in the PLAN is what makes the floor real for
+    `apply_review_expiry` too, which re-derives through here.
+
+    Returns `{ok, refused, reason, threshold_days, rows, n, n_mine,
+    n_not_mine, n_review_total, preview, confirm}`. `rows` are oldest first;
+    `preview` is pre-sorted yours-then-not-yours (§0-5).
+    """
+    if not user_person_id:
+        out = _no_user_refusal("review expiry")
+        out["threshold_days"] = older_than_days
+        out["n_review_total"] = 0
+        return out
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    if older_than_days is None:
+        threshold = _configured_review_expiry_days(workspace_root)
+        if threshold is None:
+            threshold = REVIEW_EXPIRY_DAYS
+    else:
+        threshold = int(older_than_days)
+
+    if threshold < REVIEW_EXPIRY_MIN_DAYS:
+        reason = (
+            f"I will not clear the unconfirmed pile in bulk at {threshold} "
+            f"day{'' if threshold == 1 else 's'} — the floor is "
+            f"{REVIEW_EXPIRY_MIN_DAYS}. Anything younger than that is what I "
+            f"heard this week, and one confirm is the wrong shape for it. "
+            f"Nothing was changed. Say a longer window and I will show you "
+            f"the pile.")
+        return {"ok": False, "refused": "threshold_below_floor",
+                "reason": reason, "threshold_days": threshold,
+                "rows": [], "n": 0, "n_mine": 0, "n_not_mine": 0,
+                "n_review_total": 0, "preview": reason, "confirm": reason}
+
+    tier = review_tier(workspace_root)
+    rows = review_expiry_candidates(tier, events_path=events_path,
+                                    user_person_id=user_person_id,
+                                    now_iso=now_iso, older_than_days=threshold)
+    mine, theirs = _owner_split(rows)
+    return {
+        "ok": True,
+        "refused": None,
+        "reason": "",
+        "threshold_days": threshold,
+        "rows": rows,
+        "n": len(rows),
+        "n_mine": len(mine),
+        "n_not_mine": len(theirs),
+        # How big the whole tier is, so a surface can say "N of M" instead of
+        # implying the window found everything there is.
+        "n_review_total": len(tier),
+        "preview": _review_preview(
+            rows,
+            empty_line=(f"Nothing in the unconfirmed pile has sat unanswered "
+                        f"for {threshold}+ days.")),
+        "confirm": _review_expiry_confirm(len(rows), threshold, len(mine)),
+    }
+
+
+def ingest_kill_plan(workspace_root, source_ref, *, user_person_id,
+                     now_iso=None) -> dict:
+    """Everything the review tier still holds from ONE ingest. Writes nothing.
+
+    `source_ref` is the meeting / ingest id the user names, in either live
+    spelling. A blank one is REFUSED rather than treated as "match nothing":
+    a verb whose target failed to resolve must say so, because the alternative
+    is a confident "nothing to clear" about a pile that is sitting right
+    there.
+    """
+    if not user_person_id:
+        out = _no_user_refusal("ingest kill")
+        out["source_ref"] = source_ref
+        out["n_review_total"] = 0
+        return out
+    label = str(source_ref or "").strip()
+    if not label:
+        reason = ("I need to know WHICH conversation or import to clear — say "
+                  "the meeting or the ingest and I will show you what it left "
+                  "behind. Nothing was changed.")
+        return {"ok": False, "refused": "no_source_ref", "reason": reason,
+                "source_ref": "", "rows": [], "n": 0, "n_mine": 0,
+                "n_not_mine": 0, "n_review_total": 0,
+                "preview": reason, "confirm": reason}
+
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    tier = review_tier(workspace_root)
+    rows = ingest_kill_candidates(tier, source_ref=label,
+                                  events_path=events_path,
+                                  user_person_id=user_person_id,
+                                  now_iso=now_iso)
+    mine, theirs = _owner_split(rows)
+    return {
+        "ok": True,
+        "refused": None,
+        "reason": "",
+        "source_ref": label,
+        "rows": rows,
+        "n": len(rows),
+        "n_mine": len(mine),
+        "n_not_mine": len(theirs),
+        "n_review_total": len(tier),
+        "preview": _review_preview(
+            rows,
+            empty_line=f"Nothing unconfirmed is left from {label}."),
+        "confirm": _ingest_kill_confirm(len(rows), label, len(mine)),
+    }
+
+
+def _review_decisions(rows, *, bucket, pending_ids) -> list:
+    """Plan rows -> the `apply_decisions` payload. THE review-tier fence.
+
+    THREE things happen here, and each one refuses rather than repairs:
+
+      * every composed row is stamped from `REVIEW_TIER_BUCKETS`, so a review
+        verb cannot compose a `mark done`, a `merge` or an `age_out` drop even
+        if a caller wanted one;
+      * a row that ARRIVES wearing a different bucket or verb is DROPPED, not
+        restamped — restamping would launder a row from another pile into the
+        bulk clear the user actually confirmed;
+      * **a row whose id is not in `pending_ids` is DROPPED.** This is the
+        disjointness fence, and it is the one that matters most, because the
+        review path passes `user_confirmed=True` — the floor that stops every
+        other bulk verb reaching an unconfirmed extraction is deliberately
+        DOWN here, so nothing but this membership test stands between a
+        smuggled CONFIRMED commitment and a silent expiry. `pending_ids` is
+        derived from the substrate by the apply function itself, never handed
+        in by a caller and never read off the plan.
+
+    Removing the membership test is the mutation the suite runs: a confirmed,
+    real commitment then closes inside a review-expiry batch.
+    """
+    spec = REVIEW_TIER_BUCKETS.get(bucket)
+    if spec is None:
+        return []
+    live = {str(x) for x in (pending_ids or ())}
+    out: list = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        row_bucket = str(r.get("bucket") or bucket).strip().lower()
+        row_action = str(r.get("action") or spec["action"]).strip().lower()
+        if row_bucket != bucket or row_action != spec["action"]:
+            continue
+        cid = str(r.get("commitment_id") or "").strip()
+        if not cid or cid not in live:
+            continue
+        out.append({
+            "commitment_id": cid,
+            "bucket": bucket,
+            "action": spec["action"],
+            "primary_thread_id": r.get("primary_thread_id") or "",
+        })
+    return out
+
+
+def _apply_review(workspace_root, plan, *, bucket, user_person_id, batch_id,
+                  now_iso, empty_reason, verb) -> dict:
+    """The shared apply half of both review verbs. Re-derives; trusts nothing.
+
+    The plan arrives already re-derived by the caller (which is why neither
+    public apply takes a row list). What happens HERE is the second,
+    independent derivation: the live `pending_review` id set, read from the
+    substrate a moment before the write, which is what `_review_decisions`
+    fences against. Two derivations rather than one because the first is
+    reachable by monkeypatch and the second is not — and because between the
+    offer and the yes a row can be confirmed by any other surface, at which
+    point it must fall out rather than be expired behind the user's back.
+    """
+    threshold = plan.get("threshold_days")
+    if not plan.get("ok"):
+        return {"ran": False, "applied": False, "refused": plan.get("refused"),
+                "reason": plan.get("reason"), "threshold_days": threshold,
+                "source_ref": plan.get("source_ref"), "batch_id": batch_id,
+                "n_planned": 0, "n_applied": 0, "n_drifted": 0, "n_closed": 0,
+                "closed": [], "merged": [], "skipped": [],
+                "summary": plan.get("reason")}
+
+    pending_ids = {_cid(ev) for ev in review_tier(workspace_root)}
+    decisions = _review_decisions(plan.get("rows"), bucket=bucket,
+                                  pending_ids=pending_ids)
+    n_planned = len(decisions)
+    if not n_planned:
+        return {"ran": False, "applied": False, "refused": "empty_plan",
+                "reason": empty_reason, "threshold_days": threshold,
+                "source_ref": plan.get("source_ref"), "batch_id": batch_id,
+                "n_planned": 0, "n_applied": 0, "n_drifted": 0, "n_closed": 0,
+                "closed": [], "merged": [], "skipped": [],
+                "summary": empty_reason}
+
+    out = dict(apply_decisions(workspace_root, decisions,
+                               user_person_id=user_person_id,
+                               batch_id=batch_id,
+                               source_skill=REVIEW_SOURCE_SKILL,
+                               now_iso=now_iso))
+    n_applied = int(out.get("n_closed") or 0)
+    out.update({
+        "applied": True,
+        "refused": None,
+        "reason": "",
+        "threshold_days": threshold,
+        "source_ref": plan.get("source_ref"),
+        "n_planned": n_planned,
+        "n_applied": n_applied,
+        "n_drifted": n_planned - n_applied,
+        # F-2 — the ack is built from the writer's OWN per-row results, so the
+        # cause it names is the cause that happened.
+        "summary": _review_summary(n_planned, n_applied, verb=verb,
+                                   results=out.get("closed")),
+    })
+    return out
+
+
+def apply_review_expiry(workspace_root, *, user_person_id,
+                        older_than_days=None, batch_id=None,
+                        now_iso=None) -> dict:
+    """Lapse the unanswered half of the unconfirmed pile in ONE undoable batch.
+
+    There is deliberately no `rows` / `plan` / `decisions` parameter, for the
+    same TOCTOU reason `apply_amnesty` has none: the pile is derived at offer
+    time and confirmed a turn later, and in between a row can be confirmed,
+    dropped or answered on the queue. Re-deriving means it silently falls out,
+    which is the correct behaviour and needs no special case anywhere.
+
+    Refuses, writing NOTHING, in three cases: an unresolved primary user, a
+    threshold under the floor, and an empty pile. Each returns an honest line
+    rather than a clean zero.
+    """
+    plan = review_expiry_plan(workspace_root, user_person_id=user_person_id,
+                              older_than_days=older_than_days, now_iso=now_iso)
+    threshold = plan.get("threshold_days")
+    return _apply_review(
+        workspace_root, plan, bucket=REVIEW_EXPIRY_BUCKET,
+        user_person_id=user_person_id, batch_id=batch_id, now_iso=now_iso,
+        empty_reason=(f"Nothing in the unconfirmed pile has sat unanswered "
+                      f"for {threshold}+ days, so there is nothing to clear. "
+                      f"Nothing was changed."),
+        verb=f"nobody had answered in {threshold}+ days")
+
+
+def apply_ingest_kill(workspace_root, *, user_person_id, source_ref,
+                      batch_id=None, now_iso=None) -> dict:
+    """Clear one ingest's unconfirmed cluster in ONE undoable batch.
+
+    Same no-row-list contract and the same re-derivation as the expiry. The
+    ONLY caller input is the ingest id — a name for a defect, not a list of
+    rows — so the widest thing this verb can ever reach is one ingest's
+    review-tier output.
+    """
+    plan = ingest_kill_plan(workspace_root, source_ref,
+                            user_person_id=user_person_id, now_iso=now_iso)
+    label = plan.get("source_ref") or source_ref
+    return _apply_review(
+        workspace_root, plan, bucket=INGEST_KILL_BUCKET,
+        user_person_id=user_person_id, batch_id=batch_id, now_iso=now_iso,
+        empty_reason=(f"Nothing unconfirmed is left from {label}, so there is "
+                      f"nothing to clear. Nothing was changed."),
+        verb=f"from {label}")
+
+
 __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "DEFAULT_AGE_OUT_DAYS",
@@ -1391,6 +2530,34 @@ __all__ = [
     "AUTO_CLOSE_EVIDENCE_BASES",
     "AGE_OUT_RESOLUTION",
     "AGE_OUT_REASON",
+    "AMNESTY_SOURCE_SKILL",
+    "AMNESTY_BUCKET",
+    "AMNESTY_ACTION",
+    "AMNESTY_MIN_DAYS",
+    "AMNESTY_OFFER_AT",
+    "AMNESTY_PREVIEW_ROWS",
+    "ACCEPT_SOURCE_KEY",
+    "ACCEPT_BUCKET",
+    "ACCEPT_ACTION",
+    "REVIEW_SOURCE_SKILL",
+    "REVIEW_TIER_RESOLUTION",
+    "REVIEW_EXPIRY_DAYS",
+    "REVIEW_EXPIRY_MIN_DAYS",
+    "REVIEW_PREVIEW_ROWS",
+    "REVIEW_EXPIRY_BUCKET",
+    "REVIEW_EXPIRY_ACTION",
+    "REVIEW_EXPIRY_REASON",
+    "INGEST_KILL_BUCKET",
+    "INGEST_KILL_ACTION",
+    "INGEST_KILL_REASON",
+    "REVIEW_TIER_BUCKETS",
+    "review_tier",
+    "review_expiry_candidates",
+    "ingest_kill_candidates",
+    "review_expiry_plan",
+    "apply_review_expiry",
+    "ingest_kill_plan",
+    "apply_ingest_kill",
     "AUDIT_EVENT_TYPE",
     "BATCH_PREFIX",
     "BATCH_SALT_BYTES",
@@ -1408,6 +2575,9 @@ __all__ = [
     "duplicate_groups",
     "scan",
     "apply_decisions",
+    "amnesty_plan",
+    "apply_amnesty",
+    "accept_handled_decisions",
     "digest_view",
     "summarize",
     "last_scan",

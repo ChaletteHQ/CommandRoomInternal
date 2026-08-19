@@ -255,6 +255,17 @@ close_commitment(
     resolved_by="<person_id>",
     evidence="<one-line reason — 'delivered in this meeting' or 'mentioned as done in transcript'>",
     source_skill="follow-up-ritual",
+    # PROV1 — the TRANSCRIPT this close was read out of, so a reader can open
+    # the meeting that justified it. Prose evidence names no artifact; a
+    # pointer does. Pass the meeting's native id prefixed by its provider
+    # (`granola:<meeting_id>`). Pass nothing only when there genuinely is no
+    # source — the close still lands, and since SPEC PROVMINT1 the writer
+    # mints `session:follow-up-ritual:<now>` for it, marked `surface_minted`;
+    # PROV1's bare marker is no longer reachable from this writer. That floor
+    # points at the ACT, never at a transcript, so dropping a meeting id you
+    # HAVE trades a real pointer for a receipt — and the coverage split
+    # reports it as exactly that.
+    source_ref="granola:<meeting_id>",
 )
 ```
 

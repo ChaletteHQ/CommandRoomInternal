@@ -33,6 +33,31 @@ from __future__ import annotations
 
 from typing import Any, List
 
+# APPLYAUDIT1 (defect register, bug_received seq 9517 item C) — THE VOCABULARY
+# IS NOW CENSUS-DERIVED, NOT INCIDENT-DERIVED.
+#
+# Three weeks of live Apply actions audited 31.3% "errored" because the three
+# sets below had drifted ~54 statuses behind the handlers apply-choices
+# actually dispatches into: `mine` (confirm_commitment_owner → "confirmed"),
+# `make task` / `promote` (promote_task_to_commitment → "reclassified" /
+# "already_task" / "already_promise"), `push to [date]` (no status-returning
+# writer at all) and `add to my list` (orphan_note returned `outcome`, not
+# `status`) each errored on EVERY dispatch, successes included. The fix was
+# never one more word: v5.9.3 added exactly one ("done"), WATCHGATE and ARCHFIX
+# one each before it, and the class survived all three.
+#
+# So the vocabulary is now maintained against a CENSUS, and the census is a
+# fence: `tests/run_fs18_outcome_coverage_test.py` derives the module list from
+# the apply-choices dispatch table itself (skills/apply-choices/SKILL.md),
+# walks every handler those modules expose plus everything they call, and
+# fails if ANY status literal it finds is missing from exactly one of the three
+# sets below. Add a handler status anywhere on that rail and the suite goes red
+# until it is classified here. That is the point — a status must never again
+# reach `derive_outcome` unclassified and be told "error" by fall-through.
+#
+# The fall-through itself is UNCHANGED and stays never-optimistic (:derive_
+# outcome). It now means what it always claimed to: a genuinely unknown word.
+
 # status strings that mean "the write landed" (the handlers' own vocabulary).
 _OK_STATUSES = frozenset({
     "ok", "closed", "resolved", "applied", "added", "created", "updated",
@@ -52,6 +77,39 @@ _OK_STATUSES = frozenset({
     # live 2026-08-05), and page_snapshot kept offering a row whose write had
     # landed.
     "done",
+    # --- APPLYAUDIT1: the landed-write words the census found unclassified ---
+    #   confirmed        commitment_state.confirm_commitment_owner — the `mine`
+    #     verb. 20 of the register's 93 false errors, and the nastiest shape:
+    #     `confirmed_open` (a REFUSAL) was classified while `confirmed` (the
+    #     landed write) was not, so the vocabulary knew the failure word and
+    #     not the success word.
+    #   reclassified     commitment_state.promote_task_to_commitment — `make
+    #     task` / `promote`; an additive commitment_reclassified marker.
+    #   superseded       commitment_state.supersede_commitment — the merge leg.
+    #   received         commitment_state.mark_partial_received.
+    #   restored         commitment_state.restore_review_flags — the un-confirm.
+    #   flagged          commitment_state.flag_duplicate_for_review.
+    #   subitems_added   commitment_state.add_subitems — the parent stays open
+    #     BY DESIGN; the children landing is the write.
+    #   deferred         commitment_state.apply_later, defer leg (APPLYAUDIT1
+    #     part 3) — commitment_updated carrying data.new_due.
+    #   noted            orphan_note.reroute_orphan_note — `add to my list`;
+    #     one `note` event on the resolved person/thread.
+    #   held             mute_ledger.hold_item — a dated chat_dismissal IS the
+    #     write; "held" is not a refusal (that is held_weak_evidence).
+    #   actioned         balance.record_actioned — the follow-on linkage.
+    #   moved            deal_state.set_stage.
+    #   reported         objective_state.record_report.
+    #   rebound          objective_state.rebind_objective.
+    #   written          day_intent.write_day_intent — the tomorrow block.
+    #   active           org_writer.create_org RETURNS THE NEW RECORD, whose
+    #     own `status` field is "active". The record is the handler_result, so
+    #     this string reaches derive_outcome and means the org was created.
+    #   complete         commitment_backlog_sweep's run receipt — the sweep
+    #     finished (its refusal twin, "blocked", is already classified below).
+    "confirmed", "reclassified", "superseded", "received", "restored",
+    "flagged", "subitems_added", "deferred", "noted", "held", "actioned",
+    "moved", "reported", "rebound", "written", "active", "complete",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -73,6 +131,38 @@ _NOOP_STATUSES = frozenset({
     # counting it as landed can never hide a row still awaiting this queue's
     # decision. Nothing was written, so it is a no-op, not an "ok".
     "not_pending",
+    # --- APPLYAUDIT1: the idempotent no-ops the census found unclassified ---
+    # Every one of these is a handler saying "the workspace is ALREADY in the
+    # state you asked for". Nothing was written and nothing is owed, so the
+    # page-set must stop offering the row — the same reason `already_resolved`
+    # has always suppressed. Counting them as errors is what kept re-offering
+    # rows the user had already answered, which is how they got clicked twice.
+    #   already_task / already_promise / already_scheduling / already_agenda —
+    #     promote_task_to_commitment, built as "already_" + new_kind, so a
+    #     literal grep CANNOT see any of them. The census registers that site
+    #     explicitly and DERIVES the four words from
+    #     commitment_state.KIND_VALUES_SAFE, so a fifth kind arrives here as a
+    #     red suite rather than as a silent fall-through. apply-choices only
+    #     dispatches task/promise today; the other two are classified because
+    #     the writer can emit them, not because a verb reaches them.
+    #   already_open        commitment_state.reopen_commitment.
+    #   already_noted       orphan_note — DOGFIX1 identity idempotency.
+    #   already_actioned    balance.record_actioned, keyed on the CARD.
+    #   already_held        mute_ledger.hold_item — a repeat must not silently
+    #     extend the clock, so it writes nothing.
+    #   already_unconfirmed / already_undone — the queue's undo rails (SF-5).
+    #   duplicate_open_legacy — brain_proposals.propose; the proposal already
+    #     stands under a pre-migration fingerprint.
+    #   unchanged           deal_state.set_stage / update_deal, objective_state
+    #     .rebind_objective — asked for the value it already has.
+    #   exists              people_writer.add_person_alias — the spelling was
+    #     already known to that record.
+    #   empty               brain_undo.undo_batch over a batch with nothing
+    #     reversible; no change, no failure.
+    "already_task", "already_promise", "already_scheduling", "already_agenda",
+    "already_open", "already_noted",
+    "already_actioned", "already_held", "already_unconfirmed",
+    "already_undone", "duplicate_open_legacy", "unchanged", "exists", "empty",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({
@@ -102,6 +192,33 @@ _REFUSED_STATUSES = frozenset({
     #     never-optimistic one.
     "not_individually_named", "not_found", "confirmed_not_closed",
     "has_subitems", "not_open",
+    # --- APPLYAUDIT1: the refusals the census found unclassified -------------
+    # "error" was already the outcome for each of these, but by FALL-THROUGH,
+    # and the whole lesson of this defect is that a fall-through hides an
+    # unlearned word. Each is now a decision on the record:
+    #   declined            orphan_note — nothing resolved, NOTHING written;
+    #     the user is handed a line asking for a person or project. Work is
+    #     still owed, so this must not suppress the row.
+    #   not_confirmed / touched_since_confirm / not_a_done — the queue's undo
+    #     rails refusing an id they do not own or that moved underneath them.
+    #   not_reopened        undo_done_items' reopen leg failed; item stays
+    #     closed and nothing else was written.
+    #   reopened_only       the undo's HALF-landed shape — reopened but still
+    #     confirmed. Half a write is not a write.
+    #   not_closed / not_parked — watch_gate.confirm_review_rows' two failure
+    #     legs; the row is untouched either way.
+    #   digest_members_missing — proposal_digests refusing a grouped row that
+    #     arrived without its members. Explicitly "nothing was written for it".
+    #   partial             brain_undo.undo_batch when some reversers threw;
+    #     never-optimistic says a partial batch is not a success.
+    #   open                a commitment RECORD's own lifecycle field, reached
+    #     by the census through create_personal_task / the sub-item minter. It
+    #     is not a handler outcome today; if one ever returned it, it would be
+    #     asserting the item is STILL OPEN — nothing landed. Classified into
+    #     the never-optimistic bucket for exactly that reading.
+    "declined", "not_confirmed", "touched_since_confirm", "not_a_done",
+    "not_reopened", "reopened_only", "not_closed", "not_parked",
+    "digest_members_missing", "partial", "open",
 })
 
 

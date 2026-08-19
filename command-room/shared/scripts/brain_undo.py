@@ -368,6 +368,33 @@ def _reverse_person_link(workspace_root, change, *, undone_by, source_skill):
     return result
 
 
+def _reverse_day_intent(workspace_root, change, *, undone_by, source_skill):
+    # SPEC BK1 — reverse "tomorrow is about X". Like every reverser here the
+    # reversal is ADDITIVE: `day_intent.reverse_day_intent` appends a NEW
+    # day_intent for the same for_date that either RESTORES the record this
+    # one superseded or RETRACTS the day outright (`data.retracted`, which the
+    # reader answers as None). The reversed event stays in history forever.
+    #
+    # THE ANCHOR IS THE SEQ, read off `change_ref` exactly as the
+    # entity_fact_structured reverser reads its retraction target — a
+    # day_intent has no id of its own, and its position in the for_date's
+    # append order IS its identity.
+    #
+    # NEVER ADD THIS CLASS TO `brain_proposals.AUTO_ALLOWED`. A day_intent is
+    # a statement about the CEO's own day; nothing may make one on its own,
+    # which is the same rule the UNCONFIRM1 user-gesture classes carry.
+    from day_intent import reverse_day_intent
+
+    ref = str(change.get("change_ref") or "")
+    try:
+        target_seq = int(ref.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise BrainUndoError(
+            f"day_intent reversal needs a seq-bearing change_ref, got {ref!r}")
+    return reverse_day_intent(workspace_root, target_seq,
+                              undone_by=undone_by, source_skill=source_skill)
+
+
 def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
                                        source_skill):
     # T2.2 (backlog sweep) — reverse an expire/skip tombstone on a person
@@ -489,6 +516,21 @@ REVERSERS: dict[str, dict] = {
         "description": "retract an auto-noted structured fact (append the "
                        "retraction event; the history renderers suppress "
                        "the fact — the event itself is never edited)",
+    },
+    # SPEC BK1 (2026-08-16) — "tomorrow is about X" is a USER GESTURE, so this
+    # reverser exists for the `undo` affordance the chat path advertises, NOT
+    # to license an auto tier. Like the two UNCONFIRM1 classes it may never
+    # join `brain_proposals.AUTO_ALLOWED`: nothing may state the CEO's own
+    # intent on its own. Reversal is additive — the write stays in history and
+    # the restore/retraction is appended.
+    "day_intent": {
+        "reverse": _reverse_day_intent,
+        "reverses_via": "day_intent (the restoring record, or a "
+                        "retraction when there was nothing before it)",
+        "description": "take back what you said the day was about — the "
+                       "previous answer comes back if there was one, "
+                       "otherwise the day goes quiet again; the original "
+                       "stays in history",
     },
     # T2.2 (FS-11b-extended backlog sweep): the sweep's expire tombstones are
     # undoable — the reverser appends person_proposal_reopened (additive; the
@@ -770,6 +812,10 @@ _CLASS_PHRASES = {
     # USER's own batch. A class name is not a thing anyone said or saw happen.
     "commitment_confirm": "confirmed a captured item",
     "commitment_done": "said a captured item was already done",
+    # SPEC BK1 — never written by an auto detector; the phrase exists for a
+    # surface narrating the CEO's OWN batch, and "day_intent ×1" is not a
+    # thing anyone said or saw happen.
+    "day_intent": "set what the day is about",
     "person_link": "linked a name to an existing contact",
     "person_org_creation_structured_fact": "added a contact",
     "entity_fact_structured": "noted a fact",

@@ -162,7 +162,7 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null 
 ```
 
 Read:
-- `<WORKSPACE>/_hq/data/entities.json` — primary user (`is_primary_user: true`), timezone, all canonical person/project/org records (for canonicalization during capture).
+- `<WORKSPACE>/_hq/data/entities.json` — primary user (resolve with `primary_user.resolve_primary_user`, which reads the canonical `workspace.user_id` pointer first and falls back to the legacy `is_primary_user: true` flag — never scan for the flag directly, it is unset on most real workspaces), timezone, all canonical person/project/org records (for canonicalization during capture).
 - `<WORKSPACE>/_hq/data/aliases.json` — for raw→canonical resolution on every captured interaction.
 - `<WORKSPACE>/CLAUDE.md` if exists — hot cache.
 
@@ -441,7 +441,7 @@ The `subtitle` field is REQUIRED by `brief_writer.make_brief_from_json` — omit
 - **Internal (You Owe — build / self-development):** commitments to YOURSELF about a system or platform you operate (an internal product build, workspace cleanup, infrastructure improvements). Only applies when `_hq/BUSINESS_CONTEXT.md` identifies the user as the builder/operator of an own platform or internal system; users without one have an empty Internal section and the rendered output omits it.
 
 Classification heuristic — a commitment is "Internal" when ALL of:
-- `data.owner_id == user_id` (the workspace's primary user, resolved via `entities.json` `workspace.user_id` or the legacy `is_primary_user: true` person record)
+- `data.owner_id == user_id` (the workspace's primary user — the id from `primary_user.resolve_primary_user`, the same one resolved at the top of this skill. Never re-resolve it by reading `entities.json` yourself: per SPEC USERKEY1 the canonical `workspace.user_id` pointer and the legacy `is_primary_user: true` person record are the seam's steps 1 and 3, and a second resolver in prose is exactly what the census exists to eliminate)
 - The topic / `primary_thread_id` matches one of the user's own-platform / internal-infrastructure projects as named in `_hq/BUSINESS_CONTEXT.md` (never a hardcoded project list)
 - No external counterparty named in the commitment data
 

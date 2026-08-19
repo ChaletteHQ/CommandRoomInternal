@@ -67,6 +67,8 @@ print(json.dumps(check_lateness('<workspace_root>', 'staff-meeting', fired_via='
 - **Today's date is `clock["today"]`** — take it from the return rather than computing one here.
 
 
+**Read `directive` BEFORE the tier — it is the render decision (SPEC SCHED1).** If `directive` is `skip_render`, the slot this fire is serving was ALREADY delivered: a receipt for it is on the ledger, and the helper has already written the honest `skipped` receipt for this fire. Post the returned `ack` line, exactly as returned, as the ENTIRE output of this fire — no surface, no widget, no sections, no Sources block, and no receipt of your own — then STOP. Do not re-derive whether it "really" ran, do not render a shortened version, and do not read the tier as the decision: on this path the tier is `none`, `none` means "run normally", and that reading is what delivered three duplicate full surfaces in one day. `directive` is present on every tier and is `null` on all the others, so this is one unconditional check rather than a special case to remember. A `manual` fire never carries it — a human who asks for the surface gets the surface.
+
 Branch on `tier` exactly as every scheduled chat does:
 
 - **`manual` / `none` / `exempt` / `unknown`** — run every phase normally, no timing narrative anywhere. A `suppressed` reason means the ledger found the slot served — believe it.

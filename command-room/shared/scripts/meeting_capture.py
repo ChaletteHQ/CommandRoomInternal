@@ -561,6 +561,13 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
                         canonical builder or the observed writer refused, and
                         is worth a look rather than a shrug.
 
+    `n_fusion_inert` (PREC1) rides the same receipt: how many written rows the
+    fusion guardrail could not check at all. It is NOT a tier and NOT a subset
+    of one — it cuts across book / review / observed — so it is never added to
+    another count. Before it existed, a fire with no transcript produced a
+    receipt identical to a fully-verified one, which is what let the FLOOR3
+    replay find 20 unflagged unverifiable rows in a population of 131.
+
     Accepts the whole `route_meeting_captures` return, or just its `summary`
     (the per-reason tallies need the full return — a bare summary yields the
     counts alone). Returns {} for None so a caller with no routing to report
@@ -571,12 +578,18 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
         else routed
     out: dict = {}
     for key in ("n_book", "n_review", "n_observed", "n_skipped",
-                "n_floor_gated"):
+                "n_floor_gated", "n_deduped", "n_fusion_inert"):
         if key in summary:
             out[key] = int(summary.get(key) or 0)
     floor_reasons: dict = {}
     for verdict in (routed.get("verdicts") or []):
         v = verdict or {}
+        if v.get("duplicate"):
+            # FLOOR3 E — a twin that folded into a survivor was never written,
+            # and counting its floor verdict here would say the floor bit twice
+            # on one act. The re-measure reads this tally to decide whether the
+            # floor is mis-tuned; it has to count ROWS, not extractions.
+            continue
         # `floor_code` when the verdict carries one, the prose when it does not
         # (a caller holding a pre-fix verdict dict); `floor_reason_code` reads
         # both and buckets an unrecognised third spelling as `legacy`.
@@ -719,10 +732,32 @@ def meeting_binding_audit(workspace_root, source_ref: str) -> dict:
     return out
 
 
+def meeting_ref_keys(ref) -> set:
+    """PUBLIC name for the meeting-reference key derivation (`_norm_ref_keys`).
+
+    Exported (SPEC EODFIX1 §2-4) so the End of Day's catch-up sweep can build a
+    receipt index in ONE pass while still agreeing with `already_processed`
+    meeting-for-meeting. Two spellings of "is this the same meeting" is exactly
+    the drift that made a record look processed to one path and unprocessed to
+    another; a cross-module import of the one derivation is the fix, and a
+    private name would have guaranteed a second copy."""
+    return _norm_ref_keys(ref)
+
+
 def already_processed(workspace_root, source_ref: str) -> bool:
     """True when a `meeting_processed` receipt exists for this meeting — the
     canonical already-processed marker (dedup must not depend on the bare
-    `meeting` event; F-50 proved that only held by accident)."""
+    `meeting` event; F-50 proved that only held by accident).
+
+    THERE ARE TWO ANSWERS BY DESIGN, AND THIS IS THE NARROWER ONE. This
+    function asks "was work extracted from it". The End of Day catch-up sweep
+    asks "is it still owed", and a `meeting_skipped` event answers that one
+    too — a deliberate exclusion is handled, not owed — so the sweep counts
+    `meeting_discovery.PROCESSED_RECEIPT_TYPES` rather than this predicate
+    alone. Neither side counts a bare `meeting` record. Said here as well as
+    there because a reader who starts from this docstring and assumes it is
+    the only answer is how the two-definitions bug got written in the first
+    place (review N-7)."""
     counts = count_meeting_writes(
         workspace_root, source_ref, types=("meeting_processed",)
     )
@@ -943,6 +978,28 @@ FUSION_REVIEW_REASON = (
 # orchestrator-past-meetings.md § Cross-meeting fusion guardrail.
 FUSION_MIN_WORDS = 5
 
+# The THREE outcomes of the fusion check. There have always been three; only
+# two were ever expressible, and the missing one is the defect PREC1 opens
+# with.
+#
+#   verified  the evidence (or the title) locates verbatim in the transcript
+#             this capture cites. The guardrail ran and passed.
+#   refused   it does not locate. The guardrail ran and refused —
+#             `FUSION_REVIEW_REASON`, queue row, `data.fusion_unverified`.
+#   inert     the guardrail COULD NOT RUN: no transcript was supplied, or
+#             neither evidence nor title carries `FUSION_MIN_WORDS` to check.
+#
+# `fusion_refusal_reason` collapses verified and inert to the same "" — which
+# is right for ROUTING (skip-not-fail: refuse only what you can positively
+# establish is absent) and wrong for every reader downstream, because it makes
+# a capture written without a transcript indistinguishable from one that
+# passed. FLOOR3_REPLAY_2026-08-14 §3 measured the cost: 20 of 131 live
+# captures carry evidence that is not verbatim from their transcript and
+# NOTHING on the row says so. Absence of a refusal was reading as a pass.
+FUSION_VERIFIED = "verified"
+FUSION_REFUSED = "refused"
+FUSION_INERT = "inert"
+
 TIER_BOOK = "book"
 TIER_REVIEW = "review"
 TIER_OBSERVED = "observed"
@@ -1017,6 +1074,35 @@ _HEDGE_LANG_RE = re.compile(
     r"""(?ix)
       \b(?:can|could|would|will)\s+you\b
     | \bdo\s+you\s+mind\b
+    # PREC1 — the NEGATED form of the member above. English asks the polite
+    # favour as "if you don't mind …" far more often than "do you mind …", and
+    # the class carried only the positive polarity, so the whole family leaked.
+    #
+    # AUTHORED FROM THE REAL `data.evidence` STRINGS AND MEASURED BEFORE IT WAS
+    # KEPT — the FLOOR3-v1 discipline. A class written against a DESCRIPTION of
+    # the data (the audit's quote column, the spec's characterisation of a
+    # register) is the mistake this whole family exists to stop.
+    #
+    # MEASURED by replaying the live substrate through both code sets with
+    # `scripts/replay_captures.py`: 930 comparable meeting-derived captures,
+    # 503 of them booked by the old code. This member moves 4 of those 503 off
+    # the book. One is seq 8248 — labelled J-1 by the V1 re-measure, and the
+    # item FLOOR3 v2 could not reach from the done-in-meeting side because the
+    # discharge cue is absent; read as an unaccepted REQUEST the phrase is
+    # right there in the evidence. Of the other three, one is the same shape
+    # unlabelled and two are rows the live substrate already has in the queue,
+    # which is corroboration rather than exposure. It fires on ZERO of the 16
+    # audit-labelled REAL items, and REAL-items-wrongly-gated is unchanged at
+    # 3 — FLOOR3 v2's standard, which is the number that decides whether a
+    # hardening round ships at all.
+    #
+    # SECOND PERSON IS LOAD-BEARING. `you don't mind` is a request; `I don't
+    # mind` is an ACCEPTANCE, and the broader spelling gated it — one of the
+    # ways this family over-tightens. Both spellings score identically on the
+    # live corpus, so the narrower one costs nothing and cannot make that
+    # mistake on a corpus we have not seen. `would you mind` needs no member of
+    # its own: `\b(?:can|could|would|will)\s+you\b` already carries it.
+    | \byou\s+(?:don'?t|wouldn'?t)\s+mind\b
     | \bany\s+chance\b
     | \bif\s+you\s+(?:can|could)\b
     | \b(?:we|someone|somebody|you)\s+should\b
@@ -1188,10 +1274,9 @@ def _normalize_for_fusion(text) -> str:
     return " ".join(_FUSION_WORD_RE.findall(str(text or "").lower()))
 
 
-def fusion_refusal_reason(data: dict, transcript_text) -> str:
-    """THE cross-meeting fusion guardrail, in code (A3). "" when the capture
-    is provably grounded in the transcript it cites, or when the check cannot
-    run; the refusal reason otherwise.
+def fusion_status(data: dict, transcript_text) -> str:
+    """THE cross-meeting fusion guardrail, in code (A3), reporting all THREE of
+    its outcomes: `FUSION_VERIFIED` / `FUSION_REFUSED` / `FUSION_INERT`.
 
     `orchestrator-past-meetings.md` has REQUIRED this since v2.14.19 — "a 5+
     word substring of data.title / data.evidence actually appears in the
@@ -1200,13 +1285,16 @@ def fusion_refusal_reason(data: dict, transcript_text) -> str:
     that appears nowhere in its cited transcript, which is exactly what the
     guardrail exists to make impossible.
 
-    SKIP-NOT-FAIL. No transcript text (the caller could not fetch one) and a
-    too-short evidence/title both leave the check INERT: this refuses only what
-    it can positively establish is absent. Pure — the caller supplies the
-    transcript it already loaded (never re-fetch)."""
+    SKIP-NOT-FAIL is unchanged as a ROUTING rule: only `FUSION_REFUSED` moves a
+    lane, because the check refuses only what it can positively establish is
+    absent. What changes is that the two ways of not-refusing are no longer the
+    same answer. Pure — the caller supplies the transcript it already loaded
+    (never re-fetch)."""
     haystack = _normalize_for_fusion(transcript_text)
     if not haystack:
-        return ""
+        # No transcript reached the capture. Nothing was checked, and the row
+        # has to say so — this is the exact shape behind FLOOR3_REPLAY §3.
+        return FUSION_INERT
     data = data or {}
     for field in ("evidence", "title"):
         needle = _normalize_for_fusion(data.get(field))
@@ -1214,12 +1302,27 @@ def fusion_refusal_reason(data: dict, transcript_text) -> str:
         if len(words) < FUSION_MIN_WORDS:
             continue
         if needle in haystack:
-            return ""
+            return FUSION_VERIFIED
         for i in range(len(words) - FUSION_MIN_WORDS + 1):
             if " ".join(words[i:i + FUSION_MIN_WORDS]) in haystack:
-                return ""
-        return FUSION_REVIEW_REASON
-    return ""
+                return FUSION_VERIFIED
+        return FUSION_REFUSED
+    # A transcript was supplied and neither field carries enough words to look
+    # for. Structurally un-anchorable: no transcript will ever verify this row,
+    # and every transcript-reading floor check is inert on it for the same
+    # reason (`_evidence_anchor` has nothing to anchor).
+    return FUSION_INERT
+
+
+def fusion_refusal_reason(data: dict, transcript_text) -> str:
+    """The routing face of the guardrail: "" when the capture is provably
+    grounded in the transcript it cites OR when the check could not run; the
+    refusal reason otherwise.
+
+    DERIVED from `fusion_status` rather than re-deciding — one predicate, two
+    readers. A second copy of the walk is how the two faces drift apart."""
+    return (FUSION_REVIEW_REASON
+            if fusion_status(data, transcript_text) == FUSION_REFUSED else "")
 
 
 # =============================================================================
@@ -1290,11 +1393,10 @@ SUPERSEDE_CONTEXT_WORDS = 40
 # How much verbatim transcript rides along as the superseding quote, and as the
 # retraction's own local window for the lexical test.
 SUPERSEDE_QUOTE_WORDS = 16
-# How far after the evidence span a completion acknowledgment still reads as
-# the acknowledgment of THAT action. Tighter than the supersession window: an
-# ack carries no topic words of its own ("that's done"), so proximity is the
-# only tie it can have and it has to be a short one.
-ACK_WINDOW_WORDS = 60
+# RETIRED by FLOOR3 v2. This was the window for FLOOR2's completion-ack leg,
+# which read the tail only after an evidence-side cue had already fired. v2
+# reads the tail directly and carries its own, tighter window
+# (`DISCHARGE_WINDOW_WORDS`), measured rather than assumed.
 
 # An action taken ON the call, in the words people use for it.
 #
@@ -1365,6 +1467,225 @@ _COMPLETION_ACK_RE = re.compile(
     | \b(?:it|that)\s+s\s+(?:verified|confirmed|set\s+up)\s+now\b
     """
 )
+
+# =============================================================================
+# FLOOR3 — the J-1 DEMO shape (2026-08-13).
+# =============================================================================
+#
+# The V1 FULL re-measure (2026-08-12, `_hq/audit-reports/V1_REMEASURE_2026-08-12
+# .md`) FAILED both targets — confirmed-lane junk 6/15 = 40%, overall 9/25 =
+# 36% — and 8 of the 9 junk items were J-1, the class FLOOR2 shipped a check
+# for. The check caught none of them, and the reason is structural rather than
+# a vocabulary gap:
+#
+#   `_POST_MEETING_SURFACE_RE` ran as an UNCONDITIONAL veto over `title +
+#   evidence` BEFORE either positive signal. It fires on the mere presence of a
+#   send / share / email / invite verb, on the premise that such a verb means
+#   the deliverable outlives the call. In the DEMO / ONBOARDING register — where
+#   the whole live week's junk lives — that premise is exactly inverted: the
+#   artifact is produced in the room while the other side watches, and "let me
+#   send you that here" is a completed act, not a promise.
+#
+# The proof is one sample item: its evidence was "send that over to me", its
+# transcript said "Okay. That's done." a few turns later, and `_COMPLETION_ACK_
+# RE` ALREADY MATCHED that acknowledgment. The veto threw the evidence away
+# before the ack leg ever ran. The defect is the ORDERING, not the classes.
+#
+# So the veto splits by what it can actually establish:
+#
+#   * A future TIME marker ("tomorrow", "by Friday", "after the call") is
+#     direct evidence the deliverable outlives the meeting. It stays absolute —
+#     `_FUTURE_TIME_RE`, checked first, and nothing below overrides it (nor the
+#     due-date / money rail, which is older and equally absolute).
+#   * A delivery VERB is not. It is a guess, and demo junk is made of delivery
+#     verbs with no times attached. `_POST_MEETING_SURFACE_RE` therefore keeps
+#     its force only over the ONE-LEGGED FLOOR2 deictic signal, which is where
+#     a lexical counter-cue is a fair tiebreak. Positive, TIED evidence that an
+#     act was discharged in the room now outranks it.
+#
+# Everything added here reports the SAME verdict, `FLOOR_DONE_IN_MEETING`.
+# These are three ways to observe one thing; a fourth enum member would tell a
+# reader nothing and would cost the C1 receipt pin an exception.
+#
+# All patterns below are written in the NORMALIZED FUSION VOCABULARY, like
+# every FLOOR2 class: contractions are already split (`that s going out`,
+# `i m sending`) and there is no punctuation. A pattern written with an
+# apostrophe in it matches nothing, silently.
+
+# The temporal half of `_POST_MEETING_SURFACE_RE`, and the only half that
+# survives as an absolute veto. An explicit future time is not a guess about
+# whether the deliverable outlives the call — it is the speaker saying so.
+_FUTURE_TIME_RE = re.compile(
+    r"""(?ix)
+      \bafter\s+(?:the|this|our)\s+(?:call|meeting|session|demo)\b
+    | \b(?:later\s+today|later\s+this|tonight|tomorrow|
+           this\s+(?:afternoon|evening|week|month|quarter)|
+           in\s+the\s+morning|
+           next\s+(?:week|month|quarter|year)|
+           by\s+(?:eod|eow|eom|cob))\b
+    | \b(?:by|on|next|this|come)\s+
+      (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b
+    | \b(?:end\s+of\s+(?:the\s+)?(?:day|week|month|quarter)|
+           over\s+the\s+weekend|
+           in\s+(?:a\s+(?:couple|few)|two|three)\s+(?:days|weeks|hours))\b
+    | \bby\s+the\s+(?:\d{1,2}(?:st|nd|rd|th)?|end)\b
+    | \bbefore\s+(?:the\s+)?(?:board|next|end)\b
+    """
+)
+# WIDENED IN FIX ROUND 1 (CONFIRM review F6). This class became the ONLY
+# absolute temporal veto the moment the delivery-verb half was demoted, and it
+# only knew six ways to say "later" — so "let me send you the deck here next
+# Tuesday" and "I'm texting them this afternoon" were CONFIRMED gating. Every
+# addition errs toward BOOK: a phrase that is ambiguous between past and future
+# ("on Monday") vetoes, which is the safe direction for this check.
+
+# D leg 1 — a delivery act framed as happening IN THE ROOM. Two families, one
+# is enough, and both need the deictic frame: it is the frame and not the verb
+# that says the artifact changed hands here.
+#
+# `over to you` / `over to me` are deliberately ABSENT. "I'm going to get these
+# deliverables over to you" is the single most ordinary post-call promise in
+# the sample (a confirmed REAL capture), and admitting that frame would gate
+# it. The markers kept are ones that can only mean the room: `here` (guarded
+# below), the chat, the screen, and a delivery verb bound to `right now`.
+# =============================================================================
+# FLOOR3 v2 — the cue is in the TRANSCRIPT, not the sentence (2026-08-14).
+# =============================================================================
+#
+# v1 of this layer was replayed against 110 real captures before it shipped and
+# caught ZERO of the 9 known junk items. The classes had been written against
+# the V1 audit report's QUOTE COLUMN — quotes an auditor assembled while reading
+# transcripts, which blend an item's evidence with the speech around it — and
+# not against the `data.evidence` strings the substrate actually holds. The two
+# are different text:
+#
+#   audit quote                   data.evidence
+#   "…Sorry. That's going out."   "I'm gonna change center to be earlier. Yeah,
+#                                  I think five is a good time."
+#   "…I got you right now."       "130 is fine. 130 is fine. If you want to
+#                                  send me a meeting request, that would be
+#                                  great."
+#
+# An entire signal was built on "that's going out". That phrase appears in NO
+# evidence string in the population. Measured leg-1 hit rate across 110 real
+# items: 3, and all 3 failed the second leg.
+#
+# THE CORRECTION IS A RELOCATION, NOT A REWRITE. Every phrase those classes
+# looked for is real and is in the record — it sits in the TAIL, the transcript
+# that FOLLOWS the item's evidence span. That is where the auditor was reading
+# when they wrote the quotes. So the cue class moves to the tail, and the
+# evidence-side classes are deleted rather than re-tuned:
+#
+#   seq 7933  tail: "sorry that's going out, so we're gonna get that done"
+#   seq 8334  tail: "…or just copy paste, and I actually have Slack open"
+#   seq 8348  tail: "I got you right now"
+#   seq 8345  tail: "she just did, she just did"
+#   seq 8601  tail: "send, yes please"
+#
+# MEASURED on the same 110 captures: 6 of 9 junk items gated, 1 non-junk row
+# touched — and that row's own tail says the work was done, so it may not be a
+# miss at all. With W below, 7 of 9. This class is not a guess about how people
+# talk; it is a transcription of how these people did talk, checked against
+# every capture they did not.
+#
+# Note what the relocation makes SAFE. `I have <thing> open` was cut from v1
+# during a fix round because, read from the item's own evidence, it swallowed
+# "I have to follow up" — the most ordinary promise shape in English. Read from
+# the NEIGHBOURING transcript it is a different claim: not "this promise sounds
+# live" but "the room did it". Several members are back for exactly that
+# reason, and they are safe here for exactly that reason.
+
+# How far past the evidence a discharge cue still reads as being about THIS
+# item. 30 tokens is roughly a couple of turns. Measured at 20/30/45/60: the
+# junk yield saturates at 30 (3 -> 6 items) and the false-positive count does
+# not move until 60.
+DISCHARGE_WINDOW_WORDS = 30
+
+_IN_ROOM_DISCHARGE_RE = re.compile(
+    r"""(?ix)
+      # the act reported in flight
+      \b(?:that|it|this)\s+s\s+going\s+out\b
+    | \b(?:that|it|this)\s+is\s+going\s+out\b
+    | \b(?:i|we)\s+just\s+sent\s+(?:it|that|you)\b
+      # instant provision
+    | \bi\s+got\s+you\s+(?:right\s+now|on\s+(?:that|this|it))\b
+      # the speaker's own hands on it, in the room
+    | \bi\s+(?:actually\s+)?have\s+\w+\s+open\b
+      # someone reporting it done — including about a third party, which the
+      # evidence-side classes could never see ("she just did")
+    | \b(?:he|she|they)\s+just\s+did\b
+    | \b(?:i|we)\s+just\s+did\s+(?:it|that)\b
+    | \b(?:it|that)\s+s\s+done\b
+    | \b(?:ok|okay|alright)\s+(?:it\s+s\s+|that\s+s\s+)?done\b
+    | \b(?:it|that)\s+came\s+through\b
+      # consent to a hand-over happening NOW, bound to a delivery verb. A bare
+      # "yeah please" is ordinary politeness and it produced the only clear
+      # false positive in the measurement ("but yeah please let me know").
+    | \bsend\s+(?:it\s+|that\s+)?(?:yes|yeah|yep)\s+please\b
+    | \b(?:yes|yeah|yep)\s+please\s+send\b
+    """
+)
+
+# The demo register, for W. TWO families of screen-share language, because
+# there are two ways people run one and v1 modelled only the first:
+#
+#   GUIDED    the other side drives and the presenter gives UI instructions —
+#             "click the", "scroll down", "top right".
+#   NARRATED  the presenter drives and describes — "share my screen", "just to
+#             show you", "watch this", "take a look at".
+#
+# v1 shipped the guided set alone. The real demos in this corpus are narrated,
+# so `demo_register` was FALSE on the one true demo meeting in the population
+# and W never fired on the item it was written for. Measured with both sets:
+# that meeting scores 6 distinct families and no other meeting in the window
+# scores above 2 — the threshold separates them by a wide margin rather than a
+# hair.
+_DEMO_CUE_RES = tuple(re.compile(p, re.I | re.X) for p in (
+    # guided
+    r"\b(?:click|tap)\s+(?:on\s+)?(?:the|that|this|it)\b",
+    r"\bgo\s+to\s+the\s+\w+\s+(?:tab|page|screen|menu)\b",
+    r"\byou\s+ll\s+see\b | \byou\s+can\s+see\s+(?:it|that|the)\b",
+    r"\bhit\s+(?:save|enter|submit|send|refresh)\b",
+    r"\b(?:top|bottom)\s+(?:right|left)\b",
+    r"\bscroll\s+(?:down|up)\b",
+    r"\bover\s+on\s+the\s+(?:left|right)\b",
+    r"\bpull\s+up\s+the\s+\w+\b",
+    r"\btype\s+in\s+(?:the|your)\b",
+    r"\bright\s+(?:there|here)\s+(?:on|in)\s+the\b",
+    # narrated
+    r"\b(?:share|sharing)\s+my\s+screen\b",
+    r"\b(?:let\s+me|i\s+m\s+going\s+to|i\s+ll)\s+(?:just\s+)?show\s+you\b",
+    r"\bdemonstrate\b",
+    r"\bwatch\s+(?:this|what)\b",
+    r"\b(?:take|taking)\s+a\s+look\s+at\b",
+    r"\byou\s+ll\s+notice\b",
+    r"\bunder\s+the\s+hood\b",
+    r"\bwalk\s+you\s+through\b",
+))
+# How many DISTINCT cue FAMILIES make a transcript a walkthrough. Three, not
+# one: a single "click that" happens in ordinary calls, and W is the highest
+# false-gate risk in this build so it carries the tightest leg.
+DEMO_REGISTER_MIN_CUES = 3
+
+# W leg 2 — an instruction aimed at the PRODUCT, not at a person. In a demo
+# these are prompts fired at the tool on screen and they ran during the call;
+# captured as commitments they are pure junk. Two things carry the weight and
+# both are required: a live-prompt filler (`just` / `go ahead and`), which is
+# how people talk TO a tool and not to a colleague, and a DEICTIC object
+# (`this` / `that`), which names the thing on screen. `the` is not admitted —
+# "the report" is a report anywhere.
+_PRODUCT_IMPERATIVE_RE = re.compile(
+    r"""(?ix)
+      \b(?:can|could)\s+you\s+(?:just\s+)?go\s+ahead\s+and\s+
+        (?:update|change|add|remove|delete|pull|run|generate|regenerate|
+           make|show|give|write|rewrite|redo|fix|refresh|rerun|re\s+run)\s+
+        (?:me\s+|us\s+)?(?:this|that)\b
+    | \b(?:can|could)\s+you\s+just\s+
+        (?:update|regenerate|rerun|re\s+run|refresh|redo|pull|run)\s+
+        (?:me\s+|us\s+)?(?:this|that)\b
+    """
+)
+
 
 # The counterparty redirecting the plan, or the owner replacing the
 # deliverable — a retraction of the thing just offered.
@@ -1441,23 +1762,70 @@ def _evidence_anchor(data: dict, spans: list):
     return None
 
 
+def demo_register(transcript_text=None) -> bool:
+    """FLOOR3 W leg 1 — is this transcript a screen-share walkthrough?
+
+    True when at least `DEMO_REGISTER_MIN_CUES` distinct cue FAMILIES appear.
+    Families, not matches: a presenter who says "click the" nine times about
+    nine buttons is not more of a walkthrough than one who says it once, and
+    counting matched strings made a single sentence enough (fix round 1, F5).
+    Pure; a property of the meeting, computed from the fetched transcript."""
+    text = _normalize_for_fusion(transcript_text)
+    if not text:
+        return False
+    hits = 0
+    for cue in _DEMO_CUE_RES:
+        if cue.search(text):
+            hits += 1
+            if hits >= DEMO_REGISTER_MIN_CUES:
+                return True
+    return False
+
+
+def _tail_after_evidence(data: dict, transcript_text, window: int):
+    """The `window` tokens of transcript that FOLLOW the item's evidence span,
+    as one normalized string. "" when there is no transcript or the evidence
+    cannot be anchored — every caller is then inert (skip-not-fail)."""
+    spans = _fusion_token_spans(transcript_text)
+    if not spans:
+        return ""
+    at = _evidence_anchor(data, spans)
+    if not at:
+        return ""
+    return " ".join([s[0] for s in spans][at[1]:at[1] + window])
+
+
 def done_in_meeting_reason(data: dict, transcript_text=None) -> str:
-    """FLOOR2 A (J-1) — the item was DISCHARGED inside the meeting. "" when it
-    was not, or when the check cannot establish that it was.
+    """J-1 — the item was DISCHARGED inside the meeting. "" when it was not, or
+    when the check cannot establish that it was.
 
-    Two independent signals, either sufficient:
-      (a) the item's own evidence is a DEICTIC in-call instruction ("click
-          that right now", "right here", "while we're on the call") — a bare
-          future-tense filler ("go ahead and", "real quick", a free-standing
-          "right now") is deliberately NOT one of these; see the class, or
-      (b) the transcript acknowledges the action completed AFTER the evidence
-          span and within the same stretch of conversation.
+    Signals, first hit wins. FLOOR2 shipped (a); FLOOR3 v1 added four
+    evidence-side signals that a replay against 110 real captures measured at
+    ZERO catches, and v2 replaced them with the one below (see the banner):
 
-    Gated behind one hard precondition in both cases: the item must have NO
-    post-meeting surface. A parseable due date, a money amount, or a
-    send/share/schedule/follow-up verb all mean a deliverable that outlives the
-    call, and this check then has nothing to say — that is what keeps
-    "I'll send the deck right now" on the book. Pure."""
+      0.  hard veto — a parseable due date, a money amount, or an explicit
+          future TIME in the item's own words. ABSOLUTE: the speaker has said
+          the deliverable outlives the meeting, so nothing after this runs.
+      1.  IN-ROOM DISCHARGE. The transcript that FOLLOWS the item's evidence
+          says the act happened — it went out, it came through, someone has
+          the tool open, someone reports it done. This reads the room, not the
+          sentence, which is the whole correction v2 makes.
+      W.  demo-register imperative: the meeting is a walkthrough (guided or
+          narrated) and the item is a prompt fired at the product on screen.
+      --- delivery-verb veto (`_POST_MEETING_SURFACE_RE`) applies from here ---
+      a.  deictic in-call instruction ("click that right now"). FLOOR2's, and
+          still vetoed: it is one-legged and reads only the sentence, so a
+          lexical counter-cue is a fair tiebreak against it.
+
+    WHY THE DISCHARGE CHECK OUTRANKS THE DELIVERY-VERB VETO. The veto fires on
+    any send / share / invite verb, on the premise that such a verb means the
+    deliverable outlives the call. In the demo register that premise is
+    inverted — the artifact is produced in the room — and the sample item that
+    proves it reads "Send that over to me." with "I actually have Slack open"
+    a few turns later. The veto is an inference; the tail is evidence. Evidence
+    wins, and the veto keeps its force only over the one-legged (a).
+
+    Pure — the caller supplies the transcript it already loaded."""
     data = data or {}
     title = str(data.get("title") or "")
     evidence = str(data.get("evidence") or "")
@@ -1468,24 +1836,64 @@ def done_in_meeting_reason(data: dict, transcript_text=None) -> str:
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
         from capture_gate import carries_due_or_money, parse_iso_date
+    blob = _normalize_for_fusion(f"{title} {evidence}")
+    ev_norm = _normalize_for_fusion(evidence) if evidence.strip() else ""
+
+    # 1 — the room says it happened, and this runs BEFORE the date rails.
+    #
+    # That ordering is the one doctrine change v2 makes, so here is the
+    # argument. A due date and a future-time phrase are INFERENCES about what
+    # will happen: they say a deliverable is expected later, from which the
+    # rails conclude it cannot already be done. The tail is an OBSERVATION
+    # about what did happen: someone in the room said it went out, came
+    # through, or is done. An observation of the past outranks an inference
+    # about the future — that is not a preference, it is what the two kinds of
+    # statement are worth.
+    #
+    # The rails were also demonstrably reading the wrong thing on this corpus.
+    # Both junk items they were protecting carry a date that describes the
+    # SUBJECT rather than a deadline: "move tonight's dinner reservation to
+    # 5pm" (due = the dinner) and "send the Wednesday 1:30 working-session
+    # invite" (due = the session). Both acts were performed on the call.
+    #
+    # MEASURED before making the change, on 103 real anchorable captures:
+    # putting this check above the rails gates 6 of 9 known junk items instead
+    # of 4, gates ZERO audit-labelled REAL items either way, and touches one
+    # unlabelled row whose own tail says the work was done. The rails keep
+    # their full force over everything below.
+    #
+    # Inert without a transcript, and inert when the evidence cannot be
+    # anchored in one (skip-not-fail). Note what the second case costs: a
+    # capture written with paraphrased evidence can never be reached here,
+    # however plainly the meeting discharged it — a measured 15% of the live
+    # population, and a cap on this whole layer rather than a rounding error.
+    # See the intake item on fusion running inert without leaving a trace.
+    tail = _tail_after_evidence(data, transcript_text, DISCHARGE_WINDOW_WORDS)
+    if tail and _IN_ROOM_DISCHARGE_RE.search(tail):
+        return FLOOR_DONE_IN_MEETING
+
     if parse_iso_date(data.get("due")) or carries_due_or_money(data):
         return ""
-    blob = _normalize_for_fusion(f"{title} {evidence}")
+    if _FUTURE_TIME_RE.search(blob):
+        return ""
+
+    # W — the walkthrough prompt. Four legs, all required. `owner_external`
+    # vetoes it because a named outside person owing something is a real ask
+    # however the meeting sounded, and the surface veto vetoes it because
+    # "update this and send it to the team" produces something that leaves the
+    # room.
+    if (ev_norm
+            and not str(data.get("owner_external") or "").strip()
+            and not _POST_MEETING_SURFACE_RE.search(blob)
+            and _PRODUCT_IMPERATIVE_RE.search(ev_norm)
+            and demo_register(transcript_text)):
+        return FLOOR_DONE_IN_MEETING
+
     if _POST_MEETING_SURFACE_RE.search(blob):
         return ""
 
-    if evidence.strip() and _IN_MEETING_NOW_RE.search(
-            _normalize_for_fusion(evidence)):
-        return FLOOR_DONE_IN_MEETING
-
-    spans = _fusion_token_spans(transcript_text)
-    if not spans:
-        return ""
-    at = _evidence_anchor(data, spans)
-    if not at:
-        return ""
-    tail = [s[0] for s in spans][at[1]:at[1] + ACK_WINDOW_WORDS]
-    if tail and _COMPLETION_ACK_RE.search(" ".join(tail)):
+    # (a) — FLOOR2's deictic instruction, unchanged and still vetoed above.
+    if ev_norm and _IN_MEETING_NOW_RE.search(ev_norm):
         return FLOOR_DONE_IN_MEETING
     return ""
 
@@ -1595,13 +2003,26 @@ def admit_meeting_capture(
 
     Returns {"tier": book|review|observed|skip, "reason": str,
              "floor_reason": str, "floor_code": str, "fusion_reason": str,
-             "relevance_reason": str, "superseding_quote": str}.
+             "fusion_status": str, "relevance_reason": str,
+             "superseding_quote": str}.
 
     `floor_reason` is the sentence a human reads on the row; `floor_code` is the
     same verdict's stable name, and it is what a tally is keyed by. Both are ""
     when the item cleared the floor. `superseding_quote` is set only by the
-    FLOOR2 supersession check, and it is verbatim transcript."""
+    FLOOR2 supersession check, and it is verbatim transcript.
+
+    `fusion_status` is one of `FUSION_VERIFIED` / `FUSION_REFUSED` /
+    `FUSION_INERT`, and it is computed for EVERY verdict — including the ones
+    that return before the fusion branch. A below-floor row whose evidence
+    could never be anchored is exactly as unverified as a booked one; hiding
+    that behind an early return would rebuild the blind spot one tier down."""
     data = _probe_data(item)
+
+    # Computed once, up front, and carried on every return path. Pure, so
+    # hoisting it above the floor changes no verdict — PRECEDENCE (floor, then
+    # fusion, then relevance) is a property of the RETURNS below, not of where
+    # this line sits.
+    fusion_state = fusion_status(data, transcript_text)
 
     floor = capture_floor_reason(data)
     if floor:
@@ -1626,14 +2047,16 @@ def admit_meeting_capture(
         tier = TIER_OBSERVED if (someone_else_owes and not rail) else TIER_REVIEW
         return {"tier": tier, "reason": floor, "floor_reason": floor,
                 "floor_code": floor_reason_code(floor),
-                "fusion_reason": "", "relevance_reason": "",
+                "fusion_reason": "", "fusion_status": fusion_state,
+                "relevance_reason": "",
                 "superseding_quote": ""}
 
-    fusion = fusion_refusal_reason(data, transcript_text)
+    fusion = (FUSION_REVIEW_REASON if fusion_state == FUSION_REFUSED else "")
     if fusion:
         return {"tier": TIER_REVIEW, "reason": fusion, "floor_reason": "",
                 "floor_code": "",
-                "fusion_reason": fusion, "relevance_reason": "",
+                "fusion_reason": fusion, "fusion_status": fusion_state,
+                "relevance_reason": "",
                 "superseding_quote": ""}
 
     # FLOOR2 — the second floor layer, the one that reads the MEETING. It runs
@@ -1657,7 +2080,8 @@ def admit_meeting_capture(
         return {"tier": TIER_REVIEW, "reason": deeper["reason"],
                 "floor_reason": deeper["reason"],
                 "floor_code": deeper["code"],
-                "fusion_reason": "", "relevance_reason": "",
+                "fusion_reason": "", "fusion_status": fusion_state,
+                "relevance_reason": "",
                 "superseding_quote": deeper["quote"]}
 
     ctx = capture_context or {}
@@ -1679,8 +2103,207 @@ def admit_meeting_capture(
     tier = TIER_BOOK if verdict["tier"] == "open" else TIER_OBSERVED
     return {"tier": tier, "reason": verdict["reason"], "floor_reason": "",
             "floor_code": "",
-            "fusion_reason": "", "relevance_reason": verdict["reason"],
+            "fusion_reason": "", "fusion_status": fusion_state,
+            "relevance_reason": verdict["reason"],
             "superseding_quote": ""}
+
+
+# =============================================================================
+# FLOOR3 E — cross-lane dedup.
+# =============================================================================
+#
+# The V1 re-measure's 9th junk item was not a junk CAPTURE at all: two rows,
+# seq 8334 and 8339, carried the SAME sentence from the SAME meeting — one on
+# the book, one in the queue. `route_meeting_captures` routed and BUILT each
+# item as it walked them, so nothing in the batch ever compared two items to
+# each other, and because the lane verdict is computed per item the twins could
+# land in different lanes and neither would know about the other.
+#
+# The pass below is the smallest close: group the batch by the ACT, keep one
+# row per act. It is a COLLAPSE, never a drop — the survivor is a real row with
+# a real verdict, and the count of what folded into it rides along.
+#
+# Scope is ONE meeting's batch. Cross-meeting duplication is the dedup/digest
+# family and is a different problem with a different key.
+
+# Which lane wins when twins disagree. The most-scrutinized: if either twin
+# tripped a floor, that verdict is about the shared underlying ACT and holds
+# whichever row survives. Losing a floor verdict to a coin flip would make the
+# queue's contents depend on extractor ordering.
+_TIER_RANK = {TIER_REVIEW: 3, TIER_BOOK: 2, TIER_OBSERVED: 1, TIER_SKIP: 0}
+
+
+def _owner_key(item: dict) -> tuple:
+    """Who owes it. Compared by EQUALITY — a different owner is a different
+    commitment, and there is no reading of the evidence that makes two owners
+    one."""
+    d = item or {}
+    return (str(d.get("owner_id") or "").strip().lower(),
+            str(d.get("owner_external") or "").strip().lower())
+
+
+def _field_compatible(a: dict, b: dict, field: str) -> bool:
+    """Equal, or absent on one side — the `_due_compatible` shape."""
+    va = str((a or {}).get(field) or "").strip().lower()
+    vb = str((b or {}).get(field) or "").strip().lower()
+    return (not va) or (not vb) or va == vb
+
+
+def _same_counterparty(a: dict, b: dict) -> bool:
+    """Is the same person waiting for it?
+
+    Per field, EQUAL OR ABSENT — not tuple equality (fix round 2, review R1).
+    Round 1 put the counterparty in the key because "send the deck" to Bo and
+    to Quinn, from one sentence, are two promises and the pass was deleting
+    one. Tuple equality fixed that and broke the case the pass was built for:
+    on the live ledger the 8334/8339 twins carry the SAME title, the SAME
+    evidence and the SAME owner, and differ only in that one extraction
+    resolved the counterparty to an id and the other kept the name. Two
+    spellings of one person read as two people, and the pair stopped
+    collapsing.
+
+    Equal-or-absent satisfies both: the Bo/Quinn pair carries two DIFFERENT
+    ids, so it still splits; the live twins carry an id on one side and a name
+    on the other, so they still fold.
+
+    The residual risk is honest and small: an id and a name that denote
+    DIFFERENT people read as compatible here, because this function is pure
+    and cannot resolve either. It only matters for two items that already
+    share a title, an utterance, an owner and a due date."""
+    return (_field_compatible(a, b, "counterparty_id")
+            and _field_compatible(a, b, "counterparty_name"))
+
+
+def _same_utterance(a: dict, b: dict, spans: list,
+                    at_a=None, at_b=None) -> bool:
+    """Do these two captures quote the same words? Their evidence spans located
+    in the transcript overlap, or — with nothing to locate against — their
+    normalized evidence strings are equal.
+
+    `at_a` / `at_b` are the callers' already-computed anchors; the pairwise
+    walk in `collapse_duplicate_captures` resolves each item's anchor once and
+    passes it in, instead of re-scanning the transcript on every comparison."""
+    if spans:
+        if at_a is None:
+            at_a = _evidence_anchor(a, spans)
+        if at_b is None:
+            at_b = _evidence_anchor(b, spans)
+        if at_a and at_b:
+            return at_a[0] < at_b[1] and at_b[0] < at_a[1]
+    ev_a = _normalize_for_fusion((a or {}).get("evidence"))
+    ev_b = _normalize_for_fusion((b or {}).get("evidence"))
+    return bool(ev_a) and ev_a == ev_b
+
+
+def _same_act(a: dict, b: dict) -> bool:
+    """Do they name the same act? Title content sets EQUAL.
+
+    This condition is why the pass is safe. One sentence legitimately yields
+    TWO commitments — "I'll send the deck and schedule the follow-up" — and
+    collapsing those would lose a real one, which is strictly worse than the
+    duplicate row it would prevent.
+
+    EQUALITY, not containment (fix round 1, CONFIRM review F7). The first cut
+    accepted one set contained in the other, and that CONFIRMED-collapsed
+    "review the contract" into "review the contract with legal" — plausibly the
+    same act, plausibly two, and the pass has no way to tell. Containment buys
+    a few more collapses of near-identical extractions and risks deleting a
+    commitment nobody will ever know was there; equality still folds the
+    identical re-extractions this pass exists for. If the V1 re-take shows
+    twins escaping on a title-word difference, widen it THEN, with the pair in
+    hand."""
+    ta = _content_set((a or {}).get("title"))
+    tb = _content_set((b or {}).get("title"))
+    if not ta and not tb:
+        return True
+    return bool(ta) and ta == tb
+
+
+def _due_compatible(a: dict, b: dict) -> bool:
+    da = str((a or {}).get("due") or "").strip()
+    db = str((b or {}).get("due") or "").strip()
+    return (not da) or (not db) or da == db
+
+
+def collapse_duplicate_captures(items, verdicts, transcript_text=None) -> dict:
+    """FLOOR3 E — fold twin captures of one act into one row.
+
+    `items` and `verdicts` are index-aligned (verdict i belongs to item i).
+    Returns `{"keep": [idx…], "absorbed": {survivor_idx: n}}`; `keep` is in
+    ascending index order, so the surviving events come out in the batch order
+    the receipt's counts and the queue's grouping both already read.
+
+    NOT pure — it stamps `duplicate: True` on the verdicts it absorbs, in
+    place, because that is what keeps the floor tally counting written ROWS
+    rather than extractions. Said plainly here because the first cut claimed
+    purity in this docstring while doing exactly this (review F9).
+
+    Two captures are the same act only when ALL FOUR hold — same utterance,
+    same act (title content sets EQUAL), same parties (owner AND counterparty),
+    compatible due. Conjunctive on purpose: precision over recall, because a
+    false collapse silently loses a commitment and a missed one only leaves the
+    duplicate row that exists today."""
+    items = list(items or [])
+    verdicts = list(verdicts or [])
+    spans = _fusion_token_spans(transcript_text)
+    # Anchor each item ONCE. The pairwise walk below asked for the same anchor
+    # every comparison, which made the pass quadratic in transcript scans —
+    # 5.6s on a 70-item batch over a 15k-token transcript (review F12).
+    anchors = [_evidence_anchor(item, spans) if spans else None
+               for item in items]
+    def _verdict(i):
+        """The verdict for item i, or an empty one. Guarded because `items` and
+        `verdicts` are only aligned by CONTRACT — a caller that passes ragged
+        lists used to raise IndexError from inside a sort key (review F9)."""
+        return verdicts[i] if i < len(verdicts) and isinstance(
+            verdicts[i], dict) else {}
+
+    groups: List[List[int]] = []
+    for i, item in enumerate(items):
+        for group in groups:
+            head = items[group[0]]
+            if (_owner_key(item) == _owner_key(head)
+                    and _same_counterparty(item, head)
+                    and _due_compatible(item, head)
+                    and _same_act(item, head)
+                    and _same_utterance(item, head, spans,
+                                        anchors[i], anchors[group[0]])):
+                group.append(i)
+                break
+        else:
+            groups.append([i])
+
+    keep: List[int] = []
+    absorbed: dict = {}
+    for group in groups:
+        if len(group) == 1:
+            keep.append(group[0])
+            continue
+        # The DATED twin wins first (review F8). A collapse must not be the one
+        # place a due date disappears, and the date is not merely more
+        # information — this module treats it as ABSOLUTE: `done_in_meeting_
+        # reason` refuses to gate a dated item at all. So when one twin carries
+        # a date and the other's J-1 verdict fired only because its extraction
+        # dropped it, the date is the better-founded of the two verdicts.
+        #
+        # Then the winning TIER, so the surviving row keeps a verdict that
+        # MATCHES its lane — picking a survivor first and then overwriting its
+        # tier would put one twin's lane on the other's reason.
+        winner = max(group, key=lambda i: (
+            1 if str((items[i] or {}).get("due") or "").strip() else 0,
+            _TIER_RANK.get(_verdict(i).get("tier"), 0),
+            -i))
+        keep.append(winner)
+        absorbed[winner] = len(group) - 1
+        for i in group:
+            if i != winner and i < len(verdicts) and isinstance(verdicts[i],
+                                                               dict):
+                # Kept in the batch record (it IS something the extractor
+                # produced) but marked, so the floor tally does not count one
+                # act twice — `capture_telemetry` reads this.
+                verdicts[i]["duplicate"] = True
+    keep.sort()
+    return {"keep": keep, "absorbed": absorbed}
 
 
 def route_meeting_captures(
@@ -1711,13 +2334,19 @@ def route_meeting_captures(
        "observed": [commitment_observed events],
        "skipped": [{"title", "reason"}], "verdicts": [{...}],
        "summary": {"n_book","n_review","n_observed","n_skipped",
-                   "n_floor_gated"}}
+                   "n_floor_gated","n_deduped","n_fusion_inert"}}
 
     `review` now carries BOTH kinds of queue row: fusion refusals
     (`data.fusion_unverified`) and below-floor captures (`data.floor_gated`,
     M's 2026-08-01 ruling). `n_floor_gated` is a subset of `n_review`, not a
     fifth tier. `skipped` is near-empty by construction since the ruling —
     nothing below the floor goes there.
+
+    PREC1: every written row whose fusion guardrail ran INERT carries
+    `data.fusion_inert = True` and is counted in `n_fusion_inert`. The stamp
+    moves NO lane — routing still refuses only what the guardrail positively
+    establishes is absent — it exists so that the absence of a refusal stops
+    reading as a pass.
 
     Construction only — append `book + review + observed` through
     `event_gate.append_event` in ONE call, exactly as before."""
@@ -1747,20 +2376,47 @@ def route_meeting_captures(
     verdicts: List[dict] = []
 
     n_floor_gated = 0
+    # PREC1 — rows the fusion guardrail could not check at all. Counted over
+    # SURVIVORS only, for the same reason `floor_reasons` is: a twin that
+    # folded into another row was never written, and a receipt that counts it
+    # is counting extractions rather than rows.
+    n_fusion_inert = 0
 
-    for raw in items or []:
-        item = dict(raw or {})
-        title = str(item.get("title") or "").strip()
+    # PASS 1 — the verdict for every item. Separated from the write so PASS 2
+    # can compare items to each other; before FLOOR3 this loop routed and BUILT
+    # in one walk, which is why nothing ever noticed a batch holding the same
+    # act twice.
+    staged = [dict(raw or {}) for raw in (items or [])]
+    for item in staged:
         verdict = admit_meeting_capture(
             item, transcript_text=transcript_text, capture_context=ctx,
             org_override=override)
-        verdicts.append({"title": title, **verdict})
+        verdicts.append({"title": str(item.get("title") or "").strip(),
+                         **verdict})
+
+    # PASS 2 — fold twins of one act into one row (FLOOR3 E).
+    collapsed = collapse_duplicate_captures(staged, verdicts, transcript_text)
+    keep = set(collapsed["keep"])
+    absorbed = collapsed["absorbed"]
+    n_deduped = sum(absorbed.values())
+
+    # PASS 3 — build the survivors, in batch order.
+    for idx, item in enumerate(staged):
+        if idx not in keep:
+            continue
+        title = str(item.get("title") or "").strip()
+        verdict = verdicts[idx]
         tier = verdict["tier"]
         floor_gated = bool(verdict["floor_reason"])
+        # PREC1 — the stamp. It rides EVERY lane, because the question it
+        # answers ("was this row's evidence ever checked against the meeting?")
+        # is the same question in all three, and a stamp that only marks the
+        # book lane would leave the queue's own rows reading as verified.
+        inert = verdict.get("fusion_status") == FUSION_INERT
 
         if tier == TIER_OBSERVED:
             try:
-                observed.append(build_observed_event(
+                obs_ev = build_observed_event(
                     title,
                     source_ref=source_ref,
                     reason=verdict["reason"],
@@ -1776,7 +2432,14 @@ def route_meeting_captures(
                     classification_confidence=item.get(
                         "classification_confidence"),
                     source_skill=source_skill,
-                ))
+                )
+                if absorbed.get(idx):
+                    obs_ev.setdefault("data", {})["duplicate_absorbed"] = \
+                        absorbed[idx]
+                if inert:
+                    obs_ev.setdefault("data", {})["fusion_inert"] = True
+                    n_fusion_inert += 1
+                observed.append(obs_ev)
                 continue
             except Exception as exc:
                 if not floor_gated:
@@ -1805,12 +2468,12 @@ def route_meeting_captures(
                         "reason": f"{verdict['reason']} "
                                   f"(the observed writer refused it: "
                                   f"{type(exc).__name__})"})
-                    verdicts[-1]["tier"] = TIER_SKIP
+                    verdicts[idx]["tier"] = TIER_SKIP
                     continue
                 # A FLOOR-gated row is never dropped (M ruling): the observed
                 # writer refusing it sends it to the queue, not to nothing.
                 tier = TIER_REVIEW
-                verdicts[-1]["tier"] = TIER_REVIEW
+                verdicts[idx]["tier"] = TIER_REVIEW
 
         if tier == TIER_SKIP:
             # Unreachable from the floor since the ruling; kept so any future
@@ -1849,10 +2512,21 @@ def route_meeting_captures(
             skipped.append({"title": title,
                             "reason": f"{verdict['reason']} "
                                       f"(the capture could not be built)"})
-            verdicts[-1]["tier"] = TIER_SKIP
+            verdicts[idx]["tier"] = TIER_SKIP
             continue
         if attribution_extra:
             ev["data"].update(attribution_extra)
+        if absorbed.get(idx):
+            # FLOOR3 E — a COUNT of the twins that folded in, never their
+            # titles: this rides an event whose counts reach the receipt, and
+            # "counts only, never a title" is that contract.
+            ev["data"]["duplicate_absorbed"] = absorbed[idx]
+        if inert:
+            # PREC1 — the guardrail never ran on this row. A boolean, not a
+            # sentence: the row's own reason field belongs to whatever verdict
+            # routed it, and this is a property of the CHECK, not of the item.
+            ev["data"]["fusion_inert"] = True
+            n_fusion_inert += 1
         if tier == TIER_REVIEW:
             # The two ways a row lands in the queue are marked apart, because
             # they are different questions to a reader and — for `floor_gated`
@@ -1888,6 +2562,16 @@ def route_meeting_captures(
             # read the floor's yield apart from the fusion guardrail's, and
             # one combined review number cannot answer that.
             "n_floor_gated": n_floor_gated,
+            # FLOOR3 E — twins folded into a survivor. Not a tier and not a
+            # skip: these rows were never written, so no other count moves.
+            "n_deduped": n_deduped,
+            # PREC1 — rows written with the fusion guardrail INERT. Cuts
+            # ACROSS the tiers (a book row and a queue row can both be inert),
+            # so it is a subset of nothing and is never added to another count.
+            # This is the number the V1 re-measure had no way to read: on the
+            # audited population 20 of 131 rows were in this class and the
+            # substrate recorded none of them.
+            "n_fusion_inert": n_fusion_inert,
         },
     }
 
@@ -1902,6 +2586,7 @@ __all__ = [
     "build_meeting_processed_event",
     "capture_telemetry",
     "count_meeting_writes",
+    "meeting_ref_keys",
     "already_processed",
     "verify_claims",
     # CAPTUREFLOW source gates
@@ -1926,10 +2611,18 @@ __all__ = [
     "SUPERSEDE_WINDOW_WORDS",
     "SUPERSEDE_MIN_SHARED",
     "SUPERSEDE_QUOTE_WORDS",
+    "DISCHARGE_WINDOW_WORDS",
+    "DEMO_REGISTER_MIN_CUES",
+    "demo_register",
+    "collapse_duplicate_captures",
     "floor_reason_code",
     "parse_floor_reasons",
     "FUSION_REVIEW_REASON",
     "FUSION_MIN_WORDS",
+    "FUSION_VERIFIED",
+    "FUSION_REFUSED",
+    "FUSION_INERT",
+    "fusion_status",
     "TIER_BOOK",
     "TIER_REVIEW",
     "TIER_OBSERVED",

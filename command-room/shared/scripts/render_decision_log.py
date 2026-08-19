@@ -202,25 +202,47 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
         if t == "decision":
             decisions.append(ev)
         elif t == "decision_superseded":
+            # WRITER/READER FIELD DRIFT, root-caused 2026-08-13 against the
+            # live ledger: 129 of 130 `decision_superseded` events key their
+            # target by `data.decision_id` (shape `decision_seq_<n>`), and
+            # exactly ONE uses the seq-shaped fields this reader was built for.
+            # `orig_seq` was therefore None for 129 of them, the supersede was
+            # dropped on the floor, and every plainly-superseded decision
+            # rendered ACTIVE — with `Superseded (historical)` showing a count
+            # of 1, which is literally that one seq-shaped event. Both spellings
+            # now join; the id path is the CURRENT one.
+            row = {
+                "new_seq": data.get("new_decision_seq"),
+                "reason": data.get("reason", "") or data.get("evidence", ""),
+                "reviewed_at": data.get("reviewed_at") or event_time(ev),
+            }
+            did = data.get("decision_id")
+            if did:
+                supersedes_map.setdefault(did, []).append(row)
             orig_seq = (
                 data.get("original_decision_seq")
                 or data.get("supersedes_seq")
                 or data.get("decision_event_seq")
             )
             if orig_seq is not None:
-                supersedes_map.setdefault(orig_seq, []).append({
-                    "new_seq": data.get("new_decision_seq"),
-                    "reason": data.get("reason", ""),
-                    "reviewed_at": data.get("reviewed_at") or event_time(ev),
-                })
+                supersedes_map.setdefault(orig_seq, []).append(row)
         elif t == "decision_reaffirmed":
+            # These writers DO emit `decision_event_seq` and are unaffected by
+            # the drift above — which is why the 13 reaffirms from the same
+            # repair rendered correctly and made the defect look era-split. The
+            # id path is accepted here too so the same drift cannot recur
+            # silently in this reader's other half.
+            reaffirm_row = {
+                "reason": data.get("reaffirmation_reason") or data.get("reason", ""),
+                "reviewed_at": data.get("reviewed_at") or event_time(ev),
+                "snooze_until": data.get("snooze_until"),
+            }
+            did = data.get("decision_id")
+            if did:
+                reaffirms_map.setdefault(did, []).append(reaffirm_row)
             decision_seq = data.get("decision_event_seq") or data.get("original_decision_seq")
             if decision_seq is not None:
-                reaffirms_map.setdefault(decision_seq, []).append({
-                    "reason": data.get("reaffirmation_reason") or data.get("reason", ""),
-                    "reviewed_at": data.get("reviewed_at") or event_time(ev),
-                    "snooze_until": data.get("snooze_until"),
-                })
+                reaffirms_map.setdefault(decision_seq, []).append(reaffirm_row)
         elif t == "decision_supersede_proposed":
             # WALKFIX1 FR-2 — a PROPOSED supersede. It changes no status; it
             # rides on the decision's own line so the person who owns the
@@ -235,12 +257,16 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
                     "proposed_at": data.get("reviewed_at") or event_time(ev),
                 })
         elif t == "decision_revisit_scheduled":
+            revisit_row = {
+                "snooze_until_ts": data.get("snooze_until_ts") or data.get("snooze_until"),
+                "reason": data.get("reason", ""),
+            }
+            did = data.get("decision_id")
+            if did:
+                revisits_map.setdefault(did, []).append(revisit_row)
             decision_seq = data.get("decision_event_seq") or data.get("original_decision_seq")
             if decision_seq is not None:
-                revisits_map.setdefault(decision_seq, []).append({
-                    "snooze_until_ts": data.get("snooze_until_ts") or data.get("snooze_until"),
-                    "reason": data.get("reason", ""),
-                })
+                revisits_map.setdefault(decision_seq, []).append(revisit_row)
 
     return {
         "decisions": decisions,
@@ -293,7 +319,24 @@ def _newest(rows: list[dict], key: str) -> dict:
     return sorted(rows, key=lambda r: _sort_key(r.get(key)), reverse=True)[0]
 
 
-def _decision_status(seq: Any, overlays: dict) -> tuple[str, dict[str, Any]]:
+def _overlay_rows(bucket: dict, keys) -> list[dict]:
+    """Every overlay row filed against ANY of a decision's keys — its seq and
+    its id — deduplicated by identity.
+
+    A decision is named two ways on a live ledger and the writers do not agree
+    on which; a reader that knows only one of them silently drops the other's
+    events, which is the defect this function exists to make impossible."""
+    rows: list[dict] = []
+    for key in keys:
+        if key is None:
+            continue
+        for row in bucket.get(key) or []:
+            if not any(row is seen for seen in rows):
+                rows.append(row)
+    return rows
+
+
+def _decision_status(ev: dict, overlays: dict) -> tuple[str, dict[str, Any]]:
     """Return (status, overlay_data) for one decision.
 
     LATEST SIGNAL WINS between supersede and reaffirm (WALKFIX1 FR-3).
@@ -327,8 +370,17 @@ def _decision_status(seq: Any, overlays: dict) -> tuple[str, dict[str, Any]]:
     the power it always looked like it had. The repair appends themselves are
     a workspace-side job, not this module's.
     """
-    supersedes = overlays["supersedes_map"].get(seq) or []
-    reaffirms = overlays["reaffirms_map"].get(seq) or []
+    # The decision EVENT, so both of its names are available. A bare seq is
+    # still accepted — that was this function's whole signature until FLOOR3
+    # and the WALKFIX1 suite exercises the status fold through it — but a
+    # caller passing one gets only the seq-keyed overlays, which is exactly
+    # the half-blindness the id path exists to end. Pass the event.
+    if not isinstance(ev, dict):
+        keys = (ev, None)
+    else:
+        keys = (ev.get("seq"), _decision_id(ev))
+    supersedes = _overlay_rows(overlays["supersedes_map"], keys)
+    reaffirms = _overlay_rows(overlays["reaffirms_map"], keys)
 
     if supersedes:
         latest_sup = _newest(supersedes, "reviewed_at")
@@ -346,8 +398,8 @@ def _decision_status(seq: Any, overlays: dict) -> tuple[str, dict[str, Any]]:
         overlay["superseded_history"] = latest_sup
         return ("reaffirmed", overlay)
 
-    if seq in overlays["revisits_map"]:
-        revisits = overlays["revisits_map"][seq]
+    revisits = _overlay_rows(overlays["revisits_map"], keys)
+    if revisits:
         # Same class as `_instant` — ordered on the parsed instant, because a
         # revisit written from a local machine and one written in UTC are
         # not comparable as strings.
@@ -360,6 +412,37 @@ def _decision_status(seq: Any, overlays: dict) -> tuple[str, dict[str, Any]]:
         return ("reaffirmed", _newest(reaffirms, "reviewed_at"))
 
     return ("active", {})
+
+
+# How much of an evidence string can stand in for a title. Long enough to be
+# recognisable in a list, short enough that a row is still one line.
+_TITLE_FROM_EVIDENCE_CHARS = 120
+
+
+def _decision_title(data: dict) -> str:
+    """The line's heading, from whichever field this era's writer filled.
+
+    THE DEFECT THIS REPLACES: the chain read `title` then `decision` only, and
+    the writer moved to `data.summary` around mid-May 2026. On the live ledger
+    that rendered 415 of 648 rows as `(untitled decision)` — a regenerated view
+    nobody could scan, and one the chat reply masked by summarising from the
+    ledger instead of from the view it had just written.
+
+    `summary` is preferred over `decision` because it is the CURRENT writer's
+    field; `evidence` is a last resort that at least says what the decision was
+    about. The literal fallback stays for a decision event carrying none of
+    them, because a row with no words at all is worse than a labelled gap."""
+    data = data or {}
+    for field in ("title", "summary", "decision"):
+        value = str(data.get(field) or "").strip()
+        if value:
+            return value
+    evidence = str(data.get("evidence") or "").strip()
+    if evidence:
+        if len(evidence) > _TITLE_FROM_EVIDENCE_CHARS:
+            return evidence[:_TITLE_FROM_EVIDENCE_CHARS].rstrip() + "…"
+        return evidence
+    return "(untitled decision)"
 
 
 def _decision_id(ev: dict) -> str:
@@ -386,7 +469,7 @@ def _format_decision_line(
     in user-facing output (per CONTRACT Rule 4).
     """
     data = ev.get("data") or {}
-    title = data.get("title") or data.get("decision") or "(untitled decision)"
+    title = _decision_title(data)
     decided_by_id = data.get("decided_by") or data.get("decided_by_id") or ev.get("person_id")
     decided_by = _resolve_name(name_idx, decided_by_id) if decided_by_id else ""
     decided_at = _localize_date(data.get("decided_at") or event_time(ev))
@@ -494,7 +577,7 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
     }
     for d in overlays["decisions"]:
         seq = d.get("seq")
-        status, overlay = _decision_status(seq, overlays)
+        status, overlay = _decision_status(d, overlays)
         by_status[status].append((d, status, overlay))
 
     # Sort each bucket newest-first by decided_at

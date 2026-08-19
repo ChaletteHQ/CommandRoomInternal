@@ -36,6 +36,16 @@ DESIGN RULES:
 - **No nagging:** each surfaced proposal logs a `schedule_add_proposed`
   event (registered type); the same proposal is suppressed for
   REPROPOSE_SUPPRESSION_WEEKS afterward.
+- **ONE class is applied rather than proposed (SPEC TASKRET1, M's ruling
+  2026-08-17).** `plan_readiness_retirements` plans the auto-disable of the
+  READINESS-retired surfaces (`schedule_config.retirement_class` ==
+  `readiness`); the update bridge executes it and NARRATES it in the update
+  ack. This is the deliberate exception to "propose, never silent", and it is
+  scoped by CLASS, not by task name: eliminations and renames still go through
+  `propose_task_retirements` and still disable nothing on their own. The
+  rationale — register-then-nag teaches the operator to ignore a surface
+  permanently, so asking about these three would reproduce the failure being
+  removed — lives in the class block above `schedule_config.RETIRED_TASKS`.
 
 Surface: cleanup's Monday note (weekly, already fires — un-silent-killable
 like the watchdog). The returned `line` strings are customer-ready.
@@ -77,17 +87,27 @@ PROPOSAL_THRESHOLDS = {
         # the lighter alternative when the staff meeting doesn't land
         "min_client_orgs": 5,
     },
-    # PIPE1 Part 2 — the weekly Tuesday deal review. Gated in CODE on a
-    # non-empty open pipeline (spec: "only when >=1 open deal exists" —
-    # a digest over an empty pipeline is noise); the pipeline-tracker
-    # skill's digest.enabled config is a PREFERENCE record, never a
-    # registration.
-    "pipeline-digest": {
-        "min_open_deals": 1,
-    },
+    # `pipeline-digest` HAD a row here (PIPE1 Part 2 — gated on >=1 open
+    # tracked deal). TASKRET1 removed it: the digest is READINESS-retired
+    # (M's ruling 2026-08-17), and this table was its only automated offer
+    # path, so the row's absence is what actually stops the offer. A test
+    # pins the key ABSENT rather than pinning the table's contents, so
+    # re-adding it is a deliberate act with a red suite in the way instead
+    # of a quiet merge artifact. The re-offer condition is the registry's
+    # `reoffer_when`, not this file.
 }
 
 REPROPOSE_SUPPRESSION_WEEKS = 6
+
+# The update-bridge migration id that owns the readiness retirements
+# (SPEC TASKRET1). Named for the CHANGE, not the release, because every other
+# migration id in the bridge is (`staff_meeting_cadence_mwf_v1`,
+# `rm_supersede_v1`, `claude_md_email_rule_v1`) — and because the adjudication
+# gate keys on this string forever, so a release number baked into it would
+# read as false precision the first time the migration is amended. Declared
+# here rather than in the bridge's prose so the id the gate suppresses on and
+# the id the event carries can never be two different strings.
+READINESS_RETIREMENT_MIGRATION_ID = "readiness_retirement_v1"
 
 
 def _now_local() -> _dt.datetime:
@@ -160,8 +180,8 @@ def propose_later_add_tasks(
 ) -> list[dict]:
     """The R3 readiness check. Returns 0 or 1 proposal dicts
     ({task, line, reason}) — never more than one candidate in one round
-    (staff-meeting > pipeline-digest > dormant-customer-scan; the 6-week
-    suppression window rotates the round between qualifiers).
+    (staff-meeting > dormant-customer-scan; the 6-week suppression window
+    rotates the round between qualifiers).
 
     Callers surface `line` verbatim, then log ONE `schedule_add_proposed`
     event per surfaced proposal via `log_proposal()`. This function only
@@ -240,33 +260,14 @@ def propose_later_add_tasks(
             )
         return [{"task": "staff-meeting", "reason": reason, "line": line}]
 
-    # PIPE1 Part 2 — the pipeline digest, when the pipeline is live. Slots
-    # after the staff meeting (the wider review wins the round) and before
-    # the dormant-scan alternative; the 6-week suppression window then
-    # yields the round back, so no candidate is permanently shadowed.
-    # Tolerant read — proposal machinery never blocks the Monday note.
-    n_open_deals = 0
-    try:
-        import deal_state
-
-        n_open_deals = len(deal_state.list_open_deals(workspace_root))
-    except Exception:
-        pass
-    if (
-        "pipeline-digest" not in registered
-        and n_open_deals >= PROPOSAL_THRESHOLDS["pipeline-digest"]["min_open_deals"]
-        and not suppressed("pipeline-digest")
-    ):
-        deals_word = "deal" if n_open_deals == 1 else "deals"
-        return [{
-            "task": "pipeline-digest",
-            "reason": f"{n_open_deals} open {deals_word}",
-            "line": (
-                f"You have {n_open_deals} open {deals_word} in the pipeline — a weekly "
-                f"digest shows what moved, what's stalling, and the top three moves "
-                f"every Tuesday morning. Say 'add pipeline digest' to turn it on."
-            ),
-        }]
+    # The PIPE1 pipeline-digest candidate USED to slot here, between the
+    # staff meeting and the dormant-scan alternative. TASKRET1 removed it
+    # whole (M's ruling 2026-08-17 — readiness retirement): the digest is out
+    # of DEFAULT_SCHEDULES, so proposing an add for it would route the
+    # customer at a task no registration path will create. The round order is
+    # back to staff-meeting > dormant-customer-scan, exactly as it was before
+    # PIPE1 Part 2, and the `deal_state` read that gated it is gone with it —
+    # nothing here needs to know about deals any more.
 
     # Lighter alternative — only when the staff meeting did NOT land this
     # round (unqualified, already registered, or previously proposed and
@@ -342,7 +343,8 @@ def log_proposal(workspace_root, task_id: str, *,
 
 
 def propose_task_retirements(workspace_root, registered_ids=None,
-                             now: Optional[_dt.datetime] = None) -> list:
+                             now: Optional[_dt.datetime] = None,
+                             task_records=None) -> list:
     """The RETIREMENT direction (SPEC LIFECYCLE1 §4) — the mirror of
     `propose_later_add_tasks`.
 
@@ -365,15 +367,70 @@ def propose_task_retirements(workspace_root, registered_ids=None,
     `log_retire_proposal`), honored for RETIRE_SUPPRESSION_WEEKS. An offer the
     customer ignored is not an offer to repeat next week.
 
+    ALREADY-TAKEN OFFERS ARE NOT RE-OFFERED (EOD2 / REVIEW F-2). Neither
+    accept path REMOVES a task — there is no delete API, so `pause` and the
+    rename switch both DISABLE, and registration's `registered_taskIds`
+    preserves whatever existed. So "still in the registered set" is NOT
+    evidence the customer hasn't acted, and a candidate filter that reads it
+    that way re-offers forever, every six weeks. Two signals close it:
+
+      * the RENAMED case — the SUCCESSOR is registered, so the switch has
+        demonstrably happened; re-offering promises to register something
+        already registered.
+      * either case — the predecessor is DISABLED, which is what taking the
+        offer does to it. Needs `task_records` (the scheduler readback), so
+        callers that have it should pass it; without it this signal is
+        simply unavailable and the successor check still carries the
+        renamed case.
+
+    The disabled check deliberately covers ELIMINATED retirements too: the
+    machinery is LIFECYCLE1's and `pulse` has always had the same shape —
+    "say `pause pulse`" offered to someone who already paused it is the same
+    wrong sentence. EOD2 only escalated the blast radius from the few
+    workspaces that ever had `pulse` to the whole fleet.
+
+    THE READINESS CLASS IS NOT PROPOSED (SPEC TASKRET1). A retired row whose
+    `retirement_class` is `readiness` never becomes a candidate here — its
+    removal is APPLIED by the update bridge's readiness migration
+    (`plan_readiness_retirements` below) and narrated in the update ack, on
+    M's ruling that a per-task proposal for these three would rebuild the
+    register-then-nag pattern the retirement exists to end. Surfacing both
+    would be strictly worse than either: the customer would be asked to pause
+    a chat the same update already switched off.
+
+    The divergence is read from the CLASS, never from a name list, and a test
+    proves it by flipping a fixture row's class and watching the other path
+    activate. Eliminations and renames are untouched — they still propose,
+    still suppress for six weeks, still disable nothing.
+
     READS ONLY (events.jsonl). Callers surface `line` verbatim, then call
     `log_retire_proposal()` per surfaced proposal.
     """
     from schedule_config import (RETIRE_SUPPRESSION_WEEKS, RETIRED_TASKS,
-                                 retirement_line)
+                                 is_readiness_retirement, retirement_line,
+                                 retirement_reason)
 
     now = now or _now_local()
     registered = set(registered_ids or ())
-    candidates = [t for t in RETIRED_TASKS if t in registered]
+    disabled = set()
+    for rec in task_records or []:
+        if not isinstance(rec, dict):
+            continue
+        tid = rec.get("taskId") or rec.get("task_id") or rec.get("id")
+        if tid and rec.get("enabled") is False:
+            disabled.add(tid)
+    candidates = []
+    for tid in RETIRED_TASKS:
+        if tid not in registered:
+            continue
+        if is_readiness_retirement(tid):
+            continue                      # applied, not proposed (TASKRET1)
+        if tid in disabled:
+            continue                      # already switched off — do not re-ask
+        successor = RETIRED_TASKS[tid].get("renamed_to")
+        if successor and successor in registered:
+            continue                      # already switched — do not re-ask
+        candidates.append(tid)
     if not candidates:
         return []
 
@@ -394,10 +451,132 @@ def propose_task_retirements(workspace_root, registered_ids=None,
         prior = last_proposed.get(tid)
         if prior and (now - prior) < _dt.timedelta(weeks=RETIRE_SUPPRESSION_WEEKS):
             continue
+        # `retirement_reason`, not the raw registry field: a RENAME row's
+        # reason carries a `{time}` placeholder the registry resolves from
+        # the successor's own cron (EOD2).
         out.append({"task": tid,
-                    "reason": RETIRED_TASKS[tid]["reason"],
+                    "reason": retirement_reason(tid),
                     "line": retirement_line(tid)})
     return out
+
+
+def plan_readiness_retirements(registered_ids=None, task_records=None) -> list:
+    """The READINESS direction (SPEC TASKRET1) — the third sibling of
+    `propose_later_add_tasks` (add) and `propose_task_retirements` (remove by
+    offer). This one plans a removal the update bridge APPLIES.
+
+    Returns one dict per readiness-retired task that is still LIVE on this
+    machine — `{task, line, reason, reoffer_when}` — or `[]`, which is the
+    answer on the overwhelming majority of workspaces, because a task that
+    was never registered has nothing to switch off. That case is the first
+    thing this has to get right: all three of these were later-adds, so most
+    installs never had any of them, and a migration that says anything at all
+    to those workspaces is noise about a chat they never saw.
+
+    PURE. It reads no workspace file, writes nothing, and calls no MCP —
+    NOTHING in this module can reach a live scheduler, and a battery guard
+    checks that as call syntax (which is why the scheduler tool is named in
+    prose here and never written as a call). The bridge executes the plan:
+    the scheduler's update tool with `enabled: false` per entry,
+    `log_readiness_retirement()` per entry, and ONE
+    `schedule_config.readiness_retirement_summary()` line in the update ack.
+    Splitting plan from execution is what makes the class testable without a
+    scheduler — the same split `rm_supersede_plan` uses.
+
+    IDEMPOTENT ON TWO FENCES, deliberately.
+
+      1. `task_records` (the raw `list_scheduled_tasks` readback) carries
+         `enabled`, and an entry already disabled is dropped here. Pass them
+         whenever the readback is in hand — on the bridge path it always is.
+         Without them this signal is simply unavailable, exactly as it is for
+         `propose_task_retirements`.
+      2. The bridge's migration-adjudication gate, keyed on the migration id,
+         which stops the whole block re-running after it has applied once.
+
+    Either fence alone is enough; both exist because disabling is not the
+    expensive half — re-writing a `schedule_config_changed` event on every
+    update forever is, and fence 1 is what a workspace whose adjudication
+    record was lost still has.
+
+    NEVER pass a non-readiness retirement through here. Eliminations and
+    renames are PROPOSED (`propose_task_retirements`), and auto-disabling one
+    would be the add-without-asking violation with the sign flipped. The
+    filter is `is_readiness_retirement`, read from the registry.
+    """
+    from schedule_config import (is_readiness_retirement, readiness_retired_task_ids,
+                                 reoffer_condition, retirement_line,
+                                 retirement_reason)
+
+    registered = set(registered_ids or ())
+    disabled = set()
+    for rec in task_records or []:
+        if not isinstance(rec, dict):
+            continue
+        tid = rec.get("taskId") or rec.get("task_id") or rec.get("id")
+        if tid and rec.get("enabled") is False:
+            disabled.add(tid)
+    out = []
+    for tid in sorted(readiness_retired_task_ids()):
+        if tid not in registered or tid in disabled:
+            continue
+        if not is_readiness_retirement(tid):   # belt and braces; the set is derived
+            continue
+        out.append({
+            "task": tid,
+            # `retirement_reason`, never the raw registry field — it is the
+            # one resolver for registry placeholders, and handing a raw one
+            # to a customer-facing caller is the failure it exists to
+            # prevent. Same reason `propose_task_retirements` uses it.
+            "reason": retirement_reason(tid),
+            "reoffer_when": reoffer_condition(tid),
+            "line": retirement_line(tid),
+        })
+    return out
+
+
+def log_readiness_retirement(workspace_root, task_id: str) -> bool:
+    """Record ONE readiness retirement as a `schedule_config_changed` event —
+    the SCHED1 discipline: a live schedule mutated by Command Room leaves a
+    substrate record naming the task and the new state, per instance.
+
+    Written by the update bridge AFTER the scheduler's update tool actually
+    succeeded with `enabled: false` for `task_id`, never before — an event
+    claiming a task is off while it still fires is worse than no event at all.
+
+    Two readers depend on the shape rather than on this function: `late_fire`
+    refuses to score any slot older than a task's newest
+    `schedule_config_changed` (F-51), which is precisely right here — the
+    slots this task will now never fire were minted by this change and must
+    never surface as lateness. Returns False instead of raising: telemetry
+    never blocks the migration that carried it.
+
+    ROUTED THROUGH THE ONE WRITER (main-merge reconciliation, 2026-08-17).
+    This function hand-rolled the event when it was written, because
+    `schedule_config.log_schedule_config_change` did not exist on this branch
+    yet — SCHED1 landed it on main the same day, and G33 caught the collision
+    the moment the two met. The delegation is the point, not a tidy-up: the
+    hand-rolled row omitted `cron`, skipped the id's spelling normalization,
+    and typed the event name as a literal, so the readiness migration was the
+    one pause path on the fleet whose record could drift away from every other
+    pause path's. `reason` and `migration_id` ride as annotations; the row
+    shape is the writer's.
+    """
+    if not isinstance(task_id, str) or not task_id.strip():
+        return False
+    try:
+        from schedule_config import log_schedule_config_change
+
+        return log_schedule_config_change(
+            workspace_root,
+            [{"task_id": task_id.strip(), "cron": None, "enabled": False}],
+            source_skill="command-room-update-bridge",
+            extra_data={
+                "reason": "readiness_retirement",
+                "migration_id": READINESS_RETIREMENT_MIGRATION_ID,
+            },
+        ) is not None
+    except Exception:
+        return False
 
 
 def log_retire_proposal(workspace_root, task_id: str) -> bool:
@@ -425,8 +604,11 @@ def log_retire_proposal(workspace_root, task_id: str) -> bool:
 __all__ = [
     "PROPOSAL_THRESHOLDS",
     "REPROPOSE_SUPPRESSION_WEEKS",
+    "READINESS_RETIREMENT_MIGRATION_ID",
     "propose_later_add_tasks",
     "log_proposal",
     "propose_task_retirements",
     "log_retire_proposal",
+    "plan_readiness_retirements",
+    "log_readiness_retirement",
 ]
