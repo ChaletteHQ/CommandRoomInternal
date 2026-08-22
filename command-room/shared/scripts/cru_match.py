@@ -884,6 +884,84 @@ def _events_files_sig(path: Path) -> tuple:
     return tuple(sig)
 
 
+def _twin_key_id(ev: dict) -> str:
+    """The identity two appends must SHARE to be one record: the EXPLICIT
+    `data.id`, or "" when there isn't one.
+
+    Deliberately NOT `_commitment_id`, whose seq-alias fallback returns the
+    single sentinel `commitment_seq_?` for any row with neither an id nor a
+    usable seq — collapsing on that would fold unrelated rows into one, which
+    is a far worse bug than the one this fixes."""
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    cid = d.get("id")
+    return cid.strip() if isinstance(cid, str) and cid.strip() else ""
+
+
+def _id_twin_key(ev: dict, index: int) -> tuple:
+    """Canonical-survivor ordering for two appends of ONE commitment id:
+    LOWEST seq wins. Mirrors `commitment_dedup._fold_sort_key` — the lowest seq
+    is the ORIGINAL record, the one whose id every closure, thread, widget and
+    sub-item already points at. Rows with no usable seq sort last (they cannot
+    be the original), then by append position, so the choice is total and
+    deterministic for any input order."""
+    seq = ev.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        return (1, 0, index)
+    return (0, seq, index)
+
+
+def collapse_id_twins(open_evs: list) -> tuple[list, dict]:
+    """One commitment id is ONE record — SPEC INGESTDUP1 §D2.
+
+    THE DEFECT. `data.id` is minted unique (`cmt_<ulid>`) and the event gate
+    does no reads, so nothing stopped a writer appending the SAME commitment id
+    again. It happened: three `commitment` events, one id, one source_ref,
+    identical titles, 23 seconds apart, from one skill. The projection returned
+    THREE open rows for one promise and every count read three — and no
+    existing seam could see it:
+
+      * the capture-time duplicate check skips a match whose `commitment_id`
+        equals the new row's own id (`flag_suspected_duplicates`' self-match
+        guard), so an identical-id re-append passed through unflagged;
+      * `fold_suspected_duplicates` keys on `data.suspected_duplicate_of`,
+        which nothing had set — its own comment even notes "never remap onto a
+        later twin" while doing nothing about the twin.
+
+    A duplicate id is not a SUSPECTED duplicate for someone to adjudicate.
+    Adjudication is the right answer when two DIFFERENT records might be one
+    ask; here they are one record, twice, and no question needs asking. The
+    reducer owns that judgement (`reducer owns truth`): the lowest-seq append
+    is the record, the rest are ledger noise.
+
+    Read-side only. History is untouched — every append stays on disk exactly
+    as it was written, the same additive-only doctrine as every other fold in
+    this loader.
+
+    Returns `(kept, twin_seqs)`: `kept` in the input's own order, and
+    `twin_seqs` mapping each survivor's id to the ABSORBED appends' seqs, so
+    the caller can stamp the survivor and the collapse is never silent. Rows
+    with no explicit `data.id` are always kept — the absence of an id is not an
+    id they share."""
+    evs = [ev for ev in (open_evs or []) if isinstance(ev, dict)]
+    best: dict = {}
+    for i, ev in enumerate(evs):
+        cid = _twin_key_id(ev)
+        if not cid:
+            continue
+        prev = best.get(cid)
+        if prev is None or _id_twin_key(ev, i) < _id_twin_key(evs[prev], prev):
+            best[cid] = i
+    twin_seqs: dict = {}
+    kept: list = []
+    for i, ev in enumerate(evs):
+        cid = _twin_key_id(ev)
+        if cid and best.get(cid) != i:
+            twin_seqs.setdefault(cid, []).append(ev.get("seq"))
+            continue
+        kept.append(ev)
+    return kept, twin_seqs
+
+
 def load_open_commitments(
     events_jsonl_path: str | Path,
     since_ts=None,
@@ -1348,6 +1426,19 @@ def load_open_commitments(
                 if isinstance(pid, str) and pid.strip():
                     child_records.append((cid_ev, ev.get("seq"), pid.strip()))
 
+    # SPEC INGESTDUP1 §D2 — one commitment id is ONE record. Two appends of
+    # one id are the same promise written twice, not two promises, and this is
+    # where that is decided (see collapse_id_twins). The child-record filter
+    # matters as much as the row fold: a sub-item whose id was appended twice
+    # registered twice against its parent, so `n_subitems_open` counted one
+    # child as two and the parent's "all sub-items done" signal could never
+    # fire.
+    open_evs, id_twin_seqs = collapse_id_twins(open_evs)
+    if id_twin_seqs:
+        _kept_child_keys = {(_commitment_id(e), e.get("seq")) for e in open_evs}
+        child_records = [r for r in child_records
+                         if (r[0], r[1]) in _kept_child_keys]
+
     def _closed_here(cid: str, seq) -> bool:
         """Closed iff the LATEST closure (id chain or F3 seq alias) comes
         after the LATEST reopen (Stage D undo) — delegated to the shared
@@ -1401,6 +1492,15 @@ def load_open_commitments(
         if _closed_here(cid, seq):
             continue
         patch: dict = {}
+        # INGESTDUP1 D2 — never silent: the surviving row says how many appends
+        # of itself it stands for, and `surface_drivers._dup_fold_note` renders
+        # it. Same contract as `duplicate_fold_count`.
+        twins = id_twin_seqs.get(cid)
+        if twins:
+            patch["id_twin_count"] = len(twins) + 1
+            patch["id_twin_seqs"] = [s for s in twins
+                                     if isinstance(s, int)
+                                     and not isinstance(s, bool)]
         upd = due_updates.get(cid)
         if upd:
             # In-memory copy with the EFFECTIVE due — data.due is first in
@@ -1508,7 +1608,14 @@ def load_open_commitments(
             if _reason:
                 try:
                     from review_reasons import review_reason_still_holds
-                    if not review_reason_still_holds(_rr_ws, _reason, _rr_cache):
+                    # PERSONLOOP1 §0-5 — the capture event travels WITH the
+                    # clause. `no resolved owner` is stamped bare and names
+                    # its subject on the row (`data.owner_external`), so a
+                    # row-blind verdict can never drain it. Passing `c` (the
+                    # capture, pre-patch) is what makes the grandfathered
+                    # rows checkable at all.
+                    if not review_reason_still_holds(_rr_ws, _reason,
+                                                     _rr_cache, row=c):
                         patch["pending_review"] = False
                         patch["review_reason_auto_satisfied"] = True
                 except Exception:
@@ -3752,6 +3859,7 @@ __all__ = [
     "detect_new_ask_signal",
     "detect_scheduling_intent",
     "load_open_commitments",
+    "collapse_id_twins",
     "split_pending_review",
     "load_needs_review",
     "load_open_review_proposals",

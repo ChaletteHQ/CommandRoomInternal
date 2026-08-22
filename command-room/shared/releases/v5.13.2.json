@@ -1,0 +1,27 @@
+{
+  "version": "5.13.2",
+  "headline": "Three things worth knowing on your first days after this update.",
+  "items": [
+    {
+      "id": "v5132_announce_run_now_declines_repeat",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One change in how Run Now behaves. A scheduled chat that has already delivered today's edition now declines to send it a second time when you press Run Now — it tells you when it last ran and leaves it there. This exists so a catch-up and a scheduled run can never land the same brief twice. When you want a fresh one on demand, say its phrase instead — \"brief me\" for the morning brief, \"end of day\" for the day-close — and it renders right away.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5132_announce_first_health_check_after_update",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "If you ask for a health check within a day of updating, it may tell you that several of your scheduled chats \"ran but didn't record their work.\" That is the update itself: refreshing your chats looks like a run to the check, and the record rightly has nothing for it. It clears on its own after the next morning's chats fire. Nothing is wrong with the chats and nothing needs re-authorizing.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5132_announce_first_weekly_pass_may_be_large",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The weekly pass that lets go of unanswered guesses starts with this update, and your first one may be large — it reaches everything that has sat unanswered for two weeks or more, which on a workspace that has been running since the summer can be dozens of rows in one go. It says how many it let go of, it never touches work you have agreed to or anything you have answered, and one \"undo\" puts the whole batch back. If you would rather see it before it happens, say \"review amnesty\" any time and it shows you the list and asks first.",
+      "action": "announce_only"
+    }
+  ]
+}

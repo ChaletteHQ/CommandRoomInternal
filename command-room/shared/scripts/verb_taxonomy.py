@@ -517,22 +517,52 @@ VERB_TAXONOMY = (
     _row("add person", "Add person", "person_proposal_resolved",
          "Create the contact from the proposal (details inferred; type to "
          "correct them) — future captures of this name resolve to them.",
-         ("commitments", "cr-brain"), input="optional", family="review",
+         ("commitments", "cr-brain", "needs-your-call", "end-of-day"),
+         input="optional", family="review",
          notes="W4b. Dispatch: people_writer.create_person via apply-choices "
                "Step 3a (dedup-first, disambiguation on MultipleCandidates), "
                "then the proposal tombstone (confirm_flow."
                "build_person_proposal_resolved_event, resolution "
-               "person_added) so it stops re-surfacing."),
+               "person_added) so it stops re-surfacing. PERSONLOOP1: the "
+               "same verb also answers a DERIVED person candidate (a "
+               "recurring unresolved name, no proposal event behind it) on "
+               "the needs-your-call queue, the staff-meeting fold and the "
+               "End of Day; that route dispatches "
+               "person_candidates.resolve_candidate, which creates the "
+               "record AND drains the rows blocked on the name. There is no "
+               "tombstone on that route — a live-derived candidate stops "
+               "being derived the moment the record exists."),
     _row("same as [existing]", "Same as", "person_proposal_resolved",
          "This name is an existing contact — saves the spelling as a "
          "shortcut so it resolves to them forever.",
-         ("commitments", "cr-brain"), input="required", family="review",
+         ("commitments", "cr-brain", "needs-your-call", "end-of-day"),
+         input="required", family="review",
          notes="W4b. Dispatch: resolve the typed name via the standard "
                "entity path (ambiguous → ask, never guess), then "
                "people_writer.add_person_alias (aliases.json mapping + the "
                "person record) + the proposal tombstone (resolution "
                "same_as). Permanent resolution improvement — the F-13 "
-               "P2b/F-56 misattribution class shrinks with every alias."),
+               "P2b/F-56 misattribution class shrinks with every alias. "
+               "PERSONLOOP1 routes the candidate-row twin through "
+               "person_candidates.resolve_candidate (same alias writer, "
+               "plus the drain)."),
+    _row("not a person", "Not a person (permanent)",
+         "person_candidate_suppressed",
+         "This name is not somebody to track — stop proposing it. Captures "
+         "that mention it are untouched and keep coming.",
+         ("needs-your-call", "cr-brain", "end-of-day"), family="review",
+         notes="PERSONLOOP1 §3-2. The ignore answer on a DERIVED person "
+               "candidate. Deliberately NOT `proposal not relevant`: that "
+               "verb writes a person_proposal_resolved tombstone keyed to a "
+               "proposal event's seq, and a candidate has no proposal event "
+               "— it is derived live from the pending queue on every render. "
+               "Dispatch: person_candidates.resolve_candidate(action='not a "
+               "person'), which appends ONE per-name-per-org "
+               "person_candidate_suppressed row (idempotent). Permanent, so "
+               "the label says so (the F-59 rule). SCOPE IS THE PROPOSAL "
+               "AND ONLY THE PROPOSAL: no capture path reads the ledger, so "
+               "an ignore can never silence a commitment — a mute of the "
+               "record would lose real promises to a UI preference."),
     _row("proposal not relevant", "Not relevant (permanent)",
          "person_proposal_resolved",
          "The name isn't worth tracking — the proposal is retired for good "

@@ -1,7 +1,7 @@
 ---
 name: commitment-backlog-sweep
 surfaces: both
-description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles (with evidence and undo), then asks about the rest in ONE digest: looks handled, written twice, quiet. Add `show me first` to preview. On demand only, never scheduled. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'. Rails: Routing section in the body."
+description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles, then asks about the rest in ONE digest. Add `show me first` to preview. The drain also runs weekly, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'. Rails: Routing section in the body."
 ---
 
 # commitment-backlog-sweep
@@ -19,8 +19,15 @@ It sorts the backlog into four honest piles:
 3. **the same thing written twice** — grouped side by side, never merged for you;
 4. **gone quiet** — no evidence and no movement for months: still real?
 
-**On demand only.** It is not a scheduled task, it registers nothing, and it does
-not touch the schedule set-up. It runs because somebody asked.
+**The four-pile pass above runs on demand only.** It is not a scheduled task, it
+registers nothing, and it does not touch the schedule set-up. It runs because
+somebody asked.
+
+**The review-tier DRAIN is the one exception, and it is not this pass.** Since
+REVSCHED1 it also runs weekly, silently, as a job inside the `maintenance` task
+the workspace already has — see section E. That still adds no scheduled task of
+this skill's own and still registers nothing: the job rides an existing taskId.
+Nothing above this line ever fires on a schedule.
 
 ## Skill Boundary
 
@@ -230,6 +237,23 @@ the widget offering the bulk clear: say `commitment amnesty` and the whole quiet
 pile goes in one confirm. Below that count the pile is workable row by row and the
 offer is noise. Never volunteer it for the other three piles — the duplicate and
 looks-handled piles are judgment, not volume.
+
+**And one for the OTHER pile, on the same rule (REVSCHED1 §3-1).** The four piles
+above are the CONFIRMED backlog. The unconfirmed pile — the guesses nobody has
+answered — is a separate tier with its own bulk verb, and it was reachable only by
+a user who remembered the phrase. Ask for its offer line:
+
+```python
+offer = sweep.review_offer(WORKSPACE, user_person_id=user_id)   # None below the bar
+```
+
+When it returns a dict, paste `offer["line"]` verbatim as a second line under the
+widget. `sweep.REVIEW_OFFER_AT` (10) is the bar and `review_offer` applies it — do
+not compare a count yourself, and do not compose the sentence: the queue header
+prints the same line from the same function so the two surfaces cannot offer two
+different things. It is a PURE READ that never refuses; `None` means "no offer",
+including on a workspace whose primary user cannot be resolved, and it is silence
+rather than an error line under a list the user came to read.
 
 ### Step 6 — Apply (only when the user acts)
 
@@ -480,6 +504,63 @@ whole batch back **in the queue** — as unconfirmed captures, exactly the state
 they left. Note that the undo is itself movement, so the same expiry phrase will
 not immediately re-lapse what the user just put back; that is the point of undo.
 
+### D — the door: `review amnesty including what I un-did`
+
+That shield has a measured cost. An exploratory apply → undo resets the quiet
+clock on every reopened row, so the same phrase cannot reach them again for a
+whole re-accrual window. On 2026-08-19 one operator `undo` of a 106-row batch
+held all 106 out of the bulk verb for a fresh 14 days, and the next run could
+reach 21 of the 86 rows that were over the bar. Try-before-you-buy was not a flow
+the design permitted.
+
+So there is now an explicit door, and it is a SEPARATE PHRASE — never a default,
+never inferred from "the user seems to want the whole pile":
+
+```python
+plan = sweep.review_expiry_plan(WORKSPACE, user_person_id=user_id,
+                                include_reopened=True)
+# ...and the SAME flag again on the apply — it is not carried on the plan object:
+out = sweep.apply_review_expiry(WORKSPACE, user_person_id=user_id,
+                                include_reopened=True)
+```
+
+What the flag does, exactly: it measures quiet against every movement type EXCEPT
+the reopen. So a row whose only movement since capture is an `undo` is measured
+from what it last actually did and can lapse again — while a row that was reopened
+**and then genuinely touched** (re-worded, re-dated, re-owned, chased, adjudicated)
+is still shielded by that touch. All other movement still shields. That is the
+whole difference between a door and a bulldozer.
+
+`plan["confirm"]` says so out loud when the flag is on — it names that the run
+reaches rows the user personally put back, and that anything they have touched
+since is left alone. **Show it verbatim like any other confirm and do not
+paraphrase that clause away**; it is the only warning the user gets, and an ack
+would arrive after the write.
+
+On an ordinary CLOSED-door plan, `plan["n_shielded_by_reopen"]` is how many rows
+the door WOULD have reached — i.e. how many are being held out by an undo and
+nothing else. Say it when the user asks why the pile is not draining. Do not act
+on it.
+
+### E — the drain also runs weekly, on its own
+
+Since REVSCHED1 the expiry runs as a silent weekly job inside the already-
+registered `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`,
+`review-expiry`, Sunday, last of the Sunday group). It plans internally, applies
+when the plan is non-empty, and writes one receipt either way — the empty plan is
+a silent no-op. Nothing about that path is yours to fire from a chat: the
+dispatcher decides due-ness in code, and the registered prompt runs
+`commitment_backlog_sweep.py review-expiry --apply`.
+
+Two consequences for what you say to the user:
+
+- when the job's `receipt_line` is non-empty, the next staff meeting / end-of-day
+  reads THAT ONE LINE out verbatim and nothing else. It names the count, the
+  window, the standing `undo`, and `needs your call` for what remains;
+- the scheduled path never uses the door. It always runs the ordinary closed-door
+  window, so a row the user put back stays put back until they say the door
+  phrase themselves.
+
 ### What these two verbs are NOT
 
 - **NOT a Drop.** A Drop is the CEO looking at one row and letting it go, and the
@@ -508,6 +589,23 @@ plan/confirm/apply shape, no mail, no digest. The two amnesty phrases are not
 synonyms and must never be treated as one: 'commitment amnesty' clears quiet
 CONFIRMED work, 'review amnesty' lapses UNCONFIRMED guesses, and the module
 refuses to let either reach the other's rows.
+
+Fires on 'expire the review pile' (with or without a `past N days` bar) — the SAME
+Review amnesty section as 'review amnesty', by the word a user reaches for when
+they are thinking about a window rather than a mercy. It shipped with no door:
+`expire` appeared in zero descriptions in the whole roster, so two independent
+blind routing passes reached this skill zero times out of two on 'expire the
+review pile past 30 days' while the number it names was already an honoured
+parameter.
+
+Fires on 'review amnesty including what I un-did' — the §0-3 DOOR, section D. It
+is a separate phrase because it does something the ordinary phrase deliberately
+will not: it reaches rows the user themselves put back with `undo`. Never inferred
+and never the default — a request to clear the whole pile is not this phrase.
+(Deliberately not written with the obvious bare word in quotes: the mechanical
+routing matcher reads a quoted string in this section as a phrase this skill
+CLAIMS, so quoting a generic word here to disclaim it is how you claim it. It
+collided with two neighbours the first time this paragraph was written.)
 
 Fires on 'drop everything from that meeting', 'drop everything that ingest captured' and 'drop everything that import captured' — a FOURTH door, the same Review amnesty section by its other verb: the ingest kill, for the unconfirmed cluster ONE bad import left behind. It argues from provenance, not from a date, so there is no window to say. These two phrases had no door at all until they were claimed here; the verb was reachable only by a user who first said 'review amnesty' and then read the manual, which is not a door.
 

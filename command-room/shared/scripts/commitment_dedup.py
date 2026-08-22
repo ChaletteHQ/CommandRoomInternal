@@ -226,6 +226,66 @@ def _title_of(data: dict) -> str:
     return str(data.get("title") or data.get("summary") or "")
 
 
+def owner_signal(obj, *, workspace_root=None) -> tuple:
+    """`(resolved person id or None, raw owner value or None)` for ONE
+    commitment — read through the SAME ladder on both sides of a comparison.
+
+    SPEC INGESTDUP1 §D1 — THE DEFECT THIS CLOSES. The owner gate below read
+    its two sides DIFFERENTLY: the new capture through a bare
+    `new_data.get("owner_id")`, the open row through
+    `_commitment_field(ev, "owner_id")`, whose alias ladder is
+    `("owner_id", "owner_person_id", "owner")`. The legacy `owner` key holds a
+    free-text NAME (documented in `_COMMITMENT_FIELD_ALIASES`), so one side
+    could yield `person_017` while the other yielded that same person's name —
+    and `str(a) != str(b)` read one person as two and HARD VETOED, which ends
+    the comparison before the title gate ever runs. Live proof at D-1 time: a
+    pair in the operator's open book scored 1.0 on title after name-stripping
+    and had never been flagged, its entire difference being which spelling of
+    the owner each writer chose. Six open rows carried the legacy spelling, so
+    the exposure was the whole book against those six.
+
+    So: ONE ladder for both sides, and a NAME resolves to its person id through
+    the exact-only alias graph (`commitment_parties.resolved_entity_ids` — the
+    alias/nickname ladder PERSONLOOP1 maintains, never fuzzy, never phonetic).
+    Exact-only is the safety argument: a lenient match here would let a GUESS
+    join two promises, and this gate's whole job is to be right about whether
+    two rows are one ask.
+
+    A name that resolves to nothing, or to more than one person, returns `None`
+    for the id and keeps its raw value: absence of evidence, which neither
+    vetoes on identity nor corroborates. Without a `workspace_root` no
+    resolution happens at all and a name is just a raw value — the gate then
+    behaves exactly as it did before this fix (differing raw spellings veto),
+    so a caller with no workspace in hand never gets a NEW match it cannot
+    justify.
+
+    Accepts either a commitment event dict or its `data` payload (a data
+    payload never carries its own `data` key, so the detection is
+    unambiguous — the `commitment_parties._data` trick). Pure apart from the
+    resolver's own cached entity read, which only runs for a non-id owner value
+    with a workspace_root in hand."""
+    ev = obj if isinstance(obj, dict) and isinstance(obj.get("data"), dict) \
+        else {"data": obj if isinstance(obj, dict) else {}}
+    raw = _commitment_field(ev, "owner_id")
+    raw = raw.strip() if isinstance(raw, str) else ""
+    if not raw:
+        return None, None
+    if raw.startswith("person_"):
+        return raw, raw
+    if workspace_root is None:
+        return None, raw
+    try:
+        from commitment_parties import resolved_entity_ids
+        ids = sorted(i for i in resolved_entity_ids(raw, workspace_root)
+                     if str(i).startswith("person_"))
+    except Exception:
+        # An unreadable entity graph is not this gate's business and must never
+        # take a capture down: the name stays a raw value and the pre-fix
+        # behavior applies.
+        return None, raw
+    return (ids[0] if len(ids) == 1 else None), raw
+
+
 def _edit_distance_le_1(a: str, b: str) -> bool:
     """True iff Levenshtein(a, b) <= 1 — one insert/delete/substitute."""
     if a == b:
@@ -316,11 +376,17 @@ def score_suspected_duplicate(
     name_index: Optional[dict] = None,
     now_dt: Optional[_dt.datetime] = None,
     window_days: int = DUP_WINDOW_DAYS,
+    workspace_root=None,
 ) -> Optional[dict]:
     """Score one new capture's `data` against one OPEN commitment event.
     Returns {"commitment_id", "score", "corroborated", "title"} when every
     gate holds, else None. Pure — callers supply the open set and the
-    optional person-name index."""
+    optional person-name index.
+
+    `workspace_root` (INGESTDUP1 D1) is what lets the OWNER gate resolve a
+    free-text owner name to its person id, so one writer's id and another's
+    name for the same person stop reading as two different owners. Omit it and
+    the gate behaves exactly as it did before that fix."""
     name_index = name_index or {}
     d_open = open_ev.get("data") if isinstance(open_ev.get("data"), dict) else {}
 
@@ -361,12 +427,25 @@ def score_suspected_duplicate(
         if captured > now_dt + _dt.timedelta(days=1):
             return None
 
-    # 2. Owner gate — resolved-and-different is a hard veto.
-    new_owner = new_data.get("owner_id") or None
-    open_owner = _commitment_field(open_ev, "owner_id") or None
-    if new_owner and open_owner and str(new_owner) != str(open_owner):
+    # 2. Owner gate — resolved-and-different is a hard veto. BOTH sides read
+    # through ONE ladder, and a free-text owner NAME is resolved to its person
+    # id first (INGESTDUP1 D1 — the asymmetric read is what vetoed a verbatim
+    # duplicate whose two writers spelled one person two ways). Two raw values
+    # that neither resolve still veto when they differ: that is what this gate
+    # did for every shape before the fix, and an unresolvable name is the
+    # absence of evidence, not agreement.
+    new_owner, new_owner_raw = owner_signal(
+        new_data, workspace_root=workspace_root)
+    open_owner, open_owner_raw = owner_signal(
+        open_ev, workspace_root=workspace_root)
+    if new_owner and open_owner:
+        if new_owner != open_owner:
+            return None
+    elif (new_owner_raw and open_owner_raw
+            and new_owner_raw.casefold() != open_owner_raw.casefold()):
         return None
-    owner_corroborated = bool(new_owner and open_owner and str(new_owner) == str(open_owner))
+    owner_corroborated = bool(
+        new_owner and open_owner and new_owner == open_owner)
 
     # 3. Counterparty gate.
     new_cp_ids, new_cp_toks = _counterparty_signal(new_data, name_index)
@@ -428,6 +507,7 @@ def find_suspected_duplicate(
     name_index: Optional[dict] = None,
     now_dt: Optional[_dt.datetime] = None,
     window_days: int = DUP_WINDOW_DAYS,
+    workspace_root=None,
 ) -> Optional[dict]:
     """Best (highest-scoring) suspected duplicate for one new capture, or
     None. Pure over supplied data."""
@@ -436,6 +516,7 @@ def find_suspected_duplicate(
         m = score_suspected_duplicate(
             new_data, open_ev,
             name_index=name_index, now_dt=now_dt, window_days=window_days,
+            workspace_root=workspace_root,
         )
         if m and (best is None or m["score"] > best["score"]):
             best = m
@@ -449,6 +530,7 @@ def auto_merge_eligible(
     name_index: Optional[dict] = None,
     now_dt: Optional[_dt.datetime] = None,
     window_days: int = DUP_WINDOW_DAYS,
+    workspace_root=None,
 ) -> Optional[dict]:
     """AUTOAPPLY §4c — the auto-MERGE gate: `{survivor_id, score, predicate}`
     when this new capture and `open_ev` are the same real-world commitment
@@ -492,13 +574,23 @@ def auto_merge_eligible(
     # tiers can never disagree about what is even a candidate.
     base = score_suspected_duplicate(
         new_data, open_ev, name_index=name_index, now_dt=now_dt,
-        window_days=window_days)
+        window_days=window_days, workspace_root=workspace_root)
     if base is None:
         return None
 
-    new_owner = new_data.get("owner_id") or None
-    open_owner = _commitment_field(open_ev, "owner_id") or None
-    if not (new_owner and open_owner and str(new_owner) == str(open_owner)):
+    # INGESTDUP1 D1 — the owner read is now symmetric here too (one ladder,
+    # both sides), but the auto tier deliberately does NOT take the flag tier's
+    # NAME RESOLUTION: `owner_signal` is called with no workspace_root, so only
+    # a value that is already a resolved `person_*` id counts. Same doctrine as
+    # the counterparty bar below — an alias-resolved name is enough to ASK and
+    # never enough to ACT. Resolution is a fact about the entity graph, but the
+    # entity graph is itself learned from transcripts, and this tier merges
+    # without showing anyone the pair. A resolved name falls through to the
+    # flag tier, which is strictly the safe direction: a question instead of a
+    # silent merge.
+    new_owner, _new_owner_raw = owner_signal(new_data)
+    open_owner, _open_owner_raw = owner_signal(open_ev)
+    if not (new_owner and open_owner and new_owner == open_owner):
         return None
 
     d_open = open_ev.get("data") if isinstance(open_ev.get("data"), dict) else {}
@@ -548,6 +640,7 @@ def find_auto_merge(
     name_index: Optional[dict] = None,
     now_dt: Optional[_dt.datetime] = None,
     window_days: int = DUP_WINDOW_DAYS,
+    workspace_root=None,
 ) -> Optional[dict]:
     """Best auto-mergeable survivor for one new capture, or None. When two
     open items both clear the gate the capture is ambiguous about WHICH it
@@ -557,7 +650,7 @@ def find_auto_merge(
     for open_ev in open_commitments or []:
         m = auto_merge_eligible(
             new_data, open_ev, name_index=name_index, now_dt=now_dt,
-            window_days=window_days)
+            window_days=window_days, workspace_root=workspace_root)
         if m:
             hits.append(m)
     return hits[0] if len(hits) == 1 else None
@@ -664,6 +757,7 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
             # merge instead of flagged for a question.
             auto = None if rail_is_dead else find_auto_merge(
                 data, open_commitments, name_index=name_index, now_dt=now_dt,
+                workspace_root=workspace_root,
             )
             if auto is not None and auto["survivor_id"] != data.get("id"):
                 new_data = {**data,
@@ -674,6 +768,7 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
                 continue
             match = find_suspected_duplicate(
                 data, open_commitments, name_index=name_index, now_dt=now_dt,
+                workspace_root=workspace_root,
             )
             if match is None or match["commitment_id"] == data.get("id"):
                 out.append(ev)
@@ -1027,6 +1122,7 @@ __all__ = [
     "DUP_TITLE_STRONG",
     "DUP_TITLE_UNCORROBORATED",
     "DUP_TITLE_AUTO",
+    "owner_signal",
     "title_similarity",
     "score_suspected_duplicate",
     "find_suspected_duplicate",

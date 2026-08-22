@@ -49,6 +49,7 @@ import datetime as _dt
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -526,10 +527,37 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
         "source_skill": SOURCE_SKILL,
         "group_by": group_by,
         "header": header,
+        # REVSCHED1 §3-1 — the drain's offer line, or "". Deliberately its OWN
+        # field rather than appended to `header`: the header is a counted
+        # sentence about this queue and both surfaces that count with it
+        # compare it (RIDERS1 item 4), so folding an offer into it would put a
+        # second number in the sentence the two surfaces reconcile. Rendered
+        # directly UNDER the header by `render_text` / carried onto the data
+        # view, which is where the user reads it.
+        "offer": _review_drain_offer(workspace_root, now_iso),
         "total": total,
         "n_weak": n_weak,
         "groups": groups,
     }
+
+
+def _review_drain_offer(workspace_root, now_iso) -> str:
+    """The one-line bulk-drain offer for this queue, or "" (REVSCHED1 §3-1).
+
+    Thin by design: the bar, the wording and the derivation all live in
+    `commitment_backlog_sweep.review_offer`, so the digest and this queue
+    cannot drift into offering two different things. Lazy import — the sweep
+    module is a heavy read-side module and this queue is on the daily path.
+
+    Never raises and never refuses: an offer line that can break the queue it
+    decorates is worse than no offer line.
+    """
+    try:
+        from commitment_backlog_sweep import review_offer
+        offer = review_offer(workspace_root, now_iso=now_iso)
+    except Exception:
+        return ""
+    return (offer or {}).get("line") or ""
 
 
 EMPTY_TEXT = ("Nothing needs your call — every captured item has been "
@@ -545,7 +573,18 @@ def render_text(view: dict) -> str:
     if not view.get("total"):
         return EMPTY_TEXT
 
-    lines = [view["header"], ""]
+    lines = [view["header"]]
+    # PERSONLOOP1 — the offer sits in the HEADER position because it explains
+    # the list below it: these names are why the queue is this long.
+    offer = str(view.get("person_candidate_offer") or "").strip()
+    if offer:
+        lines.append(offer)
+    # REVSCHED1 §3-1 — directly under the header, before the rows, because a
+    # reader who has decided to work the list row by row has already stopped
+    # reading by the time a footer arrives. Absent entirely below the bar.
+    if view.get("offer"):
+        lines.append(view["offer"])
+    lines.append("")
     for group in view.get("groups") or []:
         lines.append(f"{group['name']} ({group['count']})")
         for row in group["items"]:
@@ -821,7 +860,10 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
 
 
 def confirm_satisfied_reasons(workspace_root, *,
-                              source_skill: str = SOURCE_SKILL) -> dict:
+                              source_skill: str = SOURCE_SKILL,
+                              brain_batch_id: Optional[str] = None,
+                              brain_change_class: Optional[str] = None,
+                              stamp_only_ids=None) -> dict:
     """The reason-scoped batch verb (BUG-8330 item 4).
 
     The old batch surface was reason-BLIND and per-id only: nothing could
@@ -839,6 +881,22 @@ def confirm_satisfied_reasons(workspace_root, *,
     has ALREADY released it for gating; this only makes that durable.
 
     Returns {"results": [...], "n_cleared": int, "n_failed": int}.
+
+    ATTENDEE1 — `brain_batch_id` / `brain_change_class` are passed straight
+    through to `clear_review_flags`, both None by default so the manual verb
+    writes a byte-identical event. An AUTOMATIC caller supplies them so the
+    clears it caused land in the same undo batch as the record that released
+    them.
+
+    `stamp_only_ids` SCOPES THAT BATCH, and it closes review F-3. This
+    function is workspace-WIDE: it formalizes every auto-satisfied row,
+    including rows released long ago by unrelated conditions that simply never
+    got written down. Formalizing them is right and stays. But stamping them
+    put them in the undo batch too, so a user who took back ONE added contact
+    got every incidental row reopened with it — the receipt said "2 cleared"
+    while `undo` reversed 3. Pass the ids the caller can actually attribute and
+    only those carry the stamp; the rest are still cleared, just not claimed.
+    None (the default) stamps everything, which is the pre-F-3 behaviour.
     """
     from commitment_state import CommitmentIdError, clear_review_flags
     from cru_match import load_open_commitments
@@ -857,12 +915,18 @@ def confirm_satisfied_reasons(workspace_root, *,
         if not d.get("review_reason_auto_satisfied"):
             continue
         cid = _commitment_id(ev)
+        _stamp = (brain_batch_id is not None
+                  and (stamp_only_ids is None
+                       or str(cid) in {str(x) for x in stamp_only_ids}))
         try:
             res = clear_review_flags(
                 workspace_root, cid, cleared_by=cleared_by,
                 source_skill=source_skill,
                 note=f"review reason satisfied — {str(d.get('review_reason') or '')[:120]}",
                 mint_now_iso=_gesture_iso,   # PROVMINT1 — one pass, one receipt
+                # F-3: only rows the caller can attribute join the batch.
+                brain_batch_id=brain_batch_id if _stamp else None,
+                brain_change_class=brain_change_class if _stamp else None,
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
@@ -1849,12 +1913,56 @@ def _row_context_tag(row: dict, *, meeting_label: str = "") -> str:
     return " · ".join(b for b in bits if b)
 
 
-def build_queue_data_view(view: dict, *, header: str | None = None) -> dict:
+def person_candidate_offer(workspace_root, *, now_iso: str | None = None):
+    """PERSONLOOP1 §0-3 — the queue's HEADER OFFER: the recurring names this
+    queue is jammed behind, and the one-tap answers that unjam it.
+
+    Returns `(section_or_None, header_line)`. Both are drop-empty: a
+    workspace with no recurring unresolved name gets byte-identical output to
+    before this landed.
+
+    THIS IS A DELIBERATE REVERSAL of the stance recorded a few lines above in
+    `_review_reason` — that the queue should not tell the CEO to add a
+    contact. That stance was right about a SINGLE row: one unresolved name on
+    one capture is noise, and asking about it is nagging. It was wrong about
+    the aggregate, and the aggregate is what filled this queue: the same
+    handful of names failed resolution meeting after meeting, and each
+    failure minted more rows that nothing could ever drain. Recurrence plus
+    propose-only is the taste guard — the question is only ever asked about a
+    name the graph has now missed at least twice, and it is only ever a
+    question.
+
+    Any failure degrades to no offer rather than a broken queue: the queue's
+    own job does not depend on this."""
+    try:
+        from person_candidates import (candidate_section, derive_candidates,
+                                       header_offer)
+
+        cands = derive_candidates(workspace_root, now_iso=now_iso)
+        if not cands:
+            return None, ""
+        return candidate_section(workspace_root, candidates=cands), \
+            header_offer(cands)
+    except Exception as exc:  # pragma: no cover — the queue must still render
+        sys.stderr.write(f"[needs_review_queue] candidate offer skipped: "
+                         f"{exc}\n")
+        return None, ""
+
+
+def build_queue_data_view(view: dict, *, header: str | None = None,
+                          candidate_section: dict | None = None) -> dict:
     """The meeting-grouped queue as a `render_and_persist` data view — one
     SECTION per call, rows carrying their WATCHGATE strength line and the
     one-tap verbs. Never hand-composed: this is the only place the rows are
-    shaped for a widget."""
+    shaped for a widget.
+
+    `candidate_section` (PERSONLOOP1) is the person-candidate offer, built by
+    `person_candidate_offer`. It leads the page when present — the names in
+    it are why the rest of the page is as long as it is — and is absent
+    entirely otherwise."""
     sections = []
+    if candidate_section and (candidate_section.get("items") or []):
+        sections.append(candidate_section)
     for group in view.get("groups") or []:
         items = []
         for row in group.get("items") or []:
@@ -1869,11 +1977,20 @@ def build_queue_data_view(view: dict, *, header: str | None = None) -> dict:
         if items:
             sections.append({"title": f"{group['name']} ({len(items)})",
                              "count": len(items), "items": items})
-    return {
+    out = {
         "source_skill": SOURCE_SKILL,
         "header": header or view.get("header") or "Needs your call",
         "sections": sections,
     }
+    # REVSCHED1 §3-1 — carried through so the widget path shows the same offer
+    # the text path does, under the renderer's OWN optional field name
+    # (`sub_header`, the line the card renderers already draw directly under
+    # the header) rather than a key of this module's invention. Set only when
+    # there is one: an empty value would put a blank sub-header band in every
+    # render below the bar.
+    if view.get("offer"):
+        out["sub_header"] = view["offer"]
+    return out
 
 
 def paginate_groups(data_view: dict, *, page: int = 1,
@@ -1953,7 +2070,14 @@ def render_queue_page(workspace_root, *, page: int = 1,
 
     ws = Path(workspace_root)
     view = build_queue_view(ws, now_iso=now_iso, group_by=GROUP_MEETING)
-    data_view = build_queue_data_view(view)
+    # PERSONLOOP1 — the header offer. Derived here (the widget path) rather
+    # than inside `build_queue_view`, so every existing caller of the pure
+    # read keeps its cost and its output unchanged.
+    offer_section, offer_line = person_candidate_offer(ws, now_iso=now_iso)
+    if offer_line:
+        view["person_candidate_offer"] = offer_line
+    data_view = build_queue_data_view(view,
+                                      candidate_section=offer_section)
     page_view = paginate_groups(data_view, page=page, max_rows=max_rows)
     gp = page_view.pop("group_pagination")
     rows = max(1, gp["rows_on_page"])
@@ -2087,6 +2211,7 @@ __all__ = [
     "undo_confirm_items",
     "undo_done_items",
     "build_queue_data_view",
+    "person_candidate_offer",
     "paginate_groups",
     "render_queue_page",
     "staff_meeting_group_section",

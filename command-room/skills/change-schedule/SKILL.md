@@ -32,7 +32,8 @@ Background maintenance (runs quietly, no chat output):
   Maintenance         — 6:45 AM, 12:45 PM, and 5:45 PM daily
                         (sent-mail reconcile, chat reconcile, session sweep,
                         weekly cleanup, weekly insights, deal signals,
-                        identity reconcile, project lifecycle, monthly report
+                        identity reconcile, project lifecycle,
+                        unconfirmed cleanup, monthly report
                         — each runs when due)
 
 Available, not added yet:

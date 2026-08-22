@@ -109,6 +109,7 @@ CANONICAL_TASK_IDS = frozenset({
     # is append-only. `pulse` parses forever; it is simply never written again.
     "pulse",
     "lifecycle",     # LIFECYCLE1 — the project lifecycle pass job inside `maintenance` (the fold that replaced Pulse's Phase 4)
+    "review-expiry",  # REVSCHED1 — the weekly unconfirmed-pile drain job inside `maintenance` (never a task of its own; see maintenance_dispatcher.MAINTENANCE_JOBS)
     # EOD2 — the 5 PM chat's taskId was RENAMED to `end-of-day`, but the
     # RECEIPT id deliberately did NOT move: `end_of_day.TASK_ID` still writes
     # `past-meetings`, so the day-close series is ONE continuous history
@@ -292,6 +293,16 @@ RECEIPT_TYPES: dict[str, dict] = {
     # plan). The dispatcher's due-ness rule reads it, so an M-fired backfill
     # also serves that week's Sunday slot.
     "identity-reconcile": {"types": frozenset({"identity_reconcile_run"})},
+    # REVSCHED1 §3-2 — the weekly unconfirmed-pile drain job's receipt.
+    # `pack_run`, the standard scheduled-job shape (like deal-signals): the
+    # dispatcher's dueness rule reads it, so it self-limits to weekly. Written
+    # on an EMPTY plan too — the no-op is silent to the CEO but never silent to
+    # the ledger, because a job that only receipts when it finds work
+    # re-derives the whole pile at every one of the task's three daily slots
+    # forever. Its extra_data carries the §3-4 honesty trio (n_applied /
+    # n_shielded_by_reopen / n_held_back), every number off the writer's own
+    # per-row results.
+    "review-expiry":      {"types": frozenset({"pack_run"})},
     # SPEC OUT7 — the opt-in monthly KPI scorecard job's receipt. pack_run, the
     # standard scheduled-pack shape (like deal-signals / staff-meeting): the
     # dispatcher's due-ness rule reads it so a fired scorecard self-limits to

@@ -2494,6 +2494,8 @@ def clear_review_flags(
     note: str = "confirmed distinct",
     source_ref=None,
     mint_now_iso=None,
+    brain_batch_id: Optional[str] = None,
+    brain_change_class: Optional[str] = None,
 ) -> dict:
     """THE Keep-both writer (v4.6.1 W4b / C4). A suspected duplicate the
     user adjudicates as a real, separate item: appends a `commitment_updated`
@@ -2515,7 +2517,24 @@ def clear_review_flags(
     wins, and nothing supplied mints `session:<source_skill>:<now>` with
     `ref_grain: "surface_minted"`. Same semantics as `close_commitment`; see
     its docstring for why the mint's time component is load-bearing.
+
+    ATTENDEE1 — `brain_batch_id` / `brain_change_class` are OPTIONAL and both
+    default None, so every shipped caller writes a byte-identical event. They
+    exist because a clear written by an AUTOMATIC gesture has to be reversible
+    in the SAME batch as whatever caused it: ATTENDEE1's evidence path creates
+    a person and drains the rows that person released, and one `undo` must take
+    back both halves or the receipt is lying about what it did. The stamped
+    class is `commitment_confirm`, whose registered reverser routes through
+    `needs_review_queue.undo_confirm_items` -> `restore_review_flags` — the
+    additive mirror of this very event, so the reversal path is the shipped one
+    and nothing here forks a second way to un-clear a row. They travel together
+    or raise, per the house rule (see `supersede_commitment`).
     """
+    if (brain_batch_id is None) != (brain_change_class is None):
+        raise ValueError(
+            "brain_batch_id and brain_change_class travel together — a batch "
+            "id with no change class is a clear `undo_batch` will list and "
+            "then refuse to reverse")
     pointer_fields = _close_pointer_fields(source_ref, mint_for=source_skill,
                                            now_iso=mint_now_iso)
     from pathlib import Path as _Path
@@ -2537,6 +2556,9 @@ def clear_review_flags(
         data.update(pointer_fields)
         if isinstance(target.get("seq"), int):
             data["commitment_seq"] = target["seq"]
+        if brain_batch_id is not None:
+            data["brain_batch_id"] = brain_batch_id
+            data["brain_change_class"] = brain_change_class
         ev = {
             "type": "commitment_updated",
             "source_skill": source_skill,

@@ -37,7 +37,7 @@ on both ids (`end_of_day.TASK_ID`) so the day-close series never splits.
    fire would be scored by this same fire's reconcile and counted by this same
    fire's read. Capture last is the circularity fence.
 
-## The seven blocks
+## The eight blocks
 
 `surface_drivers.build_end_of_day_pack(workspace_root, mode=...)` builds all of
 them in ONE call (the t3 FB-9 pattern). Render order is the contract:
@@ -45,12 +45,73 @@ them in ONE call (the t3 FB-9 pattern). Render order is the contract:
 | Block | What it is | The rule that governs it |
 |---|---|---|
 | `alarm_lines` | `substrate_health.substrate_alarm_lines` | Verbatim, pinned top, never suppressed |
-| `score` | This morning's plan against today's closures, plus the saved digest read back | **No morning receipt → "No plan on record this morning." NEVER a guessed score.** An item with no close on file is **"Not recorded", never "not done"**. `first_move` is an ANNOTATION, not a string — see below |
+| `coverage` | What this fire actually READ, per capability | Verbatim, first under the alarms, **never suppressed and never softened** — see below |
+| `score` | This morning's plan against today's closures, plus the saved digest read back | **No morning receipt → "No plan on record this morning." NEVER a guessed score.** An item with no close on file is **"Not recorded", never "not done"**. `first_move` is an ANNOTATION, not a string; `ledger` is the book's movement — see below |
 | `wins` | What moved since the morning fire, by NAME | Zero wins → one honest line. Never padding. `title_source` and `more_line` govern the rows — see below |
-| `slipped` | The ball-is-on-you rows | Max 3, verbs on each, and every row comes from the GATED needs-attention set — never a fresh scan |
-| `confirm` | `confirm_flow.select_confirm_items`, relocated here | Cap 5, stakes-then-age. A held capture can never enter it |
+| `slipped` | The ball-is-on-you rows | Max 3, verbs on each, and every row comes from the GATED needs-attention set — never a fresh scan. `more_line` carries the denominator |
+| `confirm` | `confirm_flow.select_confirm_items`, relocated here, plus (PERSONLOOP1) `end_of_day.compute_person_candidates` | Cap 5, stakes-then-age. A held capture can never enter it. `more_line` carries the denominator. The candidate rows sit at the END of the block and are capped at 2 — they are the reason the block is as long as it is |
 | `tomorrow` | The wide calendar look, the rollover, the day-intent draft | The draft is a PROPOSAL until tapped. It is written only on confirm |
 | `sign_off` | Computed, never composed | Zero urgent → "Nothing else needs you before tomorrow's brief." verbatim |
+
+A ninth key, `catchup`, is not a block: it is the fire-level LABEL a late
+day-close arrives under, and it renders above everything (see "The catch-up
+read" below). On every non-degrade fire its `renders` is False and there is
+nothing to place.
+
+### `coverage` — say what you read before you say what you found
+
+The fire asks for email, calendar and chat per capability and receipts every
+gap under `connector_gaps` — and said nothing about any of it in chat, by
+design. The cost was measured: a chat cursor sat five days behind while the
+surface reported the day's closes with no qualification at all, and a calendar
+outage rendered byte-identically to a genuinely empty tomorrow. The reader
+could not tell *nothing happened* from *I could not look*.
+
+`coverage["lines"]` is composed in code and printed VERBATIM, first, under the
+alarms. One line per capability: mail and chat through their own cursors —
+**naming the span when a cursor is behind** — calendar present or absent, and
+the capture leg's window with what is on record in it and what is still owed. A
+capability that was skipped says so in the plain English the leg already
+receipted. The last line, when present, is the data-quality note: the count of
+closes in this window citing no artifact anyone can open.
+
+**Never suppressed and never softened**, the same posture as `alarm_lines` and
+for the same reason. A degraded read is exactly when the reader most needs to
+know what the aperture was. Do not re-word a line, do not drop the stale-cursor
+clause because the numbers look right, and do not add a reassuring sentence
+after it. `coverage["capabilities"]["calendar"]["read"]` and
+`tomorrow["calendar_available"]` are ONE boolean by construction; never write a
+sentence that puts them in conflict.
+
+### `score.ledger` — what the day did to the open book
+
+Present on BOTH score branches, `no_plan` included: a day with no morning plan
+still moved the book. Render `ledger["line"]` verbatim.
+
+`status: "movement"` — book at open → `+opened` → `−closed` → `−dropped` → book
+now, with the delta named. When `residual_line` is set, print it: the four
+movements did not account for the whole change and saying so is cheaper than a
+number that does not add up. Never absorb the residual into a movement.
+
+`status: "no_opening_figure"` — **no morning fire, so there is "no opening
+figure on record" and NO arithmetic.** The opening figure is READ off the
+morning fire's own `brief_state`, never inferred. Render the line as given and
+stop: no substituted count, no delta of zero, no "flat day". A guessed baseline
+is indistinguishable from a measured one once it is on screen —
+`NO_PLAN_LINE`'s doctrine, one field down.
+
+### The catch-up read — a late day-close arrives labelled, not skipped
+
+On the degrade tier (>24h late) this surface RENDERS, opening with
+`pack["catchup"]["lines"]`: the span it covers, how late it is, and the slot it
+missed. It used to post `late_fire`'s `degrade_notice` alone, so a skipped
+Tuesday was never scored — not that evening, not ever. **Do not post
+`degrade_notice` here**: it says "Skipped the full End of Day", which is true on
+every other scheduled surface and false on this one the moment it renders, and
+it is a shared constant that is deliberately not being reworded. One read covers
+the whole span; never one surface per missed day. And `skip_render` is
+untouched — a slot already delivered posts its `ack` and stops. Late is not
+duplicate.
 
 ### `score.first_move` — render the STATUS, not just the line
 
@@ -83,6 +144,23 @@ it, so the pointer is what keeps the cap a render bound instead of a silence —
 the same rule the morning brief's needs-attention lane keeps. Never top the
 block up to close the gap, and never report `n_total` as if it were the number
 of rows on screen.
+
+**`slipped` and `confirm` carry the same line, from the same helper
+(`end_of_day.more_line`), and every one of them STATES ITS DENOMINATOR** —
+"shows 3 of 41", not "shows at most 3". A cap without a denominator is not a
+summary; it is a claim about size, and it was a wrong one: `slipped` bound 3 of
+41 and `confirm` 5 of 67 in silence. One helper and one shape, so no block
+acquires its own dialect of "there is more than this".
+
+`window_source` says which window these rows were read from. `morning_anchor`
+— the day's morning brief fired and the window opens there. `day_floor` — no
+morning brief fired, so the window opens at workspace-LOCAL midnight of this
+fire's own day and never earlier. **A day with no morning brief still renders
+its wins**; it counts them from midnight, and `more_line` is already spelled
+for that window (*"…more moved since midnight"* rather than *"…more moved
+today"*). Print it as given and never re-word it to claim "today" over a
+floored window. This rule is here and not only in the fire's own text because
+the manual family renders the same pack.
 
 **Monday** adds the prior week's day-scores after the day-close blocks, and the
 weekly development read SLOT, which renders NOTHING until DEVREAD1 ships.
@@ -214,6 +292,17 @@ refused in plain English — never clamped, never guessed.
 | `drop [n]` | slipped, confirm | The existing drop path, unchanged |
 | `confirm [n]` | confirm | The existing confirm path, unchanged |
 | tomorrow confirm | tomorrow | `end_of_day.resolve_intent_confirm`, then `day_intent.write_day_intent(..., origin="wrap")` |
+| `add person [n]` | person_candidate | `person_candidates.resolve_candidate(action="add person")` — creates the contact with every observed spelling as an alias, then drains every capture that was blocked on the name |
+| `same as [existing] [n]` | person_candidate | Same call, `action="same as [existing]"` — the alias write, then the same drain |
+| `not a person [n]` | person_candidate | Same call, `action="not a person"` — suppresses the PROPOSAL for that name, permanently and per org. Never a capture |
+
+The three candidate verbs are legal on the `person_candidate` block and
+nowhere else, and `mark done` / `drop` are refused ON it: there is nothing to
+close on a name. Those rows are DERIVED (`person_candidates.derive_candidates`
+reads the pending queue live), so `resolve_choice` hands back the row's own
+`data` payload with them — a candidate has no substrate id to look up. The
+fire's receipt carries `person_candidate_counts` (counts only, never a name),
+which is what makes "did the waiting pile shrink?" answerable.
 
 A tomorrow-block confirm writes `origin="wrap"` because the CEO tapped. The
 pre-confirm draft is `origin="proposed"`, exists transiently, and is never

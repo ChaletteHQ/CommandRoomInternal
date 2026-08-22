@@ -2317,6 +2317,8 @@ def route_meeting_captures(
     org_name: Optional[str] = None,
     primary_thread_id: Optional[str] = None,
     source_skill: str = "meeting-notes",
+    attendee_records=None,
+    now_iso: Optional[str] = None,
 ) -> dict:
     """THE meeting-capture admission path. Both meeting legs call this — it is
     the one place the floor, the fusion guardrail and party-only scoping run,
@@ -2348,8 +2350,35 @@ def route_meeting_captures(
     establishes is absent — it exists so that the absence of a refusal stops
     reading as a pass.
 
-    Construction only — append `book + review + observed` through
-    `event_gate.append_event` in ONE call, exactly as before."""
+    ATTENDEE1 — `attendee_records` is THIS MEETING's attendee list, as the
+    caller already fetched it (dicts with a name and an email, the connector's
+    prose participant block, or plain strings — `attendee_evidence.
+    normalize_attendee_records` takes all three and PRESERVES the name/email
+    pair, which the persisted `meeting` event does not). When supplied, a
+    capture whose counterparty or owner failed person-resolution and whose name
+    exact-normalizes onto an attendee OF THIS MEETING carrying an email gets
+    that person CREATED and its id filled in, before anything is built — so the
+    capture routes clean instead of minting a pending row nobody can answer.
+
+    THIS IS THE ONE PLACE THIS FUNCTION WRITES, and it is deliberate: the
+    "construction only" contract held because no upstream code chokepoint
+    existed where resolution failure was observable, and this is that point.
+    Everything else is unchanged.
+
+    `attendee_records=None` — the default, and every shipped caller — is
+    BYTE-IDENTICAL to before: nothing is consulted, no writer is imported, and
+    the items are passed through by object identity. `now_iso` is the fire's
+    own clock reading, handed down so nothing here reads a live clock (G14);
+    absent, the batch id degrades to a constant and the creation is still fully
+    reversible.
+
+    `summary` gains `n_auto_created` (additive — no existing count moves) and
+    the return gains `auto_created` + `receipt_lines`, which the surface MUST
+    render: an auto-creation with no receipt is the CAPTUREFLOW silent-drop
+    class inverted.
+
+    Construction only, plus that one seam — append `book + review + observed`
+    through `event_gate.append_event` in ONE call, exactly as before."""
     try:
         from capture_gate import (build_observed_event, resolve_capture_mode,
                                   workspace_capture_context)
@@ -2399,6 +2428,58 @@ def route_meeting_captures(
     keep = set(collapsed["keep"])
     absorbed = collapsed["absorbed"]
     n_deduped = sum(absorbed.values())
+
+    # PASS 2b — ATTENDEE1 §3-2, THE EVIDENCE SEAM. It sits HERE, between the
+    # verdicts and the build, and both boundaries are load-bearing:
+    #
+    #   AFTER the verdicts, so routing is untouched. `admit_meeting_capture`
+    #   scores party-only relevance off the item as extracted; seeding first
+    #   would hand it a resolved counterparty and could move a row between
+    #   lanes. Whether an evidenced party SHOULD change the relevance verdict
+    #   is a real question and a separate one — it is not the pending stamp,
+    #   and this build does not answer it.
+    #
+    #   BEFORE the build, because `build_meeting_commitment_event` is where
+    #   `capture_gate.gate_commitment_data` mints the pending stamp. Filling
+    #   the id in here means the stamp evaluates its OWN shipped rules against
+    #   a graph that now contains the person — it is never told to skip a
+    #   check. `capture_gate.py` is byte-identical on this branch.
+    #
+    # Only SURVIVORS that will actually be built as commitments are offered:
+    # a collapsed twin was never written, and the observed/skip tiers have no
+    # counterparty stamp to answer for.
+    auto_created: List[dict] = []
+    auto_receipt: List[str] = []
+    n_auto_created = 0
+    # Review F-4 — the seam distinguishes "created" from "was already on
+    # file", and this boundary has to carry BOTH or the distinction dies here:
+    # dropping it would leave an already-on-file counted nowhere at all on the
+    # production path, which is worse than the mis-bucketing F-4 reported.
+    n_already_on_file = 0
+    if attendee_records is not None:
+        try:
+            from attendee_evidence import seed_people_for_items
+        except ImportError:  # pragma: no cover — direct-path import
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from attendee_evidence import seed_people_for_items
+
+        eligible = [i for i in sorted(keep)
+                    if verdicts[i]["tier"] in (TIER_BOOK, TIER_REVIEW)]
+        seeded = seed_people_for_items(
+            [staged[i] for i in eligible],
+            workspace_root=workspace_root,
+            source_ref=source_ref,
+            attendee_records=attendee_records,
+            now_iso=now_iso,
+            source_skill=source_skill,
+        )
+        for slot, i in enumerate(eligible):
+            staged[i] = seeded["items"][slot]
+        auto_created = list(seeded["created"])
+        auto_receipt = list(seeded["receipt_lines"])
+        n_auto_created = int(seeded["n_created"])
+        n_already_on_file = int(seeded.get("n_already_on_file") or 0)
 
     # PASS 3 — build the survivors, in batch order.
     for idx, item in enumerate(staged):
@@ -2553,11 +2634,26 @@ def route_meeting_captures(
         "observed": observed,
         "skipped": skipped,
         "verdicts": verdicts,
+        # ATTENDEE1 §0-4 — the people this pass created and the lines the
+        # surface renders for them. Empty lists on every unstamped call, so a
+        # caller that never passes `attendee_records` sees the same shape it
+        # always did plus two empties.
+        "auto_created": auto_created,
+        "receipt_lines": auto_receipt,
         "summary": {
             "n_book": len(book),
             "n_review": len(review),
             "n_observed": len(observed),
             "n_skipped": len(skipped),
+            # ATTENDEE1 §3-5 — people created from attendee evidence in this
+            # fire. Additive: it is a count of RECORDS, not of rows, so it is a
+            # subset of nothing and is never added to another number.
+            "n_auto_created": n_auto_created,
+            # Review F-4 — evidence matched somebody ALREADY on file. Its own
+            # key, never folded into the line above: nobody was added, and a
+            # count that says otherwise is a receipt for work that did not
+            # happen. Also a count of records, also a subset of nothing.
+            "n_already_on_file": n_already_on_file,
             # A SUBSET of n_review, not a fifth tier: V1 has to be able to
             # read the floor's yield apart from the fusion guardrail's, and
             # one combined review number cannot answer that.

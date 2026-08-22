@@ -386,7 +386,19 @@ SILENT_TASKS: dict[str, dict] = {
             "surface when the CEO says `stalled projects`, never on a "
             "scheduled surface — and the dormant->archived leg goes through "
             "the canonical archive path; its lifecycle_run receipt is written "
-            "by the script itself); monthly-report -> for EACH "
+            "by the script itself); review-expiry -> run "
+            "`python3 shared/scripts/commitment_backlog_sweep.py "
+            "review-expiry --workspace <workspace_root> --apply` from the "
+            "plugin root (REVSCHED1 — the flag matters exactly as it does "
+            "for identity-reconcile and lifecycle: without --apply it "
+            "dry-runs, writes no receipt, and stays due forever. It lapses "
+            "unconfirmed captures nobody answered inside the review window, "
+            "reversibly, in ONE undoable batch; it NEVER touches the "
+            "confirmed tier and it takes no row list. Its pack_run receipt "
+            "is written by the script itself, on an empty plan too. Say "
+            "NOTHING to the CEO here: when its `receipt_line` is non-empty, "
+            "the next staff meeting / end-of-day reads that ONE line out "
+            "verbatim; an empty plan is a silent no-op); monthly-report -> for EACH "
             "period in the job's `periods` list (step 2b), the operator report per "
             "skills/operator-report/SKILL.md then the value receipt per "
             "skills/value-receipt/SKILL.md over that period's own calendar month "
@@ -975,6 +987,7 @@ DISPLAY_NAMES: dict[str, str] = {
     # retirement cannot reintroduce it.
     "pipeline-digest": "Pipeline Digest",  # PIPE1 Part 2 → TASKRET1 READINESS-RETIRED taskId (row kept forever for legacy renders). The on-demand pipeline report is untouched.
     "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
+    "review-expiry": "Unconfirmed Cleanup",  # REVSCHED1 §3-2 — silent weekly unconfirmed-pile drain (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
 }
 
 

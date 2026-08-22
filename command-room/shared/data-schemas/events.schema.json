@@ -119,6 +119,7 @@
         "person_update_proposal",
         "person_proposal_resolved",
         "person_proposal_reopened",
+        "person_candidate_suppressed",
         "person_added",
         "person_pending_review",
         "org_created",

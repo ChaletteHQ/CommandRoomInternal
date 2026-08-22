@@ -375,11 +375,24 @@ routed = route_meeting_captures(
     org_name=<the meeting's resolved org name or None>,
     primary_thread_id=<resolved or None>,
     source_skill="meeting-notes",
+    attendee_records=<the meeting's attendee list, or None>,  # ATTENDEE1
+    now_iso="<this fire's UTC now, ISO>",
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl",
              routed["book"] + routed["review"] + routed["observed"],
              holder="meeting-notes.commitments")
+
+for line in routed["receipt_lines"]:      # ATTENDEE1 — never optional
+    print(line)
 ```
+
+**⛔ PASS `attendee_records`, AND RENDER `receipt_lines` (ATTENDEE1).** Hand the helper the attendee list you ALREADY have from the transcript backend — whatever shape it came in: dicts with a name and an email, the connector's own participant block (`"A Name from Org <a@x>, B Name <b@y>"`), or plain strings. `attendee_evidence.normalize_attendee_records` takes all three and, critically, PRESERVES the name↔email pair; the persisted `meeting` event does not (it splits emails into `data.attendees` and names into `data.attendees_external`, two lists with no correspondence), so the pair reaches this helper only if you pass it here.
+
+What it buys: a capture whose counterparty or owner resolved to nobody, but whose name exact-matches an attendee OF THIS MEETING carrying an email, gets that person created and its id filled in BEFORE the pending stamp is evaluated — so the capture routes clean instead of sitting in the queue asking a question the attendee list already answered. Nothing weaker qualifies: a name-only attendee match, a one-token label, a near spelling, or an attendee of a different meeting all fall through to the ordinary propose path unchanged. A name the user has set aside ("not a person") is NEVER auto-created — the ignore beats the evidence.
+
+`routed["receipt_lines"]` is one line per person created, and rendering it is MANDATORY: it names who was added, what it was derived from, what it unblocked, and that `undo` reverses it. An auto-creation with no receipt is the CAPTUREFLOW silent-drop class inverted. `routed["summary"]["n_auto_created"]` is the count for the receipt event; `routed["auto_created"]` carries the ids if you need them.
+
+Omitting `attendee_records` is legal and changes nothing: no records means no evidence, no writer is consulted, and every item routes exactly as it did before this existed.
 
 - `book` — ordinary open commitments.
 - `review` — written `pending_review`, so they land in the **needs-your-call** queue and never in the open book. TWO kinds arrive here: rows refused by the fusion guardrail (`data.fusion_unverified`), and rows the capture floor gated (`data.floor_gated`, with the `FLOOR_*` reason as their `review_reason`).
@@ -410,7 +423,7 @@ Everything below describes the SHAPE of an `items` entry and the classification 
 
 **pending_review is default-on for low-confidence attribution (v4.5.2 safety inversion — MANDATORY).** CRU auto-resolution gates on `data.pending_review`: a low-confidence extraction that FORGETS the flag auto-resolves at high match with no human gate. So the rule is inverted — absence of the flag is an ASSERTION of high-confidence attribution, never a default. Set `data.pending_review: true` at capture whenever ANY of these hold:
 - owner attribution is ambiguous or unresolved (incl. every `attribution_ambiguous` / `attribution_unknown` case below);
-- a counterparty is named in the source but resolves to no person record;
+- a counterparty is named in the source and still resolves to no person record after the attendee-evidence pass above has run (that pass is the ONLY thing that may answer this condition, and only from a name+email attendee record of this same meeting — it fills in the id, it never waives the check);
 - overall attribution confidence is below 0.75 (the `meeting_capture` builders enforce this floor for decisions; apply the same floor to commitments);
 - the item is a sensitive category (firing / pricing / contract terms) — flag regardless of confidence, same rule the scheduled past-meetings writer runs.
 
@@ -492,6 +505,8 @@ Same shape rules as follow-up-ritual's Step "Surface Open Commitments" — the t
 ## Step 5f: Person Proposals for Unknown Names (MANDATORY in both modes — v4.5.2, F-46 P2b)
 
 For each person who was **meaningfully involved** in the meeting (spoke, made a decision, took or received an action item, or was surfaced as an intro/prospect target) and resolves to NO person record via `aliases.json` / entities, write the durable proposal event — the same contract the scheduled past-meetings writer runs (its Phase 4.5b). Pre-v4.5.2 this skill surfaced "say add [name]" in chat only; if the user dismissed that chat, the name was stranded unrecorded forever while past-meetings wrote `person_proposal` events for the identical situation. Two capture writers, one contract — the event IS the capture; the chat line is just the pointer.
+
+**Run this AFTER Step 5e (ATTENDEE1).** The attendee-evidence pass there may already have created some of these people — from a name+email attendee record, which is stronger evidence than anything a proposal can carry — so a name that resolved to nobody before Step 5e may resolve to a real record after it. Re-resolve, then propose only what is still unknown; proposing a person the same fire just created is a question with a printed answer sitting next to it.
 
 1. **Dedup first (people_writer contract, v3.2+):** call `people_writer.find_existing_person(workspace_root, name=..., email=..., aliases=...)`. On a match, emit a `person_update_proposal` referencing the existing `person_id` with the proposed delta — never a second new-person proposal.
 2. **On a miss**, build + append the proposal:

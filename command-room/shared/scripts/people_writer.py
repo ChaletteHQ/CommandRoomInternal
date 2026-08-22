@@ -600,8 +600,16 @@ def _log_event(
     record: dict,
     source_skill: str,
     before: dict | None = None,
+    extra: dict | None = None,
 ) -> None:
     """Append a canonical-shape event to events.jsonl.
+
+    `extra` merges additional keys into `data` (ATTENDEE1). It exists for the
+    undo stamps — `brain_batch_id` / `brain_change_class` — which belong on the
+    EVENT and never on the record: `_validate_person` owns the record's schema,
+    and a batch id is a property of the gesture that made the record, not of
+    the person. Keys already present are never overwritten, so the canonical
+    `person_id` / `canonical_name` pair cannot be shadowed by a caller.
 
     v3.13.6+ — event shape matches events.schema.json: top-level `seq` + `ts`
     + `type` + `source_skill` + `data`. The pre-v3.13.6 shape used `timestamp`
@@ -633,6 +641,9 @@ def _log_event(
                 data["updated_fields"] = changed
         except Exception:
             pass
+    for key, value in (extra or {}).items():
+        if value is not None and key not in data:
+            data[key] = value
     event: dict[str, Any] = {
         # FS-03: OMIT ts — the append gate stamps it UTC-aware.
         "type": event_type,
@@ -979,8 +990,19 @@ def create_person(
     provenance: dict | None = None,
     source_ref: str | None = None,
     account_address: str | None = None,
+    brain_batch_id: str | None = None,
+    brain_change_class: str | None = None,
 ) -> dict:
     """Create a person record. Returns the new record (with assigned id).
+
+    ATTENDEE1 — `brain_batch_id` / `brain_change_class` stamp the
+    `person_created` event so `brain_undo.resolve_batch` can find this creation
+    and its registered reverser can archive it. They TRAVEL TOGETHER or raise
+    ValueError, the same rule `commitment_state.supersede_commitment` and
+    `record_person_fact` enforce, and for the same reason: a batch id with no
+    class is a change `undo_batch` will list and then refuse to reverse, which
+    is worse than an unstamped write. The stamps land on the EVENT only — never
+    on the record.
 
     Raises ValueError on schema violations. Raises DuplicatePersonError when an
     existing record matches by email / alias / canonical_name unless
@@ -995,6 +1017,11 @@ def create_person(
     scope inputs only — they are never stored on the person record.
     """
     workspace_root = Path(workspace_root)
+    if (brain_batch_id is None) != (brain_change_class is None):
+        raise ValueError(
+            "brain_batch_id and brain_change_class travel together — a batch "
+            "id with no change class is a creation `undo_batch` will list and "
+            "then refuse to reverse")
     _enforce_record_scope(workspace_root, provenance=provenance,
                           source_ref=source_ref,
                           account_address=account_address,
@@ -1031,7 +1058,9 @@ def create_person(
 
     people.append(record)
     _save_entities(workspace_root, data, source_skill)
-    _log_event(workspace_root, "person_created", record, source_skill)
+    _log_event(workspace_root, "person_created", record, source_skill,
+               extra={"brain_batch_id": brain_batch_id,
+                      "brain_change_class": brain_change_class})
     return record
 
 
@@ -1064,6 +1093,13 @@ def auto_add_person(
     "email_dropped_no_provenance": bool}`. Undo is ARCHIVE, not delete
     (`update_person(..., status="archived")`) — the R1 archive-never-delete
     reverser that `brain_undo` registers for person creation.
+
+    ATTENDEE1 — `brain_batch_id` / `brain_change_class` ride through
+    `create_kwargs` to `create_person`, which stamps them on the
+    `person_created` event so that reverser can actually be REACHED. Pass both
+    or neither; `create_person` raises on one alone. An auto rail that creates
+    a record `undo` cannot find is not reversible, and reversibility is the
+    predicate that licenses the auto tier at all.
     """
     matches = list_same_name_people(workspace_root, canonical_name)
     if matches:

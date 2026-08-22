@@ -205,6 +205,33 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "description": "ask about projects gone quiet; retire and revive the "
                        "ones the lifecycle rules already decided",
     },
+    # REVSCHED1 §3-2 — the unconfirmed-pile drain. Same Sunday slot, ordered
+    # LAST of the Sunday group and after `lifecycle`, and the order is the
+    # contract for a specific reason: this job argues FROM SILENCE, so it must
+    # read the substrate every other Sunday leg has already finished writing.
+    # A row that identity-reconcile re-owned or lifecycle touched twenty
+    # seconds earlier has moved, and moving is exactly what should keep it out
+    # of a lapse. Running before them would lapse rows the same fire was
+    # busy touching.
+    #
+    # WEEKLY, not weekdaily: the bar is 14 quiet days, so a daily pass would
+    # re-derive the same pile six extra times to find nothing new.
+    #
+    # It rides the already-authorized `maintenance` taskId, so it registers
+    # ZERO scheduled tasks on any machine — and, because a job id is not a
+    # DEFAULT_SCHEDULES key, it cannot inherit a retired predecessor's
+    # `enabled: false` through `load_schedule_config`'s renamed-predecessor
+    # override carry-over (the seam that silently disabled the end-of-day task
+    # on 2026-08-19). Entry point:
+    # `commitment_backlog_sweep.run_review_expiry_job(ws, apply=True)`.
+    "review-expiry": {
+        "skill": "commitment-backlog-sweep review amnesty "
+                 "(shared/scripts/commitment_backlog_sweep.py review-expiry "
+                 "--apply — dry-run without the flag)",
+        "nominal_cron": "0 17 * * 0",
+        "description": "lapse unconfirmed captures nobody answered inside the "
+                       "review window (reversible, one batch)",
+    },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled
     # with its own month. A machine closed across a 1st loses that month

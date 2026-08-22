@@ -181,6 +181,37 @@ explicit page and page size. `show more` re-fires it with `page=N+1`. If
 unusually large call — say so in one line rather than presenting a cut group
 as a whole one.
 
+### The header offer — the names this queue is stuck behind (PERSONLOOP1)
+
+`render_queue_page` also asks `needs_review_queue.person_candidate_offer`
+(which reads `person_candidates.derive_candidates`) and, when it returns
+something, leads the page with a capped section titled **PEOPLE THE GRAPH KEEPS
+MISSING** plus one header line. You do not build either — the render call does.
+Both are DROP-EMPTY: a workspace with no recurring unresolved name gets exactly
+the page it got before this existed.
+
+What a row is: a name that has failed person-resolution across **at least two
+different calls**, with the count of captures currently blocked behind it. That
+is the whole reason the queue gets long — a name with no contact record cannot
+resolve, so every meeting that mentions it mints more rows and none of them can
+ever drain. The row's three answers (`add person` / `same as [existing]` /
+`not a person`) are dispatched by apply-choices through
+`person_candidates.resolve_candidate`, which creates the record AND clears every
+row that was waiting on the name, in one gesture. Relay its ack count verbatim
+— "added them, and nine waiting captures cleared" is the sentence that shows
+the loop closed.
+
+Three things this offer never does, and each is deliberate:
+
+- **It never creates anybody.** The row is a question; a person record is a
+  durable graph write with an org attached, and creating one off a transcript
+  spelling would mint a misspelling as a real human being.
+- **It never asks about a one-off.** One unresolved name on one capture is
+  noise. Two different calls is a hole in the graph.
+- **`not a person` silences the PROPOSAL only.** It never stops captures that
+  mention the name. If the user seems to be asking for the second thing, say
+  plainly that this answer only stops the suggestion.
+
 ## Step 2 — Take the batch
 
 The user answers in ranges, by group, or both: *"confirm 1-40, drop 41-50"*,
@@ -267,6 +298,17 @@ a = done_items(ws, done_ids, resolved_by=user_id, attested_ids=done_ids)
 Build BOTH id lists from the SAME `view` before writing anything — confirming
 changes what is in the queue, so a second `build_queue_view` mid-batch
 renumbers the rows out from under the user's sentence.
+
+**`view["offer"]` — the bulk-drain line (REVSCHED1 §3-1).** The view carries one
+extra string: an offer to clear the lapsed half of this queue in one confirm,
+present only when the lapsed count clears
+`commitment_backlog_sweep.REVIEW_OFFER_AT` (10) and `""` otherwise. Show it
+**directly under the header, above the rows**, verbatim — `render_text` and
+`build_queue_data_view` already place it there, so pasting either one is enough.
+Do not compose the sentence, do not compare a count yourself, and do not move it
+to a footer: a reader who has started working the list row by row has stopped
+reading before a footer arrives, which is how 224 captures produced 3 answers.
+`""` means no offer — say nothing at all, never "the pile is small".
 
 **`already done` needs to know who is attesting.** `resolve_primary_user`
 returns an empty string when a workspace has no primary user on file, and

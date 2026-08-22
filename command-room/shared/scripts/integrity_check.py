@@ -592,6 +592,30 @@ def run_checks(root: Path) -> list[Finding]:
     except Exception:
         pass  # the drift check is advisory — a missing module never bricks the audit
 
+    # C19 — one commitment id is ONE record (SPEC INGESTDUP1 D2). Ids are
+    # minted unique, the event gate does no reads, and nothing stopped a writer
+    # appending the same id again; the open-book projection now collapses those
+    # to one row, which fixes the COUNT but hides the WRITER. This is the
+    # surface that keeps the writer findable: a projection fold that silently
+    # absorbs a defect is how the defect survives. WARN, not ERROR — the
+    # substrate is recoverable and the reader already sees one row.
+    _cmt_id_appends: dict[str, int] = {}
+    for ev in events:
+        if ev.get("type") != "commitment":
+            continue
+        _cid = (ev.get("data") or {}).get("id")
+        _cid = _cid.strip() if isinstance(_cid, str) else ""
+        if _cid:
+            _cmt_id_appends[_cid] = _cmt_id_appends.get(_cid, 0) + 1
+    for _cid, _n in sorted(_cmt_id_appends.items()):
+        if _n > 1:
+            findings.append(Finding("C19.commitment_id_reappended", WARN,
+                f"commitment id {_cid} was appended {_n} times — a minted id "
+                f"is unique, so these are one record written repeatedly, not "
+                f"{_n} commitments. The open-book projection collapses them to "
+                f"one row (lowest seq survives) and history is left intact; "
+                f"the writer that re-appended it is the thing to fix", _cid))
+
     return findings
 
 

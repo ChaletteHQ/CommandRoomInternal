@@ -91,7 +91,17 @@ Branch on `tier` (this does not weaken the anti-improvisation contract — every
 - **`manual`** — an interactive fire is never late: run EVERY phase normally (connector pre-scans included — a run mode never adds skip conditions), with NO timing banner and NO lateness narrative of any kind, anywhere. The helper wrote no event; do not hand-compute lateness around it (FINDINGS F-47 P1a).
 - **`none` / `exempt` / `unknown`** — run normally. No mention of timing anywhere. `none` with a `suppressed` reason means the helper's ledger found the slot already served (a receipt exists after it) or minted by a schedule change — believe it: never re-derive lateness, never invent a cause ("the computer was probably asleep").
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
-- **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (the widget-render/post phase): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
+- **`degrade` (>24h late)** — **this surface RENDERS, LABELLED (SPEC EODLEDGER1 part 3, M's ruling on D3, 2026-08-19). It does not withhold.** Run every phase below exactly as on any other tier, and open the chat output with `pack["catchup"]["lines"]` verbatim — the span the read covers, how late it is, and the slot it missed. Then the surface, in full.
+
+  **What this replaces, and why.** Pre-EODLEDGER1 this branch performed every substrate write and then posted `degrade_notice` alone. The score anchors on TODAY's morning receipt, so a skipped Tuesday was never scored — not that evening, not ever — and the only surviving trace was a Monday roll-up row reading "no close was recorded". The catch-up machinery worked perfectly and its output was shown to nobody. The degrade tier's instinct was right (a stale surface must never be presented as fresh) and M's ruling is that the remedy is to **label the span, not to withhold it**.
+
+  **DO NOT POST `degrade_notice` ON THIS SURFACE.** It reads "Skipped the full End of Day …", which is true on every other scheduled surface and false on this one the moment it renders. It is a SHARED constant and it is not being reworded — every other orchestrator still posts it as its whole output, and changing it would silently re-render stale surfaces fleet-wide, which nobody ruled on. Carry it onto the receipt instead (Phase 5) so the record keeps the tier's own words; the reader sees `pack["catchup"]["lines"]`.
+
+  **ONE READ, NOT ONE PER MISSED DAY.** `pack["catchup"]["days"]` is the whole span and the label names its ends. Do not fire the surface once per missed day, do not stack per-day sections, and do not narrate the tier name or the word "degrade" anywhere in chat. The per-day detail already lives in the Monday roll-up; a stack of stale surfaces is the pile M's ruling removed.
+
+  **THE SCOPE FENCE.** `late_fire.LATENESS_TIERS` keeps its 3h/24h thresholds and `check_lateness` keeps its return contract byte-for-byte. Only THIS orchestrator's degrade branch changed. Every other scheduled surface keeps today's suppress-on-degrade behaviour, and a fire that finds itself in this branch on any other surface is still suppressing.
+
+  **AND `skip_render` IS STILL `skip_render`.** A slot already delivered posts its `ack` and stops — read `directive` BEFORE the tier, as this file has always required. Late is not the same as duplicate: `renders` on the catch-up block is False whenever a directive is present, and conflating the two is what delivered three duplicate full surfaces in one afternoon.
 
 The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
@@ -102,6 +112,10 @@ Record `fire_start` (UTC ISO) **now, before anything below writes**. Phases 4.6 
 Run the SAME machinery the maintenance jobs run — same functions, same cursor, same audit event. Not a copy of it: `reconcile-sent` and `reconcile-chat` are jobs inside the `maintenance` task and this fire calls their entry points directly, so the 17:45 maintenance pass finds an ALREADY-ADVANCED cursor and closes nothing twice. A second implementation here would be a second cursor, and two cursors over one mailbox is how a close gets written twice.
 
 **Ask per capability, and skip-and-receipt what is absent.** Resolve mail through the seam (`tool_discovery.discover_for_category("email", "search", tools, declared=connector_config.declared_backend("email"))`) and chat through `chat_seam.resolve_chat_provider`. A capability that is not present is not an error and not a silence: pass the plain-English reason as `fetch_blocked=` so the leg records a BLOCKED run (which never advances a cursor), and carry the reason into Phase 5's `connector_gaps`. This build reaches for **email, calendar and chat** and nothing else; CONN1/CONN2 add Drive and DocuSign later by adding rows to this list, not by redesigning the fire.
+
+**THE SENT FETCH FLOOR (SPEC MAILFLOOR1) — how far back the mail leg reads, in the same three branches as `skills/reconcile-sent/SKILL.md` Step 1.** "The Sent batch you just fetched" below is not a batch of today: choose the floor by mode, and the modes are these three and no others. **First real run on this workspace** — detected as `reconcile_sent_commitments.validate_reconcile_ran(WORKSPACE_ROOT)["ran"] is False` (import it alongside `reconcile_and_receipt` below; this detection runs BEFORE the fetch, so it cannot wait for that block), i.e. no prior `sent_reconcile` audit event exists — fetch the **last 30 days** regardless of the cursor. **Manual catch-up phrasing** ("catch up my sent mail" / "reconcile the last N days" / "reconcile my backlog") — fetch the requested window, default **30 days**, regardless of the cursor. **Otherwise**, a prior audit event exists, so fetch with the `{"in_sent": true, "after": <cursor date>}` intent — the date read from `workspace.sent_reconcile_cursor` — with a **~1-day overlap** behind the cursor, cheap and idempotent and it catches near-cursor stragglers. The intent is compiled per provider by `connector_adapters/mail.py`, exactly as today; never name a provider operator here. **An over-wide window is always safe, which is why you never narrow this one:** matching is idempotent and the cursor never moves backwards, so a wide re-scan closes nothing twice. A window narrower than the gap is the failure that has no such symmetry — `reconcile_and_receipt` advances the cursor to the newest message in whatever batch it was handed, so a fire that fetches only today after a four-day gap strands every send inside those four days permanently, behind a cursor that now claims to have reconciled past them and a green receipt on the record (Bug #101). **This paragraph and `skills/reconcile-sent/SKILL.md` Step 1 are twins:** editing either window here is editing it there, in the same edit, and a test pins the pair equal.
+
+**The chat leg's window is not composed by hand either.** It comes from `chat_reconcile.backfill_floor(WORKSPACE_ROOT)` — the stored chat cursor, or a short fixed backfill on a first-ever run — and nothing else: never a span you compose, never a bound you add to "help", never full history (passive whole-history ingestion is the named anti-goal). It is already correct in code; naming it here is what stops a future edit from improvising one.
 
 ```python
 # (Inside python3, after the Rule 22 preamble + sys.path.insert)
@@ -144,22 +158,42 @@ If the maintenance dispatcher has already served today's slots, believe it: `mai
 python3 shared/scripts/surface_drivers.py end-of-day \
     --workspace "<WORKSPACE>" --mode <scheduled|manual per Phase 2.9's run mode> \
     --close-json "<a temp file holding close_result from Phase A>" \
-    --calendar-json "<a temp file holding the wide now->+3d calendar fetch>"
+    --calendar-json "<a temp file holding the wide now->+3d calendar fetch>" \
+    --gaps-json "<a temp file holding this fire's connector_gaps>" \
+    --lateness-json "<a temp file holding Phase 2.9's check_lateness return>"
 ```
 
 The driver prints exactly ONE line: `CR-EOD-PACK: {json}`. That is the whole contract. Run it ONCE per fire — a re-run to "refresh" is the RV-3 double-render class.
 
-Omit `--calendar-json` when no calendar capability is present. The `tomorrow` block then renders its intent half and `calendar_available` comes back False; record the gap in Phase 5's `connector_gaps` and say nothing about connectors in chat.
+Omit `--calendar-json` when no calendar capability is present. The `tomorrow` block then renders its intent half and `calendar_available` comes back False; record the gap in Phase 5's `connector_gaps` and say nothing about connectors in chat beyond the coverage strip's own line.
 
-**Every non-empty pack block is a MANDATORY placement, in this order:** `alarm_lines` · `score` · `wins` · `slipped` · `confirm` · `tomorrow` · `sign_off`. A turn that stops with an unplaced non-empty block is INVALID, not "done early".
+**`--gaps-json` carries the SAME `connector_gaps` list Phase 5 receipts** — one per skipped capability, `{"capability": "mail"|"chat"|"calendar", "reason": "<the plain-English reason you passed as fetch_blocked>"}`. Pass it: the coverage strip renders those reasons, and without them a skipped leg renders as *"not read, and nothing on the record says why"*, which is honest and worse. This is the same list, written once and used twice — never a second list composed for the strip.
+
+**`--lateness-json` is Phase 2.9's return, VERBATIM.** Do not edit it, do not re-key it, do not recompute lateness. On the degrade tier the pack composes the catch-up label from it; on every other tier `pack["catchup"]["renders"]` is False and there is nothing to place.
+
+**Every non-empty pack block is a MANDATORY placement, in this order:** `alarm_lines` · `coverage` · `score` · `wins` · `slipped` · `confirm` · `tomorrow` · `sign_off`. A turn that stops with an unplaced non-empty block is INVALID, not "done early". On a degrade-tier fire, `catchup.lines` goes ABOVE all of them (see Phase 2.9).
 
 Binding notes the pack does not enforce for you:
 
+- **coverage — PRINT EVERY LINE VERBATIM, FIRST, UNDER THE ALARMS (SPEC EODLEDGER1 part 1).** `coverage["lines"]` is composed in code and rendered as given: one line per capability saying what this fire actually READ. Mail and chat through their own cursors — **and when a cursor is behind, the line names the span** ("read through Friday, July 24 — 5 days behind"), which is the sentence that did not exist while M's chat cursor sat five days stale and the surface reported the day's closes with no qualification at all. Calendar present or absent. The capture leg's window, with what is on record in it and what is still owed.
+
+  **NEVER SUPPRESS IT AND NEVER SOFTEN IT.** Same posture as `alarm_lines`, same reason: a degraded read is exactly when the reader most needs to know what the aperture was, and a strip that goes quiet on a bad night is a strip that only ever says everything was fine. Do not re-word a line to sound better, do not drop the stale-cursor clause because the numbers "look right", and do not add a reassuring sentence of your own after it.
+
+  **"Not read" and "nothing there" are different claims and the strip is where they are separated.** A calendar outage and a genuinely empty tomorrow rendered identically before this. `coverage["capabilities"]["calendar"]["read"]` and `tomorrow["calendar_available"]` are ONE boolean by construction — they cannot disagree, so never write a sentence that puts them in conflict.
+
+  The strip's last line, when present, is the data-quality note: the COUNT of closes in this window that cite no artifact anyone can open. A count, not a section, and not a thing to apologise for or explain away.
 - **score.** A `no_plan` verdict means there was no morning fire on record today. Render `line` VERBATIM — "No plan on record this morning." — and render NO score. Never a zero, never a guess, never "looks like a light day". Rows whose `state` is `not_recorded` render the word **"Not recorded"**. **They NEVER render "not done".** The absence of a close event is not evidence the work did not happen, and the difference between those two sentences is the difference between a surface the CEO trusts and one they argue with. When any row is `not_recorded`, the block's `notes` carry the one-line explanation — print it verbatim, once.
+- **score.ledger — THE BOOK'S MOVEMENT (SPEC EODLEDGER1 part 2).** `score["ledger"]` is present on BOTH score branches, including `no_plan`: a day with no morning plan still moved the book. Render `ledger["line"]` verbatim.
+
+  `status: "movement"` — the line reads *book at open → opened → closed → dropped → book now*, with the delta named and its sign meaningful. When `ledger["residual_line"]` is set, print it too: the four movements did not account for the whole change (a confirm out of the review queue, a merge, an edit), and saying so is cheaper than a number that does not add up. Never absorb the residual into one of the movements to make the arithmetic look clean.
+
+  `status: "no_opening_figure"` — **there was no morning fire, so there is NO opening figure and NO arithmetic.** Render the line as given (*"no opening figure on record"*) and stop. Do NOT substitute tonight's count for this morning's, do NOT print a delta of zero, and do NOT describe the day as flat: a guessed baseline is indistinguishable from a measured one once it is on screen, and this is `NO_PLAN_LINE`'s doctrine one field down.
 - **score.first_move — RENDER THE STATUS, NOT JUST THE LINE.** `first_move` is an annotation, not a string: `{text, status, checked_against, matched}`. `status: "open"` — the morning's suggested first move is still live; render it as this morning's plan. `status: "stale"` — something closed today NAMES that line (`matched` says which), so render it as **context about this morning's plan and NEVER as an instruction**: "This morning's first move was X; it closed at 12:30" is right, "Your first move is X" is the defect this replaces. `status: "unverifiable"` — nothing was on file to check it against, so say that plainly in the same breath as the line, or leave the line out; never promote it to a live instruction. `first_move: null` means the brief printed none — render nothing, and never compose one. (Both live packs on 2026-08-17 carried the same discharged line byte-for-byte, at 9 PM, as though it were the next thing to do.)
 - **wins.** Names, not statistics. `line` is set only when there were none; print it and nothing else. A row's `title_source` says where its name came from: `snapshot` / `joined` — render the title; `generic` — the row's `title` is already the whole honest sentence (*"a commitment was closed"*), so render it AS IS and never dress it up with a name, an id, or a guess at which one it was. **When `more_line` is non-empty, print it VERBATIM as the block's last line** — the rows are capped at six and a capped day now routinely hides five times what it shows, so a cap is a render bound and never a silence (the same rule the morning brief's needs-attention lane keeps). Do not add rows back to close the gap, and never restate `n_total` as though it were the number of rows on screen.
-- **slipped.** At most 3 rows, each with its verbs. Every row came from the GATED needs-attention set (Step 3c / 3c-bis; the Bug #93 class) — do NOT top the section up from your own reading of the day, and never promote an item the gate dropped. `soften_line`, when set, prints once.
-- **confirm.** At most 5. Weak or HELD captures are already excluded by the driver; never add one back.
+
+  **THE BLOCK SAYS WHICH WINDOW IT READ. `window_source` is `morning_anchor` when the day's morning brief fired — the window opens at that brief — and `day_floor` when it did not, in which case the window opens at workspace-LOCAL midnight of this fire's own day and never earlier.** A day with no morning brief still renders its wins; it simply counts from midnight. `more_line` is already spelled for whichever window applied — *"…more moved today"* on the anchor path, *"…more moved since midnight"* on the floored path — so print it verbatim, as always, and never re-word it to say "today" over a floored window. Do not describe the floored day as having no wins, and do not describe it as a full day's history: it is the day, from midnight.
+- **slipped.** At most 3 rows, each with its verbs. Every row came from the GATED needs-attention set (Step 3c / 3c-bis; the Bug #93 class) — do NOT top the section up from your own reading of the day, and never promote an item the gate dropped. `soften_line`, when set, prints once. **`more_line`, when non-empty, prints VERBATIM as the block's last line** (SPEC EODLEDGER1) — it carries the DENOMINATOR, so a block bounded at 3 over a list of 41 says so instead of reading as 3. Never top the block up to close the gap, and never restate `n_total` as though it were the number of rows on screen.
+- **confirm.** At most 5. Weak or HELD captures are already excluded by the driver; never add one back. **`more_line` prints verbatim as this block's last line too**, on the same rule and from the same helper: this block bound 5 of 67 in silence before EODLEDGER1, and a cap without a denominator is not a summary — it is a claim about size.
 - **tomorrow.** `intent` is the CEO's own stated record (BK1) — render it as fact. `proposal` is a DRAFT the system guessed: render it as a question with the confirm/change taps and NEVER as a statement of what tomorrow is about. It is written only on tap (Phase 6.2).
 - **sign_off.** Print `line` verbatim. It is computed; there is nothing to write here.
 - **Monday** additionally carries `week_rollup` — render it AFTER the day-close blocks. It also carries `development_read`, whose `renders` is False: render NOTHING for it. No heading, no placeholder, no "coming soon". The slot fills when DEVREAD1 ships.
@@ -311,13 +345,22 @@ For each meeting:
        org_name='<the meeting resolved org name or None>',
        primary_thread_id='<resolved or None>',
        source_skill='past-meetings',
+       attendee_records=<THIS meeting's attendee list from Phase 4 step 1, or None>,
+       now_iso='<this fire UTC now, ISO>',
    )
    append_event('<workspace_root>/_hq/data/events.jsonl',
                 routed['book'] + routed['review'] + routed['observed'],
                 holder='past-meetings.commitments')
    print(json.dumps(routed['summary']))
+   print('\n'.join(routed['receipt_lines']))
    "
    ```
+
+   **⛔ ATTENDEE1 (2026-08-20) — PASS `attendee_records`, RENDER `receipt_lines`, CARRY `n_auto_created`.** The attendee list you already hold for this meeting is the strongest identity evidence this rail ever sees, and it was being discarded. Pass it in whatever shape the backend gave it (dicts with name+email, the connector's own `"A Name from Org <a@x>, …"` block, or plain strings) — `attendee_evidence.normalize_attendee_records` handles all three and PRESERVES the name↔email pair, which the persisted `meeting` event cannot (it splits emails into `data.attendees` and names into `data.attendees_external`, two lists with no correspondence between them, so re-reading the substrate later recovers nothing).
+
+   Effect: a capture whose counterparty or owner resolved to nobody, but whose name exact-normalizes onto an attendee OF THIS MEETING that carries an email, gets that person created and its id filled in before the pending stamp is evaluated — the row routes clean instead of joining the queue with a question the attendee list already answered. The bar admits nothing weaker: name-only attendee matches, one-token or annotated speaker labels, near spellings, and attendees of other meetings all fall through to the ordinary pending path unchanged, and a name the user set aside as "not a person" is never auto-created. At most 3 people per fire.
+
+   `routed['receipt_lines']` is one line per created person and printing it is MANDATORY — it names who was added, what it came from, what it unblocked, and that `undo` reverses the whole batch (record and drained rows together). An auto-creation with no receipt is the CAPTUREFLOW silent-drop class inverted. Carry `routed['summary']['n_auto_created']` onto the `meeting_processed` receipt with the other counts (it rides `capture_summary=routed` at step 9 automatically). Omitting `attendee_records` is legal and is exactly the pre-ATTENDEE1 behaviour: no records, no evidence, no writes.
 
    What the helper enforces, in ONE place, because none of it was enforced anywhere before: the **capture floor** (owner + concrete deliverable + consequence — stated in `meeting-notes/SKILL.md` since Stage D and never enforced, which is why a third of this rail's captures were discussed-only), the **cross-meeting fusion guardrail** (the verbatim check below, in code), and **party-only relevance scoping** (`capture_gate.classify_capture`, whose `party-only` default this rail had never consulted because no meeting writer called the gate). Its four outputs: `book` (ordinary open commitments), `review` (written `pending_review` so they land in the needs-your-call queue and never in the open book — BOTH fusion refusals, marked `data.fusion_unverified`, and below-floor captures, marked `data.floor_gated` with their `FLOOR_*` reason as `review_reason`), `observed` (`commitment_observed` — kept and searchable, no open item, no count, no row), `skipped` (near-empty since the ruling below; never narrated). **M RULING 2026-08-01 — below-floor captures are NEVER silently dropped.** They used to be, and the review measured what that cost: on the audit's own hand-judged sample the floor destroyed a real promise for every junk capture it stopped, with no event, no counter and no row left behind. The floor's verdict is now a routing decision, so a wrong call costs one tap in the queue rather than a lost promise. The dated case routes to the queue too — the observed writer refuses dated/money items, and 'surfaces nowhere' was never an acceptable reading of a rail that says a dated item ALWAYS surfaces. Carry `routed['summary']['n_book'] + n_review` into the `meeting_processed` receipt's `extracted_count` / `pending_review_count`, and pass the whole return as `capture_summary=routed` on that same receipt (step 9) so the gates' own counts persist.
 
@@ -827,6 +870,12 @@ log_end_of_day_receipt(
         "n_held": routed["summary"].get("n_held", 0),
     },
     extra_data={"errors": [], "nonattendee_shadow": shadow_counts,
+                # SPEC EODLEDGER1 — on a degrade-tier fire this is the record
+                # that the day-close was DELIVERED rather than withheld, plus
+                # the tier's own `degrade_notice` text, which this surface no
+                # longer posts. `late_tier` alone can no longer tell those two
+                # states apart, because both of them are "degrade".
+                "catchup_read": pack["catchup"],
                 "telemetry": build_pack_run_telemetry(...)},
 )
 ```
@@ -835,7 +884,13 @@ The helper derives `confirm_ids` from the pack itself — the numbered map, in t
 
 **Carry the Phase 4.8 shadow report onto that SAME receipt** (`extra_data={"nonattendee_shadow": …}`). This is the ONLY record of what the non-attendee lane would have done, and it is what the write-enable decision reads; the lane itself writes nothing, so a fire that drops these counts leaves the shadow run unmeasured. Counts only — never a meeting title, exactly as `meeting_processed`'s `capture_counts` keeps it. Write zeros rather than omitting the key: an absent key reads as "this fire had no lane", which is a different claim.
 
-The receipt is owed on **every completed fire**, including a degrade-tier fire (Phase 2.9 — the degrade notice is the whole output and the receipt still logs; withholding it is the Bug #98 class) and a fire whose pack came back entirely empty (nothing to place is not an error).
+The receipt is owed on **every completed fire**, including a degrade-tier fire (which since SPEC EODLEDGER1 posts a labelled catch-up read rather than a notice — the receipt logged before that change and it logs now; withholding it is the Bug #98 class) and a fire whose pack came back entirely empty (nothing to place is not an error).
+
+**The receipt's `data` shape did NOT change for any of this.** `log_end_of_day_receipt` still writes the same `pack_run` under the same `past-meetings` taskId with the same keys, `confirm_ids` is still derived from the pack in render order, and a numbered tap still resolves positionally — the coverage strip and the ledger sit ABOVE the numbered section and do not renumber it. Every existing reader (the watchdog, `catchup_window`, `late_fire`, the usage report, the week roll-up) keeps working byte-for-byte.
+
+**SPEC PERSONLOOP1 (2026-08-19) adds exactly one key, and it is additive:** `data.person_candidate_counts` — `{n_candidates, n_rows_blocked, n_top_rows_blocked, n_shown}` for the confirm block's person-candidate rows. COUNTS ONLY, never a name, the same discipline `capture_counts` keeps. The writer derives it from the pack, so there is nothing for this file to PASS. Numbering is unaffected: the candidate rows are APPENDED to `confirm_ids` after the slipped and confirm rows, so every number a pre-PERSONLOOP1 receipt handed out still points at the same row.
+
+⚠ **But there IS something for the fire to remember, and it is in Phase 6.0: the rows have to be RENDERED.** `n_shown` on this receipt asserts that they reached the screen, and `confirm_ids` numbers them whether they did or not — so a fire that skips the third section receipts a render that never happened, in the optimistic direction, and breaks its own numbering claim. This paragraph said "nothing for a fire to remember" when PERSONLOOP1 landed; that was true of the receipt and false of the render, and the second-eyes review (N-1) caught the gap. The render bullet is in Phase 6.0 and it is not optional.
 
 Append to staging_emissions.jsonl per .docx generated. Telemetry writes silently — no chat narration.
 
@@ -851,8 +906,8 @@ Drop any surfaced item the CEO has taught the system to stop showing (insight-ge
 
 Pre-EOD1 this phase posted one widget per fire listing every processed meeting with its pending sub-items. That is the pile M's ruling removes ("the client is never handed a pile"). Everything else in this phase — the renderer pre-flight, the ZERO-MANIPULATION CONTRACT, the transport, the links sections, the H2 opener rules — applies UNCHANGED to the new surface. Only what goes into `data_view` changed:
 
-- **The prose blocks** — the personified intro, `alarm_lines` verbatim at the very top, `score`, `wins`, `tomorrow`'s intent half, `sign_off`, and on Monday the week roll-up — are the markdown half of the turn, composed in Phase C and posted here.
-- **The row-lists** — `slipped`, `confirm`, and the `tomorrow` confirm/change taps — are ONE widget through `widget_transport.render_and_persist`, numbered in the SAME order as the receipt's `confirm_ids`. The numbering is the receipt's; do not renumber, do not re-rank, do not drop a row to save space.
+- **The prose blocks** — the personified intro, `catchup["lines"]` (degrade-tier fires only) above everything, `alarm_lines` verbatim, then `coverage["lines"]` verbatim, then `score` (with its `ledger` line), `wins`, `tomorrow`'s intent half, `sign_off`, and on Monday the week roll-up — are the markdown half of the turn, composed in Phase C and posted here.
+- **The row-lists** — `slipped`, `confirm`, the confirm block's **person-candidate rows** (SPEC PERSONLOOP1), and the `tomorrow` confirm/change taps — are ONE widget through `widget_transport.render_and_persist`, numbered in the SAME order as the receipt's `confirm_ids`. The numbering is the receipt's; do not renumber, do not re-rank, do not drop a row to save space.
 - **The meetings this fire processed** contribute their `.docx` links to the `Meeting briefs:` section below and NOTHING ELSE. No meeting rows, no per-meeting sub-items, no counters widget. Their ambiguous items are already in the queue and reach the CEO through the `confirm` block on the next fire, under its cap.
 - **The development-read slot** (Monday) renders NOTHING. Not a heading, not a placeholder.
 - **Friday** posts a plain day-close. No hand-off line to the Friday Wrap.
@@ -865,16 +920,30 @@ data_view = {
     "source_skill": "end-of-day",   # W4 — stamped into every Apply-all tuple as src
     "header": <the day-close header line>,
     "sections": [
-        {"title": "Slipped", "count": None, "items": [<one item per pack['slipped']['rows'] row, in order>]},
-        {"title": "Needs your call", "count": None, "items": [<one per pack['confirm']['rows'] row, in order>]},
+        {"title": "Slipped", "count": pack["slipped"]["n_total"], "items": [<one item per pack['slipped']['rows'] row, in order>]},
+        {"title": "Needs your call", "count": pack["confirm"]["n_total"], "items": [<one per pack['confirm']['rows'] row, in order>]},
+        # SPEC PERSONLOOP1 — THIRD section, and ONLY when it has rows (see below)
+        {"title": "People the graph keeps missing", "count": pack["confirm"]["person_total"], "items": [<one per pack['confirm']['person_rows'] row, in order>]},
     ],
-    "quick_read": <the score + sign-off lines, already computed>,
+    "quick_read": <the score + ledger + sign-off lines, already computed>,
 }
 ```
 
-Item numbering across BOTH sections is continuous and matches `pack["confirm_ids"]` exactly — that list was derived from these same rows in this same order by `end_of_day.confirm_ids_from_pack`, and Phase 5 already recorded it. If what you are about to render does not match it, the fix is to render the pack's rows in the pack's order, never to renumber the receipt.
+**The third section — the person-candidate rows (SPEC PERSONLOOP1 §0-3).** `pack["confirm"]["person_rows"]` is built for you by `end_of_day.compute_person_candidates` (which reads `person_candidates.derive_candidates`) and is already on the pack you are holding — you compute nothing here and you derive nothing here. Each row arrives complete: `n` (the `pcand:` wire id), `name`, `context_tag`, `data`, and `actions` (`add person` / `same as [existing]` / `not a person`, from the one shared list). Render them verbatim, in order, LAST — after the `confirm` rows — because that is the order `end_of_day.confirm_ids_from_pack` already numbered them in, and the receipt is the authority.
 
-**The empty day still posts.** Zero slipped and zero confirm rows means no widget at all, and the prose blocks are the whole turn: a score, whatever wins there were (or the one honest no-wins line), tomorrow, and the sign-off. Never improvise an "all clear" widget, and never pad an empty section.
+Three rules, and each one is the same rule the other two surfaces follow:
+
+- **DROP-EMPTY.** No `person_rows` → **no section at all.** Not an empty frame, not a heading, not an "all clear". This is the ordinary case on a healthy workspace.
+- **`count` is `person_total`**, the honest number of recurring unresolved names — not `len(person_rows)`, which the cap holds at 2. Same convention as the two sections above it.
+- **A closure verb is never added to these rows.** They carry exactly the three verbs the pack handed you; `mark done` / `drop` on a name is refused by `end_of_day.ROUTES` and would be a dead button. The row is a QUESTION about a person, not an item to close.
+
+Why this bullet exists at all: this file is the runtime for the 5 PM fire (`orchestrator-map.json` maps BOTH `past-meetings` and `end-of-day` here), so a row the pack computes and this text does not name is a row that never reaches the screen — while still being numbered into `confirm_ids` and receipted as shown. That is the CAPTUREFLOW root cause and the STAFFCUT buttonless-row class, and it is exactly what the second-eyes review caught here (N-1).
+
+**`count` is the block's HONEST TOTAL, not the number of rows below it** (SPEC EODLEDGER1). It renders in the section title — *"SLIPPED (41)"* — and it is `n_total`, never `len(rows)` and never `None`. Then print `pack["slipped"]["more_line"]` and `pack["confirm"]["more_line"]`, each verbatim, in the prose immediately after the widget, one line per section whose cap actually bound (an empty string means it did not). Between them the title says how many there are and the line says how many are on screen; before this build the section said 3 and meant 41.
+
+Item numbering across ALL the sections that rendered — slipped, then confirm, then the person-candidate rows — is continuous and matches `pack["confirm_ids"]` exactly. That list was derived from these same rows in this same order by `end_of_day.confirm_ids_from_pack`, and Phase 5 already recorded it. If what you are about to render does not match it, the fix is to render the pack's rows in the pack's order, never to renumber the receipt. **A section you decline to render is the one way to break this**, which is why the person-candidate bullet above is drop-empty rather than optional: `confirm_ids` carries an entry for every `person_rows` row, so if the pack has them and the widget does not, the numbering claim here is unsatisfiable and every tap past the confirm rows resolves against a row that is not on screen.
+
+**The empty day still posts.** Zero slipped, zero confirm AND zero person-candidate rows means no widget at all, and the prose blocks are the whole turn: the coverage strip, a score and its ledger line, whatever wins there were (or the one honest no-wins line), tomorrow, and the sign-off. Never improvise an "all clear" widget, and never pad an empty section. **The coverage strip renders on an empty day too** — "nothing closed" and "I could not look" are the two readings of an empty surface and the strip is what tells them apart.
 
 ## Phase 6.2 — the tomorrow tap (SPEC BK1 writer, EOD1 caller)
 

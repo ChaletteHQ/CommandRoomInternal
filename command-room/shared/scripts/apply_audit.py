@@ -110,6 +110,10 @@ _OK_STATUSES = frozenset({
     "confirmed", "reclassified", "superseded", "received", "restored",
     "flagged", "subitems_added", "deferred", "noted", "held", "actioned",
     "moved", "reported", "rebound", "written", "active", "complete",
+    # PERSONLOOP1 — person_candidates.resolve_candidate on the `not a person`
+    # answer. ONE person_candidate_suppressed row landed, and the row must
+    # stop being offered: the question has been answered permanently.
+    "suppressed",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -163,6 +167,15 @@ _NOOP_STATUSES = frozenset({
     "already_open", "already_noted",
     "already_actioned", "already_held", "already_unconfirmed",
     "already_undone", "duplicate_open_legacy", "unchanged", "exists", "empty",
+    # --- PERSONLOOP1: person_candidates.resolve_candidate ---------------------
+    #   already_suppressed  the name was already set aside; a second
+    #     tombstone for one decision is the 83-duplicate-row class, so the
+    #     writer declines. Nothing owed, nothing written.
+    #   already_on_file     somebody added the person between the render and
+    #     the tap. No record was created — but the DRAIN still ran, so the
+    #     rows blocked on the name are cleared and the row must stop being
+    #     offered. An honest no-op on the create, not a failure.
+    "already_suppressed", "already_on_file",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({

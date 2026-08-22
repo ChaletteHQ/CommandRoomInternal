@@ -1,0 +1,27 @@
+{
+  "version": "5.13.1",
+  "headline": "The held pile drains itself, the day-close says what it read, and a name already in your invite stops becoming a question.",
+  "items": [
+    {
+      "id": "v5131_announce_person_loop_and_review_drain",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The largest number in your workspace was a pile that could only grow, and two things now reach it. First: when a capture names somebody your workspace cannot place, it is held for your word — and until now nobody was ever asked to add that person, so the same few names failed meeting after meeting and everything waiting behind them was stuck for good. A name that has failed across two or more different calls is now offered to you as one question, with the count of captures waiting behind it and every spelling your transcripts used. Answering it adds the person, saves those spellings so the name resolves from then on, and clears the whole backlog behind it in the same breath. The offer appears at the top of \"needs your call\", in your staff meeting and in your End of Day — at most two names at a time, and not at all when there is nothing to ask. Second: guesses nobody has answered now expire on a weekly pass instead of sitting forever. You see what it is about to let go of before anything happens, it never touches something you have answered, and one \"undo\" puts it all back. Nothing is closed as done and nothing stops being captured — if it comes up again in a later conversation, it is captured fresh.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5131_announce_day_close_honesty",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your End of Day stops reporting numbers it cannot stand behind. It now opens by saying what it actually read — how far your mail and your chat have been read to, whether your calendar was reachable, how far back the meeting pass reached — and when one of those has fallen behind it names the gap in plain words instead of presenting partial counts as the whole day. On a day when no morning brief fired there was no starting point to measure from, and the block naming what moved was reading your entire recorded history and reporting it as today's; it now counts from your own workspace's midnight, in your own timezone, and says that is the window it used. Nothing was ever recorded wrongly by the old behaviour — these were reads only, so there is nothing to repair on your side and nothing to re-register. Your evening close picks all of this up on its next fire.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5131_announce_duplicates_and_attendee_evidence",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two quieter fixes, neither needing anything from you. The same promise stops taking up two lines: when one person's name had been written two different ways, the duplicate check gave up before it ever compared the promises, so genuine duplicates stayed on your book as separate rows — and an item imported twice could appear several times over. Both fold to one row now, and a folded row says that it folded rather than hiding it. And when a capture names somebody your workspace cannot place, it now checks that same meeting's attendee list first: if the list carries their full name and their email address, the contact is created and the capture files itself clean, with one line saying who was added, what it was taken from, and \"undo\" to reverse the lot. The bar is deliberately narrow — a name with no email address attached still becomes a question, because an attendee list without an address proves nothing the transcript did not already say, and a name you have set aside as \"not a person\" is never created whatever the list says. Worth knowing: this only helps on meetings whose records carry everyone's email address. If your meeting notes record only your own address, turning on participant sync at the source is what makes it work.",
+      "action": "announce_only"
+    }
+  ]
+}

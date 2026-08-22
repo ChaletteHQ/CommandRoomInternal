@@ -107,8 +107,14 @@ MORNING_TASK_ID = "morning-brief"
 RECEIPT_EVENT = "pack_run"
 
 # The block order IS the render contract (SPEC BK2's table, EOD1 §3).
-BLOCK_ORDER = ("alarm_lines", "score", "wins", "slipped", "confirm",
-               "tomorrow", "sign_off")
+#
+# SPEC EODLEDGER1 inserts `coverage` FIRST, immediately after `alarm_lines`.
+# The order is the argument: a reader cannot weigh a number until they know
+# what aperture produced it, and every block below coverage is a number. It
+# sits under the alarms for the same reason the alarms sit above everything —
+# a substrate that is not syncing outranks a statement about what was read.
+BLOCK_ORDER = ("alarm_lines", "coverage", "score", "wins", "slipped",
+               "confirm", "tomorrow", "sign_off")
 
 # Render bounds. A cap is a render bound, never a silence (the :299 doctrine).
 MAX_SLIPPED_ROWS = 3
@@ -164,6 +170,22 @@ SOFTEN_LINE = (
 # Zero wins. One honest line, never padding.
 NO_WINS_LINE = "Nothing closed today that I can see."
 
+# WHICH WINDOW THE EVENING ACTUALLY READ (SPEC WINSFLOOR1). The evening's
+# lower bound is normally the morning fire's own instant. When no morning
+# receipt exists for the day there is no anchor to open the window at, and the
+# shipped code let that mean NO lower bound at all — so the block that exists
+# to say what moved today read every win-type event ever written and reported
+# 2,328 of them as having "moved today" on a day when nothing had.
+#
+# The floor is workspace-LOCAL midnight of the fire's own day. A missing anchor
+# means "today, as this workspace reckons it" and never "all of history".
+#
+# The floored case is LABELLED, never silently substituted: a surface that
+# swapped one window for another would be honest in its numbers and mute about
+# its aperture, which is the same defect one level up.
+WINDOW_MORNING_ANCHOR = "morning_anchor"
+WINDOW_DAY_FLOOR = "day_floor"
+
 # The overflow pointer. A CAP IS A RENDER BOUND AND NEVER A SILENCE — the same
 # rule and the same mechanism as the morning brief's needs-attention lane
 # (`commitment_state.cap_needs_attention`, whose `more_line` its prose prints
@@ -176,8 +198,276 @@ NO_WINS_LINE = "Nothing closed today that I can see."
 #
 # There is no "show me the rest" trigger to point at, so this line points at
 # nothing and says so honestly: the count, and the rule the aperture used.
-WINS_MORE_LINE = ("…and {n_more} more moved today — this block shows at most "
-                  "{cap}, named rows first.")
+#
+# TWO SPELLINGS, ONE PER WINDOW (SPEC WINSFLOOR1). The line names the window it
+# read and no other. On the anchor path "moved today" is TRUE — the window
+# opened at this morning's brief. On the floored path it is a claim the read
+# cannot support in that wording, so the floored spelling says the window it
+# actually used, plainly. Both live here so there is one place to read them and
+# one place to change them; `WINS_MORE_LINES` is the only lookup.
+#
+# AND EVERY CAPPED BLOCK NOW STATES ITS DENOMINATOR (SPEC EODLEDGER1 part 1).
+# `{n_shown} of {n_total}` replaces "at most {cap}", and the same shape spells
+# `slipped` and `confirm` too. The cap was never the reader's question: `wins`
+# said "at most 6" while it was hiding 31, `slipped` bound 3 of 41 silently and
+# `confirm` 5 of 67, and a cap without a denominator is not a summary — it is a
+# claim about size. `cap` is what the code was told; `n_total` is what the day
+# actually held, and only the second is a fact about the reader's day.
+MORE_LINE_SHAPE = ("…and {n_more} more {tail} — this block shows {n_shown} of "
+                   "{n_total}, {rank} first.")
+
+
+def _more_template(tail: str, rank: str) -> str:
+    """One block's cap sentence, MINTED from `MORE_LINE_SHAPE`.
+
+    Derived rather than typed out four times: "there is one wording rule" is a
+    property of the code this way, and a fifth block cannot acquire its own
+    dialect by being written somewhere else in the file. Only the two words
+    that are genuinely per-block — what the hidden rows ARE and what won the
+    visible slots — are supplied here.
+    """
+    return MORE_LINE_SHAPE.replace("{tail}", tail).replace("{rank}", rank)
+
+
+# The per-block words. `{tail}` names what the hidden rows are, because "and 38
+# more" over a list of promises and "and 62 more" over a review queue are
+# different sentences to be on the hook for; `{rank}` names what won the
+# visible slots, so the reader knows what they are NOT seeing.
+WINS_TAIL_ANCHOR = "moved today"
+WINS_TAIL_DAY_FLOOR = "moved since midnight"
+WINS_RANK = "named rows"
+SLIPPED_TAIL = "on the you-owe list"
+SLIPPED_RANK = "overdue"
+CONFIRM_TAIL = "waiting to be confirmed"
+CONFIRM_RANK = "higher-stakes"
+
+WINS_MORE_LINE_ANCHOR = _more_template(WINS_TAIL_ANCHOR, WINS_RANK)
+WINS_MORE_LINE_DAY_FLOOR = _more_template(WINS_TAIL_DAY_FLOOR, WINS_RANK)
+WINS_MORE_LINES = {
+    WINDOW_MORNING_ANCHOR: WINS_MORE_LINE_ANCHOR,
+    WINDOW_DAY_FLOOR: WINS_MORE_LINE_DAY_FLOOR,
+}
+SLIPPED_MORE_LINE = _more_template(SLIPPED_TAIL, SLIPPED_RANK)
+CONFIRM_MORE_LINE = _more_template(CONFIRM_TAIL, CONFIRM_RANK)
+
+# THE registry. One place to read every cap sentence this surface can say, so
+# "there is one wording rule" is checkable rather than asserted — a fifth
+# template added anywhere else is a template this tuple does not know about,
+# and the suite reads THIS tuple when it pins that every one of them carries a
+# denominator.
+MORE_LINE_TEMPLATES = (WINS_MORE_LINE_ANCHOR, WINS_MORE_LINE_DAY_FLOOR,
+                       SLIPPED_MORE_LINE, CONFIRM_MORE_LINE)
+
+
+def more_line(template: str, *, n_shown: int, n_total: int) -> str:
+    """THE cap sentence, for every capped block on this surface (EODLEDGER1).
+
+    ONE helper and one shape, so a block cannot acquire its own dialect of
+    "there is more than this". `wins` had this treatment and the other two did
+    not, which is how 3-of-41 and 5-of-67 read on screen as 3 and 5.
+
+    Returns `""` when the cap did not bind — a pointer at nothing is noise, and
+    an empty string is what every render path already tests for.
+
+    `n_total` is the HONEST total, not the number of rows the caller could see:
+    a lane that was already bounded upstream must pass the upstream total or
+    the denominator it prints is the cap wearing a total's clothes.
+    """
+    try:
+        n_shown = max(0, int(n_shown))
+        n_total = max(0, int(n_total))
+    except (TypeError, ValueError):
+        return ""
+    n_more = n_total - n_shown
+    if n_more <= 0:
+        return ""
+    return template.format(n_more=n_more, n_shown=n_shown, n_total=n_total)
+
+
+# ---------------------------------------------------------------------------
+# THE COVERAGE STRIP (SPEC EODLEDGER1 part 1) — what this fire actually READ
+# ---------------------------------------------------------------------------
+#
+# The fire asks for email, calendar and chat per capability and receipts every
+# gap under `connector_gaps` — and said nothing about any of it in chat, by
+# design. Measured on the live workspace on 2026-08-19: the chat cursor had sat
+# at 2026-08-14 for five days while the evening surface reported the day's
+# closes with no qualification at all, and a calendar outage rendered
+# byte-identically to a genuinely empty tomorrow. The reader could not tell
+# "nothing happened" from "I could not look".
+#
+# So the aperture gets a block, and it is the FIRST one under the alarms.
+# Composed in code, rendered verbatim, never hand-written: the whole value of
+# the strip is that it states what the RUN did rather than what the surface
+# would like to have done, and a line a model writes is a line about the
+# latter.
+#
+# NEVER SUPPRESSED AND NEVER SOFTENED — the same posture as `alarm_lines`, for
+# the same reason. A degraded read is precisely when the reader most needs to
+# know what the aperture was; a coverage strip that goes quiet on a bad night
+# is a coverage strip that only ever says "everything was fine".
+
+CAP_MAIL = "mail"
+CAP_CHAT = "chat"
+CAP_CALENDAR = "calendar"
+CAP_MEETINGS = "meetings"
+
+# The order the strip renders in, and the whole set of capabilities this fire
+# reaches for. CONN1/CONN2 add Drive and DocuSign by adding rows here.
+COVERAGE_CAPABILITIES = (CAP_MAIL, CAP_CHAT, CAP_CALENDAR, CAP_MEETINGS)
+
+COVERAGE_LABELS = {
+    CAP_MAIL: "Mail",
+    CAP_CHAT: "Chat",
+    CAP_CALENDAR: "Calendar",
+    CAP_MEETINGS: "Meetings",
+}
+
+# A cursor whose instant falls on an EARLIER workspace-local day than the fire's
+# own is stale, and the line names the span. One day, not three: the cursor is
+# supposed to advance every evening, so "yesterday" is already a missed night.
+CURSOR_STALE_DAYS = 1
+
+# THE WORDS. Every sentence the strip can say lives here, so there is one place
+# to read them and one place to change them.
+COVERAGE_READ_THROUGH = "{label}: read through {when}."
+COVERAGE_STALE = (
+    "{label}: read through {when} — {n_days} behind, so anything closed "
+    "there since then is not in tonight's numbers.")
+COVERAGE_NEVER_ADVANCED = (
+    "{label}: nothing on record for how far this has been read, so tonight's "
+    "numbers cannot claim it was.")
+# A leg that ran on the PARTIAL path is a real run and not a complete one. The
+# chat leg's own receipt already carries `degraded` plus the note; without this
+# clause a per-conversation sweep renders identically to a full one, which is
+# the same overclaim as a stale cursor rendering as current, one degree milder.
+COVERAGE_DEGRADED = " Read on the partial path: {note}"
+COVERAGE_NOT_READ = "{label}: not read — {reason}."
+COVERAGE_NOT_READ_NO_REASON = (
+    "{label}: not read, and nothing on the record says why.")
+COVERAGE_CALENDAR_READ = "Calendar: read."
+COVERAGE_CALENDAR_ABSENT = (
+    "Calendar: not read, so tomorrow's list below is what is on file, not "
+    "what is on the calendar.")
+# The same claim WITH the reason the fire receipted. Two spellings rather than
+# one with an optional clause, because the reasonless case is a real one (a
+# fire that omitted `--calendar-json` and receipted no gap) and it must not
+# render a dangling dash.
+COVERAGE_CALENDAR_ABSENT_REASON = (
+    "Calendar: not read — {reason}. Tomorrow's list below is what is on file, "
+    "not what is on the calendar.")
+COVERAGE_MEETINGS = "Meetings: reading back to {since} ({span}); {counts}."
+COVERAGE_MEETINGS_UNKNOWN = (
+    "Meetings: the capture window could not be read, so this fire cannot say "
+    "how far back it looked.")
+# THE TWO COUNTS DEGRADE INDEPENDENTLY OF THE WINDOW, AND OF EACH OTHER
+# (EODLEDGER1 review fix-round 1). `capture_aperture` sets `known` the moment
+# `catchup_window` returns, and the two counts are read AFTER that — the meeting
+# scan needs a parseable `start_aware` and the backlog sweep is its own import
+# that can raise. Either can come back `None` over a perfectly known window, and
+# rendering `None` as `0` prints a number this fire does not have: "0 still
+# waiting to be processed" is a claim, and an unread count is not zero. That is
+# the guessed-baseline class this same spec forbids one field down, and it is
+# what the block's own docstring already promised ("a different claim from
+# 'there is nothing there'"). So each half says which it is.
+COVERAGE_MEETINGS_N = "{n_meetings} on record in that span"
+COVERAGE_MEETINGS_N_UNREAD = "how many are on record in that span could not be read"
+COVERAGE_MEETINGS_BACKLOG = "{n_backlog} still waiting to be processed"
+COVERAGE_MEETINGS_BACKLOG_UNREAD = (
+    "how many are still waiting to be processed could not be read")
+
+# The data-quality note. A COUNT, not a section (EODLEDGER1 §6): 802 closes on
+# the live workspace cite no artifact anyone can open, which is a real signal
+# with no surface today and not worth a block of its own.
+COVERAGE_UNSOURCED = (
+    "{n} of the closes in this window cite no artifact anyone can open.")
+
+
+# ---------------------------------------------------------------------------
+# THE LEDGER (SPEC EODLEDGER1 part 2) — what the day did to the open book
+# ---------------------------------------------------------------------------
+#
+# The `score` block scores this morning's plan. The BOOK is the other question
+# and the bigger one: 218 open, 137 owed by the CEO, 41 overdue — seven numbers
+# computed on every fire and rendered on none of them.
+#
+# THE OPENING FIGURE IS READ, NEVER INFERRED. It comes off the morning fire's
+# own `brief_state` — the audit event that fire wrote, carrying the counts
+# `compute_brief_state` produced at that instant. With no morning fire there is
+# no opening figure, the block says exactly that, and NO arithmetic happens at
+# all. This is `NO_PLAN_LINE`'s doctrine one field down: never a guessed
+# baseline, and specifically never TODAY's count standing in for THIS MORNING's,
+# which would render a delta of zero on the one day the delta is unknowable.
+# The ledger's two states, declared in ONE home — the same posture
+# `FIRST_MOVE_STATUSES` keeps, and for the same reason: prose that names a
+# value the code actually writes is documentation, and the prose-contract
+# scanner can only tell that apart from drift if there is a home to point at.
+# There is no third state: either the opening figure was read, or it was not.
+LEDGER_MOVEMENT = "movement"
+LEDGER_NO_OPENING_FIGURE = "no_opening_figure"
+LEDGER_STATUSES = (LEDGER_MOVEMENT, LEDGER_NO_OPENING_FIGURE)
+
+NO_OPENING_FIGURE = "no opening figure on record"
+NO_OPENING_FIGURE_LINE = (
+    "There is no opening figure on record for today, so the day's movement "
+    "cannot be stated. What closed is counted below.")
+
+LEDGER_LINE = ("Open book: {book_at_open} this morning, {opened} opened, "
+               "{closed} closed, {dropped} dropped — {book_now} now "
+               "({delta}).")
+LEDGER_DELTA_DOWN = "down {n}"
+LEDGER_DELTA_UP = "up {n}"
+LEDGER_DELTA_FLAT = "no net change"
+
+# The parts will not always account for the whole, and saying so is cheaper
+# than a number that does not add up. An item confirmed out of the review queue
+# enters the book without being "opened"; a merge retires two rows into one.
+# The residual is NAMED rather than absorbed into one of the four movements,
+# because absorbing it is how a ledger starts lying quietly.
+LEDGER_RESIDUAL_LINE = (
+    "The movements above account for {accounted} of the change; {residual} "
+    "came from somewhere this fire cannot see (a confirm out of the review "
+    "queue, a merge, an edit).")
+
+
+# ---------------------------------------------------------------------------
+# THE CATCH-UP READ (SPEC EODLEDGER1 part 3 — M's ruling on D3)
+# ---------------------------------------------------------------------------
+#
+# Over 24 hours late the fire enters the degrade tier: it performs every
+# substrate write and then posts only `late_fire`'s `degrade_notice`. The score
+# anchors on TODAY's morning receipt, so a skipped Tuesday is never scored —
+# not that evening, not ever. The catch-up machinery works perfectly and its
+# output has never been shown to anyone.
+#
+# M'S RULING: LABEL THE SPAN, DO NOT WITHHOLD IT. The degrade tier's instinct
+# is right — a stale surface must never be presented as fresh — and the remedy
+# is a label, not a silence.
+#
+# WHY `degrade_notice` IS NOT WHAT GETS POSTED HERE. That string says "Skipped
+# the full {display}", which is a true sentence on every OTHER scheduled
+# surface and a false one on this one from the moment this fire renders. It is
+# a SHARED constant: every orchestrator's degrade branch posts it as its whole
+# output, and rewording it would silently change what those surfaces say. So
+# `late_fire` is untouched — thresholds, return shape and notice text all
+# byte-identical — and this fire composes its own label from the SAME return's
+# facts (`lateness_minutes`, `scheduled_for`) plus the catch-up window. The
+# notice is retained on the record (the fire carries it onto its receipt) and
+# is not the thing the reader sees.
+#
+# ONE READ, NOT ONE PER DAY. A multi-day catch-up is compressed into a single
+# surface covering the span. The per-day detail already exists in the Monday
+# roll-up, and a stack of stale surfaces is the pile M's ruling removed.
+CATCHUP_LABEL = (
+    "This is your End of Day for {span}, arriving {late}. It was scheduled "
+    "for {scheduled}.")
+CATCHUP_SPAN_ONE_DAY = "{day}"
+CATCHUP_SPAN_MULTI = "{first} through {last}"
+CATCHUP_COMPRESSED_LINE = (
+    "{n_days} days are accounted for in this one read, not one surface each.")
+CATCHUP_CAPPED_LINE = (
+    "The gap was longer than the {cap}-day ceiling, so this read starts at "
+    "the ceiling and does not cover everything before it.")
 
 # No day intent, and none proposable.
 NO_TOMORROW_INTENT_LINE = "Nothing on file yet for tomorrow."
@@ -188,6 +478,12 @@ SLIPPED_VERBS = ("push to [date]", "draft", "drop")
 
 # The verb set the confirm block offers.
 CONFIRM_VERBS = ("confirm", "drop")
+
+# PERSONLOOP1 §0-3 — the confirm block's second, capped half: the recurring
+# names the queue is jammed behind. Its verbs come from the ONE list all
+# three surfaces read (`person_candidates.CANDIDATE_ROW_ACTIONS`), imported
+# lazily at the row-build site so this module stays import-light.
+PERSON_CANDIDATE_BLOCK = "person_candidate"
 
 # The tomorrow block's two taps.
 TOMORROW_VERBS = ("confirm", "edit [change]")
@@ -264,6 +560,49 @@ def workspace_today(workspace_root, *, now=None) -> _dt.date:
     tomorrow in UTC)."""
     from day_intent import workspace_today as _today
     return _today(workspace_root, now=now)
+
+
+def _day_floor(workspace_root, *, now_iso=None) -> _dt.datetime:
+    """Workspace-LOCAL midnight of the fire's own day, as an aware datetime.
+
+    Through `workspace_today` → `day_intent` → `tz.py`, which is the ONE date
+    resolver the bookends share. Never the machine clock and never UTC: this
+    fire runs in the evening, and at 9 PM Pacific the UTC calendar has already
+    rolled over, so a UTC floor would open the window on tomorrow and hide the
+    entire day it is supposed to be closing.
+
+    Raises rather than guessing when the workspace timezone cannot be resolved
+    — the same posture `day_intent.workspace_today` already takes, and the same
+    reason: a floor under the wrong date reads as a perfectly plausible day.
+    The evening driver already calls `workspace_today` before it reaches either
+    helper, so this raises nothing that was not already going to raise.
+    """
+    from tz import load_workspace_tz
+    day = workspace_today(workspace_root, now=now_iso)
+    zone = load_workspace_tz(workspace_path=workspace_root)
+    return _dt.datetime.combine(day, _dt.time(0, 0), tzinfo=zone)
+
+
+def _window(workspace_root, since_ts, *, now_iso=None) -> tuple:
+    """`(since, window_source)` — the lower bound the evening reads from, and
+    the name of the window it is (SPEC WINSFLOOR1).
+
+    THE LOWER BOUND IS NEVER `None`. That is the whole fix. `since_ts` arrives
+    from `morning_fire(...)["ts"]`, which is correctly `None` on a day whose
+    morning brief never fired; the shipped readers turned that into an absent
+    lower bound and scanned the workspace's entire history.
+
+    An unparseable `since_ts` floors too, and for the same reason: "I could not
+    read the anchor" is not a licence to read everything.
+
+    This lives in the helpers, not at the call site. Both readers are called
+    from more than one place, and a caller-side fence makes prose load-bearing
+    — 4 of the 8 findings on the 2026-08-17 walk were that class.
+    """
+    since = _parse_iso(since_ts) if since_ts else None
+    if since is not None:
+        return since, WINDOW_MORNING_ANCHOR
+    return _day_floor(workspace_root, now_iso=now_iso), WINDOW_DAY_FLOOR
 
 
 def day_branch(day: _dt.date) -> str:
@@ -429,8 +768,41 @@ def read_morning_digest(workspace_root, morning: dict) -> dict:
 _CLOSE_TYPES = ("commitment_resolved", "thread_resolved")
 
 
-def closures_since(workspace_root, since_ts, *, now_iso=None) -> list:
+class ClosureWindow(list):
+    """The closure rows, carrying the NAME of the window they were read from.
+
+    A list, because every caller of `closures_since` iterates it — the score
+    join, `unsourced_closes`, the first-move check and two suites. A dict
+    return would have been the plainer shape for one extra fact and a breaking
+    change for all of them, so the fact rides on the rows instead of replacing
+    them.
+
+    `window_source` is an ATTRIBUTE, not an element: it survives iteration,
+    `len`, indexing, equality against a plain list and `json.dumps` (which
+    serializes this as the array it is). It does NOT survive slicing or
+    `list(...)` — those produce a plain list. Read it off the object this
+    function returned, and read it STRICTLY (`rows.window_source`, never a
+    defaulted `getattr`): a window that cannot say which window it is should
+    fail loudly, not report the wrong one quietly.
+    """
+
+    __slots__ = ("window_source", "since")
+
+    def __init__(self, rows, *, window_source, since):
+        super().__init__(rows)
+        self.window_source = window_source
+        self.since = since
+
+
+def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow":
     """Every commitment closure written since `since_ts`, newest last.
+
+    SPEC WINSFLOOR1 — `since_ts` NO LONGER MEANS "since the beginning of time"
+    when it is absent. A day with no morning receipt floors to workspace-local
+    midnight (`_window`), and the return names the window it read:
+    `window_source` is `morning_anchor` or `day_floor`. Measured on the live
+    workspace on 2026-08-19, the unfloored read returned 942 closures on a day
+    that had closed none of them.
 
     Each row: `{"commitment_id", "title", "ts", "resolved_by", "resolution",
     "source_ref", "ref_grain", "provenance_missing", "source_skill"}`.
@@ -448,7 +820,7 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> list:
     The grain is the discriminator; it is projected, never derived, and its
     absence means caller-passed (which every pre-PROVMINT1 row is).
     """
-    since = _parse_iso(since_ts) if since_ts else None
+    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     events = _load_events(workspace_root)
     # SPEC EODFIX1 — the same id→title join the wins block uses. Without it
@@ -462,7 +834,10 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> list:
         if ev.get("type") not in _CLOSE_TYPES:
             continue
         ts = _parse_iso(ev.get("ts"))
-        if since is not None and (ts is None or ts < since):
+        # THE LOWER BOUND IS ALWAYS REAL (SPEC WINSFLOOR1). `_window` never
+        # hands back None, so this test is never the no-op it used to be on a
+        # day with no morning receipt.
+        if ts is None or ts < since:
             continue
         if until is not None and ts is not None and ts > until:
             continue
@@ -488,7 +863,8 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> list:
             "source_skill": ev.get("source_skill"),
             "evidence": str(data.get("evidence") or "").strip(),
         })
-    return out
+    return ClosureWindow(out, window_source=window_source,
+                         since=since.isoformat())
 
 
 def unsourced_closes(closures: Iterable[dict]) -> list:
@@ -518,6 +894,295 @@ def unsourced_closes(closures: Iterable[dict]) -> list:
     return [c for c in (closures or [])
             if c.get("provenance_missing") or not c.get("source_ref")
             or c.get("ref_grain") == REF_GRAIN_SURFACE_MINTED]
+
+
+# ---------------------------------------------------------------------------
+# Block: coverage — the aperture, stated (SPEC EODLEDGER1 part 1)
+# ---------------------------------------------------------------------------
+
+def _local_dt(workspace_root, value):
+    """An instant in the WORKSPACE's own clock, or None. Never raises: a
+    coverage strip that crashes on an odd cursor is a coverage strip that
+    stops existing on exactly the nights it matters."""
+    if not value:
+        return None
+    try:
+        from tz import to_local
+        return to_local(value, workspace_path=workspace_root)
+    except Exception:  # noqa: BLE001
+        return _parse_iso(value)
+
+
+def _when_phrase(local, *, today) -> str:
+    """How a cursor instant reads to a person. Same day → the time; an earlier
+    day → the day, named. Never a bare ISO string: the whole point of this line
+    is that a reader can tell at a glance whether the read is current."""
+    if local is None:
+        return ""
+    clock = local.strftime("%I:%M %p").lstrip("0")
+    if today is not None and local.date() == today:
+        return f"{clock} today"
+    return local.strftime("%A, %B ") + str(local.day)
+
+
+def _days_phrase(n: int) -> str:
+    return "1 day" if n == 1 else f"{n} days"
+
+
+def _leg_coverage(capability: str, leg, *, workspace_root, today,
+                  gap_reason=None) -> dict:
+    """ONE cursor-backed capability's coverage row.
+
+    `leg` is the close phase's own receipt for that leg — the same dict
+    `soften_floor` reads — so this states what the RUN did rather than what the
+    workspace is configured to do. Four terminal shapes and they must not look
+    alike: read and current, read but BEHIND (the line names the span), asked
+    for and skipped (the plain-English reason, from the receipt or from
+    `connector_gaps`), and never asked at all.
+    """
+    label = COVERAGE_LABELS.get(capability, capability.title())
+    out = {"capability": capability, "read": False, "cursor": None,
+           "stale": False, "degraded": False, "days_behind": None,
+           "reason": None, "line": ""}
+
+    if not isinstance(leg, dict) or not leg:
+        out["reason"] = gap_reason or None
+        out["line"] = (COVERAGE_NOT_READ.format(label=label,
+                                                reason=out["reason"])
+                       if out["reason"]
+                       else COVERAGE_NOT_READ_NO_REASON.format(label=label))
+        return out
+
+    # THE FOUR SPELLINGS OF "IT DID NOT RUN", and all four are real. The chat
+    # leg reports `status: "skipped"` (no backend declared) or
+    # `status: "blocked"` (a backend that could not be read). The mail leg's
+    # blocked receipt carries NO `status` at all — it is `ran: False` plus
+    # `blocked: True` — so a reader that tested only `status` would take a
+    # blocked mail run's unmoved cursor and print "read through <last week>",
+    # which is the exact silence this block exists to remove.
+    status = str(leg.get("status") or "").lower()
+    ran = leg.get("ran")
+    if status in ("skipped", "blocked") or leg.get("blocked") is True \
+            or ran is False:
+        # The reason, in the spellings the two legs actually use. `reason` is
+        # last so a caller-supplied shape still works, and `connector_gaps` is
+        # the floor beneath all of them.
+        for key in ("skip_reason", "blocked_reason", "fetch_blocked",
+                    "reason"):
+            candidate = str(leg.get(key) or "").strip()
+            if candidate:
+                out["reason"] = candidate
+                break
+        out["reason"] = out["reason"] or gap_reason or None
+        out["line"] = (COVERAGE_NOT_READ.format(label=label,
+                                                reason=out["reason"])
+                       if out["reason"]
+                       else COVERAGE_NOT_READ_NO_REASON.format(label=label))
+        return out
+
+    # THE CURSOR READ. This one line is the whole claim the strip makes about
+    # this capability, and it is read off the leg's OWN receipt — never from
+    # the workspace's configuration, never from a default, and never from the
+    # fire's own clock. `cursor_after` is where the leg finished; `cursor_before`
+    # is where it started when it could not advance.
+    raw_cursor = leg.get("cursor_after") or leg.get("cursor_before")
+    out["read"] = True
+    out["cursor"] = raw_cursor or None
+    if not raw_cursor:
+        # It ran and left no mark of how far it reached. That is not "current".
+        out["line"] = COVERAGE_NEVER_ADVANCED.format(label=label)
+        return out
+
+    local = _local_dt(workspace_root, raw_cursor)
+    if local is None:
+        out["line"] = COVERAGE_NEVER_ADVANCED.format(label=label)
+        return out
+
+    when = _when_phrase(local, today=today)
+    behind = (today - local.date()).days if today is not None else 0
+    out["days_behind"] = max(0, behind)
+    if behind >= CURSOR_STALE_DAYS:
+        out["stale"] = True
+        out["line"] = COVERAGE_STALE.format(label=label, when=when,
+                                            n_days=_days_phrase(behind))
+    else:
+        out["line"] = COVERAGE_READ_THROUGH.format(label=label, when=when)
+    # A run on the PARTIAL path is a real run and not a complete one, and the
+    # leg's own receipt already says which it was. Without this clause a
+    # per-conversation sweep renders identically to a full one.
+    note = str(leg.get("coverage_note") or "").strip()
+    if leg.get("degraded") and note:
+        out["degraded"] = True
+        out["line"] += COVERAGE_DEGRADED.format(note=note)
+    return out
+
+
+def capture_aperture(workspace_root, *, now_iso=None) -> dict:
+    """How far back the capture leg is reaching, and what is still owed.
+
+    Read ENTIRELY from the workspace's own ledger — `catchup.catchup_window`
+    over this fire's receipt series, plus `meeting_discovery.unprocessed_backlog`
+    — so it can be stated in Phase C, BEFORE the capture leg runs in Phase D.
+    That ordering is not negotiable (capture-last is the circularity fence), and
+    it is why this reports the APERTURE rather than the outcome: what the fire
+    is about to look at, not what it found.
+
+    Best-effort in every direction. A read that fails comes back `known: False`
+    and the strip says the window could not be read, which is a different claim
+    from "there is nothing there".
+    """
+    out = {"known": False, "start": None, "end": None, "start_aware": None,
+           "days": None, "extended": False, "capped": False,
+           "n_meetings": None, "n_backlog": None, "n_no_transcript": None,
+           "error": None}
+    try:
+        from catchup import catchup_window
+        # `now=now_iso` is not optional: without it this reads the machine
+        # clock, and a fixture (or a corroborated CLOCK1 instant) would be
+        # described by a window nobody asked for.
+        window = catchup_window(workspace_root, TASK_ID, floor_hours=24,
+                                cap_days=30, now=now_iso)
+    except Exception as exc:  # noqa: BLE001 — a read never breaks a fire
+        out["error"] = repr(exc)[:200]
+        return out
+    out.update({"known": True, "start": window.get("start"),
+                "end": window.get("end"),
+                # THE OFFSET-CARRYING instant is what gets rendered and what
+                # gets compared. `start` is machine-local NAIVE, and handing a
+                # naive value to `to_local` (which assumes naive means UTC)
+                # names the wrong day on any box that is not on UTC.
+                "start_aware": window.get("start_aware"),
+                "days": window.get("days"),
+                "extended": bool(window.get("extended")),
+                "capped": bool(window.get("capped"))})
+
+    since = _parse_iso(window.get("start_aware"))
+    if since is not None:
+        n = 0
+        for ev in _load_events(workspace_root):
+            if ev.get("type") != "meeting":
+                continue
+            ts = _parse_iso(ev.get("ts"))
+            if ts is not None and ts >= since:
+                n += 1
+        out["n_meetings"] = n
+
+    try:
+        from meeting_discovery import unprocessed_backlog
+        sweep = unprocessed_backlog(workspace_root, now=now_iso or None)
+        out["n_backlog"] = sweep.get("n_candidates")
+        out["n_no_transcript"] = sweep.get("n_no_transcript")
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = repr(exc)[:200]
+    return out
+
+
+def compute_coverage(workspace_root, *, close_result=None,
+                     calendar_available: bool = False,
+                     connector_gaps=None, now_iso=None,
+                     n_unsourced: int = 0, capture=None) -> dict:
+    """THE COVERAGE STRIP. What this fire actually read, per capability.
+
+    Composed here and rendered VERBATIM. Placed first under `alarm_lines`,
+    never suppressed and never softened — the same posture the alarms keep, and
+    for the same reason: a degraded read is exactly when the reader needs to
+    know what the aperture was.
+
+    `calendar_available` MUST be the `tomorrow` block's own value, not a second
+    derivation. "The calendar was not read" and "tomorrow is empty" are the two
+    statements that rendered identically before this spec, and the fence that
+    keeps them consistent is that they come from ONE boolean rather than from
+    two readers who might disagree.
+
+    `connector_gaps` is the fire's existing receipt field, unchanged: the gap
+    stops being audit-only and becomes the sentence the reader sees, in the
+    same plain English the leg already recorded.
+
+    Returns `{"lines": [...], "capabilities": {...}, "note": str|None,
+    "n_unsourced": int}`. `lines` is the render contract; the structured half
+    is there so a test can pin a claim rather than a substring.
+    """
+    result = close_result or {}
+    gaps = [g for g in (connector_gaps or [])]
+
+    def _gap_reason(capability):
+        """The plain-English reason the fire already receipted for this leg."""
+        for g in gaps:
+            if isinstance(g, dict):
+                if str(g.get("capability") or g.get("leg") or "").lower() \
+                        == capability:
+                    return str(g.get("reason") or "").strip() or None
+            elif isinstance(g, str) and g.lower().startswith(capability):
+                tail = g.split(":", 1)[1].strip() if ":" in g else ""
+                return tail or None
+        return None
+
+    try:
+        today = workspace_today(workspace_root, now=now_iso)
+    except Exception:  # noqa: BLE001
+        today = None
+
+    caps = {}
+    lines = []
+    for capability in (CAP_MAIL, CAP_CHAT):
+        row = _leg_coverage(capability, result.get(capability),
+                            workspace_root=workspace_root, today=today,
+                            gap_reason=_gap_reason(capability))
+        caps[capability] = row
+        lines.append(row["line"])
+
+    cal_reason = None if calendar_available else _gap_reason(CAP_CALENDAR)
+    if calendar_available:
+        cal_line = COVERAGE_CALENDAR_READ
+    elif cal_reason:
+        cal_line = COVERAGE_CALENDAR_ABSENT_REASON.format(reason=cal_reason)
+    else:
+        cal_line = COVERAGE_CALENDAR_ABSENT
+    cal = {"capability": CAP_CALENDAR, "read": bool(calendar_available),
+           "reason": cal_reason, "line": cal_line}
+    caps[CAP_CALENDAR] = cal
+    lines.append(cal["line"])
+
+    ap = capture if isinstance(capture, dict) else {}
+    if ap.get("known"):
+        since_local = _local_dt(workspace_root, ap.get("start_aware")
+                                or ap.get("start"))
+        since = (_when_phrase(since_local, today=today) if since_local
+                 else str(ap.get("start") or ""))
+        days = ap.get("days")
+        span = _days_phrase(int(round(days))) if isinstance(days, (int, float)) \
+            else "the nominal window"
+        # An UNREAD count is not zero (review fix-round 1). Each half names
+        # itself, so a backlog sweep that raised over a window that resolved
+        # fine cannot print "0 still waiting to be processed".
+        n_meetings, n_backlog = ap.get("n_meetings"), ap.get("n_backlog")
+        counts = ", ".join((
+            COVERAGE_MEETINGS_N.format(n_meetings=n_meetings)
+            if isinstance(n_meetings, int) and not isinstance(n_meetings, bool)
+            else COVERAGE_MEETINGS_N_UNREAD,
+            COVERAGE_MEETINGS_BACKLOG.format(n_backlog=n_backlog)
+            if isinstance(n_backlog, int) and not isinstance(n_backlog, bool)
+            else COVERAGE_MEETINGS_BACKLOG_UNREAD,
+        ))
+        meetings_line = COVERAGE_MEETINGS.format(since=since, span=span,
+                                                 counts=counts)
+    else:
+        meetings_line = COVERAGE_MEETINGS_UNKNOWN
+    caps[CAP_MEETINGS] = {"capability": CAP_MEETINGS,
+                          "read": bool(ap.get("known")),
+                          "aperture": ap or None, "line": meetings_line}
+    lines.append(meetings_line)
+
+    try:
+        n_unsourced = max(0, int(n_unsourced))
+    except (TypeError, ValueError):
+        n_unsourced = 0
+    note = COVERAGE_UNSOURCED.format(n=n_unsourced) if n_unsourced else None
+    if note:
+        lines.append(note)
+
+    return {"lines": [l for l in lines if l], "capabilities": caps,
+            "note": note, "n_unsourced": n_unsourced}
 
 
 # ---------------------------------------------------------------------------
@@ -593,9 +1258,200 @@ def check_first_move(text, closures: Iterable[dict], *,
     }
 
 
+# How far either side of the morning fire's own instant this reader will look
+# for the `brief_state` that fire wrote. The driver logs it moments before the
+# receipt, so the two are seconds apart in practice; two hours is slack for a
+# slow fire and is still far too narrow to reach yesterday's or this evening's.
+OPENING_FIGURE_TOLERANCE_MINUTES = 120
+
+# The one origin an opening figure may be read from. The evening fire writes NO
+# `brief_state` of its own (deliberately — see the module docstring), and the
+# on-demand surfaces write theirs under their own skill names, so keying on
+# this is what keeps "the book at open" meaning the MORNING's book.
+OPENING_FIGURE_ORIGIN = "morning-briefing"
+
+
+def opening_book(workspace_root, morning: dict, *, now_iso=None) -> dict:
+    """The open book AS THIS MORNING'S FIRE MEASURED IT. Read, never inferred.
+
+    Returns `{"found", "total", "ts", "headline"}`. `found` False is the only
+    correct answer when the morning fire did not run or left no `brief_state`
+    behind, and it is NEVER converted into a number: today's count standing in
+    for this morning's would render a delta of zero on precisely the day the
+    delta is unknowable, which is the `no_plan` failure one field down.
+
+    WHY `brief_state` AND NOT THE `pack_run` RECEIPT. The receipt carries the
+    numbered ids and the digest path; the counts live on the `brief_state`
+    audit event the same fire wrote seconds earlier, straight out of
+    `compute_brief_state` rather than out of anything a model typed (Bug #99's
+    whole point). This reader anchors on the receipt's instant and reads the
+    counts off the event — the receipt is still what says a morning fire
+    happened at all.
+    """
+    out = {"found": False, "total": None, "ts": None, "headline": None}
+    if not (morning or {}).get("found"):
+        return out
+    anchor = _parse_iso(morning.get("ts"))
+    if anchor is None:
+        return out
+    tolerance = _dt.timedelta(minutes=OPENING_FIGURE_TOLERANCE_MINUTES)
+
+    best, best_gap = None, None
+    for ev in _load_events(workspace_root):
+        if ev.get("type") != "brief_state":
+            continue
+        if str(ev.get("source_skill") or "") != OPENING_FIGURE_ORIGIN:
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts is None:
+            continue
+        gap = abs(ts - anchor)
+        if gap > tolerance:
+            continue
+        if best_gap is None or gap < best_gap:
+            best, best_gap = ev, gap
+    if best is None:
+        return out
+    data = best.get("data") if isinstance(best.get("data"), dict) else {}
+    counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+    headline = counts.get("headline") if isinstance(counts.get("headline"),
+                                                    dict) else {}
+    total = counts.get("total")
+    if not isinstance(total, int) or isinstance(total, bool):
+        # A half-written event is not an opening figure. Degrade to "no opening
+        # figure on record" rather than to a partial number.
+        return out
+    out.update({"found": True, "total": total, "ts": best.get("ts"),
+                "headline": headline})
+    return out
+
+
+def opens_since(workspace_root, since_ts, *, now_iso=None) -> dict:
+    """What ENTERED the open book in this fire's window.
+
+    `{"n": int, "window_source": str, "since": iso}` — the same `_window`
+    resolution `closures_since` uses, deliberately, so the ledger's two sides
+    are measured over one span. A ledger whose opens and closes came from
+    different windows would balance by accident or not at all.
+
+    Counts only what the book counts: `pending_review` extractions are the
+    needs-your-call queue rather than the open book, and a sub-item is a step
+    of a promise rather than another one (`commitment_state`'s own partition).
+    """
+    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
+    until = _parse_iso(now_iso) if now_iso else None
+    n = 0
+    for ev in _load_events(workspace_root):
+        if ev.get("type") != "commitment":
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts is None or ts < since:
+            continue
+        if until is not None and ts > until:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if data.get("pending_review"):
+            continue
+        if data.get("parent_id"):
+            continue
+        n += 1
+    return {"n": n, "window_source": window_source, "since": since.isoformat()}
+
+
+def compute_ledger(*, opening: dict, n_opened: int,
+                   closures: Iterable[dict], brief_state: dict) -> dict:
+    """THE LEDGER (SPEC EODLEDGER1 part 2). What the day did to the open book.
+
+    Book at open → `+opened` → `−closed` → `−dropped` → book now, with the
+    delta named and its sign meaningful. Every input already exists on this
+    fire: the opening figure off the morning's own `brief_state`, the two close
+    kinds out of `closures_since`'s `resolution`, and the closing figure out of
+    the `brief_state` this driver already computes and discards.
+
+    NO OPENING FIGURE → NO ARITHMETIC. Not a zero, not a delta of zero, not a
+    "book now" presented as though it were movement: the block says *"no
+    opening figure on record"*, renders the closes it can count, and the delta
+    key is `None`. The suite pins the ABSENCE, not merely the presence of the
+    line — a fabricated baseline is indistinguishable from a measured one once
+    it is on screen.
+
+    THE RESIDUAL IS NAMED, NEVER ABSORBED. The four movements will not always
+    account for the whole change (a confirm out of the review queue enters the
+    book without being opened; a merge retires two rows into one), and a ledger
+    that silently folded the difference into "closed" would be a ledger that
+    lies quietly. When the parts do not add up, the block says by how much and
+    stops there.
+    """
+    rows = [c for c in (closures or []) if isinstance(c, dict)]
+    n_dropped = sum(1 for c in rows
+                    if str(c.get("resolution") or "").lower() == "dropped")
+    n_closed = len(rows) - n_dropped
+    try:
+        n_opened = max(0, int(n_opened))
+    except (TypeError, ValueError):
+        n_opened = 0
+
+    headline = ((brief_state or {}).get("headline")
+                if isinstance((brief_state or {}).get("headline"), dict)
+                else {})
+    book_now = headline.get("total")
+    if not isinstance(book_now, int) or isinstance(book_now, bool):
+        book_now = None
+
+    out = {
+        "status": LEDGER_NO_OPENING_FIGURE,
+        "book_at_open": None,
+        "n_opened": n_opened,
+        "n_closed": n_closed,
+        "n_dropped": n_dropped,
+        "book_now": book_now,
+        "delta": None,
+        "movement_line": None,
+        "residual": None,
+        "residual_line": None,
+        "reconciles": None,
+        "headline": headline,
+        "line": NO_OPENING_FIGURE_LINE,
+    }
+    book_at_open = (opening or {}).get("total")
+    if not (opening or {}).get("found") \
+            or not isinstance(book_at_open, int) \
+            or isinstance(book_at_open, bool) \
+            or book_now is None:
+        return out
+
+    delta = book_now - book_at_open
+    if delta < 0:
+        delta_phrase = LEDGER_DELTA_DOWN.format(n=abs(delta))
+    elif delta > 0:
+        delta_phrase = LEDGER_DELTA_UP.format(n=delta)
+    else:
+        delta_phrase = LEDGER_DELTA_FLAT
+    accounted = n_opened - n_closed - n_dropped
+    residual = delta - accounted
+
+    out.update({
+        "status": LEDGER_MOVEMENT,
+        "book_at_open": book_at_open,
+        "delta": delta,
+        "movement_line": LEDGER_LINE.format(
+            book_at_open=book_at_open, opened=n_opened, closed=n_closed,
+            dropped=n_dropped, book_now=book_now, delta=delta_phrase),
+        "residual": residual,
+        "reconciles": residual == 0,
+        "opening_ts": (opening or {}).get("ts"),
+    })
+    out["line"] = out["movement_line"]
+    if residual:
+        out["residual_line"] = LEDGER_RESIDUAL_LINE.format(
+            accounted=accounted, residual=residual)
+    return out
+
+
 def compute_score(*, morning: dict, digest: dict, open_ids: Iterable[str],
                   closures: Iterable[dict], softened: bool = False,
-                  close_legs: Optional[Iterable[dict]] = None) -> dict:
+                  close_legs: Optional[Iterable[dict]] = None,
+                  ledger: Optional[dict] = None) -> dict:
     """The report card. A diff, not a grade.
 
     Joins the morning fire's `needs_attention_ids` against today's closures and
@@ -613,9 +1469,14 @@ def compute_score(*, morning: dict, digest: dict, open_ids: Iterable[str],
     rows at all. A score computed against nothing is a guess wearing a number.
     """
     if not (morning or {}).get("found"):
+        # THE LEDGER RIDES BOTH BRANCHES (EODLEDGER1). A day with no morning
+        # plan still moved the book, and the ledger's own no-opening-figure
+        # answer is exactly the right thing to say about it. Suppressing the
+        # ledger here would have made "no plan" mean "no day".
         return {"status": "no_plan", "line": NO_PLAN_LINE, "rows": [],
                 "n_planned": 0, "n_closed": 0, "n_open": 0,
                 "n_not_recorded": 0, "softened": bool(softened),
+                "ledger": ledger,
                 "first_move": None, "digest_read": bool((digest or {}).get("exists"))}
 
     open_set = {str(i) for i in (open_ids or [])}
@@ -669,6 +1530,10 @@ def compute_score(*, morning: dict, digest: dict, open_ids: Iterable[str],
         "n_not_recorded": n_missing,
         "notes": notes,
         "softened": bool(softened),
+        # THE BOOK'S MOVEMENT (EODLEDGER1 part 2). The score reads the plan;
+        # this reads the book. Both are the report card and only one of them
+        # existed.
+        "ledger": ledger,
         "first_move": check_first_move((digest or {}).get("first_move"),
                                        closures, close_legs=close_legs),
         "digest_read": bool((digest or {}).get("exists")),
@@ -987,8 +1852,16 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
     start biting, so the block returns `more_line` whenever it bound — the
     same posture the morning brief's capped lane has always had. `n_total` is
     the honest count regardless of the aperture; the cap binds the RENDER.
+
+    AND THE WINDOW HAS A FLOOR (SPEC WINSFLOOR1). A missing `since_ts` used to
+    mean no lower bound at all, so on any day the morning brief did not fire
+    this block read every win-type event the workspace had ever written and
+    printed the count as what moved today — 2,334 rows on the live workspace on
+    2026-08-19, on a day that had moved none of them. It now floors to
+    workspace-local midnight and returns `window_source` naming the window it
+    read, which is also what spells `more_line` (`WINS_MORE_LINES`).
     """
-    since = _parse_iso(since_ts) if since_ts else None
+    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     kinds = dict(_WIN_SPECS)
     events = _load_events(workspace_root)
@@ -1000,7 +1873,11 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
         if kind is None:
             continue
         ts = _parse_iso(ev.get("ts"))
-        if since is not None and (ts is None or ts < since):
+        # THE LOWER BOUND IS ALWAYS REAL (SPEC WINSFLOOR1). This was the line
+        # that went silent when no morning brief fired: `since` was None, the
+        # guard fell through, and the block rendered the whole history of the
+        # workspace as what moved today.
+        if ts is None or ts < since:
             continue
         if until is not None and ts is not None and ts > until:
             continue
@@ -1042,9 +1919,16 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
         "rows": shown,
         "n_total": n_total,
         "n_more": n_more,
-        # A cap is a render bound and never a silence.
-        "more_line": (WINS_MORE_LINE.format(n_more=n_more, cap=cap)
-                      if n_more else ""),
+        # WHICH WINDOW THESE ROWS CAME FROM. The pack carries it, and the
+        # overflow line is spelled from it — a block that swapped its aperture
+        # without saying so would be honest in its numbers and mute about what
+        # they count.
+        "window_source": window_source,
+        # A cap is a render bound and never a silence — and since EODLEDGER1
+        # it states the DENOMINATOR, through the one shared helper every capped
+        # block on this surface now uses.
+        "more_line": more_line(WINS_MORE_LINES[window_source],
+                               n_shown=len(shown), n_total=n_total),
         "n_generic": sum(1 for r in rows if r["title_source"] == TITLE_GENERIC),
         "line": NO_WINS_LINE if n_total == 0 else None,
     }
@@ -1059,7 +1943,8 @@ def compute_slipped(*, brief_state: dict, morning: dict,
                     processed_meeting_ids: Optional[Iterable[str]] = None,
                     now_iso: Optional[str] = None,
                     cap: int = MAX_SLIPPED_ROWS,
-                    softened: bool = False) -> dict:
+                    softened: bool = False,
+                    lane_total: Optional[int] = None) -> dict:
     """The ball-is-on-you rows, and ONLY those.
 
     A "slipped" claim is a ball-is-on-you claim, so it rides the SAME gates the
@@ -1074,7 +1959,18 @@ def compute_slipped(*, brief_state: dict, morning: dict,
     the gate dropped this morning cannot be promoted back into a slipped claim
     by this evening — the exact move Bug #93 was.
 
-    Max `cap` rows, each carrying its verbs.
+    Max `cap` rows, each carrying its verbs — and since EODLEDGER1 the cap
+    STATES ITS DENOMINATOR, through the same `more_line` helper `wins` uses.
+
+    `lane_total` IS THE HONEST DENOMINATOR AND IT HAS TO BE PASSED. The rows
+    this function receives have ALREADY been bounded once, upstream, by
+    `commitment_state.cap_needs_attention` — the driver hands over `lane["shown"]`
+    (at most five) and keeps `lane["n_total"]` beside it. So `len(candidates)`
+    is a second cap wearing a total's clothes: on the workspace this spec was
+    measured against it would print "3 of 5" over a lane holding 41. When
+    `lane_total` is absent the local count stands, which is right for a direct
+    caller handing over the whole lane and wrong for the driver — so the driver
+    passes it, and the suite pins that it does.
     """
     state = brief_state or {}
     dropped_ids = {str(d.get("commitment_id"))
@@ -1115,10 +2011,19 @@ def compute_slipped(*, brief_state: dict, morning: dict,
                               "title": str((m or {}).get("title") or "").strip()})
 
     shown = candidates[:cap] if cap else candidates
+    # The upstream total wins when it is both present and larger — larger is
+    # the only direction an upstream cap can move it, and taking the max means
+    # a caller that passes a stale or wrong-shaped value can never make the
+    # denominator SMALLER than what this function can see with its own eyes.
+    n_total = len(candidates)
+    if isinstance(lane_total, int) and not isinstance(lane_total, bool):
+        n_total = max(n_total, lane_total)
     return {
         "rows": shown,
-        "n_total": len(candidates),
-        "n_more": max(0, len(candidates) - len(shown)),
+        "n_total": n_total,
+        "n_more": max(0, n_total - len(shown)),
+        "more_line": more_line(SLIPPED_MORE_LINE, n_shown=len(shown),
+                               n_total=n_total),
         "dropped_ids": sorted(dropped_ids),
         "meetings_without_notes": unprepped,
         "softened": bool(softened),
@@ -1179,7 +2084,41 @@ def compute_confirm(open_commitments, *, now_iso: str,
         r["verbs"] = list(CONFIRM_VERBS)
     return {"rows": shown, "n_total": len(rows),
             "n_more": max(0, len(rows) - len(shown)),
+            # EODLEDGER1 — the cap states its denominator. This block bound 5
+            # of 67 in silence on the workspace the spec was measured against.
+            "more_line": more_line(CONFIRM_MORE_LINE, n_shown=len(shown),
+                                   n_total=len(rows)),
             "n_held_excluded": n_stamped + len(held)}
+
+
+def compute_person_candidates(workspace_root, *, now_iso: Optional[str] = None,
+                              cap: Optional[int] = None) -> dict:
+    """PERSONLOOP1 §0-3 — the confirm block's person-candidate rows.
+
+    The recurring names the confirm block keeps asking about WITHOUT ever
+    offering the answer: every one of them blocks captures that cannot drain
+    until a person record exists. Derived live
+    (`person_candidates.derive_candidates`), capped, counts on the receipt.
+
+    Returns `{"rows", "n_total", "telemetry"}` — `rows` in the widget row
+    shape all three surfaces share, so the End of Day renders the same
+    question as the queue and the staff meeting, and answers it through the
+    same writer. Any failure degrades to NO rows: the day-close must not die
+    because a proposal could not be computed."""
+    try:
+        from person_candidates import (PROPOSAL_CAP, candidate_rows,
+                                       derive_candidates, telemetry)
+
+        cands = derive_candidates(workspace_root, now_iso=now_iso)
+        rows = candidate_rows(
+            cands, cap=PROPOSAL_CAP if cap is None else cap)
+        return {"rows": rows, "n_total": len(cands),
+                "telemetry": telemetry(cands)}
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write(f"[end_of_day] person candidates skipped: {exc}\n")
+        return {"rows": [], "n_total": 0,
+                "telemetry": {"n_candidates": 0, "n_rows_blocked": 0,
+                              "n_top_rows_blocked": 0}}
 
 
 # ---------------------------------------------------------------------------
@@ -1498,6 +2437,169 @@ def soften_floor(close_result: Optional[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# The catch-up read (SPEC EODLEDGER1 part 3 — M's ruling on D3)
+# ---------------------------------------------------------------------------
+
+# Below this the fire is not doing catch-up work in any sense a reader cares
+# about, and the label would be noise on a surface that is otherwise fine.
+CATCHUP_TIER = "degrade"
+
+
+def _late_phrase(minutes) -> str:
+    """"30 hours late" / "3 days late", from the lateness helper's OWN number.
+
+    Never recomputed from a wall clock here: `check_lateness` already did that
+    math against the slot the cron evaluates, in the clock the cron evaluates
+    in, and a second derivation is a second answer waiting to disagree.
+    """
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return "late"
+    if minutes < 0:
+        return "late"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} hours late" if hours != 1 else "1 hour late"
+    days = hours // 24
+    return f"{days} days late" if days != 1 else "1 day late"
+
+
+def _slot_phrase(scheduled_for) -> str:
+    """The missed slot, rendered AS IT WAS AUTHORED.
+
+    `scheduled_for` is machine-local naive — the clock the cron evaluates in —
+    and it is rendered without conversion, which is the LATETZ rule: a cron
+    slot is not a connector timestamp, the workspace-TZ conversion already
+    happened at registration, and re-expressing it here names the wrong hour
+    (and sometimes the wrong DAY) on any box whose zone differs from the
+    workspace's.
+    """
+    try:
+        dt = _dt.datetime.fromisoformat(str(scheduled_for))
+    except (TypeError, ValueError):
+        return ""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    clock = dt.strftime("%I:%M %p").lstrip("0")
+    if dt.minute == 0:
+        clock = dt.strftime("%I %p").lstrip("0")
+    return f"{clock} {dt.strftime('%A')}"
+
+
+def compute_catchup_read(*, lateness: dict, window=None, workspace_root=None,
+                         now_iso=None) -> dict:
+    """The LABEL a late day-close arrives under, and whether it renders at all.
+
+    M's ruling on D3: a late fire delivers a labelled read; it does not
+    withhold one. Over 24 hours late the fire used to perform every substrate
+    write and then post `degrade_notice` alone, so a skipped Tuesday was never
+    scored — not that evening, not ever, and the only surviving trace was a
+    Monday roll-up row reading "no close was recorded".
+
+    Returns `{"renders", "tier", "label", "lines", "days", "n_days",
+    "hours_late", "scheduled_for", "degrade_notice", "capped"}`.
+
+      `renders` True   → the surface posts, with `label` at the top.
+      `renders` False  → nothing changes; this is every non-degrade tier and,
+                         critically, every `skip_render` directive.
+
+    **`skip_render` NEVER RENDERS THROUGH HERE.** A slot already delivered
+    posts its `ack` and stops — that is a duplicate, not a late first serve,
+    and conflating the two is what delivered three duplicate full surfaces in
+    one afternoon. The two paths are separated in code and pinned apart in the
+    suite; `directive` is read BEFORE the tier, exactly as the fire's own prose
+    requires.
+
+    **`late_fire` IS NOT MODIFIED.** `LATENESS_TIERS` keeps its 3h/24h
+    thresholds and `check_lateness` keeps its return contract, so every other
+    scheduled surface keeps today's suppress-on-degrade behaviour. Only this
+    orchestrator's degrade branch changed. `degrade_notice` is carried through
+    on the return so the fire can put it on the RECORD, and is deliberately not
+    the line the reader sees: it says "Skipped the full …", which is true of
+    every other surface and false of this one from the moment it renders.
+
+    The span is SOURCED, never hand-computed: how late comes from
+    `lateness_minutes`, the missed slot from `scheduled_for`, and which days
+    are accounted for from `catchup.catchup_window` over this fire's own
+    receipt series. One read covers the whole span — never one surface per
+    missed day.
+    """
+    late = lateness or {}
+    out = {"renders": False, "tier": late.get("tier"), "label": None,
+           "lines": [], "days": [], "n_days": 0,
+           "hours_late": None, "scheduled_for": late.get("scheduled_for"),
+           "degrade_notice": late.get("degrade_notice"), "capped": False}
+    if late.get("directive"):
+        # The served-slot skip. Not a late first serve; not this function's
+        # business. Returning early rather than falling through is the fence.
+        return out
+    if late.get("tier") != CATCHUP_TIER:
+        return out
+
+    if window is None and workspace_root is not None:
+        try:
+            from catchup import catchup_window
+            # `now=now_iso` for the same reason `capture_aperture` passes it:
+            # the span is a statement about the fire's own instant, and the
+            # machine clock is not that instant on a catch-up fire.
+            window = catchup_window(workspace_root, TASK_ID, floor_hours=24,
+                                    cap_days=30, now=now_iso)
+        except Exception:  # noqa: BLE001 — catch-up never blocks a fire
+            window = None
+    window = window if isinstance(window, dict) else {}
+    out["capped"] = bool(window.get("capped"))
+
+    first = _local_dt(workspace_root, window.get("start_aware")
+                      or window.get("start"))
+    last = _local_dt(workspace_root, window.get("end_aware")
+                     or window.get("end"))
+    if last is None and now_iso:
+        last = _local_dt(workspace_root, now_iso)
+    days = []
+    if first is not None and last is not None and first.date() <= last.date():
+        step = first.date()
+        # The 30-day ceiling is `catchup_window`'s, and it has already been
+        # applied to `start`; this loop only expands what came back.
+        while step <= last.date() and len(days) < 31:
+            days.append(step.isoformat())
+            step = step + _dt.timedelta(days=1)
+    out["days"] = days
+    out["n_days"] = len(days)
+
+    if len(days) > 1:
+        span = CATCHUP_SPAN_MULTI.format(
+            first=_dt.date.fromisoformat(days[0]).strftime("%A, %B ")
+            + str(_dt.date.fromisoformat(days[0]).day),
+            last=_dt.date.fromisoformat(days[-1]).strftime("%A, %B ")
+            + str(_dt.date.fromisoformat(days[-1]).day))
+    elif days:
+        span = CATCHUP_SPAN_ONE_DAY.format(
+            day=_dt.date.fromisoformat(days[0]).strftime("%A, %B ")
+            + str(_dt.date.fromisoformat(days[0]).day))
+    else:
+        span = "the missed slot"
+
+    minutes = late.get("lateness_minutes")
+    try:
+        out["hours_late"] = int(minutes) // 60
+    except (TypeError, ValueError):
+        out["hours_late"] = None
+    out["renders"] = True
+    out["label"] = CATCHUP_LABEL.format(
+        span=span, late=_late_phrase(minutes),
+        scheduled=_slot_phrase(late.get("scheduled_for")))
+    lines = [out["label"]]
+    if len(days) > 1:
+        lines.append(CATCHUP_COMPRESSED_LINE.format(n_days=len(days)))
+    if out["capped"]:
+        lines.append(CATCHUP_CAPPED_LINE.format(
+            cap=int(window.get("cap_days") or 30)))
+    out["lines"] = lines
+    return out
+
+
+# ---------------------------------------------------------------------------
 # The receipt — written BEFORE the post, and it is what taps resolve against
 # ---------------------------------------------------------------------------
 
@@ -1507,19 +2609,34 @@ def confirm_ids_from_pack(pack: dict) -> list:
     ORDER IS THE CONTRACT. `apply-choices` resolves `[n]` positionally against
     this list, so it is built from the pack's own rendered rows and in the
     pack's own order: slipped rows first (they carry the push/draft/drop
-    verbs), then the confirm rows. A surface that renumbers without rewriting
-    this list is the wrong-close hazard, which is why the list is DERIVED here
+    verbs), then the confirm rows, then (PERSONLOOP1) the confirm block's
+    person-candidate rows. A surface that renumbers without rewriting this
+    list is the wrong-close hazard, which is why the list is DERIVED here
     instead of typed by the orchestrator.
+
+    The candidate rows are APPENDED LAST on purpose: every number a pre-
+    PERSONLOOP1 receipt handed out keeps pointing at the same row, so the
+    change cannot renumber anything that already existed. A candidate entry
+    also carries its own `data` (name key, spellings, org) because a
+    candidate has no substrate id to look up — the row IS the payload, and
+    the alternative is session state.
     """
     ids = []
     for row in ((pack or {}).get("slipped") or {}).get("rows") or []:
         cid = row.get("commitment_id")
         if cid:
             ids.append({"n": len(ids) + 1, "id": str(cid), "block": "slipped"})
-    for row in ((pack or {}).get("confirm") or {}).get("rows") or []:
+    confirm = (pack or {}).get("confirm") or {}
+    for row in confirm.get("rows") or []:
         cid = row.get("commitment_id")
         if cid:
             ids.append({"n": len(ids) + 1, "id": str(cid), "block": "confirm"})
+    for row in confirm.get("person_rows") or []:
+        wire = row.get("n")
+        if wire:
+            ids.append({"n": len(ids) + 1, "id": str(wire),
+                        "block": PERSON_CANDIDATE_BLOCK,
+                        "data": dict(row.get("data") or {})})
     return ids
 
 
@@ -1617,6 +2734,20 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
                     "held_routing", "n_held"):
             if key in capture_leg and capture_leg[key] is not None:
                 data[key] = capture_leg[key]
+    # PERSONLOOP1 §3-4 — the person-loop's own arithmetic, riding the SAME
+    # receipt shape `capture_counts` rides and keeping the same discipline:
+    # counts only, never a name. Without it the V1-style re-measure has
+    # nothing to read and "did the bucket shrink?" is unanswerable.
+    confirm_block = (pack.get("confirm")
+                     if isinstance(pack.get("confirm"), dict) else {})
+    pc = confirm_block.get("person_telemetry")
+    if isinstance(pc, dict) and pc:
+        data["person_candidate_counts"] = {
+            "n_candidates": pc.get("n_candidates"),
+            "n_rows_blocked": pc.get("n_rows_blocked"),
+            "n_top_rows_blocked": pc.get("n_top_rows_blocked"),
+            "n_shown": len(confirm_block.get("person_rows") or []),
+        }
     close = pack.get("close") if isinstance(pack.get("close"), dict) else None
     if close is not None:
         data["close_leg"] = {
@@ -1719,6 +2850,13 @@ ROUTES = {
     "draft": ("slipped",),
     "drop": ("slipped", "confirm"),
     "confirm": ("confirm",),
+    # PERSONLOOP1 — the candidate row's three answers, legal ONLY on the
+    # candidate block. A `drop` on a candidate would read as "close it", and
+    # there is nothing to close: the answer that means "stop asking" is
+    # `not a person`, and it says so.
+    "add person": (PERSON_CANDIDATE_BLOCK,),
+    "same as [existing]": (PERSON_CANDIDATE_BLOCK,),
+    "not a person": (PERSON_CANDIDATE_BLOCK,),
 }
 
 
@@ -1736,7 +2874,7 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
     happened: three gestures on one evening carried one per-day constant.
     """
     out = {"ok": False, "id": None, "block": None, "action": action, "n": n,
-           "refusal": None, "source_ref": None}
+           "refusal": None, "source_ref": None, "data": None}
     verb = str(action or "").strip().lower()
     mapping = choice_map(workspace_root, now=now)
     if not mapping["ok"]:
@@ -1772,6 +2910,12 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
     out["ok"] = True
     out["id"] = str(row.get("id") or "")
     out["block"] = block
+    # PERSONLOOP1 — a candidate row's payload travels with the map entry (it
+    # has no substrate id to resolve), so the handler needs no session state.
+    # None on every other block, which is what every pre-PERSONLOOP1 receipt
+    # produces.
+    payload = row.get("data")
+    out["data"] = dict(payload) if isinstance(payload, dict) else None
     out["source_ref"] = gesture_ref(mapping["receipt_id"], f"row{index}")
     return out
 
@@ -1851,16 +2995,40 @@ __all__ = [
     "NO_PLAN_LINE", "NOT_RECORDED", "NOT_RECORDED_LINE", "NO_CLOSE_RECORDED",
     "NO_SCORE_RECORDED",
     "SIGN_OFF_CLEAR", "SOFTEN_LINE", "NO_WINS_LINE",
+    "WINDOW_MORNING_ANCHOR", "WINDOW_DAY_FLOOR",
+    "MORE_LINE_SHAPE", "MORE_LINE_TEMPLATES", "more_line",
+    "WINS_MORE_LINE_ANCHOR", "WINS_MORE_LINE_DAY_FLOOR", "WINS_MORE_LINES",
+    "SLIPPED_MORE_LINE", "CONFIRM_MORE_LINE",
+    # SPEC EODLEDGER1 — coverage, the ledger, the catch-up read.
+    "CAP_MAIL", "CAP_CHAT", "CAP_CALENDAR", "CAP_MEETINGS",
+    "COVERAGE_CAPABILITIES", "COVERAGE_LABELS", "CURSOR_STALE_DAYS",
+    "COVERAGE_READ_THROUGH", "COVERAGE_STALE", "COVERAGE_NOT_READ",
+    "COVERAGE_NOT_READ_NO_REASON", "COVERAGE_NEVER_ADVANCED",
+    "COVERAGE_DEGRADED",
+    "COVERAGE_CALENDAR_READ", "COVERAGE_CALENDAR_ABSENT",
+    "COVERAGE_CALENDAR_ABSENT_REASON",
+    "COVERAGE_MEETINGS", "COVERAGE_MEETINGS_UNKNOWN",
+    "COVERAGE_MEETINGS_N", "COVERAGE_MEETINGS_N_UNREAD",
+    "COVERAGE_MEETINGS_BACKLOG", "COVERAGE_MEETINGS_BACKLOG_UNREAD",
+    "COVERAGE_UNSOURCED",
+    "compute_coverage", "capture_aperture",
+    "NO_OPENING_FIGURE", "NO_OPENING_FIGURE_LINE", "LEDGER_LINE",
+    "LEDGER_MOVEMENT", "LEDGER_NO_OPENING_FIGURE", "LEDGER_STATUSES",
+    "LEDGER_RESIDUAL_LINE", "OPENING_FIGURE_ORIGIN",
+    "opening_book", "opens_since", "compute_ledger",
+    "CATCHUP_TIER", "CATCHUP_LABEL", "CATCHUP_COMPRESSED_LINE",
+    "CATCHUP_CAPPED_LINE", "compute_catchup_read",
     "NO_TOMORROW_INTENT_LINE",
     "SLIPPED_VERBS", "CONFIRM_VERBS", "TOMORROW_VERBS", "ROUTES",
     "NO_MAP_REFUSAL", "STALE_MAP_REFUSAL", "ORPHAN_LINE",
     "workspace_today", "day_branch",
-    "morning_fire", "read_morning_digest", "closures_since",
+    "morning_fire", "read_morning_digest", "closures_since", "ClosureWindow",
     "unsourced_closes", "check_first_move", "FIRST_MOVE_STATUSES",
     "FIRST_MOVE_OPEN", "FIRST_MOVE_STALE", "FIRST_MOVE_UNVERIFIABLE",
     "compute_score", "compute_wins", "compute_slipped", "compute_confirm",
     "compute_tomorrow", "compute_sign_off",
     "week_rollup", "development_read_slot", "soften_floor",
+    "compute_person_candidates", "PERSON_CANDIDATE_BLOCK",
     "confirm_ids_from_pack", "log_end_of_day_receipt",
     "mint_receipt_id", "gesture_ref",
     "choice_map", "resolve_choice", "resolve_intent_confirm",

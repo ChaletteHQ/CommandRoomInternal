@@ -920,6 +920,20 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
             extra.append(fold)
     except Exception as exc:  # pragma: no cover — the fire must survive
         sys.stderr.write(f"[surface_drivers] meeting fold skipped: {exc}\n")
+    # PERSONLOOP1 §0-3 — the person-candidate offer, one capped section from
+    # the SAME builder the on-demand queue and the End of Day read
+    # (`person_candidates.candidate_section`). It sits after the meeting fold
+    # deliberately: the fold is the week's captures, and this is the reason
+    # so many of them are stuck. Drop-empty, and any failure degrades to no
+    # section rather than a dead fire — the same posture as the fold above.
+    try:
+        from person_candidates import candidate_section
+        offer = candidate_section(workspace_root, now_iso=now_iso)
+        if offer:
+            extra.append(offer)
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write(f"[surface_drivers] person candidates skipped: "
+                         f"{exc}\n")
     if moves_rows:
         extra.append({"title": "THIS WEEK'S MOVES", "items": list(moves_rows)})
 
@@ -1415,6 +1429,15 @@ def _dup_fold_note(d: dict) -> str | None:
     n = d.get("duplicate_fold_count")
     if isinstance(n, int) and n > 1:
         return f"{n} records — merge?"
+    # INGESTDUP1 D2 — the id-twin collapse. Deliberately NOT worded as a merge
+    # question: these are appends of ONE record, so there is nothing to
+    # adjudicate and nothing for the reader to decide. It is said out loud
+    # anyway, because a projection that quietly drops rows is how a count bug
+    # becomes invisible (and this field is the collapse's only consumer — an
+    # unread stamp is a write-only field).
+    t = d.get("id_twin_count")
+    if isinstance(t, int) and t > 1:
+        return f"written {t} times — counted once"
     return None
 
 
@@ -1784,7 +1807,8 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                           todays_meetings=None,
                           processed_meeting_ids=None,
                           connector_gaps=None,
-                          held_ids=None) -> dict:
+                          held_ids=None,
+                          lateness=None) -> dict:
     """SPEC EOD1 — the End of Day fire's seven blocks, assembled in ONE call.
 
     The t3 FB-9 pattern the morning brief already runs on: one fetch per fire,
@@ -1797,6 +1821,14 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                    top, never suppressed. Same block, same reason, same
                    degrade-honestly posture as the brief: a stale view here is
                    already LOUD, so the surface renders rather than vanishes.
+      coverage     SPEC EODLEDGER1 — what this fire actually READ, per
+                   capability: mail and chat through their own cursors (naming
+                   the span when one is behind), calendar present or absent,
+                   and the capture leg's window with what is still owed. Same
+                   never-suppressed posture as `alarm_lines`, and placed
+                   directly under them: a reader cannot weigh a number until
+                   they know what aperture produced it, and everything below
+                   this block is a number.
       score        the report card. The morning fire's receipt joined against
                    today's closures, plus the saved digest read back off disk.
                    NO morning receipt → "No plan on record this morning",
@@ -1826,6 +1858,16 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     morning brief that lost its receipt AND would stale-refuse the next
     morning's `mark done [n]`. The evening borrows the derivation; the morning
     keeps the write.
+
+    SPEC EODLEDGER1 adds three things and no connector. `coverage` states the
+    aperture (above). `score["ledger"]` states what the day did to the OPEN
+    BOOK — book at open → opened → closed → dropped → book now — with the
+    opening figure READ off the morning fire's own `brief_state` and NO
+    arithmetic at all when there is none to read. And `catchup` is the label a
+    LATE day-close arrives under: pass the Phase 2.9 `check_lateness` return as
+    `lateness=` and, on the degrade tier only, the pack composes the span the
+    read covers. Every field any of them renders is already computed here or
+    read from this workspace's own ledger; nothing new is fetched.
 
     It writes no RECEIPT either. `end_of_day.log_end_of_day_receipt` is the one
     writer, called by the orchestrator AFTER the capture leg and BEFORE the
@@ -1884,10 +1926,25 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 
     morning = eod.morning_fire(ws, for_date, now_iso=now_iso)
     digest = eod.read_morning_digest(ws, morning)
+    # `since_ts` is None on a day whose morning brief never fired, and that is
+    # the correct answer from `morning_fire`. Both readers below floor it to
+    # workspace-local midnight themselves (SPEC WINSFLOOR1) and report which
+    # window they used — the floor is IN the helpers, deliberately, so nothing
+    # here has to remember to apply it.
     since_ts = morning.get("ts")
     closures = eod.closures_since(ws, since_ts, now_iso=now_iso)
     open_ids = [str((ev.get("data") or {}).get("id"))
                 for ev in opens if isinstance(ev, dict)]
+
+    # THE LEDGER (SPEC EODLEDGER1 part 2). The opening figure is READ off the
+    # morning fire's own `brief_state` — never inferred, and specifically never
+    # today's count standing in for this morning's. `opens_since` uses the SAME
+    # `_window` resolution `closures_since` does, so both sides of the ledger
+    # are measured over one span.
+    opening = eod.opening_book(ws, morning, now_iso=now_iso)
+    opened = eod.opens_since(ws, since_ts, now_iso=now_iso)
+    ledger = eod.compute_ledger(opening=opening, n_opened=opened["n"],
+                                closures=closures, brief_state=brief_state)
 
     score = eod.compute_score(morning=morning, digest=digest,
                               open_ids=open_ids, closures=closures,
@@ -1896,19 +1953,57 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                               # whether the close phase could see the day at
                               # all: "nothing closed it" over a stale cursor
                               # is not a measurement.
-                              close_legs=soften.get("legs"))
+                              close_legs=soften.get("legs"),
+                              ledger=ledger)
     wins = eod.compute_wins(ws, since_ts, now_iso=now_iso)
     slipped = eod.compute_slipped(brief_state=brief_state, morning=morning,
                                   todays_meetings=todays_meetings,
                                   processed_meeting_ids=processed_meeting_ids,
-                                  now_iso=now_iso, softened=softened)
+                                  now_iso=now_iso, softened=softened,
+                                  # THE HONEST DENOMINATOR (EODLEDGER1). The
+                                  # lane handed over above was ALREADY bounded
+                                  # by `cap_needs_attention`; without this the
+                                  # slipped block would print "3 of 5" over a
+                                  # lane holding 41.
+                                  lane_total=brief_state["needs_attention_total"])
     confirm = eod.compute_confirm(opens, now_iso=now_iso, held_ids=held_ids)
+    # PERSONLOOP1 §0-3 — the confirm block's second half. It rides INSIDE the
+    # confirm block rather than as a new pack block, so `BLOCK_ORDER` and
+    # every `blocks_rendered` claim are unchanged, and
+    # `confirm_ids_from_pack` appends these rows LAST so no pre-existing
+    # number moves. This is a CODE chokepoint on purpose: the fire's prose
+    # cannot forget a step it does not perform.
+    _pcand = eod.compute_person_candidates(ws, now_iso=now_iso)
+    confirm["person_rows"] = _pcand["rows"]
+    confirm["person_total"] = _pcand["n_total"]
+    confirm["person_telemetry"] = _pcand["telemetry"]
     tomorrow = eod.compute_tomorrow(ws, for_date=tomorrow_date,
                                     calendar_events=calendar_events,
                                     brief_state=brief_state,
                                     calendar_available=calendar_available)
     sign_off = eod.compute_sign_off(slipped=slipped, tomorrow=tomorrow,
                                     now_iso=now_iso, brief_state=brief_state)
+
+    # THE COVERAGE STRIP (SPEC EODLEDGER1 part 1). Composed LAST among the
+    # blocks and placed FIRST among them: it needs `unsourced_closes` and the
+    # tomorrow block's own answer about the calendar. That last point is the
+    # fence, not a convenience — "the calendar was not read" and "tomorrow is
+    # empty" rendered identically before this spec, and they cannot disagree
+    # now because there is one boolean behind both of them.
+    unsourced = eod.unsourced_closes(closures)
+    coverage = eod.compute_coverage(
+        ws, close_result=close_result, connector_gaps=connector_gaps,
+        calendar_available=tomorrow["calendar_available"],
+        now_iso=now_iso, n_unsourced=len(unsourced),
+        capture=eod.capture_aperture(ws, now_iso=now_iso))
+
+    # THE CATCH-UP READ (SPEC EODLEDGER1 part 3, M's ruling on D3). Present on
+    # every fire and `renders: False` on all but the degrade tier — one
+    # unconditional thing for the fire to read, the same posture `directive`
+    # takes. `lateness` is the Phase 2.9 return, unmodified; nothing here
+    # recomputes lateness and nothing here touches `late_fire`.
+    catchup = eod.compute_catchup_read(lateness=lateness or {},
+                                       workspace_root=ws, now_iso=now_iso)
 
     pack = {
         "surface": eod.SURFACE,
@@ -1918,6 +2013,8 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "for_date": for_date,
         "branch": branch,
         "alarm_lines": alarm_lines,
+        "coverage": coverage,
+        "catchup": catchup,
         "close": close_result or {},
         "soften": soften,
         "score": score,
@@ -1928,7 +2025,22 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "sign_off": sign_off,
         "brief_state": brief_state,
         "connector_gaps": list(connector_gaps or []),
-        "unsourced_closes": eod.unsourced_closes(closures),
+        "unsourced_closes": unsourced,
+        # EODLEDGER1 — what entered the book in the same window the closes were
+        # read over. The ledger's other side; carried so a reader can check the
+        # arithmetic against the two counts rather than trust the sentence.
+        "opened": opened,
+        # WHICH WINDOW THE EVENING READ (SPEC WINSFLOOR1). `wins` carries its
+        # own copy for the renderer; this is where the closure read — which has
+        # no block of its own — says the same thing. Read STRICTLY off the
+        # object each helper returned: a defaulted read would report the wrong
+        # window rather than fail.
+        "window": {
+            "anchor_ts": since_ts,
+            "wins": wins["window_source"],
+            "closures": closures.window_source,
+            "closures_since": closures.since,
+        },
     }
     if branch == "monday":
         pack["week_rollup"] = eod.week_rollup(ws, for_date=for_date,
@@ -1940,8 +2052,17 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     # design, in the driver, before any of it reaches a chat turn.
     scannable = "\n".join(
         alarm_lines
+        # EODLEDGER1 — the three new text surfaces are scanned like every
+        # other one. The coverage strip carries connector reasons that arrived
+        # from the orchestrator, which is exactly the shape a leak travels in.
+        + list(coverage.get("lines") or [])
+        + list(catchup.get("lines") or [])
         + [l for l in [score.get("line"), wins.get("line"),
-                       slipped.get("soften_line"), sign_off.get("line"),
+                       wins.get("more_line"), slipped.get("more_line"),
+                       slipped.get("soften_line"), confirm.get("more_line"),
+                       (ledger or {}).get("line"),
+                       (ledger or {}).get("residual_line"),
+                       sign_off.get("line"),
                        tomorrow.get("line")] if l]
         + list(score.get("notes") or [])
     )
@@ -2423,6 +2544,20 @@ def main() -> int:
                          "now->+3d calendar fetch; omit it and the tomorrow "
                          "block renders its intent half and the fire "
                          "receipts the missing leg")
+    ap.add_argument("--lateness-json", default=None,
+                    help="end-of-day only: JSON file with the Phase 2.9 "
+                         "`check_lateness` return, VERBATIM. On the degrade "
+                         "tier the pack composes the catch-up label the "
+                         "surface opens with (SPEC EODLEDGER1); on every "
+                         "other tier the block is present and renders "
+                         "nothing. Never edited on the way in — the fire "
+                         "passes what the helper returned")
+    ap.add_argument("--gaps-json", default=None,
+                    help="end-of-day only: JSON file with the fire's "
+                         "`connector_gaps` — the plain-English reason each "
+                         "absent capability was skipped. The coverage strip "
+                         "renders these; without them a skipped leg reads as "
+                         "'nothing on the record says why'")
     ap.add_argument("--moves-json", default=None,
                     help="staff-meeting only: JSON file with the Phase-4 "
                          "moves rows (email-shaped item dicts)")
@@ -2484,10 +2619,19 @@ def _dispatch(args) -> int:
             calendar_events = json.loads(
                 Path(args.calendar_json).read_text(encoding="utf-8"))
             calendar_available = True
+        lateness = None
+        if args.lateness_json:
+            lateness = json.loads(
+                Path(args.lateness_json).read_text(encoding="utf-8"))
+        connector_gaps = None
+        if args.gaps_json:
+            connector_gaps = json.loads(
+                Path(args.gaps_json).read_text(encoding="utf-8"))
         pack = build_end_of_day_pack(
             args.workspace, mode=args.mode, now_iso=args.now,
             close_result=close_result, calendar_events=calendar_events,
-            calendar_available=calendar_available)
+            calendar_available=calendar_available,
+            connector_gaps=connector_gaps, lateness=lateness)
         print("CR-EOD-PACK: " + json.dumps(pack, ensure_ascii=False))
         return 0
 

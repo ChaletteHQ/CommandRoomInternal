@@ -178,6 +178,23 @@ def _resolved_entity_ids(name: str, workspace_root) -> frozenset:
     return out
 
 
+def resolved_entity_ids(name: str, workspace_root) -> frozenset:
+    """PUBLIC name for the exact-only resolution above (`_resolved_entity_ids`).
+
+    Exported for SPEC INGESTDUP1 §D1. The duplicate-capture gate has to answer
+    "are these two rows owed by the SAME person?" when one writer stored a
+    resolved `person_*` id and another stored that person's NAME — the live
+    shape that made the gate veto a pair whose titles matched verbatim. That is
+    the question this derivation already answers: cached, exact-only, alias and
+    canonical names, never fuzzy or phonetic.
+
+    Exported rather than re-implemented for the `meeting_ref_keys` reason: two
+    spellings of one predicate is exactly the drift that makes a record look
+    resolved to one path and unresolved to another, and a private name here
+    would have guaranteed a second copy."""
+    return _resolved_entity_ids(name, workspace_root)
+
+
 def counterparty_names(obj, *, workspace_root=None) -> list:
     """The ordered union of UNRESOLVED counterparty names (free text, no id):
     legacy scalar `counterparty_name` then `counterparty_names`. [] when
@@ -381,6 +398,7 @@ def build_counterparty_fields(
 __all__ = [
     "counterparty_ids",
     "counterparty_names",
+    "resolved_entity_ids",
     "primary_counterparty_id",
     "primary_counterparty_name",
     "counterparty_count",
