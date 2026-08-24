@@ -61,11 +61,19 @@ class DiscoveryResult:
     / `"m365_sharepoint"` / `"google_calendar"` / `"outlook_calendar"`. Lets
     orchestrators branch on platform without re-parsing the tool_id. None when
     no match.
+
+    `mail_ambiguous` (MAILSEAM2, v5.14.0+) is the receipt-side half of the
+    two-connector case: the sorted list of DISTINCT mail platforms the seam
+    detected when nothing was declared, set on the hit AND on the miss so a
+    fire can log which inbox it read and which one it walked past. None on
+    every unambiguous result, and never set on the declared path — a declared
+    backend is the deliberate answer to this question.
     """
     tool_id: Optional[str] = None
     reason: str = ""
     candidates_considered: int = 0
     platform: Optional[str] = None
+    mail_ambiguous: Optional[List[str]] = None
 
 
 import re as _re
@@ -574,58 +582,298 @@ def discover_granola_tool(tools: Iterable[ToolDescriptor], operation: str) -> Di
 # ============================================================================
 
 
+def _norm_op(value) -> str:
+    """The ONE normalization used to compare an operation spelling against a
+    tool id — applied to BOTH sides, on BOTH discovery paths (REVIEW_MAILSEAM2
+    F-6).
+
+    It used to be two rules. The undeclared mail loop stripped `_` and `-`;
+    `discover_for_category` stripped only `_`. They agreed solely because no
+    mail keyword and no mail tool id happens to contain a hyphen — an accident,
+    not a contract, and the tree already carries hyphenated server segments
+    (`mcp__a1b2c3d4-sample__…`). "One list, read by both paths" is the whole
+    justification for the seam vocabulary, so the comparison the two paths make
+    has to be literally the same function."""
+    return str(value).lower().replace("_", "").replace("-", "")
+
+
+# ---------------------------------------------------------------------------
+# The mail operation vocabulary — ONE block, read by the seams, by the
+# ambiguity census, and by `discover_for_category` when a seam hands its own
+# list in. Nothing here is restated anywhere else in the module.
+# ---------------------------------------------------------------------------
+
+# SEARCH, in priority order — also the list `discover_for_category`'s intent
+# route uses, so a compiled search verb and the search seam can never disagree
+# about what a search tool looks like.
+_MAIL_SEARCH_KEYWORDS = ("searchthreads", "emailsearch", "searchmessages",
+                         "queryemail", "findmessages", "listthreads")
+_MAIL_SEND_KEYWORDS = ("sendmessage", "sendemail", "sendmail")
+_MAIL_REPLY_KEYWORDS = ("replytoemail", "replytomessage", "reply_message",
+                        "reply_to_email")
+# MAILSEAM2: `create_or_update_draft` is Superhuman's draft tool and was missing
+# — the seam resolved None on Superhuman while the bare-substring path resolved
+# it fine, so the two disagreed about what a draft tool is. Appended LAST, and
+# the loop is keyword-outer, so it is only ever reached after every precise
+# spelling has been tried against every tool: the change can turn a None into a
+# hit and can never re-bind a registry that already resolved.
+_MAIL_DRAFT_KEYWORDS = ("createdraft", "create_message_draft", "draftmessage",
+                        "create_or_update_draft")
+_MAIL_THREAD_FETCH_KEYWORDS = ("getthread", "getconversation", "get_message",
+                               "fetchconversation")
+
+# PROVIDER-BLIND vocabulary, per operation. This is what the UNDECLARED path
+# uses, and it is deliberately conservative: it cannot contain a token whose
+# meaning depends on which backend you are talking to.
+_MAIL_OPERATION_KEYWORDS = {
+    "send": _MAIL_SEND_KEYWORDS,
+    "reply": _MAIL_REPLY_KEYWORDS,
+    "draft": _MAIL_DRAFT_KEYWORDS,
+    "search": _MAIL_SEARCH_KEYWORDS,
+    "thread_fetch": _MAIL_THREAD_FETCH_KEYWORDS,
+}
+
+# PER-PROVIDER vocabulary, for the DECLARED path only (REVIEW_MAILSEAM2 fix
+# round, coordinator ruling: refusing a serviceable backend does not ship).
+#
+# The blind list above cannot carry `send_draft`, because `send_draft` is
+# Superhuman's NEW-THREAD SEND and Gmail's THREADED-REPLY mechanism — one token
+# meaning two operations depending on the backend is precisely the hazard this
+# seam exists to close. That is an argument about a list used WITHOUT knowing
+# the provider. The declared path is not blind: `declared["provider"]` is right
+# there, and is already used to tag `result.platform`. So the vocabulary is
+# refined per provider, and the ambiguity disappears rather than being refused.
+#
+# Entries are PREPENDED to the blind list, never a replacement — the blind list
+# stays the floor, so a provider row can only ever add precision.
+#
+# What each row closes, and why the tool named is the right one:
+#   gmail.reply    — the live native Gmail connector ships `reply`. The blind
+#                    list names only the Graph spellings, so a declared-Gmail
+#                    workspace went from resolving a threaded reply to a
+#                    capability-absent refusal. A working path became a
+#                    refusal; that is a regression, not a fix (D-8/F-3).
+#   superhuman.send — `send_draft`. The capability manifest declares
+#                    `superhuman.capabilities.send: true` and a suite pins it,
+#                    so a seam that refused put the tree in contradiction with
+#                    itself on the one operation whose failure is unrecoverable
+#                    (F-4).
+#   superhuman.reply — Superhuman has no single reply tool; a threaded reply is
+#                    composed into the thread with `create_or_update_draft`
+#                    (its thread id field is already mapped in
+#                    connector_adapters/mail._THREADING_FIELD) and dispatched
+#                    separately through the send seam. That matches the
+#                    lazy-draft posture: the draft is what gets created, the
+#                    send is its own click. See the BUILD record — this row is
+#                    the one judgment call in the table.
+#   outlook.reply  — the Graph spellings, restated here so the Outlook row is
+#                    explicit rather than inherited by luck of the blind list.
+_MAIL_PROVIDER_OPERATION_KEYWORDS = {
+    "gmail": {
+        "reply": ("reply",),
+    },
+    "superhuman": {
+        "send": ("send_draft",),
+        "reply": ("create_or_update_draft",),
+    },
+    "outlook": {
+        "reply": ("reply_to_email", "replytomessage"),
+    },
+}
+
+
+def _declared_op_candidates(provider: Optional[str], operation: str,
+                            blind_keywords) -> list:
+    """The operation vocabulary for a DECLARED backend: the provider's own
+    spellings first, then the provider-blind list as the floor. Unknown or
+    absent provider = the blind list unchanged."""
+    row = _MAIL_PROVIDER_OPERATION_KEYWORDS.get((provider or "").lower()) or {}
+    return list(row.get(operation, ())) + list(blind_keywords)
+
+
+# Every token that means "this tool does something mail-shaped", derived from
+# the vocabularies above rather than hand-listed, so a keyword added tomorrow
+# joins this set for free.
+_MAIL_OPERATION_TOKENS = frozenset(
+    _norm_op(k)
+    for group in _MAIL_OPERATION_KEYWORDS.values()
+    for k in group
+)
+
+
+def _has_mail_operation(tool_id: str) -> bool:
+    """True when a tool id spells an operation the mail seams can actually use.
+
+    The gate on COUNTING a server as a mail connector (REVIEW_MAILSEAM2 F-7).
+    Fingerprint matching runs at `min_overlap=2` over a provider's whole
+    signature, and the Microsoft 365 row's signature includes `get_me` and
+    `chat_message_search` — so a connector exposing Teams chat and identity and
+    NO mailbox scores two hits and is classified as the mail platform
+    `outlook`. Harmless for resolution (it exposes no mail tool, so no keyword
+    matches it) but not harmless for the ambiguity note, which is
+    receipt-facing prose: that workspace would be told, on every mail hit, that
+    it has two mail connectors — naming an inbox it does not have."""
+    tid = _norm_op(tool_id)
+    return any(tok in tid for tok in _MAIL_OPERATION_TOKENS)
+
+
+def _ambiguity_note(detected: list, operation_label: str,
+                    chosen: Optional[str]) -> str:
+    """The plain-English half of DD-3. `detected` is the sorted list of
+    DISTINCT mail platforms present with NOTHING declared; the note names all
+    of them and which one the seam read, so a workspace with two inboxes can
+    PROVE which one answered instead of reading an empty result as a quiet
+    week. Never rendered when a backend is declared — that IS the deliberate
+    answer."""
+    names = ", ".join(detected)
+    head = f"{len(detected)} mail connectors detected ({names})"
+    tail = ("declare your mail backend to make this deliberate "
+            "(workspace.connectors.email).")
+    if chosen:
+        return f"{head}; reading {chosen} — {tail}"
+    return f"{head}; none of them exposes a {operation_label} tool — {tail}"
+
+
 def _discover_mail_tool(
     tools: Iterable[ToolDescriptor],
     operation_keywords: list,
     operation_label: str,
+    *,
+    operation: str,
+    declared: Optional[dict] = None,
+    zapier_ids=None,
 ) -> DiscoveryResult:
-    """Generic mail-tool discovery — finds a native Gmail or Outlook tool whose
-    ID matches the given operation keywords. Excludes Zapier (handled
-    separately by discover_zapier_send_tool).
+    """Generic mail-tool discovery — finds a native Gmail, Outlook or
+    Superhuman tool whose ID matches the given operation keywords. Excludes
+    Zapier (handled separately by discover_zapier_send_tool).
+
+    Order, mirroring `discover_chat_tool` (MAILSEAM2, off the BUG-8538 class
+    one category over):
+      1. DECLARED backend, server-id first (`discover_for_category`), using
+         the declared PROVIDER's own operation vocabulary ahead of the blind
+         one. The deterministic path, the only one immune to substring
+         hazards, and the only one that may safely use a spelling whose
+         meaning depends on the backend.
+      2. FINGERPRINT match against the capability manifest's `email` rows —
+         the answer for a UUID-namespaced connector whose tool ids spell no
+         product name, which is what every real mail connector is.
+      3. Product-name substring hints, for a connector that spells itself.
+
+    Steps 2–3 are byte-identically the pre-MAILSEAM2 behavior, which is what a
+    workspace with NO declaration must keep getting (R4). The one thing they
+    gain is the DD-3 ambiguity note: with two mail connectors present and
+    nothing declared, `_MAIL_PLATFORM_HINTS` dict order silently decides which
+    inbox answers, and the client-visible symptom of picking the empty one is
+    not an error — it is a week that looks quiet. The note (and
+    `mail_ambiguous`) make that choice provable on the hit AND on the miss.
+    Resolution order itself is unchanged: the note is reported, never acted on.
     """
     tools_list = list(tools)
     candidates = len(tools_list)
+
+    # The same branch `discover_chat_tool` carries, structure for structure —
+    # same guard, same hit-return, same unconditional `return res` as the LAST
+    # statement, no `or`-fallback and no re-entry into the fingerprint path.
+    # The `return res` on a MISS is the whole fix. The one addition mail needs
+    # is `op_candidates`: chat resolves one operation name per backend, mail
+    # does not (see `discover_for_category`).
+    if declared and declared.get("server_id"):
+        res = discover_for_category(
+            "email", operation, tools_list,
+            declared=declared, zapier_ids=zapier_ids,
+            op_candidates=_declared_op_candidates(
+                declared.get("provider"), operation, operation_keywords),
+        )
+        if res.tool_id:
+            return res
+        # A declared backend that GENUINELY cannot serve this operation is a
+        # capability gap, not a reason to go looking for some other product's
+        # tool: a workspace that declared one mail backend must never be
+        # silently read — or WRITTEN — through another. A message delivered
+        # from the wrong account is worse than an empty search, and neither is
+        # recoverable after the fact.
+        #
+        # "Genuinely" is load-bearing, and the first cut of this build got it
+        # wrong. The vocabulary handed to `discover_for_category` above is
+        # per-provider, so a refusal here means the DECLARED PRODUCT has no
+        # such tool — not that the blind keyword list happened to spell the
+        # operation the way some other product spells it. Refusing a backend
+        # that can do the thing is not safety; it is the same silence in a
+        # different costume, and the capability manifest would be left
+        # advertising an operation the seam denies.
+        return res
+
     # R12/H-H: exclude Zapier servers (pinned + heuristically detected) so a
     # UUID Zapier leg exposing `gmail_send_email` is never matched as native.
-    zap_ids = zapier_servers(tools_list)
+    zap_ids = zapier_servers(tools_list, zapier_ids)
     # MAILSEAM item 2: the product-name hints miss every real connector, whose
     # ids are UUID-namespaced. Fingerprints answer for those.
     fp_platforms = _fingerprint_platforms(tools_list, "email")
+
+    def _platform_of(t) -> Optional[str]:
+        return (_match_platform(t.tool_id, _MAIL_PLATFORM_HINTS)
+                or fp_platforms.get(_server_id_of(t.tool_id)))
+
+    # DD-3: every DISTINCT mail platform in the eligible registry, computed
+    # from the same two predicates the resolution loop uses, so the note can
+    # never disagree with what the loop was choosing between.
+    #
+    # Counted PER SERVER, not per tool, and only when the server actually
+    # exposes a mail operation (F-7). A connector can be classified as a mail
+    # platform on a fingerprint that contains no mailbox at all — the M365 row
+    # matches on `get_me` + `chat_message_search`, which a Teams-only connector
+    # has — and the note is customer-facing prose, so counting one would tell a
+    # workspace it has an inbox it does not have.
+    mail_servers: dict = {}
+    for t in tools_list:
+        if _is_zapier(t.tool_id, zap_ids):
+            continue
+        platform = _platform_of(t)
+        if not platform:
+            continue
+        sid = _server_id_of(t.tool_id) or t.tool_id
+        row = mail_servers.setdefault(sid, {"platform": platform,
+                                            "mail_op": False})
+        if _has_mail_operation(t.tool_id):
+            row["mail_op"] = True
+    detected = sorted({r["platform"] for r in mail_servers.values()
+                       if r["mail_op"]})
+    ambiguous = detected if len(detected) >= 2 else None
+
     # Keywords are scanned in PRIORITY order rather than registry order, so a
     # server exposing both a precise and a broad tool always resolves to the
     # precise one — which tool you get stops depending on how the connector
     # happened to list them.
     for kw in operation_keywords:
-        k = kw.lower().replace("_", "").replace("-", "")
+        k = _norm_op(kw)
         for t in tools_list:
             if _is_zapier(t.tool_id, zap_ids):
                 continue
-            platform = (_match_platform(t.tool_id, _MAIL_PLATFORM_HINTS)
-                        or fp_platforms.get(_server_id_of(t.tool_id)))
+            platform = _platform_of(t)
             if not platform:
                 continue
-            tid_norm = t.tool_id.lower().replace("_", "").replace("-", "")
+            tid_norm = _norm_op(t.tool_id)
             if k in tid_norm:
                 return DiscoveryResult(
                     tool_id=t.tool_id,
                     candidates_considered=candidates,
                     platform=platform,
+                    reason=(_ambiguity_note(detected, operation_label, platform)
+                            if ambiguous else ""),
+                    mail_ambiguous=ambiguous,
                 )
+    miss = (
+        f"No native mail tool found for {operation_label}. Connect one of "
+        f"{_known_mail_products()} in Cowork → Settings → Connectors."
+    )
+    if ambiguous:
+        miss = miss + " " + _ambiguity_note(detected, operation_label, None)
     return DiscoveryResult(
         tool_id=None,
-        reason=(
-            f"No native mail tool found for {operation_label}. Connect one of "
-            f"{_known_mail_products()} in Cowork → Settings → Connectors."
-        ),
+        reason=miss,
         candidates_considered=candidates,
+        mail_ambiguous=ambiguous,
     )
-
-
-# The mail SEARCH vocabulary, in priority order — one list, read by both the
-# search helper and `discover_for_category`'s intent routing, so the two can
-# never disagree about what a search tool looks like.
-_MAIL_SEARCH_KEYWORDS = ("searchthreads", "emailsearch", "searchmessages",
-                         "queryemail", "findmessages", "listthreads")
 
 
 def _is_mail_search_intent(operation) -> bool:
@@ -648,7 +896,9 @@ def _is_mail_search_intent(operation) -> bool:
     return is_search_intent(operation)
 
 
-def discover_mail_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
+def discover_mail_send_tool(tools: Iterable[ToolDescriptor], *,
+                            declared: Optional[dict] = None,
+                            zapier_ids=None) -> DiscoveryResult:
     """Native Gmail or Outlook send tool (NEW thread, NOT a reply).
 
     Looks for tools matching `send_message`, `send_email`, `send_mail`,
@@ -658,12 +908,17 @@ def discover_mail_send_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
     """
     return _discover_mail_tool(
         tools,
-        operation_keywords=["sendmessage", "sendemail", "sendmail"],
+        operation_keywords=list(_MAIL_SEND_KEYWORDS),
         operation_label="send",
+        operation="send",
+        declared=declared,
+        zapier_ids=zapier_ids,
     )
 
 
-def discover_mail_reply_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
+def discover_mail_reply_tool(tools: Iterable[ToolDescriptor], *,
+                             declared: Optional[dict] = None,
+                             zapier_ids=None) -> DiscoveryResult:
     """Native Gmail or Outlook threaded-reply tool.
 
     Gmail: typically achieved by `send_draft` with a threadId, OR direct
@@ -673,26 +928,36 @@ def discover_mail_reply_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult
     """
     return _discover_mail_tool(
         tools,
-        operation_keywords=["replytoemail", "replytomessage", "reply_message", "reply_to_email"],
+        operation_keywords=list(_MAIL_REPLY_KEYWORDS),
         operation_label="threaded reply",
+        operation="reply",
+        declared=declared,
+        zapier_ids=zapier_ids,
     )
 
 
-def discover_mail_draft_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
-    """Native Gmail or Outlook draft-creation tool.
+def discover_mail_draft_tool(tools: Iterable[ToolDescriptor], *,
+                             declared: Optional[dict] = None,
+                             zapier_ids=None) -> DiscoveryResult:
+    """Native draft-creation tool across every known provider.
 
     Gmail: `create_draft`. Outlook: `create_draft` / `create_message_draft`.
-    Excludes Zapier — drafts are NEVER sent through Zapier per
-    EMAIL_DRAFT_PROTOCOL §3c.
+    Superhuman: `create_or_update_draft`. Excludes Zapier — drafts are NEVER
+    sent through Zapier per EMAIL_DRAFT_PROTOCOL §3c.
     """
     return _discover_mail_tool(
         tools,
-        operation_keywords=["createdraft", "create_message_draft", "draftmessage"],
+        operation_keywords=list(_MAIL_DRAFT_KEYWORDS),
         operation_label="draft",
+        operation="draft",
+        declared=declared,
+        zapier_ids=zapier_ids,
     )
 
 
-def discover_mail_search_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
+def discover_mail_search_tool(tools: Iterable[ToolDescriptor], *,
+                              declared: Optional[dict] = None,
+                              zapier_ids=None) -> DiscoveryResult:
     """Native mail search tool across every known provider.
 
     Gmail: `search_threads` / `search_messages`. Outlook: `outlook_email_search`
@@ -711,10 +976,15 @@ def discover_mail_search_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResul
         tools,
         operation_keywords=list(_MAIL_SEARCH_KEYWORDS),
         operation_label="search",
+        operation="search",
+        declared=declared,
+        zapier_ids=zapier_ids,
     )
 
 
-def discover_mail_thread_fetch_tool(tools: Iterable[ToolDescriptor]) -> DiscoveryResult:
+def discover_mail_thread_fetch_tool(tools: Iterable[ToolDescriptor], *,
+                                    declared: Optional[dict] = None,
+                                    zapier_ids=None) -> DiscoveryResult:
     """Native Gmail `get_thread` or Outlook conversation-fetch equivalent.
 
     Used by orchestrators that need to read the FULL contents of a thread/
@@ -723,8 +993,11 @@ def discover_mail_thread_fetch_tool(tools: Iterable[ToolDescriptor]) -> Discover
     """
     return _discover_mail_tool(
         tools,
-        operation_keywords=["getthread", "getconversation", "get_message", "fetchconversation"],
+        operation_keywords=list(_MAIL_THREAD_FETCH_KEYWORDS),
         operation_label="thread fetch",
+        operation="thread_fetch",
+        declared=declared,
+        zapier_ids=zapier_ids,
     )
 
 
@@ -1105,6 +1378,8 @@ def discover_for_category(
     tools: Iterable[ToolDescriptor],
     declared: Optional[dict] = None,
     zapier_ids=None,
+    *,
+    op_candidates: Optional[list] = None,
 ) -> DiscoveryResult:
     """Server-id-first resolution — the primary discovery path (A1).
 
@@ -1118,7 +1393,30 @@ def discover_for_category(
     the caller then falls back to the substring `discover_*` helper below, which
     IS today's behavior (R4). The `zapier_ids` set (from
     `workspace.connectors._zapier_server_ids`) is honored so a pinned Zapier
-    server is excluded even on the fallback path."""
+    server is excluded even on the fallback path.
+
+    `op_candidates` (MAILSEAM2) lets a SEAM hand in its own operation
+    vocabulary instead of having `operation` substring-matched. Two different
+    failures make it necessary, and they pull in opposite directions:
+
+      * TOO NARROW. `operation="search"` matches Gmail's `search_threads` and
+        Outlook's `outlook_email_search` but NOTHING on Superhuman, whose
+        search surface is `query_email_and_calendar`. Declaring Superhuman
+        would have refused every mail search — the exact bug the mail seam
+        exists to close, one layer down.
+      * TOO BROAD. Bare `"send"` is a substring of `undo_send`, so registry
+        order alone would decide whether a declared send bound the send tool
+        or the undo tool. A send bound by accident is the one failure this
+        module must never produce.
+
+    The five `discover_mail_*` seams therefore pass a vocabulary built by
+    `_declared_op_candidates`: the DECLARED PROVIDER's own spellings first,
+    then the provider-blind list as the floor. Passing only the blind list
+    would refuse operations a backend can plainly do (Superhuman's
+    `send_draft`, Gmail's `reply`), which is a refusal wearing safety's
+    clothes. `operation` still names the refusal, so the reason a caller reads
+    is unchanged. Omitted (the default) = today's behavior, and the intent
+    route below still owns the compiled search verbs."""
     tools_list = list(tools)
     zap = zapier_servers(tools_list, zapier_ids)
     if declared and declared.get("server_id"):
@@ -1132,20 +1430,31 @@ def discover_for_category(
         # improvised. An intent resolves through the adapter to the provider's
         # SEARCH tool, which is the thing that can actually run the scope.
         is_intent = category == "email" and _is_mail_search_intent(operation)
-        op_candidates = (list(_MAIL_SEARCH_KEYWORDS) if is_intent
-                         else [operation.lower().replace("_", "")])
+        if is_intent:
+            ops_to_try = list(_MAIL_SEARCH_KEYWORDS)
+        elif op_candidates:
+            ops_to_try = list(op_candidates)
+        else:
+            ops_to_try = [operation]
+        # ONE normalization, applied to the operation AND to the tool id, here
+        # and in the undeclared mail loop (F-6). It strips `-` as well as `_`,
+        # which the pre-MAILSEAM2 spelling of this branch did not: the change
+        # is monotone — removing a separator can only let MORE spellings of the
+        # same operation match, never fewer — and it is what makes "one list,
+        # read by both paths" a fact rather than a coincidence.
+        ops_to_try = [_norm_op(o) for o in ops_to_try]
         server_seen = False
         for t in tools_list:
             if _server_id_of(t.tool_id) == sid:
                 server_seen = True
                 break
-        for op_norm in op_candidates:
+        for op_norm in ops_to_try:
             for t in tools_list:
                 if _server_id_of(t.tool_id) != sid:
                     continue
                 if _is_zapier(t.tool_id, zap):
                     continue
-                if op_norm in t.tool_id.lower().replace("_", ""):
+                if op_norm in _norm_op(t.tool_id):
                     return DiscoveryResult(
                         tool_id=t.tool_id,
                         candidates_considered=len(tools_list),

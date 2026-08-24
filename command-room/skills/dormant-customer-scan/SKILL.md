@@ -138,8 +138,11 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
    import sys
    sys.path.insert(0, 'shared/scripts')
    from live_contact_check import discover_live_check_tools, live_contact_check
-   # Once per fire — resolve Gmail + Calendar tool IDs
-   lookup = discover_live_check_tools(available_tools)
+   # Once per fire — resolve the mail + Calendar tool IDs. Pass workspace_root:
+   # it is how the DECLARED mail backend reaches the seam (MAILSEAM2). Without
+   # it, a workspace with two mail connectors live-checks the wrong inbox and
+   # every candidate reads as dormant.
+   lookup = discover_live_check_tools(available_tools, workspace_root='\$WORKSPACE')
    # Per candidate — after invoking those MCP tools to fetch latest Gmail + Calendar touchpoints
    result = live_contact_check(
        workspace_root='\$WORKSPACE',

@@ -129,7 +129,7 @@ which setting that maps to.
 
 For every flag `detect_stalled_projects` returns:
 
-1. Discover connector tools ONCE per fire via `shared/scripts/live_contact_check.py::discover_live_check_tools(available_tools)`.
+1. Discover connector tools ONCE per fire via `shared/scripts/live_contact_check.py::discover_live_check_tools(available_tools, workspace_root=WORKSPACE)`. Pass `workspace_root` — it is how the DECLARED mail backend reaches the seam (MAILSEAM2); omit it on a two-connector workspace and the live check reads the wrong inbox, finds nothing, and every candidate stays flagged stalled.
 2. Query Gmail + Calendar for the most recent touch since the flag's baseline, scoped to the project: search by the project's org/display name and the email addresses of its `stakeholder_person_ids` / `owner_person_id` (resolve via entities). Cost-bound it — you need only "is there anything newer than the baseline," not a full history.
 3. Build `live_signals = {thread_id: {"live_last_iso": "<ISO date>", "source": "gmail"|"calendar", "detail": {...}} | {}}` and call `stall_detector.apply_live_check(flags, live_signals)`. The helper enforces the merge: a live touch under the threshold DROPS the flag (with the reason); a live touch newer than substrate but still over threshold corrects the day-count.
 4. **Dropped flags get one honest line each in the chat output** — "Set aside N that looked quiet in saved history but aren't: [Project] — emailed 2 days ago." Silent drops hide the discipline; per F-57, visible drops are what earn trust.

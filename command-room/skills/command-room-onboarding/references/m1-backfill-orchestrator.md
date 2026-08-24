@@ -68,7 +68,7 @@ For each connector in scope, pull full-content material for the 7-day window. Ru
 
 - All inbound emails received in window, full body
 - All outbound emails sent in window, full body
-- Use `discover_mail_search_tool()` then `discover_mail_thread_fetch_tool()` for thread expansion
+- Use `tool_discovery.discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))` then `tool_discovery.discover_mail_thread_fetch_tool(tools, declared=connector_config.declared_backend("email"))` for thread expansion — the seam resolves the declared backend first and refuses to substitute another product's tool. Never call either seam bare: a workspace with two mail connectors then gets whichever platform the hint map lists first, and the wrong one backfills nothing while looking like an empty history.
 
 Cap: 60K input tokens across all email content. If exceeded, sample by (a) inbound from top-15 most-frequent senders, (b) all outbound, (c) sample remainder.
 

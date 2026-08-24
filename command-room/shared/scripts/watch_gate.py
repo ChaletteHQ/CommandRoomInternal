@@ -126,6 +126,8 @@ TITLE_MATCH_REASON = "a title match only, not source text"
 NO_COMPLETION_REASON = ("the topic came up, but nothing in the source says it "
                         "got done")
 FUTURE_MEETING_REASON = "the meeting this refers to hasn't happened yet"
+AMBIGUITY_NO_TARGET_REASON = ("this row is a question about WHICH item, so it has no single "
+                              "thing to close")
 STALE_EVIDENCE_REASON = "the evidence came before the promise was made"
 
 WEAK_LEAD = "This came up in a meeting, but I can't see proof it got done"
@@ -1037,6 +1039,7 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
 
     screened_rows: list[dict] = []
     by_id: dict[str, dict] = {}
+    no_target: set[str] = set()
     for row in rows or []:
         rid = str((row or {}).get("id") or (row or {}).get("commitment_id") or "")
         warn = temporal_warning(
@@ -1050,6 +1053,17 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
             completion_signal=row.get("has_completion_signal"),
             temporal=warn,
         )
+        # CLOSEID1 F-9 — an either/or row has NO close target. Its
+        # `commitment_id` is an identity ANCHOR (`candidates[0]`), so
+        # confirming it closes the FIRST HIT: the wrong close this build
+        # exists to kill, arriving through a tap instead of a fire. Held
+        # unconditionally and NOT overridable by `individually_named` —
+        # naming the row's number is still not an answer to "which one did
+        # you mean". The answer travels the ordinary id path.
+        amb = row.get("ambiguous_candidates")
+        if isinstance(amb, list) and len(amb) >= 2:
+            reason = AMBIGUITY_NO_TARGET_REASON
+            no_target.add(rid)
         enriched = dict(row)
         enriched["id"] = rid
         enriched["weak_reason"] = reason
@@ -1057,8 +1071,10 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
         by_id[rid] = enriched
         screened_rows.append({"id": rid, "weak_reason": reason})
 
-    screen = screen_bulk_accept(screened_rows,
-                                individually_named=individually_named)
+    screen = screen_bulk_accept(
+        screened_rows,
+        individually_named=[x for x in (individually_named or ())
+                            if str(x) not in no_target])
 
     ctx = stakes_context(ws)
     opens_by_id: dict = {}
@@ -1332,6 +1348,7 @@ __all__ = [
     "STRONG", "WEAK", "TITLE_MATCH_MARKER",
     "NO_EVIDENCE_REASON", "TITLE_MATCH_REASON", "NO_COMPLETION_REASON",
     "FUTURE_MEETING_REASON", "STALE_EVIDENCE_REASON",
+    "AMBIGUITY_NO_TARGET_REASON",
     "STAMP_STRENGTH_FIELD", "STAMP_REASON_FIELD", "STAMP_BLOCKED_FIELD",
     "STAMP_FALLBACK_REASON", "BLOCKED_LEAD", "STAMPED_WEAK_LEAD",
     "stamped_strength", "stamped_strength_fields", "stamped_strength_note",

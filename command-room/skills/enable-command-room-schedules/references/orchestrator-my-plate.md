@@ -58,6 +58,8 @@ print(json.dumps(check_lateness('<workspace_root>', 'my-plate', fired_via='<sche
 
 **Read `directive` BEFORE the tier — it is the render decision (SPEC SCHED1).** If `directive` is `skip_render`, the slot this fire is serving was ALREADY delivered: a receipt for it is on the ledger, and the helper has already written the honest `skipped` receipt for this fire. Post the returned `ack` line, exactly as returned, as the ENTIRE output of this fire — no surface, no widget, no sections, no Sources block, and no receipt of your own — then STOP. Do not re-derive whether it "really" ran, do not render a shortened version, and do not read the tier as the decision: on this path the tier is `none`, `none` means "run normally", and that reading is what delivered three duplicate full surfaces in one day. `directive` is present on every tier and is `null` on all the others, so this is one unconditional check rather than a special case to remember. A `manual` fire never carries it — a human who asks for the surface gets the surface.
 
+**And `tier: "rerun"` is the OPPOSITE instruction — it RENDERS (SPEC RUNNOW1).** `skip_render` is bounded: the helper returns it only within two hours of the receipt that served the slot, which is the duplicate the skip exists to catch — a catch-up and a scheduled fire landing the same edition minutes apart. A fire that calls itself `scheduled` and arrives LATER for a served slot comes back with `directive: null`, `tier: "rerun"` and an `ack`. Post that `ack` as the OPENING line of this fire's output, then render this surface IN FULL, exactly as on any other tier. Past two hours the fire is a person pressing Run Now, and no run mode a fire reports about itself can tell you otherwise — the standing ruling is that a person who asks gets what they asked for. **Carry the returned `rerun_of` onto this fire's receipt, and carry it at the ONE place this file writes its `pack_run` receipt — the receipt call whose own `extra_data` block already spells the key out for you.** The writer differs by surface, so take the one THIS file names and no other: never add a second receipt call to carry the field, and never hand-roll a receipt JSON. **This is load-bearing, not bookkeeping.** A receipt carrying `rerun_of` is excluded from the served-slot marker, which is what lets the person press again in five minutes and get the surface again; a re-run receipt written WITHOUT it reads as an ordinary scheduled delivery and re-arms the skip against the next press for two hours — the refusal this build exists to remove, arriving by a different door. Post no lateness banner and no `degrade_notice` on this tier: the slot WAS delivered, so nothing was missed and nothing is stale-by-omission.
+
 Tier semantics are identical to every scheduled chat (see orchestrator-commitments.md Phase 2.9 for the full branch table — manual/none/note/degrade). Restated for the two that matter here: on **`manual`** run EVERY phase normally with NO timing banner and NO lateness narrative anywhere; on **`degrade`** post only the returned `degrade_notice` and skip Phase 9's render, but still perform Phase 8's receipt write.
 
 Carry the returned `receipt_fired_via` into the Phase 8 receipt — never guess it.
@@ -109,7 +111,16 @@ log_receipt(
     duration_ms=elapsed_ms,
     late_tier=lateness["tier"] if lateness["tier"] in ("note", "degrade") else None,
     extra_data={"promised": len(promised), "personal": len(personal),
-                "personal_capped_to": personal_cap, "errors": [], "telemetry": {...}},
+                "personal_capped_to": personal_cap, "errors": [],
+                # SPEC RERUNFAN1 — on a `rerun` tier ONLY, and it is what lets
+                # the NEXT press render. A receipt carrying `rerun_of` is excluded
+                # from the served-slot marker (a re-run is a delivery a PERSON asked
+                # for, not the scheduled delivery of a slot); one written WITHOUT it
+                # reads as an ordinary scheduled delivery and re-arms the two-hour
+                # skip, so the next press is refused. Copy `lateness["rerun_of"]`
+                # verbatim; OMIT the key entirely on every other tier.
+                "rerun_of": <lateness["rerun_of"], or omit on any other tier>,
+                "telemetry": {...}},
 )
 ```
 
@@ -123,8 +134,11 @@ The driver builds the data view + renders + persists + (with `--fired-via`) writ
 python3 shared/scripts/surface_drivers.py my-plate \
     --workspace "$WORKSPACE" [--page N] [--status-json <status-rows.json>] \
     [--personal-cap <N — default 7; a `show my plate` reply passes a large value>] \
+    [--rerun-of "<lateness['rerun_of'] on a `rerun` tier; OMIT THE FLAG on every other tier>"] \
     --fired-via "<the Phase 2.9 receipt_fired_via>"
 ```
+
+**`--rerun-of` is SPEC RERUNFAN1, and it is the other half of the re-run contract above.** On a normal fire this surface's `pack_run` receipt is written INSIDE this call (`--fired-via`, FB-7), so on that path the flag — not any receipt call written out in this file — is how `rerun_of` reaches the ledger. Pass `lateness["rerun_of"]` verbatim on a `rerun` tier and OMIT THE FLAG entirely on every other tier; the driver merges it into the receipt's `extra_data` on the page-1 write and ignores it on pages 2+. A re-run receipt written without it reads as an ordinary scheduled delivery and re-arms the two-hour skip, so the next press is refused.
 
 **`--fired-via` is MANDATORY on the page-1 call — it IS the receipt (FB-7).** Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as `widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON. Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3 guard window never double-receipts. Pages 2+ also slice the page-set page 1 froze rather than re-reading the substrate (PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE question asked ONCE") — if `CR-PAGINATION` carries `refreshed`, `suppressed`, or `clamped`, SAY it in one line before the rows.
 

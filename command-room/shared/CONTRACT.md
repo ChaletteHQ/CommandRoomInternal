@@ -193,7 +193,7 @@ Zapier scope = email `send` + `reply to email` only. NEVER calendar, drive, shee
 Helpers in `shared/scripts/tool_discovery.py`:
 - **`discover_for_category(category, operation, tools, declared=…)` — SERVER-ID-FIRST resolution (connector-agnostic-v1, the primary path).** When a backend is declared for the category (`connector_config.declared_backend(category)`, keyed by MCP server-id), it resolves the operation on THAT server — deterministic, immune to the substring / H-H hazards. When no backend is declared (empty map), it returns None+reason and the caller falls back to the substring helpers below = today's behavior (R4).
 - `discover_calendar_tool()` — native-only, returns matched tool ID or None+reason.
-- `discover_gmail_tool(tools, operation)` / `discover_mail_*()` — native mail send/reply/draft/search/thread-fetch. Prefer the `discover_mail_*` family: it spans every stack, and it identifies a UUID-namespaced connector by the capability manifest's fingerprints when the tool ids spell no product name (which is every real connector).
+- `discover_gmail_tool(tools, operation)` / `discover_mail_*(tools, declared=…)` — native mail send/reply/draft/search/thread-fetch. Prefer the `discover_mail_*` family: it spans every stack, it identifies a UUID-namespaced connector by the capability manifest's fingerprints when the tool ids spell no product name (which is every real connector), and since MAILSEAM2 it resolves the DECLARED backend itself — so the caller makes one call, not two, and cannot forget the second. Always pass `declared=connector_config.declared_backend("email")`.
 - `discover_zapier_send_tool(tools, zapier_ids=…)` — the gmail-only dispatch leg; recognizes a UUID-namespaced Zapier server by pinned server-id (`workspace.connectors._zapier_server_ids`) or the `get_configuration_url` signature (R12/H-H), not just the `mcp__zapier_` prefix.
 - `discover_granola_tool()` / `discover_transcript_tool()` — transcript fetch.
 - `repair_backend(server_tool_ids)` — fingerprint re-pair for a reconnected server whose UUID changed (A1b); confirm-with-user before re-pinning (interactive only, R13).
@@ -304,11 +304,13 @@ Every native connector is addressable through abstracted helpers in `shared/scri
 
 | Capability | Google stack | Microsoft / alt stack | Superhuman | Helper |
 |---|---|---|---|---|
-| Mail send | Gmail (`send_message`) | Outlook (Graph `send_message`) | native `send_draft` | `discover_mail_send_tool()` |
-| Mail reply (threaded) | Gmail (`send_draft` + threadId) | Outlook (`reply_to_email`) | native threaded reply | `discover_mail_reply_tool()` |
-| Mail draft | Gmail (`create_draft`) | Outlook (`create_draft`) | `create_or_update_draft` | `discover_mail_draft_tool()` |
-| Mail search | Gmail (`search_threads`) | Outlook (`outlook_email_search`) | `query_email_and_calendar` | `discover_mail_search_tool()` |
-| Mail thread fetch | Gmail (`get_thread`) | Outlook (`get_conversation`) | `get_thread` | `discover_mail_thread_fetch_tool()` |
+| Mail send | Gmail (`send_message`) | Outlook (Graph `send_message`) | native `send_draft` | `discover_mail_send_tool(tools, declared=connector_config.declared_backend("email"))` |
+| Mail reply (threaded) | Gmail (`send_draft` + threadId) | Outlook (`reply_to_email`) | native threaded reply | `discover_mail_reply_tool(tools, declared=connector_config.declared_backend("email"))` |
+| Mail draft | Gmail (`create_draft`) | Outlook (`create_draft`) | `create_or_update_draft` | `discover_mail_draft_tool(tools, declared=connector_config.declared_backend("email"))` |
+| Mail search | Gmail (`search_threads`) | Outlook (`outlook_email_search`) | `query_email_and_calendar` | `discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))` |
+| Mail thread fetch | Gmail (`get_thread`) | Outlook (`get_conversation`) | `get_thread` | `discover_mail_thread_fetch_tool(tools, declared=connector_config.declared_backend("email"))` |
+
+The five mail rows take `declared=` for a reason the other rows do not need: a workspace can have **two** mail connectors, and without a declaration the seam resolves whichever platform the hint map lists first. On the wrong one, every client-scoped read returns zero — and zero mail is not an error, it is a week that looks quiet (MAILSEAM2). Pass the declared row on every call; the seam refuses rather than substituting another product's inbox, and refuses a SEND outright.
 | Calendar | Google Calendar (`google_calendar_*`) | Outlook Calendar (Graph) | fronts calendar too | `discover_calendar_tool()` (cross-stack) |
 | Transcript | Granola | Fireflies | — | `discover_transcript_tool()` |
 | File storage | Google Drive | OneDrive / SharePoint (M365 `sharepoint_search`) | — | `discover_drive_tool()` (+ `prefer_platform=` from `infer_workspace_drive_platform()`, v5.11.1) |

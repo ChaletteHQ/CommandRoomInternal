@@ -36,13 +36,20 @@ orchestrator can do that). The contract is two-step:
 
       from live_contact_check import discover_live_check_tools
 
-      lookup = discover_live_check_tools(available_tools)
+      lookup = discover_live_check_tools(available_tools,
+                                         workspace_root=workspace_root)
       # lookup = {
       #   'mail_search_tool_id': 'mcp__abc__gmail_search_threads' | None,
       #   'mail_search_failed_reason': str | None,
+      #   'mail_ambiguous': ['gmail', 'superhuman'] | None,
       #   'calendar_tool_id': 'mcp__abc__google_calendar_find_events' | None,
       #   'calendar_failed_reason': str | None,
       # }
+      #
+      # Pass `workspace_root` (MAILSEAM2): it is how the DECLARED mail backend
+      # reaches the seam. Omit it on a two-connector workspace and discovery
+      # falls back to first-platform-wins, which can read the wrong inbox and
+      # report zero — indistinguishable from a genuinely quiet week.
 
   STEP 2 — caller invokes the discovered tools, then asks the helper to merge:
 
@@ -105,6 +112,29 @@ from tool_discovery import (
     discover_mail_search_tool,
     ToolDescriptor,
 )
+
+
+def _declared_mail_backend(workspace_root):
+    """The declared `email` backend row for this workspace, or None. Import is
+    local and swallowed: this module is imported in contexts where
+    connector_config's own import chain may not be on the path, and a discovery
+    helper that raises would take down the whole dormancy scan."""
+    try:
+        import connector_config
+        return connector_config.declared_backend("email", workspace_root)
+    except Exception:
+        return None
+
+
+def _zapier_server_ids(workspace_root):
+    """Pinned Zapier server-ids (R12/H-H), or None. Same fail-soft contract."""
+    if workspace_root is None:
+        return None
+    try:
+        import connector_config
+        return connector_config.zapier_server_ids(workspace_root) or None
+    except Exception:
+        return None
 
 
 SOURCE_SUBSTRATE = "substrate"
@@ -176,10 +206,23 @@ def _coerce_iso_date(value: Optional[str]) -> Optional[str]:
         return None
 
 
-def discover_live_check_tools(tools: Iterable[ToolDescriptor]) -> dict:
-    """Resolve the Gmail-search and Calendar-find tool IDs the caller needs
+def discover_live_check_tools(
+    tools: Iterable[ToolDescriptor],
+    workspace_root=None,
+    *,
+    declared=None,
+) -> dict:
+    """Resolve the mail-search and Calendar-find tool IDs the caller needs
     in order to fetch live signals. Returns a dict the orchestrator can read
     directly; never raises.
+
+    MAILSEAM2 — the mail half resolves the DECLARED backend first. `declared`
+    (the `connector_config.declared_backend("email")` row) wins when passed;
+    otherwise it is read from `workspace_root` when one is given. Neither =
+    today's behavior byte-for-byte (R4): substring/fingerprint discovery, in
+    which a workspace with two mail connectors gets whichever platform the
+    hint dict happens to list first. That case now comes back named, in
+    `mail_ambiguous`, so a caller can say which inbox it read.
 
     The orchestrator should:
       1. Call this once per fire (tool registry is stable for a session)
@@ -194,15 +237,25 @@ def discover_live_check_tools(tools: Iterable[ToolDescriptor]) -> dict:
         {
           'mail_search_tool_id': str | None,
           'mail_search_failed_reason': str | None,
+          'mail_ambiguous': [str, …] | None,   # two+ mail connectors, none
+                                               # declared — say which you read
           'calendar_tool_id': str | None,
           'calendar_failed_reason': str | None,
         }
     """
-    mail = discover_mail_search_tool(tools)
+    tools = list(tools)
+    if declared is None and workspace_root is not None:
+        declared = _declared_mail_backend(workspace_root)
+    mail = discover_mail_search_tool(
+        tools,
+        declared=declared,
+        zapier_ids=_zapier_server_ids(workspace_root),
+    )
     cal = discover_calendar_tool(tools, operation="find_events")
     return {
         "mail_search_tool_id": mail.tool_id,
         "mail_search_failed_reason": mail.reason or None,
+        "mail_ambiguous": mail.mail_ambiguous,
         "calendar_tool_id": cal.tool_id,
         "calendar_failed_reason": cal.reason or None,
     }

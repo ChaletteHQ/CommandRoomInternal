@@ -1537,23 +1537,50 @@ def _brief_thread_activity(workspace_root) -> dict:
     """{thread_id: latest-activity ISO} for the 7-day recent-activity drop,
     from THE canonical derivation (BRIEFSTATE1).
 
+    ONE helper, BOTH bookends: the morning brief pack and the end-of-day pack
+    call this and nothing else, because two surfaces quoting one day-count
+    must derive it with one set of rules (the F-54 contract).
+
     SEMANTICALLY equivalent to the derivation the hand-driven path
     documents, by delegation — NOT the same call. `morning-briefing/SKILL.md`
-    Step 3d instructs `derive_from_events(events, activity_types=ALL_TYPES,
-    honor_reclassifications=True)` over the events that fire already holds;
-    this calls `derive_thread_activity(ws, …)` with the same two arguments,
-    which delegates to `derive_from_events` over `_iter_events(ws)` with the
-    same default `confidence_floor`. So the rules are identical — every event
-    type counts (`ALL_TYPES` renderer "last touched" semantics, the 7-day
-    stopgap's original intent), reclassifications folded (RECL1), the 0.40
-    floor applied — while the event SOURCE differs: the full shard-transparent
-    stream here, the fire's already-loaded events there. Immaterial inside a
-    7-day window (shard contents are older than that by construction), and
-    named rather than glossed because the equality is what makes the two
-    fires quote one day-count (the F-54 contract). That equality is pinned in
-    `tests/run_briefstate1_test.py`, not asserted here: a bespoke max(ts)
-    scan, a dropped RECL1 fold or a narrowed type set would each be the C3
-    migration undone, and prose does not stop that.
+    Step 3d instructs `derive_from_events(events,
+    activity_types=BOOKEND_ACTIVITY_TYPES, honor_reclassifications=True)`
+    over the events that fire already holds; this calls
+    `derive_thread_activity(ws, …)` with the same two arguments, which
+    delegates to `derive_from_events` over `_iter_events(ws)` with the same
+    default `confidence_floor`. So the rules are identical — every event type
+    counts EXCEPT the commitment-lifecycle writers, reclassifications folded
+    (RECL1), the 0.40 floor applied — while the event SOURCE differs: the
+    full shard-transparent stream here, the fire's already-loaded events
+    there. Immaterial inside a 7-day window (shard contents are older than
+    that by construction), and named rather than glossed because the equality
+    is what makes the two fires quote one day-count. That equality is pinned
+    in `tests/run_briefstate1_test.py`, not asserted here: a bespoke max(ts)
+    scan or a dropped RECL1 fold would each be the C3 migration undone, and
+    prose does not stop that.
+
+    THE TYPE SET (SPEC BOOKENDS1, 2026-08-23). This used to pass `ALL_TYPES`
+    — the filter OFF — described as "renderer last-touched semantics, the
+    7-day stopgap's original intent". `thread_activity.derive_from_events`
+    has always said the opposite for surfaces like this one ("never pass
+    ALL_TYPES from a surface that quotes a day-count"), and the consequence
+    was measurable: with every type counting, the `commitment_resolved`
+    written when ONE item on a thread is closed marks that whole thread
+    active for seven days and hides every OTHER open item on it. On real
+    substrate, 7 items on one day (GATE0 2026-08-23: morning
+    `needs_attention` 42 -> 49).
+
+    `BOOKEND_ACTIVITY_TYPES` is that same last-touched breadth MINUS the
+    enumerated commitment-lifecycle writers — not `DEFAULT_ACTIVITY_TYPES`,
+    which would additionally stop `thread_updated` / `deal_won` /
+    `objective_updated` counting (a separate narrowing nobody ruled on;
+    GATE0 measured it at 51). The C3 migration's fear was losing the
+    canonical derivation; the derivation, the RECL1 fold and the confidence
+    floor are all still here. Do NOT re-widen this to `ALL_TYPES`:
+    last-touched IS the right rule for the renderers (MASTER_TRACKER's
+    column, the list-active tree), which keep passing it, and the wrong rule
+    for a surface that decides whether to stop telling the CEO about
+    something they still owe.
 
     `compute_brief_state` reads these values as ISO strings
     (`_within_recent_window` parses a string); the derivation returns
@@ -1565,10 +1592,11 @@ def _brief_thread_activity(workspace_root) -> dict:
     (SKILL.md Step 3d: "pass what you have").
     """
     try:
-        from thread_activity import ALL_TYPES, derive_thread_activity
+        from thread_activity import (BOOKEND_ACTIVITY_TYPES,
+                                     derive_thread_activity)
 
         rows = derive_thread_activity(workspace_root,
-                                      activity_types=ALL_TYPES,
+                                      activity_types=BOOKEND_ACTIVITY_TYPES,
                                       honor_reclassifications=True)
         return {tid: act.ts.isoformat() for tid, act in rows.items()
                 if getattr(act, "ts", None) is not None}
@@ -1808,7 +1836,8 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                           processed_meeting_ids=None,
                           connector_gaps=None,
                           held_ids=None,
-                          lateness=None) -> dict:
+                          lateness=None,
+                          phase_ledger=None) -> dict:
     """SPEC EOD1 — the End of Day fire's seven blocks, assembled in ONE call.
 
     The t3 FB-9 pattern the morning brief already runs on: one fetch per fire,
@@ -1874,6 +1903,20 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     post — the receipt carries the capture leg's window fields as well as this
     pack's id map, and it has to precede the numbered surface (BRIEFFIX1 Item
     C). See that function for why the order is load-bearing.
+
+    SPEC EODPHASE1 times each phase. The pack carries `phase_timings` (the
+    `end_of_day.PhaseLedger` snapshot) and `log_end_of_day_receipt` lifts it
+    onto the receipt additively — no schema break, and a reader that does not
+    know the field is unaffected.
+
+    `phase_ledger` is the seam for the two things a snapshot on the RETURN
+    VALUE structurally cannot give you. Pass an `end_of_day.PhaseLedger` and
+    (a) you still hold the partial ledger if a phase RAISES and no pack is
+    returned at all — the fire that dies in its slowest phase being exactly
+    the one whose numbers matter — and (b) the orchestrator can time its own
+    capture and close legs into the SAME ledger, so the receipt reads as one
+    fire rather than as a driver with two unaccounted neighbours. Omit it and
+    the driver keeps its own; the pack is identical either way.
     """
     import end_of_day as eod
     from chat_output_renderer import validate_chat_output
@@ -1902,37 +1945,86 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     tomorrow_date = (today + _dt.timedelta(days=1)).isoformat()
     branch = eod.day_branch(today)
 
-    alarm_lines = list(substrate_alarm_lines(ws) or [])
+    # EODPHASE1 — the caller's ledger when it passed one (it keeps the partial
+    # record if a phase raises), else our own.
+    phases = phase_ledger if phase_ledger is not None else eod.PhaseLedger()
+
+    with phases.phase(eod.PHASE_ALARMS) as _p:
+        alarm_lines = list(substrate_alarm_lines(ws) or [])
+        _p.count(out=len(alarm_lines))
 
     soften = eod.soften_floor(close_result)
     softened = bool(soften.get("softened"))
 
-    opens = load_open_commitments(_events_path(ws))
-    try:
-        user_id = resolve_primary_user(ws)
-    except Exception:
-        user_id = None
-    state = compute_brief_state(open_commitments=opens, user_person_id=user_id,
-                                now_iso=now_iso, workspace_root=str(ws))
-    lane = cap_needs_attention(state.get("needs_attention") or [],
-                               now_iso=now_iso)
-    brief_state = {
-        "headline": (state.get("counts") or {}).get("headline") or {},
-        "needs_attention": lane["shown"],
-        "needs_attention_total": lane["n_total"],
-        "needs_attention_more": lane["n_more"],
-        "dropped": state.get("dropped") or [],
-    }
+    with phases.phase(eod.PHASE_BRIEF_STATE) as _p:
+        opens = load_open_commitments(_events_path(ws))
+        try:
+            user_id = resolve_primary_user(ws)
+        except Exception:
+            user_id = None
+        state = compute_brief_state(
+            open_commitments=opens, user_person_id=user_id,
+            now_iso=now_iso, workspace_root=str(ws),
+            # EODSTATE1 — the declared same-class sibling of the morning fix
+            # in `build_morning_brief_pack`. This call used to pass NEITHER
+            # substrate-derivable input, and two things followed on every
+            # evening fire: the cursor defaulted to None so `reconcile_stale`
+            # was structurally True — a permanently-True per-item flag on
+            # every slipped row, so the moment any surface reads it the
+            # evening hedges every row falsely on a workspace reconciling
+            # cleanly four times a day — and `thread_activity` was empty, so
+            # the 7-day recent-activity drop could not fire at all and
+            # `dropped` was empty BY CONSTRUCTION. That second one is what
+            # made `compute_slipped`'s "rides the SAME gates / structurally,
+            # not by discipline" docstring false on this path: the dropped
+            # set it checks candidates against had nothing in it to check
+            # against.
+            #
+            # BOOKENDS1 is why this lands as the SAME call as the morning's:
+            # `_brief_thread_activity` is ONE helper passing ONE type set, so
+            # the two bookends cannot quote different day-counts (F-54). On
+            # the day this was measured the evening applied zero drops and
+            # sat 95 items away from the morning; wiring it up with the
+            # pre-BOOKENDS1 type set would have closed that gap by importing
+            # the sibling-hiding bug into the evening too, which is why the
+            # build order is BOOKENDS1 first and this second.
+            #
+            # DELIBERATE DEGRADATION, same as the morning path and named for
+            # the same reason: `threads` (Step 3c latest-sender) and
+            # `calendar_events` (Step 3c-bis) stay unpassed because both need
+            # connector I/O, and this driver is connector-free by contract.
+            # Surfacing an item the CEO already handled by email is the safe
+            # direction of that residual gap.
+            sent_reconcile_cursor=_sent_reconcile_cursor(ws),
+            thread_activity=_brief_thread_activity(ws))
+        lane = cap_needs_attention(state.get("needs_attention") or [],
+                                   now_iso=now_iso)
+        brief_state = {
+            "headline": (state.get("counts") or {}).get("headline") or {},
+            "needs_attention": lane["shown"],
+            "needs_attention_total": lane["n_total"],
+            "needs_attention_more": lane["n_more"],
+            "dropped": state.get("dropped") or [],
+        }
+        # `in` is the open book this phase read; `out` is the lane the surface
+        # will actually show. The gap between them IS the drop-and-cap work,
+        # which is the expensive half.
+        _p.count(n_in=len(opens), out=len(lane["shown"]))
 
-    morning = eod.morning_fire(ws, for_date, now_iso=now_iso)
-    digest = eod.read_morning_digest(ws, morning)
+    with phases.phase(eod.PHASE_MORNING_READ):
+        morning = eod.morning_fire(ws, for_date, now_iso=now_iso)
+        digest = eod.read_morning_digest(ws, morning)
     # `since_ts` is None on a day whose morning brief never fired, and that is
     # the correct answer from `morning_fire`. Both readers below floor it to
     # workspace-local midnight themselves (SPEC WINSFLOOR1) and report which
     # window they used — the floor is IN the helpers, deliberately, so nothing
     # here has to remember to apply it.
     since_ts = morning.get("ts")
-    closures = eod.closures_since(ws, since_ts, now_iso=now_iso)
+    with phases.phase(eod.PHASE_CLOSURES) as _p:
+        closures = eod.closures_since(ws, since_ts, now_iso=now_iso)
+        # `ClosureWindow` IS a list (with the window fields hung off it), so
+        # its length is the closure count.
+        _p.count(out=len(closures))
     open_ids = [str((ev.get("data") or {}).get("id"))
                 for ev in opens if isinstance(ev, dict)]
 
@@ -1941,48 +2033,72 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     # today's count standing in for this morning's. `opens_since` uses the SAME
     # `_window` resolution `closures_since` does, so both sides of the ledger
     # are measured over one span.
-    opening = eod.opening_book(ws, morning, now_iso=now_iso)
-    opened = eod.opens_since(ws, since_ts, now_iso=now_iso)
-    ledger = eod.compute_ledger(opening=opening, n_opened=opened["n"],
-                                closures=closures, brief_state=brief_state)
+    with phases.phase(eod.PHASE_LEDGER) as _p:
+        opening = eod.opening_book(ws, morning, now_iso=now_iso)
+        opened = eod.opens_since(ws, since_ts, now_iso=now_iso)
+        ledger = eod.compute_ledger(opening=opening, n_opened=opened["n"],
+                                    closures=closures, brief_state=brief_state)
+        _p.count(out=opened["n"])
 
-    score = eod.compute_score(morning=morning, digest=digest,
-                              open_ids=open_ids, closures=closures,
-                              softened=softened,
-                              # EODFIX1 — the first_move check needs to know
-                              # whether the close phase could see the day at
-                              # all: "nothing closed it" over a stale cursor
-                              # is not a measurement.
-                              close_legs=soften.get("legs"),
-                              ledger=ledger)
-    wins = eod.compute_wins(ws, since_ts, now_iso=now_iso)
-    slipped = eod.compute_slipped(brief_state=brief_state, morning=morning,
-                                  todays_meetings=todays_meetings,
-                                  processed_meeting_ids=processed_meeting_ids,
-                                  now_iso=now_iso, softened=softened,
-                                  # THE HONEST DENOMINATOR (EODLEDGER1). The
-                                  # lane handed over above was ALREADY bounded
-                                  # by `cap_needs_attention`; without this the
-                                  # slipped block would print "3 of 5" over a
-                                  # lane holding 41.
-                                  lane_total=brief_state["needs_attention_total"])
-    confirm = eod.compute_confirm(opens, now_iso=now_iso, held_ids=held_ids)
-    # PERSONLOOP1 §0-3 — the confirm block's second half. It rides INSIDE the
-    # confirm block rather than as a new pack block, so `BLOCK_ORDER` and
-    # every `blocks_rendered` claim are unchanged, and
-    # `confirm_ids_from_pack` appends these rows LAST so no pre-existing
-    # number moves. This is a CODE chokepoint on purpose: the fire's prose
-    # cannot forget a step it does not perform.
-    _pcand = eod.compute_person_candidates(ws, now_iso=now_iso)
-    confirm["person_rows"] = _pcand["rows"]
-    confirm["person_total"] = _pcand["n_total"]
-    confirm["person_telemetry"] = _pcand["telemetry"]
-    tomorrow = eod.compute_tomorrow(ws, for_date=tomorrow_date,
-                                    calendar_events=calendar_events,
-                                    brief_state=brief_state,
-                                    calendar_available=calendar_available)
-    sign_off = eod.compute_sign_off(slipped=slipped, tomorrow=tomorrow,
-                                    now_iso=now_iso, brief_state=brief_state)
+    with phases.phase(eod.PHASE_SCORE):
+        score = eod.compute_score(morning=morning, digest=digest,
+                                  open_ids=open_ids, closures=closures,
+                                  softened=softened,
+                                  # EODFIX1 — the first_move check needs to
+                                  # know whether the close phase could see the
+                                  # day at all: "nothing closed it" over a
+                                  # stale cursor is not a measurement.
+                                  close_legs=soften.get("legs"),
+                                  ledger=ledger)
+    with phases.phase(eod.PHASE_WINS) as _p:
+        wins = eod.compute_wins(ws, since_ts, now_iso=now_iso)
+        _p.count(out=len(wins.get("rows") or []))
+    with phases.phase(eod.PHASE_SLIPPED) as _p:
+        slipped = eod.compute_slipped(
+            brief_state=brief_state, morning=morning,
+            todays_meetings=todays_meetings,
+            processed_meeting_ids=processed_meeting_ids,
+            now_iso=now_iso, softened=softened,
+            # THE HONEST DENOMINATOR (EODLEDGER1). The lane handed over above
+            # was ALREADY bounded by `cap_needs_attention`; without this the
+            # slipped block would print "3 of 5" over a lane holding 41.
+            lane_total=brief_state["needs_attention_total"],
+            # SPEC OVERDUE1 — the fatigue threshold, read from THIS
+            # workspace's End of Day config. The block stays a pure function
+            # of what it is handed, so the config read lives out here with
+            # every other I/O this driver owns.
+            ask_after_days=eod.overdue_ask_after_days(ws))
+        _p.count(n_in=len(brief_state["needs_attention"]),
+                 out=len(slipped.get("rows") or []))
+    with phases.phase(eod.PHASE_CONFIRM) as _p:
+        confirm = eod.compute_confirm(opens, now_iso=now_iso,
+                                      held_ids=held_ids)
+        # PERSONLOOP1 §0-3 — the confirm block's second half. It rides INSIDE
+        # the confirm block rather than as a new pack block, so `BLOCK_ORDER`
+        # and every `blocks_rendered` claim are unchanged, and
+        # `confirm_ids_from_pack` appends these rows LAST so no pre-existing
+        # number moves. This is a CODE chokepoint on purpose: the fire's prose
+        # cannot forget a step it does not perform.
+        #
+        # EODPHASE1 times the two together under one name because they are one
+        # block to the reader and one decision to the operator: a phase split
+        # nobody can act on differently is a number nobody can use.
+        _pcand = eod.compute_person_candidates(ws, now_iso=now_iso)
+        confirm["person_rows"] = _pcand["rows"]
+        confirm["person_total"] = _pcand["n_total"]
+        confirm["person_telemetry"] = _pcand["telemetry"]
+        _p.count(out=len(confirm.get("rows") or [])
+                 + len(confirm.get("person_rows") or []))
+    with phases.phase(eod.PHASE_TOMORROW) as _p:
+        tomorrow = eod.compute_tomorrow(ws, for_date=tomorrow_date,
+                                        calendar_events=calendar_events,
+                                        brief_state=brief_state,
+                                        calendar_available=calendar_available)
+        _p.count(out=len(tomorrow.get("rollover") or []))
+    with phases.phase(eod.PHASE_SIGN_OFF):
+        sign_off = eod.compute_sign_off(slipped=slipped, tomorrow=tomorrow,
+                                        now_iso=now_iso,
+                                        brief_state=brief_state)
 
     # THE COVERAGE STRIP (SPEC EODLEDGER1 part 1). Composed LAST among the
     # blocks and placed FIRST among them: it needs `unsourced_closes` and the
@@ -1990,20 +2106,23 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     # fence, not a convenience — "the calendar was not read" and "tomorrow is
     # empty" rendered identically before this spec, and they cannot disagree
     # now because there is one boolean behind both of them.
-    unsourced = eod.unsourced_closes(closures)
-    coverage = eod.compute_coverage(
-        ws, close_result=close_result, connector_gaps=connector_gaps,
-        calendar_available=tomorrow["calendar_available"],
-        now_iso=now_iso, n_unsourced=len(unsourced),
-        capture=eod.capture_aperture(ws, now_iso=now_iso))
+    with phases.phase(eod.PHASE_COVERAGE) as _p:
+        unsourced = eod.unsourced_closes(closures)
+        coverage = eod.compute_coverage(
+            ws, close_result=close_result, connector_gaps=connector_gaps,
+            calendar_available=tomorrow["calendar_available"],
+            now_iso=now_iso, n_unsourced=len(unsourced),
+            capture=eod.capture_aperture(ws, now_iso=now_iso))
+        _p.count(out=len(unsourced))
 
     # THE CATCH-UP READ (SPEC EODLEDGER1 part 3, M's ruling on D3). Present on
     # every fire and `renders: False` on all but the degrade tier — one
     # unconditional thing for the fire to read, the same posture `directive`
     # takes. `lateness` is the Phase 2.9 return, unmodified; nothing here
     # recomputes lateness and nothing here touches `late_fire`.
-    catchup = eod.compute_catchup_read(lateness=lateness or {},
-                                       workspace_root=ws, now_iso=now_iso)
+    with phases.phase(eod.PHASE_CATCHUP):
+        catchup = eod.compute_catchup_read(lateness=lateness or {},
+                                           workspace_root=ws, now_iso=now_iso)
 
     pack = {
         "surface": eod.SURFACE,
@@ -2043,31 +2162,53 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         },
     }
     if branch == "monday":
-        pack["week_rollup"] = eod.week_rollup(ws, for_date=for_date,
-                                              now_iso=now_iso)
-        pack["development_read"] = eod.development_read_slot(ws)
-    pack["confirm_ids"] = eod.confirm_ids_from_pack(pack)
+        # Monday only, so this key is ABSENT from most fires' receipts rather
+        # than zero — "did not run today" and "took no time" are different
+        # claims and a reader must be able to tell them apart.
+        with phases.phase(eod.PHASE_WEEK_ROLLUP):
+            pack["week_rollup"] = eod.week_rollup(ws, for_date=for_date,
+                                                  now_iso=now_iso)
+            pack["development_read"] = eod.development_read_slot(ws)
 
-    # Leak-scan every text line the pack hands the orchestrator. Loud by
-    # design, in the driver, before any of it reaches a chat turn.
-    scannable = "\n".join(
-        alarm_lines
-        # EODLEDGER1 — the three new text surfaces are scanned like every
-        # other one. The coverage strip carries connector reasons that arrived
-        # from the orchestrator, which is exactly the shape a leak travels in.
-        + list(coverage.get("lines") or [])
-        + list(catchup.get("lines") or [])
-        + [l for l in [score.get("line"), wins.get("line"),
-                       wins.get("more_line"), slipped.get("more_line"),
-                       slipped.get("soften_line"), confirm.get("more_line"),
-                       (ledger or {}).get("line"),
-                       (ledger or {}).get("residual_line"),
-                       sign_off.get("line"),
-                       tomorrow.get("line")] if l]
-        + list(score.get("notes") or [])
-    )
-    if scannable.strip():
-        validate_chat_output(scannable)
+    with phases.phase(eod.PHASE_RENDER) as _p:
+        pack["confirm_ids"] = eod.confirm_ids_from_pack(pack)
+
+        # Leak-scan every text line the pack hands the orchestrator. Loud by
+        # design, in the driver, before any of it reaches a chat turn.
+        scannable = "\n".join(
+            alarm_lines
+            # EODLEDGER1 — the three new text surfaces are scanned like every
+            # other one. The coverage strip carries connector reasons that
+            # arrived from the orchestrator, which is exactly the shape a leak
+            # travels in.
+            + list(coverage.get("lines") or [])
+            + list(catchup.get("lines") or [])
+            + [l for l in [score.get("line"), wins.get("line"),
+                           wins.get("more_line"), slipped.get("more_line"),
+                           # SPEC OVERDUE1 — the resting line is composed
+                           # prose the fire posts, so it is scanned like every
+                           # other line the pack hands the orchestrator.
+                           slipped.get("resting_line"),
+                           slipped.get("soften_line"), confirm.get("more_line"),
+                           (ledger or {}).get("line"),
+                           (ledger or {}).get("residual_line"),
+                           sign_off.get("line"),
+                           tomorrow.get("line")] if l]
+            + list(score.get("notes") or [])
+        )
+        if scannable.strip():
+            validate_chat_output(scannable)
+        _p.count(out=len(pack["confirm_ids"]))
+
+    # EODPHASE1 — the timings ride the pack so the receipt writer can lift
+    # them without a second call. Placed AFTER the render phase closes, so the
+    # `render` number includes the leak scan (which is the part that grows with
+    # the pack) and excludes this bookkeeping. The audit copy below therefore
+    # carries the timings too, which is free and occasionally the only surviving
+    # record when a fire dies after the pack and before the receipt.
+    timings = phases.snapshot()
+    if timings:
+        pack["phase_timings"] = timings
 
     try:
         from atomic_write import atomic_write_text
@@ -2337,6 +2478,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
                 personal_cap: int = _MP_PERSONAL_CAP,
                 promised_cap: int = _MP_PROMISED_CAP,
                 fired_via: str | None = None,
+                rerun_of: str | None = None,
                 pageset_ttl_minutes: int | None = None) -> dict:
     """Build the view + render_and_persist ONE page. Returns the transport
     dict (html / pagination / path). The CLI wraps this; tests call it
@@ -2372,7 +2514,21 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     transport["receipt"]). Pages 2+ never receipt; omitting fired_via
     renders only (legacy callers unchanged). The snapshot path does NOT touch
     receipt behavior: the receipt still fires on page 1 only, still counts the
-    live-built view it was always counting."""
+    live-built view it was always counting.
+
+    `rerun_of` (SPEC RERUNFAN1, the ISO instant `late_fire.check_lateness`
+    returns on a `rerun` tier) rides onto that receipt's `extra_data` under
+    `late_fire.RERUN_OF_FIELD`. It is PASSED, never derived: this module has
+    no opinion about run modes, and RUNNOW1 DD-3 deliberately left the field a
+    prose contract rather than a code chokepoint. It exists here because three
+    orchestrators — waiting-on, my-plate and staff-meeting — write their
+    receipt INSIDE this call on every normal fire, and staff-meeting has no
+    other receipt call at all (only a degrade branch a `rerun` tier never
+    reaches); without it their re-run paragraph would be a reader with no
+    producer on the path they actually take (RUNNOW1 F-1). A receipt carrying
+    the field is excluded from the
+    served-slot marker, which is what lets the next press render (DD-5).
+    Ignored when no receipt is written (pages 2+, or no `fired_via`)."""
     from page_snapshot import (DEFAULT_TTL_MINUTES, applied_ids_since,
                                load_pageset, save_pageset)
     from widget_transport import render_and_persist
@@ -2493,6 +2649,15 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     if snap_note and transport.get("pagination") is not None:
         transport["pagination"].update(snap_note)
     if fired_via is not None and page == 1:
+        # SPEC RERUNFAN1 — merged HERE rather than inside the page-1 view
+        # build so it cannot depend on which path produced the view, and
+        # under the field name `late_fire` itself uses: a second spelling of
+        # a key one reader keys on is the F-50 P2c drift class, and this key
+        # is the one the served-slot exclusion reads.
+        if rerun_of:
+            from late_fire import RERUN_OF_FIELD
+            receipt_extra = dict(receipt_extra or {})
+            receipt_extra[RERUN_OF_FIELD] = rerun_of
         transport["receipt"] = _log_fire_receipt(
             ws, surface, live_view if live_view is not None else view,
             fired_via, extra_data=receipt_extra)
@@ -2581,6 +2746,12 @@ def main() -> int:
                          "receipt_fired_via); when given, the page-1 "
                          "invocation also writes the surface's canonical "
                          "per-fire receipt inside this call (FB-7)")
+    ap.add_argument("--rerun-of", default=None,
+                    help="SPEC RERUNFAN1: the ISO instant check_lateness "
+                         "returns as `rerun_of` on a `rerun` tier. Rides onto "
+                         "the page-1 receipt's extra_data and is what lets "
+                         "the NEXT press render; OMIT the flag on every "
+                         "other tier")
     args = ap.parse_args()
 
     try:
@@ -2670,7 +2841,7 @@ def _dispatch(args) -> int:
         chase_rows=chase_rows, status_rows=status_rows,
         personal_cap=args.personal_cap,
         promised_cap=getattr(args, "promised_cap", _MP_PROMISED_CAP),
-        fired_via=args.fired_via,
+        fired_via=args.fired_via, rerun_of=args.rerun_of,
         pageset_ttl_minutes=args.pageset_ttl_minutes)
 
     pagination = transport.get("pagination") or {}

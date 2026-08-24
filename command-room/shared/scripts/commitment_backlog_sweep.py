@@ -115,7 +115,17 @@ DEFAULT_WINDOW_DAYS = 180
 # "No evidence AND no activity for N days" → an age-out candidate. Read from
 # skill_config (`load_skill_config(ws, "commitment-backlog-sweep")["age_out_days"]`)
 # and overridable in the command ("sweep my backlog, age out at 90 days").
-DEFAULT_AGE_OUT_DAYS = 45
+#
+# SWEEPSCHED1 §0 D1 — 45 → 30, and the PHRASE PATH INHERITS IT. The 2026-08-22
+# funnel census measured the confirmed book against three bars: at 45 days
+# nothing at all qualified, at 21 days a third of the book did, at 30 days a
+# workable tenth did. A bar that clears nothing is a bar nobody notices; a bar
+# that clears a third of work somebody agreed to is a bar nobody trusts. One
+# number serves both doors on purpose — the weekly job and `commitment amnesty`
+# must never be able to disagree about what "quiet" means, or the offer a user
+# reads and the clear a job performs are answering different questions.
+# A workspace that wants its own bar still sets `age_out_days` and wins.
+DEFAULT_AGE_OUT_DAYS = 30
 
 # Volume cap per run — the CATCHUP1 batching precedent. A 400-item backlog must
 # not produce a 400-row widget or an unbounded connector bill, and a run that
@@ -1923,7 +1933,7 @@ REVIEW_SOURCE_SKILL = f"{SOURCE_SKILL}:review-amnesty"
 REVIEW_TIER_RESOLUTION = "dropped"
 
 # §0-2 — the expiry window, in days. Unconfirmed extractions age much faster
-# than confirmed work does (45 days there): a guess nobody answered in two
+# than confirmed work does (30 days there): a guess nobody answered in two
 # weeks is a guess whose context has gone, and the answer will not improve by
 # waiting. Overridable per run ("expire the review pile past 30 days") and
 # configurable per workspace — see `_configured_review_expiry_days`.
@@ -2964,6 +2974,302 @@ def _log_review_expiry_receipt(workspace_root, out, *, fired_via) -> None:
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+
+# ---------------------------------------------------------------------------
+# SWEEPSCHED1 — the CONFIRMED tier ages out on a SCHEDULE, not on a phrase
+# ---------------------------------------------------------------------------
+#
+# WHAT WAS MISSING (the 2026-08-22 funnel census). The amnesty above exists,
+# works, and is reversible — and it is wired to nothing. It runs only when
+# somebody types `commitment amnesty`, which is the same shape of problem the
+# review tier had until REVSCHED1 gave it a weekly job: a drain nobody
+# remembers is a drain that never runs, and the confirmed pile is then the one
+# lane that only ever grows.
+#
+# WHY IT IS A JOB AND NOT A TASK — the whole of `run_review_expiry_job`'s
+# reasoning applies here unchanged and is not restated: it rides the already
+# authorized `maintenance` task, so it registers zero scheduled tasks on any
+# machine, and a job id is not a `DEFAULT_SCHEDULES` key, so it cannot inherit
+# a retired predecessor's `enabled: false` through the carry-over seam that
+# silently disabled the end-of-day task on 2026-08-19.
+#
+# WHERE IT DIFFERS FROM THE REVIEW DRAIN, and this is the only difference:
+# CONFIRM-FIRST. The review tier drains guesses nobody ever agreed to, so a
+# weekly confirm nobody answers was the wrong safety there and reversibility
+# was the right one. This tier closes work somebody DID agree to, and nobody
+# has ever watched this job act. So the first `AGE_OUT_CONFIRM_FIRST_RUNS`
+# fires SHOW THEIR HAND — they compute the same plan, close nothing, and write
+# the offer as their receipt line. From the fire after that it applies
+# unattended, reversibly, exactly as the review drain does.
+#
+# THE COUNTER LIVES ON THE RECEIPTS AND NOWHERE ELSE (DD-2). A config flag
+# would be a flag nobody flips, i.e. a job that never applies; a counter in
+# config would be a second piece of state that can disagree with the ledger.
+# The job's own `pack_run` receipts already record every fire it has made, so
+# it counts itself — the same "the receipt is the signal" doctrine the
+# dispatcher's dueness rule already runs on.
+
+# The job's receipt id + type. Registered in `receipts.CANONICAL_TASK_IDS` /
+# `receipts.RECEIPT_TYPES`; read by `maintenance_dispatcher.dispatch_plan`
+# (dueness) and `task_watchdog.check_maintenance_jobs` (lateness,
+# machine-local).
+AGE_OUT_JOB_ID = "age-out"
+AGE_OUT_RECEIPT_TYPE = "pack_run"
+
+# How many fires propose before any fire applies (D2, RULED). Three is not a
+# rounded-up two: it is the number of Sundays a CEO who ignores one and skims
+# the next still gets a third look at before anything closes on its own.
+AGE_OUT_CONFIRM_FIRST_RUNS = 3
+
+# The two modes a fire can record. They are the ONLY values the counter counts,
+# which is what keeps a refusal — a fire that never got as far as a plan — from
+# burning one of the three looks the user is owed.
+AGE_OUT_MODE_PROPOSED = "proposed"
+AGE_OUT_MODE_APPLIED = "applied"
+
+
+def _age_out_prior_runs(workspace_root) -> int:
+    """How many times this job has already proposed or applied.
+
+    Counts THIS JOB'S OWN receipts and nothing else — never config, never a
+    stored counter. `iter_receipts` is shard-transparent and parses every
+    legacy shape, so the count survives a substrate that has been sharded or
+    migrated under it.
+
+    A receipt with no `mode` does not count. Three shapes arrive that way and
+    all must be excluded for the same reason: a `primary_user_unresolved`
+    refusal (the fire never reached a plan), a REFUSED plan
+    (`threshold_below_floor` — the plan came back with nothing to offer and an
+    empty line), and any receipt written under this id by a future sibling.
+    None of them showed the user anything, so none may consume one of the
+    three looks.
+
+    An unreadable substrate returns 0, which reads as "still on probation" —
+    the safe direction. The failure in the other direction is a job that
+    applies unattended because it could not read its own history, which is
+    exactly what confirm-first exists to prevent.
+    """
+    try:
+        from receipts import iter_receipts
+
+        seen = 0
+        for r in iter_receipts(workspace_root, task_ids=[AGE_OUT_JOB_ID]):
+            raw = r.get("raw") if isinstance(r, dict) else None
+            data = raw.get("data") if isinstance(raw, dict) else None
+            mode = data.get("mode") if isinstance(data, dict) else None
+            if mode in (AGE_OUT_MODE_PROPOSED, AGE_OUT_MODE_APPLIED):
+                seen += 1
+        return seen
+    except Exception:
+        return 0
+
+
+def _age_out_offer_line(n, threshold_days, n_prior) -> str:
+    """The line a PROPOSING fire leaves — an offer, not a report (DD-2).
+
+    Empty when the plan is empty, for the same reason
+    `_review_expiry_receipt_line` is: a line saying "nothing to clear" is a
+    line the CEO has to read in order to learn that nothing happened.
+
+    The tail COUNTS DOWN rather than repeating "two more Sundays" at every
+    offer. The spec's sentence is the FIRST offer's sentence; saying it again
+    on the third would be a plausible-looking lie about how much warning is
+    left, and this module refuses those elsewhere for the same reason
+    (`_review_expiry_receipt_line` never offers `undo` on an empty batch).
+    """
+    n = int(n or 0)
+    if not n:
+        return ""
+    remaining = AGE_OUT_CONFIRM_FIRST_RUNS - 1 - int(n_prior or 0)
+    if remaining >= 2:
+        tail = f"after {remaining} more Sundays"
+    elif remaining == 1:
+        tail = "after one more Sunday"
+    else:
+        tail = "from next Sunday"
+    subject = "item has" if n == 1 else "items have"
+    obj = "it" if n == 1 else "them"
+    return (f"{n} agreed {subject} been silent {threshold_days}+ days. Say "
+            f"`commitment amnesty` to let {obj} go in one reversible batch, or "
+            f"nothing and I will start doing it on my own {tail}.")
+
+
+def _age_out_receipt_line(out) -> str:
+    """The ONE line an APPLYING fire leaves for the next day-close to read out.
+
+    Same contract as `_review_expiry_receipt_line`, same empty-on-zero rule,
+    and every number off the writer's own return rather than off the plan — a
+    receipt must never assert a count the writer did not produce.
+    """
+    n = int((out or {}).get("n_applied") or 0)
+    if not n:
+        return ""
+    days = (out or {}).get("threshold_days")
+    them = "it" if n == 1 else "them"
+    return (f"{n} silent agreed item{'' if n == 1 else 's'} aged out after "
+            f"{days} quiet days — say `undo` to put {them} back, `my plate` "
+            f"for what remains.")
+
+
+def run_age_out_job(workspace_root, *, apply: bool = False, now_iso=None,
+                    fired_via: str = "scheduled", batch_id=None) -> dict:
+    """SWEEPSCHED1 DD-1/DD-2 — the confirmed-tier drain, as a maintenance JOB.
+
+    THE ORDER OF OPERATIONS IS `run_review_expiry_job`'S, DELIBERATELY, and the
+    reasoning behind each step is recorded there rather than restated here:
+
+      1. validate `fired_via` FIRST. `log_receipt` raises on a value it does not
+         know, and the receipt call sits after the closes inside a
+         swallow-and-log guard — composed, the two once closed a whole pile and
+         then lost the receipt to the exception, leaving the job permanently
+         due. A refusal at the front means nothing happened at all;
+      2. `resolve_primary_user`, never a guess. Unresolved refuses, and on an
+         apply it STILL receipts, or the job is permanently due;
+      3. `apply=False` is the dry run: plan only, no receipt. The flag
+         mattering is what stops a flagless fire from silently satisfying the
+         dispatcher's dueness rule forever;
+      4. on an apply, the plan goes through `apply_amnesty`, which this build
+         does not touch. The phrase path stays byte-identical; all this wrapper
+         adds is the user resolution `apply_amnesty` has always demanded of its
+         caller — the single thing that kept it from running unattended.
+
+    AND ONE STEP THAT IS THIS JOB'S ALONE: between 3 and 4, the confirm-first
+    gate. Under `AGE_OUT_CONFIRM_FIRST_RUNS` prior proposing/applying fires the
+    job computes the plan, CLOSES NOTHING, and writes the offer as its receipt
+    line. It is a real fire either way — it receipts, so its slot is served and
+    it does not re-derive at every one of the task's three daily slots.
+
+    It reaches the CONFIRMED pile and nothing else, and adds no second
+    derivation to make that true: `amnesty_plan` -> `_amnesty_decisions` ->
+    `apply_decisions` is the one path, `split_pending_review` inside the plan is
+    its fence, and an unconfirmed extraction never enters.
+
+    Returns `{ran, applied, mode, n_prior_runs, n_planned, n_applied,
+    n_drifted, threshold_days, batch_id, refused, reason, preview,
+    receipt_line, summary}`.
+    """
+    from primary_user import resolve_primary_user
+
+    def _blank(**over) -> dict:
+        base = {"ran": False, "applied": False, "mode": None,
+                "n_prior_runs": 0, "n_planned": 0, "n_applied": 0,
+                "n_drifted": 0, "threshold_days": None, "batch_id": None,
+                "refused": None, "reason": "", "preview": "",
+                "receipt_line": "", "summary": ""}
+        base.update(over)
+        return base
+
+    via = _normalize_fired_via_or_none(fired_via)
+    if via is None:
+        return _blank(
+            refused="unknown_fired_via",
+            reason=(f"{fired_via!r} is not a fire provenance I can record, so "
+                    f"I did not touch the agreed pile. Nothing was changed."))
+    fired_via = via
+
+    uid = resolve_primary_user(workspace_root)
+    if not uid:
+        out = _blank(
+            refused="primary_user_unresolved",
+            reason=("I could not work out whose workspace this is, so the "
+                    "agreed pile was left alone."))
+        if apply:
+            _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
+        return out
+
+    if not apply:
+        plan = amnesty_plan(workspace_root, now_iso=now_iso)
+        return _blank(
+            n_prior_runs=_age_out_prior_runs(workspace_root),
+            n_planned=int(plan.get("n") or 0),
+            threshold_days=plan.get("threshold_days"),
+            refused=plan.get("refused"),
+            reason=plan.get("reason") or "",
+            preview=plan.get("preview") or "",
+            summary=plan.get("confirm") or plan.get("reason") or "")
+
+    n_prior = _age_out_prior_runs(workspace_root)
+    if n_prior < AGE_OUT_CONFIRM_FIRST_RUNS:
+        plan = amnesty_plan(workspace_root, now_iso=now_iso)
+        n = int(plan.get("n") or 0)
+        line = _age_out_offer_line(n, plan.get("threshold_days"), n_prior)
+        out = _blank(
+            ran=bool(n),
+            # A REFUSED plan put NOTHING in front of anybody, so it records no
+            # mode and burns none of the three looks — the same shape the
+            # unresolved-user refusal above already uses, and the same reason
+            # `_age_out_prior_runs` gives for excluding it. `amnesty_plan`
+            # refuses exactly one way here (`threshold_below_floor`, a
+            # workspace configured under the seven-day floor), and a workspace
+            # can sit in that state for weeks; without this the three Sundays
+            # of warning are spent in silence and the fourth closes the pile
+            # having never once shown its hand. An EMPTY plan is NOT a refusal
+            # and still counts — there was nothing to offer, and probation that
+            # can never end is a job that can never act.
+            mode=None if plan.get("refused") else AGE_OUT_MODE_PROPOSED,
+            n_prior_runs=n_prior,
+            n_planned=n,
+            threshold_days=plan.get("threshold_days"),
+            refused=plan.get("refused"),
+            reason=plan.get("reason") or "",
+            preview=plan.get("preview") or "",
+            receipt_line=line,
+            summary=line or plan.get("reason") or "")
+        _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
+        return out
+
+    out = dict(apply_amnesty(workspace_root, user_person_id=uid,
+                             batch_id=batch_id, now_iso=now_iso))
+    out["mode"] = AGE_OUT_MODE_APPLIED
+    out["n_prior_runs"] = n_prior
+    out["preview"] = out.get("preview") or ""
+    out["receipt_line"] = _age_out_receipt_line(out)
+    _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
+    return out
+
+
+def _log_age_out_receipt(workspace_root, out, *, fired_via) -> None:
+    """ONE receipt per fire — proposed, applied, empty and refused alike.
+
+    The receipt is the job's dueness signal AND the confirm-first counter, so
+    it is written on a no-op too. A job that only receipts when it finds work
+    re-derives the whole pile at every one of the task's three daily slots
+    forever; a job that only receipted when it ACTED would additionally never
+    leave probation, because the counter it reads is this very ledger.
+
+    `surfaced` is what the fire PUT IN FRONT OF THE USER: what closed on an
+    applying fire, what was offered on a proposing one. A proposing fire
+    reporting 0 there while its line named 26 items would put the usage report
+    at odds with the sentence the CEO actually read.
+    """
+    try:
+        from receipts import log_receipt
+        mode = (out or {}).get("mode")
+        n_planned = int((out or {}).get("n_planned") or 0)
+        n_applied = int((out or {}).get("n_applied") or 0)
+        surfaced = n_planned if mode == AGE_OUT_MODE_PROPOSED else n_applied
+        log_receipt(
+            workspace_root, AGE_OUT_JOB_ID,
+            receipt_type=AGE_OUT_RECEIPT_TYPE,
+            fired_via=fired_via,
+            surfaced=surfaced,
+            extra_data={
+                "mode": mode,
+                "n_prior_runs": int((out or {}).get("n_prior_runs") or 0),
+                "n_planned": n_planned,
+                "n_applied": n_applied,
+                "n_drifted": int((out or {}).get("n_drifted") or 0),
+                "threshold_days": (out or {}).get("threshold_days"),
+                "batch_id": (out or {}).get("batch_id"),
+                "refused": (out or {}).get("refused"),
+                "preview": (out or {}).get("preview") or "",
+                "receipt_line": (out or {}).get("receipt_line") or "",
+            },
+        )
+    except Exception as exc:  # loud, never fatal — the closes already landed
+        print(f"[backlog-sweep] age-out receipt FAILED: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+
 __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "DEFAULT_AGE_OUT_DAYS",
@@ -3030,19 +3336,33 @@ __all__ = [
     "validate_sweep_ran",
     "review_offer",
     "run_review_expiry_job",
+    "AGE_OUT_JOB_ID",
+    "AGE_OUT_RECEIPT_TYPE",
+    "AGE_OUT_CONFIRM_FIRST_RUNS",
+    "AGE_OUT_MODE_PROPOSED",
+    "AGE_OUT_MODE_APPLIED",
+    "run_age_out_job",
 ]
 
 
 def main(argv: Optional[list] = None) -> int:
-    """CLI for the scheduled legs of this module (REVSCHED1 §3-2).
+    """CLI for the scheduled legs of this module (REVSCHED1 §3-2, SWEEPSCHED1).
 
     `python3 commitment_backlog_sweep.py review-expiry --workspace <root>
-    [--apply]`
+    [--apply]` — the unconfirmed pile.
+    `python3 commitment_backlog_sweep.py age-out --workspace <root> [--apply]`
+    — the confirmed pile.
 
-    Without `--apply` it plans and writes nothing — including NO receipt, so a
-    dry run leaves the job due. Same contract as `lifecycle_pass.py` and
-    `identity_reconcile.py`, deliberately: the flag mattering is what stops a
-    dry run from silently satisfying the dispatcher's dueness rule forever.
+    Without `--apply` either leg plans and writes nothing — including NO
+    receipt, so a dry run leaves the job due. Same contract as
+    `lifecycle_pass.py` and `identity_reconcile.py`, deliberately: the flag
+    mattering is what stops a dry run from silently satisfying the dispatcher's
+    dueness rule forever.
+
+    The two legs are separate subcommands and never one with a switch: they
+    close different piles under different stamps at different bars, and a typo
+    in a shell string that silently selected the other pile is exactly the
+    class of accident a scheduled command line must not be able to have.
     """
     import argparse
     import json as _json
@@ -3050,20 +3370,27 @@ def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Command Room commitment-backlog-sweep scheduled legs")
     sub = parser.add_subparsers(dest="leg", required=True)
-    rx = sub.add_parser(REVIEW_EXPIRY_JOB_ID,
-                        help="the weekly unconfirmed-pile drain")
-    rx.add_argument("--workspace", required=True,
-                    help="absolute path to the workspace root")
-    rx.add_argument("--apply", action="store_true",
-                    help="execute the plan (without it: dry run, no writes)")
-    rx.add_argument("--now", default=None,
-                    help="frozen ISO instant (testing/simulation)")
-    rx.add_argument("--fired-via", default="scheduled",
-                    help="scheduled | manual (receipt provenance)")
+
+    def _leg(name, help_text):
+        pr = sub.add_parser(name, help=help_text)
+        pr.add_argument("--workspace", required=True,
+                        help="absolute path to the workspace root")
+        pr.add_argument("--apply", action="store_true",
+                        help="execute the plan (without it: dry run, no writes)")
+        pr.add_argument("--now", default=None,
+                        help="frozen ISO instant (testing/simulation)")
+        pr.add_argument("--fired-via", default="scheduled",
+                        help="scheduled | manual (receipt provenance)")
+        return pr
+
+    _leg(REVIEW_EXPIRY_JOB_ID, "the weekly unconfirmed-pile drain")
+    _leg(AGE_OUT_JOB_ID, "the weekly confirmed-pile drain (confirm-first)")
+
     args = parser.parse_args(argv)
-    result = run_review_expiry_job(args.workspace, apply=args.apply,
-                                   now_iso=args.now,
-                                   fired_via=args.fired_via)
+    runner = (run_age_out_job if args.leg == AGE_OUT_JOB_ID
+              else run_review_expiry_job)
+    result = runner(args.workspace, apply=args.apply, now_iso=args.now,
+                    fired_via=args.fired_via)
     print(_json.dumps(result, indent=2, default=str))
     return 0
 

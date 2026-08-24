@@ -571,6 +571,34 @@ Hard rules:
   a tombstone every downstream surface has to re-join the log to render, which
   is how the End of Day's wins block ended up structurally blind to the one
   thing this product writes most of.
+- **How identity was established (CLOSEID1, 2026-08-23) — ADDITIVE and
+  OPTIONAL.** `close_commitment` stamps `data.resolved_by_match` when the
+  caller states it: `id` (the surface embedded the id), `number` (a row on a
+  receipt whose positions that fire rendered itself), or `title` (a human's
+  words, matched). Absent = unstated, which is what every close already on disk
+  says and what every programmatic closer still writes — readers must never
+  treat absence as `id`. It exists because a tombstone recorded THAT something
+  closed and never HOW its target was chosen, and the one wrong-close observed
+  in the live substrate (an End of Day fire closed one promise against another
+  promise's evidence, reopened it, and closed the second — three events in one
+  fire) was invisible in the ledger for exactly that reason. `title` is also
+  the only value the writer polices: it refuses (`AmbiguousTargetError`) unless
+  the user confirmed AND the words resolve to exactly one open item.
+- **The ambiguity row (CLOSEID1).** A refused name-close lands as exactly ONE
+  `commitment_review_proposed` via `commitment_state.propose_ambiguous_close`
+  — an ambiguity is one either/or question, never one yes/no row per
+  candidate, because N rows carrying the SAME evidence read as independent and
+  a bulk confirm over them closes every side of the either/or. That row adds
+  `ambiguous_query` (the words), `ambiguous_candidates` (the full
+  `[{id, title}]` set), `ambiguous_truncated`, and `auto_close_blocked`, and
+  `brain_proposals._adapt_commitment_reviews` renders them as the row's ask.
+  **`data.commitment_id` on such a row is an identity ANCHOR, not a close
+  target** — the queue keys rows by commitment id and the ambiguity belongs to
+  no single commitment, so a reader that closes the anchor because it is the
+  anchor has reintroduced the first-hit close. The row's `evidence` names it a
+  title match in the words `watch_gate.weakness_reason` reads, so
+  `screen_bulk_accept` HOLDS it in every bulk gesture; `has_completion_signal`
+  is `false` for the same purpose by a second, independent route.
 - **Writing closures (Phase 2 Stage B):** `commitment_resolved` is written
   ONLY through `commitment_state.close_commitment()` — the single closure
   path (legacy-id normalization via seq lookup, loud `CommitmentIdError` on
@@ -705,6 +733,26 @@ Hard rules:
   S4). `change_summary` is informational prose describing WHAT changed
   (schedule shifts) and is deliberately NEVER folded into wording. Updates
   that carry none of the folded fields affect no fold.
+  **Two MARKER families ride this same type and are never movement** — the
+  WATCHGATE pair (`watch_gate.park_in_watch` / `clear_watch`,
+  `data.watch_set` / `watch_cleared`) and the SPEC OVERDUE1 pair
+  (`commitment_state.mark_asked` / `clear_asked`, `data.asked_set` +
+  `data.asked` / `asked_cleared`). **Named consumers:** the projector
+  (`cru_match.load_open_commitments` stamps `data.watch` / `data.asked` onto
+  the in-memory copy — the item stays `status: "open"` and stays in every
+  count) and `end_of_day.compute_slipped`, which reads the asked stamp to ask
+  an overdue item once and then rest it. `commitment_activity.
+  _is_bookkeeping_update` excludes both pairs from movement, so the act of
+  noticing an item has gone quiet cannot reset the clock that measures how
+  quiet it has been; a substantive key riding along makes the write movement
+  again, and also clears the asked fold (that update IS the answer). Neither
+  marker stamps `primary_thread_id` — a mark is the system talking to itself
+  and must not make a silent thread read as touched. **The two families part
+  company in exactly one place:** `needs_review_queue`'s un-confirm bar treats
+  a watch park as an independent touch (a person parked it — a decision) and
+  DELIBERATELY EXEMPTS a pure overdue ask (`_is_system_question`), because
+  refusing the user's undo of their own confirm on the grounds that a
+  scheduled fire asked a question overnight is the wrong direction.
 - `inbound_reconcile` (REPLYCLOSE, 2026-07) — **writer:**
   `reconcile_inbound_commitments.reconcile_and_receipt`'s inbound twin,
   `reconcile_inbound_and_receipt`, which is the ONE orchestrator behind both

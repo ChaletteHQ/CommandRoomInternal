@@ -232,6 +232,36 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "description": "lapse unconfirmed captures nobody answered inside the "
                        "review window (reversible, one batch)",
     },
+    # SWEEPSCHED1 — the CONFIRMED-pile drain. Same Sunday slot, ordered
+    # IMMEDIATELY AFTER `review-expiry` and last of the Sunday group, for the
+    # same reason `review-expiry` sits where it does and one more besides:
+    # it argues FROM SILENCE, so it must read a substrate every other Sunday
+    # leg has already finished writing — and `review-expiry` runs one step
+    # earlier because a row it lapses is one this job then has no business
+    # looking at. Two drains arguing from silence in the same fire have to be
+    # ordered, not interleaved.
+    #
+    # WEEKLY, not weekdaily: the bar is 30 quiet days, so a daily pass would
+    # re-derive the same pile six extra times a week to find nothing new.
+    #
+    # CONFIRM-FIRST for its first three fires — it proposes, closes nothing,
+    # and leaves the offer as its receipt line; from the fourth it applies
+    # unattended and reversibly. The counter is the job's own receipts, so
+    # there is no flag anywhere for anyone to forget to flip.
+    #
+    # It rides the already-authorized `maintenance` taskId, so it registers
+    # ZERO scheduled tasks on any machine, and a job id is not a
+    # DEFAULT_SCHEDULES key, so `load_schedule_config`'s renamed-predecessor
+    # carry-over cannot reach it. Entry point:
+    # `commitment_backlog_sweep.run_age_out_job(ws, apply=True)`.
+    "age-out": {
+        "skill": "commitment-backlog-sweep commitment amnesty "
+                 "(shared/scripts/commitment_backlog_sweep.py age-out "
+                 "--apply — dry-run without the flag)",
+        "nominal_cron": "0 17 * * 0",
+        "description": "let agreed work that has gone silent age out "
+                       "(reversible, one batch; proposes before it acts)",
+    },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled
     # with its own month. A machine closed across a 1st loses that month

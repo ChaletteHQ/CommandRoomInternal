@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import itertools
+import re
 import sys
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -162,6 +163,55 @@ PREP_DIR = "_hq/meetings"
 # The bypass detector's check id. Named, because a red line nobody can name is
 # a red line nobody can fix.
 CHECK_RAN_WITHOUT_RECEIPT = "prep-ran-without-receipt"
+
+# ---------------------------------------------------------------------------
+# WHICH SOURCES THE PREP ACTUALLY GOT (SPEC PREPSEAM1 DD-3)
+#
+# Before this, "prepped with no mail" and "prepped" were the same row. A brief
+# built without its mail leg is thinner in a way the document itself cannot
+# show — an omitted block looks exactly like a week with no email in it — so
+# the fact has to ride the RECEIPT or it is not recorded anywhere.
+#
+# Three states, and the distinction between the last two is the whole point:
+#   read    — a backend resolved and the read happened.
+#   absent  — NO mail backend resolves. A workspace with no mail connector is
+#             not broken, so this does NOT degrade the meeting and raises no
+#             finding. The mail-derived blocks simply do not exist (DD-4).
+#   failed  — a backend IS declared but resolving or reading it ERRORED. The
+#             generator raises, `run_prep_leg` records that meeting `degraded`
+#             with the reason, and if a generator ever swallows the error and
+#             returns `ran` anyway, `prep_leg_finding` raises on the row.
+# The category keys are open by design (`mail`, `chat`, `calendar`, …) — the
+# leg records what the generator reports and interprets only `mail`.
+SOURCE_READ = "read"
+SOURCE_ABSENT = "absent"
+SOURCE_FAILED = "failed"
+SOURCE_STATES = (SOURCE_READ, SOURCE_ABSENT, SOURCE_FAILED)
+MAIL_SOURCE = "mail"
+
+# WHAT A SOURCE REPORT MAY PERSIST (REVIEW_PREPSEAM1 N-3).
+#
+# The generator is an agent, and whatever it returns here lands in
+# `events.jsonl` — canonical, append-only, and NOT covered by the brief's
+# post-render leak scan, which only sees rendered documents. A report reading
+# `{"mail": "failed: no token for <an address>"}` would persist that sentence
+# forever. So every key and every value must be a single bare token: letters,
+# digits and underscores, nothing longer than the cap. Unknown TOKENS still
+# pass through (`SOURCE_STATES` is not a filter) — prose does not.
+_SOURCE_TOKEN_MAX = 40
+_SOURCE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_]{1,%d}$" % _SOURCE_TOKEN_MAX)
+
+# What a value that is not a bare token becomes. The fact that SOMETHING was
+# reported survives — dropping the entry would be the silent-success shape
+# again — while the text itself never reaches the substrate.
+UNRECOGNISED_SOURCE = "unrecognised"
+
+# The finding id for the swallowed-failure case. `run_prep_leg` cannot detect
+# it — a generator that catches its own connector error and returns a brief
+# looks identical to one that succeeded — so the only evidence is the source
+# the generator itself reported, and the finding is what makes that evidence
+# do something.
+CHECK_RAN_WITH_FAILED_SOURCE = "prep-ran-with-failed-source"
 
 # Leg-level status. `skipped` is a THIRD state, not a flavour of degraded: the
 # leg was deliberately not run, which is a different fact from the leg trying
@@ -247,8 +297,47 @@ def degrade_line(meeting) -> str:
 # §A + §B — the leg itself
 # ---------------------------------------------------------------------------
 
+def normalize_sources(value) -> dict:
+    """The generator's `sources` report, cleaned, BOUNDED, but never
+    re-interpreted.
+
+    Non-dicts become `{}`. Everything surviving is a single bare token —
+    `[A-Za-z0-9_]`, at most `_SOURCE_TOKEN_MAX` characters.
+
+    Two rules, and they answer two different risks.
+
+    **Unknown STATES pass through** (`SOURCE_STATES` is deliberately NOT a
+    filter). A word this version does not know is still the generator's
+    testimony, and it survives on the receipt for a human or a later version to
+    read. Note what this does NOT do: `failed_source_meetings` compares against
+    `SOURCE_FAILED` exactly, so an unknown word raises no finding either way —
+    the benefit is forensic, not behavioural (REVIEW_PREPSEAM1 corrected the
+    original overclaim here).
+
+    **Free text does NOT pass through** (REVIEW_PREPSEAM1 N-3). The generator
+    is an agent, and its return value lands in `events.jsonl` — canonical,
+    append-only state that the brief's post-render leak scan never sees. A
+    report like `{"mail": "failed: no token for <an address>"}` would persist
+    that sentence forever. So a value that is not a bare token becomes
+    `UNRECOGNISED_SOURCE`: the fact that SOMETHING was reported survives, the
+    prose does not. A malformed KEY drops the entry outright — a category this
+    code cannot name is a category no reader looks up, and an arbitrary string
+    is no safer as a JSON key than as a value.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, state in value.items():
+        k = str(key or "").strip()
+        s = str(state or "").strip()
+        if not k or not s or not _SOURCE_TOKEN_RE.match(k):
+            continue
+        out[k] = s if _SOURCE_TOKEN_RE.match(s) else UNRECOGNISED_SOURCE
+    return out
+
+
 def _outcome(meeting, outcome, *, reason=None, brief_path=None, seq=None,
-             receipt_seq=None, source_receipt_seq=None) -> dict:
+             receipt_seq=None, source_receipt_seq=None, sources=None) -> dict:
     """One per-meeting outcome row.
 
     Two receipt fields, and they are NOT interchangeable (BRIEFFIX1 Item B):
@@ -269,6 +358,7 @@ def _outcome(meeting, outcome, *, reason=None, brief_path=None, seq=None,
         "seq": seq,
         "receipt_seq": receipt_seq,
         "source_receipt_seq": source_receipt_seq,
+        "sources": normalize_sources(sources),
     }
 
 
@@ -574,6 +664,24 @@ def run_prep_leg(
             meeting, OUTCOME_RAN,
             brief_path=assert_workspace_relative(relative, field="brief_path"),
             receipt_seq=(fresh or {}).get("seq"),
+            # WHICH SOURCES THIS PREP GOT (SPEC PREPSEAM1 DD-3). The generator
+            # is the only thing that knows — the leg never touches a connector
+            # — so it reports, and the leg records without editorialising. A
+            # generator that reports nothing yields `{}`, which is the honest
+            # answer for every pre-PREPSEAM1 caller and is never read as
+            # "read": absence of testimony is not testimony of success.
+            #
+            # The `isinstance` guard is the SAME one `raw_path` carries eight
+            # lines up, and it is not decoration (REVIEW_PREPSEAM1 N-1). Only
+            # `generate(meeting)` sits inside the per-meeting try/except;
+            # everything after it, including this line, is outside the
+            # isolation. A generator that returns a truthy NON-dict — a bare
+            # path string, the obvious slip now that the contract asks for two
+            # keys where it used to ask for one — would raise AttributeError
+            # out of `run_prep_leg` entirely and kill the whole leg, where the
+            # same input previously produced a clean row.
+            sources=(produced.get("sources")
+                     if isinstance(produced, dict) else None),
             seq=_next_seq(),
         ))
 
@@ -738,6 +846,12 @@ def prep_leg_block(leg_result) -> dict:
             entry["receipt_seq"] = row["receipt_seq"]
         if row.get("source_receipt_seq") is not None:
             entry["source_receipt_seq"] = row["source_receipt_seq"]
+        # SPEC PREPSEAM1 DD-3 — rides only where the generator reported
+        # something, for the same reason the two receipt seqs do: a `{}` on
+        # every row is noise, and every pre-PREPSEAM1 row has one.
+        sources = normalize_sources(row.get("sources"))
+        if sources:
+            entry["sources"] = sources
         meetings.append(entry)
     block = {
         "status": leg_result.get("status") or STATUS_DEGRADED,
@@ -869,6 +983,28 @@ def read_latest_leg_status(workspace_root) -> Optional[dict]:
     return None
 
 
+def failed_source_meetings(block, source: str = MAIL_SOURCE) -> list:
+    """The meeting ids on a `prep_leg` block whose row reports `source` as
+    `failed` (SPEC PREPSEAM1 DD-3).
+
+    Split out of the finding so the predicate can be exercised on a plain dict
+    — the finding itself needs a workspace with receipts on disk, and a rule
+    that can only be reached through a substrate read is a rule nobody probes.
+    `absent` is deliberately NOT counted: a workspace with no mail connector is
+    not broken, and a finding raised over it would fire forever on a workspace
+    whose owner has nothing to fix.
+    """
+    if not isinstance(block, dict):
+        return []
+    out = []
+    for row in block.get("meetings") or []:
+        if not isinstance(row, dict):
+            continue
+        if normalize_sources(row.get("sources")).get(source) == SOURCE_FAILED:
+            out.append(row.get("meeting_id"))
+    return out
+
+
 def prep_leg_finding(workspace_root) -> Optional[dict]:
     """The watchdog's "brief ran, prep didn't" finding, or None.
 
@@ -876,6 +1012,13 @@ def prep_leg_finding(workspace_root) -> Optional[dict]:
     ran while the prep leg did not — the asymmetry is the whole signal. A fire
     where both legs degraded is already covered by the task-level line; a fire
     with no leg-aware receipt says nothing at all rather than guessing.
+
+    ONE MORE CASE SINCE PREPSEAM1 (DD-3): a leg that reports `ran` while some
+    meeting's row says its mail source `failed`. `run_prep_leg` cannot see
+    that — a generator which catches its own connector error and returns a
+    brief is indistinguishable from one that succeeded, which is precisely how
+    "the prep leg produced zero preps" rendered as a clean fire — so the row's
+    own testimony is the only evidence, and this is what acts on it.
     """
     latest = read_latest_leg_status(workspace_root)
     if not latest:
@@ -883,11 +1026,39 @@ def prep_leg_finding(workspace_root) -> Optional[dict]:
     legs = latest.get("legs") or {}
     if legs.get(BRIEF_LEG_ID) != STATUS_RAN:
         return None
-    if legs.get(LEG_ID) in (STATUS_RAN, STATUS_SKIPPED):
+    prep_status = legs.get(LEG_ID)
+    if prep_status == STATUS_SKIPPED:
         # `skipped` is a decision the fire recorded, not a failure it hit.
         # Raising a finding over it would train the reader to ignore the
         # finding that matters.
         return None
+    if prep_status == STATUS_RAN:
+        # `ran` is normally silence too — EXCEPT when a row confesses a FAILED
+        # source. Then the leg's own word and its rows disagree, and the rows
+        # are the ones that touched a connector.
+        failed = failed_source_meetings(latest.get("prep_leg") or {})
+        if not failed:
+            return None
+        n = len(failed)
+        noun = "meeting" if n == 1 else "meetings"
+        briefs = "that brief was" if n == 1 else "those briefs were"
+        target = "that meeting" if n == 1 else "those meetings"
+        return {
+            "leg": LEG_ID,
+            "check": CHECK_RAN_WITH_FAILED_SOURCE,
+            "status": STATUS_RAN,
+            "degraded": 0,
+            "whole_leg": False,
+            "failed_source": MAIL_SOURCE,
+            "failed_meetings": failed,
+            "line": (
+                f"Your Morning Brief prepped {n} {noun} but couldn't read "
+                f"your email while it did — {briefs} built without it. Say "
+                f"`prep me for` {target} to rebuild once your email is back."
+            ),
+            "last_receipt": (latest["dt"].isoformat()
+                             if latest.get("dt") else None),
+        }
     block = latest.get("prep_leg") or {}
     counts = block.get("counts") or {}
     degraded = int(counts.get(OUTCOME_DEGRADED) or 0)
@@ -906,6 +1077,9 @@ def prep_leg_finding(workspace_root) -> Optional[dict]:
         )
     return {
         "leg": LEG_ID,
+        # No check id: this is the original "brief ran, prep didn't" shape and
+        # the key exists so both findings answer the same question.
+        "check": None,
         "status": block.get("status") or STATUS_DEGRADED,
         "degraded": degraded,
         "whole_leg": whole_leg,
@@ -929,6 +1103,15 @@ __all__ = [
     "normalize_instant",
     "PREP_DIR",
     "CHECK_RAN_WITHOUT_RECEIPT",
+    "CHECK_RAN_WITH_FAILED_SOURCE",
+    "MAIL_SOURCE",
+    "SOURCE_ABSENT",
+    "SOURCE_FAILED",
+    "SOURCE_READ",
+    "SOURCE_STATES",
+    "UNRECOGNISED_SOURCE",
+    "failed_source_meetings",
+    "normalize_sources",
     "validate_leg_result",
     "LEG_STATUSES",
     "SKIP_DEGRADE_TIER",

@@ -40,10 +40,15 @@ THE FIVE BLOCKS (FINDINGS F-60 PROPOSAL, M-approved)
 ----------------------------------------------------
 
   1. Walk out with        -> exec_header.verdict (EXEC1; mandatory here)
-  2. Changed Since Last Touch -> events + reschedules + overnight
-                             attendee-scoped Gmail since the last touch
-                             (replaces the prior-brief-gated "Since Your
-                             Last Brief" section)
+  2. Changed Since Last Touch -> events + reschedules + overnight mail from
+                             the declared mail backend scoped to attendee
+                             addresses since the last touch (SPEC PREPSEAM1 —
+                             the backend is whatever `connectors.email`
+                             declares, resolved through the mail seams; naming
+                             one product here meant the step read the wrong
+                             inbox, or none, for every workspace that runs a
+                             different one) (replaces the prior-brief-gated
+                             "Since Your Last Brief" section)
   3. Decisions Needed     -> open decisions this meeting can settle
                              (decision log), with "Decisions Already On The
                              Record" as the don't-relitigate companion
@@ -79,6 +84,10 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from brief_path import get_brief_path, get_brief_filename, _slugify  # noqa: E402
+# The tree's ONE register of mail products. Imported (never copied) so the
+# sourced-citation floor below can never disagree with what discovery knows
+# about — SPEC PREPSEAM1 DD-2. `tool_discovery` is stdlib-only at import.
+from tool_discovery import _MAIL_PLATFORM_HINTS  # noqa: E402
 
 
 class PrepContractError(ValueError):
@@ -391,9 +400,34 @@ def discuss_later_bullets(
 # claim came from — "(email, Jul 7)", "(meeting Jun 30)", "(commitment, May
 # 22)", "(decision log)", "(transcript, Jul 2)". The vocabulary is the
 # substrate's source families, so a decorative "(important!)" doesn't pass.
+#
+# THE MAIL HALF IS DERIVED, NEVER HAND-LISTED (SPEC PREPSEAM1 DD-2).
+# It used to read a literal `gmail` alternative. That is a floor a talking
+# point passes or fails on the CUSTOMER'S CHOICE OF MAIL PRODUCT: a line cited
+# `(outlook thread, Aug 20)` carried exactly as much provenance as its Gmail
+# twin and was rejected as ungrounded, so the whole five-block assembly raised
+# `PrepContractError` and an Outlook or Superhuman workspace got no prep at
+# all. `tool_discovery._MAIL_PLATFORM_HINTS` is the tree's ONE register of mail
+# products, so reading its keys here means a provider added there joins this
+# floor for free — the renamed-section-orphans class in reverse: one source of
+# truth, no second list to forget.
+_MAIL_SOURCE_WORDS = ("mail",) + tuple(sorted(_MAIL_PLATFORM_HINTS))
+
+# `mail` does NOT subsume `email`: `\bmail\b` cannot match inside "email"
+# (no word boundary between "e" and "m"), so both stay.
+#
+# The hand-written families are PATTERNS ("session notes?" carries a real
+# quantifier). The derived half is escaped, because a register key is data and
+# data must never compile as a pattern.
+_SOURCE_FAMILY_PATTERNS = (
+    ("email",)
+    + tuple(re.escape(w) for w in _MAIL_SOURCE_WORDS)
+    + ("meeting", "transcript", "call", "commitment", "decision",
+       "calendar", "session notes?", "note", "slack", "sweep", "granola")
+)
+
 _SOURCE_CITE_RE = re.compile(
-    r"\(([^()]*\b(?:email|gmail|meeting|transcript|call|commitment|decision|"
-    r"calendar|session notes?|note|slack|sweep|granola)\b[^()]*)\)\s*$",
+    r"\(([^()]*\b(?:" + "|".join(_SOURCE_FAMILY_PATTERNS) + r")\b[^()]*)\)\s*$",
     re.IGNORECASE,
 )
 

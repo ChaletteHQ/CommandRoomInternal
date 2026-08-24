@@ -146,6 +146,7 @@ except ImportError:  # pragma: no cover — direct-path fallback
 
 import datetime as _dt
 import hashlib
+import math
 import re
 import sys
 from pathlib import Path
@@ -169,6 +170,142 @@ try:
     from confidence import CONFIDENCE_SURFACE_MIN  # noqa: E402
 except Exception:  # pragma: no cover
     CONFIDENCE_SURFACE_MIN = 0.7
+
+
+# ---------------------------------------------------------------------------
+# CONFCLAMP1 — `classification_confidence` is validated AT THE WRITE SEAM.
+# ---------------------------------------------------------------------------
+#
+# `events.schema.json` bounds the field to [0.0, 1.0] and NOTHING enforced it
+# at write, so out-of-range and non-numeric values were reaching the permanent
+# record (integrity_check C15 detects them after the fact; by then they are
+# history, and history is append-only). Worse, the surface floor below was
+# `isinstance`-guarded, so a malformed value SKIPPED the floor entirely — the
+# junk capture got a free pass through the exact gate that exists to catch
+# low-quality captures.
+#
+# Two write behaviours, deliberately different:
+#
+#   numeric      -> CLAMPED into [0.0, 1.0]. The writer meant "very confident"
+#                   / "not confident"; the magnitude is the bug, not the
+#                   intent, so the score is repaired rather than lost.
+#   non-numeric  -> DROPPED from the event, with a tell on stderr. The event
+#                   still writes, UNSCORED: absence is the honest
+#                   representation of an unusable score, and the capture
+#                   itself is usually fine — killing it over a malformed
+#                   annotation is disproportionate.
+#
+# Strings are NOT coerced ("0.8" -> 0.8). Coercion would repair the symptom
+# and hide the writer bug the tell exists to surface.
+#
+# The two halves are one posture, not a contradiction: the WRITE seam drops an
+# unreadable score so no junk enters the permanent record, and the FLOOR routes
+# the capture carrying it to REVIEW so no junk enters the ledger unexamined.
+# The capture survives; nobody is asked to trust it.
+CONFIDENCE_MIN = 0.0
+CONFIDENCE_MAX = 1.0
+
+# The four branches the surface floor can take. Named constants (not a bare
+# bool) so a test can assert WHICH branch a value took — an unscored pass and
+# an above-floor pass are the same outcome and very different meanings.
+#
+# UNSCORED and MALFORMED are deliberately NOT the same branch. An absent score
+# is legitimate (infrastructure events carry none) and passes. A score that is
+# present but unreadable is a defect, and routing it to REVIEW is not a drop —
+# it is the CAPTUREFLOW posture: doubt becomes a question, never a silent pass.
+# Collapsing the two would make a malformed score strictly WEAKER than a bad
+# numeric one, which is the regression this branch exists to prevent.
+CONFIDENCE_UNSCORED = "unscored"
+CONFIDENCE_MALFORMED = "malformed"
+CONFIDENCE_BELOW_FLOOR = "below_floor"
+CONFIDENCE_OK = "ok"
+
+
+def is_scored_confidence(value) -> bool:
+    """Is `value` a usable classification confidence — a real number?
+
+    `bool` is excluded on purpose: `True` is an `int` in Python, and a boolean
+    is a flag, not a score. NaN is excluded for the same reason — it compares
+    False against every bound, so a floor test on it silently passes.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    # `math.isnan` CONVERTS its argument to float, so an over-large int
+    # (10**400) raises OverflowError inside what is supposed to be a total
+    # predicate. An int can never be NaN, so only floats are asked.
+    return not (isinstance(value, float) and math.isnan(value))
+
+
+def clamp_confidence(value):
+    """A numeric confidence, clamped into [0.0, 1.0]; `None` for anything that
+    is not a score.
+
+    An already-in-range value is returned UNCHANGED (same object, same type) —
+    the clamp must be invisible to every writer that was already correct.
+    """
+    if not is_scored_confidence(value):
+        return None
+    if CONFIDENCE_MIN <= value <= CONFIDENCE_MAX:
+        return value
+    return CONFIDENCE_MIN if value < CONFIDENCE_MIN else CONFIDENCE_MAX
+
+
+def stamp_confidence(ev: dict, value, *, holder: str = "capture_gate") -> dict:
+    """Write `classification_confidence` onto `ev` under the rules above.
+
+    THE one write seam for this field in this module — both event builders
+    route through it, so the bound is enforced in a single place instead of
+    being restated (and forgotten) per builder. Mutates and returns `ev`.
+    Never raises: a bad score must not be able to destroy a good capture.
+    """
+    if value is None:
+        return ev
+    clamped = clamp_confidence(value)
+    if clamped is None:
+        ev.pop("classification_confidence", None)
+        sys.stderr.write(
+            f"[capture_gate] dropped non-numeric classification_confidence "
+            f"{value!r} (holder={holder}) — the event writes UNSCORED. The "
+            f"schema bounds this field to [{CONFIDENCE_MIN}, {CONFIDENCE_MAX}] "
+            f"and strings are deliberately NOT coerced; fix the writer.\n"
+        )
+        return ev
+    if clamped != value:
+        sys.stderr.write(
+            f"[capture_gate] clamped classification_confidence {value!r} -> "
+            f"{clamped} (holder={holder}) — the schema bounds this field to "
+            f"[{CONFIDENCE_MIN}, {CONFIDENCE_MAX}].\n"
+        )
+    ev["classification_confidence"] = clamped
+    return ev
+
+
+def classify_confidence_for_floor(value, floor) -> str:
+    """Which branch of the surface floor a confidence takes.
+
+    Four cases, each stated out loud:
+
+      UNSCORED     `None`, and only `None`. Infrastructure events legitimately
+                   carry no score, and unscored PASSES the floor per the
+                   standing read-side doctrine that the floor must never
+                   silently drop an unscored capture.
+      MALFORMED    a score that is PRESENT but unreadable — a string, a bool,
+                   NaN, a dict. Routed to REVIEW with its own reason, never
+                   clamped and never silently passed. Before CONFCLAMP1 this
+                   case was the accidental fall-through of an `isinstance`
+                   guard: the malformed value SKIPPED the floor entirely, which
+                   is the free pass this build exists to close. Folding it in
+                   with UNSCORED instead would leave `False` strictly weaker
+                   than it was before this build (it used to compare as 0 and
+                   flag below-floor), which is the wrong direction.
+      BELOW_FLOOR  a real score under the floor — flagged, exactly as before.
+      OK           a real score at or above the floor.
+    """
+    if value is None:
+        return CONFIDENCE_UNSCORED
+    if not is_scored_confidence(value):
+        return CONFIDENCE_MALFORMED
+    return CONFIDENCE_BELOW_FLOOR if value < floor else CONFIDENCE_OK
 
 
 class CaptureGateError(ValueError):
@@ -357,12 +494,21 @@ def gate_commitment_data(
         _floor = _surface_min(workspace_root)
     except Exception:
         _floor = CONFIDENCE_SURFACE_MIN
-    if (
-        isinstance(classification_confidence, (int, float))
-        and classification_confidence < _floor
-    ):
+    # CONFCLAMP1 DD-2 — the four floor branches are named, and the malformed
+    # one is stated rather than fallen through. See
+    # `classify_confidence_for_floor`.
+    _conf_branch = classify_confidence_for_floor(
+        classification_confidence, _floor
+    )
+    if _conf_branch == CONFIDENCE_BELOW_FLOOR:
         reasons.append(
             f"extraction confidence {classification_confidence} below threshold"
+        )
+    elif _conf_branch == CONFIDENCE_MALFORMED:
+        reasons.append(
+            f"extraction confidence {classification_confidence!r} is not a "
+            f"number — unreadable, so this routes for review rather than "
+            f"being trusted"
         )
     if reasons:
         data["pending_review"] = True
@@ -835,8 +981,8 @@ def build_observed_event(
         "person_ids": pids,
         "data": data,
     }
-    if classification_confidence is not None:
-        ev["classification_confidence"] = classification_confidence
+    # CONFCLAMP1 DD-1 — validated at the write seam, not just read-side.
+    stamp_confidence(ev, classification_confidence, holder="build_observed_event")
     return ev
 
 
@@ -1123,8 +1269,11 @@ def promote_observed(
         "person_ids": list(obs.get("person_ids") or []),
         "data": data,
     }
-    if obs.get("classification_confidence") is not None:
-        ev["classification_confidence"] = obs["classification_confidence"]
+    # CONFCLAMP1 DD-1 — the observed row this promotion inherits from may
+    # predate the clamp, so the score is validated on the way OUT too.
+    stamp_confidence(
+        ev, obs.get("classification_confidence"), holder="promote_observed"
+    )
     from event_gate import append_event
 
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"

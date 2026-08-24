@@ -633,7 +633,7 @@ Narrate completion in one line:
 
 **Handle the answer:**
 
-- **"yes"** / *"go"* / *"sure"* → run the voice-scan flow used by onboarding Phase 1a's workspace build. Pull the last 10+ sent emails via `discover_mail_search_tool()` / the seam (the **from-me, last-30-days** intent, compiled per provider by `connector_adapters/mail.py`; limit 30). Run them through the voice-extraction logic that produces BRAND_VOICE.md (tone, openings, closings, signature moves, banned phrases). Atomic-write `_hq/BRAND_VOICE.md` and `_hq/COMMUNICATION_PROFILE.md`. Append `workspace_migration_applied` event.
+- **"yes"** / *"go"* / *"sure"* → run the voice-scan flow used by onboarding Phase 1a's workspace build. Pull the last 10+ sent emails via the seam — `tool_discovery.discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))`, which resolves the declared backend first and refuses to substitute another product's tool (the **from-me, last-30-days** intent, compiled per provider by `connector_adapters/mail.py`; limit 30). Run them through the voice-extraction logic that produces BRAND_VOICE.md (tone, openings, closings, signature moves, banned phrases). Atomic-write `_hq/BRAND_VOICE.md` and `_hq/COMMUNICATION_PROFILE.md`. Append `workspace_migration_applied` event.
 - **"not now"** / *"skip"* / *"no"* → log `workspace_migration_skipped` with `reason: "user_declined"`. User can run `seed voice` later if they change their mind.
 
 **Narrate completion in one line:**

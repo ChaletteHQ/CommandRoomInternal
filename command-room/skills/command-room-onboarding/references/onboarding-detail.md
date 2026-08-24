@@ -112,7 +112,7 @@ Use these to deliver the three-layer value proposition. Pick the language that m
 #### Gmail Scan (if connected)
 
 Try to:
-1. Pull last 30 sent emails (resolve the mail search tool via the seam — `discover_mail_search_tool()` / `discover_for_category("email","search",…)`; use the **from-me** intent, sorted by date descending — `connector_adapters/mail.py` compiles it per provider, never a hardcoded operator)
+1. Pull last 30 sent emails (resolve the mail search tool via the seam in ONE call — `tool_discovery.discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))`, which resolves the declared backend first and refuses to substitute another product's tool; use the **from-me** intent, sorted by date descending — `connector_adapters/mail.py` compiles it per provider, never a hardcoded operator)
 2. Extract and group:
    - Frequent recipients (name + email, group by frequency: daily, weekly, occasional)
    - Recurring topics/subjects (watch for project names, initiative names, recurring patterns)

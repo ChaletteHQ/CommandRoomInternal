@@ -23,11 +23,13 @@ It sorts the backlog into four honest piles:
 registers nothing, and it does not touch the schedule set-up. It runs because
 somebody asked.
 
-**The review-tier DRAIN is the one exception, and it is not this pass.** Since
-REVSCHED1 it also runs weekly, silently, as a job inside the `maintenance` task
-the workspace already has — see section E. That still adds no scheduled task of
-this skill's own and still registers nothing: the job rides an existing taskId.
-Nothing above this line ever fires on a schedule.
+**The two DRAINS are the exceptions, and neither of them is that pass.** Since
+REVSCHED1 the review-tier drain runs weekly, silently, as a job inside the
+`maintenance` task the workspace already has (Review amnesty, section E); since
+SWEEPSCHED1 the confirmed-tier drain runs the same way (Amnesty, section D).
+Both still add no scheduled task of this skill's own and both still register
+nothing: each rides that existing taskId. Nothing else above this line ever
+fires on a schedule.
 
 ## Skill Boundary
 
@@ -107,7 +109,7 @@ saved = load_skill_config(WORKSPACE, "commitment-backlog-sweep") or {}
 cfg = saved.get("config") if isinstance(saved.get("config"), dict) else saved
 
 window_days  = cfg.get("window_days",  sweep.DEFAULT_WINDOW_DAYS)    # 180
-age_out_days = cfg.get("age_out_days", sweep.DEFAULT_AGE_OUT_DAYS)   # 45
+age_out_days = cfg.get("age_out_days", sweep.DEFAULT_AGE_OUT_DAYS)   # 30
 item_cap     = cfg.get("item_cap",     sweep.DEFAULT_ITEM_CAP)       # 60
 ```
 
@@ -336,7 +338,10 @@ plan = sweep.amnesty_plan(WORKSPACE)             # "past 90 days" -> older_than_
 ```
 
 The bar resolves itself, in this order: the number in the phrase, else the
-workspace's configured `age_out_days`, else 45. `amnesty_plan` reads
+workspace's configured `age_out_days`, else **30 days**. That default moved from
+45 in SWEEPSCHED1 and this phrase inherits it deliberately: the weekly job below
+clears at the same bar, and a phrase that offered one number while the schedule
+acted on another would be two answers to one question. `amnesty_plan` reads
 `events.jsonl` and nothing else, and it writes nothing at all — no audit row, no
 close, no cursor.
 
@@ -374,6 +379,33 @@ reporting a run that cleared zero.
 
 Every close lands reversibly, as an aged-out drop in ONE `swb_` batch, so a
 single `undo` reopens all of them.
+
+### D — and it also runs weekly, on its own
+
+Since SWEEPSCHED1 the same clear runs as a silent weekly job inside the already-
+registered `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`,
+`age-out`, Sunday, right after the review-tier drain). Nothing about that path is
+yours to fire from a chat: the dispatcher decides due-ness in code, and the
+registered prompt runs `commitment_backlog_sweep.py age-out --apply`.
+
+**Its first three fires PROPOSE and close nothing.** They line up the same pile
+and leave the offer as their one line — the count, the bar, and the fact that
+saying `commitment amnesty` does it now. From the fourth fire on it applies by
+itself, reversibly, in one `swb_` batch like any other amnesty. The job counts
+its own prior fires off its own receipts, so there is no setting anywhere for
+anybody to turn on, and nothing for you to check before answering a question
+about it.
+
+Three consequences for what you say to the user:
+
+- when the job's `receipt_line` is non-empty, the next staff meeting / end-of-day
+  reads THAT ONE LINE out verbatim and nothing else. On a proposing fire it is
+  the offer; on an applying fire it names the count, the window, the standing
+  `undo`, and `my plate` for what remains;
+- an empty plan is a silent no-op — the fire still receipts (that is how it stays
+  off the next slot), but its line is empty and the user hears nothing;
+- it never touches an unconfirmed capture. Those are the review tier's, and the
+  fence is inside `amnesty_plan` itself, not in this job.
 
 ## Review amnesty — the UNCONFIRMED pile, which is a different pile
 
@@ -418,7 +450,7 @@ plan = sweep.review_expiry_plan(WORKSPACE, user_person_id=user_id)
 
 The bar resolves itself, in this order: the number in the phrase, else the
 workspace's configured `review_expiry_days`, else **14 days**. That is a much
-shorter fuse than the confirmed pile's 45, deliberately: a guess nobody answered
+shorter fuse than the confirmed pile's 30, deliberately: a guess nobody answered
 in two weeks is a guess whose context has gone, and waiting will not improve the
 answer. `review_expiry_days` is a separate config key from `age_out_days` — one
 number for both piles would silently move whichever was tuned second.

@@ -721,6 +721,41 @@ def _cru_render_line(title: str, evidence: str,
     return f"{line} ({note})" if note else line
 
 
+def _cru_ambiguity_line(query: str, candidates: list, truncated: int = 0) -> str:
+    """CLOSEID1 — the either/or row's ASK.
+
+    An ambiguity is ONE question, not N. When a name matched more than one open
+    promise, `commitment_state.propose_ambiguous_close` writes a single row
+    carrying every candidate, and this composes the sentence that makes the
+    exclusivity visible: without it the user sees rows that look independent
+    and answers them independently, which is how a bulk confirm closes both
+    halves of an either/or and one of them is definitionally wrong.
+
+    It never claims a close happened and never picks a side — it names the
+    words that were ambiguous and lists what they hit, in the order the writer
+    recorded.
+    """
+    q = str(query or "").strip()
+    names = [str((c or {}).get("title") or "").strip()
+             for c in (candidates or [])]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    listed = "; ".join(f"{i}. {n}" for i, n in enumerate(names, 1))
+    more = ""
+    try:
+        n_more = int(truncated or 0)
+    except (TypeError, ValueError):
+        n_more = 0
+    if n_more > 0:
+        more = f" (and {n_more} more)"
+    lead = (f"Which one did you mean by '{q}'?" if q
+            else "Which one did you mean?")
+    return (f"{lead} {len(names)} open items match{more}, and only one of them "
+            f"can be the one you closed — {listed}. Say which, and I will "
+            f"close that one and leave the rest open.")
+
+
 def _adapt_commitment_reviews(workspace_root, *,
                               now_iso: Optional[str] = None,
                               window_now_iso: Optional[str] = None
@@ -817,6 +852,26 @@ def _adapt_commitment_reviews(workspace_root, *,
             stamp, stamp_fields, stamp_note = {}, {}, ""
         if stamp_note:
             strength = stamp["strength"]
+        # CLOSEID1 — THE READER for the ambiguity row's fields. The writer
+        # records one either/or instead of N yes/no rows; the ids and titles it
+        # carries ARE the question, so they have to reach the screen. A field
+        # written and rendered nowhere is the documented-and-read-by-nobody
+        # shape, and an either/or the user cannot see is the bulk-confirm
+        # double-close waiting to happen.
+        amb_cands = data.get("ambiguous_candidates")
+        amb_cands = list(amb_cands) if isinstance(amb_cands, list) else []
+        amb_query = str(data.get("ambiguous_query") or "").strip()
+        amb_truncated = data.get("ambiguous_truncated") or 0
+        amb_match = str(data.get("resolved_by_match") or "")
+        amb_line = (_cru_ambiguity_line(amb_query, amb_cands, amb_truncated)
+                    if len(amb_cands) >= 2 else "")
+        if amb_line:
+            # The row's own name is the question. The anchor commitment's title
+            # would read as "close this one?", which is the one thing this row
+            # must never say.
+            title = (f"Which item did you mean by '{amb_query}'?" if amb_query
+                     else "Which item did you mean?")
+
         if not title:
             # DROP-EMPTY (FB-19): no title means no honest ask — the row would
             # render as a bare "Housekeeping" shrug, which is the defect this
@@ -833,9 +888,15 @@ def _adapt_commitment_reviews(workspace_root, *,
             "fingerprint": f"cru:{cid}",
             "title": title,
             "evidence": evidence,
-            "action_tuples": list(_CRU_ACTIONS),
-            "render_line": _cru_render_line(title, render_evidence,
-                                            weak_reason, stamp_note),
+            # CLOSEID1 F-9 — a row that ASKS "which one did you mean"
+            # offers no confirm: the button would close the anchor,
+            # i.e. the first hit. Dismiss and hold still apply.
+            "action_tuples": [a for a in _CRU_ACTIONS
+                              if not (amb_line and
+                                      a.get("action") == "confirm")],
+            "render_line": (amb_line or
+                            _cru_render_line(title, render_evidence,
+                                             weak_reason, stamp_note)),
             "opened_at": ev.get("ts") or "",
             "expires_at": "",
             "detector": "reconcile-sent",
@@ -859,6 +920,14 @@ def _adapt_commitment_reviews(workspace_root, *,
             # rows sharing an evidence line digest together only when they
             # also agree on thread (and counterparty, when carried).
             "primary_thread_id": ev.get("primary_thread_id") or "",
+            # CLOSEID1 — carried onto the row so an apply surface can ask
+            # WHICH rather than act on the anchor. `commitment_id` above is an
+            # identity anchor for this row, never a close target, whenever
+            # `ambiguous_candidates` has more than one entry.
+            "ambiguous_query": amb_query,
+            "ambiguous_candidates": amb_cands,
+            "ambiguous_truncated": amb_truncated,
+            "resolved_by_match": amb_match,
         })
         # RIDERS (c) — the stamp rides the row ONLY when the writer set one, so
         # an unstamped row's dict is key-for-key what it was before. A surface

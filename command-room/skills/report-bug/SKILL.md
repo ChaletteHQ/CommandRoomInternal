@@ -76,7 +76,7 @@ If the user replies `still broken` (or any equivalent — "didn't work", "same i
 
 ### Step 4b — Draft path (escalate=yes, or try-first didn't work)
 
-Draft to the maintainer via the **declared mail backend** (connector-agnostic-v1 parity, N9) — resolve it with `tool_discovery.discover_for_category("email", "draft", tools, declared=connector_config.declared_backend("email"))`, falling back to `discover_mail_draft_tool(tools)` when no backend is declared (Gmail/Outlook/Superhuman all work; empty map = today's behavior). Do NOT name a provider tool directly. The draft must be saved as a draft — never sent. The user reviews and sends manually. If the backend is read-only (can't draft — e.g. a read-only Outlook, per the capability manifest), skip straight to the paste-text fallback below.
+Draft to the maintainer via the **declared mail backend** (connector-agnostic-v1 parity, N9) — resolve it in ONE call with `tool_discovery.discover_mail_draft_tool(tools, declared=connector_config.declared_backend("email"))` — the seam resolves the declared backend first and refuses to substitute another product's tool, and falls back to fingerprint discovery when nothing is declared (Gmail/Outlook/Superhuman all work; empty map = today's behavior). Do NOT name a provider tool directly. The draft must be saved as a draft — never sent. The user reviews and sends manually. If the backend is read-only (can't draft — e.g. a read-only Outlook, per the capability manifest), skip straight to the paste-text fallback below.
 
 **Subject:** `[Command Room bug] [last_skill or "unknown"] — [first 8 words of WHAT_HAPPENED]`
 

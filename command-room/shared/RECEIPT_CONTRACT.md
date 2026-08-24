@@ -83,6 +83,40 @@ every writer calls one helper; every reader goes through one parser.
 (`meetings_processed`, `items_drafted_text`, `needs_attention_ids`, ...)
 ride along via `extra_data`.
 
+### Per-phase timing (SPEC EODPHASE1)
+
+A whole-fire `duration_ms` says a fire took 19 minutes and nothing about which
+phase paid, so an optimisation off it is guesswork. The day-close fire records
+per-phase wall time and row counts on the receipt it already writes, through
+`end_of_day.PhaseLedger`:
+
+```json
+"phase_durations_ms": {"alarms": 120, "brief_state": 8400, "score": 310},
+"phase_counts": {"brief_state": {"in": 412, "out": 5}},
+"phase_order": ["alarms", "brief_state", "score"],
+"phases_failed": ["wins"]
+```
+
+- **Additive, forever.** Every key is optional; a reader that does not know
+  them behaves identically, and a pre-EODPHASE1 fire carries none.
+- **The phase names are a VOCABULARY.** They are declared once, in
+  `end_of_day.PACK_PHASES` / `LEG_PHASES`, never spelled at a call site.
+  Anything reading these receipts joins on them, so a rename orphans every
+  prior fire's number for that phase and the series silently reads as absent.
+- **Absent, never zero.** A phase that did not run on this branch (the
+  Monday-only week roll-up) has no key at all; a phase that supplied no row
+  counts appears in `phase_durations_ms` and not in `phase_counts`. "Did not
+  run" and "took no time" are different claims.
+- **They do NOT sum to `duration_ms`,** and are not meant to. The pack build
+  is one leg; the capture leg, the close leg and the post sit outside it
+  unless the orchestrator timed them into the same ledger. `phase_order` says
+  which legs are represented.
+- **A phase that RAISES is still recorded** — its elapsed time lands and its
+  name goes in `phases_failed`, then the exception propagates untouched. The
+  fire that dies in its slowest phase is exactly the one whose numbers matter,
+  so a caller that wants the partial ledger holds one BEFORE the call
+  (`build_end_of_day_pack(..., phase_ledger=...)`) and reads it after.
+
 ### Multi-leg fires: one receipt, both legs (SPEC BRIEFMERGE §D)
 
 A fire that runs more than one leg reports every leg in its OWN receipt — no
@@ -98,11 +132,47 @@ since BRIEFMERGE, written by `prep_leg.log_combined_receipt`:
                            "reason": "<why, for the watchdog — never for the digest>"},
                           {"meeting_id": "evt_sample_2",
                            "outcome": "ran", "reason": null,
-                           "receipt_seq": 8110},
+                           "receipt_seq": 8110,
+                           "sources": {"mail": "read"}},
                           {"meeting_id": "evt_sample_3",
                            "outcome": "reused", "reason": null,
                            "source_receipt_seq": 7927}]}
 ```
+
+**Which sources the prep actually got (SPEC PREPSEAM1 DD-3, 2026-08-23).** A
+`ran` row may carry `sources`, a map of source category to one of three
+states, reported by the generator and recorded by the leg without
+re-interpretation:
+
+- `read` — a backend resolved and the read happened.
+- `absent` — no backend of that kind resolves at all. This is **not** a
+  degrade and raises **no** finding: a workspace with no mail connector is not
+  broken. The mail-derived blocks simply do not exist for that prep and the
+  brief never says so — the receipt is where the absence is recorded, which is
+  what stops "prepped with no mail" from being indistinguishable from
+  "prepped".
+- `failed` — a backend IS declared but resolving or reading it errored. The
+  generator raises, so `run_prep_leg` records that meeting `degraded` with the
+  reason. If a generator ever swallows the error and returns a brief anyway,
+  the row still says `failed` and `prep_leg.prep_leg_finding` raises a
+  `prep-ran-with-failed-source` finding on an otherwise-`ran` leg — the leg
+  itself cannot tell those two apart, and the row's own testimony is the only
+  evidence there is.
+
+The key is absent on every pre-PREPSEAM1 row and on every row whose generator
+reports nothing. Readers tolerate that forever, and an absent `sources` is
+never read as `read`: no testimony is not testimony of success.
+
+**Every key and value is a single bare token** — letters, digits and
+underscores, 40 characters at most (`prep_leg.normalize_sources`). A state this
+version does not recognise still passes through, so the vocabulary can grow
+without a code change; anything carrying whitespace or punctuation becomes
+`unrecognised`, and a malformed key drops its entry. The generator is an agent
+and its return value lands in append-only canonical state that the brief's
+post-render leak scan never sees, so a report like
+`{"mail": "failed: no token for <an address>"}` must not be able to persist
+that sentence. The fact that something was reported survives; the prose does
+not.
 
 **Per-meeting outcomes are FOUR words, not three (SPEC BRIEFFIX1 Item B,
 2026-08-09).** `reused` means a prep already existed for that meeting and none
@@ -197,6 +267,25 @@ file mtimes remain a freshness FALLBACK in the watchdog forever.
 
 ## Run counting (`count_runs`)
 
+- A run is counted under the **surface it served**, not the task id it wears
+  (`receipts.run_bucket` — SPEC SURFCOUNT1). A receipt naming a known
+  `data.surface` buckets there; one that names none buckets under its task id
+  exactly as before, and an unrecognised surface name falls back to the task
+  id rather than minting a row nothing can render. Exactly one bucket per
+  receipt, so double-counting is structurally impossible rather than a
+  property to remember. The day-close is the shipped case: it registers as
+  `past-meetings` **by design** (re-pointing the registration would move every
+  customer's evening chat) and stamps `surface: "end-of-day"` as the
+  discriminator — before this, its fires tallied under Past Meetings and the
+  usage report said End of Day had never run.
+- **Freshness readers deliberately do NOT bucket on surface.**
+  `last_receipt_times`, the maintenance dispatcher's due-ness rule and the
+  watchdog ask "when did this REGISTERED task last fire", and the answer to
+  that really is keyed on the task id (`serving_task_ids` already unions a
+  renamed predecessor's receipts in). Surface bucketing belongs to readers
+  that TALLY or COMPARE fires across surfaces — today `count_runs` and
+  `telemetry.aggregate_pack_run_telemetry`, which share a usage-report row and
+  therefore have to share a rule.
 - Receipts of **different** types chained within 15 minutes are ONE run
   (a fire emitting its primary + secondary receipts).
 - Receipts of the **same** type never merge — two `session_sweep_run`s four

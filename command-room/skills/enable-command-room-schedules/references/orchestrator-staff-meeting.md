@@ -69,6 +69,8 @@ print(json.dumps(check_lateness('<workspace_root>', 'staff-meeting', fired_via='
 
 **Read `directive` BEFORE the tier — it is the render decision (SPEC SCHED1).** If `directive` is `skip_render`, the slot this fire is serving was ALREADY delivered: a receipt for it is on the ledger, and the helper has already written the honest `skipped` receipt for this fire. Post the returned `ack` line, exactly as returned, as the ENTIRE output of this fire — no surface, no widget, no sections, no Sources block, and no receipt of your own — then STOP. Do not re-derive whether it "really" ran, do not render a shortened version, and do not read the tier as the decision: on this path the tier is `none`, `none` means "run normally", and that reading is what delivered three duplicate full surfaces in one day. `directive` is present on every tier and is `null` on all the others, so this is one unconditional check rather than a special case to remember. A `manual` fire never carries it — a human who asks for the surface gets the surface.
 
+**And `tier: "rerun"` is the OPPOSITE instruction — it RENDERS (SPEC RUNNOW1).** `skip_render` is bounded: the helper returns it only within two hours of the receipt that served the slot, which is the duplicate the skip exists to catch — a catch-up and a scheduled fire landing the same edition minutes apart. A fire that calls itself `scheduled` and arrives LATER for a served slot comes back with `directive: null`, `tier: "rerun"` and an `ack`. Post that `ack` as the OPENING line of this fire's output, then render this surface IN FULL, exactly as on any other tier. Past two hours the fire is a person pressing Run Now, and no run mode a fire reports about itself can tell you otherwise — the standing ruling is that a person who asks gets what they asked for. **Carry the returned `rerun_of` onto this fire's receipt, and carry it at the ONE place this file writes its `pack_run` receipt — the receipt call whose own `extra_data` block already spells the key out for you.** The writer differs by surface, so take the one THIS file names and no other: never add a second receipt call to carry the field, and never hand-roll a receipt JSON. **This is load-bearing, not bookkeeping.** A receipt carrying `rerun_of` is excluded from the served-slot marker, which is what lets the person press again in five minutes and get the surface again; a re-run receipt written WITHOUT it reads as an ordinary scheduled delivery and re-arms the skip against the next press for two hours — the refusal this build exists to remove, arriving by a different door. Post no lateness banner and no `degrade_notice` on this tier: the slot WAS delivered, so nothing was missed and nothing is stale-by-omission.
+
 Branch on `tier` exactly as every scheduled chat does:
 
 - **`manual` / `none` / `exempt` / `unknown`** — run every phase normally, no timing narrative anywhere. A `suppressed` reason means the ledger found the slot served — believe it.
@@ -156,8 +158,11 @@ them itself:
 # file; omit --moves-json when Phase 4 produced zero rows.
 python3 shared/scripts/surface_drivers.py staff-meeting \
     --workspace "<WORKSPACE>" --page 1 --moves-json <temp moves.json> \
+    [--rerun-of "<lateness['rerun_of'] on a `rerun` tier; OMIT THE FLAG on every other tier>"] \
     --fired-via "<the Phase 2.9 receipt_fired_via>"
 ```
+
+**`--rerun-of` is SPEC RERUNFAN1, and it is the other half of the re-run contract above.** On a normal fire this surface's `pack_run` receipt is written INSIDE this call (`--fired-via`, FB-7), so on that path the flag — not any receipt call written out in this file — is how `rerun_of` reaches the ledger. Pass `lateness["rerun_of"]` verbatim on a `rerun` tier and OMIT THE FLAG entirely on every other tier; the driver merges it into the receipt's `extra_data` on the page-1 write and ignores it on pages 2+. A re-run receipt written without it reads as an ordinary scheduled delivery and re-arms the two-hour skip, so the next press is refused.
 
 **`--fired-via` is MANDATORY on the page-1 call — it is the receipt (FB-7).**
 The driver appends the canonical `pack_run` receipt itself (via
@@ -200,6 +205,6 @@ The two-line narration ("Since last Monday I …" from Phase 3, one line per hal
 
 Since STAFFCUT that receipt also carries PER-KIND counts (`open_by_kind`, `surfaced_by_kind`) and the digest/bound arithmetic (`queue_rows_rendered` vs `queue_items_represented`, `digest_rows`, `page_bound`) on `extra_data`. The scalar `surfaced` keeps its exact meaning — the rows the widget showed. This is additive telemetry so load history is MEASURABLE: the 2026-08-02 audit had to reconstruct 23 fires from an upper-bound model because no receipt had ever recorded what was surfaced. Nothing here is for you to compute, narrate, or repeat in the chat.
 
-The ONE branch that still writes its receipt here is **degrade** (Phase 2.9 — the surface never rendered, so the driver never ran): append it via the canonical helper: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "staff-meeting", fired_via=<the Phase 2.9 receipt_fired_via>, surfaced=0)`.
+The ONE branch that still writes its receipt here is **degrade** (Phase 2.9 — the surface never rendered, so the driver never ran): append it via the canonical helper: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "staff-meeting", fired_via=<the Phase 2.9 receipt_fired_via>, surfaced=0, extra_data={"rerun_of": <lateness["rerun_of"], or omit on any other tier>})` — same `rerun_of` rule as the driver call above (SPEC RERUNFAN1): copy `lateness["rerun_of"]` verbatim on a `rerun` tier, OMIT the key entirely on every other tier, and this branch is one of the others.
 
 Then STOP — narration + widget + Links section is the whole turn.

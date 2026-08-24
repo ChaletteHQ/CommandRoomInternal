@@ -1101,6 +1101,19 @@ def load_open_commitments(
         surfaces may badge it, but nothing may lose it. A reader written
         before this fold existed sees exactly the open commitment it always
         saw, which is the entire back-compat contract.
+      * OVERDUE ASK (SPEC OVERDUE1 DD-2 — the asked-once fold, the watch
+        fold's twin): a `commitment_updated` carrying `data.asked_set: true`
+        plus a `data.asked` object (commitment_state.mark_asked) stamps that
+        object onto the projection; one carrying `data.asked_cleared: true`
+        (commitment_state.clear_asked) removes it. The ONE way it differs
+        from the watch fold is the auto-clear: any update carrying a
+        SUBSTANTIVE key (`commitment_activity.SUBSTANTIVE_UPDATE_KEYS` — a
+        new due date, new wording, a re-owner, an adjudication) also removes
+        it, because that update IS the user answering the question the mark
+        records, and it arrives with no knowledge that a question was ever
+        asked. Like WATCHING, an ASKED item stays `status: "open"`, stays in
+        this projection and stays in every count; only the End of Day slipped
+        block reads the stamp.
       Ordering is append-order-aware ACROSS the reassignment fold: a Mine
       confirm followed by a later unconfirmed reassignment re-stamps
       pending_review (latest adjudication wins), and vice versa.
@@ -1220,6 +1233,20 @@ def load_open_commitments(
     # seeing the ordinary open commitment it always saw. Latest wins per
     # target, so a park after a clear re-parks and vice versa.
     watch_marks: dict[str, dict] = {}
+    # commitment id → latest OVERDUE-ASK mark (SPEC OVERDUE1 DD-2): a
+    # commitment_updated carrying asked_set (commitment_state.mark_asked) or
+    # asked_cleared (commitment_state.clear_asked). ADDITIVE, exactly like the
+    # watch fold above — the item stays `status: "open"` and gains
+    # `data.asked`; nothing filters on it but the nightly slipped block.
+    #
+    # It differs from the watch fold in ONE way, and that difference is the
+    # spec: the mark also clears on any SUBSTANTIVE update. A user who pushed
+    # the item to a new date, re-worded it, re-owned it or adjudicated it has
+    # ANSWERED the question the mark records, so the mark must not outlive the
+    # answer — and the answer arrives as an ordinary update with no knowledge
+    # that a question was ever asked. Latest wins per target in append order,
+    # so a re-ask after an answer re-arms and vice versa.
+    asked_marks: dict[str, dict] = {}
     # commitment target → latest kind override (Stage D fold: the
     # `commitment_reclassified` marker is ADDITIVE — promote/migrate never
     # delete/recreate; the projector applies the label change read-side).
@@ -1260,6 +1287,13 @@ def load_open_commitments(
         if isinstance(value, str) and value.strip().isdigit():
             return int(value.strip())
         return None
+
+    # OVERDUE1 DD-2 — the ONE list of what makes an update a REAL change, so
+    # the fold's auto-clear and the movement filter can never disagree about
+    # whether the user answered. Imported HERE rather than at module scope
+    # because `commitment_activity` imports this module at module scope: the
+    # dependency closes at call time, when both modules are fully loaded.
+    from commitment_activity import SUBSTANTIVE_UPDATE_KEYS as _SUBSTANTIVE
 
     for idx, ev in enumerate(events):
         et = ev.get("type") or ev.get("event") or ""
@@ -1374,6 +1408,26 @@ def load_open_commitments(
                                             "seq": ev.get("seq"), "idx": idx}
             elif target and d.get("watch_cleared"):
                 watch_marks[str(target)] = {"watch": None,
+                                            "seq": ev.get("seq"), "idx": idx}
+            # OVERDUE1 DD-2 overdue-ask fold. Same explicit-boolean keying as
+            # the three folds above, plus the auto-clear: any update carrying a
+            # SUBSTANTIVE key is the user answering, and an answered question
+            # stops resting the row. A malformed `asked` payload (non-dict) is
+            # ignored rather than stamped, exactly as a malformed watch is —
+            # the failure direction is "keep asking", never "rest forever".
+            if target and d.get("asked_set") and isinstance(d.get("asked"), dict):
+                asked_marks[str(target)] = {"asked": d["asked"],
+                                            "seq": ev.get("seq"), "idx": idx}
+            elif (target and str(target) in asked_marks
+                    and (d.get("asked_cleared")
+                         or any(d.get(k) not in (None, "", False)
+                                for k in _SUBSTANTIVE))):
+                # Only ever clears a mark this same pass has SEEN. Without the
+                # membership test every ordinary due-date push in the log would
+                # stamp `asked: None` onto a row that was never asked about —
+                # harmless to every reader here, and exactly the kind of key
+                # that gets mistaken for a signal by the next one.
+                asked_marks[str(target)] = {"asked": None,
                                             "seq": ev.get("seq"), "idx": idx}
         elif et == "commitment_partial_received":
             # MC1 receipt fold: union the delivering counterparty (id and/or
@@ -1630,6 +1684,18 @@ def load_open_commitments(
             else:
                 patch["watch"] = dict(wm["watch"])
                 patch["watch_set_by_seq"] = wm["seq"]
+        # OVERDUE1 DD-2 — the overdue-ask stamp. `data.asked` present == this
+        # item has been asked about and has not been answered; absent == it has
+        # not, or the answer already landed. Additive and last-writer-wins,
+        # and nothing else about the row moves: a reader written before this
+        # fold sees the same open commitment it always saw.
+        am = asked_marks.get(cid)
+        if am is not None:
+            if am["asked"] is None:
+                patch["asked"] = None
+            else:
+                patch["asked"] = dict(am["asked"])
+                patch["asked_set_by_seq"] = am["seq"]
         ko = kind_overrides_by_id.get(cid) or (
             kind_overrides_by_seq.get(seq) if seq is not None else None
         )

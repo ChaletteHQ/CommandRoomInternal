@@ -1541,6 +1541,45 @@ def _touch_phrase(ev: dict) -> str:
     return "it was changed after you confirmed it"
 
 
+def _is_system_question(event_type: str, data: dict) -> bool:
+    """True for a `commitment_updated` that is only the SYSTEM ASKING — the
+    SPEC OVERDUE1 overdue-ask mark (`asked_set` / `asked_cleared`).
+
+    The independent-touch bar exists so an undo cannot silently step over
+    somebody ELSE'S later decision. That reasoning is about a decision. An
+    overdue ask is not a decision and is not a touch: nobody edited the item,
+    nobody re-routed it, nobody adjudicated it — the evening surface asked a
+    question and is still waiting for the answer. Counting it would refuse the
+    user's undo of THEIR OWN confirm because the system spoke while they
+    slept, which is the wrong direction for a bar whose whole purpose is to
+    protect the user's intent (REVIEW OVERDUE1 F-1, coordinator's ruling).
+
+    The path this closes is one confirm plus one night, not an exotic race: a
+    capture arrives unconfirmed with a due date already days past; the user
+    confirms it, which is precisely what makes it eligible for the evening
+    block; that night's fire asks about it; the next morning `undo confirm`
+    was refused as `touched_since_confirm`.
+
+    DELIBERATELY NARROW, and it does NOT touch the watch precedent. A watch
+    park is a person parking an item — a decision, and it stays a touch. So
+    does an ask that rides along with any real change: this returns False the
+    moment the same event carries a substantive key, because then the item
+    really did move and the mark is incidental to it. `_TOUCH_TYPES` is
+    unchanged (removing `commitment_updated` from it would blind the bar to
+    every genuine edit), so `_NON_TOUCH_TYPES` and the coverage pin over the
+    two sets are unaffected — this is a payload-level exemption inside the
+    one function that reads the bar, exactly where the scope belongs.
+    """
+    if event_type != "commitment_updated":
+        return False
+    d = data if isinstance(data, dict) else {}
+    if not (d.get("asked_set") or d.get("asked_cleared")):
+        return False
+    from commitment_activity import SUBSTANTIVE_UPDATE_KEYS
+    return not any(d.get(k) not in (None, "", False)
+                   for k in SUBSTANTIVE_UPDATE_KEYS)
+
+
 def _confirm_touch_map(workspace_root, targets: dict) -> dict:
     """{cid: {"confirmed": bool, "touch": <plain sentence or "">}} for the
     THE INDEPENDENT-TOUCH BAR.
@@ -1549,6 +1588,13 @@ def _confirm_touch_map(workspace_root, targets: dict) -> dict:
     all (nothing to reverse otherwise). `touch` names the FIRST adjudicating or
     state event appended after the LATEST one — a reassignment, a watch park, a
     wording fix, a later close by another path.
+
+    ONE payload-level exemption (SPEC OVERDUE1 F-1): a pure overdue-ask mark is
+    skipped by `_is_system_question` before any target matching. The bar is
+    about somebody else's later DECISION; the system asking a question is not
+    one, and refusing the user's own undo because the evening fire spoke
+    overnight is the wrong direction. Read that helper for the full reasoning
+    and for why the watch precedent is untouched.
 
     Reads through the shard-aware iterator, defensively: a broken log yields an
     empty map, and an empty map REFUSES every id (`not_confirmed`) rather than
@@ -1567,6 +1613,8 @@ def _confirm_touch_map(workspace_root, targets: dict) -> dict:
             if t not in _TOUCH_TYPES:
                 continue
             d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if _is_system_question(t, d):
+                continue
             for cid, seq in targets.items():
                 if not _event_targets(ev, cid, seq):
                     continue

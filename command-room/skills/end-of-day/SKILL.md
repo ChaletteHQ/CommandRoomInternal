@@ -48,7 +48,7 @@ them in ONE call (the t3 FB-9 pattern). Render order is the contract:
 | `coverage` | What this fire actually READ, per capability | Verbatim, first under the alarms, **never suppressed and never softened** — see below |
 | `score` | This morning's plan against today's closures, plus the saved digest read back | **No morning receipt → "No plan on record this morning." NEVER a guessed score.** An item with no close on file is **"Not recorded", never "not done"**. `first_move` is an ANNOTATION, not a string; `ledger` is the book's movement — see below |
 | `wins` | What moved since the morning fire, by NAME | Zero wins → one honest line. Never padding. `title_source` and `more_line` govern the rows — see below |
-| `slipped` | The ball-is-on-you rows | Max 3, verbs on each, and every row comes from the GATED needs-attention set — never a fresh scan. `more_line` carries the denominator |
+| `slipped` | The ball-is-on-you rows | Max 3, verbs on each, and every row comes from the GATED needs-attention set — never a fresh scan. `more_line` carries the denominator. An item 3+ days overdue is asked about ONCE and then rests until answered (OVERDUE1) — see below |
 | `confirm` | `confirm_flow.select_confirm_items`, relocated here, plus (PERSONLOOP1) `end_of_day.compute_person_candidates` | Cap 5, stakes-then-age. A held capture can never enter it. `more_line` carries the denominator. The candidate rows sit at the END of the block and are capped at 2 — they are the reason the block is as long as it is |
 | `tomorrow` | The wide calendar look, the rollover, the day-intent draft | The draft is a PROPOSAL until tapped. It is written only on confirm |
 | `sign_off` | Computed, never composed | Zero urgent → "Nothing else needs you before tomorrow's brief." verbatim |
@@ -152,6 +152,39 @@ summary; it is a claim about size, and it was a wrong one: `slipped` bound 3 of
 41 and `confirm` 5 of 67 in silence. One helper and one shape, so no block
 acquires its own dialect of "there is more than this".
 
+**An overdue item asks once, then it rests (SPEC OVERDUE1, M's ruling R-3:
+"I would do it for 3-4 days").** Three items due Aug 6-8 rendered identically
+in this block every night for two weeks. Past a few nights, repetition stops
+being a reminder. So an item **3 or more days past its due date** (the knob is
+`overdue_ask_after_days` on this skill's config; default 3) is pinned to the
+TOP of the block once, with a direct question — *"{title} — 8 days overdue.
+Done, new date, or drop?"* — carrying the block's existing verbs. From the
+next fire it is **suppressed from this block only** until it is answered, and
+one trailing line says how many are resting and where to find them.
+
+Resting is not disappearing: the item stays on the open book, stays on
+`my plate`, stays in the morning brief's needs-attention lane, and stays
+inside this block's own `n_total`. **Answered** means any real movement —
+`mark done`, `drop`, `push to [date]`, or a re-word / re-owner / re-date. A
+new due date re-arms the clock from that date, with no second write: the mark
+records WHICH deadline it asked about, so it stops matching the moment the
+deadline moves. The mark itself is `commitment_state.mark_asked`, modelled on
+`watch_gate.park_in_watch`, and it is deliberately **not movement** — asking
+about a quiet item must not make it read as freshly touched.
+
+Two consequences worth stating plainly, because both are places the rule
+could have gone quiet and does not. **The sign-off still counts a resting
+item** — it stopped being repeated, not late — so "3 items are still overdue"
+stays true on a night the block shows one of them. And **being asked is not
+being touched**: the mark is exempt from the un-confirm bar, so if you confirm
+an old overdue item and the evening chat asks about it that night, `undo
+confirm` still works the next morning. A watch park is a decision and still
+blocks that undo; a question the system asked is not.
+
+This is NOT `cap_needs_attention`'s rotation rule and must never be described
+as one. That rule exists so nothing is suppressed FOREVER; this one exists
+because something is shown EVERY NIGHT. Opposite problems, separate code.
+
 `window_source` says which window these rows were read from. `morning_anchor`
 — the day's morning brief fired and the window opens there. `day_floor` — no
 morning brief fired, so the window opens at workspace-LOCAL midnight of this
@@ -205,25 +238,36 @@ would route the weakest of those rows to a HELD tier — out of sight: not
 queued, not badged, not counted, retrievable on request. The knob is
 `weak_capture_routing` on this skill's config and its default is `review`.
 
-**Turning it on is gated on a measurement, and the gate is
-`shared/scripts/precision_gate.py`.** `held_tier.enable_held_routing` calls
-`precision_gate.precision_gate_status(workspace_root)` and REFUSES while that
-status is not passing — the bar is M's ruling of 2026-08-16: at least 90% of
-meeting-derived items routed to the open book are verified promises, on a
-labelled sample of at least 100, holding for two consecutive dogfood weeks.
-Nothing is written on a refusal, not even a pending marker.
+**Turning it on is not this workspace's decision, and the fence is
+`shared/scripts/operator_capability.py`.** `held_tier.enable_held_routing`
+calls `held_tier.capability_status(...)`, which asks
+`operator_capability.capability_status("held_tier_routing")`, and REFUSES while
+that capability has not been granted. Nothing is written on a refusal, not even
+a pending marker.
+
+The grant lives in the plugin payload
+(`shared/config/operator_capabilities.json`), so it arrives with a release and
+by no other route. This is deliberate: the flip turns on when the people who
+build Command Room are satisfied the disposition is safe. They reach that on
+their own book — nobody reads this workspace's captures to decide it. It is
+**not** a measurement a workspace takes of itself. It used to be, and that
+was wrong in a way worth stating once — the thing that produced
+the measurement never shipped, so the check was red in every workspace forever
+and read as an accusation about that owner's accuracy when it meant that the
+instrument had never been delivered.
 
 Three things follow and none of them is optional:
 
-- **Never enable it from inside a fire.** Enabling is an M action, taken once
-  the gate holds. A fire that flips it has decided a thing the measurement was
-  built to decide.
+- **Never enable it from inside a fire.** Enabling is a deliberate action taken
+  once the disposition has been judged safe. A fire that flips it has decided
+  the thing that judgement exists to decide.
 - **Never route around the refusal** by writing the config value directly. The
-  value alone does not enable anything: `held_tier.flip_status` re-asks
-  `precision_gate` on every fire, because a workspace can fall back out of a
-  two-week bar it once met.
-- **Never soften the bar to pass the bar.** The three constants in
-  `precision_gate.py` are the ruling, not tuning knobs.
+  value alone does not enable anything: `held_tier.flip_status` re-asks the
+  capability on every fire, so a stored request is a request and never a grant.
+- **Never tell an owner their own numbers are the reason.** The refusal
+  sentence is pinned once, as `held_tier.REFUSAL_LINE`, and it says the flip is
+  not a setting in this workspace and that nothing about their numbers is
+  holding it back. Both halves are true and the second one is the point.
 
 When the flip is off — which is every workspace today — `apply_held_routing`
 hands the routing back unchanged and the held lane is empty. Off is
@@ -356,6 +400,6 @@ Also DOES NOT fire on:
 
 - `shared/scripts/end_of_day.py` — the blocks, the words, the receipt, the resolver
 - `shared/scripts/held_tier.py` — the dark flip
-- `shared/scripts/precision_gate.py` — the bar the flip is gated on
+- `shared/scripts/operator_capability.py` — the operator grant the flip is fenced on
 - `shared/scripts/day_intent.py` — the tomorrow record (SPEC BK1)
 - `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md` — the scheduled fire

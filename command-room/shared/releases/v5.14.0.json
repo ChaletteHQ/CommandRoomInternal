@@ -1,0 +1,69 @@
+{
+  "version": "5.14.0",
+  "headline": "The list starts cleaning itself: overdue work asks once and then rests, agreed work that goes silent ages out weekly, weak guesses stop at the door, and closing one item no longer hides the rest.",
+  "items": [
+    {
+      "id": "v5140_instruct_set_up_schedules",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One thing to do once, on each computer you use Command Room from: say \"set up command room schedules\". This update adds a weekly pass that lets go of agreed work which has gone quiet, and that pass lives inside your registered chats rather than in the code. Your scheduled chats are stored on the computer that runs them, so the new leg only reaches this one when you say it here. It takes a few seconds, it changes nothing else about your chats, and it is safe to say more than once.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v5140_announce_run_now_renders_on_every_chat",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Run Now changes, and the note in the last update about it no longer holds. That note said a scheduled chat which had already delivered today's edition would decline a second press and leave it there. Run Now now renders a fresh edition on every scheduled chat, and every render carries a line saying when that chat last ran, so a re-run is never mistaken for the scheduled one. The only press it still declines is a duplicate within two hours of a delivery, which is the case the refusal was written for. Outside that window, press it whenever you want the current picture.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_review_amnesty_in_one_sitting",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Old unanswered guesses can now be let go in one sitting. Say \"review amnesty\" and you get the whole batch of guesses nobody ever answered, sorted into yours and other people's, with the count shown before anything happens. One \"undo\" puts the entire batch back exactly as it was. Then answer tonight's questions on what is left: for each item still open you get done, a new date, or drop. That is the one sitting. From there the weekly pass keeps the list at that size on its own, so this is not something you do again.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_overdue_asks_once",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "An item that has gone past its date now asks you once and then rests. The question carries the three ways out you already have: done, a new date, or drop. Until you answer one of them that item stays quiet, so a single slipped promise no longer repeats at you every evening for a week. Answering it puts it straight back into the normal flow, and a new date reschedules it rather than closing it.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_silent_work_ages_out_weekly",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Agreed work that goes silent now leaves on its own. An item nobody has touched is shown to you three times first, so nothing goes without having asked. After the third showing it is let go in a weekly pass that says how many it released, and one \"undo\" puts that whole batch back. Work you have answered, dated, or acted on is never in scope, and neither is anything you agreed to this week. This is the leg that only reaches a computer once you have done the one-time step in this update.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_closing_one_item_stops_hiding_the_rest",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Closing or confirming one item no longer hides the other open items on the same conversation. Answering one promise on a thread used to quiet every other promise on that thread for a week, which is why a thread you had only partly dealt with could look finished. Each item now stands on its own. You may see a handful of items reappear that were being held back this way. They are not new work and they are not new questions: they fall under the asks you already have, and they answer the same three ways.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_weak_guesses_stopped_at_the_door",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Low quality guesses are now stopped where they are written instead of landing in the pile you confirm. Every guess carries a confidence rating, and the quality floor that rating feeds was only being applied at some of the places that create work. It is applied at all of them now, so a guess below the bar never becomes a row you have to answer. Two odd cases are handled rather than waved through: a rating that cannot be read as a number goes to review instead of past the floor, and a rating far outside the sensible range is brought back to that range's edge. What you should notice is a shorter confirm pile, not a different one.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_either_or_question_has_no_button",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When two of your items match what you said closely enough that it is genuinely unclear which one you meant, you now get a single either or question instead of a guess. It names both sides and it deliberately carries no confirm button, because a tap cannot say which one you meant. You answer in words and the right item closes. Nothing sweeps an ambiguous row shut on your behalf, and no bulk action reaches one either. This closes the last way the evening routine could have closed the wrong promise.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5140_announce_meeting_prep_reads_your_mail",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Meeting prep now reads the mail account you told Command Room to use. Prep had been looking for one mail product whatever you actually had connected, so anyone working out of Outlook or Superhuman got a brief with the calendar and the meeting history in it and no mail context at all. It resolves whichever mail you declared and speaks that product's own search vocabulary, so the thread history that belongs in a prep is in it. Nothing changes for anyone already on the mail it used to assume.",
+      "action": "announce_only"
+    }
+  ]
+}

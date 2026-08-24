@@ -197,6 +197,21 @@ def aggregate_pack_run_telemetry(events: Iterable[dict]) -> dict:
             kind = normalize_task_id(kind) or "unknown"
         except ImportError:
             pass
+        # SPEC SURFCOUNT1 DD-2 — the SAME discrimination `count_runs` applies,
+        # because these two numbers share a ROW. usage-report renders the run
+        # count from `count_runs` and the word/lookup/second columns from this
+        # aggregation, side by side: bucketing one on surface and the other on
+        # task id puts "End of Day ran 4x" next to blank cost columns and
+        # parks that spend on Past Meetings, which is the original defect
+        # split across two columns instead of fixed.
+        try:
+            from receipts import run_bucket
+
+            surfaced_bucket = run_bucket({"raw": ev, "task_id": kind})
+            if surfaced_bucket:
+                kind = surfaced_bucket
+        except ImportError:
+            pass
         tel = data.get("telemetry") or {}
         if not tel:
             continue

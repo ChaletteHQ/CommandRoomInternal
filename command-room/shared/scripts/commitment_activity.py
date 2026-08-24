@@ -107,31 +107,56 @@ CHASE_EVENT_TYPES = frozenset({"outreach_sent"})
 # WATCHGATE R-5 — the keys that make a `commitment_updated` a REAL change to
 # the item: a new date, new wording, a re-owner, an adjudication. A watch
 # mark carries none of them.
-_SUBSTANTIVE_UPDATE_KEYS = (
+SUBSTANTIVE_UPDATE_KEYS = (
     "new_due", "due", "due_date", "new_title", "new_summary",
     "change_summary", "owner_confirmed", "review_flags_cleared",
     "review_flags_set", "new_owner_id", "new_counterparty_id",
 )
 
+# The pre-OVERDUE1 spelling, kept because this module's own call sites and its
+# suites use it. ONE tuple, two names — a second literal list is how the two
+# halves of "what counts as a real change" drift apart. The public name exists
+# because `cru_match`'s read-side fold needs the SAME answer: an item the user
+# actually re-dated or re-worded has been ANSWERED, so its overdue ask clears
+# (SPEC OVERDUE1 DD-2), and a fold judging that from its own copy of the list
+# would start disagreeing with the movement filter the first time either moved.
+_SUBSTANTIVE_UPDATE_KEYS = SUBSTANTIVE_UPDATE_KEYS
+
+
+# The bookkeeping markers: a `commitment_updated` whose ONLY payload is one of
+# these is the system filing a note about an item, never the item moving.
+#
+# `watch_set` / `watch_cleared` — WATCHGATE R-5, the original pair.
+# `asked_set` / `asked_cleared` — SPEC OVERDUE1 DD-1. The slipped block asking
+#   an item's owner "done, new date, or drop?" is a QUESTION about an item
+#   nobody has touched for days. If asking counted as movement, the very act of
+#   noticing an item had gone quiet would reset the 21-day quiet clock, and the
+#   item would read as freshly active to every staleness surface the morning
+#   after the evening asked about it — the same inversion the watch mark had,
+#   for the same reason.
+_BOOKKEEPING_MARKER_KEYS = ("watch_set", "watch_cleared",
+                            "asked_set", "asked_cleared")
+
 
 def _is_bookkeeping_update(ev: dict) -> bool:
-    """True for a `commitment_updated` that only PARKS or UN-PARKS a watch.
+    """True for a `commitment_updated` that only files a MARKER on an item —
+    parking or un-parking a watch, or raising or clearing an overdue ask.
 
-    Movement means the promise moved. Parking one is the system filing its own
-    note about an item nobody has touched — and `commitment_updated` sits in
+    Movement means the promise moved. Filing one of these is the system making
+    a note about an item nobody has touched — and `commitment_updated` sits in
     MOVEMENT_EVENT_TYPES, so without this the act of noticing that an item has
     gone quiet would reset the 21-day clock that measures how long it has been
-    quiet. A parked item would read as freshly active to every staleness
-    surface, which is the precise opposite of what parking it means.
+    quiet. A marked item would read as freshly active to every staleness
+    surface, which is the precise opposite of what the mark means.
 
     Deliberately narrow: an update that ALSO carries a real change (a shifted
     date, a wording fix, an adjudication) is movement and stays movement, even
-    if a watch marker rides along. Only the pure bookkeeping write is excluded.
+    if a marker rides along. Only the pure bookkeeping write is excluded.
     """
     if (ev.get("type") or ev.get("event")) != "commitment_updated":
         return False
     d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-    if not (d.get("watch_set") or d.get("watch_cleared")):
+    if not any(d.get(k) for k in _BOOKKEEPING_MARKER_KEYS):
         return False
     return not any(d.get(k) not in (None, "", False)
                    for k in _SUBSTANTIVE_UPDATE_KEYS)
@@ -453,5 +478,6 @@ __all__ = [
     "CommitmentMovement",
     "MOVEMENT_EVENT_TYPES",
     "CHASE_EVENT_TYPES",
+    "SUBSTANTIVE_UPDATE_KEYS",
     "STUCK_DAYS",
 ]

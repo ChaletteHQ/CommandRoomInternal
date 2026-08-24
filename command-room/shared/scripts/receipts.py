@@ -110,6 +110,7 @@ CANONICAL_TASK_IDS = frozenset({
     "pulse",
     "lifecycle",     # LIFECYCLE1 — the project lifecycle pass job inside `maintenance` (the fold that replaced Pulse's Phase 4)
     "review-expiry",  # REVSCHED1 — the weekly unconfirmed-pile drain job inside `maintenance` (never a task of its own; see maintenance_dispatcher.MAINTENANCE_JOBS)
+    "age-out",       # SWEEPSCHED1 — the weekly CONFIRMED-pile drain job inside `maintenance` (never a task of its own; sibling of review-expiry, different pile, different bar)
     # EOD2 — the 5 PM chat's taskId was RENAMED to `end-of-day`, but the
     # RECEIPT id deliberately did NOT move: `end_of_day.TASK_ID` still writes
     # `past-meetings`, so the day-close series is ONE continuous history
@@ -303,6 +304,17 @@ RECEIPT_TYPES: dict[str, dict] = {
     # n_shielded_by_reopen / n_held_back), every number off the writer's own
     # per-row results.
     "review-expiry":      {"types": frozenset({"pack_run"})},
+    # SWEEPSCHED1 — the weekly confirmed-pile drain job's receipt. `pack_run`,
+    # the same scheduled-job shape its review-tier sibling uses, so the
+    # dispatcher's dueness rule self-limits it to weekly. Written on an EMPTY
+    # plan and on a PROPOSING fire too, and the second one is load-bearing
+    # twice over: it is the dueness signal, and `data.mode` on these receipts
+    # IS the confirm-first counter — the job counts its own prior fires here
+    # rather than in config, so there is no second piece of state to disagree
+    # with the ledger. `mode` is "proposed" (showed its hand, closed nothing)
+    # or "applied"; a refusal that never reached a plan carries neither and is
+    # therefore not counted.
+    "age-out":            {"types": frozenset({"pack_run"})},
     # SPEC OUT7 — the opt-in monthly KPI scorecard job's receipt. pack_run, the
     # standard scheduled-pack shape (like deal-signals / staff-meeting): the
     # dispatcher's due-ness rule reads it so a fired scorecard self-limits to
@@ -871,6 +883,52 @@ def last_receipt_times(
     return out
 
 
+def receipt_surface(receipt) -> Optional[str]:
+    """The SURFACE a receipt served, when it names one and the name is a task
+    this module knows (SPEC SURFCOUNT1). None otherwise.
+
+    Some fires deliberately wear a task id that is not the surface they
+    serve. The day-close is the shipped case: `end_of_day.TASK_ID` is the
+    legacy `past-meetings` BY DESIGN — a rename that re-pointed the
+    registration would have moved every customer's evening chat — and the
+    fire stamps `data.surface: "end-of-day"` as the discriminator. So the
+    receipt names both, and which of the two a reader should use depends on
+    the question: "when did this REGISTERED task last fire" wants the task
+    id; "how many times did this SURFACE run" wants the surface.
+
+    Gated on `RECEIPT_TYPES` membership on purpose. An unrecognised surface
+    string minting a bucket of its own would give the usage report a row with
+    no `count_types` to judge against and no display name to render, and would
+    silently move that fire out of the row it does belong in. Falling back to
+    the task id keeps the run counted somewhere real — the conservative
+    direction, and the same posture `normalize_task_id` takes with an
+    unknown-but-clean id.
+    """
+    raw = receipt.get("raw") if isinstance(receipt, dict) else None
+    data = raw.get("data") if isinstance(raw, dict) else None
+    surface = data.get("surface") if isinstance(data, dict) else None
+    if not isinstance(surface, str) or not surface.strip():
+        return None
+    tid = normalize_task_id(surface)
+    return tid if tid in RECEIPT_TYPES else None
+
+
+def run_bucket(receipt) -> Optional[str]:
+    """WHICH ROW a receipt's run belongs in: its surface when it names a known
+    one, else its task id (SPEC SURFCOUNT1).
+
+    Exactly one bucket per receipt, which is what makes double-counting
+    structurally impossible rather than a property somebody has to remember.
+    Every reader that TALLIES or COMPARES fires across surfaces goes through
+    here; readers asking about a single registered task's freshness
+    (`last_receipt_times`, the dispatcher's due-ness rule) correctly keep
+    using the task id, because their question really is about the task.
+    """
+    if not isinstance(receipt, dict):
+        return None
+    return receipt_surface(receipt) or receipt.get("task_id")
+
+
 def count_runs(
     workspace_root,
     *,
@@ -881,9 +939,19 @@ def count_runs(
     """Run count per task — the usage-report number (F-49's acceptance).
 
     Counting rules (the documented contract):
+      - A receipt is counted under the SURFACE it served when it names one
+        (`run_bucket`), else under its task id. The day-close fires under the
+        legacy `past-meetings` id with `data.surface: "end-of-day"`; before
+        SURFCOUNT1 those fires tallied under Past Meetings and End of Day
+        rendered "ran 0x" the morning after it fired, which teaches a reader
+        to distrust either the schedule or the report. The
+        discriminate-on-surface rule was already written for the audit
+        readers; this is the reporting readers applying it.
       - Only a task's `count_types` (defaulting to its full `types` set)
         are run-countable — monthly-report's value_receipt_generated events
-        are freshness signals, not runs (one fire writes 2-3 of them).
+        are freshness signals, not runs (one fire writes 2-3 of them). Judged
+        against the BUCKET's spec, since the bucket is the row the run lands
+        in.
       - Receipts of DIFFERENT types chained within RUN_DEDUP_WINDOW are ONE
         run (a fire emitting primary + secondary receipts).
       - Receipts of the SAME type never merge — two pack_runs minutes apart
@@ -896,15 +964,26 @@ def count_runs(
     """
     ids = [normalize_task_id(t) for t in task_ids] if task_ids is not None else list(RECEIPT_TYPES)
     counts: dict[str, int] = {tid: 0 for tid in ids}
-    receipts = iter_receipts(workspace_root, task_ids=ids, since=since, until=until)
+    wanted = set(ids)
+    # NO task filter on the fetch, and that is load-bearing rather than
+    # sloppy: a receipt destined for the `end-of-day` bucket is written under
+    # `past-meetings`, so filtering by the requested ids up front would drop
+    # it before anything could read its surface — a caller asking only about
+    # the day-close would get the same zero it gets today. The scan is the
+    # same one pass either way (`iter_receipts` walks the events once
+    # regardless); only the in-memory filter moves, to AFTER bucketing.
+    receipts = iter_receipts(workspace_root, since=since, until=until)
 
     by_task: dict[str, list[dict]] = {}
     for r in receipts:
-        spec = RECEIPT_TYPES.get(r["task_id"], {})
+        bucket = run_bucket(r)
+        if bucket not in wanted:
+            continue
+        spec = RECEIPT_TYPES.get(bucket, {})
         countable = spec.get("count_types") or spec.get("types") or frozenset()
         if r["type"] not in countable:
             continue
-        by_task.setdefault(r["task_id"], []).append(r)
+        by_task.setdefault(bucket, []).append(r)
 
     for tid, rs in by_task.items():
         undated = [r for r in rs if r["dt"] is None]
@@ -940,6 +1019,8 @@ __all__ = [
     "log_receipt",
     "iter_receipts",
     "last_receipt_times",
+    "receipt_surface",
+    "run_bucket",
     "count_runs",
     "PREP_RECEIPT_TYPE",
     "log_prep_receipt",

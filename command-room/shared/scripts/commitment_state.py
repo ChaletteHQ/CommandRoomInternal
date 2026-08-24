@@ -266,6 +266,27 @@ def is_overdue(due_value: Optional[str], now_iso: str) -> bool:
     return due < today
 
 
+def overdue_days(due_value: Optional[str], now_iso: str):
+    """How many whole days past its due date an item is, or None when it is
+    not overdue at all (SPEC OVERDUE1 DD-3).
+
+    Deliberately the SAME parse and the SAME "strictly before today" boundary
+    `is_overdue` uses, and deliberately in this module rather than in the
+    surface that needs it: two derivations of "how late is this" is how a row
+    renders `overdue: True` beside "0 days overdue". `None` for a missing,
+    unparseable, or not-yet-due date — the caller's threshold comparison then
+    fails closed (an item with no known age never crosses a fatigue bar).
+    """
+    due = _parse_date(due_value)
+    if due is None:
+        return None
+    today = _parse_date(now_iso)
+    if today is None:
+        return None
+    delta = (today - due).days
+    return delta if delta > 0 else None
+
+
 def _age_in_days(ts_value: Optional[str], now_iso: str):
     """Whole days between a capture's ts and now, or None when either end is
     unparseable. Date-granular on purpose: the brief's lane ranks by age band,
@@ -1307,6 +1328,16 @@ def compute_brief_state(
                 row["next_subitem_due"] = d_ev["next_subitem_due"]
             if d_ev.get("all_subitems_resolved"):
                 row["all_subitems_resolved"] = True
+        # SPEC OVERDUE1 DD-3 — the overdue-ask mark rides the lane row, so the
+        # End of Day's slipped block can stay a PURE function of the rows it is
+        # handed (it does no I/O and must not start). Present only when the
+        # item actually carries one, the same absent-not-empty rule the SUB1
+        # stamps above follow: a row with no key has never been asked about.
+        # The value is the projection's own fold verbatim — nothing here
+        # re-derives it, and nothing here decides what it means.
+        asked_mark = asked_mark_of(ev)
+        if asked_mark is not None:
+            row["asked"] = dict(asked_mark)
         needs_attention.append(row)
 
     # Meeting relevance is its own ranking signal (F-44): matched over the
@@ -1557,6 +1588,19 @@ import re as _re
 
 VALID_RESOLUTIONS = ("done", "dropped", "superseded")
 
+# CLOSEID1 — how a closer established WHICH commitment it is closing. Not a
+# confidence score and not a match type: `id` and `number` both mean the target
+# arrived already resolved (a widget's embedded `data.id`; a row on a receipt
+# whose positions this fire rendered itself), `title` means a human's words
+# were turned into an id by matching, which is the one door the wrong-close
+# came through.
+RESOLVED_BY_MATCH_VALUES = ("id", "number", "title")
+MATCH_KEY = "resolved_by_match"
+# DD-3 — how many candidates the ONE ambiguity row lists. Past three, a "which
+# of these did you mean" list stops being an answer and becomes the list the
+# user was already looking at.
+MAX_AMBIGUOUS_CANDIDATES = 3
+
 # Legacy id spellings observed in the live substrate (F2): bare int 86,
 # "86", "seq_86", "event_086", "commitment_seq_86" — all meaning "the
 # commitment event at seq N". Canonical definition lives in event_types
@@ -1585,6 +1629,27 @@ class OpenSubitemsError(ValueError):
     (SUB1 D3). A silent close would orphan the children; the caller must
     either close/drop the children first or pass close_subitems=True from an
     explicit user confirmation ("this also closes its N open sub-items")."""
+
+
+class AmbiguousTargetError(ValueError):
+    """Refused to close a commitment that was picked by NAME rather than by id
+    (CLOSEID1). The 2026-08-22 End of Day fire closed one item against evidence
+    that belonged to another, reopened it, and closed the right one — three
+    ledger events in one fire — because a first-hit name match was allowed to
+    close. Identity comes from the id the surface already resolved, or from
+    exactly one unambiguous open match that the user confirmed; everything
+    weaker PROPOSES (`propose_ambiguous_close`) and writes nothing to the
+    commitment.
+
+    Carries `candidates` — the open items the name matched — so the caller can
+    say WHICH ones it saw instead of apologising in the abstract.
+    """
+
+    def __init__(self, message: str, candidates: Optional[list] = None,
+                 query: str = ""):
+        super().__init__(message)
+        self.candidates = list(candidates or [])
+        self.query = query or ""
 
 
 def _closer_target_id(ev: dict) -> str:
@@ -1769,6 +1834,101 @@ def normalize_commitment_id(raw, index: dict) -> str:
     )
 
 
+_TITLE_PUNCT_RE = _re.compile(r"[^0-9a-z]+")
+
+
+def _title_key(value) -> str:
+    """Normalized comparison key for a commitment title: casefolded, every
+    non-alphanumeric run collapsed to one space, ends trimmed. Deliberately
+    NOT a fuzzy matcher — this key decides whether two strings are the SAME
+    title, and every loosening of it widens the wrong-close blast radius."""
+    return _TITLE_PUNCT_RE.sub(" ", str(value or "").casefold()).strip()
+
+
+def _title_tokens(value) -> list[str]:
+    key = _title_key(value)
+    return [t for t in key.split(" ") if t]
+
+
+def _title_candidate(ev: dict) -> dict:
+    return {
+        "id": _commitment_id(ev),
+        "title": _commitment_field(ev, "title") or "",
+        "owner_id": _commitment_field(ev, "owner_id") or "",
+        "due": _commitment_field(ev, "due") or "",
+    }
+
+
+def resolve_commitment_by_title(index, text, *, open_only: bool = True) -> dict:
+    """Resolve a user's WORDS to a commitment — or refuse, with the candidates.
+
+    Returns `{"ok": bool, "id": str|None, "candidates": [{id, title, owner_id,
+    due}], "query": str, "stage": "exact"|"token"|None}`.
+
+    CLOSEID1 DD-1. This is the resolver every name-keyed close must go through,
+    and its contract is the whole point: **it never returns a first hit.**
+    - exact-normalized title match first (`_title_key`); if that stage hits at
+      all, it is the ONLY stage consulted — a weaker match can never outvote an
+      exact one;
+    - otherwise a token match: every token of the query must appear in the
+      title's tokens (so a bare first name matches every item that names that
+      person, which is exactly the ambiguity we want SEEN);
+    - exactly one hit -> `ok: True` with its id;
+    - two or more -> `ok: False` and every candidate, because "the first one"
+      is how the 2026-08-22 fire closed the wrong promise;
+    - zero -> `ok: False`, empty candidates.
+
+    `index` is the `_scan_commitment_index` working set, or a workspace root
+    (str/Path) to scan — prose callers hold a workspace, not an index, and a
+    resolver they cannot call from the surface that needs it is a resolver that
+    gets re-implemented inline.
+
+    `open_only=True` (default) considers only commitments that are currently
+    open: a closed item is not something a name may re-close, and leaving them
+    in would let old history manufacture ambiguity forever.
+    """
+    if not isinstance(index, dict):
+        from pathlib import Path as _P
+        index = _scan_commitment_index(_P(index) / "_hq" / "data" / "events.jsonl")
+
+    query = str(text or "").strip()
+    out = {"ok": False, "id": None, "candidates": [], "query": query,
+           "stage": None}
+    q_key = _title_key(query)
+    q_tokens = _title_tokens(query)
+    if not q_key or not q_tokens:
+        return out
+
+    pool: list[dict] = []
+    for cid, ev in index["by_id"].items():
+        if open_only:
+            status = _commitment_field(ev, "status") or "open"
+            if status not in ("open", "overdue"):
+                continue
+            if _currently_closed(index, cid, ev.get("seq")):
+                continue
+        pool.append(ev)
+
+    exact = [ev for ev in pool
+             if _title_key(_commitment_field(ev, "title")) == q_key]
+    if exact:
+        hits, stage = exact, "exact"
+    else:
+        hits, stage = ([ev for ev in pool
+                        if set(q_tokens) <= set(_title_tokens(
+                            _commitment_field(ev, "title")))],
+                       "token")
+    if not hits:
+        return out
+
+    out["stage"] = stage
+    out["candidates"] = [_title_candidate(ev) for ev in hits]
+    if len(hits) == 1:
+        out["ok"] = True
+        out["id"] = _commitment_id(hits[0])
+    return out
+
+
 def close_commitment(
     workspace_root,
     commitment_id,
@@ -1781,6 +1941,9 @@ def close_commitment(
     user_confirmed: bool = False,
     extra_data: Optional[dict] = None,
     close_subitems: bool = False,
+    resolved_by_match: Optional[str] = None,
+    title_candidates: Optional[int] = None,
+    title_query: Optional[str] = None,
     source_ref=None,
     mint_now_iso=None,
 ) -> dict:
@@ -1803,6 +1966,28 @@ def close_commitment(
         close without it — no path may AUTO-resolve them (PendingReviewError).
       extra_data: optional additional data keys (e.g. Bug #51's
         resolved_via_wrapper_seq). Never overrides the canonical keys.
+      resolved_by_match: CLOSEID1 — HOW the caller picked this target.
+        `"id"` (the surface embedded it), `"number"` (a row on a receipt whose
+        positions this fire itself rendered), `"title"` (the user's words), or
+        None = unstated, the pre-CLOSEID1 default that every programmatic
+        closer still writes byte-identically. `"title"` is the only value this
+        writer polices, and it polices it by REFUSING: a name-picked close is
+        allowed only when the user confirmed it AND the name resolved to
+        exactly one open item. Anything weaker raises AmbiguousTargetError with
+        the candidates and writes nothing — the caller lands it as a proposal
+        through `propose_ambiguous_close`. When stated, the value is stamped on
+        `data.resolved_by_match` so the ledger records how identity was
+        established, not just that something closed.
+      title_candidates: how many open items the caller's name match hit. Only
+        read when `resolved_by_match="title"`; anything but 1 refuses.
+      title_query: the user's actual WORDS, when the caller has them. This is
+        the difference between a chokepoint and an honor system: given the
+        query, this writer re-derives the candidate set itself through
+        `resolve_commitment_by_title` and refuses on what IT finds, so a caller
+        that asserts "one match" while its own first-hit logic looked past a
+        second one is refused anyway. That caller-asserted count is exactly the
+        shape of the prose contract that failed on 2026-08-22. Optional, and
+        strictly stricter: omit it and only `title_candidates` is consulted.
       source_ref: PROV1 — the pointer back to the thing that justified this
         close, canonicalized through Layer A4 before append
         (`gmail:<message-id>`, `granola:<meeting-id>`, either Slack spelling,
@@ -1862,6 +2047,12 @@ def close_commitment(
         raise ValueError(
             f"invalid resolution {resolution!r} (allowed: {VALID_RESOLUTIONS})"
         )
+    if (resolved_by_match is not None
+            and resolved_by_match not in RESOLVED_BY_MATCH_VALUES):
+        raise ValueError(
+            f"invalid resolved_by_match {resolved_by_match!r} "
+            f"(allowed: {RESOLVED_BY_MATCH_VALUES}, or None when unstated)"
+        )
     # PROV1 — resolve the pointer BEFORE the lock. A malformed ref refuses with
     # nothing written and no lock held; a missing one is MINTED here (PROVMINT1),
     # once, for the parent and every cascade child — so a cascade reads as one
@@ -1877,6 +2068,63 @@ def close_commitment(
         index = _scan_commitment_index(events_path)
         cid = normalize_commitment_id(commitment_id, index)
         target = index["by_id"][cid]
+
+        # CLOSEID1 DD-2 — a target picked by NAME does not get to close itself.
+        # This sits BEFORE the already-closed check on purpose: a caller that
+        # guessed at the target should be told it guessed, not handed a cheerful
+        # "already done" about an item it never identified.
+        if resolved_by_match == "title":
+            # F-3 — an empty-but-PRESENT query is not "no query". `""` and
+            # `"   "` are falsy, and letting them fall through to the
+            # caller-asserted count would hand the door straight back to the
+            # honor system this guard exists to replace — a caller whose match
+            # produced nothing would look identical to one that never matched.
+            # Present-and-blank is its own refusal; only None means "not
+            # supplied".
+            if title_query is not None and not str(title_query).strip():
+                raise AmbiguousTargetError(
+                    f"refusing to close {cid!r}: resolved_by_match='title' "
+                    "with an EMPTY query. A blank string is not the absence of "
+                    "a name match, it is a name match that resolved nothing — "
+                    "pass the user's actual words, or do not claim a title "
+                    "resolution.",
+                    candidates=[], query="")
+            derived = (resolve_commitment_by_title(index, title_query)
+                       if title_query else None)
+            candidates = list(derived["candidates"]) if derived else []
+            n_hits = (len(candidates) if derived is not None
+                      else title_candidates)
+            named = f" for {title_query!r}" if title_query else ""
+            if not user_confirmed:
+                raise AmbiguousTargetError(
+                    f"refusing to close {cid!r}{named}: the target was resolved "
+                    "from a NAME and nobody confirmed it. A name match may "
+                    "propose (propose_ambiguous_close) — only an explicit user "
+                    "confirmation may close one.",
+                    candidates=candidates, query=title_query or "")
+            if n_hits is None:
+                raise AmbiguousTargetError(
+                    f"refusing to close {cid!r}{named}: resolved_by_match="
+                    "'title' but the caller reported no candidate count. Pass "
+                    "title_candidates (and title_query when you have the "
+                    "user's words) from resolve_commitment_by_title — an "
+                    "unmeasured name match is the first-hit close by another "
+                    "name.",
+                    candidates=candidates, query=title_query or "")
+            if int(n_hits) != 1:
+                raise AmbiguousTargetError(
+                    f"refusing to close {cid!r}{named}: the name matched "
+                    f"{int(n_hits)} open items, not one. Nothing was written — "
+                    "propose them instead (propose_ambiguous_close) and let "
+                    "the user say which they meant.",
+                    candidates=candidates, query=title_query or "")
+            if derived is not None and derived.get("id") != cid:
+                raise AmbiguousTargetError(
+                    f"refusing to close {cid!r}{named}: the caller's own words "
+                    f"resolve to {derived.get('id')!r}, not to the id it asked "
+                    "to close. The target and the evidence disagree — this is "
+                    "the 2026-08-22 wrong-close shape exactly.",
+                    candidates=candidates, query=title_query or "")
 
         # Order-aware, cross-keyed CURRENT state (Stage C seq-alias mirror +
         # Stage D reopen awareness): a closed-then-reopened commitment is open
@@ -1966,6 +2214,16 @@ def close_commitment(
             # written from here legible without one.
             **_title_snapshot(target),
         })
+        # CLOSEID1 — HOW identity was established, recorded beside the close.
+        # Popped first for the same reason the PROV1 pointer is: this is a
+        # statement THIS writer makes about how it was called, so a caller must
+        # not be able to smuggle one in through extra_data and make a
+        # name-picked close read as an id-keyed one. Omitted entirely when the
+        # caller did not state it, so every existing closer writes the
+        # byte-identical event it wrote before.
+        data.pop(MATCH_KEY, None)
+        if resolved_by_match is not None:
+            data[MATCH_KEY] = resolved_by_match
         # PROV1 last: the CANONICAL pointer wins over whatever spelling arrived
         # through extra_data, and the marker can never sit next to a real ref.
         # PROVMINT1: the GRAIN marker is popped with them — it is a statement
@@ -1996,6 +2254,177 @@ def close_commitment(
         # the whole family (reopen is per-item; see reopen_commitment).
         result["closed_subitems"] = closed_subitem_ids
     return result
+
+
+def ambiguous_close_sentence(query: str, candidates: list) -> str:
+    """The one sentence a refused name-close says out loud (CLOSEID1 DD-3).
+
+    Named and returned rather than described in prose because the refusal is
+    the FEATURE: a fire that silently proposes instead of closing looks, to the
+    CEO, exactly like a fire that did nothing.
+    """
+    n = len(candidates or [])
+    q = str(query or "").strip()
+    if n == 0:
+        return (f"Nothing open matches '{q}', so I did not close anything. "
+                "Tell me which item you mean and I will close that one.")
+    word = {1: "One", 2: "Two", 3: "Three"}.get(n, str(n))
+    plural = "item" if n == 1 else "items"
+    where = "it" if n == 1 else ("both" if n == 2 else "all of them")
+    return (f"{word} open {plural} match '{q}' — I have put "
+            f"{where} in needs your call rather than guess.")
+
+
+AMBIGUITY_EVIDENCE_SHAPE = (
+    "a title match on '{query}' — {n} open items matched it, so this is a "
+    "question about which one, not a close"
+)
+
+
+def propose_ambiguous_close(
+    workspace_root,
+    *,
+    query: str,
+    source_skill: str,
+    evidence: str = "",
+    candidates: Optional[list] = None,
+    proposed_resolution: str = "auto_resolve",
+    evidence_ts: Optional[str] = None,
+    source_ref=None,
+    max_candidates: int = MAX_AMBIGUOUS_CANDIDATES,
+) -> dict:
+    """Where a refused name-close LANDS (CLOSEID1 DD-3, reshaped by review).
+
+    **ONE question, not N.** An ambiguity is a single either/or — "two open
+    items match what you said; which did you mean?" — carried on ONE
+    `commitment_review_proposed` row that names every candidate. The first
+    build wrote one row per candidate, which is three things wrong at once: it
+    is net-new INFLOW into a queue already measured as an inflow problem (436
+    open, 25/day in against 8/day out); it presents an either/or as N
+    independent yes/no questions with the SAME evidence attached and nothing on
+    screen saying only one can be true; and a `confirm all` over that pile
+    closes BOTH candidates, which is the wrong close returning one hop later
+    through the bulk path. One row makes the ask count 1, so the trade is
+    honestly "one question replaces one wrong close plus a reopen plus a
+    re-close".
+
+    **The row cannot be swept.** Its evidence states, in the words the fence
+    reads, that it is a title match — so `watch_gate.weakness_reason` returns
+    `TITLE_MATCH_REASON` and `screen_bulk_accept` HOLDS it in every bulk
+    gesture. `has_completion_signal=False` holds it a second, independent way.
+    Neither is decoration: this row IS a title match, and nothing assessed
+    completion for any single candidate. The only way past the fence is a human
+    naming that row's own number, which is `screen_bulk_accept`'s
+    `individually_named` escape hatch working exactly as designed.
+
+    **`data.commitment_id` is an identity ANCHOR, never a close target.** The
+    queue keys rows by commitment id, so the row needs one; the ambiguity does
+    not belong to any single commitment. Readers that mean to act on this row
+    read `ambiguous_candidates` — the full [{id, title}] set — and ask the
+    user. A reader that closes the anchor because it is the anchor has
+    reintroduced the first-hit close.
+
+    It touches NOTHING on the commitments: no tombstone, no marker, no reopen.
+
+    Returns `{"status", "query", "candidates", "anchor_id", "proposed",
+    "truncated", "rows", "sentence", "event"}`.
+    """
+    from pathlib import Path as _Path
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    index = _scan_commitment_index(events_path)
+    if candidates is None:
+        candidates = resolve_commitment_by_title(index, query)["candidates"]
+    candidates = list(candidates or [])
+
+    # An either/or needs two sides. A cap of 1 would truncate a real
+    # ambiguity down to its FIRST hit, and a one-candidate row renders as
+    # "close this one?" against the anchor — the first-hit close this
+    # whole build exists to kill, resurfaced as a proposal. Any positive
+    # cap floors at 2; 0 still means "propose nothing".
+    cap = max(2, int(max_candidates)) if int(max_candidates) > 0 else 0
+    listed = candidates[:cap]
+    truncated = max(0, len(candidates) - len(listed))
+
+    out = {
+        "status": "nothing_to_propose",
+        "query": str(query or ""),
+        "candidates": candidates,
+        "anchor_id": None,
+        "proposed": [],
+        "truncated": truncated,
+        "rows": 0,
+        "sentence": ambiguous_close_sentence(query, candidates),
+        "event": None,
+    }
+    carried = [
+        {"id": str(c.get("id") or "").strip(),
+         "title": str(c.get("title")
+                      or _commitment_field(index["by_id"].get(
+                          str(c.get("id") or "").strip()) or {}, "title") or "")}
+        for c in listed if str(c.get("id") or "").strip()
+    ]
+    if not carried:
+        return out
+
+    anchor = carried[0]["id"]
+    target = index["by_id"].get(anchor) or {}
+
+    try:
+        from cru_match import build_pending_review_event
+    except ImportError:  # pragma: no cover
+        sys.path.insert(0, str(_Path(__file__).resolve().parent))
+        from cru_match import build_pending_review_event
+
+    # The evidence the FENCE reads. `weakness_reason` looks for the title-match
+    # marker in this text and nothing else, so the row's own honest description
+    # of itself is what holds it — not a flag some renderer might ignore.
+    fence_evidence = AMBIGUITY_EVIDENCE_SHAPE.format(
+        query=str(query or "").strip(), n=len(carried))
+    if evidence:
+        fence_evidence = f"{fence_evidence}. What was said: {clip(evidence)}"
+
+    ev = build_pending_review_event(
+        commitment_id=anchor,
+        primary_thread_id=target.get("primary_thread_id") or "",
+        source_skill=source_skill,
+        proposed_resolution=proposed_resolution,
+        # No scored rail produced this — a string hit more than one promise.
+        # Claiming a score would let an accept surface read a number no
+        # matcher computed.
+        score=0.0,
+        evidence=fence_evidence,
+        next_seq=None,
+        title=carried[0]["title"],
+        # The caller assessed completion for the PHRASE, never for a single
+        # candidate. False is the honest answer and it holds the row a second
+        # way, independent of the evidence text.
+        has_completion_signal=False,
+        evidence_ts=evidence_ts,
+    )
+    data = dict(ev.get("data") or {})
+    data[MATCH_KEY] = "title"
+    data["ambiguous_query"] = clip(str(query or ""))
+    # The LIST, not a count: a reader that must ask "which did you mean" needs
+    # the ids and the titles. A bare count told nobody anything, which is why
+    # it had no reader.
+    data["ambiguous_candidates"] = carried
+    data["ambiguous_truncated"] = truncated
+    data["auto_close_blocked"] = True
+    if source_ref is not None:
+        data[SOURCE_REF_KEY] = source_ref
+    ev["data"] = data
+
+    from event_gate import append_event
+    append_event(events_path, [ev], holder=source_skill)
+
+    out.update({
+        "status": "proposed",
+        "anchor_id": anchor,
+        "proposed": [c["id"] for c in carried],
+        "rows": 1,
+        "event": ev,
+    })
+    return out
 
 
 def resolve_thread(
@@ -2765,6 +3194,228 @@ def restore_review_flags(
     return {"status": "restored", "commitment_id": cid, "event": ev}
 
 
+# ---------------------------------------------------------------------------
+# THE OVERDUE ASK (SPEC OVERDUE1 DD-1) — asked once, then it rests
+# ---------------------------------------------------------------------------
+#
+# M's ruling R-3, on an item that had rendered identically in the evening block
+# every night for two weeks: "I would do it for 3-4 days." So after the
+# threshold the block asks ONCE — done, new date, or drop — and then stops
+# repeating the row until the question is answered.
+#
+# The mark that remembers the asking is modelled on `watch_gate.park_in_watch`,
+# key for key: ONE additive `commitment_updated`, idempotent, id-validated, the
+# capture never rewritten, the item never leaving the open set or changing
+# status. Two properties are load-bearing and neither is decoration:
+#
+#   * IT IS NOT MOVEMENT. `commitment_activity._is_bookkeeping_update` excludes
+#     it, so asking about a quiet item does not reset the 21-day clock that
+#     measures how quiet it has been. Without that exclusion the fatigue rule
+#     would launder every stale row into a fresh one on the night it noticed.
+#
+#   * IT CARRIES NO THREAD. Unlike `close_commitment` / `clear_review_flags`,
+#     this writer does NOT stamp `primary_thread_id` from its target — exactly
+#     as `park_in_watch` does not. A surface deriving thread activity with
+#     `thread_activity.ALL_TYPES` counts every event that names a thread, so a
+#     thread-stamped mark would make a silent thread look touched on the night
+#     the system talked to itself about it.
+#
+# `due_at_ask` is what makes the mark answerable rather than permanent: it
+# records WHICH deadline was asked about. Re-date the item and the mark no
+# longer describes the item's due date, so it stops suppressing anything and
+# the clock re-arms from the new date. That is the whole of "a new due date
+# re-arms it", and it needs no second event to happen.
+
+ASKED_SURFACE_DEFAULT = "end-of-day"
+
+
+def asked_mark_of(commitment_event: dict):
+    """The live overdue-ask mark on a PROJECTED commitment, or None.
+
+    Reads the read-side fold `cru_match.load_open_commitments` stamps
+    (`data.asked`), never the raw event stream — same posture as every other
+    projection read in this module."""
+    d = (commitment_event or {}).get("data")
+    if not isinstance(d, dict):
+        return None
+    asked = d.get("asked")
+    return asked if isinstance(asked, dict) else None
+
+
+def asked_commitment_marks(workspace_root, events_path=None) -> dict:
+    """{commitment id: the live `asked` mark} across the open set.
+
+    The idempotency source for `mark_asked`, mirroring
+    `watch_gate.watched_commitment_ids`. Defensive in the same direction:
+    any failure yields an EMPTY map, which fails toward asking a second time
+    rather than silently suppressing a row nobody ever answered. A duplicate
+    question is a redundancy; a row that rests without ever having been asked
+    is a disappearance, and those are not the same mistake.
+    """
+    try:
+        from pathlib import Path as _P
+        path = events_path or str(_P(workspace_root) / "_hq" / "data" / "events.jsonl")
+        rows = load_open_commitments(path, workspace_root=str(workspace_root))
+        out = {}
+        for ev in rows:
+            mark = asked_mark_of(ev)
+            if mark is not None:
+                out[_commitment_id(ev)] = mark
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def mark_asked(
+    workspace_root,
+    commitment_id,
+    *,
+    due_at_ask,
+    source_skill: str,
+    surface: str = ASKED_SURFACE_DEFAULT,
+    now_iso: Optional[str] = None,
+    note: str = "",
+    force: bool = False,
+    known_asked: Optional[dict] = None,
+) -> dict:
+    """Record that a surface has ASKED about an overdue item (OVERDUE1 DD-1).
+
+    Appends ONE `commitment_updated` carrying
+    `data = {commitment_id, asked_set: True, asked: {surface, asked_at,
+    due_at_ask}}`. Nothing else about the item changes: it stays `status:
+    "open"`, stays in every count, stays on `my plate` and in the brief's
+    needs-attention lane. Only the nightly slipped block reads the mark.
+
+    IDEMPOTENT, and idempotent on the QUESTION rather than on the item: a live
+    mark for the SAME `due_at_ask` is a no-op (`{"status": "already_asked"}`)
+    and appends nothing, because asking twice about one deadline is one
+    question. A mark whose `due_at_ask` differs from the one being written is
+    stale — the user re-dated the item — so this writes a fresh mark and the
+    fatigue clock re-arms. `force=True` re-asks deliberately; `known_asked`
+    lets a batch caller pass the map it already projected instead of
+    re-projecting per row.
+
+    REFUSES AN EMPTY ID and refuses a CLOSED item, the two floors every
+    id-bearing writer in this module holds. A mark on nothing is a permanent
+    line in an append-only log that no projection can ever attach to anything
+    (the `park_in_watch` empty-id incident), and a mark on a closed item is a
+    question about work that is already finished. It also REFUSES AN EMPTY
+    `due_at_ask` unless `force=True` — see the guard's own comment: a mark
+    with nothing to go stale against rests its row forever.
+
+    The idempotency projection runs OUTSIDE the writer lock; the reasoning,
+    and the TOCTOU it accepts in exchange, are in the comment above the read.
+
+    Returns {"status": "asked"|"already_asked"|"not_open", "commitment_id": …,
+             "event": {...}} — `event` only on an actual write.
+    """
+    cid_raw = str(commitment_id or "").strip()
+    if not cid_raw:
+        raise CommitmentIdError(
+            "mark_asked got an empty commitment id — an overdue ask has to be "
+            "about something. The caller's row arrived with no id at the top "
+            "level (a rendered pack row keeps its id under `commitment_id`).")
+    due_key = str(due_at_ask or "").strip()
+    if not due_key and not force:
+        # REVIEW OVERDUE1 F-7. `due_at_ask` is what lets a mark go STALE: the
+        # row's due date moves, the comparison stops matching, the clock
+        # re-arms. An empty one can never stop matching an undated row, so the
+        # row would rest forever with `clear_asked` as its only way out. The
+        # shipped path cannot reach this (an undated row has no days-overdue
+        # and is never asked), which is exactly why a second caller could.
+        raise ValueError(
+            "mark_asked needs the due date the question was about — a mark "
+            "with no `due_at_ask` can never go stale, so the item would rest "
+            "until something explicitly un-asks it. Pass the row's effective "
+            "due, or force=True if a permanent mark is genuinely intended.")
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    # THE PROJECTION HAPPENS OUTSIDE THE LOCK (REVIEW OVERDUE1 F-5). No other
+    # writer in this module reads a whole workspace projection while holding
+    # the writer lock — they scan an index and append — and this repo has
+    # already lost five mutation suites to writer-lock starvation at exactly
+    # the 900s cap. A nightly writer that holds the lock across a
+    # workspace-sized read is how that comes back. The cost is the same TOCTOU
+    # every other member of this family accepts (`park_in_watch` projects
+    # entirely outside any lock): a mark landing between this read and the
+    # append yields one duplicate `asked_set`, which the fold resolves
+    # latest-wins and which costs nothing but a line of history. Batch callers
+    # pass `known_asked` and skip this read entirely.
+    live = None
+    if not force:
+        live = (known_asked if known_asked is not None
+                else asked_commitment_marks(workspace_root, events_path))
+    with events_writer_lock(events_path, holder=f"mark_asked:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(cid_raw, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        if live is not None:
+            # Keyed on the CANONICAL id, which is what the projection uses —
+            # so a caller arriving with a legacy spelling still matches its
+            # own prior mark.
+            prior = live.get(cid)
+            if isinstance(prior, dict) and str(
+                    prior.get("due_at_ask") or "").strip() == due_key:
+                return {"status": "already_asked", "commitment_id": cid}
+        data: dict = {
+            "commitment_id": cid,
+            "asked_set": True,
+            "asked": {
+                "surface": surface,
+                "asked_at": now_iso or _now_iso(),
+                # The deadline THIS question was about. Empty string rather
+                # than absent for an undated item, so the comparison above has
+                # one shape to reason about.
+                "due_at_ask": due_key,
+            },
+        }
+        if note:
+            data["note"] = note[:200]
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        # NO `primary_thread_id` — see the section note above.
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "asked", "commitment_id": cid, "event": ev}
+
+
+def clear_asked(workspace_root, commitment_id, *, source_skill: str,
+                note: str = "") -> dict:
+    """Drop the overdue-ask mark WITHOUT resolving the item — the mirror of
+    `mark_asked` and the twin of `watch_gate.clear_watch`.
+
+    One `commitment_updated` carrying `data.asked_cleared: true`; the item
+    stays exactly as open as it was and returns to the nightly block on the
+    next fire. Ordinary answers do not need this: a `push to [date]`, a
+    re-wording, a re-owner or a close all clear the mark through the read-side
+    fold with no event of their own (DD-2). This exists for the case with no
+    such write behind it — an operator or a repair pass un-asking a question.
+    """
+    cid = str(commitment_id or "").strip()
+    if not cid:
+        raise CommitmentIdError(
+            "clear_asked got an empty commitment id — there is nothing to "
+            "un-ask.")
+    from pathlib import Path as _Path
+    from event_gate import append_event
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    data = {"commitment_id": cid, "asked_cleared": True}
+    if note:
+        data["note"] = note[:200]
+    ev = {"type": "commitment_updated", "source_skill": source_skill,
+          "data": data}
+    append_event(events_path, [ev], holder=source_skill)
+    return {"status": "cleared", "commitment_id": cid, "event": ev}
+
+
 def mark_partial_received(
     workspace_root,
     commitment_id,
@@ -3450,6 +4101,13 @@ __all__ = [
     "CommitmentIdError",
     "PendingReviewError",
     "OpenSubitemsError",
+    "AmbiguousTargetError",
+    "RESOLVED_BY_MATCH_VALUES",
+    "MAX_AMBIGUOUS_CANDIDATES",
+    "AMBIGUITY_EVIDENCE_SHAPE",
+    "resolve_commitment_by_title",
+    "propose_ambiguous_close",
+    "ambiguous_close_sentence",
     "effective_kind",
     "partition_subitems",
     "add_subitems",
@@ -3462,6 +4120,11 @@ __all__ = [
     "restore_review_flags",
     "RESTORE_DEFAULT_REVIEW_REASON",
     "mark_partial_received",
+    "ASKED_SURFACE_DEFAULT",
+    "asked_mark_of",
+    "asked_commitment_marks",
+    "mark_asked",
+    "clear_asked",
     "split_commitment",
     "reopen_commitment",
     "promote_task_to_commitment",
@@ -3470,6 +4133,7 @@ __all__ = [
     "commitment_kind",
     "load_open_commitments",
     "is_overdue",
+    "overdue_days",
     "reconcile_is_stale",
     "HEADLINE_BUCKETS",
     "BUCKET_YOU_OWE",

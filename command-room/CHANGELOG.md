@@ -1,5 +1,49 @@
 # Command Room — Changelog
 
+## v5.14.0 — 2026-08-23 — The list cleans itself
+
+**The train that stops the commitment list growing on its own.** Fifteen merges since the v5.13.2 cut. The measured finding behind the shape of it: the pile is an *inflow* problem, not a staleness problem — nothing was sitting quiet for 45 days, and a quarter of the confirm pile was junk that should never have been written. So most of this train sits at the point work is created and at the point it leaves, not at the point it is cleared.
+
+### What shipped, one line per merge
+
+- **WLOCK1** — the writer-lock torture suite gets a lane of its own, so the battery can stop protecting it by running everything single-file.
+- **MUTCAP1** — a heavy lane, so the twenty tree-copying harnesses that were dying at the 900s cap through contention (not slowness) stop dying there. Batteries now run at default parallelism.
+- **EODREL1** — the evening routine can no longer switch itself off when a section is renamed (SCHEDINH1), the usage report stops reporting that it never ran (SURFCOUNT1), and every phase of the day-close leaves a record (EODPHASE1).
+- **MAILSEAM2** — all five mail seams honour the declared backend in the provider's own vocabulary, so two connected mail products never silently bind the wrong inbox and a declared backend never refuses an operation it can do.
+- **eodphase1-ci-fix** — the phase-coverage pin measures the phased region with a fine clock instead of a tick-quantised one, and the shard guard's control clumps on a synthetic set instead of the live tree.
+- **PREPSEAM1** — call-prep resolves the declared mail backend, so meeting prep carries mail context for Outlook and Superhuman clients instead of none at all.
+- **RUNNOW1** — Run Now on a served chat renders again outside a two-hour window, and every press renders with a line saying when that chat last ran.
+- **OVERDUE1** — an item three days overdue asks once (done / new date / drop) and then rests until answered, instead of repeating every night.
+- **BOOKENDS1** — closing or confirming one item no longer hides its siblings on the same thread for a week; EODSTATE1 un-parked on top.
+- **ADAPTK1** — the heavy lane widens to K=3 once the light lane has drained, so the battery stops bounding a threat that has already left.
+- **HELDOP1** — the held tier becomes a release-carried capability that ships OFF; no workspace setting can turn it on, and the refusal never implies anyone reads a client's captures.
+- **RERUNFAN1** — Run Now renders a fresh edition on every scheduled chat, saying when it last ran; a re-run never re-arms the served-slot skip.
+- **CLOSEID1** — a commitment closes only by a resolved id or one confirmed match; an ambiguity becomes one either/or row that no confirm can sweep or tap shut.
+- **SWEEPSCHED1** — agreed work that has gone silent ages out weekly after showing its hand three times, with one undo per batch.
+- **CONFCLAMP1** — a classification score is checked where it is written, so a junk score stops sneaking past the quality floor.
+
+### Release manifest
+
+Nine items in `shared/releases/v5.14.0.json` — one `instruct_user` and eight `announce_only`.
+
+The `instruct_user` item (`v5140_instruct_set_up_schedules`) is **required, not optional**: SWEEPSCHED1's weekly age-out leg lives in the registered prompt, not in code, so an existing machine never hears of it until the customer re-runs registration. Same Rule 16 self-refresh contract as every prior schedule change.
+
+`v5140_announce_run_now_renders_on_every_chat` **supersedes v5.13.2's `v5132_announce_run_now_declines_repeat`**, and says so in its own customer prose. A client coming from v5.11.1 plays both manifests in one bridge run, and the older note — a served slot declines a second press and leaves it there — is now false in the general case; only the two-hour duplicate window survives. The superseded id is named *here* and not in the customer surface: manifest prose carries no internal identifiers (Rule 9), and the guards that scan it would not have caught the leak.
+
+HELDOP1 ships dark (capability OFF, `granted: false`) and deliberately gets **no** announce item. ADAPTK1, EODPHASE1, SCHEDINH1, SURFCOUNT1, WLOCK1 and MUTCAP1 are internal and are folded into this file only.
+
+### Correction carried in this cut
+
+The REVAMN1 note under v5.13.1 said review expiry's 14-day bar was "much shorter than the 45 confirmed work ages at". Confirmed work ages out at **30** days, and has since the sweep shipped. Corrected in place.
+
+### Files touched
+
+`.claude-plugin/plugin.json` (5.13.2 → 5.14.0), `shared/releases/v5.14.0.json` (new), this file.
+
+### Customer migration impact
+
+One required action, once per machine: `set up command room schedules`. Without it the weekly age-out leg never fires on that computer, and nothing else says so. Everything else in this release takes effect on the next scheduled fire with no customer action.
+
 ## v5.13.2 — 2026-08-22 — Release notes say what a client will actually see
 
 **Notes only — no code changed.** Cut after the 2026-08-22 pre-push walkthrough of v5.11.1 → v5.13.1 (findings record in the operator workspace), before the fleet fan-out. Three announcements were missing and one claim was not yet true.
@@ -172,7 +216,7 @@ Every capture the extractor was unsure about lands in the needs-your-call queue 
 
 Two bulk verbs now reach it, and only it.
 
-- **Review expiry** argues from time. An unconfirmed capture nobody answered inside the window has lapsed — nothing is asserted about whether it was ever real. The bar is **14 days**, much shorter than the 45 confirmed work ages at, because a guess whose context has gone will not be answered better later. Tunable per workspace as `review_expiry_days` (a separate key from `age_out_days`), overridable per run, floored at 3 days.
+- **Review expiry** argues from time. An unconfirmed capture nobody answered inside the window has lapsed — nothing is asserted about whether it was ever real. The bar is **14 days**, much shorter than the 30 confirmed work ages at, because a guess whose context has gone will not be answered better later. Tunable per workspace as `review_expiry_days` (a separate key from `age_out_days`), overridable per run, floored at 3 days.
 - **Ingest kill** argues from provenance. One import wrote a cluster of junk; the user names that meeting or import and the cluster goes. No threshold and no floor — it targets a defect rather than a date, so a cluster written an hour ago is exactly the case it exists for. Either id spelling works.
 
 Both follow the amnesty shape exactly: a plan that writes nothing, a prose confirm shown verbatim, and an apply that re-derives its own pile and takes no row list, so nothing stale can be handed to it. Closes land reversibly in one `swb_` batch under `resolution_reason: "review_expired"` / `"ingest_killed"`, and a single `undo` puts the whole batch back **in the queue** — as unconfirmed captures, exactly the state they left. No new event type, no new writer, no new reverser.

@@ -77,6 +77,8 @@ If the workspace has no receipts at all: surface plain English `(Nothing to repo
 
 **Never claim "run counts are solid" beyond what the reader returned** — the counts are the reader's output verbatim; the report renders them, it does not re-derive or adjust them.
 
+**A fire is counted under the SURFACE it served, not the task id it wears (SPEC SURFCOUNT1) — and both columns of a row agree because both readers apply the same rule.** Some fires deliberately run under a legacy task id: the day-close registers as Past Meetings and stamps `data.surface: "end-of-day"`, because re-pointing the registration would have moved every customer's evening chat. `count_runs` buckets those fires under End of Day, and `aggregate_pack_run_telemetry` puts their word/lookup/second columns on the same row. Before this, a workspace whose day-close fired four times that week read "End of Day ran 0x" the morning after it fired, with the spend parked on Past Meetings — and the honest reaction to that is to distrust either the schedule or this report. **Render one row per key the readers return, named through `schedule_config.task_display_name`** — never a row list typed here, and never fold two keys into one row to "tidy up" a workspace mid-rename: a machine that has fired under both ids genuinely has two histories, and saying so is the honest answer.
+
 ### Step 3 — Surface a plain-English breakdown
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. Customers meet these as **scheduled chats** — never "scheduled threads" or "tasks" in the rendered report.
@@ -90,7 +92,7 @@ By scheduled chat:
   Inbox             ran 5x   avg 6.2k words   avg 12 lookups   avg 8 seconds
   Commitments       ran 5x   avg 9.8k words   avg 22 lookups   avg 14 seconds
   Staff Meeting     ran 5x   avg 4.1k words   avg 8 lookups    avg 6 seconds
-  Past Meetings     ran 5x   avg 18.3k words  avg 35 lookups   avg 24 seconds   ← uses the most
+  End of Day        ran 5x   avg 18.3k words  avg 35 lookups   avg 24 seconds   ← uses the most
   Upcoming Meetings ran 5x   avg 11.2k words  avg 18 lookups   avg 12 seconds
 
 Background tasks (silent — no chat output, so no word counts):

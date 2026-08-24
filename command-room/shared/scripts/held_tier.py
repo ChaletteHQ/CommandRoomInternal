@@ -17,24 +17,37 @@ WHY IT SHIPS OFF, AND WHY THE SWITCH REFUSES
 --------------------------------------------
 The 5 PM sort removes the client-side review queue, and that queue is the only
 net under the roughly one-in-three meeting-derived captures that were never
-promises. So M's ruling ties the flip to a measured bar, and
-`precision_gate.py` is that bar in code:
+promises. So the flip is FENCED — and HELDOP1 changed what the fence is.
 
-    >=90% of meeting-derived items routed to the open book are verified
-    promises, on a >=100-item labelled sample, holding two consecutive
-    dogfood weeks.
+It used to be a measurement each workspace took of itself (a capture-precision
+bar, read by a gate that scanned that workspace for census records). That was
+the wrong fence, and not by a little: the only thing that can WRITE a census
+record lives at repo root, outside everything a workspace ever receives, so the
+directory the gate scanned was empty forever. Every workspace but the
+operator's own read RED permanently, which says "your accuracy is bad" while
+meaning "the instrument was never delivered". M retired that bar on 2026-08-22.
 
-`enable_held_routing` calls `precision_gate.precision_gate_status(workspace_root)`
-and REFUSES while it is not passing. That call is the fence. It is not a
-warning, not a log line, and not something the caller may skip: with the gate
-red there is no code path in this module that returns an enabled routing.
+The fence now is an OPERATOR-ISSUED CAPABILITY: `operator_capability`
+`held_tier_routing`, granted in the plugin payload
+(`shared/config/operator_capabilities.json`) and therefore writable only by a
+release. `enable_held_routing` calls `capability_status(workspace_root)` here,
+which asks that module, and REFUSES while the capability is absent. That call
+is the fence. It is not a warning, not a log line, and not something the caller
+may skip: without the grant there is no code path in this module that returns
+an enabled routing.
 
-**The gate is also NAMED in this fire's skill prose.** REVIEW_PREC1's N-1
-finding was that `precision_gate.py` was cited by zero shipped skills — code
+**Nothing a workspace can edit satisfies it.** The capability read is anchored
+to the payload and takes no workspace argument at all, so writing the routing
+value — or any other key, under any name — into this skill's own config grants
+nothing. That is the property to protect if this module is ever refactored, and
+it is pinned by removal in `tests/run_heldop1_test.py`.
+
+**The fence is also NAMED in this fire's skill prose.** REVIEW_PREC1's N-1
+finding was that the old gate module was cited by zero shipped skills — code
 nothing instructs anyone to consult is inert at the moment it matters, however
-correct it is. `skills/end-of-day/SKILL.md` names the module and this refusal,
-and a guard test asserts it keeps doing so. Both halves are the fix; either one
-alone is the finding restated.
+correct it is. `skills/end-of-day/SKILL.md` names the capability module and
+this refusal, and a guard test asserts it keeps doing so. Both halves are the
+fix; either one alone is the finding restated.
 
 THE DEFAULT IS OFF AND OFF IS BYTE-IDENTICAL
 --------------------------------------------
@@ -75,6 +88,14 @@ CONFIG_DEFAULTS = {
     "sign_off": "on",              # on | off
     # Decision 1. DARK. See the module docstring.
     CONFIG_KEY: DEFAULT_ROUTING,
+    # SPEC OVERDUE1 D1 (M's ruling R-3: "3-4 days"). How many days past its due
+    # date an item may be before the slipped block asks about it once and then
+    # stops repeating it. Whole days, 1 or more; the reader is
+    # `end_of_day.overdue_ask_after_days`, which falls back to its own default
+    # on anything else. It lives here because this dict is the ONE full default
+    # set for this fire's config — a knob declared anywhere else is a knob
+    # `get_config` cannot fill in for a workspace whose saved config predates it.
+    "overdue_ask_after_days": 3,
 }
 
 # The mark a held row carries. A boolean on the row, plus the reason, so a
@@ -84,18 +105,28 @@ HELD_REASON_KEY = "held_reason"
 HELD_REASON = "below the capture floor, held out of the queue"
 
 # Refusal codes. Stable, UPPER_SNAKE, ordered most-structural first — the
-# caller owns the words (the DONT-PRINT-THE-GATE'S-SENTENCE lesson from
-# precision_gate's own docstring).
-REFUSED_GATE_RED = "GATE_RED"
+# caller owns the words, never the fence.
+REFUSED_NOT_GRANTED = "NOT_GRANTED"
 REFUSED_UNKNOWN_VALUE = "UNKNOWN_VALUE"
 
-# The one sentence a caller may print when the switch refuses. It lives here
-# so the wording is pinned once, and it deliberately says what would have to
-# change rather than naming a threshold the reader cannot act on.
+# The one sentence a caller may print when the switch refuses. It lives here so
+# the wording is pinned once, and it names NO measurement: the reader — an
+# owner, in their own workspace — has no measurement to act on and never did,
+# and a refusal that implies otherwise is read as an accusation about their own
+# accuracy. It says what is true instead, including the last line, which is the
+# whole correction (HELDOP1 D3).
+#
+# The middle clause is deliberate too (REVIEW_HELDOP1 F-1). It says the people
+# who build this are satisfied it is SAFE — never that they have READ anything,
+# because to an owner "once we have looked at what it would hide" describes us
+# reading THEIR captures, which is not what happens and not a thing to imply in
+# a sentence whose whole job is to reassure. The pin carries these words
+# literally.
 REFUSAL_LINE = (
-    "I am not turning that on yet. Holding weak captures out of sight is only "
-    "safe once the capture precision measurement has held its bar for two "
-    "weeks running, and it has not."
+    "I am not turning that on. Holding weak captures out of sight is not a "
+    "setting in this workspace — it is switched on in the Command Room release "
+    "itself, once the people who build it are satisfied it is safe. Nothing "
+    "about your own numbers is holding it back."
 )
 
 
@@ -114,23 +145,35 @@ def _load_config(workspace_root) -> dict:
         return config_defaults()
 
 
-def gate_status(workspace_root) -> dict:
-    """The capture-precision gate's verdict, verbatim.
+def capability_status(workspace_root=None) -> dict:
+    """Has the operator issued the held-tier capability with this release?
 
-    ONE call site for the gate inside this module, so the fence is one thing
-    to find and one thing to remove in a red-proof. Never raises: an
-    unreadable report is a week that does not count, which is a FAIL, and a
-    gate that crashes is a gate that gets removed.
+    ONE call site for the fence inside this module, so it is one thing to find
+    and one thing to remove in a red-proof — the same single-seam design the
+    measurement gate had, pointed at the thing that actually decides now.
+
+    `workspace_root` is accepted so the seam keeps the shape of what it
+    replaced, and it is DELIBERATELY UNUSED. That is not an oversight to tidy
+    up later: a capability that could be read out of a workspace is a
+    capability that workspace could grant itself, which is the entire fence.
+    Anyone refactoring this signature should read the pin in
+    `tests/run_heldop1_test.py` first.
+
+    Never raises. Anything unreadable is NOT GRANTED — a fence that crashes is
+    a fence that gets removed, and one that fails open is not a fence.
     """
-    from precision_gate import precision_gate_status
+    del workspace_root  # see above: the fence is that this is never consulted.
     try:
-        status = precision_gate_status(workspace_root)
+        import operator_capability as _oc
+        status = _oc.capability_status(_oc.HELD_TIER_ROUTING)
     except Exception:  # noqa: BLE001
-        return {"status": "FAIL", "pass": False, "blockers": ["NO_REPORTS"],
-                "weeks_found": 0, "reports_found": 0, "weeks": []}
+        return {"capability": "held_tier_routing", "granted": False,
+                "blockers": ["UNREADABLE_CAPABILITY_FILE", REFUSED_NOT_GRANTED],
+                "granted_on": None, "source": None}
     if not isinstance(status, dict):
-        return {"status": "FAIL", "pass": False, "blockers": ["NO_REPORTS"],
-                "weeks_found": 0, "reports_found": 0, "weeks": []}
+        return {"capability": "held_tier_routing", "granted": False,
+                "blockers": ["UNREADABLE_CAPABILITY_FILE", REFUSED_NOT_GRANTED],
+                "granted_on": None, "source": None}
     return status
 
 
@@ -140,58 +183,64 @@ def flip_status(workspace_root) -> dict:
     Returns:
       {"requested": "review"|"held"|<whatever is stored>,
        "enabled": bool,          # the ONLY field the routing path reads
-       "gate_pass": bool,
-       "gate": <precision_gate_status>,
+       "granted": bool,
+       "capability": <operator_capability.capability_status>,
        "blockers": [CODE, ...],
        "default": "review"}
 
-    `enabled` is `requested == "held"` AND the gate passes. The second half is
-    not belt-and-braces: a workspace can carry a stored `held` from a week when
-    the gate was green, and the bar is "holding for two consecutive weeks",
-    which a workspace can fall out of. The routing asks this function every
-    time rather than trusting a value written once.
+    `enabled` is `requested == "held"` AND the capability is granted. The
+    second half is not belt-and-braces, and it is the reason this is a function
+    rather than a stored boolean: a workspace can carry a `held` value written
+    while a release granted the capability and still be running a release that
+    does not. The routing asks this function EVERY time rather than trusting a
+    value written once — a stored request is a request, never a grant.
     """
     cfg = _load_config(workspace_root)
     requested = cfg.get(CONFIG_KEY, DEFAULT_ROUTING)
-    gate = gate_status(workspace_root)
-    gate_pass = bool(gate.get("pass"))
-    blockers = list(gate.get("blockers") or [])
+    capability = capability_status(workspace_root)
+    granted = bool(capability.get("granted"))
+    blockers = list(capability.get("blockers") or [])
     if requested not in (ROUTING_REVIEW, ROUTING_HELD):
         # An unreadable value is the DEFAULT, and it says so rather than
         # guessing which of the two the workspace meant.
         return {"requested": requested, "enabled": False,
-                "gate_pass": gate_pass, "gate": gate,
+                "granted": granted, "capability": capability,
                 "blockers": [REFUSED_UNKNOWN_VALUE] + blockers,
                 "default": DEFAULT_ROUTING}
-    enabled = (requested == ROUTING_HELD) and gate_pass
-    if requested == ROUTING_HELD and not gate_pass:
-        blockers = [REFUSED_GATE_RED] + blockers
+    enabled = (requested == ROUTING_HELD) and granted
     return {"requested": requested, "enabled": enabled,
-            "gate_pass": gate_pass, "gate": gate, "blockers": blockers,
-            "default": DEFAULT_ROUTING}
+            "granted": granted, "capability": capability,
+            "blockers": blockers, "default": DEFAULT_ROUTING}
 
 
 def enable_held_routing(workspace_root, *, origin: str = "m_action") -> dict:
-    """Turn the flip ON. REFUSES while the capture-precision gate is red.
+    """Turn the flip ON. REFUSES unless the operator issued the capability.
 
     Returns `{"status": "enabled"|"refused", "blockers": [...],
-    "gate": <status>, "line": REFUSAL_LINE|None}`.
+    "capability": <status>, "line": REFUSAL_LINE|None}`.
 
     Nothing is written on a refusal — not the value, not a "pending" marker,
     not an event. A stored request that is inert is the shape that makes a
     dark feature look enabled to the next reader.
+
+    This is the ONE writer, and HELDREVIEW1's enable phrase is its caller: the
+    review is what earns the grant, and the grant is a release, so nothing that
+    runs inside a workspace can substitute for either.
     """
-    gate = gate_status(workspace_root)
-    if not gate.get("pass"):
+    capability = capability_status(workspace_root)
+    if not capability.get("granted"):
         return {"status": "refused",
-                "blockers": [REFUSED_GATE_RED] + list(gate.get("blockers") or []),
-                "gate": gate, "line": REFUSAL_LINE}
+                "blockers": [REFUSED_NOT_GRANTED]
+                + [b for b in (capability.get("blockers") or [])
+                   if b != REFUSED_NOT_GRANTED],
+                "capability": capability, "line": REFUSAL_LINE}
     from skill_config_writer import get_config, save_skill_config
     cfg = get_config(workspace_root, CONFIG_SKILL, config_defaults())
     cfg[CONFIG_KEY] = ROUTING_HELD
     save_skill_config(workspace_root, CONFIG_SKILL, cfg,
                       is_reconfigure=True, origin=origin)
-    return {"status": "enabled", "blockers": [], "gate": gate, "line": None}
+    return {"status": "enabled", "blockers": [], "capability": capability,
+            "line": None}
 
 
 def disable_held_routing(workspace_root, *, origin: str = "m_action") -> dict:
@@ -237,8 +286,8 @@ def apply_held_routing(routed: dict, workspace_root, *,
     deletion.
 
     `status` is accepted so a caller that already asked can pass the answer
-    rather than paying for a second gate read; when omitted this asks
-    `flip_status`, which asks the gate.
+    rather than paying for a second capability read; when omitted this asks
+    `flip_status`, which asks the fence.
     """
     src = routed if isinstance(routed, dict) else {}
     state = status if isinstance(status, dict) else flip_status(workspace_root)
@@ -328,8 +377,8 @@ __all__ = [
     "CONFIG_SKILL", "CONFIG_KEY", "CONFIG_DEFAULTS",
     "ROUTING_REVIEW", "ROUTING_HELD", "DEFAULT_ROUTING",
     "HELD_FLAG", "HELD_REASON_KEY", "HELD_REASON",
-    "REFUSED_GATE_RED", "REFUSED_UNKNOWN_VALUE", "REFUSAL_LINE",
-    "config_defaults", "gate_status", "flip_status",
+    "REFUSED_NOT_GRANTED", "REFUSED_UNKNOWN_VALUE", "REFUSAL_LINE",
+    "config_defaults", "capability_status", "flip_status",
     "enable_held_routing", "disable_held_routing",
     "is_floor_gated", "apply_held_routing", "appendable", "held_ids",
     "load_held",

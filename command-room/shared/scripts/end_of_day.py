@@ -49,8 +49,10 @@ WHAT THIS MODULE DOES NOT DO
     morning fire, and the evening borrows the derivation without the write.
   - It does not decide the capture flip. That is `held_tier.py`, and it is
     DARK: see that module and this fire's skill prose, which cites
-    `precision_gate` because a gate no instruction layer names is a gate that
-    is never consulted (the instruction-layer-gap finding, REVIEW_PREC1 N-1).
+    `operator_capability` because a fence no instruction layer names is a fence
+    that is never consulted (the instruction-layer-gap finding, REVIEW_PREC1
+    N-1). The flip is an operator grant shipped in the payload, never a
+    measurement this workspace takes of itself (HELDOP1).
 
 Stdlib only.
 """
@@ -106,6 +108,186 @@ MORNING_TASK_ID = "morning-brief"
 
 RECEIPT_EVENT = "pack_run"
 
+
+# ---------------------------------------------------------------------------
+# Per-phase instrumentation (SPEC EODPHASE1)
+# ---------------------------------------------------------------------------
+#
+# The fire recorded ONE `duration_ms` for the whole thing. Live durations
+# climbed roughly 8 -> 19 minutes across two days and nothing on the receipt
+# said which phase paid, so any optimisation would have been guesswork. This
+# instruments FIRST; the fix is a later spec, written off real receipts.
+#
+# The phase NAMES are a vocabulary, not labels — the suite pins the set, and
+# anything reading these receipts joins on them. Renaming one silently orphans
+# every prior fire's number for that phase, which is the whole class of bug
+# that makes a measurement quietly read as zero. Add a name here, in order,
+# rather than spelling one at a call site.
+PHASE_ALARMS = "alarms"
+PHASE_BRIEF_STATE = "brief_state"
+PHASE_MORNING_READ = "morning_read"
+PHASE_CLOSURES = "closures"
+PHASE_LEDGER = "ledger"
+PHASE_SCORE = "score"
+PHASE_WINS = "wins"
+PHASE_SLIPPED = "slipped"
+PHASE_CONFIRM = "confirm"
+PHASE_TOMORROW = "tomorrow"
+PHASE_SIGN_OFF = "sign_off"
+PHASE_COVERAGE = "coverage"
+PHASE_CATCHUP = "catchup"
+PHASE_WEEK_ROLLUP = "week_rollup"
+PHASE_RENDER = "render"
+
+# The phases `build_end_of_day_pack` itself runs, in execution order.
+# `week_rollup` is Monday-only, so it is in the vocabulary and absent from
+# most fires' receipts — absent, never zero (the MC2 rule): "this phase did
+# not run today" and "this phase took no time" are different claims.
+PACK_PHASES = (
+    PHASE_ALARMS, PHASE_BRIEF_STATE, PHASE_MORNING_READ, PHASE_CLOSURES,
+    PHASE_LEDGER, PHASE_SCORE, PHASE_WINS, PHASE_SLIPPED, PHASE_CONFIRM,
+    PHASE_TOMORROW, PHASE_SIGN_OFF, PHASE_COVERAGE, PHASE_CATCHUP,
+    PHASE_WEEK_ROLLUP, PHASE_RENDER,
+)
+
+# Legs the ORCHESTRATOR runs around the pack build — the capture leg and the
+# title-match close leg both happen outside this driver, and a driver cannot
+# time work it does not perform. They are named here so an orchestrator that
+# wants to contribute times has one vocabulary to use rather than inventing a
+# second, and so a reader knows the pack's phases do NOT sum to the fire.
+PHASE_CAPTURE = "capture_leg"
+PHASE_CLOSE = "close_leg"
+PHASE_POST = "post"
+LEG_PHASES = (PHASE_CAPTURE, PHASE_CLOSE, PHASE_POST)
+
+ALL_PHASES = PACK_PHASES + LEG_PHASES
+
+
+class PhaseLedger:
+    """Wall time and row counts per phase of one fire.
+
+    Usage — the whole surface is the context manager:
+
+        ledger = PhaseLedger()
+        with ledger.phase(PHASE_WINS) as p:
+            wins = compute_wins(...)
+            p.count(out=len(wins["rows"]))
+
+    Three properties, each of which is why this is a class and not a dict of
+    `time.monotonic()` calls at the call sites:
+
+    **A raising phase is still recorded.** The timer stops in a `finally` and
+    the phase is stamped `failed`, then the exception propagates untouched. A
+    19-minute fire that dies in its slowest phase is exactly the fire whose
+    diagnostics matter most, and the pre-instrumentation failure mode — a
+    crash erasing the numbers that would explain it — is the one this must not
+    reproduce. Nothing here swallows anything: a caller that wants the partial
+    ledger holds it BEFORE the call and reads it after the raise, which is why
+    `build_end_of_day_pack` takes one rather than only returning one.
+
+    **`monotonic`, never the wall clock.** A clock adjustment mid-fire (NTP, a
+    DST-adjacent laptop waking up — this fire runs at 5 PM on a machine that
+    has often just woken) would otherwise produce a negative or wildly long
+    phase and put a fabricated number on a diagnostic receipt.
+
+    **Counts are ABSENT rather than zero when nobody supplied them.** A phase
+    that never called `count()` records no counts at all; "we did not measure"
+    and "we measured nothing" are different claims and only one of them should
+    make a reader go looking.
+
+    Re-entering the same phase name ACCUMULATES time and keeps the first
+    `in` / last `out` — a phase run in two chunks is one phase, and the
+    alternative (last write wins) would silently discard half of a slow one.
+    """
+
+    __slots__ = ("_ms", "_counts", "_failed", "_order")
+
+    def __init__(self):
+        self._ms: dict[str, float] = {}
+        self._counts: dict[str, dict] = {}
+        self._failed: list[str] = []
+        self._order: list[str] = []
+
+    class _Phase:
+        __slots__ = ("_ledger", "_name")
+
+        def __init__(self, ledger, name):
+            self._ledger = ledger
+            self._name = name
+
+        def count(self, *, n_in=None, out=None) -> None:
+            """Rows entering / leaving this phase. Either may be omitted; a
+            key nobody set stays absent."""
+            slot = self._ledger._counts.setdefault(self._name, {})
+            if isinstance(n_in, int) and not isinstance(n_in, bool):
+                slot.setdefault("in", n_in)
+            if isinstance(out, int) and not isinstance(out, bool):
+                slot["out"] = out
+
+    def phase(self, name: str):
+        return _PhaseTimer(self, name)
+
+    def mark_failed(self, name: str) -> None:
+        if name not in self._failed:
+            self._failed.append(name)
+
+    def add_ms(self, name: str, ms: float) -> None:
+        if name not in self._ms:
+            self._order.append(name)
+            self._ms[name] = 0.0
+        self._ms[name] += ms
+
+    def snapshot(self) -> dict:
+        """The additive receipt payload, or `{}` when nothing was timed.
+
+        `{"phase_durations_ms": {...}, "phase_counts": {...},
+          "phase_order": [...], "phases_failed": [...]}` — the last two keys
+        present only when they carry something. `phase_order` is execution
+        order, which a dict's key order would also give but only by accident
+        of the JSON round trip; naming it means a reader never has to bet on
+        that.
+        """
+        if not self._ms:
+            return {}
+        out: dict = {
+            "phase_durations_ms": {k: int(round(self._ms[k]))
+                                   for k in self._order},
+            "phase_order": list(self._order),
+        }
+        counts = {k: v for k, v in self._counts.items() if v}
+        if counts:
+            out["phase_counts"] = counts
+        if self._failed:
+            out["phases_failed"] = list(self._failed)
+        return out
+
+
+class _PhaseTimer:
+    """`PhaseLedger.phase()`'s context manager. Separate class so the ledger
+    stays picklable/inspectable and so re-entry is obviously supported."""
+
+    __slots__ = ("_ledger", "_name", "_t0", "_handle")
+
+    def __init__(self, ledger: PhaseLedger, name: str):
+        self._ledger = ledger
+        self._name = name
+        self._t0 = None
+        self._handle = PhaseLedger._Phase(ledger, name)
+
+    def __enter__(self):
+        import time as _time
+        self._t0 = _time.monotonic()
+        return self._handle
+
+    def __exit__(self, exc_type, exc, tb):
+        import time as _time
+        if self._t0 is not None:
+            self._ledger.add_ms(self._name,
+                                (_time.monotonic() - self._t0) * 1000.0)
+        if exc_type is not None:
+            self._ledger.mark_failed(self._name)
+        return False  # never swallow — a degraded fire must still degrade
+
 # The block order IS the render contract (SPEC BK2's table, EOD1 §3).
 #
 # SPEC EODLEDGER1 inserts `coverage` FIRST, immediately after `alarm_lines`.
@@ -121,6 +303,35 @@ MAX_SLIPPED_ROWS = 3
 MAX_CONFIRM_ROWS = 5
 MAX_WIN_ROWS = 6
 MAX_TOMORROW_ROLLOVER = 3
+
+# ---------------------------------------------------------------------------
+# THE FATIGUE RULE (SPEC OVERDUE1) — ask once, then let the row rest
+# ---------------------------------------------------------------------------
+#
+# M's ruling R-3, on three items due Aug 6-8 that rendered in the same order in
+# this block every night for two weeks: "I would do it for 3-4 days." Past that
+# the repetition stops being a reminder and starts being wallpaper, and a
+# surface nobody reads has no way back.
+#
+# So: an item this far past its due date gets ONE direct question with the
+# block's existing verbs, and from the next fire it is suppressed from THIS
+# BLOCK until the question is answered. It is suppressed nowhere else — it
+# stays on the open book, on `my plate`, and in the brief's needs-attention
+# lane. Only the nightly nagging stops.
+#
+# NOT the same problem as `commitment_state.cap_needs_attention`'s rotation
+# rule, which exists so that no item can be suppressed FOREVER. That rule is
+# about items the cap never reaches; this one is about an item the cap reaches
+# every single night. They point in opposite directions, they share no
+# function, and neither is allowed to be re-expressed in terms of the other.
+OVERDUE_ASK_AFTER_DAYS = 3
+
+# The per-workspace override, on this fire's own FRP1 config (the knob's
+# default lives with every other End of Day knob in `held_tier.CONFIG_DEFAULTS`
+# so `get_config` has one full default set). M's ruling says 3 or 4; both are
+# inside it, and nothing here bounds the value beyond "a positive whole number"
+# — a workspace that sets 10 has decided it wants ten days of reminders.
+OVERDUE_ASK_CONFIG_KEY = "overdue_ask_after_days"
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +380,52 @@ SOFTEN_LINE = (
 
 # Zero wins. One honest line, never padding.
 NO_WINS_LINE = "Nothing closed today that I can see."
+
+# SPEC OVERDUE1 — the fork. ONE question, the block's existing three answers,
+# and the number of days said out loud, because "still on you" said for the
+# fourteenth time carries no information and "8 days overdue" does. It is a
+# QUESTION and never an instruction: R-3 says ask, never act, so no wording
+# here may imply the system will decide if the CEO does not.
+OVERDUE_ASK_LABEL = "{title} — {n} days overdue. Done, new date, or drop?"
+OVERDUE_ASK_LABEL_ONE_DAY = "{title} — 1 day overdue. Done, new date, or drop?"
+
+# The trailing line, said ONLY when something is actually resting (a line
+# reporting zero is noise, and this surface has a rule about that). It names
+# where the items went, because a row that vanishes from a block without a
+# forwarding address reads as a row the system lost.
+OVERDUE_RESTING_LINE = (
+    "{n} overdue items are resting until you answer them — say `my plate` to "
+    "see them.")
+OVERDUE_RESTING_LINE_ONE = (
+    "One overdue item is resting until you answer it — say `my plate` to see "
+    "it.")
+
+
+def overdue_ask_label(title: str, days_over: int) -> str:
+    """The fork label for one asked row. Singular and plural are two
+    constants rather than a formatted noun, for the same reason `more_line`'s
+    "one"/"more" is: "1 days overdue" on a customer's screen is the kind of
+    seam that makes the whole surface read as machine output."""
+    title = str(title or "").strip()
+    template = (OVERDUE_ASK_LABEL_ONE_DAY if days_over == 1
+                else OVERDUE_ASK_LABEL)
+    return template.format(title=title, n=days_over)
+
+
+def resting_line(n_resting: int) -> str:
+    """The trailing resting sentence, or `""` when nothing is resting — the
+    same empty-string contract `more_line` returns and every render path
+    already tests for."""
+    try:
+        n = int(n_resting)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n == 1:
+        return OVERDUE_RESTING_LINE_ONE
+    return OVERDUE_RESTING_LINE.format(n=n)
+
 
 # WHICH WINDOW THE EVENING ACTUALLY READ (SPEC WINSFLOOR1). The evening's
 # lower bound is normally the morning fire's own instant. When no morning
@@ -1938,13 +2195,37 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
 # Block: slipped
 # ---------------------------------------------------------------------------
 
+def overdue_ask_after_days(workspace_root) -> int:
+    """This workspace's fatigue threshold, in whole days (SPEC OVERDUE1 D1).
+
+    Reads `overdue_ask_after_days` off the End of Day fire's own FRP1 config,
+    defaulting to `OVERDUE_ASK_AFTER_DAYS`. An unreadable or nonsensical value
+    falls back to the default rather than guessing: a threshold of 0 would ask
+    about everything the day it came due, and a negative one would ask about
+    work that is not late yet, and neither is a reading anyone intended.
+    """
+    try:
+        from held_tier import CONFIG_SKILL, config_defaults
+        from skill_config_writer import get_config
+        defaults = config_defaults()
+        defaults.setdefault(OVERDUE_ASK_CONFIG_KEY, OVERDUE_ASK_AFTER_DAYS)
+        value = get_config(workspace_root, CONFIG_SKILL,
+                           defaults).get(OVERDUE_ASK_CONFIG_KEY)
+    except Exception:  # noqa: BLE001 — a config read never costs a fire
+        return OVERDUE_ASK_AFTER_DAYS
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return OVERDUE_ASK_AFTER_DAYS
+    return value
+
+
 def compute_slipped(*, brief_state: dict, morning: dict,
                     todays_meetings: Optional[Iterable[dict]] = None,
                     processed_meeting_ids: Optional[Iterable[str]] = None,
                     now_iso: Optional[str] = None,
                     cap: int = MAX_SLIPPED_ROWS,
                     softened: bool = False,
-                    lane_total: Optional[int] = None) -> dict:
+                    lane_total: Optional[int] = None,
+                    ask_after_days: int = OVERDUE_ASK_AFTER_DAYS) -> dict:
     """The ball-is-on-you rows, and ONLY those.
 
     A "slipped" claim is a ball-is-on-you claim, so it rides the SAME gates the
@@ -1971,6 +2252,51 @@ def compute_slipped(*, brief_state: dict, morning: dict,
     `lane_total` is absent the local count stands, which is right for a direct
     caller handing over the whole lane and wrong for the driver — so the driver
     passes it, and the suite pins that it does.
+
+    THE FATIGUE RULE (SPEC OVERDUE1). Two additions and nothing else moves:
+
+      * A row `ask_after_days` or more past its EFFECTIVE due that carries no
+        live `asked` mark is pinned to the TOP of the block with the fork
+        label, and `ask_now: True` tells the orchestrator to write the mark
+        after the pack is posted (`mark_slipped_asked`).
+      * A row carrying a live mark for its CURRENT due is suppressed from the
+        block — the same shape and the same place as the Bug #93 `dropped_ids`
+        check — counted in `n_resting`, and named by one trailing line.
+
+    "Live" is the whole idea and it is one comparison: the mark records the
+    due date it asked about, so an item the user re-dated no longer matches
+    its own mark, the mark stops suppressing anything, and the clock re-arms
+    from the new date. No second event, no expiry sweep, nothing to schedule.
+
+    Suppression is from THIS BLOCK ONLY. A resting row is still on the open
+    book, still on `my plate`, still in the brief's needs-attention lane, and
+    still inside `n_total` — the denominator counts it, because it really is
+    on the you-owe list and a total that quietly shrank would be the
+    dishonesty the cap doctrine exists to prevent.
+
+    `now_iso` GATES THE ASK AND NOT THE REST, deliberately. With no clock
+    there is no "days overdue", so nothing new is ever asked and every row
+    renders exactly as it did before this build. A row that ALREADY carries a
+    mark still rests, because the mark is a fact about the row — the CEO was
+    asked and has not answered — and not a fact about the clock; un-resting it
+    because a caller forgot to pass a time would re-nag on the one input the
+    reader never chose. So "no clock" means "asks nothing", never "does
+    nothing". (An earlier draft of this docstring claimed a clock-less caller
+    got the pre-OVERDUE1 block byte for byte; that was false for any caller
+    whose rows carry marks, and the suite's pin was written over mark-less
+    rows and so proved nothing about it — REVIEW OVERDUE1 F-2.)
+
+    ONE INHERITED DEPENDENCY, named because it is invisible from here
+    (REVIEW OVERDUE1 F-6). Every row this function can ever ask about is
+    YOU-OWE: `compute_brief_state` builds `needs_attention` from owner-is-user
+    items only. That is what makes `push to [date]` take
+    `commitment_state.apply_later`'s DEFER leg — a `commitment_updated` with
+    `new_due`, which clears the mark through the fold — rather than the SNOOZE
+    leg, which writes a `chat_dismissal` this fold never sees. If that other
+    module ever admits a they-owe row into the lane, a push on an asked row
+    would stop clearing its mark and the row would rest permanently and
+    silently. The fatigue rule has no defence of its own against that; the
+    lane's you-owe rule IS the defence.
     """
     state = brief_state or {}
     dropped_ids = {str(d.get("commitment_id"))
@@ -1978,27 +2304,58 @@ def compute_slipped(*, brief_state: dict, morning: dict,
                    if isinstance(d, dict) and d.get("commitment_id")}
     planned = {str(i) for i in ((morning or {}).get("needs_attention_ids") or [])}
 
+    # ONE derivation of "how late is this", shared with `is_overdue` so a row
+    # can never render `overdue: True` beside a day count that disagrees.
+    from commitment_state import overdue_days as _overdue_days
+
+    try:
+        threshold = int(ask_after_days)
+    except (TypeError, ValueError):
+        threshold = OVERDUE_ASK_AFTER_DAYS
+    if threshold < 1:
+        threshold = OVERDUE_ASK_AFTER_DAYS
+
     candidates = []
+    resting_ids = []
     for row in (state.get("needs_attention") or []):
         if not isinstance(row, dict):
             continue
         cid = str(row.get("commitment_id") or "")
         if not cid or cid in dropped_ids:
             continue
-        candidates.append({
+        due = row.get("due")
+        days_over = _overdue_days(due, now_iso) if now_iso else None
+        mark = row.get("asked") if isinstance(row.get("asked"), dict) else None
+        # A mark whose `due_at_ask` is not this row's due date is STALE — the
+        # user moved the deadline, which is an answer — so it suppresses
+        # nothing and the row re-arms against the new date.
+        if mark is not None and str(mark.get("due_at_ask") or "").strip() == str(
+                due or "").strip():
+            resting_ids.append(cid)
+            continue
+        candidate = {
             "commitment_id": cid,
             "title": str(row.get("title") or "").strip(),
-            "due": row.get("due"),
+            "due": due,
             "overdue": bool(row.get("overdue")),
             "on_this_mornings_plan": cid in planned,
             "gate_source": "brief_state.needs_attention",
             "verbs": list(SLIPPED_VERBS),
-        })
+        }
+        if isinstance(days_over, int) and days_over >= threshold:
+            candidate["ask_now"] = True
+            candidate["days_over"] = days_over
+            candidate["ask_line"] = overdue_ask_label(candidate["title"],
+                                                      days_over)
+        candidates.append(candidate)
 
-    # Rank: overdue first, then what the morning actually asked for, then the
-    # rest. Nothing here re-scores an item — the gate already decided which
-    # items may be claimed at all; this only decides which three are shown.
-    candidates.sort(key=lambda r: (not r["overdue"],
+    # Rank: the one being ASKED about first, then overdue, then what the
+    # morning actually asked for, then the rest. Nothing here re-scores an
+    # item — the gate already decided which items may be claimed at all; this
+    # only decides which three are shown. The new term LEADS because a
+    # question the reader never sees is not a question.
+    candidates.sort(key=lambda r: (not r.get("ask_now"),
+                                   not r["overdue"],
                                    not r["on_this_mornings_plan"],
                                    r["title"].lower()))
 
@@ -2015,7 +2372,13 @@ def compute_slipped(*, brief_state: dict, morning: dict,
     # the only direction an upstream cap can move it, and taking the max means
     # a caller that passes a stale or wrong-shaped value can never make the
     # denominator SMALLER than what this function can see with its own eyes.
-    n_total = len(candidates)
+    # The resting rows are ADDED BACK here and nowhere else. They are genuinely
+    # still on the you-owe list — unlike a `dropped_ids` row, which the morning
+    # gate refused as a claim at all — so a denominator that quietly shed them
+    # the night the block went quiet would be the cap doctrine's own dishonesty
+    # wearing the fatigue rule's clothes. (On the driver's path `lane_total`
+    # already counts them; this is what makes a direct caller agree.)
+    n_total = len(candidates) + len(resting_ids)
     if isinstance(lane_total, int) and not isinstance(lane_total, bool):
         n_total = max(n_total, lane_total)
     return {
@@ -2028,7 +2391,95 @@ def compute_slipped(*, brief_state: dict, morning: dict,
         "meetings_without_notes": unprepped,
         "softened": bool(softened),
         "soften_line": SOFTEN_LINE if softened else None,
+        # SPEC OVERDUE1 — what the fatigue rule did tonight. `n_resting` is
+        # the count the receipt records and the trailing line reports;
+        # `resting_ids` is beside it so a reader can name them rather than
+        # take the number on faith, exactly as `dropped_ids` does one line up.
+        # `ask_after_days` states the threshold this fire actually used, which
+        # is the only way a workspace that changed the knob can read its own
+        # numbers back later.
+        "n_resting": len(resting_ids),
+        "resting_ids": sorted(resting_ids),
+        "resting_line": resting_line(len(resting_ids)),
+        # Derived from `shown`, NEVER from `candidates`: if more rows qualify
+        # than the cap can hold, the ones below the fold were not asked about,
+        # and marking them would rest a row the reader never saw a question
+        # about. That is the disappearance this whole rule is built to avoid.
+        "asked_ids": sorted(r["commitment_id"] for r in shown
+                            if r.get("ask_now")),
+        "ask_after_days": threshold,
     }
+
+
+def mark_slipped_asked(workspace_root, pack: dict, *,
+                       source_skill: str = SURFACE,
+                       now_iso: Optional[str] = None) -> dict:
+    """Write the ask marks for the rows this fire actually ASKED about
+    (SPEC OVERDUE1 DD-3). Called by the orchestrator AFTER the post.
+
+    ONE call takes the pack whole, exactly as `log_end_of_day_receipt` does,
+    and for the same reason: the alternative is prose telling a fire to loop
+    over rows and call a writer per row, and a prose contract is presumed
+    skipped (the Bug #98 class). Everything about WHICH rows get marked is
+    decided in `compute_slipped` and read off `slipped["asked_ids"]` here —
+    this function chooses nothing.
+
+    AFTER the post, deliberately. The mark's whole meaning is "the CEO has
+    been asked", so writing it before the question reaches the screen would
+    rest a row nobody was ever asked about. That is the opposite ordering from
+    the receipt, which must precede the post because it is what the numbers on
+    screen resolve against — two bookkeeping writes, two different failure
+    modes, two different places in the turn.
+
+    Returns {"n_marked", "n_already", "n_closed", "n_failed", "results": […]}
+    — never raises. A mark that cannot be written costs one repeated row
+    tomorrow night; an exception here would cost the fire its ending.
+    `n_closed` is its own number rather than a failure: an item the CEO closed
+    between the pack and the post is the rule working, not breaking.
+    """
+    slipped = pack.get("slipped") if isinstance(pack, dict) else None
+    slipped = slipped if isinstance(slipped, dict) else {}
+    ids = [str(i) for i in (slipped.get("asked_ids") or []) if str(i).strip()]
+    out = {"n_marked": 0, "n_already": 0, "n_closed": 0, "n_failed": 0,
+           "results": []}
+    if not ids:
+        return out
+    due_by_id = {str(r.get("commitment_id")): r.get("due")
+                 for r in (slipped.get("rows") or [])
+                 if isinstance(r, dict)}
+    try:
+        from commitment_state import asked_commitment_marks, mark_asked
+    except Exception as exc:  # noqa: BLE001
+        out["n_failed"] = len(ids)
+        out["results"] = [{"commitment_id": i, "status": "error",
+                           "error": str(exc)} for i in ids]
+        return out
+    # Project the live marks ONCE for the whole batch rather than per row —
+    # the `known_watched` bargain `park_in_watch` offers, for the same reason.
+    known = asked_commitment_marks(workspace_root)
+    for cid in ids:
+        try:
+            res = mark_asked(workspace_root, cid,
+                             due_at_ask=due_by_id.get(cid),
+                             source_skill=source_skill,
+                             surface=SURFACE, now_iso=now_iso,
+                             known_asked=known)
+        except Exception as exc:  # noqa: BLE001
+            out["n_failed"] += 1
+            out["results"].append({"commitment_id": cid, "status": "error",
+                                   "error": str(exc)})
+            continue
+        status = res.get("status")
+        if status == "asked":
+            out["n_marked"] += 1
+        elif status == "already_asked":
+            out["n_already"] += 1
+        elif status == "not_open":
+            out["n_closed"] += 1
+        else:
+            out["n_failed"] += 1
+        out["results"].append({"commitment_id": cid, "status": status})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2247,11 +2698,34 @@ def compute_sign_off(*, slipped: dict, tomorrow: dict, now_iso: str,
     tomorrow's brief and survived every drop. Zero urgent → `SIGN_OFF_CLEAR`,
     verbatim. Otherwise ONE line naming the exception — assembled from the
     row's own title, so there is nothing for a model to write here.
+
+    SPEC OVERDUE1 — A RESTING ROW IS STILL OVERDUE (REVIEW F-3). The block
+    stops REPEATING a row after it has asked once; it does not stop the item
+    being late, and the sign-off is the fire's last honest sentence about what
+    is outstanding. The `slipped["resting_ids"]` rows are therefore counted
+    here, joined back to their titles through the SAME `brief_state` lane the
+    block itself was built from — the rows never left it (D3). Shown rows lead
+    the list, so the item the CEO can see is the one the sentence names, and
+    the resting ones make the COUNT true. Without this the fire says "one
+    thing is still overdue" on a night when three are, and the two it did not
+    say are precisely the ones it has stopped showing. Byte-identical on any
+    night with nothing resting.
     """
     urgent = []
     for row in (slipped or {}).get("rows") or []:
         if row.get("overdue"):
             urgent.append(row)
+    resting_ids = {str(i) for i in (slipped or {}).get("resting_ids") or []
+                   if str(i).strip()}
+    if resting_ids:
+        for row in ((brief_state or {}).get("needs_attention") or []):
+            if not isinstance(row, dict) or not row.get("overdue"):
+                continue
+            rid = str(row.get("commitment_id") or "")
+            if rid in resting_ids:
+                urgent.append({"commitment_id": rid,
+                               "title": str(row.get("title") or "").strip(),
+                               "resting": True})
     if not urgent:
         for row in ((brief_state or {}).get("needs_attention") or []):
             if isinstance(row, dict) and row.get("overdue"):
@@ -2683,6 +3157,7 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
                            duration_ms: Optional[int] = None,
                            late_tier: Optional[str] = None,
                            capture_leg: Optional[dict] = None,
+                           phase_ledger: Optional["PhaseLedger"] = None,
                            extra_data: Optional[dict] = None) -> dict:
     """THE receipt. ONE per fire, written BEFORE the post (BRIEFFIX1 Item C).
 
@@ -2698,6 +3173,22 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     the meeting counts — which is why the capture leg runs BEFORE this call
     and the POST comes after it. Capture is still the fire's final work leg;
     the receipt is bookkeeping and the post is delivery.
+
+    SPEC EODPHASE1 — the per-phase wall time and row counts ride here too,
+    ADDITIVELY: `data.phase_durations_ms`, `data.phase_counts`,
+    `data.phase_order`, and `data.phases_failed` when a phase raised. Same
+    posture as every other receipt extension — a reader that does not know
+    these keys behaves identically, and a fire from before this spec simply
+    carries none of them. The numbers come from a `PhaseLedger`: `phase_ledger`
+    when the caller holds one (the orchestrator, which can also time its own
+    capture and close legs into it), else the snapshot the driver left on
+    `pack["phase_timings"]`. The explicit ledger WINS, because a caller that
+    kept its own is by definition the one that saw more of the fire.
+
+    The phase durations do NOT sum to `duration_ms` and are not meant to: the
+    pack build is one leg of the fire, and the capture leg, the close leg and
+    the post sit outside it unless the orchestrator timed them into the same
+    ledger. `phase_order` says which legs are represented.
     """
     from receipts import log_receipt, normalize_fired_via
 
@@ -2748,6 +3239,19 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
             "n_top_rows_blocked": pc.get("n_top_rows_blocked"),
             "n_shown": len(confirm_block.get("person_rows") or []),
         }
+    # SPEC OVERDUE1 — the fatigue rule's own arithmetic, on the SAME receipt
+    # and to the same discipline `person_candidate_counts` keeps: counts and
+    # the threshold only, never a title. Without it "how many rows are resting
+    # tonight, and did asking actually drain anything?" is unanswerable, which
+    # is the measurement this rule will be judged on.
+    slipped_block = (pack.get("slipped")
+                     if isinstance(pack.get("slipped"), dict) else {})
+    if isinstance(slipped_block.get("n_resting"), int):
+        data["slipped_fatigue"] = {
+            "n_asked": len(slipped_block.get("asked_ids") or []),
+            "n_resting": slipped_block["n_resting"],
+            "ask_after_days": slipped_block.get("ask_after_days"),
+        }
     close = pack.get("close") if isinstance(pack.get("close"), dict) else None
     if close is not None:
         data["close_leg"] = {
@@ -2757,6 +3261,26 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     gaps = pack.get("connector_gaps")
     if gaps:
         data["connector_gaps"] = list(gaps)
+
+    # EODPHASE1 — the per-phase diagnostics. Best-effort by design: a fire that
+    # cannot describe its own timing must still write its receipt, because the
+    # receipt is what the one-tap actions resolve against and instrumentation
+    # is never allowed to cost a fire its numbering (BRIEFFIX1 Item C).
+    try:
+        timings = None
+        if phase_ledger is not None:
+            timings = phase_ledger.snapshot()
+        if not timings:
+            candidate = pack.get("phase_timings")
+            timings = candidate if isinstance(candidate, dict) else None
+        for key in ("phase_durations_ms", "phase_counts", "phase_order",
+                    "phases_failed"):
+            value = (timings or {}).get(key)
+            if value:
+                data[key] = value
+    except Exception:  # noqa: BLE001
+        pass
+
     for k, v in (extra_data or {}).items():
         data.setdefault(k, v)
 
@@ -2895,10 +3419,15 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
     rows = mapping["rows"]
     if index < 1 or index > len(rows):
         total = len(rows)
+        # CLOSEID1 DD-4 — this used to end "or tell me what you mean by name."
+        # The safety property of this whole surface is POSITIONAL resolution
+        # against the receipt this fire rendered; inviting a name after refusing
+        # a number hands the target back to a string match, which is how the
+        # 2026-08-22 fire closed the wrong promise. The number is the answer.
         out["refusal"] = (
             f"There is no item {index} on this End of Day. It listed {total} "
             f"{'item' if total == 1 else 'items'}. Say the number from the "
-            f"list, or tell me what you mean by name.")
+            f"list.")
         return out
     row = rows[index - 1]
     block = row.get("block")
@@ -2990,11 +3519,24 @@ def orphan_end_of_day_finding(workspace_root, *, now=None,
 
 __all__ = [
     "SURFACE", "SKILL_NAME", "TASK_ID", "MORNING_TASK_ID", "RECEIPT_EVENT",
+    # SPEC EODPHASE1 — the phase vocabulary and its ledger.
+    "PHASE_ALARMS", "PHASE_BRIEF_STATE", "PHASE_MORNING_READ",
+    "PHASE_CLOSURES", "PHASE_LEDGER", "PHASE_SCORE", "PHASE_WINS",
+    "PHASE_SLIPPED", "PHASE_CONFIRM", "PHASE_TOMORROW", "PHASE_SIGN_OFF",
+    "PHASE_COVERAGE", "PHASE_CATCHUP", "PHASE_WEEK_ROLLUP", "PHASE_RENDER",
+    "PHASE_CAPTURE", "PHASE_CLOSE", "PHASE_POST",
+    "PACK_PHASES", "LEG_PHASES", "ALL_PHASES", "PhaseLedger",
     "BLOCK_ORDER", "MAX_SLIPPED_ROWS", "MAX_CONFIRM_ROWS",
     "MAX_TOMORROW_ROLLOVER",
     "NO_PLAN_LINE", "NOT_RECORDED", "NOT_RECORDED_LINE", "NO_CLOSE_RECORDED",
     "NO_SCORE_RECORDED",
     "SIGN_OFF_CLEAR", "SOFTEN_LINE", "NO_WINS_LINE",
+    # SPEC OVERDUE1 — the fatigue rule: ask once, then let the row rest.
+    "OVERDUE_ASK_AFTER_DAYS", "OVERDUE_ASK_CONFIG_KEY",
+    "OVERDUE_ASK_LABEL", "OVERDUE_ASK_LABEL_ONE_DAY",
+    "OVERDUE_RESTING_LINE", "OVERDUE_RESTING_LINE_ONE",
+    "overdue_ask_label", "resting_line", "overdue_ask_after_days",
+    "mark_slipped_asked",
     "WINDOW_MORNING_ANCHOR", "WINDOW_DAY_FLOOR",
     "MORE_LINE_SHAPE", "MORE_LINE_TEMPLATES", "more_line",
     "WINS_MORE_LINE_ANCHOR", "WINS_MORE_LINE_DAY_FLOOR", "WINS_MORE_LINES",

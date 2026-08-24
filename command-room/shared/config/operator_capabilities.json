@@ -1,0 +1,11 @@
+{
+  "docs": "SPEC HELDOP1 — capabilities the OPERATOR issues with a release, read by shared/scripts/operator_capability.py. This file is part of the plugin payload: it is written in the staging repo, travels with a version, and lands in a workspace only through the normal push -> plugin-update -> promote ritual. That is the whole mechanism. A workspace has no supported way to write here, nothing under _hq/ is consulted when a capability is read, and a hand-edit of an installed copy is overwritten by the next update. Anything a person in a workspace can change is a SKILL CONFIG, and a skill config can never grant a capability. Precedent for a shipped, JSON-editable payload config: shared/config/surface_profiles.json.",
+  "how_to_grant": "Set granted to true (booleans only, never a string), fill granted_on with the date, and say in the note what was reviewed before granting. Ship it. The grant is fleet-wide by construction: the promote fan-out copies command-room/ verbatim into every client repo, so granting here grants it to every workspace on that release. Granting per client is a change to the fan-out, never a knob handed to a workspace.",
+  "capabilities": {
+    "held_tier_routing": {
+      "granted": false,
+      "granted_on": null,
+      "note": "The Decision-1 held tier: routing the weakest below-floor captures out of sight instead of into the review queue. Ungranted. It turns on when the operator is satisfied the disposition is safe, judged on the operator's own book and never by reading a workspace's own captures, and NOT on any measurement taken inside a workspace — the instrument that would take that measurement does not ship, which is why every workspace's own reading of it was red forever. See shared/scripts/held_tier.py."
+    }
+  }
+}

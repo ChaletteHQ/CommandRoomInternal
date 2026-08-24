@@ -347,10 +347,19 @@ def resolve_mark_done(workspace_root, n, *, now=None) -> dict:
     ids = mapping["ids"]
     if index < 1 or index > len(ids):
         total = len(ids)
+        # CLOSEID1 DD-4 (sibling site) — this used to end "or tell me what to
+        # close by name." The End of Day's identical refusal lost that clause
+        # for the reason this one does: the safety property of a numbered
+        # surface is POSITIONAL resolution against the receipt it rendered, and
+        # inviting a name right after refusing a number hands the target back to
+        # a string match. The number is the answer. (The stale-map and no-map
+        # refusals above still offer a name — there the numbered map is broken,
+        # so the name is the only door left, and it now goes through the
+        # refusing resolver rather than a first hit.)
         out["refusal"] = (
             f"There's no item {index} on this brief — it listed {total} "
             f"{'item' if total == 1 else 'items'}. Say the number from the "
-            f"list, or tell me what to close by name.")
+            f"list.")
         return out
     out["ok"] = True
     out["id"] = ids[index - 1]

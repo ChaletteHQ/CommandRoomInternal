@@ -45,6 +45,15 @@ a slot the change itself created. The contract now:
     honest `skipped` receipt instead of re-rendering the surface. Detecting
     the duplicate and then rendering it anyway is what this module did for
     three full deliveries in one day.
+    RUNNOW1 (2026-08-23) bounds that skip to SERVED_RECEIPT_MAX_AGE after the
+    serving receipt, and stops a `skipped` receipt from counting as a serve.
+    Unbounded, the skip refused a human: a Run Now the model labelled
+    `scheduled` 1,945 minutes after Friday's slot got the "already ran"
+    ack instead of the surface, and asking again reproduced it. Self-fed, it
+    also re-armed from its own skip receipts, so two Run Now presses in a row
+    could both be declined. Past the bound the fire renders, tier `rerun`, and
+    the re-run's own receipt (`rerun_of`) is excluded from the served-slot
+    marker too, so a person may press as often as they like.
   - A slot older than the task's most recent `schedule_config_changed`
     event was minted retroactively by the change (the F-51 phantom) — never
     scored. Schedule changes do not create missed slots.
@@ -64,6 +73,15 @@ TIER CONTRACT (thresholds tunable in LATENESS_TIERS — one shared constant):
              schedule change (`suppressed` says which). Run normally,
              no mention — EXCEPT on the served-slot skip, where `directive`
              is `skip_render` and the tier is not the thing to read (SCHED1).
+  rerun    — the slot was served, this fire calls itself `scheduled`, and it
+             arrived more than SERVED_RECEIPT_MAX_AGE after the receipt that
+             served it (RUNNOW1). Render the surface IN FULL with the returned
+             `ack` as the first line: past that bound the fire is a person
+             pressing Run Now, and a person who asks gets the surface. No
+             banner, no degrade notice, no `late_fire` event — the slot was
+             delivered, so it was never a missed fire. An explicit `catchup`
+             never reaches this tier: it is the one run mode that can prove it
+             is not a person, so it keeps SCHED1's skip in full.
   note     — 3h–24h late. Run normally; the output OPENS with the one
              plain-English `banner` line.
   degrade  — > 24h late. Do NOT render the full stale surface. The run
@@ -157,6 +175,27 @@ LATENESS_TIERS = {
     "note": _dt.timedelta(hours=3),
     "degrade": _dt.timedelta(hours=24),
 }
+
+# RUNNOW1 (2026-08-23) — HOW LONG THE SERVED-SLOT SKIP STAYS IN FORCE, measured
+# from the receipt that served the slot. Inside this window a scheduled-context
+# fire for a served slot still skips, which is the one job the skip was built
+# for: a catch-up and a scheduled fire landing the SAME edition minutes apart
+# (module header, SCHED1). Outside it the fire renders, labelled as a re-run.
+#
+# WHY THERE HAS TO BE A BOUND. Run mode is self-reported and always will be
+# (`slot_provenance` below documents the search for a real discriminator and
+# its answer: there is none). So the skip's input signal cannot distinguish a
+# duplicate scheduler fire from a person pressing Run Now — and unbounded, it
+# refused a person: a Saturday Run Now scored 1,945 minutes against Friday's
+# 7 AM slot, found it served at 8:45 AM Friday, and posted "already ran … so
+# I'm not sending it twice" instead of the surface M asked for. M's ruling:
+# "I want to be able to shoot these off whenever I want."
+#
+# Two hours because that is generous for the duplicate the skip exists to catch
+# (minutes apart, at worst an app-launch catch-up chasing its own cron slot)
+# and nowhere near a day-later, days-later or 1,945-minute gap, which is
+# obviously a human. Tunable here and nowhere else, like LATENESS_TIERS.
+SERVED_RECEIPT_MAX_AGE = _dt.timedelta(hours=2)
 
 # Chronic-lateness proposal threshold: >24h-late fires in >=3 of the last 4
 # weeks triggers the better-default-time proposal (cleanup Monday note).
@@ -301,6 +340,18 @@ PRE_REGISTRATION_SKIP_REASON = "slot predates registration"
 SUPPRESSED_SLOT_SERVED = "slot_already_served"
 SERVED_SLOT_SKIP_REASON = "slot already served"
 DIRECTIVE_SKIP_RENDER = "skip_render"
+
+# RUNNOW1 — the OTHER half of a served slot. Past SERVED_RECEIPT_MAX_AGE the
+# fire renders, and it renders LABELLED: the tier says re-run, `rerun_of` names
+# the delivery it is repeating, and the ack goes ABOVE the surface instead of
+# in place of it. The suppression stays `slot_already_served` on both halves on
+# purpose — the reason lateness is zeroed is the same fact in both cases, and a
+# second suppression string would fork every ledger reader that already knows
+# the first. The TIER is the discriminator, and `directive` is the render
+# decision exactly as SCHED1 left it: `skip_render` on the bounded half, `None`
+# here.
+TIER_RERUN = "rerun"
+RERUN_OF_FIELD = "rerun_of"
 
 # WALKFIX1 Item H — the two fields that make an off-slot fire self-explaining.
 SLOT_DELTA_FIELD = "slot_delta_minutes"
@@ -485,10 +536,16 @@ def served_slot_markers(workspace_root, task_id) -> dict:
     needs — machine-local naive datetimes (None = never):
 
       last_receipt         — newest receipt for this task, ANY legacy shape
-                             (the R1 reader's matcher). This is the
-                             served-slot marker: receipts are the only
+                             (the R1 reader's matcher), EXCLUDING skips. This
+                             is the served-slot marker: receipts are the only
                              served/not-served truth (F-39 — scheduler
                              lastRunAt stamps land without execution).
+      last_skip            — newest `status: "skipped"` receipt for this task.
+                             Visible, and deliberately NOT the served marker.
+      last_rerun           — newest receipt carrying `rerun_of`: a delivery a
+                             PERSON asked for. Visible, counted as a delivery
+                             for the ack, and deliberately NOT the served
+                             marker either.
       last_schedule_change — newest `schedule_config_changed` event naming
                              this task (change-schedule writes
                              `data.changes: [{task_id, cron, enabled}]`).
@@ -511,6 +568,39 @@ def served_slot_markers(workspace_root, task_id) -> dict:
     OLDEST, not newest: re-running the setup ritual re-registers every task
     idempotently, and keying on the newest `schedule_created` would move the
     floor forward on every re-run and quietly suppress real missed slots.
+
+    WHY A SKIP IS NOT A SERVE (RUNNOW1 §DD-1, 2026-08-23). Until this build the
+    matcher had no status filter, so the honest `skipped` receipt SCHED1 writes
+    when it declines a delivery came straight back as `last_receipt` — the
+    served-slot marker — for the NEXT fire. The skip therefore re-armed itself
+    from its own output: the first refusal made the second refusal correct, the
+    second made the third, and nothing in the ledger ever recorded a delivery.
+    Two consecutive Run Now presses could both be declined, the second one
+    citing the first one's refusal as the delivery it was not sending twice.
+    A skip processes nothing and delivers nothing; it is a record that a fire
+    declined, not evidence a slot was served. It stays fully visible as
+    `last_skip` — the receipt/watchdog side still needs to see that a fire
+    declined — it simply stops standing in for a delivery.
+
+    Both suppressions write `status: "skipped"` (the registration floor and the
+    served-slot skip share one shape by design, SCHED1 §4-2), so both are
+    filtered here, and correctly: neither one delivered anything either.
+
+    AND A RE-RUN IS NOT A SERVE EITHER (RUNNOW1 §DD-5, coordinator-authorized
+    2026-08-23 under M's R-2). A receipt carrying `rerun_of` records a delivery
+    a PERSON asked for, not the scheduled delivery of a slot. Left in the
+    served-slot marker it re-armed the skip against the very person it had just
+    served: press Run Now, get the surface, press again fifteen minutes later
+    and be told "already ran at 3:25 PM, so I'm not sending it twice" — the
+    refusal M ruled against, arriving by a different door. The same principle
+    as the skip filter, applied to the other kind of receipt this branch
+    produces: only a receipt that SERVED THE SLOT is a served-slot marker.
+
+    A re-run receipt IS still a delivery, and `last_rerun` keeps it visible so
+    the re-run ack can name the last time the surface actually ran. What it is
+    not is evidence the SLOT was served — that fact belongs to `last_receipt`
+    alone, and the two-hour bound is measured against it and nothing else, so
+    a genuine scheduled duplicate is still stopped exactly as before.
     """
     canonical = normalize_task_id(task_id)
     # CTS1 — a split successor's ledger also reads its RETIRED predecessor's
@@ -520,6 +610,8 @@ def served_slot_markers(workspace_root, task_id) -> dict:
     # fabricates lateness for a slot that ran.
     accepted = {canonical} | set(TASK_PREDECESSORS.get(canonical, ()))
     last_receipt: Optional[_dt.datetime] = None
+    last_skip: Optional[_dt.datetime] = None
+    last_rerun: Optional[_dt.datetime] = None
     last_change: Optional[_dt.datetime] = None
     registered: Optional[_dt.datetime] = None
     for ev in _iter_events(workspace_root):
@@ -550,10 +642,29 @@ def served_slot_markers(workspace_root, task_id) -> dict:
             continue
         if receipt_task_id(ev) in accepted:
             dt = event_dt(ev)
-            if dt is not None and (last_receipt is None or dt > last_receipt):
+            if dt is None:
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            # `status` on today's receipts, `outcome` on the pre-R1 legacy
+            # shape — the same pair `receipts.iter_receipts` reads, so a
+            # legacy skip cannot slip past this filter under its old key.
+            status = data.get("status") or data.get("outcome")
+            if status == "skipped":
+                if last_skip is None or dt > last_skip:
+                    last_skip = dt
+                continue
+            if data.get(RERUN_OF_FIELD):
+                # A delivery a person asked for. Still a delivery (it is what
+                # the next re-run's ack names), never a served-slot marker.
+                if last_rerun is None or dt > last_rerun:
+                    last_rerun = dt
+                continue
+            if last_receipt is None or dt > last_receipt:
                 last_receipt = dt
     return {
         "last_receipt": _to_local_naive(last_receipt),
+        "last_skip": _to_local_naive(last_skip),
+        "last_rerun": _to_local_naive(last_rerun),
         "last_schedule_change": _to_local_naive(last_change),
         "registered_at": _to_local_naive(registered),
     }
@@ -594,7 +705,7 @@ def check_lateness(
         garbage session date never moves the clock and never blocks a run.
 
     Returns:
-      {task, tier: manual|exempt|none|note|degrade|unknown,
+      {task, tier: manual|exempt|none|note|degrade|rerun|unknown,
        fired_via (normalized, fail-safed input), fired_via_raw (what the
        caller actually passed — evidence when the fallback fired),
        receipt_fired_via (what the fire's closing log_receipt call passes:
@@ -603,7 +714,8 @@ def check_lateness(
        "slot_created_by_schedule_change"), lateness_minutes,
        scheduled_for (ISO, machine-local), banner (note tier),
        degrade_notice (degrade tier), directive (SCHED1: None | "skip_render"),
-       served_at + ack + skip_receipt_logged (skip_render only),
+       served_at (both served-slot halves),
+       ack + skip_receipt_logged (skip_render), rerun_of + ack (rerun tier),
        event_logged (bool),
        clock (CLOCK1: {untrusted, direction, notice, today, machine_now,
        corroborated_now, source, skew_seconds, anomaly})}
@@ -622,6 +734,35 @@ def check_lateness(
     ended a day with three duplicate deliveries whose duplication it had
     detected each time. A `manual` fire never reaches this branch — a human who
     asks for a surface gets the surface.
+
+    `skip_render` IS BOUNDED (RUNNOW1, 2026-08-23) — on `fired_via="scheduled"`
+    only. It is emitted for a scheduled fire only within
+    `SERVED_RECEIPT_MAX_AGE` of the receipt that served the slot, and for an
+    explicit `catchup` always (a catchup is the one run mode that can prove it
+    is not a person; a Run Now labels itself `scheduled`). A scheduled fire
+    arriving LATER for a served slot returns tier
+    `rerun`, `directive: None`, `rerun_of` (the last actual delivery) and an `ack`
+    the orchestrator posts ABOVE the surface rather than in place of it: past
+    two hours the fire is a person pressing Run Now, and the run mode it
+    reports about itself cannot tell you otherwise. `suppressed` is
+    `slot_already_served` on BOTH halves — the fact that zeroes lateness is the
+    same one — so the TIER, not the suppression, says which happened.
+
+    REPEATED PRESSES EACH RENDER (§DD-5). A re-run's own receipt carries
+    `rerun_of` and is therefore excluded from the served-slot marker, exactly
+    as a `skipped` receipt is: it records a delivery a PERSON asked for, not
+    the scheduled delivery of a slot. Without that exclusion the second press
+    fell inside the bound of the FIRST press's receipt and was refused — the
+    same refusal by a different door. The bound is measured against
+    `served_at` (the slot's serving receipt) and nothing else, so a genuine
+    scheduled duplicate is stopped exactly as before; `rerun_of` in the return
+    names the last time the surface actually ran, which on a second press is
+    the previous re-run.
+
+    ⚠ `rerun_of` IS LOAD-BEARING ON THE RECEIPT, not audit decoration. The
+    orchestrator carries it into `log_receipt`'s `extra_data`; a re-run receipt
+    written WITHOUT it reads as an ordinary scheduled delivery and re-arms the
+    skip against the next press for two hours.
 
     `clock` is present on EVERY tier including `manual` — a clock that cannot
     be trusted is a fact about the run, not about the lateness verdict, and a
@@ -717,9 +858,10 @@ def check_lateness(
     try:
         markers = served_slot_markers(workspace_root, task_id)
     except Exception:
-        markers = {"last_receipt": None, "last_schedule_change": None,
-                   "registered_at": None}
+        markers = {"last_receipt": None, "last_skip": None, "last_rerun": None,
+                   "last_schedule_change": None, "registered_at": None}
     last_receipt = markers["last_receipt"]
+    last_rerun = markers.get("last_rerun")
     last_change = markers["last_schedule_change"]
     registered_at = markers.get("registered_at")
     if registered_at is not None and scheduled < registered_at:
@@ -786,9 +928,77 @@ def check_lateness(
         # the fire renders, and the day is at least on the record. Not
         # reachable on today's fleet (`pack_run` is valid for every task in
         # `orchestrator-map.json`), which is exactly when a fence is cheap.
+        #
+        # RUNNOW1 (2026-08-23) — THE SKIP IS BOUNDED. Everything above is
+        # unchanged INSIDE `SERVED_RECEIPT_MAX_AGE` of the receipt that served
+        # the slot, which is the duplicate this branch was built for. Past it
+        # the fire renders, labelled `TIER_RERUN`, because past it the fire is
+        # a person: the residual stated two paragraphs up ("a manual fire that
+        # mislabels itself degrades to a skip plus an ack — cheap, honest, and
+        # recoverable by asking again") turned out to be neither cheap nor
+        # recoverable in the field. A Saturday Run Now on Morning Brief scored
+        # 1,945 minutes against Friday's 7 AM slot, found it served at 8:45 AM
+        # Friday, and answered the person with "already ran … so I'm not
+        # sending it twice" — and asking again produces the same self-labelled
+        # `scheduled` and the same refusal, because the label is the model's
+        # own judgement about a byte-identical prompt, not a signal. M's
+        # ruling: "I want to be able to shoot these off whenever I want."
+        #
+        # THE BOUND IS THE ONLY DISCRIMINATOR AVAILABLE, and it is a good one:
+        # the duplicate the skip exists for lands minutes after the delivery,
+        # a person lands hours or days after it. Nothing here pretends to know
+        # the run mode — D1 of the spec is explicit that no such signal exists
+        # and that inventing one is the thing not to do.
+        #
+        # AND IT IS SCOPED TO `scheduled` (review F-4, 2026-08-23). `catchup`
+        # is the one run mode where a REAL discriminator does exist: it is
+        # asserted by the app-launch recovery path, and a person pressing Run
+        # Now never arrives labelled `catchup` — the whole finding is that a
+        # Run Now labels itself `scheduled`. So an explicit `catchup` past the
+        # bound is a second recovery fire for a slot already delivered, which
+        # is precisely the duplicate SCHED1 exists to stop, and letting the
+        # bound render it would re-open that delivery in exchange for nothing.
+        # SCHED1 is preserved in full on the one context that can prove it is
+        # not a human. Pinned in run_runnow1_test [8e].
         out["suppressed"] = SUPPRESSED_SLOT_SERVED
         out["lateness_minutes"] = 0
         out["served_at"] = last_receipt.isoformat()
+        if via == "scheduled" and (now - last_receipt) > SERVED_RECEIPT_MAX_AGE:
+            # BEYOND THE BOUND — render, and say so. Deliberately an early
+            # return rather than a fall-through to the catch-up branch below,
+            # which spec DD-2 phrased as "drops through": that branch writes a
+            # `late_fire` telemetry row and a "running late" banner (or, past
+            # 24h, `degrade_notice`: "Skipped the full …"). Both are false
+            # about a slot that WAS delivered — the surface is not late, it is
+            # repeated — and the better-default-times loop must not learn a
+            # missed slot from a delivered one (SCHED1 pins that telemetry
+            # off on this path). So the served branch keeps its early return
+            # and spec DD-3's `tier: "rerun"` is what it returns.
+            #
+            # Note what this restores: pre-SCHED1 this exact fire rendered the
+            # full surface silently (tier `none` = "run normally, no mention").
+            # The re-run tier renders the same surface WITH a line saying it is
+            # a repeat, which is strictly more honest than either the silent
+            # render or the refusal.
+            #
+            # WHICH DELIVERY THE LINE NAMES (§DD-5). `served_at` above is the
+            # SLOT's serving receipt — the fact this branch turns on, and the
+            # only thing the two-hour bound is measured against. The line the
+            # reader sees names the last time the surface actually RAN, which
+            # on a second press is the previous RE-RUN, not the scheduled
+            # delivery hours or days earlier. Two different facts, kept apart:
+            # a re-run receipt is a delivery but never a served-slot marker,
+            # so repeated presses each render and each say something true.
+            last_delivery = last_receipt
+            if last_rerun is not None and last_rerun > last_delivery:
+                last_delivery = last_rerun
+            out["tier"] = TIER_RERUN
+            out[RERUN_OF_FIELD] = last_delivery.isoformat()
+            out["ack"] = (
+                f"This is a re-run — your {display} last ran "
+                f"{_human_time(last_delivery)}."
+            )
+            return out
         logged = True
         if emit:
             logged = _log_served_slot_skip(
@@ -916,12 +1126,15 @@ def detect_chronic_lateness(
 
 __all__ = [
     "LATENESS_TIERS",
+    "SERVED_RECEIPT_MAX_AGE",
     "SCHEDULED_CONTEXT",
     "CHRONIC_WINDOW_WEEKS",
     "CHRONIC_MIN_LATE_WEEKS",
     "DIRECTIVE_SKIP_RENDER",
     "SUPPRESSED_SLOT_SERVED",
     "SERVED_SLOT_SKIP_REASON",
+    "TIER_RERUN",
+    "RERUN_OF_FIELD",
     "check_lateness",
     "detect_chronic_lateness",
     "served_slot_markers",

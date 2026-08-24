@@ -95,6 +95,124 @@ DEFAULT_ACTIVITY_TYPES = frozenset({"meeting", "commitment", "decision", "intera
 ALL_TYPES = object()
 
 
+class ExcludedTypes:
+    """"Every event type counts EXCEPT these" — the third shape
+    `activity_types` accepts, beside a real type set and `ALL_TYPES`.
+
+    Deliberately NOT a set, a frozenset subclass or a NamedTuple: those are
+    all iterable, and an iterable here would be silently swallowed by the
+    `frozenset(activity_types)` branch as an INCLUSION set — the exclusion
+    would invert into "only these types count" and the caller would still go
+    green. A plain opaque object cannot be mistaken for a type set; a caller
+    that hands one to something expecting names gets a TypeError, loudly.
+
+    `excluded` is materialized as a frozenset of type NAMES so the membership
+    test in the fold stays O(1).
+    """
+
+    __slots__ = ("excluded",)
+
+    def __init__(self, excluded: Iterable[str]) -> None:
+        self.excluded = frozenset(excluded)
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return f"ExcludedTypes({sorted(self.excluded)!r})"
+
+
+# The commitment-lifecycle writers — the system's own bookkeeping ABOUT a
+# commitment, as opposed to a human touching the thread the commitment sits
+# on. Enumerated from the WRITERS (SPEC BOOKENDS1 §8 / GATE0 §4, re-read at
+# this base), type -> writer:
+#
+#   commitment                    commitment_state._mint_child_commitments,
+#                                 .create_personal_task (and the capture paths)
+#   commitment_updated            commitment_state.apply_later,
+#                                 .edit_commitment_wording,
+#                                 .confirm_commitment_owner,
+#                                 .clear_review_flags (the review-flag clear),
+#                                 .flag_duplicate_for_review,
+#                                 .restore_review_flags,
+#                                 .mark_asked / .clear_asked (OVERDUE1's
+#                                   `data.asked_set` / `data.asked_cleared` —
+#                                   these are DATA FLAGS on this type, not
+#                                   types of their own, so excluding
+#                                   `commitment_updated` is what excludes
+#                                   them; that writer additionally stamps no
+#                                   `primary_thread_id` at all),
+#                                 watch_gate.park_in_watch / .clear_watch
+#                                   (the watch parks),
+#                                 cru_match.build_commitment_updated_event
+#   commitment_resolved           commitment_state.close_commitment,
+#                                 cru_match.build_commitment_resolved_event
+#   commitment_reopened           commitment_state.reopen_commitment
+#   commitment_superseded         commitment_state.supersede_commitment,
+#                                 .split_commitment
+#   commitment_reassigned         commitment_state.reassign_commitment
+#   commitment_reclassified       commitment_state.promote_task_to_commitment
+#   commitment_partial_received   commitment_state.mark_partial_received
+#   commitment_review_proposed    cru_match.build_pending_review_event
+#   commitment_review_dismissed   cru_match.build_commitment_review_dismissed_event
+#   chat_dismissal /              commitment_state.apply_later and its clear
+#     chat_dismissal_cleared
+#
+# Deliberately NOT excluded, each for a stated reason:
+#   thread_resolved             commitment_state.resolve_thread — a THREAD-level
+#                               close, not bookkeeping about one commitment.
+#                               A human resolving a thread is real movement.
+#   commitment_observed         capture_gate (the observed tier) and the
+#   commitment_to_discuss       `add to my list` verb. Both ARE lifecycle
+#                               writes by nature, but they sit OUTSIDE the set
+#                               that GATE0 measured, and this build ships the
+#                               set M ruled on — adding them unmeasured would
+#                               make the 42 -> 49 number in the BUILD record
+#                               false. Named here so the gap is visible; owed
+#                               a follow-up measurement, not a silent widening.
+BOOKEND_EXCLUDED_TYPES = frozenset({
+    "commitment",
+    "commitment_updated",
+    "commitment_resolved",
+    "commitment_reopened",
+    "commitment_superseded",
+    "commitment_reassigned",
+    "commitment_reclassified",
+    "commitment_partial_received",
+    "commitment_review_proposed",
+    "commitment_review_dismissed",
+    "chat_dismissal",
+    "chat_dismissal_cleared",
+})
+
+# THE set both day-count bookends pass (SPEC BOOKENDS1). Every event type
+# counts EXCEPT the commitment-lifecycle writers above — i.e. the full type
+# set MINUS those, expressed as an exclusion rather than a materialized
+# frozenset so that a newly-registered event type keeps counting instead of
+# silently falling out of a hardcoded list.
+#
+# WHY IT IS NOT `ALL_TYPES`: the morning brief and the evening pack both quote
+# a day-count, and `derive_from_events` has always said never to pass
+# ALL_TYPES from such a surface (the F-54 contract: surfaces quoting ONE
+# day-count share ONE set). Both passed it anyway. With the filter off, the
+# `commitment_resolved` written when one item on a thread is CLOSED marks that
+# whole thread active for seven days and hides every OTHER open item on it —
+# measured on real substrate as 7 items hidden on one day (GATE0, 2026-08-23:
+# morning needs_attention 42 -> 49).
+#
+# WHY IT IS NOT `DEFAULT_ACTIVITY_TYPES`: that set is {meeting, commitment,
+# decision, interaction}, so adopting it would ALSO stop `thread_updated`,
+# `deal_won`, `email_outcome`, `objective_updated` and every other
+# non-lifecycle type counting — a second, unrelated narrowing that GATE0
+# measured separately (51, not 49) and that nobody ruled on.
+#
+# WHAT THIS DOES NOT CHANGE (the C3 answer, DD-3): the canonical derivation,
+# the RECL1 reclassification fold and the 0.40 confidence floor all still
+# apply exactly as before. The C3 migration's fear was a bespoke max(ts) scan
+# or a dropped fold — losing the derivation. This changes only WHICH event
+# types count. Do not re-widen this to ALL_TYPES to "restore last-touched
+# semantics": last-touched is the RENDERER contract (MASTER_TRACKER's column,
+# the list-active tree), and those two callers keep ALL_TYPES on purpose.
+BOOKEND_ACTIVITY_TYPES = ExcludedTypes(BOOKEND_EXCLUDED_TYPES)
+
+
 class ThreadActivity(NamedTuple):
     seq: Optional[int]
     event_type: str
@@ -268,10 +386,17 @@ def derive_from_events(
     (render_master_tracker, list-active/render_tree load them once for
     other columns too).
 
-    activity_types: a type set (None → DEFAULT_ACTIVITY_TYPES), or the
-    module's ALL_TYPES sentinel — renderer "last touched" semantics where
-    every event type counts. Never pass ALL_TYPES from a surface that
-    quotes a day-count (F-54 contract).
+    activity_types: one of three shapes —
+      * a type set (None → DEFAULT_ACTIVITY_TYPES): only these types count;
+      * the ALL_TYPES sentinel: renderer "last touched" semantics, every
+        event type counts. Never pass ALL_TYPES from a surface that quotes
+        a day-count (F-54 contract);
+      * an ExcludedTypes object: every type counts EXCEPT the named ones.
+        This is the shape the day-count bookends pass
+        (BOOKEND_ACTIVITY_TYPES) — it keeps last-touched breadth for
+        everything a human does to a thread while refusing to count the
+        system's own bookkeeping about a commitment as the thread having
+        moved.
 
     honor_reclassifications: when True, fold apply_reclassifications over
     the stream first, so user-approved corrections (Pass 8 edits,
@@ -282,8 +407,12 @@ def derive_from_events(
     """
     if honor_reclassifications:
         events = apply_reclassifications(events)
+    excluded: frozenset[str] = frozenset()
     if activity_types is ALL_TYPES:
         types = None
+    elif isinstance(activity_types, ExcludedTypes):
+        types = None
+        excluded = activity_types.excluded
     else:
         types = frozenset(activity_types) if activity_types is not None else DEFAULT_ACTIVITY_TYPES
     last: dict[str, ThreadActivity] = {}
@@ -291,7 +420,10 @@ def derive_from_events(
     for ev in events:
         if not isinstance(ev, dict):
             continue
-        if types is not None and ev.get("type") not in types:
+        etype = ev.get("type")
+        if types is not None and etype not in types:
+            continue
+        if etype in excluded:
             continue
         conf = ev.get("classification_confidence")
         if isinstance(conf, (int, float)) and not isinstance(conf, bool) and conf < confidence_floor:
@@ -307,7 +439,7 @@ def derive_from_events(
             seq = None
         # Store UTC-aware so downstream day-count arithmetic against an
         # aware `now` never mixes naive/aware (the F-15 legacy writer mix).
-        record = ThreadActivity(seq=seq, event_type=ev.get("type") or "", ts=ts)
+        record = ThreadActivity(seq=seq, event_type=etype or "", ts=ts)
         for tid in thread_ids:
             prior = last.get(tid)
             if prior is None or record.ts > prior.ts:
@@ -328,10 +460,13 @@ def derive_thread_activity(
     Args:
         workspace_root: folder containing `_hq/data/events.jsonl`.
         activity_types: which event types count as activity. None →
-            DEFAULT_ACTIVITY_TYPES. Pass the user's saved stalled-projects
-            `activity_event_types` — and pass the SAME set from every
-            surface that quotes a day-count, or the numbers diverge (F-54's
-            21d-vs-37d split).
+            DEFAULT_ACTIVITY_TYPES; an ExcludedTypes object → every type
+            counts except the named ones (see derive_from_events). Pass the
+            user's saved stalled-projects `activity_event_types` — and pass
+            the SAME set from every surface that quotes a day-count, or the
+            numbers diverge (F-54's 21d-vs-37d split). The morning brief and
+            the evening pack both pass BOOKEND_ACTIVITY_TYPES for exactly
+            that reason.
         confidence_floor: events with numeric classification_confidence
             below this are skipped (absent field = counted).
         honor_reclassifications: True = fold user-approved corrections
@@ -369,5 +504,8 @@ __all__ = [
     "ThreadActivity",
     "DEFAULT_ACTIVITY_TYPES",
     "ALL_TYPES",
+    "ExcludedTypes",
+    "BOOKEND_EXCLUDED_TYPES",
+    "BOOKEND_ACTIVITY_TYPES",
     "CONFIDENCE_FLOOR",
 ]
