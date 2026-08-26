@@ -376,6 +376,22 @@ SILENT_TASKS: dict[str, dict] = {
             "silently.\n"
             "2. Execute each due job's skill END-TO-END, one at a time in plan order, "
             "never in parallel: reconcile-sent -> skills/reconcile-sent/SKILL.md; "
+            "meeting-capture -> the End of Day capture leg run INCREMENTALLY "
+            "(SPEC EODSPEED1): execute "
+            "skills/enable-command-room-schedules/references/"
+            "orchestrator-past-meetings.md Phases 3 through 4.8 VERBATIM — same "
+            "canonical writers, same admission gates, no relaxed floors — with "
+            "exactly these differences, stated in that file's EODSPEED1 section: "
+            "the window comes from catchup.catchup_window(<workspace_root>, "
+            "'meeting-capture', floor_hours=24, cap_days=30); the pass is SILENT "
+            "(no chat post, no widget, no notification — writes, briefs, and "
+            "receipts only; the 5 PM close is the one narrator); and the pass "
+            "ends with ONE eod_incremental.log_capture_pass_receipt call "
+            "carrying the window fields and counts (a pack_run under task id "
+            "meeting-capture — NEVER log_end_of_day_receipt, and NEVER any "
+            "receipt under past-meetings, which would arm skip_render against "
+            "the real close). Phase C, Phase 5's day-close receipt, and Phase 6 "
+            "do NOT run in this job; "
             "session-sweep -> skills/session-sweep/SKILL.md; cleanup -> "
             "skills/cleanup/SKILL.md (every phase); weekly-insights -> "
             "skills/insight-generator/SKILL.md; identity-reconcile -> run "
@@ -1020,6 +1036,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
     "review-expiry": "Unconfirmed Cleanup",  # REVSCHED1 §3-2 — silent weekly unconfirmed-pile drain (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
     "age-out": "Silent Work Cleanup",  # SWEEPSCHED1 — silent weekly confirmed-pile drain (a maintenance JOB, not a task; same reason for the row). "Silent Work", not "Age Out": the render is read by a CEO, and the noun has to name what is being cleared rather than the mechanism clearing it
+    "meeting-capture": "Meeting Capture",  # EODSPEED1 — the incremental End of Day capture pass (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
 }
 
 

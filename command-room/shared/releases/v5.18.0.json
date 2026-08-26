@@ -1,0 +1,13 @@
+{
+  "version": "5.18.0",
+  "headline": "Command Room learns how you like to be spoken to — and proposes it from your own record instead of asking a questionnaire.",
+  "items": [
+    {
+      "id": "v5180_announce_style_layer",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Command Room now carries a style layer: how brief, how formal, how much explanation, and one concrete \"never do this\" rule of your choosing. You can set any of it by just saying so (\"be more direct with me\", \"skip the pleasantries\") — and over time it may PROPOSE a setting it can read from your own record, like your sent mail running short. A proposal is always shown with its evidence and applied only when you confirm; anything you have ruled on explicitly is never second-guessed. Say \"how do you talk to me\" to see the current settings.",
+      "action": "announce_only"
+    }
+  ]
+}

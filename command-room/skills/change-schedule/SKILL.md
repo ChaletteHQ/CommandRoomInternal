@@ -1,7 +1,7 @@
 ---
 name: change-schedule
 surfaces: both
-description: "Customize when each Command Room scheduled chat fires — the user-facing schedule mutator. Fires on: 'change my schedule', 'show my schedule', 'when do my chats run', 'show my scheduled chats', 'configure my schedules', 'move [chat] to [time]', 'set [chat] to [time]', 'pause [chat]' / 'resume [chat]', 'disable [chat]' / 'enable [chat]', 'back to defaults'. Renders the registration-aware merged view (defaults + your changes + what's actually registered), converts requested times from your timezone to the machine clock at registration, and pushes cron changes to the live scheduler itself. Does NOT fire on 'set up command room schedules' (enable-command-room-schedules — first registration), 'what's my schedule today' (calendar / morning-briefing), or 'health check' (system-health). Command grammar and config semantics: Routing section in the body."
+description: "Customize when each Command Room scheduled chat fires — the user-facing schedule mutator. Fires on: 'change my schedule', 'show my schedule', 'when do my chats run', 'show my scheduled chats', 'configure my schedules', 'move [chat] to [time]', 'set [chat] to [time]', 'pause [chat]' / 'resume [chat]', 'disable [chat]' / 'enable [chat]', 'back to defaults'. Renders the registration-aware merged view (defaults + your changes + what's actually registered), converts requested times from your timezone to the machine clock at registration, and pushes cron changes to the live scheduler itself. Does NOT fire on 'set up command room schedules' (enable-command-room-schedules — first registration), 'what's my schedule today' (calendar / morning-briefing), or 'health check' (system-health)."
 ---
 
 # change-schedule
@@ -30,7 +30,8 @@ Your current Command Room schedule:
 
 Background maintenance (runs quietly, no chat output):
   Maintenance         — 6:45 AM, 12:45 PM, and 5:45 PM daily
-                        (sent-mail reconcile, chat reconcile, session sweep,
+                        (sent-mail reconcile, chat reconcile,
+                        meeting capture, session sweep,
                         weekly cleanup, weekly insights, deal signals,
                         identity reconcile, project lifecycle,
                         unconfirmed cleanup, silent work cleanup,

@@ -131,12 +131,16 @@ verbs are ALIASES onto their existing domain config files (`_hq/contracts/standa
 `_team-config.md` respectively) — no `skill_config` JSON, no migration, storage unchanged. Their
 SKILL.md "Settings verbs" sections define the mapping.
 
-**The output profile is NOT in this catalog — by design (OUT2 §5 fence).** The cross-skill
-`_hq/data/skill_config/output_profile.json` (density / visual_bias / page_cap / default_format —
-read by `make_brief`, contract in `EXECUTIVE_OUTPUT_STANDARD.md` § "The output profile") has **no
-first-run block, no first-fire footer, and no onboarding mention, ever**. It is written only by an
-explicit `tune output` (workspace-manager) or a confirmed insight-generator proposal. Do not add a
-row for it here.
+**The output profile is NOT in this catalog — by design (OUT2 §5 fence, graduated by STYLE1 D1).**
+The cross-skill `_hq/data/skill_config/output_profile.json` (density / visual_bias / page_cap /
+default_format — read by `make_brief`, contract in `EXECUTIVE_OUTPUT_STANDARD.md` § "The output
+profile") has **no first-run block and no first-fire footer, ever** — no skill offers it
+proactively at first fire of anything. Its sanctioned writers are: an explicit `tune output` /
+`tune my documents` (workspace-manager), a confirmed insight-generator proposal, and — since SPEC
+STYLE1 (D1 ruling 2026-08-25) — the onboarding style proposal: `style_inference.py` may derive
+document-shape knobs from the client's own record and onboarding writes ONLY the knobs the
+inference confidently proposed (origin `inferred_provisional`, disclosed at the reveal, D7).
+Unproposed knobs stay byte-stable defaults. Do not add a first-fire row for it here.
 
 ---
 

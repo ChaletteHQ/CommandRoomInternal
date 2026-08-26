@@ -214,8 +214,18 @@ Run the driver ONCE per fire (idempotent-single-call — a re-run to "refresh" d
 
 1. `alarm_lines` — verbatim, pinned at the very top of the digest prose (above even the escalated-reminders block and the synthesis lead).
 2. `changed.lines` — folded into the CHANGED contract line (one narration slot; substance first).
-3. `brief_state.headline` — the commitments header counts, rendered per the skill's Step 3d rules (omit absent keys, never 0-pad).
+3. `brief_state.headline` — the commitments header counts, rendered per the skill's Step 3d rules (omit absent keys, never 0-pad). CLUSTCOUNT1: when `headline.information_line` is present, render it verbatim in place of the bare total ("9 items, 41 rows"); when absent, render the bare total exactly as before — never compute a substitute.
 3b. `brief_state.needs_attention` + `needs_attention_more_line` — the NEEDS ATTENTION section (CAPTUREFLOW §D 2026-08-01). The driver hands you at most **5** rows, already ranked due-then-age, and the pointer line for the rest. Render exactly those rows in exactly that order; never re-rank them, never top the section up from your own Step-3 scan, and never drop the pointer line to save a line. The lane was unbounded before this (72 rows on a live workspace) and an unreadable lane is an unread one. A 14-day rotation inside the driver pins any item that has been below the fold too long into the visible set, so nothing is suppressed forever — which is exactly why you must not reorder what you were handed. `needs_attention_total` is the honest full count if you need to say one; the header counts in `brief_state.headline` are unfiltered and stay that way.
+
+  **3b-bis. THE OVERDUE ASK LIVES HERE NOW (SPEC EODSYNTH1 R-3, M's ruling 2026-08-23).** The "Done, new date, or drop?" fork used to sit in the End of Day's slipped block. It asks in the MORNING now, because 5 PM is wind-down and this is the surface where the operator is in triage mode. Nothing about the RULE changed — same three-day threshold, same ask-once, same rest-until-answered, same `commitment_state.mark_asked` write; only the surface did.
+
+  A row that is `overdue_ask_after_days` or more past its due and carries no live mark arrives with **`ask_line`** — *"Send the pricing sheet — 8 days overdue. Done, new date, or drop?"*. **Render that string as the row's label, verbatim**, instead of the plain title. The driver already pinned it to the top of the lane, and its verbs are the ones the row carries. A row with no `ask_line` renders exactly as it always has. You compute no day counts here and you compose no question here — a fire that re-words this asks a different question every morning, which is the repetition the rule exists to end.
+
+  **How the three answers resolve on THIS surface, stated plainly because two of them cost a hop.** *Done* is `mark done [n]`, which this brief already resolves through `brief_receipt.resolve_mark_done` against the `needs_attention_ids` on its own receipt — one tap, unchanged. *A new date* and *drop* are the `push to [date]` / `drop` verbs the row carries, and they are adjudicated on `my plate`, which the brief's queue pointer already routes to. Do not invent a one-tap affordance for them here and do not drop them from the row: the row states what it offers, and the honest sentence is that two of the three answers happen one surface over. (Closing that hop is an apply-choices route on this surface — a build, not a wording change.)
+
+  **`brief_state.resting_line`**, when non-empty, prints verbatim as the lane's last line beside `needs_attention_more_line`. It says how many overdue items are waiting on an answer and where to find them. An empty string means nothing is resting: do not narrate that, and never write a "0 resting" line of your own. Resting rows are not in `needs_attention` at all and you do not go looking for them — they are still inside `needs_attention_total`, which is why the denominator does not move when the lane goes quiet.
+
+  **And the write half is Phase 6.1, AFTER the post.** It is a prose-called step and it is not optional: see that phase.
 4. `watchdog_line` — verbatim in the digest tail.
 5. `money_lines` — verbatim, one sentence each, in the digest body (place with NEEDS ATTENTION). **The ONE money carve-out (FB-20):** a deal signal is the single class the brief still names outright, because a deal that goes quiet for a day is the one silence with a price tag. These sentences are PROPOSE-ONLY and carry no verbs — each one already routes the user to `staff meeting`, which is where the confirm happens by chat phrase. Never add buttons to them, never invent a "confirm?" affordance, never act on one from this turn. Empty list → nothing renders; **never** pad an all-clear ("no new deals today" — never).
 6. `queue_pointer.line` — verbatim, exactly ONE line, as the digest's last content line before SUGGESTED FIRST MOVE. It is the brief's entire handoff to the adjudication surface. The count is the driver's, computed from the same projector the staff meeting renders — **never recount it, never adjust it, never round it, never soften it** ("a few things need your eyes" is a lie about a number you were handed). Empty line (nothing queued) → nothing renders.
@@ -324,7 +334,22 @@ A `dead_doc_link` violation means the conversion above did not happen or did not
 
 If any briefs or files were referenced (Past Meetings docs, prep docs from earlier fires), add a **Links:** section per `shared/CHAT_ACTION_WIDGET.md` "Post-widget chat-links section" — one bulleted line per linked file, `computer://` artifact URLs built the same way (never a hand-assembled path). Skip the Links section entirely if nothing connects.
 
-**STOP.** The chat turn is over. Do not narrate what just posted. Do not summarize sections. Do not preview tomorrow's fire. Do not append a "posted" confirmation of any kind — the receipt is already on disk from Phase 5 and a second marker is a second thing to keep in sync.
+## Phase 6.1 — AFTER the post: record what was asked (SPEC EODSYNTH1 R-3, inheriting SPEC OVERDUE1)
+
+Once the turn is posted, one call, silent, no chat output:
+
+```python
+from end_of_day import mark_lane_asked
+mark_lane_asked(WORKSPACE_ROOT, pack["brief_state"], source_skill="morning-brief")
+```
+
+**One call that takes the lane whole** — it reads `brief_state["asked_ids"]` and writes one additive `commitment_updated` per row through `commitment_state.mark_asked`, stamped with THIS surface's id so "which surface asked" stays readable. Do not loop, do not pick rows, do not hand it a list you built: which rows were asked about was decided in the driver and is not a judgement to re-make here.
+
+**AFTER the post, and that is the opposite of the receipt on purpose.** The receipt goes first because it is what the numbers on screen resolve against. This goes last because the mark means *the CEO has been asked* — write it before the question reaches the screen and a fire that dies mid-turn rests a row nobody ever saw a question about. It never raises and it never blocks: a mark that fails to write costs one repeated row tomorrow morning, which is the pre-OVERDUE1 behaviour and a survivable one.
+
+The write is deliberately not movement, so asking about a quiet item does not make it read as freshly touched — that fence lives in `commitment_activity`, not here. Nothing about this step is narrated in chat, and it happens after the STOP below rather than before it: it posts nothing.
+
+**STOP.** The chat turn is over. Do not narrate what just posted. Do not summarize sections. Do not preview tomorrow's fire. Do not append a "posted" confirmation of any kind — the receipt is already on disk from Phase 5 and a second marker is a second thing to keep in sync. (Phase 6.1 above is a silent WRITE, not output — it adds nothing to the turn.)
 
 # Phase 7 — Failure handling (Rule 8)
 

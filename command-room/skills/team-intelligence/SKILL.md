@@ -1,7 +1,7 @@
 ---
 name: team-intelligence
 surfaces: both
-description: "Never walk into a 1:1 cold again — the team layer: who owns what, who's overloaded, what each person delivered, and a prep brief per direct report. Fires on: 'my team', 'team status', 'prep for 1:1 with [name]' / 'prep me for my 1:1 with [name]', 'who owns [project/deliverable]', 'who's overloaded', 'what has [name] delivered this quarter', 'log commitment for [name]', 'discover my team'. Builds and maintains per-person delivery records from meetings, commitments, and threads. Does NOT fire on 'prep me for the [external] call' / 'prep me for my 2pm' (call-prep — external meeting brief), 'who is [name]' (people-crm — relationship record), or 'who should I reach out to' (relationship-moves). Team model and 1:1 brief spec: Routing section in the body."
+description: "Never walk into a 1:1 cold again — the team layer: who owns what, who's overloaded, what each person delivered, and a prep brief per direct report. Fires on: 'my team', 'team status', 'prep for 1:1 with [name]' / 'prep me for my 1:1 with [name]', 'who owns [project/deliverable]', 'who's overloaded', 'what has [name] delivered this quarter', 'log commitment for [name]', 'discover my team'. Builds and maintains per-person delivery records from meetings, commitments, and threads. Does NOT fire on 'prep me for the [external] call' / 'prep me for my 2pm' (call-prep — external meeting brief), 'who is [name]' (people-crm — relationship record), or 'who should I reach out to' (relationship-moves)."
 ---
 
 ## Skill Boundary (v2.1)
@@ -209,10 +209,12 @@ assembled = assemble_prep_sections(
         {"heading": "Fresh Intel", "bullets": [<email/Slack/calendar not yet in the profile>]},
         {"heading": "Flags", "bullets": [<anything the CEO flagged>]},   # omit the section entirely if none
     ],
+    source_reads={<per-source consumption states actually observed this fire — e.g. "mail": "read"|"absent", "calendar": "read">},
+    operator_supplied=<True when the render consumed anything the CEO typed in>,
 )
 ```
 
-**Contract note:** `assemble_prep_sections` REQUIRES `walk_out_with` and enforces that every talking point carries a source cite — an unsourced line raises `PrepContractError` before any file is written (rewrite the flagged lines and re-assemble). Drop-empty is automatic: no owed items → no owed table; <2 timeline points → no timeline; an empty `extra_sections` bullet list → that section is omitted (never an empty frame).
+**Contract note:** `assemble_prep_sections` REQUIRES `walk_out_with` and enforces that every talking point carries a source cite — an unsourced line raises `PrepContractError` before any file is written (rewrite the flagged lines and re-assemble). Drop-empty is automatic: no owed items → no owed table; <2 timeline points → no timeline; an empty `extra_sections` bullet list → that section is omitted (never an empty frame). **Sources line (PREPSRC1):** the pipeline derives the one Sources section from `source_reads` + the page's own cites + `operator_supplied` — consumption only, never the plan. Never hand-build a `{"heading": "Sources", ...}` section (it raises `PrepContractError`), and never list a planned source that came back empty. `source_reads` keys must be bare tokens (letters, digits, underscores) — a hyphenated `session-notes` is dropped silently, so spell it `session_notes`.
 
 Render through the shared writer (SAME `brief_kind` as call-prep, so the eyebrow + gate path match):
 

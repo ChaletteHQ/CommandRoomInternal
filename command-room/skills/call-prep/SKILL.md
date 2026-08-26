@@ -1,7 +1,7 @@
 ---
 name: call-prep
 surfaces: both
-description: "Walk into a specific meeting already prepped. Fires on: 'prep me for my 2pm' (any time), 'prep me for the [name] call', 'quick prep me for my 3pm', 'prep the call', 'prep me for the board meeting', 'get me ready for [meeting]', '1:1 brief for [name]', 'meeting prep', plus 'tune call-prep'. Synthesizes calendar, email, Slack, meeting transcripts, and open commitments for every attendee into one scannable brief saved to the meetings folder and linked in chat — with learned per-meeting-type section weights applied. Does NOT fire on 'brief me on today' (morning-briefing — all meetings, summary only), 'process the call' (meeting-notes — post-meeting), 'prep for 1:1 with [direct report]' (team-intelligence), or speaking-engagement prep (memo-writer position paper). Full trigger list and section spec: Routing section in the body."
+description: "Walk into a specific meeting already prepped. Fires on: 'prep me for my 2pm' (any time), 'prep me for the [name] call', 'quick prep me for my 3pm', 'prep the call', 'prep me for the board meeting', 'get me ready for [meeting]', '1:1 brief for [name]', 'meeting prep', plus 'tune call-prep'. Synthesizes calendar, email, Slack, meeting transcripts, and open commitments for every attendee into one scannable brief saved to the meetings folder and linked in chat — with learned per-meeting-type section weights applied. Does NOT fire on 'brief me on today' (morning-briefing — all meetings, summary only), 'process the call' (meeting-notes — post-meeting), 'prep for 1:1 with [direct report]' (team-intelligence), or speaking-engagement prep (memo-writer position paper)."
 ---
 
 ## Deliverable Render Gate (GATE1 — MUST, v3.20.x; ONE GENERATOR v4.5.2 S1)
@@ -172,7 +172,21 @@ res = resolve_prep_brief_path(workspace_root, meeting_id, title=meeting_title, d
 # 2. Assemble the five blocks (walk-out-with / changed / decide / owed / sourced
 #    talking points) + visual layer through the pipeline — it owns section order
 #    and rejects unsourced talking points (PrepContractError).
-out = assemble_prep_sections(walk_out_with=..., meeting_details=..., ...)
+#    PREPSRC1 — the Sources line is DERIVED here, from consumption, never
+#    hand-listed: pass `source_reads` (the SAME per-source report this skill
+#    already returns to the prep leg — {"mail": "read"|"absent"|"failed"},
+#    keys extensible to calendar/transcripts/chat/substrate/notes, or the
+#    key of whichever platform this workspace actually resolved) and
+#    KEYS MUST BE BARE TOKENS — letters, digits, underscores. A
+#    hyphenated "session-notes" is dropped by normalize_sources with no
+#    error and the read goes uncredited. Use "session_notes".
+#    `operator_supplied=True` when the render consumed anything the CEO typed
+#    into the prep. The pipeline appends the one Sources section from what was
+#    actually read plus the page's own cites; a planned source that came back
+#    empty NEVER appears on it (its absence rides the receipt, per Gotchas).
+#    A hand-built {"heading": "Sources", ...} section raises PrepContractError.
+out = assemble_prep_sections(walk_out_with=..., meeting_details=...,
+                             source_reads=..., operator_supplied=..., ...)
 
 # 3. Render through the gated chokepoint.
 make_brief(res["path"], brief_kind="call_prep", title=..., subtitle=...,
@@ -224,7 +238,7 @@ opener_url = get_brief_opener_url(res["path"], drive_web_url)
 
 **Surface in chat (v3.13.0+ — per CONTRACT.md Rule 3, H2 heading-link primary, `present_files` demoted):**
 
-1. **H2 heading link at the BOTTOM of the chat turn.** Use `chat_output_renderer.doc_headline_link(label, artifact_url)` to render the canonical format: `## → **[Call Prep — {recipient or meeting title}](computer://...)**`. ("Call Prep" is the ONE name for this deliverable everywhere — chat link, doc cover, folder — never "1:1 Prep".) This is the PRIMARY surface — the link the user clicks to open the brief in Cowork's side panel. Goes at the END of the chat response (after the synthesis + Sources section), NOT interspliced through the body. Per M's 2026-05-20 feedback #9: deliverable links land at the bottom or they get lost.
+1. **H2 heading link at the BOTTOM of the chat turn.** Use `chat_output_renderer.doc_headline_link(label, artifact_url)` to render the canonical format: `## → **[Call Prep — {recipient or meeting title}](computer://...)**`. ("Call Prep" is the ONE name for this deliverable everywhere — chat link, doc cover, folder — never "1:1 Prep".) This is the PRIMARY surface — the link the user clicks to open the brief in Cowork's side panel. Goes at the END of the chat response (after the synthesis + Sources section), NOT interspliced through the body. Per M's 2026-05-20 feedback #9: deliverable links land at the bottom or they get lost. **The chat `Sources:` section keeps its per-record link format (CONTRACT Rule 3 / `_hq/CONVENTIONS_SOURCE_LINKS.md`) — `[Title — date](connector-returned URL)` per record actually read — and `assembled["sources_consulted"]` (PREPSRC1) CONSTRAINS its membership:** never link a record from a source family absent from that list (the render did not consume it), and never omit a family on it (a consumed family with no linkable record gets its plain-language label as a non-linked bullet — operator input, for instance, has no URL). Both surfaces derive from that one list. **This is an instruction, not a gate:** `sources_consulted` has no renderer-side filter behind it (`chat_output_renderer._render_sources_inline` takes whatever it is handed), so nothing catches a chat Sources bullet the document's line does not support. Honour it by hand.
 
 2. **`mcp__cowork__present_files` is OPTIONAL (reveal-in-folder convenience only).** Pre-v3.13.0 this was the primary opener; M's 2026-05-20 testing surfaced that the cards' primary-click DOESN'T open most file types — only "Show in Folder" works. So `present_files` is no longer the opener. Include it if and only if the user is likely to want to navigate the filesystem to find the brief (rare for call-prep). Default: skip the `present_files` call entirely for this skill.
 
@@ -266,7 +280,7 @@ The full section content is unchanged; only the ORDER flips and the lead moves t
 
 ## What You Get
 
-The brief is structured around the **five blocks** (v4.5.2 S1, the FINDINGS F-60 PROPOSAL): ① walk-out-with ② changed since last touch ③ decide ④ owed both directions ⑤ sourced talking points. `prep_pipeline.assemble_prep_sections` owns the section order — both prep paths call it. Every section is required (omit only when no signal exists for it; never pad with placeholder text). **Order (EXEC1-inverted): the exec header is first.**
+The brief is structured around the **five blocks** (v4.5.2 S1, the FINDINGS F-60 PROPOSAL): ① walk-out-with ② changed since last touch ③ decide ④ owed both directions ⑤ sourced talking points — plus the pipeline-appended **Sources** line (PREPSRC1, always last). `prep_pipeline.assemble_prep_sections` owns the section order — both prep paths call it. Every section is required (omit only when no signal exists for it; never pad with placeholder text). **Order (EXEC1-inverted): the exec header is first.**
 
 > **Sync rule (v3.11.1+ / v4.5.2, narrowed by BRIEFMERGE):** If you add, rename, or reorder any section below, update `prep_pipeline.assemble_prep_sections` **in the same commit**. That is now the entire sync surface: the scheduled path reads THIS file at fire time instead of carrying its own section list, so the drift that made this rule necessary (pre-v3.6.4 the upcoming-meetings orchestrator silently dropped content from any section it didn't know about) is structurally gone.
 
@@ -286,6 +300,7 @@ The brief is structured around the **five blocks** (v4.5.2 S1, the FINDINGS F-60
 - **Decisions Needed (block ③ — DECIDE):** the open decisions this meeting is positioned to close, from the decision log for this project, with the tradeoffs of each direction
 - **Cross-Project Insights:** Patterns from related projects that might bear on this conversation
 - **Risks / Watch-outs:** Anything that could derail the call (recent friction, unresolved disagreements, sensitive topics)
+- **Sources (PREPSRC1 — pipeline-appended, always last):** one plain-language line ("Built from: …") naming what the render actually consumed. `assemble_prep_sections` derives and appends it from `source_reads` + the page's cite-mandated lines + the structural blocks + `operator_supplied` — never compose it by hand (a hand-built Sources section raises `PrepContractError`), and never list a planned source that came back empty. Absent when nothing was consumed (legacy calls unchanged).
 - **Suggested Outcome:** *(EXEC1 — now rendered as the exec-header VERDICT at the top, not a separate bottom block)* What "good" looks like for this call in one sentence
 
 **Learned section weights (Phase 6 Loop 3).** Before rendering, consult the section weights insight-generator's Pass 15 learned from prep-vs-transcript grading, stored in this skill's config: `from prep_grading import section_weight` → for each gradable section (Talking Points / Risks — Watch-outs / Questions to Ask / Decisions Needed), if `section_weight(cfg, <meeting_type>, <section>) == 0`, DROP that section for this meeting-type (it's been rendered-but-empty in that context — the CEO approved dropping it). A missing weight defaults to 1.0 (render normally), so a fresh workspace produces every section exactly as before. This never drops a section that has real signal for THIS meeting — it only suppresses one the CEO agreed is dead weight for this meeting-type. `cfg = get_config(workspace_root, "call-prep", DEFAULTS)`; `section_weights` is a learned key populated only by Pass 15 (never asked in the first-run questionnaire).
@@ -347,6 +362,7 @@ Internal-only section list, in order:
 - **Decisions stuck** — decisions logged as `decision_pending` for this project where this attendee is owner or blocker
 - **Decisions Already On The Record** — same as external (don't relitigate)
 - **What to drive** — talking points, sourced-line rule + multi-attendee prefix rule still apply if 2+ internal attendees
+- **Sources** — same pipeline-appended consumption-derived line as the external template (PREPSRC1); always last, never hand-composed
 - **Walk-out** — what the user wants decided / committed before leaving the room (one sentence — rendered as `exec_header.verdict`, same as the external walk-out)
 
 Dropped vs external template: Relationship Context, Progress Since You Last Met (folded into "Project events since last meeting"), Questions to Ask (collapsed into "What to drive" — questions ARE the talking points in internal 1:1s), Cross-Project Insights, Risks / Watch-outs.
@@ -355,7 +371,7 @@ The internal variant exists because orchestrator v2.14.36+ surfaces internal mee
 
 **Voice:** match the user's tone — direct, executive, specific, no filler. Voice comes from `shared/VOICE_CALIBRATION.md` plus the workspace's calibrated override at `_hq/voice/voice-block-call-prep.md` if present (the override supersedes section-by-section).
 
-**Provenance (v2.14.32+ correction):** every claim that came from a connector should be traceable through events.jsonl (the `connector_read` events written silently per `shared/PASSIVE_CAPTURE.md`). The brief .docx itself does NOT carry a provenance footer — `shared/scripts/brief_writer.py` hard-codes the footer to `Command Room` per the v2.12.4+ forwardable-clean rule. Pre-v2.14.32 some briefs leaked `Source: ... | Fired: ... | Inputs: ... | TTL: ...` into the document body; that footer pattern is dead. Provenance lives in events.jsonl, not in the shareable doc.
+**Provenance (v2.14.32+ correction):** every claim that came from a connector should be traceable through events.jsonl (the `connector_read` events written silently per `shared/PASSIVE_CAPTURE.md`). The brief .docx itself does NOT carry a provenance footer — `shared/scripts/brief_writer.py` hard-codes the footer to `Command Room` per the v2.12.4+ forwardable-clean rule. Pre-v2.14.32 some briefs leaked `Source: ... | Fired: ... | Inputs: ... | TTL: ...` into the document body; that footer pattern is dead. Provenance lives in events.jsonl, not in the shareable doc. The one user-facing exception is the plain-language Sources section `prep_pipeline.build_sources_section` derives from consumption (PREPSRC1) — it names WHAT informed the brief, never internal tokens. **Verifying a provenance claim on a prep artifact queries the SOURCE (the live thread, the transcript service), never the workspace's processed summaries** — transcript-derived content is not on disk, so a workspace grep proves nothing in either direction.
 
 ## Triggers
 

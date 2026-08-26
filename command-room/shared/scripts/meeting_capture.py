@@ -732,6 +732,145 @@ def meeting_binding_audit(workspace_root, source_ref: str) -> dict:
     return out
 
 
+def _norm_name(name) -> str:
+    """Case/whitespace-normalized person name for support checks."""
+    return re.sub(r"\s+", " ", str(name or "").strip()).lower()
+
+
+def brief_counterparty(meeting_event, *, email_index=None,
+                       exclude_person_ids=(), exclude_names=(),
+                       resolved_names=None, association=None) -> dict:
+    """THE BRIEF BINDER (SPEC BRIEFBIND1, BUG-8244 / G28 family). Who a
+    brief's headline may name, derived from the cited meeting's OWN
+    participant record — and from nothing else.
+
+    THE DEFECT THIS FENCES. An evening-close brief was headlined with a
+    person who appears nowhere on the cited meeting's participant record —
+    right topic cluster, wrong human, filled by association from a recent
+    joint session after a participant-less sibling capture left a vacuum. A
+    wrong binding is strictly worse than a missing one: it looks complete,
+    and downstream surfaces (call-prep context, relationship history,
+    commitment attribution) key person context on it.
+
+    THE EVIDENCE RULE. The counterparty derives from the record the brief
+    CITES: `person_ids` (every legacy variant, folded by
+    `event_refs.meeting_person_ids`, resolved through `email_index` when
+    given) plus `data.attendees_external` names. An empty record renders
+    UNBOUND — the existing G28 contract — and is never filled from topical
+    or temporal association.
+
+    `association` is accepted so a call site can hand over whatever
+    association evidence it holds (a recent joint session's names, a
+    calendar neighbor) and have the refusal on the record: it is echoed back
+    as `association_ignored` and NOTHING in this function reads it to pick a
+    name — neither when the record binds nor when it is empty. That
+    non-consultation is pinned by mutation in
+    `tests/run_meetcount1_briefbind1_mutation_test.py`.
+
+    `exclude_person_ids` / `exclude_names`: the operator's own identity —
+    the headline names the counterparty, not the CEO. `resolved_names`:
+    optional {person_id: display_name} so the return can carry names for
+    bound ids.
+
+    Returns `{"bound", "person_ids", "names", "unbound_reason",
+    "association_ignored"}`.
+    """
+    ev = meeting_event if isinstance(meeting_event, dict) else {}
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    try:
+        from event_refs import meeting_person_ids
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from event_refs import meeting_person_ids
+    excluded_ids = {str(x) for x in (exclude_person_ids or ()) if x}
+    excluded_names = {_norm_name(x) for x in (exclude_names or ()) if x}
+    person_ids = sorted(
+        pid for pid in meeting_person_ids(ev, email_index)
+        if pid and str(pid) not in excluded_ids)
+    names = []
+    lookup = resolved_names if isinstance(resolved_names, dict) else {}
+    for pid in person_ids:
+        nm = lookup.get(pid)
+        if nm and _norm_name(nm) not in excluded_names:
+            names.append(str(nm))
+    for nm in (data.get("attendees_external") or []):
+        if isinstance(nm, str) and nm.strip() \
+                and _norm_name(nm) not in excluded_names \
+                and _norm_name(nm) not in {_norm_name(n) for n in names}:
+            names.append(nm.strip())
+    association_ignored = [str(a) for a in (association or ()) if a]
+    if person_ids or names:
+        # The record's own evidence, and nothing else, decides the binding.
+        return {"bound": True, "person_ids": person_ids, "names": names,
+                "unbound_reason": None,
+                "association_ignored": association_ignored}
+    # An empty record renders UNBOUND (the G28 contract) — never
+    # association-filled: the vacuum is exactly where the wrong name got in.
+    return {"bound": False, "person_ids": [], "names": [],
+            "unbound_reason": "the cited record names no participants",
+            "association_ignored": association_ignored}
+
+
+def brief_claim_audit(meeting_event, claimed, *, email_index=None,
+                      resolved_names=None) -> dict:
+    """G28's MIS-binding half (SPEC BRIEFBIND1). Does the cited record
+    SUPPORT the counterparty a brief names?
+
+    `meeting_binding_audit` answers "is the record bound at all" — the
+    UN-binding class BUG-8244 fixed. It cannot see the strictly worse
+    failure: a record that names person A under a brief that names person B.
+    This audit takes the claim itself and reds on exactly that.
+
+    `claimed`: the person the brief headlines — a person_id or a display
+    name. Falsy `claimed` asserts the brief rendered UNBOUND.
+
+    Verdicts (`{"record_present", "supported", "reason"}`):
+      * record present, claim among its participants  -> supported
+      * record present, claim absent from it          -> NOT supported —
+        the MIS-binding case ("the cited record does not name them")
+      * record empty, brief names someone             -> NOT supported —
+        the association-fill case
+      * record empty, brief unbound                   -> supported (the
+        G28 contract shape)
+    """
+    ev = meeting_event if isinstance(meeting_event, dict) else {}
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    try:
+        from event_refs import meeting_person_ids
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from event_refs import meeting_person_ids
+    person_ids = {str(p) for p in meeting_person_ids(ev, email_index)}
+    external = [n for n in (data.get("attendees_external") or [])
+                if isinstance(n, str) and n.strip()]
+    record_present = bool(person_ids or external)
+    claim = str(claimed or "").strip()
+    if not claim:
+        if record_present:
+            return {"record_present": True, "supported": False,
+                    "reason": "the record names participants and the brief "
+                              "renders unbound"}
+        return {"record_present": False, "supported": True,
+                "reason": "empty record, unbound brief — the G28 contract"}
+    if not record_present:
+        return {"record_present": False, "supported": False,
+                "reason": "the cited record names no participants — a named "
+                          "counterparty here is association-filled"}
+    supported_names = {_norm_name(n) for n in external}
+    lookup = resolved_names if isinstance(resolved_names, dict) else {}
+    for pid in person_ids:
+        nm = lookup.get(pid)
+        if nm:
+            supported_names.add(_norm_name(nm))
+    if claim in person_ids or _norm_name(claim) in supported_names:
+        return {"record_present": True, "supported": True,
+                "reason": "named on the cited record"}
+    return {"record_present": True, "supported": False,
+            "reason": "the cited record does not name them"}
+
+
 def meeting_ref_keys(ref) -> set:
     """PUBLIC name for the meeting-reference key derivation (`_norm_ref_keys`).
 
@@ -1045,6 +1184,13 @@ _CONSEQUENCE_RE = re.compile(
     | \bin\s+time\s+for\b
     | \bso\s+(?:that\s+)?(?:we|they|i|you|it)\s+can\b
     | \b(?:is|are|'s)?\s*block(?:ing|ed)\b
+    # EXCH1 rider — dependency stated as a noun. A row whose own captured text
+    # called the item "the standing obstacle on the closing rock" was stamped
+    # "nothing depends on it": the class knew the verb forms of blocking and
+    # none of the nouns people use for the same fact.
+    | \b(?:obstacle|blocker|roadblock|bottleneck)\b
+    | \bhinges\s+on\b
+    | \bcritical\s+path\b
     | \bwaiting\s+on\b
     | \bholds?\s+up\b
     | \bfor\s+(?:the\s+)?(?:board|launch|kickoff|close|closing|renewal|
@@ -1710,6 +1856,196 @@ _SUPERSEDE_CUE_RE = re.compile(
     """
 )
 
+# =============================================================================
+# EXCH1 — reason assignment adjudicates the EXCHANGE, not the line (2026-08-24).
+# =============================================================================
+#
+# The first operator walk of the held-review reading chair pulled four
+# below-floor rows against their originating transcripts and found three whose
+# stated reason is factually false, all one shape: the verdict was computed
+# from the utterance that TRIGGERED the capture, and nothing read the turns
+# that follow it. A commitment does not live in a line — it lives in an
+# exchange: offer, then acceptance, then sometimes a revision of scope.
+#
+#   actual exchange                     what the classifier saw   its label
+#   offer -> acceptance next turn       the offer                 "never accepted"
+#   request -> "yeah" next turn         the request               "never accepted"
+#   offer -> scope narrowed, still on   the narrowing             "taken back"
+#
+# SIBLING OF FLOOR3 v2, NOT A DUPLICATE. v2 established the doctrine — the cue
+# is in the transcript, not the sentence — and applied it to what the FLOOR
+# reads (the J-1 discharge check moved to the tail). REASON ASSIGNMENT still
+# read one line: NOT_ACCEPTED is a pure function of the evidence string, and
+# the supersession check read the tail only to find a retraction cue, never to
+# notice the same speaker re-committing right after it. This layer carries the
+# v2 doctrine into the two verdicts that adjudicate agreement.
+#
+# WHERE THE WINDOW ENDS. Acceptance is answered where conversation answers —
+# in the reply. The three confirmed failures all carry the acceptance in the
+# immediately following turn, so the window is DISCHARGE_WINDOW_WORDS' scale
+# (30 tokens ~ a couple of turns, the bound FLOOR3 v2 measured at 20/30/45/60
+# and found saturated at 30), with one refinement: a BARE affirmative ("yeah",
+# "okay") counts only inside the first ACCEPTANCE_IMMEDIATE_WORDS tokens —
+# the reply turn itself — because a bare "yeah" thirty tokens later is about
+# whatever is being discussed by then. A STRONG acceptance ("that's perfect",
+# "sounds good, send it over") carries its own tie and reads anywhere in the
+# window. Nothing reads further: an acceptance three minutes later answers a
+# different exchange, and the cost of missing it is a row that stays VISIBLE
+# in the review queue — the safe direction by the 2026-08-01 ruling.
+ACCEPTANCE_WINDOW_WORDS = 30
+# The reply turn: where a bare affirmative is still an answer to THIS offer.
+# ~12 tokens covers a speaker label plus a short sentence.
+ACCEPTANCE_IMMEDIATE_WORDS = 12
+# How far past a retraction cue a re-commitment still reads as the same
+# breath. MEASURED, not authored: on the confirmed narrowing case the
+# speaker's definitive re-commitment ("I'll send you a kind of overall
+# model and then kind of a recap…") lands 44 tokens after the cue — the
+# revision is a speaker talking through what they WILL do instead, which is
+# a few sentences, not one. 60 covers it with headroom and is still half of
+# SUPERSEDE_WINDOW_WORDS, so a "re-commitment" can never be further from
+# its cue than the cue is allowed to be from the offer.
+RECOMMIT_WINDOW_WORDS = 60
+
+# Acceptance that carries its own weight — phrases that only mean "yes, do
+# that". Fusion vocabulary: contractions pre-split, no punctuation.
+_ACCEPTANCE_STRONG_RE = re.compile(
+    r"""(?ix)
+      \b(?:that|it)\s+s\s+perfect\b
+    | \bsounds\s+(?:good|great|perfect|like\s+a\s+plan)\b
+    | \bthat\s+(?:works|would\s+work)\b
+    | \bworks\s+for\s+(?:me|us)\b
+    | \bthat\s+would\s+be\s+(?:great|perfect|awesome|helpful|amazing)\b
+    | \blet\s+s\s+do\s+(?:it|that)\b
+    | \bwill\s+do\b
+    | \bhappy\s+to\b
+    | \byes\s+please\b
+    | \bplease\s+do\b
+    | \bgo\s+for\s+it\b
+    | \b(?:i|we)\s+can\s+do\s+that\b
+      # REVIEW F-1 R-1: the intensifiers guard against the NEGATION CLASS,
+      # not the literal word — "do not", "no way", "never", and the split
+      # contractions all flip the polarity. "no problem"/"no worries" are
+      # carved back out: those are acceptances wearing a negative (the same
+      # ruling the decline vocabulary records).
+    | \bfor\s+sure\b
+        (?!\s+(?:not|never|do\s+not|don\s+t|won\s+t|can\s+t
+               |cannot|will\s+not
+               |no(?!\s+(?:problem|worries)\b))\b)
+    | \babsolutely\b
+        (?!\s+(?:not|never|do\s+not|don\s+t|won\s+t|can\s+t
+               |cannot|will\s+not
+               |no(?!\s+(?:problem|worries)\b))\b)
+    | \bdefinitely\b
+        (?!\s+(?:not|never|do\s+not|don\s+t|won\s+t|can\s+t
+               |cannot|will\s+not
+               |no(?!\s+(?:problem|worries)\b))\b)
+    | \bsweet\b
+      # REVIEW F-1 R-1: the handshake "deal" must not fire when the next word
+      # says the deal COLLAPSED. "is/'s dead|off" stays out of this list on
+      # purpose — that shape is the tie rule's live witness (decline twin
+      # anchored at the same token), and both layers are pinned by removal.
+    | \bdeal\b(?!\s+(?:fell|collapsed|died|went)\b)
+    """
+)
+
+# The bare affirmative — an answer only where the token stream says a reply
+# could be. Both live shapes were found by replaying the real substrate:
+#
+#   REPLY     after a turn marker ("Them: Yeah."). The backend stamps turns
+#             as `Me:` / `Them:`, which normalize to bare `me` / `them`
+#             tokens, so "marker then affirmative" is a reply.
+#   MERGED    at the immediate head of the tail with speech continuing
+#             through it ("…when you have it? Yeah. Because my next step…").
+#             This backend routinely folds a counterparty's short interjection
+#             into the current speaker's turn (its attribution is documented
+#             as unreliable), so a head-position affirmative is ambiguous
+#             between a mis-attributed reply and the speaker's own discourse
+#             glue. It counts, because the two costs are not symmetric: the
+#             glue reading leaves a live commitment silently hidden, the
+#             reply reading leaves a dead row visible in review.
+#   …but NOT  turn-FINAL: an affirmative the floor changes hands right after
+#             ("…or something like that too. Yeah.  Them: …") is the offering
+#             speaker's own trailing filler, and the replay caught exactly
+#             that shape rescuing a row it should not have.
+#
+# Label-free transcripts have no markers, so only the head-position leg and
+# strong acceptances can ever fire there — the conservative direction.
+_ACCEPTANCE_BARE_RE = re.compile(
+    r"\b(?:yeah|yes|yep|yup|sure|ok|okay|perfect)\b"
+)
+_TURN_MARKER_TOKENS = frozenset(("me", "them"))
+# How many tokens past a head-position affirmative to look for the floor
+# changing hands (the turn-final shape above): the marker lands within a
+# token or two of the filler in every observed instance.
+_TURN_FINAL_LOOKAHEAD = 2
+
+# REVIEW F-1c — the bare leg learns polarity. "Yeah, no." is the canonical
+# colloquial refusal: the affirmative is discourse glue and the NEGATION
+# right behind it is the answer. A bare candidate is skipped when a negation
+# head lands within _BARE_NEG_LOOKAHEAD tokens of it — unless the negation
+# is itself softened into an acceptance ("no problem", "not a problem",
+# "no worries"), the same carve-out the strong leg records. The lookahead
+# never crosses a turn marker: the floor changing hands ends the answer,
+# and the next speaker's "no" is about their own sentence.
+_BARE_NEG_TOKENS = frozenset(("no", "not", "nope", "never", "cannot"))
+_BARE_NEG_SPLIT_HEADS = frozenset(("won", "can", "don"))
+_BARE_NEG_SOFTENERS = frozenset(("problem", "worries", "issue"))
+_BARE_NEG_LOOKAHEAD = 4
+
+
+def _bare_polarity_flipped(window: list, pos: int) -> bool:
+    """Does a negation inside the lookahead flip this bare affirmative?"""
+    look = window[pos + 1: pos + 1 + _BARE_NEG_LOOKAHEAD]
+    for i, tok in enumerate(look):
+        if tok in _TURN_MARKER_TOKENS:
+            break
+        neg = tok in _BARE_NEG_TOKENS or (
+            tok in _BARE_NEG_SPLIT_HEADS
+            and i + 1 < len(look) and look[i + 1] == "t")
+        if not neg:
+            continue
+        softened = any(t in _BARE_NEG_SOFTENERS
+                       for t in look[i + 1: i + 3])
+        if not softened:
+            return True
+    return False
+
+# The reply DECLINING the offer. A decline before any acceptance leaves the
+# verdict standing. Deliberately absent: "no worries" / "no problem" — those
+# are acceptances wearing a negative.
+_ACCEPTANCE_DECLINE_RE = re.compile(
+    r"""(?ix)
+      \bdon\s+t\s+(?:worry|bother)\b
+    | \bno\s+need\b
+    | \byou\s+don\s+t\s+have\s+to\b
+    | \bnah\b
+    | \bno\s+(?:that|it)\s+s\s+(?:ok|okay|fine|alright)\b
+    | \bwe\s+re\s+(?:good|fine|all\s+set)\b
+    | \bi\s+m\s+good\b
+    | \blet\s+s\s+not\b
+    | \bmaybe\s+later\b
+    | \bnot\s+(?:yet|now|necessary)\b
+    | \b(?:absolutely|definitely|for\s+sure)\s+(?:not|never|no\s+way)\b
+    | \bno\s+deal\b
+    | \bdeal\s+(?:is|s)\s+(?:dead|off)\b
+    | \bdeal\s+(?:fell\s+through|collapsed)\b
+    """
+)
+
+# First-person future delivery — the shape of a speaker re-committing to the
+# act. Verb-anchored: "I'll send" re-commits, "we'll skip that" does not.
+_RECOMMIT_RE = re.compile(
+    r"""(?ix)
+      \b(?:i|we)\s+(?:ll|will|can)\s+(?:just\s+)?
+        (?:send|give|get|put|pull|share|shoot|draft|write|make|do|have|
+           circulate|deliver|forward|schedule|book|email|text)\b
+    | \b(?:i\s+m|we\s+re)\s+(?:gonna|going\s+to)\s+(?:just\s+)?
+        (?:send|give|get|put|pull|share|shoot|draft|write|make|do|have|
+           circulate|deliver|forward|schedule|book|email|text)\b
+    | \blet\s+me\s+(?:send|give|get|put|pull|draft|write|share|shoot)\b
+    """
+)
+
 
 def _fusion_token_spans(text) -> list:
     """`[(token, start, end, source_text)]` over the FUSION token class, with
@@ -1898,6 +2234,91 @@ def done_in_meeting_reason(data: dict, transcript_text=None) -> str:
     return ""
 
 
+def accepted_in_exchange(data: dict, transcript_text=None) -> dict:
+    """EXCH1 — did the turns FOLLOWING the trigger line accept the offer?
+    Returns `{"accepted": bool, "quote": str}`; the quote is verbatim
+    transcript, sliced by the matched tokens' own offsets.
+
+    Runs only where a NOT_ACCEPTED verdict is about to stand, and only on the
+    fetched transcript. Acceptance in a following turn beats absence of
+    acceptance in the trigger line — the trigger line is an offer or a
+    request, and offers are answered by the OTHER party, in the next turn,
+    which is exactly the text the one-line verdict never read.
+
+    Three cue classes, resolved by position:
+      strong    a phrase that only means "yes, do that" — anywhere in the
+                ACCEPTANCE_WINDOW_WORDS tail.
+      bare      "yeah" / "okay" — only inside ACCEPTANCE_IMMEDIATE_WORDS,
+                the reply turn, where it is still an answer to THIS line.
+      decline   a refusal. A decline AT OR BEFORE the first acceptance wins:
+                "no need — " followed by polite noise is not an acceptance,
+                and "absolutely not" / "deal is dead" anchor a refusal at the
+                cue word itself (REVIEW F-1 — the tie reads as the refusal).
+
+    Inert (never rescues) when there is no transcript or the evidence cannot
+    be anchored in it — the same skip-not-fail contract as every transcript
+    check, and the same anchoring the fusion check uses, so evidence that
+    fusion would refuse can never be "accepted" here (the F-2 dependency
+    holds by construction rather than by ordering).
+
+    Pure — the caller supplies the transcript it already loaded."""
+    out = {"accepted": False, "quote": ""}
+    spans = _fusion_token_spans(transcript_text)
+    if not spans:
+        return out
+    at = _evidence_anchor(data or {}, spans)
+    if not at:
+        return out
+    tail_from = at[1]
+    window = [s[0] for s in spans][tail_from:tail_from
+                                   + ACCEPTANCE_WINDOW_WORDS]
+    if not window:
+        return out
+    joined = " ".join(window)
+
+    strong = _ACCEPTANCE_STRONG_RE.search(joined)
+    strong_idx = (len(joined[:strong.start()].split())
+                  if strong is not None else None)
+    # The bare leg walks tokens, not text: it needs "did a turn marker come
+    # first", which is a property of token order.
+    bare_idx = None
+    marker_seen = False
+    for pos, tok in enumerate(window[:ACCEPTANCE_IMMEDIATE_WORDS]):
+        if tok in _TURN_MARKER_TOKENS:
+            marker_seen = True
+            continue
+        if not _ACCEPTANCE_BARE_RE.fullmatch(tok):
+            continue
+        if _bare_polarity_flipped(window, pos):
+            # REVIEW F-1c — "Yeah, no." The affirmative is glue and the
+            # negation behind it is the answer. Keep walking: a later bare
+            # affirmative may still be a clean one.
+            continue
+        if marker_seen:  # REPLY — a marker put the floor on the other side
+            bare_idx = pos
+            break
+        if pos <= 1 and not any(
+                t in _TURN_MARKER_TOKENS
+                for t in window[pos + 1:pos + 1 + _TURN_FINAL_LOOKAHEAD]):
+            # MERGED head-position affirmative, and not turn-final.
+            bare_idx = pos
+            break
+    if strong_idx is None and bare_idx is None:
+        return out
+    idx = min(i for i in (strong_idx, bare_idx) if i is not None)
+    decline = _ACCEPTANCE_DECLINE_RE.search(joined)
+    # REVIEW F-1: <= not < — when the refusal phrase is HEADED by the cue word
+    # itself ("absolutely not", "deal is dead") both REs anchor at the same
+    # token, and a tie must read as the refusal it is.
+    if decline is not None and len(joined[:decline.start()].split()) <= idx:
+        return out
+    first = spans[tail_from + idx]
+    last = spans[min(len(spans) - 1, tail_from + idx + 5)]
+    out["accepted"] = True
+    out["quote"] = clip(first[3][first[1]:last[2]].strip())
+    return out
+
+
 def superseded_in_meeting(data: dict, transcript_text=None) -> dict:
     """FLOOR2 B (J-2) — the SAME conversation took the offer back. Returns
     `{"reason": "", "quote": ""}` when it did not (or when the check cannot
@@ -1905,7 +2326,7 @@ def superseded_in_meeting(data: dict, transcript_text=None) -> dict:
 
     Runs on the FETCHED transcript, never on a summary of it, and only on the
     REMAINDER after the item's own evidence span — a retraction that precedes
-    the offer is not a retraction of it. TWO conditions, both required:
+    the offer is not a retraction of it. THREE conditions, all required:
 
       near    the cue falls within `SUPERSEDE_WINDOW_WORDS` of the span (the
               same stretch of conversation), and
@@ -1913,7 +2334,17 @@ def superseded_in_meeting(data: dict, transcript_text=None) -> dict:
               the item's TOPIC — the title, the evidence, and the
               `SUPERSEDE_CONTEXT_WORDS` of transcript that led into it, because
               a retraction answers the exchange and not the one sentence an
-              extractor kept.
+              extractor kept, and
+      final   (EXCH1) no topic-tied first-person re-commitment follows the cue
+              within `RECOMMIT_WINDOW_WORDS`. A retraction requires the thing
+              itself being called off — a speaker who says "I don't need to
+              [go that deep] — I'll send you an overall model" has narrowed
+              the SCOPE and re-committed to the ACT, and reading the narrowing
+              as a retraction is the confirmed defect this leg closes. The
+              tie is one shared content token between the re-commitment's own
+              `SUPERSEDE_QUOTE_WORDS` stretch and the topic: the verb-anchored
+              `_RECOMMIT_RE` supplies the commitment shape, and the shared
+              token is what says it is the same act being delivered.
 
     Proximity alone gates every clean promise on a dense call (measured during
     the build: four of four); the lexical tie is what makes "never mind" about
@@ -1959,6 +2390,24 @@ def superseded_in_meeting(data: dict, transcript_text=None) -> dict:
                        if len(t) > 1 and t not in _FLOOR_STOPWORDS}) \
                 < SUPERSEDE_MIN_SHARED:
             continue  # a retraction of something else
+        # EXCH1 `final` — the exchange's last word wins. A cue followed by the
+        # speaker re-committing to the same act is a revision of scope, not a
+        # retraction; a LATER cue still gets its own scan, so "I'll send it —
+        # actually never mind" retracts and "never mind the deep dive — I'll
+        # send the overall model" does not.
+        follow = remainder[idx:idx + RECOMMIT_WINDOW_WORDS]
+        fj = " ".join(follow)
+        m2 = _RECOMMIT_RE.search(fj)
+        if m2 is not None:
+            # The tie reads the re-commitment's OBJECT — the words after the
+            # matched verb phrase — never the phrase itself. "I'll send…"
+            # shares "send" with half the topic set of every send-shaped
+            # item, and a tie the verb can satisfy alone reads "never mind
+            # X, separately I'll send Y" as X surviving.
+            region = fj[m2.end():].split()[:SUPERSEDE_QUOTE_WORDS]
+            if want & {t for t in region
+                       if len(t) > 1 and t not in _FLOOR_STOPWORDS}:
+                continue  # scope narrowed, still committed — not called off
         # The quote is sliced out of the SOURCE text by the matched tokens' own
         # offsets, so it is verbatim including its punctuation — never a
         # re-rendering of the normalized form.
@@ -2025,6 +2474,17 @@ def admit_meeting_capture(
     fusion_state = fusion_status(data, transcript_text)
 
     floor = capture_floor_reason(data)
+    # EXCH1 — acceptance in a following turn beats absence of acceptance in
+    # the trigger line. The NOT_ACCEPTED condition is the one floor verdict
+    # that is a claim about the EXCHANGE ("never accepted") computed from one
+    # line, so it alone gets the transcript's answer before it stands. The
+    # check anchors the evidence the same way fusion does — unanchorable
+    # evidence is inert, never rescued — and a rescued item still walks every
+    # gate below: fusion can refuse it, the FLOOR2 layer can find it
+    # discharged or genuinely retracted, and relevance still assigns its lane.
+    if floor == FLOOR_NOT_ACCEPTED \
+            and accepted_in_exchange(data, transcript_text)["accepted"]:
+        floor = ""
     if floor:
         # Below the floor — and since M's 2026-08-01 ruling that is a routing
         # verdict, never a deletion (see the PRECEDENCE note above).
@@ -2709,6 +3169,10 @@ __all__ = [
     "SUPERSEDE_QUOTE_WORDS",
     "DISCHARGE_WINDOW_WORDS",
     "DEMO_REGISTER_MIN_CUES",
+    "ACCEPTANCE_WINDOW_WORDS",
+    "ACCEPTANCE_IMMEDIATE_WORDS",
+    "RECOMMIT_WINDOW_WORDS",
+    "accepted_in_exchange",
     "demo_register",
     "collapse_duplicate_captures",
     "floor_reason_code",

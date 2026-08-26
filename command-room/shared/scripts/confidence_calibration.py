@@ -35,10 +35,12 @@ from typing import Dict, List, Optional
 
 try:
     from events_io import iter_events
+    from event_types import is_non_dismissal_closure
 except Exception:  # pragma: no cover
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     from events_io import iter_events  # type: ignore
+    from event_types import is_non_dismissal_closure  # type: ignore
 
 MIN_SAMPLES = 20          # small-n floor per band (Loop 4 spec: ≥20)
 LOOSEN_RATE = 0.95        # confirm-rate to justify lowering auto-resolve
@@ -76,7 +78,16 @@ def load_review_outcomes(workspace_root) -> List[dict]:
         elif t == "commitment_resolved" and cid:
             resolved.add(cid)
         elif t == "commitment_review_dismissed" and cid:
-            dismissed.add(cid)
+            # REFINT1 — a SYSTEM tombstone is not the CEO saying "not
+            # relevant". The dangling-row drain terminally dismisses
+            # proposals whose commitment was never created, stamped with a
+            # lapse reason under the shared vocabulary key; counting those
+            # as user rejections would move these bands off events no human
+            # ever adjudicated (the observed orphans score 0.43–0.5 —
+            # squarely inside DEFAULT_BANDS). Same doctrine as the
+            # suppression learners' REVAMN1 rule, applied to this reader.
+            if not is_non_dismissal_closure(data):
+                dismissed.add(cid)
         elif t == "commitment_reopened" and cid:
             reopened.add(cid)
 

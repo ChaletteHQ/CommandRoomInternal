@@ -60,7 +60,12 @@ WHAT THIS MODULE IS
                               rest
   build_watching_view / render_watching_text
                               `show watching`: a read-only list of parked
-                              items, each individually confirmable on demand
+                              items, each individually confirmable on demand.
+                              OBSERVED1: also carries the SET-ASIDE section —
+                              live `commitment_observed` rows with the tier's
+                              confirm/drop verbs, so the observed tier is
+                              answerable from the surface whose name promises
+                              exactly that
 
 CONNECTOR-AGNOSTIC BY CONSTRUCTION
 ==================================
@@ -889,8 +894,9 @@ def self_confirm(workspace_root, commitment_id, *, signal: dict,
     transcript that corroborated. A caller whose backend gave it no id passes
     none and the close lands marked — visible, never blocked.
     """
-    from commitment_state import (CommitmentIdError, OpenSubitemsError,
-                                  PendingReviewError, close_commitment)
+    from commitment_state import (AmbiguousTargetError, CommitmentIdError,
+                                  OpenSubitemsError, PendingReviewError,
+                                  close_commitment)
 
     kind = (signal or {}).get("kind")
     if kind not in CORROBORATION_KINDS:
@@ -911,7 +917,8 @@ def self_confirm(workspace_root, commitment_id, *, signal: dict,
     except PendingReviewError as exc:
         return {"status": "held_pending_review",
                 "commitment_id": str(commitment_id), "detail": str(exc)}
-    except (CommitmentIdError, OpenSubitemsError) as exc:
+    except (CommitmentIdError, OpenSubitemsError,
+            AmbiguousTargetError) as exc:
         return {"status": "not_closed", "commitment_id": str(commitment_id),
                 "detail": str(exc)}
     return res
@@ -933,8 +940,9 @@ def close_as_assumed(workspace_root, commitment_id, *, resolved_by: str,
     cited anything; the watching surface let it expire at that instant), and
     the grain marker is what keeps it out of the artifact-backed number the
     coverage line reports."""
-    from commitment_state import (CommitmentIdError, OpenSubitemsError,
-                                  PendingReviewError, close_commitment)
+    from commitment_state import (AmbiguousTargetError, CommitmentIdError,
+                                  OpenSubitemsError, PendingReviewError,
+                                  close_commitment)
     try:
         return close_commitment(
             workspace_root, str(commitment_id), resolved_by=resolved_by,
@@ -945,7 +953,8 @@ def close_as_assumed(workspace_root, commitment_id, *, resolved_by: str,
     except PendingReviewError as exc:
         return {"status": "held_pending_review",
                 "commitment_id": str(commitment_id), "detail": str(exc)}
-    except (CommitmentIdError, OpenSubitemsError) as exc:
+    except (CommitmentIdError, OpenSubitemsError,
+            AmbiguousTargetError) as exc:
         return {"status": "not_closed", "commitment_id": str(commitment_id),
                 "detail": str(exc)}
 
@@ -1024,8 +1033,9 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
     Returns {"results", "n_confirmed", "n_held", "n_parked", "n_failed",
              "held", "ack"}.
     """
-    from commitment_state import (CommitmentIdError, OpenSubitemsError,
-                                  PendingReviewError, close_commitment)
+    from commitment_state import (AmbiguousTargetError, CommitmentIdError,
+                                  OpenSubitemsError, PendingReviewError,
+                                  close_commitment)
     try:
         from confidence import watch_window_days as _window
     except Exception:  # pragma: no cover — shipped constant fallback
@@ -1123,7 +1133,8 @@ def confirm_review_rows(workspace_root, rows, *, resolved_by: str,
                 source_ref=_prefixed_ref(row.get("matched_ref")),
                 mint_now_iso=now,
             )
-        except (CommitmentIdError, OpenSubitemsError, PendingReviewError) as exc:
+        except (CommitmentIdError, OpenSubitemsError, PendingReviewError,
+                AmbiguousTargetError) as exc:
             results.append({"id": rid, "commitment_id": cid,
                             "status": "not_closed", "detail": str(exc)})
             n_failed += 1
@@ -1258,6 +1269,13 @@ WATCHING_EMPTY_TEXT = ("Nothing on watch — every guess has either proved "
 
 _WATCHING_ACTIONS = ["confirm", "drop", "hold"]
 
+# REVIEW OBSERVED1 R6 — the most set-aside rows this surface renders. Its
+# documented widget render is the UNPAGINATED transport call (Step 4 of the
+# skill), which performs no 40KB byte fit — so the section bounds itself,
+# oldest first, and names the overflow. The full tier is always reachable
+# through needs-your-call, whose pager fits by group and by byte.
+WATCHING_OBSERVED_CAP = 20
+
 
 def build_watching_view(workspace_root, *, now_iso: str | None = None) -> dict:
     """The `show watching` data view — PURE READ, shaped for
@@ -1266,6 +1284,16 @@ def build_watching_view(workspace_root, *, now_iso: str | None = None) -> dict:
     Each row says what it rests on and how long it has left, and carries the
     per-item verbs, because the whole promise of parking something is that the
     user can still reach in and answer it whenever they want.
+
+    OBSERVED1 — the view also carries the SET-ASIDE section: live observed
+    rows (`capture_gate.live_observed` — unexpired, never promoted), each
+    with the tier's own confirm/drop verbs, dispatched through the queue's
+    write wrappers exactly like a watched row's. This surface is where the
+    tier's silence was costing the most: "watching" is the user's word for
+    "things you half-know about", and the observed tier IS that — half-known
+    items that were influencing prep while no surface could answer one.
+    Drop-empty: a workspace with no live observed rows gets a byte-identical
+    view.
     """
     now = now_iso or _now_iso()
     rows = load_watched(workspace_root, now_iso=now)
@@ -1289,14 +1317,86 @@ def build_watching_view(workspace_root, *, now_iso: str | None = None) -> dict:
             "actions": list(_WATCHING_ACTIONS),
         })
     total = len(items)
+
+    # OBSERVED1 — the set-aside rows, numbered CONTINUING after the watched
+    # rows so a typed "confirm N" is unambiguous across the whole render.
+    # Defensive load: this view must render without its new section before it
+    # renders without its own rows.
+    obs_items: list[dict] = []
+    n_obs_total = 0
+    try:
+        from capture_gate import (OBSERVED_ROW_ACTIONS,
+                                  OBSERVED_SECTION_TITLE, live_observed)
+        obs_rows = live_observed(workspace_root, now=_parse(now))
+    except Exception:
+        obs_rows = []
+    # REVIEW OBSERVED1 R6 — this surface's documented widget render is the
+    # unpaginated transport call (no byte fit), so the section is CAPPED and
+    # says so: oldest first (the rotation rule — answering the front of the
+    # tier is what advances it), the overflow named in the title, and the
+    # full tier always reachable through needs-your-call's paginated pages.
+    n_obs_total = len(obs_rows)
+    obs_rows = obs_rows[:WATCHING_OBSERVED_CAP]
+    now_dt = _parse(now)
+    for j, ev in enumerate(obs_rows, start=total + 1):
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        # REVIEW R1 — the wire id matches the queue surface's spelling for
+        # the same row (`data.id`, or the `commitment_seq_<seq>` fallback a
+        # legacy id-less row renders under), so one row answers by one id
+        # from either door.
+        oid = str(d.get("id") or "") or (
+            f"commitment_seq_{ev.get('seq')}"
+            if ev.get("seq") is not None else "")
+        bits = []
+        seen = _parse(ev.get("ts") or "")
+        if seen is not None and now_dt is not None:
+            age = int((now_dt - seen).total_seconds() // 86400)
+            bits.append("set aside today" if age <= 0
+                        else ("set aside 1 day ago"
+                              if age == 1 else f"set aside {age} days ago"))
+        reason = str(d.get("observed_reason") or "").strip()
+        if reason:
+            bits.append(reason)
+        bits.append(strength_line(commitment_weak_reason(ev),
+                                  evidence=str(d.get("evidence") or "")))
+        obs_items.append({
+            "n": oid,
+            "display_n": j,
+            # REVIEW S5 — same title fallback as the queue surface, so one
+            # row wears one name on both doors.
+            "name": str(d.get("title") or d.get("summary") or "(untitled)"),
+            "context_tag": " · ".join(b for b in bits if b),
+            "data": {"id": oid},
+            "actions": list(OBSERVED_ROW_ACTIONS),
+        })
+
     noun = "item" if total == 1 else "items"
+    sections = ([{"title": "ON WATCH", "count": total, "items": items}]
+                if items else [])
+    if obs_items:
+        obs_title = OBSERVED_SECTION_TITLE
+        if n_obs_total > len(obs_items):
+            obs_title = (f"{OBSERVED_SECTION_TITLE} — showing "
+                         f"{len(obs_items)} of {n_obs_total}, oldest first; "
+                         f"say `needs your call` for the rest")
+        sections.append({"title": obs_title,
+                         "count": len(obs_items), "items": obs_items})
+    # REVIEW R4 — with nothing on watch but a populated set-aside section,
+    # the counted header would read "0 items" above rows; say what is
+    # actually on screen instead.
+    if items or not obs_items:
+        header = f"Watching — {total} {noun} I'm still trying to prove"
+    else:
+        n = len(obs_items)
+        obs_noun = "item" if n == 1 else "items"
+        header = (f"Watching — nothing I'm still trying to prove, but "
+                  f"{n} set-aside {obs_noun} from your calls:")
     view = {
         "source_skill": "needs-your-call",
-        "header": f"Watching — {total} {noun} I'm still trying to prove",
-        "sections": ([{"title": "ON WATCH", "count": total, "items": items}]
-                     if items else []),
+        "header": header,
+        "sections": sections,
     }
-    if not items:
+    if not items and not obs_items:
         view["quick_read"] = WATCHING_EMPTY_TEXT
         view["pointer"] = WATCHING_EMPTY_TEXT
     return view
@@ -1317,6 +1417,20 @@ def render_watching_text(view: dict) -> str:
     lines.append("")
     lines.append("Say `confirm 2` to close one now, or `drop 2` to let it go. "
                  "Left alone, I keep looking.")
+    # REVIEW OBSERVED1 R4 — on a SET ASIDE row the same verb OPENS rather
+    # than closes; the fixed hint above would promise the opposite.
+    try:
+        from capture_gate import OBSERVED_SECTION_TITLE
+
+        has_observed = any(
+            str(s.get("title") or "").startswith(OBSERVED_SECTION_TITLE)
+            for s in sections)
+    except Exception:
+        has_observed = False
+    if has_observed:
+        lines.append("On a set-aside row, `confirm` starts tracking it as an "
+                     "ordinary open item instead — nothing was being tracked "
+                     "yet.")
     return "\n".join(lines)
 
 

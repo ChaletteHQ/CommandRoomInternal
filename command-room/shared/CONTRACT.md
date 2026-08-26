@@ -238,7 +238,7 @@ The brief document itself MUST NOT include:
 - Internal entity IDs, file paths, routing-stage labels
 - Internal asks or follow-up drafts
 
-Brief content = MEETING SUBSTANCE ONLY. Forwardable to a third party without redaction. Footer states: `Forwardable: yes — contains no internal asks or drafts.`
+Brief content = MEETING SUBSTANCE ONLY. Forwardable to a third party without redaction. One exception, and it needs no redaction either: the single plain-language Sources section `prep_pipeline.assemble_prep_sections` derives from actual consumption and appends last (PREPSRC1) — its labels come from a closed vocabulary ("Email", "Calendar", "Pre-meeting notes", …), never tokens, paths, or product names. Footer states: `Forwardable: yes — contains no internal asks or drafts.`
 
 ## Rule 16 — Self-refresh after every plugin upgrade
 

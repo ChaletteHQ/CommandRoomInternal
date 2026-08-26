@@ -1212,14 +1212,22 @@ def compute_brief_state(
         `counterparty_id` and that person's free-text name is ONE
         counterparty, not two. Without it Path 5's MC1 downgrade carries a
         parameter nothing fills (the post-review F-1 dead-rail finding). This
-        function still does no I/O of its own. `None` is byte-identically
-        pre-F-28.
+        function still does no I/O of its own — it forwards the path to
+        callees that do. `None` is byte-identically pre-F-28.
+        CLUSTCOUNT1 (2026-08-26) extends the forward: the same path also
+        reaches `commitment_cluster.render_clusters`, so `counts["headline"]`
+        gains `information_count` / `information_line` ("9 items, 41 rows")
+        whenever the confirmed open set actually clusters. `None` here is
+        also byte-identically pre-CLUSTCOUNT1 on this axis.
 
     Returns:
       {
         "counts": count_commitments(open_commitments, ...) — the canonical
             counting API's dict verbatim (total/you_owe/they_owe/unowned/
-            stuck/undated/by_kind),
+            stuck/undated/by_kind), with `counts["headline"]` additionally
+            carrying `information_count` / `information_line` when
+            CLUSTCOUNT1's clustering pass (above) found something to fold —
+            absent otherwise, never a guessed pair of equal numbers,
         "needs_attention": [  # you-owe items that survived ALL drops
             {"commitment_id", "title", "owner_id", "thread_id", "due",
              "overdue": bool}
@@ -1252,6 +1260,50 @@ def compute_brief_state(
     # line (orphan children partition top-level and surface normally).
     from cru_match import partition_subitems
     top_level_commitments, _sub_items = partition_subitems(open_commitments)
+
+    # CLUSTCOUNT1 (REVIEW_PR62 F-3 / DEV-1) — the bookend counters learn the
+    # information count. CLUSTER1 made every QUEUE surface state one line per
+    # real-world item; the two bookends (end-of-day, morning brief) could not
+    # follow it in that build because `count_commitments` is a pure reader
+    # over an already-loaded list, with no workspace in hand to run the
+    # clusterer. THIS function already holds `workspace_root` (F-28, for
+    # Path 5's roster read) — the SAME clusterer the queues consult
+    # (`commitment_cluster.render_clusters` / `information_count`) runs here,
+    # over the SAME confirmed top-level set `count_commitments` just counted:
+    # `top_level_commitments` (above) minus pending-review, via
+    # `_is_pending_review` — the one predicate `bucket_of` itself gates on,
+    # reused rather than re-derived, so this set is byte-for-byte
+    # `count_commitments`'s own `confirmed_top` (headline["total"] counts it).
+    #
+    # Additive and drop-empty, the CLUSTER1 contract one level up: the keys
+    # land on `counts["headline"]` ONLY when `workspace_root` is supplied AND
+    # something actually clusters. A workspace with no clusters — or a caller
+    # that still hands over no `workspace_root` — renders BYTE-IDENTICAL to
+    # pre-CLUSTCOUNT1 output; `render_clusters` is the same defensive wrapper
+    # every queue calls, so a clustering failure degrades to nothing here too,
+    # never to a broken bookend.
+    if workspace_root is not None:
+        try:
+            from commitment_cluster import information_count, render_clusters
+
+            confirmed_top = [ev for ev in top_level_commitments
+                             if not _is_pending_review(ev)]
+            clusters = render_clusters(confirmed_top,
+                                       workspace_root=workspace_root,
+                                       now_iso=now_iso)
+            if clusters:
+                n_rows = len(confirmed_top)
+                n_items = information_count(n_rows, clusters)
+                noun_items = "item" if n_items == 1 else "items"
+                noun_rows = "row" if n_rows == 1 else "rows"
+                counts["headline"]["information_count"] = n_items
+                counts["headline"]["information_line"] = (
+                    f"{n_items} {noun_items}, {n_rows} {noun_rows}")
+        except Exception as exc:  # pragma: no cover — a bookend must render
+            import sys as _sys
+            _sys.stderr.write(
+                f"[commitment_state] bookend clustering skipped: {exc}\n")
+
     you_owe_commitments: list[dict] = [
         ev for ev in top_level_commitments
         if _commitment_field(ev, "owner_id") == user_person_id
@@ -1593,9 +1645,24 @@ VALID_RESOLUTIONS = ("done", "dropped", "superseded")
 # arrived already resolved (a widget's embedded `data.id`; a row on a receipt
 # whose positions this fire rendered itself), `title` means a human's words
 # were turned into an id by matching, which is the one door the wrong-close
-# came through.
-RESOLVED_BY_MATCH_VALUES = ("id", "number", "title")
+# came through. `session` (CLOSEID2) means the session resolved the id ITSELF
+# — its own scan of the substrate, its own hand-built picker — and that door
+# does not exist: the writer refuses it unconditionally, because a
+# session-resolved id never inherits the pre-confirmed status of a
+# surface-resolved one.
+RESOLVED_BY_MATCH_VALUES = ("id", "number", "title", "session")
 MATCH_KEY = "resolved_by_match"
+
+# CLOSEID2 — the SESSION LANE: skills whose closes arrive from an ad-hoc chat
+# turn, where the "surface" is the session itself. In this lane an unstated
+# resolved_by_match cannot mean "the surface embedded the id" — there is no
+# surface but the model — so the writer refuses silence instead of letting it
+# inherit the id-keyed door (the 2026-08-24 Skip closed three live items
+# through exactly that silence). Membership is deliberately the catch-all
+# alone: every other closer's ids arrive from queue rows, numbered receipts,
+# watch entries, or widget payloads (sweep, SPEC_CLOSEID2 §3), and adding a
+# skill here is a statement that its closes have no surface anchor either.
+SESSION_RESOLVED_SOURCES = frozenset({"workspace-manager"})
 # DD-3 — how many candidates the ONE ambiguity row lists. Past three, a "which
 # of these did you mean" list stops being an answer and becomes the list the
 # user was already looking at.
@@ -1966,16 +2033,22 @@ def close_commitment(
         close without it — no path may AUTO-resolve them (PendingReviewError).
       extra_data: optional additional data keys (e.g. Bug #51's
         resolved_via_wrapper_seq). Never overrides the canonical keys.
-      resolved_by_match: CLOSEID1 — HOW the caller picked this target.
-        `"id"` (the surface embedded it), `"number"` (a row on a receipt whose
-        positions this fire itself rendered), `"title"` (the user's words), or
+      resolved_by_match: CLOSEID1/CLOSEID2 — HOW the caller picked this
+        target. `"id"` (the surface embedded it), `"number"` (a row on a
+        receipt whose positions this fire itself rendered), `"title"` (the
+        user's words), `"session"` (the session resolved the id itself), or
         None = unstated, the pre-CLOSEID1 default that every programmatic
-        closer still writes byte-identically. `"title"` is the only value this
-        writer polices, and it polices it by REFUSING: a name-picked close is
-        allowed only when the user confirmed it AND the name resolved to
-        exactly one open item. Anything weaker raises AmbiguousTargetError with
-        the candidates and writes nothing — the caller lands it as a proposal
-        through `propose_ambiguous_close`. When stated, the value is stamped on
+        closer still writes byte-identically. Two values are policed by
+        REFUSING: `"title"` closes only when the user confirmed it AND the
+        name resolved to exactly one open item; `"session"` NEVER closes —
+        a session-resolved id takes the one-question path
+        (`propose_ambiguous_close`) or re-enters through the user's words
+        (`resolve_commitment_by_title` + the title door). And in the session
+        lane (`SESSION_RESOLVED_SOURCES` — the chat catch-all, where the
+        "surface" is the session itself) None refuses too: silence no longer
+        inherits the id-keyed door there, the caller must state which door
+        it came through. Every refusal raises AmbiguousTargetError with the
+        candidates and writes nothing. When stated, the value is stamped on
         `data.resolved_by_match` so the ledger records how identity was
         established, not just that something closed.
       title_candidates: how many open items the caller's name match hit. Only
@@ -2131,6 +2204,46 @@ def close_commitment(
         # again and MAY be re-closed.
         if _currently_closed(index, cid, target.get("seq")):
             return {"status": "already_resolved", "commitment_id": cid}
+
+        # CLOSEID2 — the rule, named: a close whose ids were resolved by the
+        # SESSION rather than by a rendered surface requires the same
+        # one-question path a name match does. The 2026-08-24 chat turn
+        # scanned the substrate itself, rendered its own picker, and Skip —
+        # the decline-to-answer control — closed all three candidates,
+        # because an unstated resolved_by_match inherited the id-keyed door
+        # by default. Two clauses close that — and they sit AFTER the
+        # already-closed check, unlike the title guard above: a name-picked
+        # close is a GUESS about identity and must be told so, but a bare or
+        # session-labeled id is a missing/failed label on a target the caller
+        # named exactly, and the documented already_resolved no-op ("that one
+        # was already closed") stays reachable for the session lane's
+        # legitimate double-tap retries. Nothing is written on either path.
+        if resolved_by_match == "session":
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}: the session resolved this id "
+                "itself, and a session-resolved id never inherits the "
+                "pre-confirmed status of a surface-resolved one (CLOSEID2). "
+                "Route the user's words through resolve_commitment_by_title "
+                "and close on its singular confirmed answer, or ask the one "
+                "question (propose_ambiguous_close, passing "
+                "resolved_by_match='session' so the row says what it is). A "
+                "decline on that question — Skip, dismiss, timeout, empty "
+                "submit — is NO ACTION, never a close.",
+                candidates=[], query="")
+        if resolved_by_match is None and source_skill in SESSION_RESOLVED_SOURCES:
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}: {source_skill!r} is the session "
+                "lane, where an unstated resolved_by_match means the model "
+                "picked the target itself (CLOSEID2) — silence does not "
+                "inherit surface trust here. State the door ONLY IF IT IS "
+                "TRUE: resolved_by_match='id' (a widget embedded this id), "
+                "'number' (the user said a row number from a receipt this "
+                "session rendered), or 'title' with title_query=<the user's "
+                "words>. An id you resolved yourself has no door — declare "
+                "'session' or take the one-question path "
+                "(propose_ambiguous_close) instead; never claim a surface "
+                "that did not render.",
+                candidates=[], query="")
 
         if _is_pending_review(target) and not user_confirmed:
             raise PendingReviewError(
@@ -2292,6 +2405,7 @@ def propose_ambiguous_close(
     evidence_ts: Optional[str] = None,
     source_ref=None,
     max_candidates: int = MAX_AMBIGUOUS_CANDIDATES,
+    resolved_by_match: str = "title",
 ) -> dict:
     """Where a refused name-close LANDS (CLOSEID1 DD-3, reshaped by review).
 
@@ -2402,7 +2516,18 @@ def propose_ambiguous_close(
         evidence_ts=evidence_ts,
     )
     data = dict(ev.get("data") or {})
-    data[MATCH_KEY] = "title"
+    # CLOSEID2 — the row says how its CANDIDATES were resolved. "title" (the
+    # default, and every pre-CLOSEID2 caller's truth): a human's words were
+    # matched. "session": the session's own scan produced them — the one
+    # place that value ever reaches disk, so an audit can tell a
+    # model-resolved ambiguity from a human one. The bulk fence is untouched
+    # either way: `weakness_reason` reads the EVIDENCE TEXT, not this key.
+    if resolved_by_match not in ("title", "session"):
+        raise ValueError(
+            f"invalid resolved_by_match {resolved_by_match!r} for an "
+            "ambiguity row (allowed: 'title', 'session') — 'id' and 'number' "
+            "are surface doors, and a surface-resolved id is never ambiguous")
+    data[MATCH_KEY] = resolved_by_match
     data["ambiguous_query"] = clip(str(query or ""))
     # The LIST, not a count: a reader that must ask "which did you mean" needs
     # the ids and the titles. A bare count told nobody anything, which is why
@@ -3828,7 +3953,9 @@ def add_subitems(
 def close_commitments(workspace_root, closures, *, source_skill: str) -> list[dict]:
     """Batch closure for callers that close several commitments in one run
     (reconcile-sent). Same contract as close_commitment per item; a
-    CommitmentIdError, PendingReviewError, OpenSubitemsError, or SourceRefError
+    CommitmentIdError, PendingReviewError, OpenSubitemsError, SourceRefError,
+    or AmbiguousTargetError (CLOSEID2 — this batch shape has no per-row door
+    to state, so a session-lane call refuses every row rather than the run)
     on one item is recorded as {"status": "error", ...} and does NOT abort the
     rest (a bad id — or a bad POINTER — in a batch of real closes must not lose
     the real closes; PROV1 refuses the one row, never the run).
@@ -3870,7 +3997,7 @@ def close_commitments(workspace_root, closures, *, source_skill: str) -> list[di
                 mint_now_iso=batch_mint_iso,
             ))
         except (CommitmentIdError, PendingReviewError, OpenSubitemsError,
-                SourceRefError) as e:
+                SourceRefError, AmbiguousTargetError) as e:
             sys.stderr.write(
                 f"[close_commitments] {type(e).__name__} for "
                 f"{c.get('commitment_id')!r}: {e}\n"
@@ -4012,8 +4139,24 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     from pathlib import Path as _Path
     from capture_gate import gate_commitment_data, user_initiated_source_ref
     from event_gate import append_event
+    # REVIEW TITLEMINT1 R-1 — the same non-empty-title refusal every OTHER
+    # commitment writer already carries (`inbound_capture`, `sent_capture`,
+    # `slack_capture`, `meeting_capture`, and `capture_gate`'s observed-item
+    # promoter). This one never had it, and `gate_commitment_data` — the block
+    # they all share — does not check the title, so this was the one door in
+    # the tree through which a TITLELESS commitment could reach the substrate.
+    # That shape is what makes TITLEMINT1's refuse-at-the-writer posture
+    # dangerous rather than merely strict: the non-title close bases
+    # (`REPLY_BASIS`, `DELIVERY_BASIS`) grade a titleless item into the
+    # `pending_review` band at score 0.0 by design, and the reconcile rails
+    # then hand that empty title to `build_pending_review_event`, which now
+    # raises — uncaught, inside a nightly loop. Refusing at capture is what
+    # keeps that population empty (measured: 0 titleless of 842 commitments).
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("a My Plate task needs a non-empty title")
     data = {
-        "title": (title or "").strip(),
+        "title": title,
         "kind": "task",
         "owner_id": owner_id,
         "status": "open",
@@ -4103,6 +4246,7 @@ __all__ = [
     "OpenSubitemsError",
     "AmbiguousTargetError",
     "RESOLVED_BY_MATCH_VALUES",
+    "SESSION_RESOLVED_SOURCES",
     "MAX_AMBIGUOUS_CANDIDATES",
     "AMBIGUITY_EVIDENCE_SHAPE",
     "resolve_commitment_by_title",

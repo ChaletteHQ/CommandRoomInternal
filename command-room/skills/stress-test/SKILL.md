@@ -1,7 +1,7 @@
 ---
 name: stress-test
 surfaces: both
-description: "Systematically map every path a plan, decision, or launch could fail — then reverse each failure mode into a structural safeguard. Fires on: 'stress test this plan', 'what could go wrong', 'pre-mortem' / 'pre-mortem on [topic]', 'poke holes in this', 'red team this', 'inversion pass on [plan]'. Munger-style inversion over the plan's own claims plus workspace evidence where entities are named; output is the failure-mode map with safeguards, chat-first with optional .docx. Does NOT fire on 'convene the board' (boardroom — multi-perspective deliberation; this is single-lens failure mapping), 'decision memo' (decision-memo-composer — this chains FROM it as the inversion pass), or 'review this contract' (contract-review). Method and output shape: Routing section in the body."
+description: "Systematically map every path a plan, decision, or launch could fail — then reverse each failure mode into a structural safeguard. Fires on: 'stress test this plan', 'what could go wrong', 'pre-mortem' / 'pre-mortem on [topic]', 'poke holes in this', 'red team this', 'inversion pass on [plan]'. Munger-style inversion over the plan's own claims plus workspace evidence where entities are named; output is the failure-mode map with safeguards, chat-first with optional .docx. Does NOT fire on 'convene the board' (boardroom — multi-perspective deliberation; this is single-lens failure mapping), 'decision memo' (decision-memo-composer — this chains FROM it as the inversion pass), or 'review this contract' (contract-review)."
 ---
 
 ## Skill Boundary (v2.1)

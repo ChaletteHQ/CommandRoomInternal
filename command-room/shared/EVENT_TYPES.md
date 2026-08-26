@@ -574,16 +574,29 @@ Hard rules:
 - **How identity was established (CLOSEID1, 2026-08-23) — ADDITIVE and
   OPTIONAL.** `close_commitment` stamps `data.resolved_by_match` when the
   caller states it: `id` (the surface embedded the id), `number` (a row on a
-  receipt whose positions that fire rendered itself), or `title` (a human's
-  words, matched). Absent = unstated, which is what every close already on disk
+  receipt whose positions that fire rendered itself), `title` (a human's
+  words, matched), or `session` (CLOSEID2 — the session resolved the id
+  itself; the value exists so a caller can say so honestly, and the closure
+  writer refuses it every time, so it never reaches disk on a closure — its
+  one legitimate disk home is the ambiguity row, where
+  `propose_ambiguous_close(resolved_by_match="session")` records that the
+  QUESTION's candidates came from the session's own scan rather than from a
+  human's words). Absent =
+  unstated, which is what every close already on disk
   says and what every programmatic closer still writes — readers must never
   treat absence as `id`. It exists because a tombstone recorded THAT something
   closed and never HOW its target was chosen, and the one wrong-close observed
   in the live substrate (an End of Day fire closed one promise against another
   promise's evidence, reopened it, and closed the second — three events in one
-  fire) was invisible in the ledger for exactly that reason. `title` is also
-  the only value the writer polices: it refuses (`AmbiguousTargetError`) unless
-  the user confirmed AND the words resolve to exactly one open item.
+  fire) was invisible in the ledger for exactly that reason. Two values are
+  policed by the writer: `title` refuses (`AmbiguousTargetError`) unless
+  the user confirmed AND the words resolve to exactly one open item, and
+  `session` always refuses — a session-resolved id never inherits the
+  pre-confirmed status of a surface-resolved one (CLOSEID2, 2026-08-24: a
+  Skip on a hand-built picker closed three live items through the unstated
+  default). In the session lane (`SESSION_RESOLVED_SOURCES`, today the
+  workspace-manager catch-all) absence itself refuses at the writer — a chat
+  close must state which door it came through.
 - **The ambiguity row (CLOSEID1).** A refused name-close lands as exactly ONE
   `commitment_review_proposed` via `commitment_state.propose_ambiguous_close`
   — an ambiguity is one either/or question, never one yes/no row per
@@ -696,8 +709,8 @@ Hard rules:
   resolve (amber is silent by default). Deliberately a SEPARATE type from
   `commitment`, not a tier field on it: every open-set reader filters
   `type == "commitment"`, so observed items are excluded from counts, triage,
-  the confirm section, chase, and CRU candidacy BY CONSTRUCTION — the same
-  doctrine that keeps reminders out (W4a). **Writers:** every capture leg via
+  chase, and CRU candidacy BY CONSTRUCTION — the same doctrine that keeps
+  reminders out (W4a). **Writers:** every capture leg via
   `capture_gate.build_observed_event` / `observed_from_commitment_event`
   (session_sweep routes automatically; scan-for-commitments' meeting/Slack
   legs per its Step 3.5). The builder REFUSES items carrying a due date or a
@@ -709,8 +722,18 @@ Hard rules:
   affordance), `capture_gate.find_corroborations` / `promote_observed`
   (promotion appends a REAL `commitment` with `data.pending_review: true` +
   `data.promoted_from` → the confirm flow picks it up by data contract),
-  transcript-search (observed items are part of the searchable record).
-  Capture policy (modes + per-org overrides) is SCL1 directives under
+  transcript-search (observed items are part of the searchable record),
+  **and the CONFIRM QUEUES (OBSERVED1, 2026-08-24)**:
+  `needs_review_queue.build_queue_view` and `watch_gate.build_watching_view`
+  render LIVE rows (`capture_gate.live_observed` — unexpired, never
+  promoted) with confirm/drop verbs, and `needs_review_queue.confirm_items`
+  / `drop_items` dispatch an `obs_` id through the tier's one defined
+  transition — `promote_observed`, then `clear_review_flags` (confirm) or
+  `close_commitment(resolution="dropped")` (drop). There is NO
+  `commitment_confirmed` type and never was — the tier's confirm transition
+  IS promotion followed by the standard writers; before OBSERVED1 nothing
+  dispatched it, so observed rows fed prep while no surface could answer
+  one. Capture policy (modes + per-org overrides) is SCL1 directives under
   `scan-for-commitments`; full contract in `COMMITMENT_SCHEMA.md`
   § Observed tier.
 - `commitment_update` is drift; the gate rewrites it to `commitment_updated`.
@@ -753,6 +776,29 @@ Hard rules:
   DELIBERATELY EXEMPTS a pure overdue ask (`_is_system_question`), because
   refusing the user's undo of their own confirm on the grounds that a
   scheduled fire asked a question overnight is the wrong direction.
+  **Reference integrity (REFINT1, 2026-08-24):** the gate refuses a
+  `commitment_updated` (and a `commitment_review_proposed`) whose
+  `data.commitment_id` resolves to no CREATED commitment — same wall, same
+  resolver, and same batch-local amnesty as the closer family
+  (`event_gate._check_commitment_ref_resolves`). The class it kills: an
+  event contract with a read and no producer — three live proposals sat
+  past the amnesty bar, invisible to every surface, because the read side
+  joins `commitment` events and nothing behind the row means no count and
+  no list (the seq-2191 tell was a writer UPDATING a commitment that was
+  never created). `commitment_review_dismissed` is deliberately outside the
+  wall: a dismissal claims no work exists, and the residue drain
+  (`commitment_backlog_sweep.dangling_review_drain`, wired into cleanup's
+  Phase 2) terminally closes each pre-existing orphan with one — built by
+  the CANONICAL builder (`cru_match.build_commitment_review_dismissed_event`,
+  the same writer shape the queue's Skip uses) and carrying the lapse reason
+  under the SHARED key: `data.resolution_reason: "target_never_created"`
+  (`event_types.RESOLUTION_REASON_KEY` / `DANGLING_TARGET_REASON`, a member
+  of `NON_DISMISSAL_RESOLUTION_REASONS`) plus `data.dangling_proposal_seqs`.
+  **Named reader:** `confidence_calibration.load_review_outcomes` excludes
+  lapse-reason dismissals via `is_non_dismissal_closure` — a system drain is
+  not the CEO saying "not relevant", and counting it would move the
+  calibration bands off events no human ever adjudicated. The exit is an
+  event that says why, never a silent deletion.
 - `inbound_reconcile` (REPLYCLOSE, 2026-07) — **writer:**
   `reconcile_inbound_commitments.reconcile_and_receipt`'s inbound twin,
   `reconcile_inbound_and_receipt`, which is the ONE orchestrator behind both
@@ -909,3 +955,25 @@ priority order.
   strong enough to propose on and far too weak to write closures on. The full
   argument and the complete strike set live at `RECOMMEND_ONLY_SUPERSEDES` in
   `shared/scripts/decision_match.py`.
+
+## Style lane (SPEC STYLE1, 2026-08-25)
+
+- `style_changed` — **writers:** `workspace-manager` (the "tune how [name]
+  talks" / "tune my style" / "recalibrate my style" verbs, ALWAYS after an
+  explicit user confirm) and `command-room-onboarding` (exactly once, the
+  D7 provisional initial set — the ONLY unconfirmed write this lane permits).
+  Events are BUILT by `chat_persona.build_style_changed_event` and appended
+  via `event_gate.append_event`; nothing hand-shapes the payload.
+  `data: {layer: chat_persona|output_profile, origin: inferred_provisional|
+  inferred_confirmed|asked|recalibrated, changes: [{knob, from, to}],
+  evidence?}`. One event per confirmed batch per layer.
+  **Named consumers:** the "show my style" card (per-knob provenance column is
+  read straight off this lane), `usage-report` (style adoption), `cleanup`
+  (weekly config lint cross-check).
+
+  **Hard rules (D4/D5/D7):** no automated path may write this lane — there is
+  NO drift watch, and inference (`style_inference.py`) is read-only by
+  construction. Outside onboarding's single provisional set, a write without
+  a user confirm is a bug, not a style choice. The lane records TONE/SHAPE
+  changes only; nothing in it may alter contract-guaranteed output machinery
+  (EXEC1 header, ASK block, leak scan, receipts, canonical actions).

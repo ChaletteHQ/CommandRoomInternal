@@ -48,14 +48,21 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from chat_persona import is_persona_configured, persona_lines  # noqa: E402
 from entities_io import entities_collection          # noqa: E402
 from next_seq import next_seq                        # noqa: E402
-from render_brain_block import needs_render, render_block  # noqa: E402
+from personification import get_brain_name           # noqa: E402
+from render_brain_block import needs_render, read_block_meta, render_block  # noqa: E402
 from thread_writer import thread_org_id              # noqa: E402
 
 LOGIC_VERSION = 1
 BLOCK_ORGS = "orgs"
 BLOCK_WORKSTREAMS = "workstreams"
+# SPEC STYLE1: the per-client persona rides the same generated-block contract.
+# Strictly dormancy-gated — a workspace with no configured persona never gets
+# the block (AC-1: byte-identical to pre-STYLE1), and a persona that is later
+# wiped clears its block instead of leaving it stale.
+BLOCK_PERSONA = "persona"
 SOURCE_LINE = "_Full register: `_hq/data/entities.json` · views: `_hq/views/`_"
 
 # Above this many VISIBLE orgs (post passive/archived exclusion) the register
@@ -212,15 +219,44 @@ def _workstream_body(data: dict) -> str:
     return "\n".join(lines + ["", tail])
 
 
+def _persona_block_active(ws: Path, claude_md: Path) -> bool:
+    """The persona block participates only when the workspace has a configured
+    persona OR a stale block that must be cleared. A never-configured
+    workspace is byte-identical to pre-STYLE1 (AC-1)."""
+    return (is_persona_configured(ws)
+            or read_block_meta(claude_md, BLOCK_PERSONA) is not None)
+
+
+def _persona_body(ws: Path) -> str:
+    """Body for the persona block: chat_persona.persona_lines under the D3
+    budget. Empty string when the store was wiped — render_block then clears
+    the region instead of leaving stale voice guidance in the hot cache."""
+    data = None
+    first_name = ""
+    try:
+        data = _load(ws)
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        first_name = str((data.get("workspace") or {})
+                         .get("user_first_name") or "")
+    lines = persona_lines(ws, brain_name=get_brain_name(ws),
+                          first_name=first_name)
+    return "\n".join(lines)
+
+
 def needs_regenerate(workspace_root: str | Path) -> bool:
     ws = Path(workspace_root)
     claude_md = ws / "CLAUDE.md"
     if not claude_md.exists():
         return False
     seq = _latest_seq(ws)
+    blocks = [BLOCK_ORGS, BLOCK_WORKSTREAMS]
+    if _persona_block_active(ws, claude_md):
+        blocks.append(BLOCK_PERSONA)
     return any(
         needs_render(claude_md, b, seq, logic_version=LOGIC_VERSION)
-        for b in (BLOCK_ORGS, BLOCK_WORKSTREAMS))
+        for b in blocks)
 
 
 def regenerate(workspace_root: str | Path) -> dict:
@@ -236,6 +272,21 @@ def regenerate(workspace_root: str | Path) -> dict:
     seq = _latest_seq(ws)
     now = _now_iso()
     out = {}
+    if _persona_block_active(ws, claude_md):
+        # SPEC STYLE1: same contract, own body source (the chat_persona store,
+        # not entities.json). Dirty-check identical — style_changed events
+        # advance source_seq, so a confirmed change re-renders on the next
+        # sweep and an unchanged persona is never rewritten.
+        if needs_render(claude_md, BLOCK_PERSONA, seq,
+                        logic_version=LOGIC_VERSION):
+            out[BLOCK_PERSONA] = render_block(
+                claude_md, BLOCK_PERSONA, _persona_body(ws),
+                generated_at=now, source_seq=seq,
+                logic_version=LOGIC_VERSION,
+                create_after_heading="## Workspace register (generated)",
+            )["status"]
+        else:
+            out[BLOCK_PERSONA] = "unchanged"
     for block_id, body_fn in ((BLOCK_ORGS, _org_body),
                               (BLOCK_WORKSTREAMS, _workstream_body)):
         # Honor the dirty-check BEFORE rebuilding (v5.10.0 flake fix): the

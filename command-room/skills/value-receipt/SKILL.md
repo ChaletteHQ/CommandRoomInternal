@@ -1,7 +1,7 @@
 ---
 name: value-receipt
 surfaces: both
-description: "A monthly 'value receipt' the CEO can read in chat and forward as a Word doc: deterministic counts from their own workspace — commitments captured and resolved on time, drafts written, briefs delivered, hours absorbed — every number computed in code, never estimated. Fires on: 'value receipt', 'monthly value receipt', 'quarterly value receipt', 'roi receipt', 'show me the receipt'. Corroborates delivery from transcripts, states its counting rules inline, and renders a conservative bottom line. Does NOT fire on 'operator report' / 'show me the value' (operator-report — the richer lift narrative), 'usage report' (usage-report — cost/volume telemetry), or 'weekly recap' (weekly-recap). Counting rules and receipt structure: Routing section in the body."
+description: "A monthly 'value receipt' the CEO can read in chat and forward as a Word doc: deterministic counts from their own workspace — commitments captured and resolved on time, drafts written, briefs delivered, hours absorbed — every number computed in code, never estimated. Fires on: 'value receipt', 'monthly value receipt', 'quarterly value receipt', 'roi receipt', 'show me the receipt'. Corroborates delivery from transcripts, states its counting rules inline, and renders a conservative bottom line. Does NOT fire on 'operator report' / 'show me the value' (operator-report — the richer lift narrative), 'usage report' (usage-report — cost/volume telemetry), or 'weekly recap' (weekly-recap)."
 ---
 
 # value-receipt

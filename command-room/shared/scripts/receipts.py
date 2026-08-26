@@ -144,6 +144,7 @@ CANONICAL_TASK_IDS = frozenset({
     "pipeline-digest",  # PIPE1 Part 2 — the Tuesday deal-review chat. TASKRET1 READINESS-retired it; the row stays forever so pre-retirement receipts keep parsing (and its since-window marker stays readable), but nothing writes it any more — the on-demand report is `pipeline-tracker` above.
     "deal-signals",   # LB1 D7 — the deal-signal detector job inside `maintenance`
     "identity-reconcile",  # PID1 D7 — the Sunday identity reconciler job inside `maintenance` (also the M-fired one-time backfill)
+    "meeting-capture",  # EODSPEED1 — the incremental capture pass job inside `maintenance` (never a task of its own; its pack_run is the dispatcher's dueness signal and catchup_window's resume point — NEVER written under past-meetings, which would arm skip_render against the real close)
     "monthly-scorecard",  # SPEC OUT7 — the OPT-IN monthly KPI scorecard job inside `maintenance` (never auto-fires; its pack_run receipt self-limits it to monthly once opted in)
 })
 
@@ -247,6 +248,14 @@ RECEIPT_TYPES: dict[str, dict] = {
     # healthy — the two would have vouched for each other. Same shape, same
     # cadence, separate proof.
     "reconcile-chat":     {"types": frozenset({"chat_reconcile"})},
+    # SPEC EODSPEED1 — the incremental capture pass's job receipt (the
+    # `meeting-capture` maintenance job). `pack_run`, the standard
+    # scheduled-job shape: the dispatcher's due-ness rule reads it and
+    # `catchup_window("meeting-capture", ...)` resumes from its window
+    # fields. Deliberately its OWN task id, never `past-meetings`: a
+    # pack_run on the day-close series would arm skip_render against the
+    # real 5 PM close and split the series EOD2 keeps whole.
+    "meeting-capture":    {"types": frozenset({"pack_run"})},
     "monthly-report":     {"types": frozenset({"operator_report_generated", "value_receipt_generated"}),
                            "count_types": frozenset({"operator_report_generated"})},
     # weekly-insights writes a pack_run receipt from v4.5.2 (it was the one

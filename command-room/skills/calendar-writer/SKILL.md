@@ -1,7 +1,7 @@
 ---
 name: calendar-writer
 surfaces: both
-description: "Schedule meetings — find mutual availability, draft the invite with a context-aware agenda (open commitments with each attendee plus recent project context), create the calendar event, and optionally auto-arrange call prep before it. Fires on: 'schedule a [length] with [name]', 'set up a 30-min with [name]', 'book time with [name]', 'find time with [name]', 'book a meeting with [name]', 'put [name] on the calendar', 'block 90 min for [topic]', 'set up lunch with [name]', 'put it on my calendar'. Does NOT fire on 'cancel my meeting' or 'reschedule' (out of current scope — new invites only), 'prep me for [meeting]' (call-prep), or 'process meeting' (meeting-notes). Availability rules and agenda sourcing: Routing section in the body."
+description: "Schedule meetings — find mutual availability, draft the invite with a context-aware agenda (open commitments with each attendee plus recent project context), create the calendar event, and optionally auto-arrange call prep before it. Fires on: 'schedule a [length] with [name]', 'set up a 30-min with [name]', 'book time with [name]', 'find time with [name]', 'book a meeting with [name]', 'put [name] on the calendar', 'block 90 min for [topic]', 'set up lunch with [name]', 'put it on my calendar'. Does NOT fire on 'cancel my meeting' or 'reschedule' (out of current scope — new invites only), 'prep me for [meeting]' (call-prep), or 'process meeting' (meeting-notes)."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
@@ -205,7 +205,10 @@ On dispatch:
    # the receipt the writer would otherwise mint. Dropping a ref you are already
    # holding is the exact class the walk found on three independent auto-resolve
    # rails. Omit it only if the connector returned no event id.
-   # pending_review → build_pending_review_event(source_skill="calendar-writer", ...)
+   # pending_review → build_pending_review_event(source_skill="calendar-writer",
+   #   title=r["title"], ...)  # SPEC TITLEMINT1: the matched commitment's own
+   #   name, from the result row. The builder REFUSES an empty title, so a
+   #   forgotten argument raises here instead of writing a subject-less row.
    # Capture each auto_resolved commitment's {title, due} so Phase 7 can surface it.
    ```
    **Surface the closure — do NOT stay silent (v3.19.x — FIX1 item 23).** This is a user-initiated action, so a calendar-driven auto-close is a substrate change the user should SEE (unlike the scheduled-CRU silence the inbox/commitments orchestrators keep). In the Phase 7 confirm, add one plain-language line per auto-resolved commitment: `✓ This likely closes: '[commitment title]' (was due [date]). Say `undo` if that's wrong.` Plain language only — never print the `commitment_resolved` event-type name (CONTRACT Rule 4 forbids the event NAME in chat, not the fact that something closed). De-dups with Phase 2.7 by construction (both read `load_open_commitments`, which excludes already-closed commitments).

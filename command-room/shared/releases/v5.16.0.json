@@ -1,0 +1,34 @@
+{
+  "version": "5.16.0",
+  "headline": "The list gets shorter and truer: one line per real thing, an evening that reads your day instead of listing it, and captures that hear the answer, not just the offer.",
+  "items": [
+    {
+      "id": "v5160_announce_clustering",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your queues now show one line per real-world item. When the same piece of work was captured several times across calls, you see it once, with a small \"+N folded\" naming how many captures sit behind it — tap to read them. One tap on \"keep as one\" makes the fold permanent, and one undo puts everything back. Nothing merges on its own except word-for-word duplicates, the same as before. The counts you see now count items, not fragments.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5160_announce_evening_arcs",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your evening close now reads the day back against the bigger picture: which of the things you are running moved today, which ones that carry consequences did not, and where the day's weight actually went — in plain sentences, each grounded in something that happened. It adds no new buttons and asks the same single question about tomorrow.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5160_announce_set_aside",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Items the system was quietly watching now appear at the tail of \"needs your call\" as a Set Aside section, each answerable with confirm or drop. Before this they were in a lane no surface showed, which meant they could never be cleared. If your queue looks slightly longer this week, that is previously invisible work becoming answerable — not new inflow.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5160_announce_quieter_and_truer",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two quiet corrections underneath everything: pressing Skip or dismissing a question now does exactly nothing — declining to answer never closes, drops, or changes an item. And when a capture from a meeting is judged, the system now reads the reply that followed — \"That's perfect.\" after an offer counts as the acceptance it was — so fewer real promises get labeled as never agreed to.",
+      "action": "announce_only"
+    }
+  ]
+}

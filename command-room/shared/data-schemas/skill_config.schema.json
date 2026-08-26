@@ -9,7 +9,7 @@
     "meeting-notes": ["commitment_capture", "verbosity", "new_person_handling"],
     "follow-up-ritual": ["send_timing", "recipient_default"],
     "weekly-recap": ["lens", "internal_backlog"],
-    "end-of-day": ["tone", "slipped_section", "sign_off", "weak_capture_routing", "overdue_ask_after_days"],
+    "end-of-day": ["tone", "slipped_section", "slipped_prose_section", "tone_before_eodsynth1", "sign_off", "weak_capture_routing", "overdue_ask_after_days"],
     "dormant-customer-scan": ["threshold", "revenue_weighting", "watch_list"],
     "decision-log": ["auto_log", "revisit_reminders"],
     "one-pager-composer": ["register", "signature"],
@@ -19,6 +19,7 @@
     "decision-memo-composer": ["criteria_persistence", "weight_display"],
     "stress-test": ["depth", "risk_framing"],
     "automation-scanner": ["ranking_weights", "horizon_buckets"],
-    "output_profile": ["density", "visual_bias", "page_cap", "default_format", "format_by_kind"]
+    "output_profile": ["density", "visual_bias", "page_cap", "default_format", "format_by_kind", "visual_first"],
+    "chat_persona": ["brevity", "explanation_depth", "formality", "encouragement", "humor_ok", "jargon_level", "language", "never_line"]
   }
 }

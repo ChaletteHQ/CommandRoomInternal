@@ -2,7 +2,7 @@
 name: enable-command-room-schedules
 surfaces: cowork
 slack_fallback: "Scheduled chats are registered from desktop Cowork — ask there; your Slack briefs are scheduled server-side and fire on their own."
-description: "Sets up Command Room's scheduled chats and silent background tasks — registration is the writer of record for the schedule config. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats', and silently from the update bridge. Registers the daily action chats, the weekly surfaces, and one maintenance task carrying the SILENT_TASKS jobs, each loading its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'show my schedule' / 'pause [chat]' (change-schedule — the user-facing mutator). Registration mechanics, task set, and verify mode: Routing section in the body."
+description: "Sets up Command Room's scheduled chats and silent background tasks — registration is the writer of record for the schedule config. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats', and silently from the update bridge. Registers the daily action chats, the weekly surfaces, and one maintenance task carrying the SILENT_TASKS jobs, each loading its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'show my schedule' / 'pause [chat]' (change-schedule — the user-facing mutator)."
 ---
 
 ## Verify-only mode (preview without firing) — rewritten for the bootloader era (Phase 3 / P0.3)

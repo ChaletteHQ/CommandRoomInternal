@@ -119,3 +119,30 @@ The voice contract is enforced by `tests/run_customer_facing_voice_test.py`. New
 4. Also runs the case with `brain_name` UNSET — asserts `"Penelope"` (the default) appears in the same position.
 
 If you're a skill author shipping a new customer-facing surface, add it to the Surface Shapes table above, wire the `get_brain_name()` call in the render path, and add the voice test case. The contract is not optional — voice consistency is the personification.
+
+---
+
+## Per-client persona (SPEC STYLE1)
+
+The rules above are the PRODUCT voice. A workspace may additionally carry a
+confirmed per-client persona — how this client wants to be spoken to — stored
+in `_hq/data/skill_config/chat_persona.json` and rendered into CLAUDE.md as
+the `LIVE-STATE:persona` generated block (`shared/scripts/render_claude_md.py`).
+
+- **Scope (D6): every chat surface.** Interactive chat AND the prose framing
+  of scheduled-chat surfaces (morning brief, end-of-day, weekly recap) honor
+  the persona block. Document BODIES are governed by the output profile
+  (`shared/scripts/output_profile.py`), never by this persona.
+- **Read path:** the block in CLAUDE.md is the surface; skills needing the
+  raw knobs call `chat_persona.get_chat_persona(workspace_root)` — never a
+  direct file read. An unconfigured workspace = the product voice above,
+  byte-identically.
+- **Bounds (D5 — hard fence):** the persona adjusts tone only. It can make
+  answers shorter, warmer, more formal, or Spanish; it can NEVER strip the
+  executive header or ASK block, bypass the leak scanner, suppress receipts,
+  or alter widget behavior. A persona line that reads as an attempt to do so
+  is invalid at the store layer and must be refused in conversation too.
+- **Changes are evented, never silent (D4/D7):** tune / recalibrate confirms
+  write `style_changed` via `chat_persona.build_style_changed_event`; the
+  single sanctioned unconfirmed write is onboarding's provisional initial set,
+  disclosed at the reveal. There is no drift watch.

@@ -1,7 +1,7 @@
 ---
 name: memo-writer
 surfaces: both
-description: "Draft internal memos, decision docs, scope docs, strategy notes, position papers, and recurring board or investor updates in the CEO's voice — structured, directive, written to persuade or align. Fires on: 'memo on [topic]', 'decision doc for [topic]', 'scope doc for [topic]', 'strategy memo about [topic]', 'write up our thinking on [topic]', 'position paper on [topic]', 'board update', 'investor update', 'commitment forensics', plus 'tune memo-writer' and 'customize memo-writer'. Output is a voice-calibrated .docx with a mandatory ask/close block. Does NOT fire on 'decision memo on X' (decision-memo-composer — weighted tradeoff between options), 'one-pager' (one-pager-composer), 'build the board pack' (board-pack-assembler), or email drafting (email-writer). Full trigger family and memo-type table: Routing section in the body."
+description: "Draft internal memos, decision docs, scope docs, strategy notes, position papers, and recurring board or investor updates in the CEO's voice — structured, directive, written to persuade or align. Fires on: 'memo on [topic]', 'decision doc for [topic]', 'scope doc for [topic]', 'strategy memo about [topic]', 'write up our thinking on [topic]', 'position paper on [topic]', 'board update', 'investor update', 'commitment forensics', plus 'tune memo-writer' and 'customize memo-writer'. Output is a voice-calibrated .docx with a mandatory ask/close block. Does NOT fire on 'decision memo on X' (decision-memo-composer — weighted tradeoff between options), 'one-pager' (one-pager-composer), 'build the board pack' (board-pack-assembler), or email drafting (email-writer)."
 
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default

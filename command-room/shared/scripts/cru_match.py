@@ -147,6 +147,32 @@ except Exception:  # pragma: no cover
 HIGH_CONFIDENCE_THRESHOLD = MATCH_SCORE_AUTO_RESOLVE   # 0.55
 PENDING_REVIEW_THRESHOLD = MATCH_SCORE_PENDING_REVIEW  # 0.30
 
+# TITLEMINT1 D1 — how many review proposals ONE FIRE may write on the
+# title-match close rail. NOT a threshold and never to be read as one: the
+# match floors above are untouched by this build, and a candidate the cap
+# suppresses was a candidate at the same score it always was. This bounds
+# VOLUME, which nothing bounded before — a single 2026-08-19 fire wrote 70
+# proposals in about 35 seconds.
+REVIEW_PROPOSAL_FIRE_CAP = 25
+
+
+class ReviewProposalTitleError(ValueError):
+    """A `commitment_review_proposed` event was built with no title.
+
+    Refuse at the writer, the same posture `close_commitment` takes with
+    `CommitmentIdError`. A proposal is a QUESTION put to a person — "did this
+    get done?" — and a question with no subject cannot be answered. The
+    2026-08-19 fire wrote 70 of them because the builder carried a `""`
+    default and the caller that forgot to pass a title looked exactly like a
+    caller that meant to omit one.
+
+    Every matcher on this rail already puts the commitment's own title in its
+    result row, so a caller has it a dict away; and a titleless commitment
+    scores 0.0 (`score_match` returns 0.0 when either side tokenizes empty),
+    which is below every proposal floor. A raise here therefore means a caller
+    bug, never a data shape the substrate can legitimately produce.
+    """
+
 
 def _workspace_from_events_path(events_jsonl_path):
     """CLOCK1 - the workspace root containing an events.jsonl, or None.
@@ -702,6 +728,40 @@ def _commitment_confidence(ev: dict) -> float:
     return 0.0
 
 
+def _is_unscored(ev: dict) -> bool:
+    """THE single definition of "this row carries no usable confidence".
+
+    Missing, blank, and outside-the-vocabulary label all mean UNSCORED —
+    absence of a score is not an assertion of doubt. Factored out of
+    `passes_surface_floor` (DEDUPFLOOR1) so its sibling `surface_floor_value`
+    cannot drift from it: two copies of this test is exactly how one caller
+    starts treating an unscored row as a 0.0 one again."""
+    v = _commitment_field(ev, "confidence")
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return True
+    return isinstance(v, str) and v.strip().lower() not in _CONFIDENCE_LEVEL_MAP
+
+
+# An unscored row clears every floor (`passes_surface_floor` returns True for
+# it outright). `surface_floor_value` has to say that as a NUMBER, because its
+# caller compares maxima across a duplicate component before any floor is
+# known. The score accessors clamp to [0, 1] (`confidence.get_threshold`), so
+# the top of the scale is the honest stand-in — not a sentinel that could be
+# mistaken for a real reading of 1.0 confidence, but the same verdict.
+UNSCORED_SURFACE_VALUE = 1.0
+
+
+def surface_floor_value(ev: dict) -> float:
+    """The row's floor-comparable confidence, unscored included (DEDUPFLOOR1).
+
+    `passes_surface_floor(ev, floor=f)` and `surface_floor_value(ev) >= f`
+    agree for every f in [0, 1]; this form exists because the duplicate fold
+    must record a component's maximum member confidence BEFORE the floor is
+    resolved, and `_commitment_confidence` alone would read every unscored
+    member as 0.0 — re-creating the silent-drop class inside the component."""
+    return UNSCORED_SURFACE_VALUE if _is_unscored(ev) else _commitment_confidence(ev)
+
+
 def passes_surface_floor(ev: dict, *, floor=None, workspace_root=None) -> bool:
     """THE code-side confidence surface filter (BUG-8330 item 6).
 
@@ -721,13 +781,10 @@ def passes_surface_floor(ev: dict, *, floor=None, workspace_root=None) -> bool:
     calibration surface — so a workspace's override file actually moves this
     filter. Pass `floor` directly to skip the lookup (batch callers resolve
     once)."""
-    v = _commitment_field(ev, "confidence")
-    if v is None or (isinstance(v, str) and not v.strip()):
-        return True
-    if isinstance(v, str) and v.strip().lower() not in _CONFIDENCE_LEVEL_MAP:
-        # A label outside the known vocabulary is unparseable, not low —
-        # treating it as 0.0 re-creates the silent-drop class for one
-        # misspelling. Unscored → passes.
+    # Missing, blank, or a label outside the known vocabulary: unparseable is
+    # not low — treating it as 0.0 re-creates the silent-drop class for one
+    # misspelling. Unscored → passes, at any floor.
+    if _is_unscored(ev):
         return True
     if floor is None:
         try:
@@ -3707,7 +3764,7 @@ def build_pending_review_event(
     score: float,
     evidence: str,
     next_seq: int,
-    title: str = "",
+    title: str,
     has_completion_signal: Optional[bool] = None,
     evidence_ts: Optional[str] = None,
 ) -> dict:
@@ -3718,6 +3775,16 @@ def build_pending_review_event(
     `title` (FB-19) is the commitment's own name, carried so the card row can
     say WHAT it is asking about. Without it the row renders as a bare shape
     label ("Housekeeping") — the live 2026-07-16 defect.
+
+    **TITLEMINT1 — `title` is REQUIRED and an empty or whitespace-only value
+    RAISES `ReviewProposalTitleError`; no event is built.** It carried a `""`
+    default until 2026-08-24, which made "the caller forgot" indistinguishable
+    from "the caller meant to omit it", and on 2026-08-19 one fire wrote 70
+    subject-less rows onto every review surface because two call sites on the
+    title-match leg never passed the argument. The builder stays
+    substrate-blind — it does NOT look the title up from `commitment_id`; the
+    caller holds the matched record and every matcher result row on this rail
+    already carries `title`.
 
     `has_completion_signal` (WATCHGATE R-2) is the matcher's own fulfillment
     flag — the SAME boolean the rails compute and then, until now, threw
@@ -3737,12 +3804,19 @@ def build_pending_review_event(
     Both are OMITTED from `data` when None, so a caller that passes neither
     writes the byte-identical event it wrote before.
     """
+    if not str(title or "").strip():
+        raise ReviewProposalTitleError(
+            "refusing to propose a review with no title for commitment "
+            f"{commitment_id!r}: a proposal is a question, and a question "
+            "with no subject cannot be answered. Pass the matched "
+            "commitment's own title — every matcher result row carries it."
+        )
     data = {
         "commitment_id": commitment_id,
         "proposed_resolution": proposed_resolution,
         "match_score": round(score, 3),
         "evidence": clip(evidence) if evidence else "",
-        "title": title or "",
+        "title": title,
     }
     if has_completion_signal is not None:
         data["has_completion_signal"] = bool(has_completion_signal)
@@ -3915,6 +3989,63 @@ def filter_duplicate_review_targets(results: list, *, already_proposed: set) -> 
     return out
 
 
+def cap_review_proposals(results: list, *, budget: dict,
+                         cap: int = REVIEW_PROPOSAL_FIRE_CAP) -> list:
+    """TITLEMINT1 D1 — bound how many review proposals ONE FIRE writes.
+
+    On 2026-08-19 a single past-meetings fire wrote 70
+    `commitment_review_proposed` events in about 35 seconds. Nothing anywhere
+    on this rail asked how many was too many: the dedup filter above bounds
+    proposals PER COMMITMENT and the match floors bound them PER CANDIDATE,
+    and neither is a statement about the size of the pile a person opens in
+    the morning.
+
+    **This is a volume bound and it is NOT a threshold.** The match floors are
+    untouched by this build and must stay untouched (standing ruling): a
+    suppressed candidate scored exactly what it always scored, and would be
+    proposed on a quieter fire. Highest `score` first, so the ones that survive
+    are the ones most worth a person's attention.
+
+    `budget` is MUTATED — thread ONE dict across every transcript in the fire,
+    exactly as `already_proposed` is threaded through the dedup filter above,
+    or the cap becomes per-transcript and bounds nothing a busy fire does. It
+    accumulates two keys, both of which the caller puts on the fire receipt:
+
+      * `proposals_written` — how many this fire has written so far
+      * `proposals_suppressed` — how many did not fit
+
+    A cap without a count is a SILENCE, which is the thing this codebase keeps
+    ruling against; the suppressed number is why the receipt line exists and it
+    is written even when it is zero.
+
+    Because the budget is spent in call order, an early transcript's rows can
+    take headroom a later transcript would have outscored. That is inherent to
+    bounding a stream rather than a batch, and it is the honest trade: the
+    alternative is holding every transcript's results until the fire ends, at
+    which point nothing has been written and a crash mid-fire loses all of it.
+    """
+    rows = [r for r in (results or []) if r]
+    try:
+        limit = max(0, int(cap))
+    except (TypeError, ValueError):
+        limit = REVIEW_PROPOSAL_FIRE_CAP
+    if not isinstance(budget, dict):
+        raise TypeError(
+            "cap_review_proposals needs a mutable budget dict threaded across "
+            "the whole fire — a per-call budget bounds nothing")
+    written = int(budget.get("proposals_written") or 0)
+    headroom = max(0, limit - written)
+    # sorted() is stable, so equal scores keep the caller's order — which on
+    # every match_* path is already score-descending.
+    ranked = sorted(rows, key=lambda r: (r or {}).get("score") or 0.0,
+                    reverse=True)
+    kept = ranked[:headroom]
+    budget["proposals_written"] = written + len(kept)
+    budget["proposals_suppressed"] = (
+        int(budget.get("proposals_suppressed") or 0) + len(rows) - len(kept))
+    return kept
+
+
 __all__ = [
     "HIGH_CONFIDENCE_THRESHOLD",
     "PENDING_REVIEW_THRESHOLD",
@@ -3931,6 +4062,9 @@ __all__ = [
     "load_open_review_proposals",
     "open_review_proposal_ids",
     "filter_duplicate_review_targets",
+    "cap_review_proposals",
+    "REVIEW_PROPOSAL_FIRE_CAP",
+    "ReviewProposalTitleError",
     "commitment_source_refs",
     "commitment_matches_source_ref",
     "commitment_thread_refs",

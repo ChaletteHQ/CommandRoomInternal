@@ -45,6 +45,16 @@ this module adds the identity + validation layer on top:
      as of Phase 4 (2026-07-02). Register new types per shared/EVENT_TYPES.md
      before writing them.
 
+  8. Thread binding (SPEC THREADSTAMP1, 2026-08-23) — a thread-bound event
+     type (`event_types.THREAD_BOUND_TYPES`) arriving with no usable
+     `primary_thread_id` has one DERIVED from the reference its own payload
+     already carries (`event_types.derive_primary_thread_id`). Nothing is
+     invented and no empty-string sentinel is ever written: a row that names no
+     thread anywhere keeps the field exactly as the caller left it and gets a
+     stderr WARN instead. Warn-only this train (DD-2) — fleet substrate exists
+     that a block would refuse; the flip is a later ruling once integrity_check
+     C14's counts drain.
+
 Escape hatch: CR_EVENT_GATE=0 disables the gate entirely (emergencies only —
 e.g. replaying a quarantined batch that predates the contract). The write
 path itself (lock, seq, ts, atomic rename) is unaffected by the env var.
@@ -63,6 +73,9 @@ try:
         COMMITMENT_CLOSURE_SEQ_FIELDS,
         KIND_VALUES,
         LEGACY_SEQ_ID_RE,
+        THREAD_BOUND_TYPES,
+        derive_primary_thread_id,
+        has_thread_ref,
         is_known_type,
     )
 except ImportError:
@@ -75,6 +88,9 @@ except ImportError:
         COMMITMENT_CLOSURE_SEQ_FIELDS,
         KIND_VALUES,
         LEGACY_SEQ_ID_RE,
+        THREAD_BOUND_TYPES,
+        derive_primary_thread_id,
+        has_thread_ref,
         is_known_type,
     )
 
@@ -156,6 +172,28 @@ _RESOLVE_CHECKED_TYPES = frozenset(
     {"commitment_resolved", "thread_resolved", "commitment_superseded"}
 )
 
+# REFINT1 — the same wall for the commitment-REFERENCE family. A
+# `commitment_review_proposed` or `commitment_updated` whose target was never
+# created is WORSE than a dead-letter closure: the row exists, carries a live
+# question (`proposed_resolution: auto_resolve`), and is unreachable by every
+# surface — the review tier and amnesty derive from `commitment` events, so
+# "nothing has sat unanswered" reads literally true while three live
+# questions sit past the bar (operator workspace, 2026-08-24; the seq-2191
+# tell was a writer UPDATING a commitment that was never created). The class:
+# an event contract with a read and no producer — the reader assumed a
+# producer wrote first; the gate now proves it at append time.
+#
+# `commitment_review_dismissed` is DELIBERATELY absent from this set: a
+# dismissal is the tombstone of a question — it claims no work exists — and
+# it is exactly what the dangling-row drain
+# (`commitment_backlog_sweep.dangling_review_drain`) writes to give the
+# already-orphaned rows a terminal state. Gating it would wall off the only
+# honest exit.
+# Membership lives in event_types.COMMITMENT_REFERENCE_TYPES (the shared
+# vocabulary home, beside the closure chain it mirrors); this is the gate's
+# local name for it, kept so the wall reads like its 4a sibling.
+from event_types import COMMITMENT_REFERENCE_TYPES as _REFERENCE_CHECKED_TYPES  # noqa: E402,E501
+
 
 def _check_closure_resolves(ev: dict, etype: str, holder: str,
                             by_id: dict, by_seq: dict) -> None:
@@ -190,6 +228,50 @@ def _check_closure_resolves(ev: dict, etype: str, holder: str,
         "the commitment's data.id verbatim (cmt_<ulid>, or its "
         "commitment_seq_<n> spelling), or write through "
         "commitment_state.close_commitment."
+    )
+
+
+def _check_commitment_ref_resolves(ev: dict, etype: str, holder: str,
+                                   by_id: dict, by_seq: dict) -> None:
+    """REFINT1 — raise EventGateError when a commitment-REFERENCE event's
+    target resolves to no created commitment.
+
+    THE SAME RESOLVER AS THE CLOSER WALL — `closure_index.
+    resolve_closure_target`, which walks every leg of
+    COMMITMENT_CLOSURE_ID_CHAIN plus the string-coercing seq aliases. The
+    first cut of this function hand-rolled a narrower two-leg ladder, which
+    is exactly the BUG-8330 drift the chain constant exists to prevent: a
+    target spelled at top level, or a digit-string `commitment_seq`, would
+    have been refused as "names no commitment" while every reader in the
+    repo resolved it fine. A missing target refuses too (the id-less
+    degenerate of a never-created id), mirroring the 4b
+    `commitment_reassigned` rule."""
+    from closure_index import (
+        closer_target_id,
+        closer_target_seqs,
+        resolve_closure_target,
+    )
+
+    if resolve_closure_target(ev, by_id, by_seq) is not None:
+        return
+    if not _has_closure_id(ev):
+        raise EventGateError(
+            f"{etype} event names no commitment (need data.commitment_id, "
+            f"another chain leg, or a data."
+            f"{'/data.'.join(COMMITMENT_CLOSURE_SEQ_FIELDS)} seq alias; "
+            f"holder={holder}) — a reference event with no target proposes "
+            "or updates nothing (REFINT1)."
+        )
+    raise EventGateError(
+        f"{etype} event references {closer_target_id(ev)!r} (seq aliases "
+        f"{closer_target_seqs(ev)!r}) which resolves to no CREATED "
+        f"commitment (holder={holder}). A proposal or update against an "
+        "uncreated id is worse than a dead letter: the row exists, is "
+        "unreachable by every surface, and amnesty honestly reports nothing "
+        "waiting while it sits past the bar (REFINT1). Create the "
+        "commitment first (same batch is fine — the gate resolves "
+        "batch-local creations), or pass the id of one already in the "
+        "ledger."
     )
 
 
@@ -313,6 +395,63 @@ def gate_events(
             if strict_enum:
                 raise EventGateError(msg)
             sys.stderr.write(f"[event_gate] {msg}\n")
+
+        # 8. Thread binding — DERIVE, then WARN (SPEC THREADSTAMP1 DD-1/DD-2).
+        #
+        # THE DEFECT. Thread-bound rows arriving with no `primary_thread_id`
+        # are invisible to every daily surface that filters on the field, and
+        # the pile accelerated 32 -> 54 -> 63 -> 181 -> 280 over five weekly
+        # scans. The field is an optional pass-through everywhere it appears,
+        # and ~40 writer sites spell it `x.get("primary_thread_id") or ""` —
+        # they PROPAGATE emptiness, they never derive. Fixing forty callers is
+        # the losing shape (RULED, DD-1): caller fixes rot, and the next writer
+        # copies the old spelling. This is the one place every append passes
+        # through — `append_event` calls `gate_events` directly and
+        # `atomic_append_jsonl` calls it inside its events.jsonl branch — so
+        # it is the only place a derivation cannot be bypassed.
+        #
+        # WHAT IT DOES NOT DO. It never invents an id and never writes an
+        # empty-string sentinel: a row that names no thread anywhere keeps the
+        # field exactly as the caller left it (absent stays absent), and gets a
+        # warning instead. A caller's real id is never overwritten. The whole
+        # change is "promote a reference the payload ALREADY CARRIES into the
+        # slot the surfaces read".
+        #
+        # WHY IT IS SAFE FOR THE PERSONAL LANE (BUG-8330 item 12 / FX-5). The
+        # personal firewall's business-binding override RESOLVES thread ids,
+        # and it resolves the source spellings this ladder derives from in both
+        # scopes already — see the constraint note on
+        # `event_types.THREAD_REF_DERIVE_FIELDS`. The stamp therefore cannot
+        # move a row across the firewall in either direction.
+        #
+        # WARN, NOT BLOCK, THIS TRAIN (DD-2). Fleet substrate exists that would
+        # block; the flip is a later ruling once the C14 counts drain. So this
+        # writes to stderr and returns the row.
+        #
+        # COMPOSITION WITH CLOCKTS1. This runs before the write; a batch whose
+        # `ts` is refused raises `FutureTimestampRefused` inside the writer
+        # lock and reaches the review side file, never the ledger — so a
+        # refused row is never thread-stamped INTO the ledger by construction.
+        if isinstance(etype, str) and etype in THREAD_BOUND_TYPES:
+            existing_tid = ev.get("primary_thread_id")
+            has_real_tid = (
+                isinstance(existing_tid, str) and existing_tid.strip() != ""
+            )
+            if not has_real_tid:
+                derived_tid = derive_primary_thread_id(ev)
+                if derived_tid:
+                    ev["primary_thread_id"] = derived_tid
+                elif not has_thread_ref(ev):
+                    sys.stderr.write(
+                        f"[event_gate] THREADSTAMP1 warn (holder={holder}): "
+                        f"thread-bound event type '{etype}' carries no thread "
+                        f"reference — no primary_thread_id, no thread_id / "
+                        f"project_id / primary_project_id in either scope, and "
+                        f"no related_thread_ids. It will be invisible to every "
+                        f"daily surface that filters on primary_thread_id. "
+                        f"Stamp the thread at capture; nothing is derivable "
+                        f"here and the gate will not invent one.\n"
+                    )
 
         # 2 + 3. Commitment identity + kind.
         if etype == "commitment":
@@ -525,6 +664,21 @@ def gate_events(
         ):
             by_id, by_seq = _resolution_universe()
             _check_closure_resolves(ev, etype, holder, by_id, by_seq)
+
+        # 4d (REFINT1) — the same wall for the commitment-REFERENCE family.
+        # A proposal or update against a never-created id used to land clean
+        # and become permanently invisible (the read side joins commitment
+        # events, so nothing behind the row means no count and no surface).
+        # Same universe, same batch-local amnesty, same replay escape hatch
+        # as 4a. Dismissals are deliberately exempt — see
+        # _REFERENCE_CHECKED_TYPES.
+        if (
+            etype in _REFERENCE_CHECKED_TYPES
+            and strict_enum
+            and events_jsonl_path is not None
+        ):
+            by_id, by_seq = _resolution_universe()
+            _check_commitment_ref_resolves(ev, etype, holder, by_id, by_seq)
 
         # 4b (v4.6.0 S4) — the same dead-letter rule for the reassign and
         # unmute references: an event that names no target routes/clears

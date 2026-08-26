@@ -200,6 +200,17 @@ print('pruned', len(pruned), 'stale read-alarm sidecars')
 
 12. **CLAUDE.md edit guard** (CLAUDEMD1 Defect B): ANY pass in this skill that rewrites or compresses `CLAUDE.md` — including "tidy the quick-reference file" style compression — must snapshot the file text BEFORE editing and run `shared/scripts/claude_md_guard.py::report(before, after)` after. When `ok` is false, surface **every line in `removed` verbatim** in the session output and the Monday note — by content, never as a count ("removed 3 lines" is the bug, not the report). For each line in `removed_rules` (imperative operating instructions — the draft-posture class that was silently deleted 2026-07-29): restore it verbatim, or refuse the compression for that section and say why. Compression may reword; it may not drop. A backup on disk is recovery, not disclosure — writing one does not satisfy this rule. Generated `LIVE-STATE` blocks are machine-owned (render_claude_md redraws them) and are outside this guard by construction; regenerate them via `shared/scripts/render_claude_md.py` instead of editing them.
 
+13. **Dangling review-proposal drain** (REFINT1): review proposals whose commitment was never created are reachable by NO surface — the review tier and amnesty derive from `commitment` events, so a dangling row appears in no count and no list while "nothing has sat unanswered" reads literally true. The write gate refuses new ones since REFINT1; this drains the residue: each orphaned question is terminally closed with a `commitment_review_dismissed` carrying `resolution_reason: "target_never_created"` (an appended tombstone — nothing deleted, the proposal rows stay in history, and calibration readers know it is a system lapse, not your "not relevant"). The drain REFUSES to apply when the log has unparseable lines (`refused: "unparseable_lines"` in its result) — surface that line in the Monday note and let the 3a/3b heal pass fix the corruption first; the drain catches up next week. Run the code block below; fold each returned line into `actions_taken[]` AND into the Monday note (Beat 1) — the note is the "surfaced once for a human" half, so the lines go in verbatim, by content, never as a bare count.
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from commitment_backlog_sweep import dangling_review_drain
+out = dangling_review_drain('<workspace_root>', apply=True)
+print(json.dumps({'n': out['n'], 'lines': out['lines']}, indent=2))
+"
+```
+
 These rules are non-destructive by design — **nothing is ever deleted, with the ONE ruled exception of Rule 11's stale read-alarm sidecars (derived machine telemetry, LB2 D5).** Memory is compressed/archived in place; caches and >1h-stale locks are MOVED into `_archive/` (never a user's folders or files). Record each action taken into `actions_taken[]` for the `cleanup_run` event.
 
 ## Phase 3: Substrate Integrity (detect → remediate)

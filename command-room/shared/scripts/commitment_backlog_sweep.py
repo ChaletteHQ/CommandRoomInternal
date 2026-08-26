@@ -1163,7 +1163,87 @@ def summarize(receipt) -> str:
     return line
 
 
-def digest_view(receipt, *, page: Optional[int] = None) -> dict:
+_CLUSTERABLE_BUCKETS = frozenset({"proposed", "age_out"})
+_BUCKET_TITLES = {
+    "proposed": "Looks handled — your call",
+    "age_out": "Gone quiet — still real?",
+}
+
+
+def _cluster_digest_sections(sections: list, workspace_root) -> None:
+    """CLUSTER1 — fold the digest's per-row lists, in place, per bucket.
+
+    Render-level only, through `commitment_cluster.render_clusters` (the one
+    clusterer — nothing here re-derives a similarity signal). Never crosses
+    a bucket; the survivor keeps the section's own verbs and gains the
+    `keep as one` tap with `data.folded_ids` embedded (the CLOSEID2 "id"
+    door). Section titles restate the headline as the information count with
+    the true row count in the same sentence (SPEC §0-4). Defensive: any
+    failure leaves the sections exactly as built."""
+    try:
+        from cru_match import load_open_commitments
+        from commitment_cluster import (CLUSTER_ACTION, folded_line,
+                                        render_clusters)
+        from pathlib import Path as _Path
+
+        events_path = (_Path(workspace_root) / "_hq" / "data"
+                       / "events.jsonl")
+        opens = load_open_commitments(str(events_path),
+                                      workspace_root=str(workspace_root))
+        by_cid = {_cid(ev): ev for ev in opens}
+        for sec in sections:
+            rows = sec.get("items") or []
+            buckets = {(r.get("data") or {}).get("bucket") for r in rows}
+            if not (rows and buckets <= _CLUSTERABLE_BUCKETS):
+                continue
+            row_of = {}
+            for r in rows:
+                cid = str((r.get("data") or {}).get("id") or "")
+                if cid and cid in by_cid:
+                    row_of[cid] = r
+            if len(row_of) < 2:
+                continue
+            clusters = render_clusters([by_cid[c] for c in row_of],
+                                       workspace_root=str(workspace_root))
+            clusters = [c for c in clusters
+                        if all(m in row_of for m in c["member_ids"])]
+            if not clusters:
+                continue
+            folded_away = set()
+            for c in clusters:
+                srow = row_of[c["survivor_id"]]
+                srow["context_tag"] = (str(srow.get("context_tag") or "")
+                                       + f" · +{c['n_folded']} folded — the "
+                                         f"same real-world item")
+                srow["folded_rows"] = [
+                    folded_line(row_of[fid].get("n"),
+                                row_of[fid].get("name") or "(untitled)")
+                    for fid in c["folded_ids"]]
+                srow["data"]["folded_ids"] = list(c["folded_ids"])
+                srow["actions"] = list(srow.get("actions") or []) \
+                    + [CLUSTER_ACTION]
+                folded_away |= set(c["folded_ids"])
+            if not folded_away:
+                continue
+            sec["items"] = [
+                r for r in rows
+                if str((r.get("data") or {}).get("id") or "")
+                not in folded_away]
+            info = len(sec["items"])
+            bucket = next(iter(buckets))
+            base = _BUCKET_TITLES.get(bucket)
+            if base:
+                sec["title"] = (f"{base} ({info} "
+                                f"{'item' if info == 1 else 'items'} "
+                                f"covering {len(rows)} rows)")
+    except Exception as exc:  # pragma: no cover — the digest must render
+        import sys as _sys
+        _sys.stderr.write(f"[commitment_backlog_sweep] digest clustering "
+                          f"skipped: {exc}\n")
+
+
+def digest_view(receipt, *, page: Optional[int] = None,
+                workspace_root=None) -> dict:
     """The data view for `widget_transport.render_and_persist`.
 
     Four sections in the spec's order, plus the coverage block. Every action verb
@@ -1171,6 +1251,19 @@ def digest_view(receipt, *, page: Optional[int] = None) -> dict:
     carries NO actions at all — those already happened, and the honest affordance
     for them is the batch id plus one word (`undo`), not a button that re-decides
     a decision already made.
+
+    `workspace_root` (CLUSTER1) turns on render-level clustering of the
+    "Looks handled" and "Gone quiet" lists: rows the clusterer joins (the
+    shipped duplicate scorer + roster counterparty conjunct + temporal
+    adjacency, precision over recall) render as ONE line — survivor +
+    "+N folded" + the read-only expand + the `keep as one` tap, ids
+    widget-embedded. Clustering never crosses a bucket (a "looks handled"
+    row and a "gone quiet" row are two different questions), never touches
+    the merge or auto-closed sections (the merge section already IS one line
+    per real-world item, and the auto-closed rows already happened), and
+    never edits the flat `items` export — the true row list stays reachable.
+    Omitted (the default), or with nothing clustering, the view is
+    byte-identical to before this parameter existed.
     """
     n = 0
     sections: list = []
@@ -1239,6 +1332,11 @@ def digest_view(receipt, *, page: Optional[int] = None) -> dict:
             # and `still valid` ride each row, and Snooze-rest arms `skip` across
             # every un-armed row in one click.
             "title": f"Gone quiet — still real? ({len(aged)})", "items": aged})
+
+    # CLUSTER1 — fold the two per-row lists (see the docstring). Sections
+    # only; `all_items` stays the true, complete export.
+    if workspace_root is not None:
+        _cluster_digest_sections(sections, workspace_root)
 
     # SWEEPRENDER (F-1) — the view speaks the RENDERER'S vocabulary, not this
     # module's private one. `title` / `headline` / `footer` were three names
@@ -1527,6 +1625,180 @@ def _apply_summary(n_closed, n_merged, n_skipped) -> str:
         return "Nothing to do — nothing was changed."
     return ("Done: " + ", ".join(bits)
             + ". Say `undo` if any of that was wrong.")
+
+
+# ---------------------------------------------------------------------------
+# REFINT1 — the dangling review-proposal drain (writes, so it lives ABOVE the
+# AMNESTY heading: everything below it is fenced to write only through
+# apply_decisions — run_commitment_backlog_sweep_test §5)
+# ---------------------------------------------------------------------------
+
+def dangling_review_drain(workspace_root, *, now_iso=None,
+                          apply: bool = False,
+                          source_skill: str = "cleanup") -> dict:
+    """REFINT1 layer 2 — drain review proposals whose commitment was never
+    created.
+
+    The write gate now refuses new ones (event_gate 4d), but the class left
+    residue on live substrates: rows that exist, carry a live question
+    (`proposed_resolution: auto_resolve`, scores 0.43–0.5 on the observed
+    three), and are reachable by NO surface — the review tier and amnesty
+    derive from `commitment` events, the queue adapter reads a 7-day window
+    and drops title-less rows, so a dangling proposal appears in no count
+    and no list while "nothing has sat unanswered" reads literally true.
+
+    Silent permanent invisibility is the bug, so the exit is neither silent
+    nor a deletion: each orphaned QUESTION is terminally closed with a
+    `commitment_review_dismissed` (built by the CANONICAL builder — the same
+    writer shape the queue's own Skip uses) carrying the lapse reason under
+    the SHARED key (`RESOLUTION_REASON_KEY: DANGLING_TARGET_REASON`) so
+    `is_non_dismissal_closure` readers — confidence calibration above all —
+    can tell a system drain from the CEO's "not relevant". The report lines
+    carry every row for a human note (cleanup's Monday note surfaces them
+    once). A dismissal is the right tombstone — it claims no work exists,
+    which is exactly the truth here — and it is deliberately outside the
+    gate's reference wall.
+
+    Termination is ORDER-AWARE and reads the whole closer family, exactly as
+    the queue's own loader does (`commitment_review_dismissed` plus
+    `closure_index.CLOSER_TYPES`, targets via `closer_target_id`): a cid's
+    question is open when its newest proposal came AFTER its newest terminal
+    event, so a tombstone written today cannot hide a fresh orphan replayed
+    tomorrow, and a question already ended by a merge or a thread resolve is
+    never re-tombstoned. Resolution honors the full chain + seq aliases
+    (`resolve_closure_target`) — a proposal whose id string is garbage but
+    whose `commitment_seq` names a real commitment is a LIVE question, never
+    a drain candidate. Scans the FULL log: the 7-day read window is one of
+    the ways these rows went invisible, and the drain must not inherit it.
+
+    Safety rails: `apply=True` runs the whole scan→append inside the events
+    writer lock (the R1c discipline every sibling writer keeps), and refuses
+    outright when the log has unparseable lines — a commitment whose
+    creation row is corrupt would read exactly like one never created, and a
+    tombstone is not the remedy for corruption (the heal pass is). Proposals
+    carrying no readable target at all are counted and reported
+    (`n_unaddressable`), never tombstoned — a tombstone needs a cid to
+    terminate anything.
+
+    Returns {"rows", "n", "applied", "lines", "n_unaddressable",
+    "n_skipped_lines", "refused"}. `apply=False` (default) is a dry run; a
+    second applied run finds nothing (the tombstone terminates).
+    """
+    from cru_match import (build_commitment_review_dismissed_event,
+                           load_events_defensively)
+    from closure_index import (CLOSER_TYPES, build_commitment_universe,
+                               closer_target_id, resolve_closure_target)
+    from event_types import DANGLING_TARGET_REASON, RESOLUTION_REASON_KEY
+
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    now = _now_dt(now_iso)
+
+    def _compute():
+        events, skipped = load_events_defensively(str(events_path))
+        by_id, by_seq = build_commitment_universe(events)
+
+        terminal_at: dict = {}
+        groups: dict = {}
+        n_unaddressable = 0
+        for i, ev in enumerate(events):
+            et = ev.get("type") or ev.get("event")
+            if et == "commitment_review_proposed":
+                cid = closer_target_id(ev)
+                if not cid:
+                    n_unaddressable += 1
+                    continue
+                g = groups.setdefault(cid, {"evs": [], "last_idx": -1})
+                g["evs"].append(ev)
+                g["last_idx"] = i
+            elif et == "commitment_review_dismissed" or et in CLOSER_TYPES:
+                cid = closer_target_id(ev)
+                if cid:
+                    terminal_at[cid] = i
+
+        rows = []
+        for cid, g in groups.items():
+            if terminal_at.get(cid, -1) > g["last_idx"]:
+                continue  # the question was ended AFTER its newest asking
+            if any(resolve_closure_target(ev, by_id, by_seq) is not None
+                   for ev in g["evs"]):
+                continue  # a live, answerable question — not ours
+            stamps = [parse_ts(event_time(ev)) for ev in g["evs"]]
+            oldest = min((s for s in stamps if s is not None), default=None)
+            age = (int((now - oldest).total_seconds() // 86400)
+                   if oldest is not None else None)
+            title = ""
+            for ev in g["evs"]:
+                title = str((ev.get("data") or {}).get("title") or "").strip()
+                if title:
+                    break
+            rows.append({
+                "commitment_id": cid,
+                "title": title,
+                "proposal_seqs": sorted(ev.get("seq") for ev in g["evs"]
+                                        if isinstance(ev.get("seq"), int)),
+                "age_days": age,
+            })
+        rows.sort(key=lambda r: (-(r["age_days"] if r["age_days"] is not None
+                                   else 10 ** 6), r["commitment_id"]))
+        return rows, n_unaddressable, len(skipped)
+
+    def _lines(rows, n_unaddressable):
+        lines = [
+            (f"Closed as unresolvable: {r['title'] or r['commitment_id']!r}"
+             + (f" (proposed {r['age_days']}d ago)"
+                if r["age_days"] is not None else "")
+             + " — its work item was never created")
+            for r in rows
+        ]
+        if n_unaddressable:
+            lines.append(
+                f"{n_unaddressable} review proposal(s) name no target at all "
+                "— nothing to terminate, flagged for the heal pass")
+        return lines
+
+    def _tombstones(rows):
+        batch = []
+        for r in rows:
+            ev = build_commitment_review_dismissed_event(
+                commitment_id=r["commitment_id"], primary_thread_id="",
+                source_skill=source_skill, next_seq=None)
+            ev.pop("seq", None)
+            ev["data"].update({
+                RESOLUTION_REASON_KEY: DANGLING_TARGET_REASON,
+                "dangling_proposal_seqs": r["proposal_seqs"],
+                "title": r["title"],
+            })
+            batch.append(ev)
+        return batch
+
+    if not apply:
+        rows, n_unaddressable, n_skipped = _compute()
+        return {"rows": rows, "n": len(rows), "applied": False,
+                "lines": _lines(rows, n_unaddressable),
+                "n_unaddressable": n_unaddressable,
+                "n_skipped_lines": n_skipped, "refused": None}
+
+    from event_gate import append_event
+    from writer_lock import events_writer_lock
+    with events_writer_lock(events_path,
+                            holder=f"dangling_review_drain:{source_skill}"):
+        rows, n_unaddressable, n_skipped = _compute()
+        if n_skipped:
+            return {"rows": rows, "n": len(rows), "applied": False,
+                    "lines": _lines(rows, n_unaddressable) + [
+                        f"NOT applied: the log has {n_skipped} unparseable "
+                        "line(s) — a corrupt creation row would read as "
+                        "never-created, and a tombstone is not the remedy "
+                        "for corruption. Run the heal pass first."],
+                    "n_unaddressable": n_unaddressable,
+                    "n_skipped_lines": n_skipped,
+                    "refused": "unparseable_lines"}
+        if rows:
+            append_event(events_path, _tombstones(rows), holder=source_skill)
+    return {"rows": rows, "n": len(rows), "applied": bool(rows),
+            "lines": _lines(rows, n_unaddressable),
+            "n_unaddressable": n_unaddressable,
+            "n_skipped_lines": n_skipped, "refused": None}
 
 
 # ---------------------------------------------------------------------------

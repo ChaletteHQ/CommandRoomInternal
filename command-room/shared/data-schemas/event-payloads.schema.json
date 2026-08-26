@@ -294,5 +294,10 @@
     "description": "SPEC SYNC1 A2 — best-effort audit event when a substrate-regression alert's condition re-checks false and the alert is annotated + archived to _hq/_resolved_alerts/ (D-3). WRITTEN ONLY by alarm_artifacts.sweep_alerts. data.alert = the archived alert filename; marker = the regression-marker path it referenced; sidecar_max_seq = the high-water the resolved predicate tested against.",
     "required": [["alert"]],
     "properties": {"alert": "string", "marker": "string", "sidecar_max_seq": "number", "resolved_at": "string"}
+  },
+  "style_changed": {
+    "description": "SPEC STYLE1 — one confirmed style change batch per layer. BUILT ONLY via chat_persona.build_style_changed_event (which enforces the layer/origin enums and refuses an empty changes list); appended via event_gate.append_event. layer = chat_persona | output_profile; origin = inferred_provisional (onboarding D7 carve-out, exactly once) | inferred_confirmed | asked | recalibrated; changes = [{knob, from, to}]. The show-my-style card reads per-knob provenance off this lane; no automated writer exists (D4: drift watch is OFF, hence no proposal_ref field — it would have no reader).",
+    "required": [["layer"], ["origin"], ["changes"]],
+    "properties": {"layer": "string", "origin": "string", "changes": "array", "evidence": "string"}
   }
 }

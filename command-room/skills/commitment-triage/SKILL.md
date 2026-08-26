@@ -1,7 +1,7 @@
 ---
 name: commitment-triage
 surfaces: both
-description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. On demand only (the opt-in Friday chat is retired). Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts). Action semantics: Routing section in the body."
+description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. On demand only (the opt-in Friday chat is retired). Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
 ---
 
 # commitment-triage
@@ -83,6 +83,19 @@ one giant widget. One page's worth of the layout:
   view with `Open` / `You owe` / `Owed to you` / `Unowned` / `Unconfirmed`
   (+ `Undated` if room) — values VERBATIM from `counts["headline"]`, never
   hand-rolled.
+- **One line per real-world item (CLUSTER1, default-on):** the driver
+  render-clusters the OPEN sections — rows the shipped duplicate scorer
+  joins (shared wording + shared roster counterparty + captured within
+  days; precision over recall) fold under the oldest row's line as
+  `+N folded` with a read-only expand, and the cluster line carries a
+  `keep as one` tap whose ids the row itself embeds (`data.id` +
+  `data.folded_ids` — dispatch via apply-choices to
+  `commitment_cluster.apply_cluster_merge`, one `clu_` batch, one undo).
+  The header leads with the information count ("N items (M open)"); the
+  tiles keep their reconciled true counts. A cluster is a display fact —
+  ignoring it or answering rows individually writes nothing. With nothing
+  clustering the view is byte-identical to before CLUSTER1. Nothing here
+  auto-merges: that stays confined to `commitment_dedup.auto_merge_eligible`.
 - **Unconfirmed block — renders FIRST, above every age section (v4.6.1
   W4b escalation; never age-buried):** anything unconfirmed 7+ days pins to
   a dedicated **"Unconfirmed"** section at the TOP of the widget —

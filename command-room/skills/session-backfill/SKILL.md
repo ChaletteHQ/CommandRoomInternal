@@ -1,7 +1,7 @@
 ---
 name: session-backfill
 surfaces: both
-description: "One-time supervised catch-up that recovers the commitments, decisions, interactions, and deliverables buried in the CEO's chat history from before Command Room was capturing them — the last 60 days of sessions, swept once. Shows a preview of exactly what it found and waits for a yes before writing anything; records each item with the same dedup and identity rules as the nightly pass; snapshots history first and never deletes. Fires on: 'backfill my history', 'sweep the last 60 days', 'recover my past chats', 'catch up my chat history', 'go back and capture my old chats'. Does NOT fire on 'run session sweep' / 'sweep my chats' (session-sweep — the recurring nightly forward pass), 'process the last call' (meeting-notes), or 'reconcile my sent mail' (reconcile-sent). Preview format and safety rails: Routing section in the body."
+description: "One-time supervised catch-up that recovers the commitments, decisions, interactions, and deliverables buried in the CEO's chat history from before Command Room was capturing them — the last 60 days of sessions, swept once. Shows a preview of exactly what it found and waits for a yes before writing anything; records each item with the same dedup and identity rules as the nightly pass; snapshots history first and never deletes. Fires on: 'backfill my history', 'sweep the last 60 days', 'recover my past chats', 'catch up my chat history', 'go back and capture my old chats'. Does NOT fire on 'run session sweep' / 'sweep my chats' (session-sweep — the recurring nightly forward pass), 'process the last call' (meeting-notes), or 'reconcile my sent mail' (reconcile-sent)."
 ---
 
 # Session Backfill — one-time historical chat recovery (supervised)

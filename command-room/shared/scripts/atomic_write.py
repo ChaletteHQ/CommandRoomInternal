@@ -187,6 +187,36 @@ _EPOCH_THRESHOLD = 10**10
 # (supervised one-shot remap).
 SEQ_GAP_MAX = 1000
 
+# CLOCKTS1 — the SYMMETRIC bound on an explicit caller-supplied `ts` ahead of
+# the machine clock. `SEQ_GAP_MAX` above has bounded a suspicious explicit
+# `seq` since BUG-8330; the same file honoured any explicit `ts` verbatim, and
+# a single future-dated row became the ledger maximum, was adopted as a
+# clock-skew floor, and re-stamped itself onto every later append.
+#
+# WHY A DAY AND NOT THE 300s TOLERANCE. This bound REFUSES a write, so it may
+# only catch rows that are certainly wrong. A rounded placeholder written for a
+# same-day item legitimately lands a few hours ahead (the field case: a
+# weekly-recap interaction stamped at local noon), and refusing those would
+# break a real workflow to fix a stamp. So the division of labour is:
+#
+#   this gate REFUSES the certainly-wrong — a row dated a day or more ahead,
+#   which no writer in the product has any reason to produce;
+#   `trusted_now.classify_substrate_max` NEUTRALIZES the merely-suspicious —
+#   the row still lands, but it can never become a floor for anything else.
+#
+# Together they close both scales. Neither alone does. CR_TS_LEAD_GUARD=0
+# disables this check, for supervised historical replay and for the repair
+# tool — the same escape-hatch shape as CR_SEQ_HIGHWATER=0.
+TS_LEAD_MAX_SECONDS = 86400
+
+
+class FutureTimestampRefused(Exception):
+    """Raised when an events append is refused because a caller supplied a `ts`
+    leading the machine clock by more than TS_LEAD_MAX_SECONDS. The batch is
+    written to a REVIEW side file and never silently re-stamped and never
+    silently accepted — a wrong date in the permanent ledger drives wrong
+    windows and, since the confirmed-tier age-out, wrong closures."""
+
 
 def _clock1():
     """The CLOCK1 helper module, or None.
@@ -235,6 +265,35 @@ def _scan_events_text(path: Path, existing_text: str):
     return None, _file_max_seq(path, existing_text=existing_text)
 
 
+def _ts_lead_seconds(raw_ts: str, machine_now) -> float | None:
+    """How far `raw_ts` leads `machine_now`, in seconds, or None.
+
+    None means "no opinion" and is returned for anything unparseable — the
+    defensive-reader posture every other reader here takes. A `ts` this cannot
+    parse is a different defect (event_payload_check's job) and must not be
+    turned into a refusal by this guard, which would make an unrelated
+    malformed row look like a clock incident.
+    """
+    try:
+        from event_time import parse_ts
+    except ImportError:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from event_time import parse_ts
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        parsed = parse_ts(raw_ts)
+        if parsed is None:
+            return None
+        return (parsed - machine_now).total_seconds()
+    except Exception:
+        return None
+
+
 def _clock1_floor_stamp(machine_now, newest_ts, events_path=None) -> dict:
     """CLOCK1 — the `ts` this append should carry, plus its provenance.
 
@@ -244,7 +303,8 @@ def _clock1_floor_stamp(machine_now, newest_ts, events_path=None) -> dict:
     `events_path` scopes the anomaly suppression to THIS workspace.
     """
     mod = _clock1()
-    plain = {"ts": machine_now, "ts_source": None, "machine_ts": None}
+    plain = {"ts": machine_now, "ts_source": None, "machine_ts": None,
+             "refused": None}
     if mod is None:
         return plain
     try:
@@ -605,10 +665,49 @@ def atomic_append_jsonl(
             # returns the newest recorded timestamp as a floor. It writes and
             # annotates; it never refuses (a raise here would lose every
             # remaining substrate write the fire owes).
+            # The RAW machine reading, kept in a name. CLOCKTS1 judges a
+            # caller-supplied `ts` against THIS, never against `clock_stamp`:
+            # the floor is exactly the value a poisoned ledger moves, so
+            # measuring a suspicious lead against it would let a contaminated
+            # workspace excuse the row that contaminated it.
+            machine_now = _dt.datetime.now(_dt.timezone.utc)
             clock_stamp = _clock1_floor_stamp(
-                _dt.datetime.now(_dt.timezone.utc), existing_newest_ts,
-                events_path=path)
+                machine_now, existing_newest_ts, events_path=path)
             now_iso = clock_stamp["ts"].isoformat()
+            if clock_stamp.get("refused"):
+                # CLOCKTS1 — a floor correction was available and was REFUSED
+                # because the ledger maximum is a forward-dated row, not clock
+                # evidence. Said out loud: silence here is how the field case
+                # ran for eighteen days without anyone noticing.
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[atomic_append_jsonl] substrate clock floor refused "
+                    f"({clock_stamp['refused']}): the newest ledger timestamp "
+                    f"leads the .seqhw witness, so it is a forward-dated row "
+                    f"rather than proof this clock is behind. Stamped the "
+                    f"machine reading (holder={holder}). Run "
+                    f"shared/scripts/repair_future_ts.py to see what is "
+                    f"recoverable.\n"
+                )
+            # WHICH CLOCK A CALLER'S `ts` IS JUDGED AGAINST (fix round, F-2).
+            # The raw machine reading is the right reference in general — a
+            # contaminated workspace must not be allowed to excuse the row that
+            # contaminated it. But on the exact incident this module exists for
+            # — a machine that booted unsynced and reads days behind — "the
+            # real time" IS ahead of the raw clock, by precisely the skew, so a
+            # caller passing a meeting's CORRECT start time was refused at 25h
+            # behind. The discriminator tolerates that same machine's skew up
+            # to four days; the gate refusing it at one was the two bounds
+            # disagreeing about one clock.
+            #
+            # So: when a floor was actually ADOPTED, the corroborated stamp is
+            # this machine's best reading of now and is the reference. When it
+            # was not — including every refusal, which is what a poisoned
+            # workspace now produces — `ts_source` is None and the reference
+            # stays the raw clock. The anti-excuse property is untouched.
+            ts_reference = (clock_stamp["ts"] if clock_stamp["ts_source"]
+                            else machine_now)
+            ts_refused: list[tuple[int, str, float]] = []
             for ev in evs:
                 current_seq = ev.get("seq")
                 seq_is_valid_human_counter = (
@@ -657,9 +756,6 @@ def atomic_append_jsonl(
                     next_seq_val += 1
                 current_ts = ev.get("ts")
                 if current_ts is None or not isinstance(current_ts, str) or not current_ts.strip():
-                    # A caller-supplied non-empty `ts` is NEVER touched:
-                    # historic backfills are legal and indistinguishable from
-                    # intent. Only the auto-stamp is corroborated.
                     ev["ts"] = now_iso
                     if clock_stamp["ts_source"]:
                         # The contamination trail (CLOCK1 D4), additive so
@@ -667,6 +763,84 @@ def atomic_append_jsonl(
                         # came from, and what the machine actually said.
                         ev["ts_source"] = clock_stamp["ts_source"]
                         ev["machine_ts"] = clock_stamp["machine_ts"]
+                else:
+                    # A caller-supplied non-empty `ts` is still never REWRITTEN
+                    # — historic backfills are legal and indistinguishable from
+                    # intent, and `ts` = meeting start time is a live data
+                    # contract that dormancy and "when did I last meet with X"
+                    # read. CLOCKTS1 changes nothing about a backward `ts`.
+                    #
+                    # A FORWARD one is different in kind: it is a claim about
+                    # something that has not happened, it becomes the ledger
+                    # maximum, and every window in the product reads it. Bound
+                    # it exactly the way an explicit `seq` above is bounded.
+                    lead = _ts_lead_seconds(current_ts, ts_reference)
+                    if lead is not None and lead > TS_LEAD_MAX_SECONDS:
+                        ts_refused.append((len(ts_refused), current_ts, lead))
+
+            # CLOCKTS1 — REFUSE INTO REVIEW. Neither of the two silent outcomes
+            # is acceptable here: re-stamping the row loses the caller's stated
+            # time with no trail (and the caller may have meant it — a genuinely
+            # scheduled item belongs in the payload, not in `ts`), and accepting
+            # it writes a future date into the permanent ledger that every
+            # window, the dormancy math and the confirmed-tier age-out will read
+            # as fact. So the batch goes to a REVIEW side file with a named
+            # reason, exactly like the FS-04 quarantine below, and the caller
+            # hears about it.
+            #
+            # The WHOLE batch is set aside, not just the offending rows: a batch
+            # is often referentially linked (a commitment and the closure that
+            # resolves it), and splitting it would land half a relationship.
+            if ts_refused and os.environ.get("CR_TS_LEAD_GUARD", "1") != "0":
+                stamp = machine_now.strftime("%Y%m%dT%H%M%S%fZ")
+                r_path = path.with_name(path.name + f".tsreview-{stamp}.jsonl")
+                r_lines = "".join(
+                    json.dumps(e, ensure_ascii=False) + "\n" for e in evs)
+                try:
+                    r_existing = (r_path.read_text(encoding=encoding)
+                                  if r_path.exists() else "")
+                    if r_existing and not r_existing.endswith("\n"):
+                        r_existing += "\n"
+                    atomic_write_text(r_path, r_existing + r_lines,
+                                      encoding=encoding)
+                except Exception:
+                    pass
+                marker = path.with_name(path.name + ".tsreview.json")
+                worst = max(ts_refused, key=lambda r: r[2])
+                try:
+                    atomic_write_json(marker, {
+                        "detected": machine_now.isoformat(),
+                        "reason": "caller_ts_leads_machine_clock",
+                        "n_refused": len(ts_refused),
+                        "n_in_batch": len(evs),
+                        "worst_ts": worst[1],
+                        "worst_lead_seconds": worst[2],
+                        "ts_lead_max_seconds": TS_LEAD_MAX_SECONDS,
+                        "machine_now": machine_now.isoformat(),
+                        "reference": ts_reference.isoformat(),
+                        "reference_kind": ("substrate_floor"
+                                           if clock_stamp["ts_source"]
+                                           else "machine_clock"),
+                        "review_path": str(r_path),
+                        "holder": holder,
+                    })
+                except Exception:
+                    pass
+                raise FutureTimestampRefused(
+                    f"refused {len(ts_refused)} event(s) whose caller-supplied "
+                    f"`ts` leads this workspace's best reading of now by more "
+                    f"than TS_LEAD_MAX_SECONDS={TS_LEAD_MAX_SECONDS}s (worst: "
+                    f"{worst[1]!r}, {worst[2]:.0f}s ahead of "
+                    f"{ts_reference.isoformat()}; machine clock reads "
+                    f"{machine_now.isoformat()}; holder={holder}). The batch of "
+                    f"{len(evs)} was set aside for review at {r_path.name} — "
+                    f"nothing was re-stamped and nothing was written to the "
+                    f"ledger. A future date in `ts` becomes the ledger maximum "
+                    f"and is read as fact by every window, by dormancy, and by "
+                    f"the confirmed-tier age-out. If the event has already "
+                    f"happened, pass its real time; if it has not, omit `ts` "
+                    f"and put the scheduled time in the payload."
+                )
 
         stamped[:] = evs
         new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs)

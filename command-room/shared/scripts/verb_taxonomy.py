@@ -225,6 +225,25 @@ VERB_TAXONOMY = (
          ("commitments", "commitment-triage"), family="commitment",
          notes="W4b/C4. Dispatch: commitment_state.clear_review_flags "
                "(note 'confirmed distinct')."),
+    _row("keep as one", "Keep as one", "commitment_superseded",
+         "The rows folded under this line are the same real-world item — "
+         "keep the surviving line and fold the rest into it for good. One "
+         "undo splits them back out.",
+         ("needs-your-call", "commitment-triage", "backlog-sweep",
+          "cr-brain"), family="commitment",
+         notes="CLUSTER1. The cluster line's one tap: render-level "
+               "clustering (default-on) shows one line per real-world item "
+               "(survivor + '+N folded'); this makes the cluster durable "
+               "through the EXISTING writers only — dispatch: "
+               "commitment_cluster.apply_cluster_merge (clear_review_flags "
+               "on a pending survivor + one supersede_commitment("
+               "user_confirmed=True) per folded id, all in one clu_ brain "
+               "batch → one undo). The row embeds data.id + data.folded_ids "
+               "verbatim (the CLOSEID2 'id' door) — no input needed, and "
+               "dispatch never resolves ids itself. NEVER renders on "
+               "held-review (its DD-4 fence keeps that surface verbless "
+               "beyond the objection). Never auto-fires: auto-merge stays "
+               "confined to commitment_dedup.auto_merge_eligible."),
     _row("never track this", "Never track (permanent)", "commitment_resolved",
          "Close the item AND append a suppression rule so extractors never "
          "capture this shape again. Permanent — not a timed mute.",
@@ -718,6 +737,21 @@ VERB_TAXONOMY = (
          notes="LB1. The existing chat_dismissal TTL machinery (target_id = "
                "the proposal id). The proposal's own TTL clock keeps running "
                "— an ignored proposal still expires silently."),
+
+    # --- Held-tier review (HELDREVIEW1) ---------------------------------------
+    _row("wrong to hide", "Wrong to hide", "held_review_objection",
+         "Tell me this one should never be hidden. One note, recorded once — "
+         "the row itself does not move and nothing comes back to be cleared.",
+         ("held-review",), family="review",
+         notes="HELDREVIEW1. The held-tier review's ONLY verb, and "
+               "deliberately not one of needs_review_queue."
+               "QUEUE_ROW_ACTIONS: the review asks 'is this list acceptable?' "
+               "and a surface that could also confirm or drop would make "
+               "answering that question destructive (SPEC_HELDREVIEW1 DD-4). "
+               "Dispatch: held_review.capture_objection — ONE "
+               "held_review_objection event, idempotent per commitment id, "
+               "and the button is not re-offered on a row that already "
+               "carries one. No closure, no confirm, no review-flag change."),
 
     # --- Decisions ------------------------------------------------------------
     _row("revisit", "Revisit now", None,

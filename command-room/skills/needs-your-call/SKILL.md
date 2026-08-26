@@ -53,6 +53,80 @@ The `floor_gated` marker exists so those rows can be hidden behind a config
 toggle once M has run with them for a while. **The toggle is deliberately not
 built** — do not invent one, and do not filter these rows out of any render.
 
+### The SET ASIDE section (OBSERVED1, 2026-08-24)
+
+Below the queue's own rows, the view can carry one more labelled section:
+**live observed-tier items** (`commitment_observed` — the relevance gate's
+set-asides: heard on the user's calls between other people, kept on file,
+deliberately not tracked). They were readable by prep and answerable by
+nobody — the reader-coverage gap OBSERVED1 closed. What to know:
+
+- The section is DROP-EMPTY and its rows are numbered CONTINUING after the
+  queue (`view["observed_groups"]` / `view["n_observed"]`). Selections parse
+  through `selection_numbers(view, spec)`: explicit numbers and ranges reach
+  these rows, while **`all` answers the queue's own counted rows only** —
+  the header's sentence is the question the user is answering, and a
+  one-word sweep must never mint or dismiss the set-aside tier.
+  `view["total"]` still counts ONLY unconfirmed extractions; it is the
+  number `headline.unconfirmed` points at and the header's counted sentence,
+  and observed rows never inflate it (`addressable_total(view)` is the full
+  addressable bound the helper validates against).
+- The verbs are **confirm / drop only** (`capture_gate.OBSERVED_ROW_ACTIONS`).
+  No `already done` (nothing tracked = nothing whose completion can be
+  attested) and no `not mine` button (the tier already IS "not mine" — though
+  a typed `not mine N` on one of these rows works and writes the same drop).
+- **Confirm** = `promote_observed` (the tier's one defined transition — a
+  real `commitment` carrying `promoted_from`) **then** `clear_review_flags`,
+  in one gesture: the row becomes an ordinary open commitment. **Drop** =
+  `promote_observed` then `close_commitment(resolution="dropped")` — the
+  standard tombstone, which also feeds the capture gate's dismissal tuning.
+  Both are appends; the observed event stays in history unrewritten. You
+  never call the tier's functions yourself — `confirm_items` / `drop_items`
+  route an `obs_` id automatically.
+- Group phrases ("confirm the Acme call") deliberately answer NO set-aside
+  row — those answer by number (or one tap) only. The weak-evidence fence
+  holds here too, and it matters MORE: confirming an observed row MINTS a
+  commitment, so an evidence-less one never confirms in bulk.
+- The staff meeting's FROM YOUR MEETINGS fold does NOT carry this section —
+  it stays scoped to the queue's own rows.
+
+### One line per real-world item (CLUSTER1, 2026-08-25)
+
+Render-level clustering is **default-on**. Rows the clusterer reads as the
+same real-world item — shared content tokens (the shipped duplicate scorer),
+a shared counterparty read off the roster, captured within days of each
+other; precision over recall, a false join costs trust — render as **one
+line**: the oldest row's title plus `+N folded`, with the folded rows one
+tap away (expand, read-only, display numbers kept). What to know:
+
+- **A cluster is a display fact until confirmed.** Expanding, ignoring, or
+  answering rows individually (their numbers still work — folded rows keep
+  their display numbers and stay in the view's selection maps) writes
+  nothing and changes nothing.
+- **The one tap — `keep as one`** (widget button on the cluster line, or
+  typed `keep as one N` where N is the line's number) — makes it durable
+  through the EXISTING writers only:
+  `commitment_cluster.apply_cluster_merge` → `clear_review_flags` on the
+  pending survivor + one `supersede_commitment(user_confirmed=True)` per
+  folded row, details in evidence, all in ONE `clu_` batch. One `undo`
+  (`brain_undo.undo_batch` on the returned `batch_ref`) splits them back
+  out. The widget row embeds `data.id` + `data.folded_ids` verbatim — never
+  resolve the ids yourself.
+- **The headline count is the information count** — a queue of 41 rows in 9
+  clusters says 9, with the true row count in the same sentence and every
+  row reachable one level down. `view["total"]` keeps its shipped meaning
+  (the reconciled row count `headline.unconfirmed` points at);
+  `view["n_lines"]` / `n_clusters` / `n_folded` appear only when something
+  clustered.
+- **Nothing auto-merges from here.** Auto-merge stays confined to
+  `commitment_dedup.auto_merge_eligible` (the zero-ambiguity gate),
+  byte-identical. The clusterer proposes; the tap is the verdict.
+- The SET ASIDE section never clusters (a different tier with its own
+  doctrine), and the `show me what you'd hide` review renders clusters
+  display-only (held-review's DD-4 fence — no resolving verb there, ever).
+- There is no setting for this and none should be invented: M's ruling is
+  that it is baked in for everybody.
+
 ## Routing
 
 | The user says | Fires |
@@ -110,7 +184,15 @@ through `commitment_state` helpers, reached via
   `commitment_state.restore_review_flags` (one `commitment_updated` carrying
   `data.review_flags_set: true` + the item's ORIGINAL `review_reason`);
 - **undo an already done** → `needs_review_queue.undo_done_items` →
-  `commitment_state.reopen_commitment` **then** `restore_review_flags`.
+  `commitment_state.reopen_commitment` **then** `restore_review_flags`;
+- **confirm on a SET ASIDE row** (an `obs_` id) →
+  `capture_gate.promote_observed` (one real `commitment` with
+  `data.promoted_from` + `pending_review`) **then** `clear_review_flags` —
+  one gesture, two appends, an ordinary open commitment. Routed inside
+  `confirm_items`; never call the tier's functions directly;
+- **drop on a SET ASIDE row** → `promote_observed` **then**
+  `close_commitment(resolution="dropped", user_confirmed=True)` — the same
+  standard tombstone a queue drop writes. Routed inside `drop_items`.
 
 **Nothing is ever deleted or rewritten.** A dropped item's original capture
 stays in history exactly as written — the drop is an appended tombstone. The
@@ -222,7 +304,12 @@ The row verbs are `confirm` / `already done` / `drop` / `not mine`, and they
 are the same four on this surface and on the staff meeting's FROM YOUR
 MEETINGS fold — one list, one dispatch, no per-surface variant.
 
-- **Ranges and `all`** parse in code: `parse_selection(spec, view["total"])`.
+- **Ranges and `all`** parse in code: `selection_numbers(view, spec)` — THE
+  view-aware parse (OBSERVED1). `all` answers the queue's own counted rows
+  only; explicit numbers and ranges also reach the SET ASIDE section. Never
+  call `parse_selection` with a bound you picked yourself — the two-total
+  split (`total` vs `addressable_total`) is exactly what this helper exists
+  to get right.
 - **Group phrases** ("the Acme call", "all Acme rows") resolve in code too:
   `ids_for_group(view, "<what they said>")` matches a group's `group_key`
   exactly, then its display name, then a substring — and raises loudly when
@@ -248,6 +335,16 @@ MEETINGS fold — one list, one dispatch, no per-surface variant.
   just was not theirs). If they NAME the real owner, route to
   `commitment_state.reassign_commitment` instead — this queue never guesses
   at a reassignment.
+- **`keep as one N`** (CLUSTER1) → N must be a CLUSTER line's own display
+  number in the CURRENT view. Read the survivor's `cluster` off the view row
+  (`row["cluster"]["folded_ids"]`) and dispatch ONE call:
+  `commitment_cluster.apply_cluster_merge(ws, <survivor id>, <folded_ids>,
+  merged_by=user_id, source_skill="needs-your-call")`. Never re-derive the
+  cluster, never pass ids the view row does not carry, and never apply it to
+  a line with no cluster — refuse in one line ("that line has nothing folded
+  under it"). Relay the returned `summary` verbatim (it names the undo);
+  a follow-up `undo` goes to `brain_undo.undo_batch` with the returned
+  `batch_ref`.
 - **Never confirm or drop anything the user did not name.** There is no
   "clear the rest", no default, no auto-confirm on an empty answer. A bare
   "clear the queue" is a request to SEE it (Step 1), not to empty it.
@@ -265,7 +362,7 @@ MEETINGS fold — one list, one dispatch, no per-surface variant.
 import sys; sys.path.insert(0, "shared/scripts")  # cwd == $PLUGIN_ROOT per the preamble
 from needs_review_queue import (GROUP_MEETING, build_queue_view,
                                 confirm_group, ids_for_selection,
-                                individually_named, parse_selection,
+                                individually_named, selection_numbers,
                                 confirm_items, done_items, drop_items,
                                 not_mine_items)
 from primary_user import resolve_primary_user
@@ -274,9 +371,14 @@ ws = "<WORKSPACE>"
 view = build_queue_view(ws, group_by=GROUP_MEETING)
 user_id = resolve_primary_user(ws)
 
+# OBSERVED1 — selection parses through selection_numbers(view, spec), the
+# view-aware helper: `all` answers the queue's own counted rows only (the
+# header's sentence is the question being answered — a one-word sweep never
+# mints or dismisses the set-aside tier), while explicit numbers and ranges
+# reach BOTH tiers, validated against addressable_total(view).
 confirm_spec, drop_spec = "1-40, 44", "41-50"
-keep = ids_for_selection(view, parse_selection(confirm_spec, view["total"]))
-gone = ids_for_selection(view, parse_selection(drop_spec, view["total"]))
+keep = ids_for_selection(view, selection_numbers(view, confirm_spec))
+gone = ids_for_selection(view, selection_numbers(view, drop_spec))
 # Only standalone-typed numbers (here: 44) may override a weak-evidence hold.
 named = ids_for_selection(view, sorted(individually_named(confirm_spec)))
 
@@ -368,6 +470,12 @@ original answer stays in history beside its reversal:
   confirmed on the user's behalf.
 - a drop / not mine → `commitment_state.reopen_commitment`, the shipped
   triage batch-undo path.
+- **a SET ASIDE confirm** → the same `undo_confirm_items` call with the same
+  cached ids — it translates an observed id to the commitment its confirm
+  minted. The undone item comes back to THIS QUEUE as an unconfirmed row
+  (promotion is permanent; the tier defines no un-promote), carrying the
+  promotion's own reason. **A SET ASIDE drop** → `reopen_commitment` on the
+  result's `promoted_id` (the observed id itself matches no commitment).
 
 An undo REFUSES rather than steamrolls. `touched_since_confirm` means someone
 made a later decision about that item — it was reassigned, parked, re-worded,
@@ -409,6 +517,15 @@ transport = render_and_persist(
 Any row is answerable on demand — *"confirm 2"* closes that one now,
 *"drop 2"* lets it go — and both dispatch through the ordinary per-item paths
 above. Left alone, the watch runs its course by itself.
+
+**The view also carries the SET ASIDE section (OBSERVED1)** — the same live
+observed rows the queue renders (see "The SET ASIDE section" above), numbered
+continuing after the watched rows, each with confirm/drop. Dispatch is
+identical: hand the row's id to `confirm_items` / `drop_items` and they route
+it through the observed transition. On THESE rows the two verbs mean "start
+tracking it as an ordinary open item" / "let it go" — unlike a watched row,
+nothing was being tracked yet. Drop-empty: no live observed rows, no
+section, and the view is byte-identical to before OBSERVED1.
 
 ### Explaining it, when the user asks
 

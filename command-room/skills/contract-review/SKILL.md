@@ -1,7 +1,7 @@
 ---
 name: contract-review
 surfaces: both
-description: "Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Fires on: 'review this contract', 'review this NDA', 'redline this contract / NDA / MSA', 'contract review', 'check this contract', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Counterparty- and history-aware: repeated carve-out pushes from the same counterparty get noted as a pattern; every review is logged with parties and deviation classes. Does NOT fire on 'write a contract' (out of scope — Command Room reviews, never drafts contracts), legal-advice questions (out of scope), or e-signature sending (the connected signing tool). Deviation taxonomy and standard-terms contract: Routing section in the body."
+description: "Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Fires on: 'review this contract', 'review this NDA', 'redline this contract / NDA / MSA', 'contract review', 'check this contract', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Counterparty- and history-aware: repeated carve-out pushes from the same counterparty get noted as a pattern; every review is logged with parties and deviation classes. Does NOT fire on 'write a contract' (out of scope — Command Room reviews, never drafts contracts), legal-advice questions (out of scope), or e-signature sending (the connected signing tool)."
 ---
 
 ## Skill Boundary (v2.1)

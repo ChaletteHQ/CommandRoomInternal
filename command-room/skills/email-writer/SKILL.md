@@ -1,7 +1,7 @@
 ---
 name: email-writer
 surfaces: both
-description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro emails. Fires on: 'draft an email to [name] about [topic]', 'email to [name]', 'write an email to the team', 'reply to [name]', 'follow up with [name] about [topic]' (single named follow-up), plus 'tune email-writer'. Reads the calibrated voice block and relationship context; output lands as a draft in the declared mail backend or a preview per the draft-posture setting — never auto-sent. Does NOT fire on 'follow up on that call' / 'draft follow-ups' (follow-up-ritual — per-attendee pack from a transcript), 'who should I reach out to' (relationship-moves), or intro requests between two contacts (intro-broker). Register table and full trigger family: Routing section in the body."
+description: "Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro emails. Fires on: 'draft an email to [name] about [topic]', 'email to [name]', 'write an email to the team', 'reply to [name]', 'follow up with [name] about [topic]' (single named follow-up), plus 'tune email-writer'. Reads the calibrated voice block and relationship context; output lands as a draft in the declared mail backend or a preview per the draft-posture setting — never auto-sent. Does NOT fire on 'follow up on that call' / 'draft follow-ups' (follow-up-ritual — per-attendee pack from a transcript), 'who should I reach out to' (relationship-moves), or intro requests between two contacts (intro-broker)."
 
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default

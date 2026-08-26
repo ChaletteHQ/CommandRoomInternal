@@ -17,10 +17,13 @@ warning, no event, no config required — and every default equals today's
 behavior exactly (an absent file is indistinguishable from the pre-profile
 world; same bytes out).
 
-⛔ FENCE (SPEC OUT2 §5): there is NO first-run block for the output profile and
-NO onboarding mention — it starts empty and is written ONLY by an explicit
-`tune output` request or an insight-generator proposal (confirm-first). It is a
-power-user surface until Wave 3. Do not add it to any first-run catalog.
+⛔ FENCE (SPEC OUT2 §5, graduated by SPEC STYLE1 D1, 2026-08-25): there is NO
+first-run block and NO proactive first-fire offer for the output profile, ever.
+Sanctioned writers: an explicit `tune output` / `tune my documents` request, a
+confirmed insight-generator proposal, and onboarding's STYLE1 style proposal —
+inference-derived knobs only (origin inferred_provisional, disclosed at the
+reveal per D7; unproposed knobs stay byte-stable defaults). This was the
+"Wave 3" moment the original fence deferred to.
 
 STORAGE
 -------

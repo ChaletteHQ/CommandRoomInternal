@@ -84,10 +84,24 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from brief_path import get_brief_path, get_brief_filename, _slugify  # noqa: E402
-# The tree's ONE register of mail products. Imported (never copied) so the
+# The tree's ONE register per platform family. Imported (never copied) so the
 # sourced-citation floor below can never disagree with what discovery knows
-# about — SPEC PREPSEAM1 DD-2. `tool_discovery` is stdlib-only at import.
-from tool_discovery import _MAIL_PLATFORM_HINTS  # noqa: E402
+# about — SPEC PREPSEAM1 DD-2, extended to transcripts and chat by PREPSRC1.
+# `tool_discovery` is stdlib-only at import.
+from tool_discovery import (  # noqa: E402
+    _CHAT_PLATFORM_HINTS,
+    _MAIL_PLATFORM_HINTS,
+    _TRANSCRIPT_PLATFORM_HINTS,
+)
+# The receipt side OWNS the per-source state vocabulary and its cleaner
+# (SPEC PREPSEAM1 DD-3 / REVIEW_PREPSEAM1 N-3) — imported, never re-declared,
+# so the render side cannot drift from what lands in events.jsonl.
+from prep_leg import (  # noqa: E402
+    SOURCE_ABSENT,
+    SOURCE_FAILED,
+    SOURCE_READ,
+    normalize_sources,
+)
 
 
 class PrepContractError(ValueError):
@@ -96,8 +110,16 @@ class PrepContractError(ValueError):
     rewrites the failing lines and re-assembles."""
 
     def __init__(self, message: str, violations: Optional[List[str]] = None):
-        super().__init__(message)
         self.violations = violations or []
+        # The violation TEXT rides `str(exc)`, not just `.violations`. The
+        # scheduled path degrades a failed meeting with
+        # `reason=f"{type(exc).__name__}: {exc}"` (prep_leg) and nothing
+        # reads `.violations`, so a summary-only message put "1
+        # prep-contract violation(s)" on the receipt and left the operator
+        # with no way to learn WHICH rule failed.
+        if self.violations:
+            message = f"{message}: " + "; ".join(self.violations)
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------
@@ -416,15 +438,68 @@ _MAIL_SOURCE_WORDS = ("mail",) + tuple(sorted(_MAIL_PLATFORM_HINTS))
 # `mail` does NOT subsume `email`: `\bmail\b` cannot match inside "email"
 # (no word boundary between "e" and "m"), so both stay.
 #
-# The hand-written families are PATTERNS ("session notes?" carries a real
-# quantifier). The derived half is escaped, because a register key is data and
-# data must never compile as a pattern.
-_SOURCE_FAMILY_PATTERNS = (
-    ("email",)
-    + tuple(re.escape(w) for w in _MAIL_SOURCE_WORDS)
-    + ("meeting", "transcript", "call", "commitment", "decision",
-       "calendar", "session notes?", "note", "slack", "sweep", "granola")
+# The hand-written families are PATTERNS ("notes?" carries a real quantifier).
+# The derived half is escaped, because a register key is data and data must
+# never compile as a pattern.
+#
+# ONE TABLE, EVERY DERIVATION (PREPSRC1 review). The cite floor below, the
+# cite→source-key crediting, and the `source_reads` alias map all read THIS
+# table, so a family added here joins every derivation in one edit — two
+# hand-synced lists would let a family pass the floor yet never credit,
+# silently recreating the uncredited direction of the shipped defect. Each row
+# is (source key, hand-written patterns, register words). Register words come
+# from tool_discovery's platform registers (mail, transcripts, chat) — the
+# DD-2 posture, extended.
+#
+# `(?<!pre-)meeting` excludes the ONE prefix that belongs to another family.
+# A bare `\bmeeting\b` matched inside "pre-meeting", so the canonical operator
+# cite "(you said, pre-meeting)" falsely credited Meeting transcripts. The
+# first fix was `(?<![\w-])meeting`, which over-corrected: a hyphen is a word
+# boundary, so it refused EVERY hyphen-prefixed spelling, and
+# "(post-meeting notes, Jul 2)" — which cleared the floor before PREPSRC1 —
+# began raising PrepContractError and shipping no prep at all. Excluding
+# "pre-" alone keeps both directions correct.
+#
+# The operator family anchors on "pre-meeting" ONLY — deliberately narrow, so
+# that decorative rhetoric ("Hold firm (you told me twice)") cannot clear the
+# block-5 floor with no provenance behind it.
+#
+# "teams" rides the WORDS column, not the patterns column, because only the
+# words column feeds `_SOURCE_KEY_ALIASES` below — a cite word that is not
+# also an alias is a family the page can cite but a `source_reads` report can
+# never name. It is hand-written because `_CHAT_PLATFORM_HINTS` keys are
+# tool-id spellings (`ms365_teams`) that no human writes in a cite; the mail
+# and transcript registers happen to use real citation words, so those derive
+# cleanly and chat cannot. It is also a common English noun, so a cite like
+# "(teams sync notes, Jul 2)" over-credits Chat messages — accepted, because
+# the alternative is a Microsoft-stack workspace that can never cite chat.
+_OPERATOR_SOURCE_KEY = "operator"
+_SUBSTRATE_SOURCE_KEY = "substrate"
+
+_FAMILY_TABLE = (
+    ("mail", ("email",), _MAIL_SOURCE_WORDS),
+    ("transcripts", (r"(?<!pre-)meeting", "transcript"),
+     tuple(sorted(_TRANSCRIPT_PLATFORM_HINTS))),
+    (_SUBSTRATE_SOURCE_KEY, ("commitment", "decision", "sweep"), ()),
+    ("calendar", ("calendar",), ()),
+    ("chat", ("chat",), ("teams",) + tuple(sorted(_CHAT_PLATFORM_HINTS))),
+    ("notes", ("notes?",), ()),
+    (_OPERATOR_SOURCE_KEY, ("pre-meeting",), ()),
 )
+
+# Words that satisfy the block-5 citation floor but name no CONSUMABLE source,
+# so they credit nothing on the page. "call" is the case: a phone call the CEO
+# remembers is a legitimate provenance claim, but routing it to the
+# transcripts family put "Meeting transcripts" on a forwardable document for a
+# call no transcript service ever saw. Floor-only keeps the line honest in
+# both directions — the cite still passes, it just credits no source.
+_FLOOR_ONLY_PATTERNS = ("call",)
+
+_SOURCE_FAMILY_PATTERNS = tuple(
+    p
+    for _key, patterns, words in _FAMILY_TABLE
+    for p in tuple(patterns) + tuple(re.escape(w) for w in words)
+) + _FLOOR_ONLY_PATTERNS
 
 _SOURCE_CITE_RE = re.compile(
     r"\(([^()]*\b(?:" + "|".join(_SOURCE_FAMILY_PATTERNS) + r")\b[^()]*)\)\s*$",
@@ -445,7 +520,251 @@ def unsourced_lines(lines: Iterable[str]) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Assembly — the five-block section list, one order, both paths
+# The sources line — derived from consumption, never from the plan (PREPSRC1)
+# ---------------------------------------------------------------------------
+#
+# One v5.14.0 prep fire shipped a .docx whose sources line was wrong in BOTH
+# directions: it credited a session record that does not exist (a planned
+# source that came back empty was listed as if consulted) and omitted two
+# sources the render actually used (a live mail read, and facts the operator
+# typed into the prep minutes before the render — neither was ever in the
+# planned set). One mechanism explains both: the line described the PLAN.
+#
+# So the line is assembled here, from consumption evidence only. Two feeds,
+# neither of which a plan can reach:
+#
+#   * `source_reads` — the generator's own per-source consumption report, the
+#     SAME dict shape the prep leg already receipts (SPEC PREPSEAM1 DD-3:
+#     `{"mail": "read" | "absent" | "failed"}`, keys extensible), cleaned by
+#     the receipt side's own `normalize_sources`. Only `read` credits.
+#     `absent` is OMITTED, deliberately not "marked absent": the call-prep
+#     Gotchas rule (never name a missing source in the document) predates
+#     this line and wins — the absence is recorded on the receipt, where it
+#     belongs, not apologised for on the page.
+#   * the page's CITE-MANDATED lines — talking points and questions (block-5,
+#     code-enforced) plus changed-since bullets (documented floor: one fact
+#     WITH its source + date). Those cites are consumption testimony, so a
+#     family cited there is credited even when the caller forgot to record
+#     the read (the uncredited-mail direction of the shipped defect, closed
+#     structurally). Free prose bodies are never harvested — an ordinary
+#     narrative parenthetical is decoration, not testimony.
+#   * the substrate-built blocks, structurally — an owed table, timeline,
+#     tile band, discuss list, or decisions-on-record block exists only
+#     because substrate records were consumed to build it.
+#
+# Operator-supplied input rides its own flag: it has no connector to report a
+# state and no substrate record to cite, which is exactly why the shipped line
+# could never name it.
+
+SOURCES_HEADING = "Sources"
+
+# The hand-built-Sources tripwire (a whole-heading match, canonical spellings
+# only). Anchored, not a prefix: `startswith("sources")` refused legitimate
+# content headings ("Sources of risk" killed the whole render) while missing
+# respellings ("Consulted Sources"). This catches the spellings a caller
+# reaching for a source listing actually writes; the instruction layer
+# carries the rule itself.
+_HANDBUILT_SOURCES_RE = re.compile(
+    r"^(?:consulted\s+|data\s+)?sources?(?:\s+(?:consulted|used|read|list))?$"
+)
+
+
+def _is_handbuilt_sources_heading(heading: str) -> bool:
+    """True when a caller-supplied heading reads as a source LISTING.
+
+    Trailing punctuation is stripped first: "Sources:" is the same heading as
+    "Sources", and letting the colon through admitted a hand-built plan-based
+    listing that then rendered NEXT TO the derived one — one document, two
+    Sources sections, which is the failure this tripwire exists to prevent.
+    """
+    return bool(_HANDBUILT_SOURCES_RE.match(
+        str(heading or "").strip().rstrip(":—-").strip().lower()))
+
+# Source key -> the plain-language label the page carries. CLOSED vocabulary,
+# deliberately: an unknown key is DROPPED from the page (its testimony stays
+# on the receipt), never humanized onto it — a raw generator token on the
+# CEO-facing line is the "no internal tokens" output-guard violation, and
+# "forwardable-clean" (CONTRACT Rule 15) means every label here must read as
+# meeting substance to a third party. Extending the vocabulary = one entry
+# here (plus a `_FAMILY_TABLE` row if the source is citable per-line).
+_SOURCE_KEY_LABELS = {
+    "mail": "Email",
+    "calendar": "Calendar",
+    "transcripts": "Meeting transcripts",
+    "chat": "Chat messages",
+    "substrate": "Commitments and decisions on record",
+    "notes": "Session notes",
+    _OPERATOR_SOURCE_KEY: "Pre-meeting notes",
+}
+
+# The order the labels read on the page, and the ONLY thing that decides
+# it — the declaration order above, which is a deliberate reading order
+# (the connectors first, then what the workspace holds, then what the
+# operator typed). Sorting the `source_reads` keys alone was not enough:
+# a key can arrive from the read report OR from the page's own cites, so
+# the SAME consumed set rendered "Email · Calendar" or "Calendar · Email"
+# depending on which feed happened to carry each one. A brief that
+# refreshes in place then rewrote its own sources line for no reason.
+_LABEL_ORDER = {label: i
+                for i, label in enumerate(_SOURCE_KEY_LABELS.values())}
+
+# `source_reads` key -> canonical source key. The product-named half is
+# DERIVED FROM `_FAMILY_TABLE`'s words column, not re-enumerated from the three
+# registers: a generator that resolved a specific product reports under that
+# product's name, and hand-listing the same registers twice is the
+# two-synced-lists shape the table consolidation exists to end — it is exactly
+# how "teams" came to be citable on the page yet unnameable in a report.
+# The literal half is near-synonyms and singular spellings only.
+#
+# On G37/R1c: that guard derives its denylist from `_MAIL_PLATFORM_HINTS`
+# alone, so it polices MAIL product names here and says nothing about chat or
+# transcripts. This map names no mail product literally, which is what R1c
+# actually requires — not the broader "no product name anywhere" an earlier
+# comment here claimed.
+#
+# Keys must be bare tokens (`[A-Za-z0-9_]`): `normalize_sources` drops anything
+# else, so a hyphenated "session-notes" would vanish with no error.
+_SOURCE_KEY_ALIASES = {"email": "mail",
+                       "commitments": _SUBSTRATE_SOURCE_KEY,
+                       "decisions": _SUBSTRATE_SOURCE_KEY,
+                       "session_notes": "notes",
+                       "note": "notes",
+                       "transcript": "transcripts",
+                       "meetings": "transcripts"}
+for _key, _patterns, _words in _FAMILY_TABLE:
+    for _word in _words:
+        _SOURCE_KEY_ALIASES.setdefault(_word, _key)
+del _key, _patterns, _words, _word
+
+# A platform-qualified calendar ("outlook calendar", "google calendar") is a
+# CALENDAR read, not a mail read — but the mail register contributes
+# "outlook", so ONE cite matched two families and the page credited an
+# Email read that never happened. Invisible on Gmail workspaces, which is
+# why it survived the first pass. Collapsing the qualifier before family
+# matching leaves exactly one credit.
+_QUALIFIED_CALENDAR_RE = re.compile(r"\b[\w-]+\s+calendar\b", re.IGNORECASE)
+
+# Cite family -> source key, derived from the ONE `_FAMILY_TABLE` above —
+# the same rows the cite floor compiles, so floor and credit cannot diverge.
+_FAMILY_KEY_PATTERNS = tuple(
+    (key,
+     re.compile(
+         r"\b(?:" + "|".join(tuple(patterns)
+                             + tuple(re.escape(w) for w in words)) + r")\b",
+         re.IGNORECASE))
+    for key, patterns, words in _FAMILY_TABLE
+)
+
+
+def cited_source_keys(lines: Iterable[str]) -> List[str]:
+    """The source keys a set of CITE-MANDATED lines testifies to — each
+    line-final source cite mapped to its family's key. Sorted, deduped.
+
+    Feed it ONLY lines whose contract demands a cite (talking points and
+    questions, code-enforced by the block-5 floor; changed-since bullets,
+    whose documented floor is one fact WITH its source + date per bullet).
+    Free prose bodies are never harvested: an ordinary narrative
+    parenthetical ("...(see the June call)") is decoration, not consumption
+    testimony, and harvesting it fabricated credits."""
+    keys = set()
+    for line in lines or []:
+        m = _SOURCE_CITE_RE.search(str(line).strip())
+        if not m:
+            continue
+        cite = _QUALIFIED_CALENDAR_RE.sub("calendar", m.group(1))
+        for key, pat in _FAMILY_KEY_PATTERNS:
+            if pat.search(cite):
+                keys.add(key)
+    return sorted(keys)
+
+
+def _source_label(key: str) -> str:
+    """The page label for a source key, or "" for a key outside the closed
+    vocabulary (the caller drops it — see `_SOURCE_KEY_LABELS`)."""
+    k = str(key or "").strip().lower()
+    k = _SOURCE_KEY_ALIASES.get(k, k)
+    return _SOURCE_KEY_LABELS.get(k, "")
+
+
+def consumed_source_labels(
+    source_reads: Optional[dict] = None,
+    *,
+    cited_keys: Iterable[str] = (),
+    operator_supplied: bool = False,
+) -> List[str]:
+    """The plain-language labels of every source the render CONSUMED — the
+    one derivation both the page's Sources section and any chat mirror read.
+
+    Credits are consumption-derived only: a `source_reads` entry credits IFF
+    its state is `read`; a key the page's own cites testify to credits even
+    unrecorded — and even over a contradicting `absent` report, because a
+    fact on the page visibly claims the source and omitting the credit would
+    recreate the uncredited direction of the shipped defect (fix the cite,
+    not the line); operator-supplied input credits when the flag says the
+    render consumed any. A planned source that came back `absent` (or
+    `failed`) and contributed nothing NEVER appears — its record lives on
+    the receipt, not on the page.
+    """
+    # The receipt side's cleaner runs first (REVIEW_PREPSEAM1 N-3, reused):
+    # free-text keys drop, prose states become UNRECOGNISED_SOURCE — so a
+    # generator's sentence can no more reach this page than the receipt. Every
+    # surviving key is already a bare stripped token, so `_source_label` owns
+    # the ONE remaining canonicalization (aliases + the closed vocabulary) and
+    # the label dedup below collapses a product key and its family to one
+    # entry.
+    reads = normalize_sources(source_reads)
+    # THE CONSUMPTION FENCE: only a source that actually resolved and was read
+    # credits — widen it and the line describes the plan again.
+    keys = [k for k, state in reads.items()
+            if state.strip().lower() == SOURCE_READ]
+    keys += [str(k).strip() for k in cited_keys]
+    if operator_supplied:
+        keys.append(_OPERATOR_SOURCE_KEY)
+    labels = []
+    for key in keys:
+        label = _source_label(key)
+        if label and label not in labels:
+            labels.append(label)
+    # Canonical order, so the line is a function of WHAT was consumed and
+    # never of which feed reported it or in what order.
+    # `.get`, not `__getitem__`: every label today comes from the closed
+    # vocabulary, but a KeyError here would turn a vocabulary bug into a
+    # dead render instead of a visibly-wrong line — and it did, reddening
+    # the R5 pin by crashing the suite instead of failing its named check.
+    # Unknown sorts last.
+    return sorted(labels,
+                  key=lambda lab: _LABEL_ORDER.get(lab, len(_LABEL_ORDER)))
+
+
+def _sources_section(labels: List[str]) -> Optional[dict]:
+    """The ONE spelling of the Sources section, from an already-derived
+    label list. None when nothing was consumed (omit-don't-pad)."""
+    if not labels:
+        return None
+    return {"heading": SOURCES_HEADING,
+            "body": "Built from: " + " · ".join(labels) + "."}
+
+
+def build_sources_section(
+    source_reads: Optional[dict] = None,
+    *,
+    cited_keys: Iterable[str] = (),
+    operator_supplied: bool = False,
+) -> Optional[dict]:
+    """The ONE way a Sources section reaches a prep page (PREPSRC1).
+
+    Returns a brief_writer section dict over `consumed_source_labels`, or
+    None when nothing was consumed (the caller omits the section —
+    omit-don't-pad, like every other block).
+    """
+    return _sources_section(consumed_source_labels(
+        source_reads, cited_keys=cited_keys,
+        operator_supplied=operator_supplied))
+
+
+# ---------------------------------------------------------------------------
+# Assembly — the five-block section list (+ the consumption-derived Sources
+# section, PREPSRC1), one order, both paths
 # ---------------------------------------------------------------------------
 
 def assemble_prep_sections(
@@ -466,6 +785,8 @@ def assemble_prep_sections(
     changed_summary: Optional[str] = None,
     decide_summary: Optional[str] = None,
     needs: Optional[str] = None,
+    source_reads: Optional[dict] = None,
+    operator_supplied: bool = False,
 ) -> dict:
     """Compose the exec header + canonical section list for
     `brief_writer.make_brief(brief_kind="call_prep", ...)`. BOTH prep paths
@@ -475,6 +796,13 @@ def assemble_prep_sections(
     Contracts enforced (PrepContractError, before any render):
       - `walk_out_with` is mandatory — block 1 IS the brief's reason to exist.
       - every talking point / question carries a source cite (block 5).
+      - no hand-built "Sources" section may arrive through
+        `supporting_sections` / `extra_sections` (PREPSRC1) — the sources
+        line is DERIVED from consumption by `build_sources_section`, never
+        listed from the plan. Pass `source_reads` (the same
+        `{"mail": "read"|"absent"|"failed"}` report the prep leg receipts)
+        and `operator_supplied=True` when the render consumed input the CEO
+        typed into the prep; the derived section is appended last.
 
     Drop rules applied (never an empty frame):
       - tiles: [] or None -> no "At a Glance" section.
@@ -488,7 +816,11 @@ def assemble_prep_sections(
     the end. Depth (Standard/Deep) governs how much the CALLER gathers into
     these — never which generator runs.
 
-    Returns {"exec_header": {...}, "sections": [...]}.
+    Returns {"exec_header": {...}, "sections": [...],
+    "sources_consulted": [...]} — `sources_consulted` is the derived
+    plain-language label list the appended Sources section carries (empty on
+    legacy calls and when nothing was consumed); the chat Sources mirror
+    reads it (call-prep SKILL.md).
     """
     violations: List[str] = []
     if not (walk_out_with or "").strip():
@@ -501,6 +833,20 @@ def assemble_prep_sections(
             violations.append(
                 f"{label}: no source cite — every line names where it came from "
                 f"(e.g. '(email, Jul 7)'): {bad[:100]}"
+            )
+    # PREPSRC1 — a hand-built Sources section is the plan-based assembly this
+    # module exists to end: the shipped defect credited a record that does not
+    # exist and omitted the mail read and the operator's own input. The ONLY
+    # sources line is the consumption-derived one appended below.
+    for sec in list(supporting_sections or []) + list(extra_sections or []):
+        heading = (sec or {}).get("heading") if isinstance(sec, dict) else ""
+        if _is_handbuilt_sources_heading(heading):
+            violations.append(
+                "a hand-built Sources section is refused — the sources line is "
+                "derived from consumption (pass source_reads / "
+                "operator_supplied), never assembled from the planned set. "
+                "If this heading names CONTENT (e.g. 'Sources of risk'), "
+                "rename it so it does not read as a source listing"
             )
     if violations:
         raise PrepContractError(
@@ -554,7 +900,44 @@ def assemble_prep_sections(
     for sec in extra_sections or []:
         sections.append(sec)
 
-    return {"exec_header": exec_header, "sections": sections}
+    # PREPSRC1 — the sources line, derived from what THIS assembly actually
+    # consumed. The feeds and the reasoning behind each are documented once,
+    # above under "The sources line". Two details that live HERE because they
+    # are properties of the assembly rather than of the derivation:
+    #
+    # The gate is `is not None`, and the difference between `{}` and omitted
+    # is LOAD-BEARING, not an oversight. `source_reads={}` is a PREPSRC1-aware
+    # caller saying "I am reporting my reads, and there were none" — its page
+    # still gets a sources line off its own cites, which is the whole
+    # uncredited-direction fix. Omitting the kwarg entirely is a legacy caller,
+    # and it gets no section at all so its document is unchanged. Collapsing
+    # the two to truthiness silently removes the cite-derived credit from every
+    # generator that honestly reports nothing read.
+    #
+    # The structural substrate credit is narrower than it first looked. An
+    # owed table, a discuss list and a decisions-on-record block genuinely
+    # cannot exist without commitment/decision records. A tile band
+    # (`build_prep_tiles` — days-since-last-touch, touch number) and a
+    # timeline ("meetings + key emails", per `build_relationship_timeline`)
+    # can, so crediting them put "Commitments and decisions on record" on a
+    # forwardable page that consulted neither — the credited-a-record-that-
+    # does-not-exist direction of the very defect this line exists to close.
+    sources_consulted: List[str] = []
+    if source_reads is not None or operator_supplied:
+        cited = set(cited_source_keys(tp + qs + changed_lines))
+        if owed_table or on_record or discuss:
+            cited.add(_SUBSTRATE_SOURCE_KEY)
+        sources_consulted = consumed_source_labels(
+            source_reads,
+            cited_keys=sorted(cited),
+            operator_supplied=bool(operator_supplied),
+        )
+        src_section = _sources_section(sources_consulted)
+        if src_section:
+            sections.append(src_section)
+
+    return {"exec_header": exec_header, "sections": sections,
+            "sources_consulted": sources_consulted}
 
 
 __all__ = [
@@ -568,5 +951,12 @@ __all__ = [
     "build_owed_table",
     "discuss_later_bullets",
     "unsourced_lines",
+    "cited_source_keys",
+    "consumed_source_labels",
+    "build_sources_section",
     "assemble_prep_sections",
+    "SOURCES_HEADING",
+    "SOURCE_READ",
+    "SOURCE_ABSENT",
+    "SOURCE_FAILED",
 ]

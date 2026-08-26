@@ -1,0 +1,27 @@
+{
+  "version": "5.15.0",
+  "headline": "The evening brief tells you about your day instead of scoring it, a clock that runs ahead can no longer poison the ledger, and the weakest captures get a reading chair before anything is ever hidden.",
+  "items": [
+    {
+      "id": "v5150_announce_eod_synthesis",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your end-of-day changes shape. It used to hand you a scored list of what moved; now it reads the day back to you in plain sentences, each one grounded in something that actually happened, and ends by asking a single question about tomorrow. Nothing is scored and nothing is graded. If the evening pass has felt like a report card rather than a close-out, this is the change.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5150_announce_held_review",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "There is a new thing you can ask to see: say \"show me what you'd hide\" and you get every capture that was judged too weak to be worth asking you about, grouped by the call it came from, each row carrying the plain reason it was refused. Looking at the list changes nothing at all — no row is closed, dropped, or re-dated by reading it. It exists so that the weakest captures can be looked at before anyone decides whether they should stop being asked about. That decision has not been made and nothing is being hidden from you today.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5150_announce_future_dated_refused",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "A record stamped with a time in the future is now refused when it arrives, instead of being written and quietly dragging your workspace's sense of \"now\" forward with it. If a machine with a wrong clock ever did write one, your health check names the contamination directly rather than reporting everything as fine — say \"health check\" to see it, and it will tell you what can be repaired from the record itself.",
+      "action": "announce_only"
+    }
+  ]
+}

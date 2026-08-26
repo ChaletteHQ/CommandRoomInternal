@@ -94,17 +94,35 @@ session date: all of them mean "cannot corroborate", which means trust the
 machine and say nothing. A brand-new workspace behaves exactly as it did before
 this module existed. Nothing in here raises.
 
-THE CONTAMINATION FEEDBACK LOOP, AND THE GUARD ON IT
-----------------------------------------------------
-If the substrate maximum is itself a future-contaminated stamp, floor-stamping
-briefly perpetuates it. This is self-limiting — the correction only fires while
-the machine is more than the tolerance behind the maximum, so it converges as
-real time passes the contaminated value — and where a session date is available
-it is arbitrated away outright. The guard fires on exactly one shape: the
-ledger claiming a future DAY that neither the machine nor the session date
-supports, in BOTH zone renderings. Anything narrower let a real correction be
-suppressed; anything wider let the contamination be corrected onto. The full
-predicate, clause by clause, is documented at its site in `assess_clock`.
+THE CONTAMINATION FEEDBACK LOOP, AND THE GUARDS ON IT
+-----------------------------------------------------
+If the substrate maximum is itself a future-dated stamp, floor-stamping
+perpetuates it: the corrected row carries the same maximum, so it re-poisons
+the next append, self-sustaining until real time passes the seed.
+
+THIS MODULE ONCE CALLED THAT SELF-LIMITING. It is not, and the claim is left
+here as the correction it earned. "Self-limiting" is true only at minutes
+scale. A seed the clock will not reach for hours or days keeps firing for
+hours or days, and the field found it at both: 1,242 rows from a week-scale
+seed in one workspace, 24 rows from a 2.4-hour rounded placeholder in another.
+Neither the DAY-granular anomaly guard nor a lead cap could have caught the
+second one.
+
+Two guards now stand on it, and they answer different questions:
+
+  THE SESSION-DATE ANOMALY GUARD fires on exactly one shape — the ledger
+  claiming a future DAY that neither the machine nor the session date
+  supports, in BOTH zone renderings. Anything narrower let a real correction
+  be suppressed; anything wider let the contamination be corrected onto. It
+  needs a session date, which a pure-code append never has, so it can only
+  ever cover the surfaces. Documented clause by clause in `assess_clock`.
+
+  THE `.seqhw` DISCRIMINATOR (CLOCKTS1) needs nothing but the substrate and
+  covers every caller, surface or not. `.seqhw.updated` is stamped from the
+  RAW machine clock on every append, so it witnesses when the last write
+  really happened: a stale clock leaves `newest_ts ~= .seqhw.updated`, while a
+  forward-dated payload leaves `newest_ts` leading BOTH. One comparison, no
+  scale to tune. See `classify_substrate_max`, which both stamp sites call.
 
 CACHING
 -------
@@ -148,6 +166,33 @@ CLOCK_TRUST_TOLERANCE_SECONDS = 300
 # ahead. One full calendar day: the session date is a DATE, so a finer bar
 # would be reading precision into a value that does not carry it.
 AHEAD_MIN_DAYS = 1
+
+# CLOCKTS1 — the BACKSTOP cap, used ONLY where the `.seqhw` witness cannot be
+# read. It is deliberately coarse, and it is not the mechanism: the witness is.
+#
+# WHY NOT THE 24-48h A CAP-ONLY FIX WOULD WANT. The incident THIS MODULE was
+# built for was a machine that booted unsynced and read TWO DAYS behind. A cap
+# at 24h or 48h refuses exactly that correction — the fix eating the feature.
+# And a cap tight enough to catch the everyday hours-scale forward date would
+# refuse essentially every real correction, which is why the triage rejected a
+# cap as the fix rather than as the backstop.
+#
+# FOUR DAYS is chosen from the two real data points, not split between them:
+# strictly above the 2-day unsynced-boot skew that is documented and real, and
+# strictly below the 7-day and 3-week seeds observed in the field. It also
+# matches how machine clocks actually fail — NTP drift is seconds, a timezone
+# or DST mistake is hours, an unsynced RTC boot is days, and a dead CMOS resets
+# to a manufacture epoch YEARS BEHIND, which is a different branch entirely. A
+# clock running days-to-weeks AHEAD of a ledger is not a failure mode hardware
+# produces; it is a row someone wrote.
+TS_LEAD_CAP_DAYS = 4
+TS_LEAD_CAP_SECONDS = TS_LEAD_CAP_DAYS * 86400
+
+# The named reasons a substrate maximum is refused as clock evidence. These
+# travel into the verdict's `anomaly` field, into the append gate's stderr, and
+# into the health line, so they are pinned words, not incidental strings.
+FLOOR_REFUSED_FORWARD_DATED = "substrate_max_leads_seqhw"
+FLOOR_REFUSED_BEYOND_CAP = "substrate_max_beyond_lead_cap"
 
 # The two disclosure lines, verbatim. PIN THE WORDS, NOT THE CONSTANT — a test
 # that asserts `rendered == CLOCK_NOTICE_STALE` is green whatever the constant
@@ -480,6 +525,177 @@ def _human_day(value) -> str:
 
 
 # --------------------------------------------------------------------------
+# CLOCKTS1 — is the substrate maximum clock evidence, or a forward-dated row?
+# --------------------------------------------------------------------------
+
+def read_seqhw_updated(events_path) -> Optional[_dt.datetime]:
+    """The `updated` stamp from the `.seqhw` sidecar, aware UTC, or None.
+
+    THE WITNESS. `atomic_write._write_seqhw` stamps this field from
+    `datetime.now(timezone.utc)` — the RAW machine clock, never the corroborated
+    floor — on every single events append. So it records when the last append
+    really happened, and it cannot be moved by a forward-dated payload the way
+    the ledger maximum can.
+
+    Best-effort in both directions: the sidecar is written under `except: pass`
+    and may legitimately be absent (a fresh workspace, or a write that failed
+    the sidecar and succeeded the log). None means "no witness available", which
+    routes the caller to the cap backstop, never to a refusal.
+    """
+    if events_path is None:
+        return None
+    try:
+        import json
+
+        p = Path(events_path)
+        raw = json.loads(
+            p.with_name(p.name + ".seqhw").read_text(encoding="utf-8"))
+        value = raw.get("updated")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        parsed = parse_ts(value)
+        if parsed is None:
+            return None
+        return parsed.astimezone(_dt.timezone.utc)
+    except Exception:
+        return None
+
+
+def classify_substrate_max(newest_ts: Optional[_dt.datetime],
+                           machine_now: _dt.datetime,
+                           events_path=None) -> dict:
+    """Is `newest_ts` evidence the machine clock is behind, or a poisoned row?
+
+    Returns `{"is_clock_evidence", "reason", "seqhw_updated",
+    "lead_over_seqhw", "lead_over_machine"}`.
+
+    THE DISCRIMINATOR, and the whole of CLOCKTS1. Two situations produce a
+    ledger maximum ahead of the machine clock, and until now nothing told them
+    apart:
+
+      GENUINELY STALE CLOCK. The machine reads behind. The newest row AND the
+      `.seqhw` witness were both written by a healthy clock at roughly the same
+      past instant, so `newest_ts ~= seqhw.updated`. The maximum IS clock
+      evidence and the floor correction is exactly right — this is the feature
+      CLOCK1 shipped for and it must keep working.
+
+      FORWARD-DATED PAYLOAD. A caller supplied a `ts` ahead of now. The append
+      itself really happened NOW, so `seqhw.updated ~= machine_now` while
+      `newest_ts` leads BOTH. The maximum is not clock evidence, it is a wrong
+      row, and adopting it as a floor re-stamps it onto every later append —
+      self-sustaining until real time passes the seed.
+
+    One comparison separates them and it is SCALE-FREE: it catches the reported
+    week-scale case and the hours-scale case in the field on the same predicate,
+    with no cap to tune and nothing to outgrow.
+
+    Where the sidecar cannot be read there is no witness, so the answer falls
+    back to `TS_LEAD_CAP_SECONDS`. That backstop is day-scale and therefore
+    strictly weaker: an hours-scale forward date with no sidecar is still
+    adopted. Stated rather than hidden — the sidecar is written on every append,
+    so the only workspaces without one are those that have never appended, which
+    have no maximum to be poisoned by either.
+
+    THE KNOWN LIMIT, STATED BECAUSE IT IS REAL. The witness is the raw machine
+    clock, so ONCE A STALE CLOCK HAS ITSELF APPENDED, it overwrites the witness
+    with its own wrong reading. From that point the two situations above are
+    genuinely identical in the data — `witness ~= machine_now` and `newest_ts`
+    leads both — and no predicate over the substrate can separate them. This
+    function then answers "not evidence" and the stale machine stamps its own
+    reading for the rest of the session.
+
+    That is the deliberate trade, and it is the conservative direction: the
+    cost is a stale-clock session writing skew-sized wrong stamps, which is
+    precisely the pre-CLOCK1 behaviour and is self-correcting the moment NTP
+    lands; the alternative is adopting a maximum that may be a forward-dated
+    row, which is permanent and, since the confirmed-tier age-out, drives
+    wrong closures. A bounded, self-healing wrong beats an unbounded,
+    self-sustaining one. The first append of a stale session — the case the
+    reported incident is made of — is still corrected, because the witness is
+    still the healthy clock's at that moment.
+    """
+    lead_over_machine = None
+    if newest_ts is not None:
+        lead_over_machine = (newest_ts - machine_now).total_seconds()
+    out = {
+        "is_clock_evidence": True,
+        "reason": None,
+        "seqhw_updated": None,
+        "lead_over_seqhw": None,
+        "lead_over_machine": lead_over_machine,
+    }
+    if newest_ts is None:
+        return out
+
+    # THE CAP BINDS FIRST, AND UNCONDITIONALLY (CLOCKTS1 fix round, F-3).
+    # It used to sit only in the no-witness branch, so a witness that AGREED
+    # with a wrong maximum waved any magnitude through. That is reachable on a
+    # Drive-synced pair: a peer machine running three weeks fast writes both
+    # the rows AND the witness, they corroborate each other perfectly, and a
+    # healthy machine then adopts a floor three weeks in the future — 5x this
+    # very constant, whose own docstring says a ledger running days-to-weeks
+    # ahead is a row someone wrote, not a clock. Corroboration between two
+    # values written by the SAME wrong clock is not corroboration.
+    if lead_over_machine is not None and lead_over_machine > TS_LEAD_CAP_SECONDS:
+        out["is_clock_evidence"] = False
+        out["reason"] = FLOOR_REFUSED_BEYOND_CAP
+        out["seqhw_updated"] = read_seqhw_updated(events_path)
+        return out
+
+    witness = read_seqhw_updated(events_path)
+    if witness is not None:
+        out["seqhw_updated"] = witness
+        lead = (newest_ts - witness).total_seconds()
+        out["lead_over_seqhw"] = lead
+        if lead > CLOCK_TRUST_TOLERANCE_SECONDS:
+            out["is_clock_evidence"] = False
+            out["reason"] = FLOOR_REFUSED_FORWARD_DATED
+    return out
+
+
+def forward_dated_lead(row_ts, row_machine_ts, witness):
+    """Was ONE row's timestamp ahead of real time when it was written?
+
+    Returns `(is_forward_dated, lead_seconds, reference)` where `reference` is
+    `"machine_ts"` or `"seqhw"` — or `(False, None, None)` when neither
+    reference is available.
+
+    WHY THIS EXISTS AS A SHARED VERB (CLOCKTS1 fix round, F-1). The health
+    check and the repair tool each compared every row against the SINGLE live
+    `.seqhw.updated`. That value is not a per-row record — it is overwritten
+    from the raw machine clock on every append, so it ADVANCES WITH REAL TIME.
+    A row that was forward-dated when written stops leading it the moment a
+    later append moves it past, and both readers then report clean. Measured on
+    the operator workspace's own 24-row dose, fourteen days on: 0 detected,
+    "nothing to repair". Detection went silent exactly when the corruption
+    became permanent, which is the opposite of what a detector is for.
+
+    `machine_ts` is the fix, and it was already on disk: the append gate writes
+    it beside `ts_source: substrate_floor`, it records what the machine really
+    said for THAT row, and it never moves. Where it is present it is the
+    reference, and the answer is durable forever. Where it is absent the moving
+    witness is all there is — which still catches fresh contamination, and is
+    exactly the site-B residue the repair tool reports rather than hides.
+    """
+    if row_ts is None:
+        return False, None, None
+    if row_machine_ts is not None:
+        lead = (row_ts - row_machine_ts).total_seconds()
+        if lead > CLOCK_TRUST_TOLERANCE_SECONDS:
+            return True, lead, "machine_ts"
+        # A row with a trail that does NOT lead its own write time is sound,
+        # and the moving witness must not be allowed to overrule that: the
+        # per-row reading is strictly better evidence than the file-wide one.
+        return False, lead, "machine_ts"
+    if witness is not None:
+        lead = (row_ts - witness).total_seconds()
+        if lead > CLOCK_TRUST_TOLERANCE_SECONDS:
+            return True, lead, "seqhw"
+        return False, lead, "seqhw"
+    return False, None, None
+
+
+# --------------------------------------------------------------------------
 # The verdict
 # --------------------------------------------------------------------------
 
@@ -618,6 +834,31 @@ def assess_clock(workspace_root=None, *, machine_now=None,
         # the session date) gets its day handed back to the machine clock,
         # which is the harm this helper exists to stop.
         substrate_lead = None
+
+    # --- CLOCKTS1: is that lead clock evidence, or a forward-dated row? -----
+    # SITE B, the unannotated one. This branch is reached by ~20 writer helpers
+    # through `trusted_now()` / `trusted_now_local_naive()` / `clock_report()`,
+    # none of which can hang a `machine_ts` trail on what they stamp — so a
+    # correction taken here is invisible after the fact, and a WRONG one is
+    # unrecoverable. Bounding it matters more than bounding the append gate,
+    # not less.
+    #
+    # The `.seqhw` witness is read from the events file this verdict is ABOUT,
+    # resolved from the same root the corroboration maximum came from. Where
+    # there is no root there is no maximum either, so there is nothing to
+    # classify.
+    if substrate_lead is not None:
+        ts_class = classify_substrate_max(
+            newest, machine,
+            events_path=_events_path(root) if root is not None else None)
+        if not ts_class["is_clock_evidence"]:
+            # Same posture as the anomaly guard above: drop the corroboration
+            # input rather than returning, so the session-date `ahead` branch
+            # still gets its chance. Record WHICH refusal fired — the reason is
+            # what a health surface and a recovery run read.
+            verdict["anomaly"] = ts_class["reason"]
+            verdict["newest_substrate_ts"] = newest
+            substrate_lead = None
 
     # --- STALE: the direction substrate can actually prove -----------------
     stale_by_more_than_tolerance = (
@@ -817,7 +1058,8 @@ def floor_stamp(machine_now: _dt.datetime,
     ledger's lineage is healthy; only the stamp is uncertain. A real event
     belongs in the ledger, annotated.
     """
-    plain = {"ts": machine_now, "ts_source": None, "machine_ts": None}
+    plain = {"ts": machine_now, "ts_source": None, "machine_ts": None,
+             "refused": None}
     if newest_ts is None:
         return plain
     if _correction_suppressed(events_path):
@@ -825,10 +1067,22 @@ def floor_stamp(machine_now: _dt.datetime,
     lead_seconds = (newest_ts - machine_now).total_seconds()
     if lead_seconds <= CLOCK_TRUST_TOLERANCE_SECONDS:
         return plain
+    # CLOCKTS1, SITE A. A lead alone was the whole predicate, and a lead alone
+    # cannot tell a machine that is behind from a row that is ahead. Ask the
+    # `.seqhw` witness which one this is; adopt the floor only for the first.
+    ts_class = classify_substrate_max(newest_ts, machine_now, events_path)
+    if not ts_class["is_clock_evidence"]:
+        # Stamp the MACHINE reading and say why, rather than adopting a
+        # maximum that is a wrong row. `refused` is additive and travels to the
+        # gate for its stderr line; the event itself is byte-identical to an
+        # ordinary uncorrected append, which is the correct output here.
+        return {"ts": machine_now, "ts_source": None, "machine_ts": None,
+                "refused": ts_class["reason"]}
     return {
         "ts": newest_ts,
         "ts_source": TS_SOURCE_SUBSTRATE_FLOOR,
         "machine_ts": machine_now.isoformat(),
+        "refused": None,
     }
 
 
@@ -861,10 +1115,17 @@ __all__ = [
     "CLOCK_NOTICE_AHEAD",
     "CLOCK_NOTICE_STALE",
     "CLOCK_TRUST_TOLERANCE_SECONDS",
+    "FLOOR_REFUSED_BEYOND_CAP",
+    "FLOOR_REFUSED_FORWARD_DATED",
+    "TS_LEAD_CAP_DAYS",
+    "TS_LEAD_CAP_SECONDS",
     "TS_SOURCE_SUBSTRATE_FLOOR",
     "assess_clock",
+    "classify_substrate_max",
     "clock_report",
     "floor_stamp",
+    "forward_dated_lead",
+    "read_seqhw_updated",
     "max_ts_in_jsonl_text",
     "newest_substrate_ts",
     "parse_env_date",

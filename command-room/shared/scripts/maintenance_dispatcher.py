@@ -143,6 +143,37 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "voided_reason": ("its last run skipped because no chat backend was "
                           "declared, and one has been declared since"),
     },
+    # SPEC EODSPEED1 (2026-08-26) — the End of Day's capture leg, run
+    # INCREMENTALLY during the day so the 5 PM close finds the day's meetings
+    # already captured and re-verifies instead of fetching. Ordered directly
+    # after the two reconcile legs and on their identical weekday cron:
+    # the 12:45 slot is the one that moves the day's fetching off the close
+    # (the 6:45 slot picks up the prior evening; 17:45 drains stragglers for
+    # the NEXT day's close). It rides the already-authorized `maintenance`
+    # taskId, so it registers ZERO scheduled tasks on any machine — the
+    # piggyback IS the design, and a new registration was explicitly the
+    # thing to avoid (a fleet-wide never_authorized risk per release).
+    #
+    # The job executes the close's OWN Phase D contract, verbatim —
+    # orchestrator-past-meetings.md Phases 3 → 4.8, same canonical writers,
+    # same admission gates, no relaxed floors — under the EODSPEED1
+    # incremental rules stated in that file: SILENT (writes and receipts
+    # only; the close remains the one narrator), window from
+    # `catchup_window("meeting-capture", floor_hours=24)`, receipt via
+    # `eod_incremental.log_capture_pass_receipt` (a pack_run under THIS job
+    # id — NEVER a receipt under `past-meetings`, which would arm
+    # skip_render against the real close). A machine that never runs this
+    # job loses nothing: the close's own window computation is untouched and
+    # degrades to fetch-at-close exactly.
+    "meeting-capture": {
+        "skill": ("end-of-day capture leg, incremental "
+                  "(orchestrator-past-meetings.md Phase D under the "
+                  "EODSPEED1 incremental rules; receipt via "
+                  "eod_incremental.log_capture_pass_receipt)"),
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": ("capture the day's meetings as they land, so the "
+                        "evening close reconciles instead of fetching"),
+    },
     # Nominal midnight daily -> due once per day, served at the FIRST fire of
     # the day (6:45). Evening chats sweep the next morning, still BEFORE the
     # 7:00 brief, so the brief sees them.

@@ -1,7 +1,7 @@
 ---
 name: thread-resurrection
 surfaces: both
-description: "Surface conversations — email threads, Slack threads, meeting follow-ups — that went silent but carried high-value context worth reviving. Fires on: 'thread resurrection', 'warm threads to revive', 'dead threads worth reviving', 'what conversations went quiet', 'threads I dropped'. Ranks by value signals (deal language, decision proximity, seniority, thread depth) against silence duration, and offers one-tap revival drafts in the CEO's voice. Different from dormant-customer-scan, which finds dormant PEOPLE — this finds dormant CONVERSATIONS; a person can be active while a thread died. Does NOT fire on 'who went dark' (dormant-customer-scan), 'who should I reach out to' (relationship-moves), or 'follow up with [name]' (follow-up-ritual / email-writer). Ranking signals and fences: Routing section in the body."
+description: "Surface conversations — email threads, Slack threads, meeting follow-ups — that went silent but carried high-value context worth reviving. Fires on: 'thread resurrection', 'warm threads to revive', 'dead threads worth reviving', 'what conversations went quiet', 'threads I dropped'. Ranks by value signals (deal language, decision proximity, seniority, thread depth) against silence duration, and offers one-tap revival drafts in the CEO's voice. Different from dormant-customer-scan, which finds dormant PEOPLE — this finds dormant CONVERSATIONS; a person can be active while a thread died. Does NOT fire on 'who went dark' (dormant-customer-scan), 'who should I reach out to' (relationship-moves), or 'follow up with [name]' (follow-up-ritual / email-writer)."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)

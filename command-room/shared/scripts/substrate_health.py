@@ -14,6 +14,10 @@ Checks:
     that will not parse — corruption or a mid-sync truncation.
   - FS-06: duplicate seq numbers in events.jsonl (append-gate race across
     machine forks) that mis-target seq-keyed references.
+  - CLOCKTS1: rows whose `ts` leads the `.seqhw` witness — forward-dated stamps
+    already in the permanent ledger. Nothing in the product detected a future
+    timestamp before this, which is how one workspace ran eighteen days and
+    1,242 wrong rows with every other check green.
   - FS-15 (read-time): `.readalarm.json` sidecars dropped by the defensive
     readers (read_alarm.py) when a read served corrupt bytes MID-FIRE. This
     catches what the scan-time parse check cannot: the 2026-07-14 dogfood had
@@ -30,8 +34,10 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import timezone as _timezone
 from pathlib import Path
 
+_UTC = _timezone.utc
 
 _CORE_JSONS = ("entities.json", "aliases.json")
 _CONFIG_JSONS = ("workspace_config.json",)  # under _hq/
@@ -307,6 +313,136 @@ def check_duplicate_seqs(workspace_root) -> dict:
     return {"n_duplicated": len(dupes), "dupes": dupes}
 
 
+def check_future_ts(workspace_root) -> dict:
+    """CLOCKTS1 — rows dated later than the moment they were actually written.
+    Returns `{n_future, n_exact, newest_ts, seqhw_updated, lead_seconds}`;
+    `n_future == 0` is clean.
+
+    TWO REFERENCES, PER ROW, and the order matters (fix round, F-1). Each row
+    is judged by `trusted_now.forward_dated_lead`: against its own `machine_ts`
+    where the append gate left one — a PERMANENT record of what the machine
+    really said for that row — and against the `.seqhw` witness otherwise.
+
+    The first version used only the witness, and the witness MOVES: it is
+    overwritten from the raw machine clock on every append, so it advances with
+    real time and a row stops leading it as soon as later activity carries it
+    past. On the operator workspace's own 24-row dose, fourteen days on, that
+    version reported zero. A detector that goes quiet at the moment the damage
+    becomes permanent is worse than no detector, because it also reports
+    "healthy".
+
+    `lead_seconds` is the WORST PER-ROW lead — measured against whatever
+    reference judged that row, never `newest_ts - witness`, which with a moved
+    witness produces a negative "lead" in a sentence claiming rows are ahead.
+
+    `n_exact` counts the rows judged by their own `machine_ts`, i.e. the ones
+    the repair tool can restore exactly. Rows without that trail are detectable
+    only while the witness still postdates them — stated in the repair report,
+    not hidden.
+    """
+    empty = {"n_future": 0, "n_exact": 0, "newest_ts": None,
+             "seqhw_updated": None, "lead_seconds": None}
+    p = _events_path(Path(workspace_root))
+    if not p.exists():
+        return empty
+    try:
+        from trusted_now import forward_dated_lead, read_seqhw_updated
+        from event_time import parse_ts
+    except Exception:
+        return empty
+    witness = read_seqhw_updated(p)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return empty
+
+    def _parse(value):
+        if not isinstance(value, str) or not value.strip():
+            return None
+        out = parse_ts(value)
+        return out.astimezone(_UTC) if out is not None else None
+
+    n_future = 0
+    n_exact = 0
+    newest = None
+    worst = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        row_ts = None
+        for field in ("ts", "timestamp", "date"):
+            value = ev.get(field)
+            if isinstance(value, str) and value.strip():
+                row_ts = _parse(value)
+                break
+        bad, lead, reference = forward_dated_lead(
+            row_ts, _parse(ev.get("machine_ts")), witness)
+        if not bad:
+            continue
+        n_future += 1
+        if reference == "machine_ts":
+            n_exact += 1
+        if newest is None or row_ts > newest:
+            newest = row_ts
+        if worst is None or lead > worst:
+            worst = lead
+    if not n_future:
+        return empty
+    return {
+        "n_future": n_future,
+        "n_exact": n_exact,
+        "newest_ts": newest.isoformat() if newest else None,
+        "seqhw_updated": witness.isoformat() if witness else None,
+        "lead_seconds": worst,
+    }
+
+
+def check_ts_review(workspace_root) -> dict:
+    """CLOCKTS1 — batches the append gate REFUSED because a caller-supplied
+    `ts` led the clock. Returns `{n_episodes, n_refused, reason, detected}`;
+    `n_episodes == 0` is clean.
+
+    Wired here because a refusal that nothing surfaces is a refusal nobody acts
+    on (fix round, F-4): the marker was written and read by no code at all, so
+    the only signal was a stderr line at the instant of the raise, which a
+    scheduled fire discards.
+
+    The marker has a FIXED name, so it describes only the MOST RECENT refusal.
+    The review side files are stamp-unique, so they are what the episode count
+    comes from — no episode is lost even though only the last one is described.
+    """
+    empty = {"n_episodes": 0, "n_refused": 0, "reason": None, "detected": None}
+    p = _events_path(Path(workspace_root))
+    try:
+        episodes = sorted(p.parent.glob(p.name + ".tsreview-*.jsonl"))
+    except OSError:
+        return empty
+    if not episodes:
+        return empty
+    marker = {}
+    try:
+        marker = json.loads(
+            p.with_name(p.name + ".tsreview.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        marker = {}
+    if not isinstance(marker, dict):
+        marker = {}
+    n_refused = marker.get("n_refused")
+    return {
+        "n_episodes": len(episodes),
+        "n_refused": n_refused if isinstance(n_refused, int) else 0,
+        "reason": marker.get("reason"),
+        "detected": marker.get("detected"),
+    }
+
+
 def substrate_alarm_lines(workspace_root) -> list[str]:
     """The LOUD, plain-English alarm lines for the health check / brief. Empty
     list = substrate is healthy (surface nothing). Ordered most-severe first."""
@@ -383,6 +519,53 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
                 f"it happens again, fully quit and reopen Cowork (quit the "
                 f"app completely — closing the window is not enough)."
             )
+    # CLOCKTS1 — forward-dated stamps. Named, counted, and ahead of the
+    # duplicate-seq line because this one changes what the numbers MEAN rather
+    # than how tidy they are: every window, the dormancy math and the
+    # confirmed-tier age-out read these dates as fact.
+    fut = check_future_ts(workspace_root)
+    if fut["n_future"] > 0:
+        n = fut["n_future"]
+        n_exact = fut.get("n_exact") or 0
+        # The lead is the WORST PER-ROW one, so this sentence is arithmetic
+        # about the rows it is describing. Deriving it from
+        # `newest_ts - witness` produced "the furthest is -342.2 hour(s)
+        # ahead" once the witness had moved past the rows (fix round, F-1).
+        lead = fut.get("lead_seconds")
+        how_far = ""
+        if isinstance(lead, (int, float)) and lead > 0:
+            how_far = (f" — the furthest by {lead / 86400.0:.1f} day(s)"
+                       if lead >= 86400
+                       else f" — the furthest by {lead / 3600.0:.1f} hour(s)")
+        restorable = ""
+        if n_exact:
+            restorable = (f" {n_exact} of them still carr{'ies' if n_exact == 1 else 'y'} "
+                          f"a record of the real time and can be restored exactly.")
+        lines.append(
+            f"⚠ {n} entr{'y' if n == 1 else 'ies'} in your activity log "
+            f"{'is' if n == 1 else 'are'} dated later than the moment "
+            f"{'it was' if n == 1 else 'they were'} actually written"
+            f"{how_far}. Anything measured in days — how long something has "
+            f"been quiet, when you last spoke to someone, what aged out — is "
+            f"reading those dates as fact.{restorable} Ask me to run the "
+            f"timestamp repair."
+        )
+    # CLOCKTS1 F-4 — a refused batch that nothing surfaces is a refusal nobody
+    # acts on. The rows are safe in the review file, but they are also NOT in
+    # the ledger, so the operator has to learn that from somewhere.
+    rev = check_ts_review(workspace_root)
+    if rev["n_episodes"] > 0:
+        e = rev["n_episodes"]
+        n_ref = rev.get("n_refused") or 0
+        most_recent = (f" The most recent set aside {n_ref} "
+                       f"entr{'y' if n_ref == 1 else 'ies'}." if n_ref else "")
+        lines.append(
+            f"⚠ {e} time{'s' if e != 1 else ''}, something tried to record an "
+            f"activity dated in the future and I stopped it at the door rather "
+            f"than filing it under a date that has not happened.{most_recent} "
+            f"Nothing was lost — it is held next to your activity log waiting "
+            f"on a decision. Ask me to show you what is waiting."
+        )
     dup = check_duplicate_seqs(workspace_root)
     if dup["n_duplicated"] > 0:
         lines.append(
@@ -401,5 +584,7 @@ __all__ = [
     "check_json_parse",
     "check_read_alarms",
     "check_duplicate_seqs",
+    "check_future_ts",
+    "check_ts_review",
     "substrate_alarm_lines",
 ]

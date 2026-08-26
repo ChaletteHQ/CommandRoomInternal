@@ -1,7 +1,7 @@
 ---
 name: decision-memo-composer
 surfaces: both
-description: "Walk through a structured tradeoff between options and produce a decision memo .docx — framing, options, weighted criteria, comparison, recommendation. Fires on: 'decision memo on [topic]', 'decision memo for [topic]', 'help me decide between [A] and [B]', 'tradeoff analysis', 'choose between [options]', 'compare [A] vs [B] for [decision]'. Interactive criteria weighting with the CEO, evidence pulled from the workspace where entities are named, one-tap chain to stress-test for the inversion pass, and 'log decision' on the way out. Does NOT fire on 'we decided X' / 'what did we decide' (decision-log — logging/retrieval), 'revisit the [topic] decision' (decision-revisit), 'deal memo on [target]' (single-opportunity evaluation), or 'convene the board' (boardroom). Memo structure and chain points: Routing section in the body."
+description: "Walk through a structured tradeoff between options and produce a decision memo .docx — framing, options, weighted criteria, comparison, recommendation. Fires on: 'decision memo on [topic]', 'decision memo for [topic]', 'help me decide between [A] and [B]', 'tradeoff analysis', 'choose between [options]', 'compare [A] vs [B] for [decision]'. Interactive criteria weighting with the CEO, evidence pulled from the workspace where entities are named, one-tap chain to stress-test for the inversion pass, and 'log decision' on the way out. Does NOT fire on 'we decided X' / 'what did we decide' (decision-log — logging/retrieval), 'revisit the [topic] decision' (decision-revisit), 'deal memo on [target]' (single-opportunity evaluation), or 'convene the board' (boardroom)."
 voice_block_last_refreshed: 2026-05-19
 calibration_level: default
 template_version: 1.0.0

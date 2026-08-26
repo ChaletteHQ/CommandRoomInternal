@@ -216,6 +216,8 @@
         "pulse_run",
         "triage_feedback",
         "prep_feedback",
+        "held_review_rendered",
+        "held_review_objection",
         "prep_brief",
         "sender_priority_proposal",
         "surface_preference_proposal",
@@ -271,6 +273,7 @@
         "renewal_window_opened",
         "referral_moment_flagged",
         "member_artifact_delivered",
+        "style_changed",
         "note",
         "other"
       ]

@@ -36,6 +36,11 @@ try:
 except ImportError:  # when imported as a package member
     from .workspace_root import find_workspace_root  # type: ignore
 
+try:
+    from event_types import THREAD_BOUND_TYPES
+except ImportError:  # when imported as a package member
+    from .event_types import THREAD_BOUND_TYPES  # type: ignore
+
 # Folders that are never client/project threads, so "folder with no thread
 # record" is expected for them, not an orphan.
 _NON_PROJECT_FOLDERS = {
@@ -439,8 +444,18 @@ def run_checks(root: Path) -> list[Finding]:
     # FILTERS on this field, so an event missing it is silently invisible.
     # Scoped to the thread-bound types so meta/system events (org_created,
     # backfill, tier_change) don't false-positive (deep-audit 2026-05-29, #13).
-    _THREAD_BOUND_TYPES = {"meeting", "interaction", "commitment", "decision",
-                           "follow_up", "note", "insight"}
+    #
+    # THREADSTAMP1 — the local literal that used to sit here has moved to
+    # `event_types.THREAD_BOUND_TYPES`. It was one of three divergent copies:
+    # `backfill_substrate` carried a different set while claiming in a comment
+    # to mirror THIS one, so the detector counted six types the repair tool
+    # would not touch and the tool touched six the detector never counted. The
+    # shared set is the union, so this check's count RISES on existing
+    # workspaces — it was always understated, and C14 is a WARN, not a gate.
+    # The resolver below is deliberately UNCHANGED: C14 asks "is the canonical
+    # field populated", so teaching it to read `data.thread_id` would hide the
+    # very rows the gate's derivation exists to fix.
+    _THREAD_BOUND_TYPES = THREAD_BOUND_TYPES
     missing_tid = 0
     for ev in events:
         et = ev.get("type") or ev.get("event") or ""

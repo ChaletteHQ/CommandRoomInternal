@@ -1,5 +1,122 @@
 # Command Room — Changelog
 
+## v5.19.0 — 2026-08-26 — The close gets fast without getting thin
+
+**The EOD-completion train** — M's ruling: everything EOD ships before the test. Three merges since v5.18.0, each independently reviewed.
+
+### What shipped
+
+- **EODSPEED1** (#67) — the close reconciles; it does not fetch. Meeting capture runs incrementally on the existing maintenance task (same writers, same gates, silent, receipted); the 5 PM close verifies over material already on disk and narrates the background pass's work; the 237-row stale-evidence re-scan class gets a walk ledger with a doubt-means-walk honor fence; a 5-minute budget verdict rides the phase records. Equivalence pinned: incremental vs bulk yields a byte-identical verdict set, and a machine-off day degrades to today's behavior exactly.
+- **TOMFILT1** (#66) — tomorrow never proposes the past: same-day-anchored and already-due items are filtered from the day-intent draft (full-lane, no starvation), and every rendered due phrase re-anchors to today.
+- **CLUSTCOUNT1** (#65) — the bookend counters learn the information count ("9 items, 41 rows") through the same clusterer the queues use, one chokepoint, byte-identical when nothing clusters.
+
+### Release manifest
+
+Three items: ONE `instruct_user` — **required** — the incremental-capture leg lives in the registered maintenance prompt, so each machine must say `set up command room schedules` once (until then the close keeps fetching: degrade, never breakage); two `announce_only`.
+
+### Verification
+
+Review records REVIEW_PR65/66/67 on file; the #66/#67 one-file conflict resolved per the review's prescribed union with all four suites green on the resolved tree; batteries green per branch. Riders filed to intake (amended-evidence intra-day semantics, ledger n_stale, tomorrow-filter heuristic refinements).
+
+### What's NOT in this ship
+
+No fan-out — clients stay on v5.14.0 pending M's walk and promote-shape call.
+
+## v5.18.0 — 2026-08-26 — The style layer
+
+**One squash-merge past v5.17.0: STYLE1** — the per-client style layer. Built in a separate operator session against SPEC_STYLE1 rev 2 (M's D1–D9 rulings), independently reviewed FAIL → fix round → CONFIRM (REVIEW_STYLE1_2026-08-26 on main; the FAIL was record-confined — the build's own scrub log quoted what it scrubbed — plus a proposer that raised on malformed signals and a hyphen-permeable bounds fence, all three fixed and pinned).
+
+- **Chat persona knobs** (brevity, explanation depth, formality, one bounded `never_line`) rendered into the workspace CLAUDE.md persona block — heading + at most 7 lines, priority-ordered.
+- **Inference-first:** `style_inference.propose` reads the client's own record (sent-mail mechanics, spoken asks, correction logs) and proposes evidence-carrying, threshold-gated settings; explicit rulings are never re-proposed; conflicts suppress rather than guess; garbage signals read as absent (never raise, never write).
+- **Fences:** the `never_line` cannot switch off output machinery (hyphenated spellings included); unknown knobs refuse at the writer; unconfigured workspaces regenerate byte-identical.
+
+### Manifest
+One `announce_only` item; no `instruct_user`.
+
+### Verification
+Review record on main (FAIL + CONFIRM addendum); style1 suite 85/0; battery 496/496 fresh at the fix tip; squash ruling honored so pre-fix placeholder hunks never entered history. Rides M's guided morning walk with everything since v5.15.0.
+
+### What's NOT in this ship
+No fan-out — clients stay on v5.14.0 pending the walk. Review LOWs (humor_ok re-propose, suppression-reason asymmetry, unused window_days) and the worktree-hooks gap ride intake.
+
+## v5.17.0 — 2026-08-25 — The close coaches from the record
+
+**One merge past v5.16.0: EODCOACH2** — the two prose layers M kept from the full coaching sample. Built on Sonnet per M's model-efficiency ruling, reviewed on the top tier (PASS-WITH-FIXES → per-push cooldown + honest naming count → CONFIRM, 14/14 confirm probes).
+
+- **Layer 1, pattern memory:** the close reads its own last seven packs — an arc still across ≥3 consecutive closes gets its count said out loud, a deliverable discussed on ≥3 days without a work event gets named, the oldest consequence gets its survival count.
+- **Layer 2, the intent-vs-outcome delta:** yesterday's stated "tomorrow is about X" is compared to what actually happened — one sentence, the honest positive included — plus at most ONE push line (fact + cost, pattern-backed only), fenced against nagging: the third consecutive identical push names the repetition at its actual ordinal, then rests for three closes, per-push, never muting fresh signal.
+- Hard caps (2 patterns + 1 delta + 1 push), honest absence everywhere (thin history coaches nothing), grounding refs on every sentence, zero new interactions — the tomorrow block stays the only question. Layer 3 (a curated action strip) is PARKED by M's own one-interaction ruling.
+
+### Manifest
+One `announce_only` item; no `instruct_user` — nothing needs re-registration.
+
+### Verification
+Independent review record REVIEW_PR63_EODCOACH2_2026-08-25 (original + confirm addendum); suite 57/0 with four removal proofs; battery 495/0 local + CI. The operator's guided walk covers this surface live tomorrow morning — the cut exists for that test.
+
+### What's NOT in this ship
+No fan-out — cr1-only; clients stay on v5.14.0 pending the walk and M's promote-shape call.
+
+## v5.16.0 — 2026-08-25 — The pipeline clears
+
+**The train M commissioned to clear the backlog before one big test.** Eight merges since the v5.15.0 cut, every one through the independent second-eyes ritual — several forced multi-round fix loops (EXCH1 four rounds, CLUSTER1 three), each round pinned by name.
+
+### What shipped, one line per merge
+
+- **EXCH1** — capture reason assignment adjudicates the EXCHANGE, not the trigger line: an acceptance in the following turn beats absence of acceptance in the offer, a narrowing of scope is not a retraction, and twelve refusal shapes (from "Absolutely not." to "Yeah, no.") are pinned with removal proofs.
+- **CLOSEID2** (#55) — a close whose ids the session resolved itself requires the one-question path, and every decline affordance — Skip, dismiss, X, timeout, empty submit — resolves to no action, zero writes.
+- **REFINT1** (#56) — the append gate refuses proposals and updates against commitment ids no creation event backs, and the drain gives the existing orphans a terminal state.
+- **OBSERVED1** (#57) — the observed tier reaches the confirm queues: set-aside rows render on needs-your-call and show watching with confirm/drop, dispatched through promotion plus the standard writers.
+- **PREPSRC1** (#58) — the prep Sources line derives from what the render consumed; a hand-built Sources section refuses loudly before any file ships.
+- **MEETCOUNT1 + BRIEFBIND1** (#60) — the evening coverage line and the briefs share one producer so the counts cannot diverge, every reduction is named in the sentence, and a brief's counterparty comes from the cited record's own participants — G28 now reds on MIS-binding, not only un-binding.
+- **EODARC1** (#61) — the evening close reads the day against the standing arcs (what moved, what is waiting and on whom, where the weight went) in grounded prose, zero new actions, with a structural fence against regressing into a row recap.
+- **CLUSTER1** (#62) — one line per real-world item on every queue surface, default-on: render-time clustering with a "+N folded" line, one tap makes it durable through the existing merge writers, and a conflicting-deliverable fence (down to the q3-vs-q4 token class) keeps two different items from ever joining.
+
+### Release manifest
+
+Four items in `shared/releases/v5.16.0.json`, all `announce_only`. No `instruct_user`: nothing needs a re-registration or any action on an existing machine.
+
+### Verification, stated honestly
+
+Every merge carries an independent review record (`REVIEW_*_2026-08-25`), full battery GREEN on the complete tree at cut time, and CI green per branch. The operator's guided step-by-step walk on his own book is the NEXT step and is what this cut exists to enable — it had not been walked at cut time, and the structured fresh-workspace plan remains unwalked. The held tier remains ungranted; its revisit is gated on the post-EXCH1 five-random-row spot-check during the walk.
+
+### What's NOT in this ship
+
+- **No fan-out.** cr1-only cut; client repos stay on v5.14.0 until the walk passes and M calls the promote shape.
+- CLUSTCOUNT1 (bookend counters as information counts) — BACKLOG, follow-up.
+- The intake riders filed off this train's reviews (event-gate append cost, title-lane sneak-past, Sources-tripwire trailing period, claim-audit operator-only exclusion).
+
+## v5.15.0 — 2026-08-24 — Show me what you'd hide
+
+**A release about what the system does with its own weakest judgments.** Six merges since the v5.14.0 cut. The evening pass stops scoring and starts synthesizing; the capture floor stops letting a folded duplicate swallow its group and stops minting untitled close proposals; a future-dated row is refused at the door rather than poisoning the clock floor; and the below-floor captures — the ones the held tier would one day route out of sight — finally get a surface where a human can read them before any of that is switched on.
+
+### What shipped, one line per merge
+
+- **EODSYNTH1** — the evening brief synthesizes the day instead of scoring it, grounded sentence by sentence, and asks one thing: tomorrow.
+- **HELDREVIEW1** — the operator can read what the held tier would hide, object row by row, and turn it on only with both the release grant and his own workspace's flag.
+- **CLOCKTS1** — a future timestamp is refused at the door instead of poisoning the clock floor; contamination reds the health check by name, and the repair tool restores what the machine trail can prove.
+- **DEDUPFLOOR1** — a folded duplicate no longer swallows its group: the fold annotates the group's best confidence, the floor consults it, and a rescue is never silent.
+- **TITLEMINT1** — a close proposal carries the subject it is about, an untitled write is refused into review, and one fire proposes at most 25.
+- **THREADSTAMP1** — the gate derives the thread id where a real ref exists, absent stays absent, and the personal lane cannot leak through a new spelling.
+
+### Release manifest
+
+Three items in `shared/releases/v5.15.0.json`, all `announce_only`. No `instruct_user` item: nothing in this train needs a re-registration or any action on an existing machine, unlike v5.14.0's schedule leg.
+
+### The held tier is still OFF, and this release does not grant it
+
+`shared/config/operator_capabilities.json` ships with `held_tier_routing.granted` still `false`. HELDREVIEW1 adds the reading chair in front of the switch — not the switch. Nothing is hidden in any workspace on this release, and no workspace can turn the routing on.
+
+The grant was staged for this cut and deliberately pulled. The first operator walk of the reading chair, on the maintainer's own book, found the capture floor's stated reasons unreliable: on a four-row hand-check against source transcripts, four of four were rows the operator would have kept, and three of four carried a reason that is false against the transcript — an acceptance in the following turn read as "never accepted" twice, and a narrowing of scope read as a retraction once. The held tier cannot be safer than the judgment it routes on. It stays ungranted until that judgment is fixed and re-measured by replay.
+
+### Attended verification, stated honestly
+
+The freeform dogfood half of the attended tier was walked against a real workspace for this build, and is what produced the finding above. The structured half — `VERIFICATION_PLAN.md` Phases 0–4 against a fresh workspace — was **not** walked for this build. Recorded, not inferred.
+
+### What's NOT in this ship
+
+- **CLOSEID2** (PR #55) and **REFINT1** (PR #56) — both green, both awaiting independent review at cut time.
+- **No fan-out.** This is a cr1-only cut. Client repos remain on v5.14.0 until a separate, deliberate promote.
+
 ## v5.14.0 — 2026-08-23 — The list cleans itself
 
 **The train that stops the commitment list growing on its own.** Fifteen merges since the v5.13.2 cut. The measured finding behind the shape of it: the pile is an *inflow* problem, not a staleness problem — nothing was sitting quiet for 45 days, and a quarter of the confirm pile was junk that should never have been written. So most of this train sits at the point work is created and at the point it leaves, not at the point it is cleared.

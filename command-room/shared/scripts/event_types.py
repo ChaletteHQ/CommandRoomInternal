@@ -93,9 +93,34 @@ COMMITMENT_CLOSURE_ID_FIELDS = tuple(
 RESOLUTION_REASON_KEY = "resolution_reason"
 REVIEW_EXPIRY_REASON = "review_expired"
 INGEST_KILL_REASON = "ingest_killed"
+# REFINT1 — the drain's terminal reason, on a `commitment_review_dismissed`
+# (NOT a `commitment_resolved`: there is no commitment to resolve — that is
+# the defect). A proposal whose target was never created is closed as
+# unresolvable, and the event says so instead of the row staying invisible
+# forever. Written under RESOLUTION_REASON_KEY — the SAME key the lapse
+# family uses — so `is_non_dismissal_closure` is the one reader that tells a
+# human's Skip from the system draining an orphan, and it is IN the frozenset
+# below for the same reason the expiry and ingest-kill reasons are: a learner
+# that read a drain tombstone as the CEO saying "not relevant" would move the
+# calibration bands off events no human ever adjudicated
+# (confidence_calibration.load_review_outcomes is the named reader).
+DANGLING_TARGET_REASON = "target_never_created"
 NON_DISMISSAL_RESOLUTION_REASONS: FrozenSet[str] = frozenset({
     REVIEW_EXPIRY_REASON,
     INGEST_KILL_REASON,
+    DANGLING_TARGET_REASON,
+})
+
+# REFINT1 — the commitment-REFERENCE family: event types whose data points at
+# a commitment that a reader will assume exists. Lives HERE, beside
+# COMMITMENT_CLOSURE_ID_CHAIN and THREAD_BOUND_TYPES, for the same
+# one-list-not-two reason: the gate's reference wall (event_gate 4d) and any
+# future read-side audit must answer "which types reference commitments"
+# identically. `commitment_review_dismissed` is deliberately absent — a
+# dismissal claims no work exists, and it is the drain's own terminal event.
+COMMITMENT_REFERENCE_TYPES: FrozenSet[str] = frozenset({
+    "commitment_review_proposed",
+    "commitment_updated",
 })
 
 
@@ -151,6 +176,153 @@ def is_known_type(event_type) -> bool:
     if not types:
         return True
     return isinstance(event_type, str) and event_type in types
+
+
+# --- Thread binding (THREADSTAMP1, 2026-08-23) ------------------------------
+# ONE list, for the same "two lists WILL drift, one cannot" reason as the
+# closure chain above — and this one had already drifted three ways when the
+# defect was re-derived:
+#
+#   integrity_check C14   {meeting, interaction, commitment, decision,
+#                          follow_up, note, insight}
+#   backfill_substrate    {meeting, decision, draft_created, commitment,
+#                          commitment_captured, follow_up, thread_resolved,
+#                          memo, brief, call_prep}
+#
+# and `backfill_substrate` claimed in a comment that it "mirrors integrity_check
+# C14's scope", which it did not. The detector counted six types the repair tool
+# would not touch, and the repair tool touched six types the detector never
+# counted. THREADSTAMP1 takes the UNION and puts it here, so the checker, the
+# repair tool, the append gate's warning and the capture gate's derivation all
+# read the same vocabulary.
+#
+# Union, not intersection: this set answers "would a missing thread id make this
+# row invisible to a surface that filters on the field", and the answer is yes
+# for every member of both lists. Widening the detector's scope raises C14's
+# WARN count on existing workspaces — that count was always understated, and
+# C14 is a warning, not a gate.
+#
+# DETECTION-ONLY MEMBERS. Six of these are NOT in the schema enum, so nothing
+# can write one today (event_gate rejects an unregistered type on both entries):
+# `brief`, `call_prep`, `commitment_captured`, `follow_up`, `insight`, `memo`.
+# They stay in the set because both readers of it — C14 and the backfill — walk
+# HISTORICAL substrate, where those rows exist. The write-side consumers (the
+# gate warning, the capture-gate derivation) can never see them, so their
+# presence costs nothing there. `run_threadstamp1_test` pins that split so a
+# future registration or removal is a deliberate edit rather than a surprise.
+THREAD_BOUND_TYPES: FrozenSet[str] = frozenset({
+    "brief",
+    "call_prep",
+    "commitment",
+    "commitment_captured",
+    "decision",
+    "draft_created",
+    "follow_up",
+    "insight",
+    "interaction",
+    "meeting",
+    "memo",
+    "note",
+    "thread_resolved",
+})
+
+# The payload spellings a thread reference is DERIVED FROM, in ladder order.
+#
+# THE CONSTRAINT THAT SHAPES THIS TUPLE (BUG-8330 item 12 / FX-5 / FIX ROUND 2).
+# Presence of `primary_thread_id` is load-bearing for the personal firewall:
+# `personal_leak.business_thread_id` RESOLVES every thread-id spelling on a row
+# against the workspace's business thread register, and a resolving id is the
+# override that lets a tie-touching row onto an org surface. So a derivation
+# that promotes a ref INTO `primary_thread_id` must not hand the firewall a
+# signal it could not already see, or the derivation quietly re-opens the leak
+# that item 12 was filed for and that FX-5 re-opened twice.
+#
+# These three fields are exactly `personal_leak._THREAD_REF_FIELDS` minus the
+# destination field, and the firewall reads them in BOTH scopes already. That
+# makes the derivation provably FIREWALL-NEUTRAL: `is_personal`'s verdict on a
+# row is identical before and after the stamp, because the resolver was already
+# reading the source field. `run_threadstamp1_test` pins the tuple relationship
+# AND the behavioural consequence.
+#
+# `related_thread_ids[0]` is DELIBERATELY NOT A RUNG, and that is a deviation
+# from SPEC_THREADSTAMP1 DD-1's literal ladder, taken under the same spec's
+# instruction that the BUG-8330 analysis constrains the derivation. That field
+# is NOT in `_THREAD_REF_FIELDS`, so deriving from it is the one rung that
+# WOULD move a row across the firewall — a personal-tie row whose sole related
+# thread resolves to a business thread would go from withheld to rendered. It
+# is also written by exactly ONE Python site repo-wide — `objective_state`'s
+# `objective_created`, a type that is not in `THREAD_BOUND_TYPES` and that
+# already carries a real `primary_thread_id` — so no row the ladder can reach
+# has a related thread as its only reference: the rung buys nothing and costs
+# the one property worth protecting here.
+THREAD_REF_DERIVE_FIELDS = ("thread_id", "project_id", "primary_project_id")
+
+# The canonical destination.
+PRIMARY_THREAD_FIELD = "primary_thread_id"
+
+# An org id parked in a thread slot is a type error, not a thread reference
+# (backfill_substrate FIX 1 exists to relocate exactly these). Never derive one.
+_ORG_ID_PREFIX = "org_"
+
+
+def _thread_scope(ev):
+    d = ev.get("data") if isinstance(ev, dict) else None
+    return d if isinstance(d, dict) else {}
+
+
+def derive_primary_thread_id(ev) -> Optional[str]:
+    """The thread reference this event ALREADY CARRIES, promoted to a value the
+    canonical slot can hold — or None when it carries none.
+
+    Walks `THREAD_REF_DERIVE_FIELDS` in ladder order, envelope scope before
+    `data` scope for each field (the order `backfill_substrate._derive_thread`
+    has always used, kept verbatim so the gate and the repair tool derive
+    identically — `run_threadstamp1_test` pins the parity).
+
+    NEVER INVENTS AND NEVER RETURNS A SENTINEL. No thread reference in the
+    payload means None, and every caller writes the field absent rather than
+    empty. An `org_*` id in a thread slot is a type error and is skipped, not
+    promoted.
+    """
+    if not isinstance(ev, dict):
+        return None
+    data = _thread_scope(ev)
+    for field in THREAD_REF_DERIVE_FIELDS:
+        for holder in (ev, data):
+            value = holder.get(field)
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if value and not value.startswith(_ORG_ID_PREFIX):
+                return value
+    return None
+
+
+def has_thread_ref(ev) -> bool:
+    """True when the row carries ANY thread reference at all — the canonical
+    field, a derivable spelling, or a non-empty `related_thread_ids`.
+
+    This is the event gate's warning predicate, and it is deliberately WIDER
+    than `derive_primary_thread_id`: a row whose only reference is a related
+    thread is not derivable (see the tuple note above) but it is also not
+    thread-LESS, and warning about it would be false. The warning fires only on
+    rows that name no thread anywhere.
+    """
+    if not isinstance(ev, dict):
+        return False
+    if derive_primary_thread_id(ev) is not None:
+        return True
+    data = _thread_scope(ev)
+    for holder in (ev, data):
+        value = holder.get(PRIMARY_THREAD_FIELD)
+        if isinstance(value, str) and value.strip():
+            return True
+        related = holder.get("related_thread_ids")
+        if isinstance(related, list) and any(
+            isinstance(r, str) and r.strip() for r in related
+        ):
+            return True
+    return False
 
 
 # --- Pre-registry fossils (2026-07-25) --------------------------------------
@@ -216,7 +388,14 @@ __all__ = [
     "RESOLUTION_REASON_KEY",
     "REVIEW_EXPIRY_REASON",
     "INGEST_KILL_REASON",
+    "DANGLING_TARGET_REASON",
+    "COMMITMENT_REFERENCE_TYPES",
     "NON_DISMISSAL_RESOLUTION_REASONS",
+    "THREAD_BOUND_TYPES",
+    "THREAD_REF_DERIVE_FIELDS",
+    "PRIMARY_THREAD_FIELD",
+    "derive_primary_thread_id",
+    "has_thread_ref",
     "is_non_dismissal_closure",
     "load_event_types",
     "is_known_type",

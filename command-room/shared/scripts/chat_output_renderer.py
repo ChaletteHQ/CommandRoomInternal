@@ -482,6 +482,19 @@ def _render_item(item: dict) -> list[str]:
             out.extend(_render_sub_item(sub))
             out.append("")  # blank line between sub-items
 
+    # CLUSTER1 — folded rows: the read-only expand under a cluster's one
+    # surviving line. Display strings only (the producer built them through
+    # `commitment_cluster.folded_line`); no verbs, no dispatch — a cluster
+    # is a display fact until the user's own tap.
+    folded = item.get("folded_rows", [])
+    if folded:
+        out.append("")
+        noun = "row" if len(folded) == 1 else "rows"
+        out.append(f"_{len(folded)} folded {noun} — the same real-world "
+                   f"item, kept reachable:_")
+        for line in folded:
+            out.append(f"- _{line}_")
+
     return out
 
 
@@ -4019,6 +4032,24 @@ def _render_widget_item(item: dict) -> str:
                 f"</div>"
             )
         parts.append("</div>")
+
+    # CLUSTER1 — folded rows: the read-only expand under a cluster's one
+    # surviving line, one tap away (<details>). Display strings only, built
+    # by the producer (`commitment_cluster.folded_line`); NO verbs, NO
+    # dispatch attributes — a cluster is a display fact until the user's own
+    # `keep as one` tap on the surviving row.
+    folded = item.get("folded_rows", [])
+    if folded:
+        noun = "row" if len(folded) == 1 else "rows"
+        folded_lines = "".join(
+            f'<div class="cr-folded-row">{_html_mod.escape(str(line))}</div>'
+            for line in folded)
+        parts.append(
+            f'<details class="cr-folded-rows">'
+            f"<summary>{len(folded)} folded {noun} — the same real-world "
+            f"item (read-only)</summary>"
+            f"{folded_lines}"
+            f"</details>")
 
     parts.append("</div>")  # close cr-item
     return "".join(parts)

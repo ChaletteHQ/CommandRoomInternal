@@ -1,7 +1,7 @@
 ---
 name: end-of-day
 surfaces: both
-description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, scores the day against this morning's plan, surfaces what slipped with one-tap verbs, and records what tomorrow is about. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
+description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, names what slipped that has consequences, and asks one thing — what tomorrow is about. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
 ---
 
 # End of Day — the evening bookend
@@ -37,26 +37,185 @@ on both ids (`end_of_day.TASK_ID`) so the day-close series never splits.
    fire would be scored by this same fire's reconcile and counted by this same
    fire's read. Capture last is the circularity fence.
 
-## The eight blocks
+## What renders, and what is only computed (SPEC EODSYNTH1)
 
-`surface_drivers.build_end_of_day_pack(workspace_root, mode=...)` builds all of
-them in ONE call (the t3 FB-9 pattern). Render order is the contract:
+`surface_drivers.build_end_of_day_pack(workspace_root, mode=...)` builds
+everything in ONE call (the t3 FB-9 pattern). **Two lists govern it and the
+difference between them is M's 2026-08-23 ruling written down:**
+`end_of_day.RENDER_ORDER` is what reaches the screen, in order, and
+`end_of_day.COMPUTED_ONLY` is what still runs, still lands on the `pack_run`
+receipt, and renders nowhere. **Un-render, don't unbuild.**
 
 | Block | What it is | The rule that governs it |
 |---|---|---|
 | `alarm_lines` | `substrate_health.substrate_alarm_lines` | Verbatim, pinned top, never suppressed |
-| `coverage` | What this fire actually READ, per capability | Verbatim, first under the alarms, **never suppressed and never softened** — see below |
-| `score` | This morning's plan against today's closures, plus the saved digest read back | **No morning receipt → "No plan on record this morning." NEVER a guessed score.** An item with no close on file is **"Not recorded", never "not done"**. `first_move` is an ANNOTATION, not a string; `ledger` is the book's movement — see below |
-| `wins` | What moved since the morning fire, by NAME | Zero wins → one honest line. Never padding. `title_source` and `more_line` govern the rows — see below |
-| `slipped` | The ball-is-on-you rows | Max 3, verbs on each, and every row comes from the GATED needs-attention set — never a fresh scan. `more_line` carries the denominator. An item 3+ days overdue is asked about ONCE and then rests until answered (OVERDUE1) — see below |
-| `confirm` | `confirm_flow.select_confirm_items`, relocated here, plus (PERSONLOOP1) `end_of_day.compute_person_candidates` | Cap 5, stakes-then-age. A held capture can never enter it. `more_line` carries the denominator. The candidate rows sit at the END of the block and are capped at 2 — they are the reason the block is as long as it is |
-| `tomorrow` | The wide calendar look, the rollover, the day-intent draft | The draft is a PROPOSAL until tapped. It is written only on confirm |
+| `coverage` | What this fire actually READ, per capability | Verbatim, first under the alarms, **never suppressed and never softened** — the honesty floor under the prose. See below |
+| `day_went` | One grounded paragraph: what moved today | Composed in code by `eod_synthesis.compute_day_went` from the LEDGER's own fields and today's named closes. Printed verbatim; never extended |
+| `what_it_meant` | THE ARC READ (SPEC EODARC1): which arcs moved today, which consequence-carrying arcs did not move, where the day's weight went | Composed in code by `eod_synthesis.compute_what_it_meant` over DECLARED arcs only. A sentence with no arc attached does not belong in the section (`eod_synthesis.drop_rows_only`); a genuinely empty day says so honestly in one grounded line; never an arc the model inferred |
+| `worth_remembering` | Decisions and notes logged today, 1–4 lines | Each line IS a row, not a summary of one |
+| `slipped_prose` | The slips whose consequence is STATED | Prose, not a list. No denominator, no "137 slipped". Everything else that slipped is silent here and appears in the morning |
+| `echoes` | At most two labelled precedent echoes | Absent by default; each cites a precedent BY ID or is refused |
+| `tomorrow` | The wide calendar look, the rollover, the day-intent draft | **The ONE interaction.** The draft is a PROPOSAL until tapped. It is written only on confirm |
 | `sign_off` | Computed, never composed | Zero urgent → "Nothing else needs you before tomorrow's brief." verbatim |
+
+**Computed, receipted, rendered NOWHERE:** `score` (with its `ledger` and
+`first_move`), `wins`, `slipped`, `confirm`.
+
+- **`score`** — `n_planned` / `n_closed` / the book-at-open arithmetic are all
+  still computed and still on the receipt, because weekly-recap and the trend
+  surfaces read them. No sentence on this surface carries one. The score
+  anchors on the morning plan, so a day that drifted from its 7 AM plan scored
+  as a failure regardless of what actually got done; on 2026-08-19 the grade
+  sat next to three closed wins and read as a contradiction.
+  `eod_synthesis.assert_no_score` is a code fence over the composed text and it
+  RAISES.
+- **`wins`** — the named closes feed `day_went`. No block of their own.
+- **`slipped` / `confirm`** — they feed `slipped_prose` and the MORNING
+  surfaces. The confirm/drop queues and the needs-your-call rows render on the
+  morning brief's needs-attention lane and on the `needs-your-call` / `my-plate`
+  chats, where the operator is in triage mode; 5 PM is wind-down.
+
+**The widget is the tomorrow block and nothing else**, rendered ABOVE the
+prose, through `widget_transport.render_and_persist` byte-exact. No Slipped
+section, no Needs-your-call section, no person candidates, no score.
+
+**`confirm_ids` is EMPTY** (`end_of_day.NUMBERED_BLOCKS` is `()`): the evening
+renders no numbered rows, so it numbers none, and a `[n]` tap is refused in
+plain English. The tomorrow confirm resolves through
+`end_of_day.resolve_intent_confirm` off the same receipt and never used that
+map. Numbering a row that does not render is the defect, not a spare
+capability — it makes every tap past it resolve against something nobody saw.
+
+### Grounding is the build, not a footnote
+
+Every synthesized sentence carries the rows it came from, and
+`eod_synthesis.drop_unreferenced` removes any sentence whose ref set is empty
+BEFORE it can be composed. The chat shows prose; the persisted brief and the
+receipt show the join. Six rules, each a pin:
+
+1. An unreferenced sentence never renders.
+2. A quote is admitted only from a LABELLED transcript and never assembled
+   across speakers (`eod_synthesis.admit_quote`) — the meeting connector
+   fabricates attribution on label-free transcripts.
+3. Tier 2 joins only to arcs the substrate DECLARES (`end_of_day.declared_arcs`
+   reads objectives, the day's stated intent, org relationships with a live
+   thread, active workstreams, deals with a stage; SPEC EODARC1 adds the
+   consequence-carrying open commitments minted in the composer). Never an
+   inferred theme.
+4. Tier 3 refuses an echo with no precedent id, bans the manufactured-profundity
+   phrasings outright, and rations to two.
+5. The numbers in the prose are read off the ledger dict the receipt carries
+   (`eod_synthesis.ledger_numbers`), so the prose and the receipt are the same
+   fields by construction — "closed 4" here and "0 closed" there cannot recur.
+6. A row held out of sight by the held tier or the personal firewall never
+   reaches a sentence (`eod_synthesis.visible_rows`).
+
+### The arc read (SPEC EODARC1) — a recap lists what changed; a synthesis says what it means for what you are running
+
+That sentence is the build, and it is named here so it cannot drift back:
+the first live EODSYNTH1 render was true, grounded, and entirely about ROWS —
+coverage lines, what didn't move, what was late — and not one sentence was
+about the day. The `what_it_meant` block is now the ARC READ, answered in
+order:
+
+1. **Which arcs moved today**, grounded in what happened — today's closes,
+   meetings and decisions joined (strictly, by id and thread linkage, never
+   by similarity) to the arcs the substrate declares: objectives, the day's
+   stated intent, **org relationships with a live thread** (partnerships,
+   clients — every non-self org in the entity register with an active
+   thread), the unclaimed active workstreams (the product tracks), deals
+   with a recorded stage, and consequence-carrying open commitments no other
+   arc tracks (`eod_synthesis.mint_commitment_arcs`).
+2. **Which consequence-carrying arcs did NOT move** — what is waiting, and
+   on whom, off the OPEN book with the same strict join. The consequence is
+   the row's own stated field (a due date, a named counterparty, a stated
+   blocker, a meeting it gates — `eod_synthesis.arc_stated_consequence`),
+   never an inferred one.
+3. **Where the day's weight went** — one sentence relating effort to arcs,
+   counted off today's own rows and never against a plan.
+
+**The fence:** `eod_synthesis.drop_rows_only` runs over every sentence the
+composer produces — a sentence whose refs name no arc this render was handed
+cannot reach the screen, so the section structurally refuses to enumerate
+rows as synthesis. The one exemption is the honest empty-day line (kind
+`empty_day`), which still carries the day window as its ref: a genuinely
+empty day says so, it is never padded and never silent.
+
+**Ruling 3 (M, 2026-08-25): deals are read as context, never as state.** The
+pipeline tracker is not load-bearing anywhere in the arc read: an org with
+recent activity and a live thread IS an arc whether or not a deal row tracks
+it, a deal row with a stage can only ADD an arc, and nothing in the read
+raises when deal state is absent, stale, or malformed. No writes to deal
+state, ever. The section stays prose-only — zero new actions, buttons,
+proposals, or writes; the tomorrow block remains the one interaction,
+unchanged.
+
+### The coach (SPEC EODCOACH2) — patterns across evenings, and the intent-vs-outcome delta
+
+M's ruling, same date, after seeing the full-build sample: two more prose
+layers survive on top of the arc read above — Layer 1 (pattern memory across
+closes) and Layer 2 (the intent-vs-outcome delta, plus one push line). Layer
+3 (a curated action strip) is PARKED: it collided with M's own one-
+interaction ruling, and this build does not render it. `eod_coach.py` is the
+module; `pack["coach"]["text"]`, printed verbatim, right after `echoes` and
+above `tomorrow` — never inside `render_order`, for the same reason
+`catchup` is not: it is a key the fire renders by instruction, not a member
+of a tuple pinned elsewhere by exact equality.
+
+**Prose only, ZERO new interactions** — the same fence EODARC1 keeps: a coach
+sentence carries `{text, refs, tier, kind}` and nothing else, no verb, no
+checkbox, no proposal. The tomorrow block stays the one interaction.
+
+**Layer 1 — pattern memory.** Reads the last 7 EOD packs off disk (the same
+`_hq/.system/briefs/end-of-day-pack-*.json` audit copies this driver already
+writes) and counts, never infers: an arc unmoved 3+ CONSECUTIVE closes while
+carrying a consequence ("That's the Nth consecutive close where X sat
+still."); a commitment recurring in the meeting-gated slip on 3+ of the days
+examined with no send between ("X has come up in meetings on N of the last M
+days without a send."); and the survival count on the single oldest
+consequence-carrying overdue item ("X has now survived N closes."). At most
+2 render, dropped by strength (most repetitions, then the older item) —
+`eod_coach.compute_patterns`. **Honest absence:** fewer than 3 prior packs on
+disk and this renders NOTHING.
+
+**Layer 2 — the delta and the push.** `eod_coach.compute_intent_delta` reads
+the day's own STATED `day_intent` (EODFIX1's id linkage) against today's
+closures and open book, grounded strictly through the item's
+`commitment_id` — never inferred from the item's own words. At most one
+sentence: "You said tomorrow was about X. It didn't move." or the honest
+positive, "...it shipped." **Honest absence:** no STATED record for the day
+being closed and this renders nothing.
+
+`eod_coach.compute_push` is the one push line, rendered ONLY when Layer 1
+kept a pattern — the strongest one, restated as its own count plus a
+concrete, countable cost. Never an imperative, never a to-do.
+
+**The repetition fence (anti-nag).** The same push forced a THIRD
+consecutive close renders once more, NAMING the repetition, then goes quiet
+for a 3-close cooldown. The state lives on THE PACK RECORD
+(`coach["push_state"]`) — this driver's next fire reads it off the one prior
+pack on disk, exactly as it always writes one; there is no second store.
+
+### Section names are join keys
+
+The slipped ROW-LIST became the slipped-with-consequences PROSE, so the FRP1
+config key moved with it: `slipped_section` → `slipped_prose_section`, carried
+across by `end_of_day.migrate_section_config`, never by name match. A rename
+that does not migrate does not fail — it DEFAULTS, and the workspace silently
+loses a decision its owner made. `end_of_day.slipped_prose_enabled` reads the
+new key and falls back to the old one, which is the belt to that migration's
+braces. `tone: "scoreboard"` named a rendering that no longer exists and
+migrates to `journal`, with the old value preserved under
+`tone_before_eodsynth1`.
 
 A ninth key, `catchup`, is not a block: it is the fire-level LABEL a late
 day-close arrives under, and it renders above everything (see "The catch-up
 read" below). On every non-degrade fire its `renders` is False and there is
 nothing to place.
+
+`coach` (SPEC EODCOACH2) is the same shape of exception, at the other end of
+the surface: it renders by instruction, right after `echoes` and above
+`tomorrow`, and it is not in `RENDER_ORDER` either — see "The coach" above.
 
 ### `coverage` — say what you read before you say what you found
 
@@ -100,6 +259,8 @@ stop: no substituted count, no delta of zero, no "flat day". A guessed baseline
 is indistinguishable from a measured one once it is on screen —
 `NO_PLAN_LINE`'s doctrine, one field down.
 
+**Information count (CLUSTCOUNT1, 2026-08-26)** — `pack["brief_state"]["headline"]` may carry `information_count` + `information_line` (e.g. `"9 items, 41 rows"`) beside `book_now`'s bare total — the same one-line-per-real-world-item read the queues already give, run here by `compute_brief_state` over tonight's confirmed open set. ADDITIVE and PRESENT ONLY when something actually clustered. **When `information_line` is present, print it beside `ledger["line"]`'s book-now figure** ("book now: 41 — 9 items, 41 rows"); when absent, the ledger line stands alone exactly as before — never compute a substitute, never invent "N items, N rows" restating the total when the key is not there.
+
 ### The catch-up read — a late day-close arrives labelled, not skipped
 
 On the degrade tier (>24h late) this surface RENDERS, opening with
@@ -131,7 +292,15 @@ family renders the same pack. The failure it closes was field-observed: two
 live packs on 2026-08-17 carried the same already-discharged line, byte for
 byte, at 9 PM, as though it were the next thing to do.
 
-### `wins.title_source` and `wins.more_line`
+### `wins.title_source` and `wins.more_line` — computed, rendered nowhere
+
+**SPEC EODSYNTH1 un-rendered this block.** Its named closes are an INPUT to
+`day_went`; there is no wins section on the surface any more, so nothing below
+about `title_source` or `more_line` describes something a reader sees. Both
+rules are kept — not as render instructions, but because they still govern what
+`compute_wins` may CLAIM about a row, and a row whose name was guessed would
+carry that guess straight into a paragraph. `window_source` at the end of this
+section is the one that matters most, and it is the reason it is kept in full.
 
 Each row says where its name came from. `snapshot` / `joined` — render the
 title. `generic` — the row's `title` IS the whole honest sentence (*"a
@@ -153,7 +322,17 @@ summary; it is a claim about size, and it was a wrong one: `slipped` bound 3 of
 acquires its own dialect of "there is more than this".
 
 **An overdue item asks once, then it rests (SPEC OVERDUE1, M's ruling R-3:
-"I would do it for 3-4 days").** Three items due Aug 6-8 rendered identically
+"I would do it for 3-4 days") — AND SINCE SPEC EODSYNTH1 THE ASK HAPPENS IN
+THE MORNING.** The rule below is unchanged down to the comparison; what moved
+is the surface that performs it. `end_of_day.apply_overdue_ask` is the shared
+verdict both bookends call, `end_of_day.mark_lane_asked` is the morning's
+write, and this fire builds its slipped block with `ask=False` — it rests what
+is resting and asks nothing, so its `asked_ids` is empty and
+`end_of_day.mark_slipped_asked` has nothing to do on this surface. Read every
+paragraph below as a description of the RULE, and the morning brief's
+needs-attention lane as where it is now performed.
+
+ Three items due Aug 6-8 rendered identically
 in this block every night for two weeks. Past a few nights, repetition stops
 being a reminder. So an item **3 or more days past its due date** (the knob is
 `overdue_ask_after_days` on this skill's config; default 3) is pinned to the
@@ -195,6 +374,16 @@ today"*). Print it as given and never re-word it to claim "today" over a
 floored window. This rule is here and not only in the fire's own text because
 the manual family renders the same pack.
 
+**AND THE PARAGRAPH INHERITS THAT FLOOR, because it inherits these rows.**
+`day_went` is composed over the same closure window (`pack["window"]["wins"]`
+and `pack["window"]["closures"]` name it), so a day with no morning brief still
+gets a paragraph and the paragraph is about the day FROM MIDNIGHT — never a
+whole workspace's history read as today. Unfloored, that read returned 2,334
+rows on 2026-08-19 on a day that had moved none of them. The paragraph never
+claims a window in words; the window is on the receipt, where a reader can
+check it. Never describe the floored day as having no wins, and never describe
+it as a full day's history.
+
 **Monday** adds the prior week's day-scores after the day-close blocks, and the
 weekly development read SLOT, which renders NOTHING until DEVREAD1 ships.
 **Friday** is a plain day-close with no hand-off line: the Friday chat must not
@@ -223,6 +412,39 @@ not say the work did not happen. Say the second and the CEO argues with the
 surface, and a surface the CEO argues with stops getting read. The phrasing
 lives in `end_of_day.NOT_RECORDED` / `NOT_RECORDED_LINE`, so there is one place
 to read it and one place to change it.
+
+## The close reconciles; it does not fetch (SPEC EODSPEED1)
+
+EODPHASE1's live records measured the 9–27-minute evenings: the pack build
+costs 7–10 seconds; the rest was connector fetching and redundant re-scans at
+close time. The remedy moves the day's fetching earlier — it never trims a
+check.
+
+- **The incremental capture pass.** The capture leg also runs as the
+  `meeting-capture` job inside the already-authorized `maintenance` task
+  (6:45 / 12:45 / 5:45 slots — zero new scheduled tasks), executing the
+  orchestrator's Phase D verbatim: same canonical writers, same admission
+  gates, no relaxed floors. It is SILENT — writes, briefs, and its own
+  receipt (`eod_incremental.log_capture_pass_receipt`, a `pack_run` under
+  task id `meeting-capture`, never under `past-meetings`) and nothing else.
+  The close remains the one narrator.
+- **The close re-verifies over disk.** Its window computation is untouched;
+  meetings the pass captured come back already-processed from dedup, so the
+  5 PM fire fetches only what arrived since the last pass. Their briefs
+  still render — the render set's `briefed_prior` status counts them as
+  briefed and the coverage sentence names them ("captured earlier by the
+  background pass"). A day where no pass ran degrades to fetch-at-close
+  exactly: slower, complete, never a thinner close.
+- **Stale-evidence skips are recorded once** (the 237-row class): the CRU
+  walk ledger (`eod_incremental.already_walked` / `record_walk`) lets a fire
+  honor a prior complete walk of the same evidence inside the evidence
+  window instead of re-fetching and re-deriving the same refusals. The
+  matcher and its floors are untouched; an empty ledger walks normally.
+- **The budget:** a close on a day whose captures are current lands within
+  5 minutes of the slot at full depth (`end_of_day.CLOSE_BUDGET_MS`); the
+  receipt's `close_budget` verdict plus the EODPHASE1 phase records are the
+  instrument. The verdict set is pinned byte-identical across incremental
+  and bulk arrival (`tests/run_eodspeed1_test.py`).
 
 ## Capture: the admission gates, and the flip that is OFF
 
@@ -399,6 +621,8 @@ Also DOES NOT fire on:
 ## See also
 
 - `shared/scripts/end_of_day.py` — the blocks, the words, the receipt, the resolver
+- `shared/scripts/eod_synthesis.py` — the prose, and every grounding fence on it
+- `shared/scripts/eod_coach.py` — pattern memory and the intent-vs-outcome delta (SPEC EODCOACH2)
 - `shared/scripts/held_tier.py` — the dark flip
 - `shared/scripts/operator_capability.py` — the operator grant the flip is fenced on
 - `shared/scripts/day_intent.py` — the tomorrow record (SPEC BK1)

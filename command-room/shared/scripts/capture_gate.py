@@ -14,7 +14,18 @@ Two layers, one module:
      items whose attribution can't be confidently resolved (amber), are
      stored as `commitment_observed` events instead — the full record, kept
      silently: searchable, feeds prep context, promotable — but they create
-     NO open item, NO count, NO triage row, NO confirm-section row.
+     NO open item, NO count, NO triage row.
+
+     OBSERVED1 (2026-08-24) — the CONFIRM QUEUES read the tier. "No
+     confirm-section row" was the shipped state for six weeks and it was a
+     reader-coverage gap, not a design: prep cited observed rows as live work
+     while no surface could answer one (24 rows, zero ever confirmed or
+     dropped, on the first workspace measured). `live_observed` below is the
+     canonical liveness read; needs-your-call and `show watching` render live
+     rows with confirm/drop verbs. Confirm = `promote_observed` (the tier's
+     one defined transition) + `clear_review_flags`; drop = `promote_observed`
+     + `close_commitment(resolution="dropped")` — the standard writers, no new
+     event type. The WRITE path here is untouched.
 
      STORAGE DECISION (ratified in this module): a dedicated event type,
      `commitment_observed` (with `data.tier: "observed"`), NOT
@@ -160,6 +171,9 @@ from event_types import KIND_VALUES  # noqa: E402
 # REVAMN1 §0-3 — the lapse-vs-dismissal test, imported not restated. See
 # `event_types.is_non_dismissal_closure`.
 from event_types import is_non_dismissal_closure as _is_non_dismissal  # noqa: E402
+# THREADSTAMP1 DD-1 — the derivation ladder is imported, never restated. One
+# ladder for the capture gate, the append gate and the repair tool.
+from event_types import derive_primary_thread_id  # noqa: E402
 
 # SPEC PROV2 — identity comparisons on STORED source pointers route through
 # Layer A4's derivation, never a raw `==` (guard G30). Stored pointers preserve
@@ -974,13 +988,22 @@ def build_observed_event(
     for pid in (owner_id, counterparty_id):
         if pid and pid not in pids:
             pids.append(pid)
+    # THREADSTAMP1 DD-1, seam 1 of 3. The caller's value wins when it is a real
+    # id; a blank one (None, "", whitespace — the `x.get(...) or ""` shape ~40
+    # writer sites propagate) is not a value, so the PAYLOAD is asked instead.
+    # ABSENT STAYS ABSENT: nothing derivable means the key is not written at
+    # all, never "" and never an invented id.
+    stamped_thread = (
+        primary_thread_id.strip() if isinstance(primary_thread_id, str) else ""
+    ) or derive_primary_thread_id({"data": data}) or ""
     ev: dict = {
         "type": OBSERVED_TYPE,
         "source_skill": source_skill,
-        "primary_thread_id": primary_thread_id,
         "person_ids": pids,
         "data": data,
     }
+    if stamped_thread:
+        ev["primary_thread_id"] = stamped_thread
     # CONFCLAMP1 DD-1 — validated at the write seam, not just read-side.
     stamp_confidence(ev, classification_confidence, holder="build_observed_event")
     return ev
@@ -1004,6 +1027,16 @@ def observed_from_commitment_event(event: dict, *, reason: str) -> dict:
     out = dict(event)
     out["type"] = OBSERVED_TYPE
     out["data"] = data
+    # THREADSTAMP1 DD-1, seam 2 of 3. This seam INHERITS the whole envelope, so
+    # it inherits the caller's blank `primary_thread_id` too — the exact
+    # propagate-emptiness shape the spec names. Derive from the payload it is
+    # carrying; drop a blank key rather than re-emitting an empty sentinel.
+    if not str(out.get("primary_thread_id") or "").strip():
+        derived = derive_primary_thread_id(out)
+        if derived:
+            out["primary_thread_id"] = derived
+        else:
+            out.pop("primary_thread_id", None)
     return out
 
 
@@ -1227,8 +1260,24 @@ def promote_observed(
             f"{OBSERVED_EXPIRY_DAYS} days old and expired — if it's still "
             "real, capture it fresh from a current mention")}
 
+    # REVIEW TITLEMINT1 R-1 — the promoted row is a COMMITMENT, and no
+    # commitment may reach the substrate without a title. `build_observed_event`
+    # refuses an empty one, so a well-formed observed row always carries it;
+    # a legacy or malformed row does not, and `gate_commitment_data` below does
+    # not check titles. This branch matters more than the arithmetic suggests:
+    # the promoted commitment is stamped `pending_review: True` just below, and
+    # that flag is one of the three downgrades that turns a non-title-basis
+    # `auto_resolve` into a PROPOSAL — so a titleless promotion is the shortest
+    # path to handing an empty title to `build_pending_review_event`, which
+    # refuses it with an uncaught raise inside a nightly reconcile.
+    _promoted_title = str(od.get("title") or "").strip()
+    if not _promoted_title:
+        return {"ok": False, "reason": (
+            f"set-aside item {observed_ref!r} has no title — a commitment "
+            "with no subject cannot be surfaced, confirmed, or asked about; "
+            "re-capture it fresh from a current mention")}
     data: dict = {
-        "title": od.get("title") or "",
+        "title": _promoted_title,
         "kind": od.get("kind") or "promise",
         "source_ref": od.get("source_ref") or "",
         "promoted_from": oid or str(obs.get("seq")),
@@ -1262,13 +1311,22 @@ def promote_observed(
             < _clock_now(workspace_root).date()):
         data["status"] = "overdue"
 
+    # THREADSTAMP1 DD-1, seam 3 of 3. A promotion is a NEW `commitment` row —
+    # a thread-bound type — built from the observed row's envelope. Inherit the
+    # observed thread id when it is real, else derive from what the observed
+    # row carries (its own payload came through seam 1, but a legacy row
+    # captured before this train has neither). Absent stays absent.
+    promoted_thread = str(obs.get("primary_thread_id") or "").strip() or (
+        derive_primary_thread_id(obs) or ""
+    )
     ev: dict = {
         "type": "commitment",
         "source_skill": source_skill,
-        "primary_thread_id": obs.get("primary_thread_id"),
         "person_ids": list(obs.get("person_ids") or []),
         "data": data,
     }
+    if promoted_thread:
+        ev["primary_thread_id"] = promoted_thread
     # CONFCLAMP1 DD-1 — the observed row this promotion inherits from may
     # predate the clamp, so the score is validated on the way OUT too.
     stamp_confidence(
@@ -1277,8 +1335,12 @@ def promote_observed(
     from event_gate import append_event
 
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    append_event(events_path, ev, holder=source_skill)
-    return {"ok": True, "commitment": ev}
+    # REVIEW OBSERVED1 E2 — return the STAMPED copy (allocated seq, minted
+    # id), not the pre-append dict: append_event returns it precisely so
+    # callers can address what they just wrote without re-scanning the log
+    # (BUG-8330 item 7), and the confirm queues' dispatch does exactly that.
+    stamped = append_event(events_path, ev, holder=source_skill)
+    return {"ok": True, "commitment": stamped[0] if stamped else ev}
 
 
 # ---------------------------------------------------------------------------
@@ -1343,6 +1405,69 @@ def prep_context_observed(workspace_root, attendee_person_ids, *, limit: int = 5
             hits.append(ev)
     hits.sort(key=_ev_time, reverse=True)
     return hits[:limit]
+
+
+# ---------------------------------------------------------------------------
+# OBSERVED1 — the confirm queues' read of the tier.
+# ---------------------------------------------------------------------------
+
+# The verbs an observed row renders, on BOTH confirm queues (needs-your-call
+# and `show watching`) — defined ONCE, here, in the tier's own module, for the
+# same reason QUEUE_ROW_ACTIONS is defined once in needs_review_queue: a verb
+# that appears on one surface and not the other is two queues wearing one
+# name. Deliberately NOT the full queue verb set: `already done` attests a
+# completion, and an observed row was never tracked, so there is nothing whose
+# completion can be attested; `not mine` is what the observed tier already IS
+# (a third-party item the gate kept without opening), so the honest dismissal
+# is `drop`.
+OBSERVED_ROW_ACTIONS = ["confirm", "drop"]
+
+# The section label both queues render live observed rows under. One string,
+# so the two surfaces cannot drift into two names for the same tier.
+OBSERVED_SECTION_TITLE = "SET ASIDE — heard on your calls, not tracked"
+
+
+def live_observed(workspace_root, *, since_ts=None, now=None) -> list[dict]:
+    """Every LIVE observed event — unexpired and never promoted — append
+    order preserved. THE liveness read the confirm queues use (OBSERVED1).
+
+    "Live" is exactly the predicate the tier's other readers already apply
+    inline (`find_corroborations`, `prep_context_observed`): not past the
+    HYG1 30-day window, and not already promoted into the confirm flow — a
+    promotion is permanent, and a promoted row's question now lives on the
+    promoted commitment. Duplicate `data.id`s (a re-scan writing the same
+    deterministic id) collapse to the LATEST event. Never raises.
+
+    Why the queues need their own entry point rather than reusing prep's:
+    `prep_context_observed` filters by attendee and caps at 5 — correct for a
+    brief, and exactly the shape that made this tier's bug invisible (a row
+    prep CITED had no surface where a human could answer it). The confirm
+    queues must see the whole live tier or the negative pin in
+    `run_observed1_test.py` — nothing prep cites is unanswerable — cannot
+    hold."""
+    events = list(_iter_ws_events(workspace_root, since_ts=since_ts))
+    promoted = _promoted_ids(events)
+    by_id: dict = {}
+    order: list = []
+    for ev in events:
+        if ev.get("type") != OBSERVED_TYPE:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        oid = str(d.get("id") or "")
+        # REVIEW OBSERVED1 R1 — a legacy row with NO data.id promotes by SEQ
+        # (`promote_observed` writes `promoted_from: str(seq)` for exactly
+        # that shape), so the promoted-skip has to honor both spellings or
+        # the answered row keeps rendering as live.
+        sid = str(ev.get("seq")) if ev.get("seq") is not None else ""
+        if (oid and oid in promoted) or (sid and sid in promoted):
+            continue
+        if observed_expired(ev, promoted_ids=promoted, now=now):
+            continue
+        key = oid or f"seq:{ev.get('seq')}"
+        if key not in by_id:
+            order.append(key)
+        by_id[key] = ev
+    return [by_id[k] for k in order]
 
 
 # ---------------------------------------------------------------------------

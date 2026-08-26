@@ -1,7 +1,7 @@
 ---
 name: commitment-backlog-sweep
 surfaces: both
-description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles, then asks about the rest in ONE digest. Add `show me first` to preview. The drain also runs weekly, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'. Rails: Routing section in the body."
+description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles, then asks about the rest in ONE digest. Add `show me first` to preview. The drain also runs weekly, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'."
 ---
 
 # commitment-backlog-sweep
@@ -215,7 +215,12 @@ v = sweep.validate_sweep_ran(WORKSPACE)
 
 ```python
 from widget_transport import render_and_persist
-view = sweep.digest_view(receipt, page=1)
+# CLUSTER1 — pass the workspace so the "Looks handled" and "Gone quiet"
+# lists render one line per real-world item (survivor + "+N folded" +
+# read-only expand + the `keep as one` tap, ids widget-embedded). The merge
+# and auto-closed sections are untouched, and with nothing clustering the
+# view is byte-identical.
+view = sweep.digest_view(receipt, page=1, workspace_root=WORKSPACE)
 transport = render_and_persist(
     data_view=view, wrapper="fragment",
     persist_dir="<WORKSPACE>/_hq/.system/widgets", page=1)

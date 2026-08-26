@@ -1,7 +1,7 @@
 ---
 name: session-sweep
 surfaces: both
-description: "Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. Reads sessions active since the last sweep, extracts only what never became a logged item, and records each through the standard write path with dedup. Renders nothing. Runs nightly in the maintenance task; manual: 'run session sweep', 'sweep my chats', 'sweep my sessions'. Does NOT fire on 'process the last call' (meeting-notes — MEETING transcripts), 'reconcile my sent mail' (reconcile-sent — Gmail), or 'backfill my history' / 'sweep the last 60 days' (session-backfill — the one-time supervised catch-up). Extraction rules and dedup contract: Routing section in the body."
+description: "Silent nightly memory pass that catches the commitments, decisions, interactions, and deliverables the CEO produced in ad-hoc chats that never went through a Command Room skill — so nothing said in passing is lost. Reads sessions active since the last sweep, extracts only what never became a logged item, and records each through the standard write path with dedup. Renders nothing. Runs nightly in the maintenance task; manual: 'run session sweep', 'sweep my chats', 'sweep my sessions'. Does NOT fire on 'process the last call' (meeting-notes — MEETING transcripts), 'reconcile my sent mail' (reconcile-sent — Gmail), or 'backfill my history' / 'sweep the last 60 days' (session-backfill — the one-time supervised catch-up)."
 ---
 
 # Session Sweep — silent nightly transcript-to-history promotion

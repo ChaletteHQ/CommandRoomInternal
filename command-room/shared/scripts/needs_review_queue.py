@@ -19,6 +19,23 @@ with no other change. Dropping one closes it with `resolution="dropped"`.
 Neither path ever rewrites or deletes an event: the substrate is append-only,
 and the original capture stays in history exactly as it was written.
 
+OBSERVED1 (2026-08-24) — the queue also reads the OBSERVED TIER. A
+`commitment_observed` row is the relevance gate's set-aside: kept on file,
+feeding prep, deliberately not open. For six weeks those rows were readable
+(prep cited them as live work) while NO confirm queue listed them — no
+confirm path, no drop path, a row influencing output that no human could
+answer. The view now carries live observed rows (unexpired, unpromoted) as a
+separate trailing section (`observed_groups` / `n_observed`, drop-empty), and
+the two verbs below dispatch an `obs_` id through the tier's one defined
+transition: `capture_gate.promote_observed` first (a REAL commitment with
+`promoted_from` + `pending_review`), then the standard writer — confirm
+clears the review flags, drop closes it dropped. The observed WRITE path is
+untouched, and `total` keeps its shipped meaning (the count
+`headline.unconfirmed` points at); `selection_numbers(view, spec)` is the
+one selection parse — `all` answers the queue's own rows only, explicit
+numbers and ranges reach both tiers (`addressable_total(view)` is the full
+bound it validates against).
+
 WHAT THIS MODULE IS
   build_queue_view  — PURE READ. The queue, grouped by counterparty, each row
                       numbered so the user can answer in ranges.
@@ -71,6 +88,30 @@ GROUP_COUNTERPARTY = "counterparty"
 GROUP_MEETING = "meeting"
 GROUP_MODES = (GROUP_MEETING, GROUP_COUNTERPARTY)
 NOT_FROM_A_MEETING = "(not from a meeting)"
+
+# HELDREVIEW1 §DD-1 — the queue's ROW SCOPE. A second selector beside
+# `group_by`, and deliberately the same shape: it decides WHICH rows are in
+# the view and nothing else. The numbering contract, the fields on every row,
+# the grouping and the render are identical either way.
+#
+#   "all"         every unconfirmed extraction — the shipped queue. DEFAULT,
+#                 and byte-identical to before this parameter existed: the
+#                 filter below is a no-op on this value and the returned dict
+#                 gains no key. That is pinned, both ways, in
+#                 `tests/run_heldreview1_test.py`.
+#   "would_hold"  ONLY the rows `held_tier.is_floor_gated` calls true — the
+#                 candidate list the held tier would route out of sight if the
+#                 flip were on. It is a READING scope: the operator looks at
+#                 what would have been hidden before deciding whether hiding
+#                 it is acceptable. It resolves nothing and offers no verb.
+#
+# The scope reads `held_tier.is_floor_gated` rather than re-testing the marker
+# here, so "what would be held" can never come to mean two different things on
+# the routing side and the review side — the same single-definition rule the
+# weakness vocabulary already follows through `watch_gate`.
+SCOPE_ALL = "all"
+SCOPE_WOULD_HOLD = "would_hold"
+SCOPE_MODES = (SCOPE_ALL, SCOPE_WOULD_HOLD)
 
 # The row verbs on the grouped surface (§B): one tap each. `not mine` is the
 # W4b reassign-or-drop verb, not a third idea.
@@ -397,7 +438,8 @@ def source_count_phrase(groups) -> str:
 # ---------------------------------------------------------------------------
 
 def build_queue_view(workspace_root, now_iso: str | None = None,
-                     *, group_by: str = GROUP_COUNTERPARTY) -> dict:
+                     *, group_by: str = GROUP_COUNTERPARTY,
+                     scope: str = SCOPE_ALL) -> dict:
     """The needs-your-call queue, grouped by counterparty. PURE READ.
 
     Returns:
@@ -432,58 +474,49 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
                       the user makes in one pass. Each group also carries
                       `group_key` (the meeting's normalized ref) so a group
                       answer can be resolved without matching on display text.
+
+    `scope` (HELDREVIEW1 DD-1) selects WHICH ROWS are in the view and nothing
+    else — same numbering contract, same fields, same grouping, same render:
+
+      "all"         every unconfirmed extraction. DEFAULT, and the output is
+                    byte-identical to before this parameter existed — the
+                    filter is a no-op and the returned dict gains no key.
+      "would_hold"  only the below-floor captures (`held_tier.is_floor_gated`)
+                    — what the held tier WOULD route out of sight. The header
+                    says so, and says which weeks the rows span, because a
+                    review of "what would be hidden" that does not say over
+                    what period is a number without a denominator.
     """
     from cru_match import _commitment_field, load_needs_review
 
     if group_by not in GROUP_MODES:
         raise ValueError(
             f"group_by must be one of {list(GROUP_MODES)}; got {group_by!r}")
+    if scope not in SCOPE_MODES:
+        raise ValueError(
+            f"scope must be one of {list(SCOPE_MODES)}; got {scope!r}")
 
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
     items = load_needs_review(str(_events_path(ws)), workspace_root=str(ws))
+    if scope == SCOPE_WOULD_HOLD:
+        # ONE filter, at ONE place, keyed on the routing side's own predicate.
+        from held_tier import is_floor_gated
+        items = [ev for ev in items if is_floor_gated(ev)]
     people = _people_by_id(ws)
     rr_cache: dict = {}
 
     by_meeting = group_by == GROUP_MEETING
     index = _meeting_index(ws) if by_meeting else {}
-    buckets: dict[str, list] = {}
-    labels: dict[str, str] = {}
-    dates: dict[str, str] = {}
-    for ev in items:
-        if by_meeting:
-            key, label, date = _meeting_group(ev, index)
-            labels.setdefault(key, label)
-            if date and not dates.get(key):
-                dates[key] = date
-        else:
-            key = _counterparty_display(ev, people, ws)
-            labels.setdefault(key, key)
-        buckets.setdefault(key, []).append(ev)
-
-    def _age_key(ev) -> tuple:
-        age = _age_days(ev.get("ts") or "", now_iso)
-        # Oldest first; an unparseable ts sorts last rather than pretending
-        # to be brand new.
-        return (0 if age is not None else 1, -(age or 0), _commitment_id(ev))
-
-    bucket_last = NOT_FROM_A_MEETING if by_meeting else NO_COUNTERPARTY
-    ordered_keys = sorted(
-        buckets,
-        key=lambda k: (
-            1 if k == bucket_last else 0,
-            -max((_age_days(e.get("ts") or "", now_iso) or 0)
-                 for e in buckets[k]),
-            labels.get(k, k).lower(),
-        ),
-    )
+    ordered = _bucket_and_order(items, by_meeting=by_meeting, people=people,
+                                index=index, ws=ws, now_iso=now_iso)
 
     display_n = 0
     n_weak = 0
     groups: list[dict] = []
-    for key in ordered_keys:
+    for key, label, date, bucket_rows in ordered:
         rows = []
-        for ev in sorted(buckets[key], key=_age_key):
+        for ev in bucket_rows:
             display_n += 1
             weak = _weak_reason(ev)
             if weak:
@@ -508,22 +541,59 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
             # is what `confirm_items` screens a bulk answer with, and this
             # rider is a rendering change, not a screening one.
             rows[-1].update(_stamped_fields(ev))
-        group = {"name": labels.get(key, key), "count": len(rows),
-                 "items": rows}
+        group = {"name": label, "count": len(rows), "items": rows}
         if by_meeting:
             group["group_key"] = key
-            group["date"] = dates.get(key, "")
+            group["date"] = date
         groups.append(group)
 
     total = display_n
     noun = "extraction" if total == 1 else "extractions"
-    if by_meeting:
-        header = (f"Needs your call — {total} unconfirmed {noun} "
-                  f"from {source_count_phrase(groups)}")
+
+    # CLUSTER1 — render-level clustering, DEFAULT-ON (SPEC §0-1). One line
+    # per real-world item: rows the clusterer joins (shared content tokens +
+    # shared counterparty read off the roster + temporal adjacency, precision
+    # over recall) render as ONE cluster line — survivor title + "+N folded"
+    # — with the folded rows one tap away, read-only, numbers kept so a typed
+    # answer still reaches them individually. A cluster is a DISPLAY fact:
+    # nothing here writes, and the view keeps EVERY row (`ids_for_selection`,
+    # `ids_for_group` and the numbering contract are untouched) — the RENDER
+    # paths are what fold. Drop-empty: with no clusters the view gains no key
+    # and is byte-identical to before this existed (golden-pinned). Both
+    # scopes cluster — the `would_hold` reading chair shows the same one-line
+    # shape, display-only by its own DD-4 fence (held_review renders it).
+    clusters = []
+    if total:
+        from commitment_cluster import render_clusters
+        clusters = render_clusters(items, workspace_root=str(ws),
+                                   now_iso=now_iso)
+    n_folded = sum(c["n_folded"] for c in clusters)
+    info = total - n_folded
+    info_noun = "item" if info == 1 else "items"
+
+    if scope == SCOPE_WOULD_HOLD:
+        header = would_hold_header(total, week_span_phrase(items),
+                                   n_lines=info if clusters else None)
+    elif by_meeting:
+        if clusters:
+            # SPEC §0-4 — the headline count is the INFORMATION count
+            # (clusters, not fragments); the true row count stays in the
+            # same sentence, one level down.
+            header = (f"Needs your call — {info} {info_noun} to answer "
+                      f"({total} unconfirmed {noun}) "
+                      f"from {source_count_phrase(groups)}")
+        else:
+            header = (f"Needs your call — {total} unconfirmed {noun} "
+                      f"from {source_count_phrase(groups)}")
     else:
-        header = (f"Needs your call — {total} unconfirmed {noun}, "
-                  f"grouped by counterparty")
-    return {
+        if clusters:
+            header = (f"Needs your call — {info} {info_noun} to answer "
+                      f"({total} unconfirmed {noun}), "
+                      f"grouped by counterparty")
+        else:
+            header = (f"Needs your call — {total} unconfirmed {noun}, "
+                      f"grouped by counterparty")
+    out = {
         "source_skill": SOURCE_SKILL,
         "group_by": group_by,
         "header": header,
@@ -539,6 +609,297 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
         "n_weak": n_weak,
         "groups": groups,
     }
+    # The scope MARKER is carried only by a non-default scope, on purpose: the
+    # default view's key set is what every existing caller and every existing
+    # surface test reads, and "the default is byte-identical to today" is an
+    # acceptance criterion of this build, not a nicety. A reader that wants to
+    # know the scope of a default view already knows it — it asked for it.
+    if scope != SCOPE_ALL:
+        out["scope"] = scope
+
+    # CLUSTER1 — annotate the rows (additive keys only; absent entirely when
+    # nothing clusters, which is the byte-identical contract).
+    if clusters:
+        _overlay_view_clusters(out, clusters)
+
+    # OBSERVED1 — the set-aside tier, rendered as its OWN trailing section.
+    # The tier was readable (prep cited its rows as live work) while no
+    # confirm queue listed it, so a row could influence output forever
+    # without a human ever being able to answer it. Live rows only
+    # (unexpired, unpromoted — `capture_gate.live_observed`), numbered
+    # CONTINUING after the queue so a typed answer addresses them, and
+    # DELIBERATELY not folded into `total` / the groups: `total` is the
+    # header's counted sentence ("N unconfirmed extractions") and the number
+    # `headline.unconfirmed` points at — observed rows are a different tier
+    # with their own count (`n_observed`), and inflating the reconciled
+    # number would trade one coverage lie for another. Drop-empty: with no
+    # live observed rows the returned dict gains no key and is byte-identical
+    # to before this section existed. The `would_hold` scope never carries
+    # it — that scope is a reading of the HELD-tier candidate list, and
+    # mixing tiers into it would put a second population under its header's
+    # denominator.
+    if scope == SCOPE_ALL:
+        observed_groups, n_observed = _observed_view_groups(
+            ws, now_iso=now_iso, group_by=group_by, people=people,
+            index=index, start_n=total)
+        if n_observed:
+            out["observed_groups"] = observed_groups
+            out["n_observed"] = n_observed
+    return out
+
+
+def _bucket_and_order(events, *, by_meeting: bool, people: dict, index: dict,
+                      ws: Path, now_iso: str) -> list:
+    """CAPTUREFLOW §B's grouping and ordering, ONE copy (REVIEW S1) — the
+    queue's own rows and the observed section both read it, so the two
+    contiguously-numbered sections of one render cannot drift onto two
+    ordering rules. Buckets by meeting or counterparty, orders buckets
+    oldest-first with the catch-all bucket last (label tiebreak), orders rows
+    inside a bucket oldest-first (unparseable ts last rather than pretending
+    to be brand new). Returns `[(key, label, date, sorted_events), ...]`."""
+    buckets: dict[str, list] = {}
+    labels: dict[str, str] = {}
+    dates: dict[str, str] = {}
+    for ev in events:
+        if by_meeting:
+            key, label, date = _meeting_group(ev, index)
+            labels.setdefault(key, label)
+            if date and not dates.get(key):
+                dates[key] = date
+        else:
+            key = _counterparty_display(ev, people, ws)
+            labels.setdefault(key, key)
+        buckets.setdefault(key, []).append(ev)
+
+    def _age_key(ev) -> tuple:
+        age = _age_days(ev.get("ts") or "", now_iso)
+        return (0 if age is not None else 1, -(age or 0), _commitment_id(ev))
+
+    bucket_last = NOT_FROM_A_MEETING if by_meeting else NO_COUNTERPARTY
+    ordered_keys = sorted(
+        buckets,
+        key=lambda k: (
+            1 if k == bucket_last else 0,
+            -max((_age_days(e.get("ts") or "", now_iso) or 0)
+                 for e in buckets[k]),
+            labels.get(k, k).lower(),
+        ),
+    )
+    return [(k, labels.get(k, k), dates.get(k, ""),
+             sorted(buckets[k], key=_age_key)) for k in ordered_keys]
+
+
+def _overlay_view_clusters(out: dict, clusters: list) -> None:
+    """CLUSTER1 — stamp the cluster DISPLAY facts onto a built view, in place.
+
+    Additive only, and only when clusters exist: the SURVIVOR row gains
+    `cluster` ({cluster_id, n_folded, folded_ids, folded: [{display_n,
+    commitment_id, title, group} ...]}), each FOLDED row gains
+    `folded_into: <survivor_id>`, and the view gains `n_clusters` /
+    `n_folded` / `n_lines` (the information count — SPEC §0-4: the count the
+    CEO sees is clusters, not fragments, with the true row count reachable).
+    EVERY row stays in `groups` with its number: folding is a job for the
+    render paths, so `ids_for_selection` / `ids_for_group` and every typed
+    answer keep working on individual rows (SPEC §0-2 — answering rows
+    individually leaves history untouched, and stays possible)."""
+    from commitment_cluster import cluster_index
+
+    by_survivor, by_folded = cluster_index(clusters)
+    row_of: dict = {}
+    group_of: dict = {}
+    for group in out.get("groups") or []:
+        for row in group.get("items") or []:
+            row_of[row["commitment_id"]] = row
+            group_of[row["commitment_id"]] = group.get("name") or ""
+    for c in clusters:
+        srow = row_of.get(c["survivor_id"])
+        if srow is None:  # pragma: no cover — members come from these rows
+            continue
+        folded_meta = []
+        for fid in c["folded_ids"]:
+            frow = row_of.get(fid)
+            if frow is None:  # pragma: no cover
+                continue
+            frow["folded_into"] = c["survivor_id"]
+            folded_meta.append({
+                "display_n": frow.get("display_n"),
+                "commitment_id": fid,
+                "title": frow.get("title") or "(untitled)",
+                "group": group_of.get(fid, ""),
+            })
+        if not folded_meta:  # pragma: no cover
+            continue
+        srow["cluster"] = {
+            "cluster_id": c["cluster_id"],
+            "n_folded": len(folded_meta),
+            "folded_ids": [f["commitment_id"] for f in folded_meta],
+            "folded": folded_meta,
+        }
+    n_folded = sum(len(r.get("cluster", {}).get("folded_ids") or [])
+                   for r in row_of.values() if r.get("cluster"))
+    if not n_folded:  # pragma: no cover — defensive: nothing actually folded
+        return
+    out["n_clusters"] = sum(1 for r in row_of.values() if r.get("cluster"))
+    out["n_folded"] = n_folded
+    out["n_lines"] = int(out.get("total") or 0) - n_folded
+
+
+def _observed_view_groups(ws: Path, *, now_iso: str, group_by: str,
+                          people: dict, index: dict,
+                          start_n: int) -> tuple[list, int]:
+    """The live observed rows, grouped and numbered like the queue's own rows
+    (same grouping mode, same ordering rule — `_bucket_and_order`, the one
+    copy), continuing the display numbering from `start_n`. Returns
+    `(groups, n_rows)`; `([], 0)` when the tier is empty or unreadable — the
+    queue must render without this section before it renders without its own
+    rows."""
+    from cru_match import _commitment_field
+
+    try:
+        from capture_gate import live_observed
+        rows_src = live_observed(ws, now=_aware_now(now_iso))
+    except Exception:
+        return [], 0
+    if not rows_src:
+        return [], 0
+
+    by_meeting = group_by == GROUP_MEETING
+    ordered = _bucket_and_order(rows_src, by_meeting=by_meeting,
+                                people=people, index=index, ws=ws,
+                                now_iso=now_iso)
+
+    display_n = start_n
+    groups: list[dict] = []
+    for key, label, date, bucket_rows in ordered:
+        rows = []
+        for ev in bucket_rows:
+            display_n += 1
+            d = ev.get("data") or {}
+            rows.append({
+                "display_n": display_n,
+                "commitment_id": _commitment_id(ev),
+                "title": (_commitment_field(ev, "title")
+                          or d.get("summary") or "(untitled)"),
+                "age_days": _age_days(ev.get("ts") or "", now_iso),
+                # Not a review_reason clause (no RRF1 overlay applies): the
+                # gate's own record of why this was kept without opening.
+                "review_reason": ("set aside at capture — "
+                                  f"{d.get('observed_reason') or 'other'}"),
+                "source_skill": ev.get("source_skill") or "",
+                "due": None,   # the caution rail refuses dated items observed
+                "evidence": _evidence_text(ev),
+                "weak_reason": _weak_reason(ev),
+                "observed": True,
+            })
+        group = {"name": label, "count": len(rows), "items": rows,
+                 "observed": True}
+        if by_meeting:
+            group["group_key"] = key
+            group["date"] = date
+        groups.append(group)
+    return groups, display_n - start_n
+
+
+def _aware_now(now_iso: str):
+    """`now_iso` as an aware datetime for `live_observed`, or None (its own
+    clock) when the string will not parse. One parser (REVIEW S2): the
+    canonical `event_time.parse_ts`, which `_age_days` and `watch_gate._parse`
+    already read through — a private fourth ISO parser here is the drift
+    class `event_time` exists to end."""
+    try:
+        from event_time import parse_ts
+
+        return parse_ts(str(now_iso))
+    except Exception:
+        return None
+
+
+def addressable_total(view: dict) -> int:
+    """The bound to hand `parse_selection` for THIS view: every display
+    number a typed answer may name — the queue's own rows plus the set-aside
+    section (OBSERVED1). `view["total"]` keeps its shipped meaning (the
+    header's counted sentence, the number `headline.unconfirmed` points at)
+    and cannot double as the selection bound now the view can carry a second
+    numbered section."""
+    return int(view.get("total") or 0) + int(view.get("n_observed") or 0)
+
+
+def selection_numbers(view: dict, spec) -> list[int]:
+    """THE view-aware selection parse (REVIEW OBSERVED1 C2) — the one call
+    the skill makes for a typed answer.
+
+    `all` answers the QUEUE'S OWN rows only: the header's counted sentence
+    ("N unconfirmed extractions") is the question the user is answering, and
+    a one-word sweep must never mint or dismiss the set-aside tier — the
+    tier's own doctrine says promotion stays an explicit gesture, and every
+    bulk drop is a dismissal-tuning signal the gate learns from. Explicit
+    NUMBERS and RANGES reach both tiers (validated against
+    `addressable_total`): a typed number is the user reading THAT row, which
+    is exactly the bar the tier's verbs want.
+    """
+    text = str(spec or "").strip().lower()
+    if text == "all":
+        total = int(view.get("total") or 0)
+        if not total and view.get("n_observed"):
+            raise ValueError(
+                "`all` answers the tracked queue only, and it is empty — "
+                "the set-aside rows answer by their own numbers (or one "
+                "tap), never in one word")
+        return parse_selection("all", total)
+    return parse_selection(spec, addressable_total(view))
+
+
+# HELDREVIEW1 DD-2 — the review header. Counts FIRST (the number is the whole
+# question M is answering), then the period the rows span, then the promise
+# that each row says why. The wording is M's own framing of the decision:
+# these are the ones it would stop asking about.
+WOULD_HOLD_EMPTY = ("Nothing would be held — every capture on file cleared "
+                    "the floor.")
+
+
+def would_hold_header(total: int, window: str = "", *,
+                      n_lines=None) -> str:
+    """The scoped view's header: the count, the window, the promise.
+
+    `n_lines` (CLUSTER1) is the information count when the view clustered —
+    the headline says clusters, the true capture count stays in the same
+    sentence. None (the default, and every un-clustered render) is
+    byte-identical to before the parameter existed."""
+    if not total:
+        return WOULD_HOLD_EMPTY
+    noun = "capture" if total == 1 else "captures"
+    if n_lines is not None and n_lines != total:
+        line_noun = "item" if n_lines == 1 else "items"
+        head = (f"{n_lines} {line_noun} ({total} {noun}) — this is what I'd "
+                f"stop asking you about. Each row says why it was weak.")
+    else:
+        head = (f"{total} {noun} — this is what I'd stop asking you about. "
+                f"Each row says why it was weak.")
+    return f"{head} {window}" if window else head
+
+
+def week_span_phrase(events) -> str:
+    """"From the weeks of Aug 3, Aug 10 and Aug 17." — or "".
+
+    The window is DERIVED from the rows in hand rather than imposed on them:
+    a review of what would be hidden that silently drops part of what would be
+    hidden is the one thing this surface must not do. Weeks are ISO weeks
+    named by their Monday, oldest first."""
+    mondays = set()
+    for ev in events or []:
+        ts = str((ev or {}).get("ts") or "")[:10]
+        try:
+            day = _dt.date.fromisoformat(ts)
+        except Exception:
+            continue
+        mondays.add(day - _dt.timedelta(days=day.weekday()))
+    if not mondays:
+        return ""
+    labels = [f"{_MONTHS[d.month - 1]} {d.day}" for d in sorted(mondays)]
+    if len(labels) == 1:
+        return f"From the week of {labels[0]}."
+    joined = ", ".join(labels[:-1]) + f" and {labels[-1]}"
+    return f"From the weeks of {joined}."
 
 
 def _review_drain_offer(workspace_root, now_iso) -> str:
@@ -564,16 +925,33 @@ EMPTY_TEXT = ("Nothing needs your call — every captured item has been "
               "confirmed or dropped.")
 
 
+def _observed_only_lead(n: int) -> str:
+    """The lead line when the queue's own rows are empty and only set-aside
+    rows remain — ONE wording for the text render and the widget header
+    (REVIEW OBSERVED1 R3: the widget was still saying '0 unconfirmed
+    extractions from 0 calls' above a populated section)."""
+    noun_is = "item is" if n == 1 else "items are"
+    return (f"Nothing needs your call on tracked items — but {n} "
+            f"set-aside {noun_is} on file from your calls:")
+
+
 def render_text(view: dict) -> str:
     """The scannable list the skill pastes to the user, verbatim.
 
     Numbered across the whole queue so a range answer ("confirm 1-12, drop
     13") is unambiguous, and grouped so the user can also answer by
     counterparty ("confirm all Acme rows")."""
-    if not view.get("total"):
+    if not view.get("total") and not view.get("n_observed"):
         return EMPTY_TEXT
 
-    lines = [view["header"]]
+    if not view.get("total"):
+        # OBSERVED1 — only set-aside rows on file. The counted header is a
+        # sentence about the queue's own rows; with zero of those it would
+        # read "0 unconfirmed extractions from 0 calls", so the section
+        # leads instead. Same wording on the widget path (REVIEW R3).
+        lines = [_observed_only_lead(view.get("n_observed") or 0)]
+    else:
+        lines = [view["header"]]
     # PERSONLOOP1 — the offer sits in the HEADER position because it explains
     # the list below it: these names are why the queue is this long.
     offer = str(view.get("person_candidate_offer") or "").strip()
@@ -586,8 +964,15 @@ def render_text(view: dict) -> str:
         lines.append(view["offer"])
     lines.append("")
     for group in view.get("groups") or []:
+        # CLUSTER1 — one line per real-world item: a folded row renders
+        # under its cluster's surviving line (read-only, number kept), never
+        # as a line of its own. A group whose rows ALL folded elsewhere is
+        # skipped whole — its rows are on the page, under their survivors.
+        shown_rows = [r for r in group["items"] if not r.get("folded_into")]
+        if not shown_rows:
+            continue
         lines.append(f"{group['name']} ({group['count']})")
-        for row in group["items"]:
+        for row in shown_rows:
             bits = []
             age = row.get("age_days")
             if age is not None:
@@ -596,6 +981,10 @@ def render_text(view: dict) -> str:
                 bits.append(f"due {row['due']}")
             if row.get("source_skill"):
                 bits.append(f"from {row['source_skill']}")
+            cluster = row.get("cluster")
+            if cluster:
+                bits.append(f"+{cluster['n_folded']} folded — the same "
+                            f"real-world item")
             tail = (" — " + " · ".join(bits)) if bits else ""
             lines.append(f"  {row['display_n']}. {row['title']}{tail}")
             if row.get("review_reason"):
@@ -611,13 +1000,65 @@ def render_text(view: dict) -> str:
                 if len(evd) > 110:
                     evd = evd[:107] + "..."
                 lines.append(f"       evidence: \"{evd}\"")
+            if cluster:
+                # The folded rows, read-only, numbers kept — reachable one
+                # level down, individually answerable by their own numbers.
+                from commitment_cluster import folded_line
+                lines.append("       folded in (read-only — these read as "
+                             "the same item):")
+                for f in cluster["folded"]:
+                    lines.append("         + " + folded_line(
+                        f.get("display_n"), f.get("title") or "(untitled)",
+                        f.get("group") or ""))
         lines.append("")
-    if view.get("group_by") == GROUP_MEETING:
+    # OBSERVED1 — the set-aside section, after the queue's own rows and
+    # under its own labelled banner: same row format, same numbering scheme
+    # (continuing), so a typed answer addresses either tier the same way.
+    if view.get("n_observed"):
+        from capture_gate import OBSERVED_SECTION_TITLE
+        lines.append(f"{OBSERVED_SECTION_TITLE} ({view['n_observed']})")
+        for group in view.get("observed_groups") or []:
+            lines.append(f"{group['name']} ({group['count']})")
+            for row in group["items"]:
+                bits = []
+                age = row.get("age_days")
+                if age is not None:
+                    bits.append("1 day old" if age == 1
+                                else f"{age} days old")
+                if row.get("source_skill"):
+                    bits.append(f"from {row['source_skill']}")
+                tail = (" — " + " · ".join(bits)) if bits else ""
+                lines.append(f"  {row['display_n']}. {row['title']}{tail}")
+                if row.get("review_reason"):
+                    lines.append(f"       why it's here: "
+                                 f"{row['review_reason']}")
+                if row.get("weak_reason"):
+                    lines.append(f"       evidence: NONE that holds up — "
+                                 f"{row['weak_reason']}. Bulk answers skip "
+                                 f"this row; say `confirm "
+                                 f"{row['display_n']}` on its own to track "
+                                 f"it.")
+                else:
+                    evd = row.get("evidence") or ""
+                    if len(evd) > 110:
+                        evd = evd[:107] + "..."
+                    lines.append(f"       evidence: \"{evd}\"")
+        lines.append("")
+        lines.append("These were heard between other people, so I kept them "
+                     "without tracking. `confirm N` starts tracking one as "
+                     "an ordinary open item; `drop N` lets it go. Either "
+                     "way the original stays in history.")
+    # REVIEW OBSERVED1 R5 — the group-answer invitation renders only when
+    # the queue's own rows exist: group phrases deliberately answer no
+    # set-aside row (`ids_for_group`), so in the observed-only case the
+    # footer would invite the one gesture that cannot address anything on
+    # screen. The observed section's own hint above already covers its rows.
+    if view.get("total") and view.get("group_by") == GROUP_MEETING:
         lines.append("Say `confirm 1-5` to keep them, `drop 6,7` to let them "
                      "go, `not mine 8` if it was someone else's, or name a "
                      "call to answer the whole group. Nothing changes until "
                      "you say so.")
-    else:
+    elif view.get("total"):
         lines.append("Say `confirm 1-5` to keep them, `drop 6,7` to let them "
                      "go, or name a group (`confirm all Acme`). Nothing "
                      "changes until you say so.")
@@ -628,6 +1069,18 @@ def render_text(view: dict) -> str:
                      f"extractor's guess — `confirm all`, group confirms and "
                      f"ranges will hold those; confirm each by its own "
                      f"number, or drop them.")
+    # CLUSTER1 — the one-tap offer, only when something clustered. A cluster
+    # is a display fact until this gesture; ignoring it, expanding it, or
+    # answering rows one at a time changes nothing.
+    if view.get("n_folded"):
+        n_c = view.get("n_clusters") or 0
+        covered = (view.get("n_folded") or 0) + n_c
+        noun_c = "line covers" if n_c == 1 else "lines cover"
+        lines.append(f"{n_c} {noun_c} {covered} rows that read as the same "
+                     f"real-world item — say `keep as one N` (the line's "
+                     f"number) to fold them for good; that writes through "
+                     f"the ordinary merge path and one `undo` splits them "
+                     f"back out. Leaving them alone changes nothing.")
     return "\n".join(lines)
 
 
@@ -733,9 +1186,15 @@ def ids_for_group(view: dict, group) -> list[str]:
 
 def ids_for_selection(view: dict, numbers) -> list[str]:
     """Display numbers -> commitment ids, in list order. Unknown numbers are
-    a loud ValueError for the same reason parse_selection refuses to guess."""
+    a loud ValueError for the same reason parse_selection refuses to guess.
+    OBSERVED1: the set-aside section's numbers resolve too (to `obs_` ids —
+    the write wrappers dispatch those through the observed transition);
+    `parse_selection` needs `addressable_total(view)` as its bound for those
+    numbers to survive the range check."""
     by_n = {row["display_n"]: row["commitment_id"]
-            for g in (view.get("groups") or []) for row in g["items"]}
+            for g in ((view.get("groups") or [])
+                      + (view.get("observed_groups") or []))
+            for row in g["items"]}
     out = []
     for n in numbers:
         if n not in by_n:
@@ -766,6 +1225,215 @@ def _pending_by_id(workspace_root) -> dict:
                                         workspace_root=str(ws))}
 
 
+# ---------------------------------------------------------------------------
+# OBSERVED1 — the observed transition, dispatched from the same two verbs.
+#
+# An observed row's ONE defined transition is `capture_gate.promote_observed`
+# (there has never been a `commitment_confirmed` type — zero lifetime across
+# the first workspace measured, and it is registered nowhere): promotion
+# appends a REAL `commitment` carrying `pending_review` + `promoted_from`,
+# which puts the item ON the standard closure path. The queue's verbs then do
+# exactly what they already do — confirm clears the review flags (one gesture,
+# an ordinary open commitment), drop closes it as dropped (the standard
+# tombstone, which also feeds the capture gate's dismissal tuning — dropping
+# observed noise SHOULD teach the gate). Both are appends; the observed event
+# is never rewritten, and once promoted it stops surfacing everywhere by the
+# tier's own permanent-promotion rule.
+# ---------------------------------------------------------------------------
+
+
+def _observed_by_id(workspace_root) -> dict:
+    """Every observed row, keyed by EVERY id spelling a surface can render
+    for it (latest event per row, live or not): `data.id` when the row
+    carries one, and the `_commitment_id` fallback (`commitment_seq_<seq>`)
+    either way — REVIEW OBSERVED1 R1: a legacy row with no `data.id` renders
+    under the fallback spelling, and a map keyed on `data.id` alone made
+    that row unanswerable from the very surfaces built to answer it.
+    Membership here is what routes an id through the observed transition;
+    expiry/already-promoted are enforced by `promote_observed` itself, so a
+    stale id gets the tier's own plain refusal rather than a generic
+    not-found."""
+    try:
+        from capture_gate import OBSERVED_TYPE, _iter_ws_events
+    except Exception:
+        return {}
+    out: dict = {}
+    for ev in _iter_ws_events(workspace_root):
+        if ev.get("type") != OBSERVED_TYPE:
+            continue
+        oid = str((ev.get("data") or {}).get("id") or "")
+        if oid:
+            out[oid] = ev
+        fallback = _commitment_id(ev)
+        if fallback and not fallback.endswith("_?"):
+            out[fallback] = ev
+    return out
+
+
+def _observed_promote_ref(ev: dict) -> str:
+    """The spelling `promote_observed` resolves THIS row by — `data.id`, or
+    the bare seq for a legacy id-less row (the same `or` its own
+    `promoted_from` stamp uses)."""
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    oid = str(d.get("id") or "")
+    if oid:
+        return oid
+    return str(ev.get("seq")) if ev.get("seq") is not None else ""
+
+
+def _promoted_commitment_ref(workspace_root, promote_ref: str) -> str:
+    """The id spelling of the commitment a promotion minted for this observed
+    row (`data.promoted_from == promote_ref`) — its `data.id` when stamped,
+    else the `commitment_seq_<seq>` legacy spelling `normalize_commitment_id`
+    already accepts. "" when no promotion exists. The fresh-promote path
+    never needs this scan (promote_observed returns the stamped copy); this
+    is the `already`-promoted fallback."""
+    try:
+        from capture_gate import _iter_ws_events
+    except Exception:
+        return ""
+    hit = None
+    for ev in _iter_ws_events(workspace_root):
+        if (ev.get("type") == "commitment"
+                and str((ev.get("data") or {}).get("promoted_from") or "")
+                == str(promote_ref)):
+            hit = ev
+    if hit is None:
+        return ""
+    return _commitment_id(hit)
+
+
+def _promote_for_dispatch(workspace_root, obs_ev: dict, *,
+                          source_skill: str) -> tuple:
+    """Shared first half of both observed verbs: promote (or find the prior
+    promotion) and return `(ref, already, error_result)` where exactly one of
+    `ref` / `error_result` is set. The fresh-promote ref comes from the
+    STAMPED copy promote_observed returns — no rescan; the `already` branch
+    falls back to the promoted_from scan."""
+    from capture_gate import promote_observed
+
+    promote_ref = _observed_promote_ref(obs_ev)
+    obs_key = _commitment_id(obs_ev)
+    r = promote_observed(workspace_root, promote_ref, corroborated_by="user",
+                         source_skill=source_skill)
+    if not r.get("ok"):
+        return "", False, {"commitment_id": obs_key, "status": "failed",
+                           "detail": r.get("reason") or ""}
+    if r.get("already"):
+        ref = _promoted_commitment_ref(workspace_root, promote_ref)
+    else:
+        ref = _commitment_id(r.get("commitment") or {})
+        if not ref or ref.endswith("_?"):
+            ref = _promoted_commitment_ref(workspace_root, promote_ref)
+    if not ref:
+        return "", False, {"commitment_id": obs_key, "status": "failed",
+                           "detail": "promotion left no commitment to act on"}
+    return ref, bool(r.get("already")), None
+
+
+# The one-line honesty owed when the second append fails after the first
+# landed: the row has ALREADY left the set-aside tier (promotion is
+# permanent), so it now sits in the queue proper as an unconfirmed row.
+_OBSERVED_HALF_LANDED = (" — the item now sits in the needs-your-call queue "
+                         "as an unconfirmed row; answer it there, or repeat "
+                         "this verb to finish")
+
+
+def _confirm_observed_row(workspace_root, obs_ev: dict, *, cleared_by: str,
+                          source_skill: str, gesture_iso: str,
+                          pending: dict) -> dict:
+    """Confirm ONE observed row: promote, then clear the promoted row's
+    review flags — one gesture, two appends, an ordinary open commitment.
+    Statuses: `confirmed` / `not_pending` (already adjudicated) / `failed`
+    (the tier refused — expired, titleless — with its own plain reason)."""
+    from commitment_state import CommitmentIdError, clear_review_flags
+
+    obs_key = _commitment_id(obs_ev)
+    ref, already, err = _promote_for_dispatch(workspace_root, obs_ev,
+                                              source_skill=source_skill)
+    if err:
+        return err
+    if already and ref not in pending:
+        # Promoted earlier AND no longer awaiting review — the question was
+        # already answered (confirmed, or closed another way). Honest no-op.
+        return {"commitment_id": obs_key, "status": "not_pending",
+                "promoted_id": ref}
+    try:
+        res = clear_review_flags(
+            workspace_root, ref, cleared_by=cleared_by,
+            source_skill=source_skill,
+            note=("confirmed from the needs-your-call queue — a set-aside "
+                  "item you told me to track"),
+            mint_now_iso=gesture_iso,
+        )
+    except CommitmentIdError as exc:
+        return {"commitment_id": obs_key, "status": "failed",
+                "detail": str(exc) + _OBSERVED_HALF_LANDED}
+    status = res.get("status")
+    if status == "cleared":
+        return {"commitment_id": obs_key, "status": "confirmed",
+                "promoted_id": res.get("commitment_id", ref)}
+    return {"commitment_id": obs_key, "status": "not_pending",
+            "promoted_id": res.get("commitment_id", ref)}
+
+
+def _drop_observed_row(workspace_root, obs_ev: dict, *, resolved_by: str,
+                       evidence: str, source_skill: str, source_ref,
+                       mint_iso: str, confirmed_open: set) -> dict:
+    """Drop ONE observed row: promote, then close the promoted row as
+    dropped — the standard tombstone, appended, nothing rewritten. Statuses
+    are the closure path's OWN vocabulary (FS-18: one status, one meaning,
+    everywhere): `closed` / `already_resolved` / `confirmed_open` (promoted
+    earlier and since confirmed — the queue never closes confirmed work) /
+    `has_subitems` (the same per-row refusal the queue path reports) /
+    `failed`."""
+    from commitment_state import (AmbiguousTargetError, CommitmentIdError,
+                                  OpenSubitemsError, close_commitment)
+
+    obs_key = _commitment_id(obs_ev)
+    ref, _already, err = _promote_for_dispatch(workspace_root, obs_ev,
+                                               source_skill=source_skill)
+    if err:
+        return err
+    if ref in confirmed_open:
+        return {"commitment_id": obs_key, "status": "confirmed_open",
+                "promoted_id": ref,
+                "detail": "you confirmed this one earlier — it is an open "
+                          "commitment now; use the ordinary close path"}
+    try:
+        res = close_commitment(
+            workspace_root, ref, resolved_by=resolved_by,
+            evidence=evidence, source_skill=source_skill,
+            resolution="dropped", user_confirmed=True,
+            source_ref=source_ref, mint_now_iso=mint_iso,
+        )
+    except CommitmentIdError as exc:
+        return {"commitment_id": obs_key, "status": "failed",
+                "detail": str(exc) + _OBSERVED_HALF_LANDED}
+    except AmbiguousTargetError as exc:
+        # REVIEW_PR57 F-6 — CLOSEID2 retrofitted this catch onto every other
+        # closure callsite; this drop path merged alongside it and was the
+        # one without it. Low reachability (promotion-minted refs are
+        # unambiguous), but an uncaught raise here would abort the batch
+        # after this row's promotion already landed — same refuse-the-row
+        # contract as the queue path 700 lines below.
+        return {"commitment_id": obs_key, "status": "failed",
+                "detail": str(exc) + _OBSERVED_HALF_LANDED}
+    except OpenSubitemsError as exc:
+        # Same per-row refusal the queue path reports 20 lines below — an
+        # uncaught raise here would abort the rest of the batch after this
+        # row's promotion already landed.
+        return {"commitment_id": obs_key, "status": "has_subitems",
+                "promoted_id": ref,
+                "detail": str(exc) + _OBSERVED_HALF_LANDED}
+    status = res.get("status")
+    if status == "closed":
+        return {"commitment_id": obs_key, "status": "closed",
+                "promoted_id": res.get("commitment_id", ref)}
+    return {"commitment_id": obs_key, "status": "already_resolved",
+            "promoted_id": res.get("commitment_id", ref)}
+
+
 def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
                   confirm_weak_ids=()) -> dict:
     """Confirm unconfirmed extractions: they become ordinary open commitments.
@@ -793,12 +1461,28 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
     `not_open`), never raised and never written. Re-running the same
     selection is a no-op with an honest ack, not a second event.
 
+    OBSERVED1 — an `obs_` id (a live set-aside row) rides the same fence and
+    the same counters, through `_confirm_observed_row`: promote, then clear
+    the promoted row's flags — one gesture, an ordinary open commitment.
+    Idempotent by the tier's own rules (a second confirm is `not_pending`;
+    an expired row is `failed` with the tier's plain reason). The result row
+    carries `promoted_id` so the ack can point at what now exists.
+
     Returns {"results": [{commitment_id, status}, ...], "n_confirmed": int,
              "n_not_pending": int, "n_held": int, "n_failed": int}.
     """
     from commitment_state import CommitmentIdError, clear_review_flags
 
     pending = _pending_by_id(workspace_root)
+    # OBSERVED1 — the set-aside rows this queue now also answers. Routed by
+    # id membership, never by prefix; a pending id always wins the route (the
+    # two id schemes cannot collide, but the order states the priority).
+    # REVIEW E1 — the observed index is a second full-log scan, so it is
+    # built ONLY when some id is not already a queue member; the common
+    # all-pending selection pays nothing new.
+    observed: dict = {}
+    if any(str(c) not in pending for c in (ids or [])):
+        observed = _observed_by_id(workspace_root)
     cleared_by = _resolve_user(workspace_root)
     # PROVMINT1 — this call IS one gesture, so its minted receipt is read from
     # the clock ONCE and handed to every write below. Minting per row would
@@ -810,10 +1494,14 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
     # THE fence (WATCHGATE §2.2), over the rows this queue can actually
     # answer. An id that is not in the queue is reported first and never
     # reaches the screen — it has no evidence to weigh either way.
+    # OBSERVED1: set-aside rows ride the SAME fence — confirming one MINTS an
+    # open commitment, so an evidence-less observed row is exactly the class
+    # the bulk guard exists for.
     screenable = [cid for cid in (str(c) for c in (ids or []))
-                  if cid in pending]
+                  if cid in pending or cid in observed]
     screen = screen_bulk_accept(
-        [{"id": cid, "weak_reason": _weak_reason(pending[cid])}
+        [{"id": cid,
+          "weak_reason": _weak_reason(pending.get(cid) or observed[cid])}
          for cid in screenable],
         individually_named=confirm_weak_ids or (),
     )
@@ -822,6 +1510,25 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
 
     for cid in ids or []:
         cid = str(cid)
+        if cid not in pending and cid in observed:
+            if cid not in accepted:
+                results.append({"commitment_id": cid,
+                                "status": "held_weak_evidence",
+                                "detail": held_reason.get(cid, "")})
+                n_held += 1
+                continue
+            res = _confirm_observed_row(
+                workspace_root, observed[cid], cleared_by=cleared_by,
+                source_skill=source_skill, gesture_iso=_gesture_iso,
+                pending=pending)
+            results.append(res)
+            if res["status"] == "confirmed":
+                n_confirmed += 1
+            elif res["status"] == "not_pending":
+                n_not_pending += 1
+            else:
+                n_failed += 1
+            continue
         if cid not in pending:
             results.append({"commitment_id": cid, "status": "not_pending"})
             n_not_pending += 1
@@ -1177,10 +1884,32 @@ def done_items(workspace_root, ids, *, resolved_by: str,
     fence_accepted = set(screen["accept"])
     held_reason = {h["id"]: h["reason"] for h in screen["held"]}
 
+    # REVIEW OBSERVED1 C4 — a rendered SET ASIDE row resolves to an id this
+    # verb cannot honor (nothing was tracked, so there is nothing whose
+    # completion can be attested). Refusing it BY NAME beats the generic
+    # `not_pending`, which Step 3's ack reads as "already settled" — telling
+    # the user a row the render just printed does not exist. Lazy (E1): the
+    # index is a full-log scan and is built only when some id misses the
+    # queue.
+    observed: dict = {}
+    if any(str(c) not in pending for c in (ids or [])):
+        observed = _observed_by_id(workspace_root)
+
     results: list[dict] = []
     n_done = n_not_pending = n_held = n_refused = n_failed = 0
     for cid in ids or []:
         cid = str(cid)
+        if cid not in pending and cid in observed:
+            results.append({
+                "commitment_id": cid,
+                "status": "refused",
+                "detail": "a set-aside item — heard between other people, "
+                          "never tracked, so there is nothing to attest as "
+                          "done. `confirm` starts tracking it; `drop` lets "
+                          "it go.",
+            })
+            n_refused += 1
+            continue
         if cid not in pending:
             results.append({"commitment_id": cid, "status": "not_pending"})
             n_not_pending += 1
@@ -1316,11 +2045,18 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
     one gesture over many ids reads as one act (again as `done_items` does).
     A caller holding a truer receipt id passes `source_ref` and it wins.
 
+    OBSERVED1 — an `obs_` id (a set-aside row) routes through
+    `_drop_observed_row`: promote, then close the promoted row as dropped —
+    the standard tombstone, so the drop also feeds the capture gate's
+    dismissal tuning exactly as a queue drop does. A set-aside row promoted
+    earlier and CONFIRMED since refuses (`confirmed_open`) like any other
+    confirmed open item.
+
     Returns {"results": [...], "n_dropped": int, "n_already": int,
              "n_refused": int, "n_failed": int}.
     """
-    from commitment_state import (CommitmentIdError, OpenSubitemsError,
-                                  close_commitment)
+    from commitment_state import (AmbiguousTargetError, CommitmentIdError,
+                                  OpenSubitemsError, close_commitment)
     from cru_match import load_open_commitments, split_pending_review
 
     ws = Path(workspace_root)
@@ -1333,15 +2069,39 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
     # `commitment_state` (one helper, one home); what belongs here is the clock
     # read, which is the only part this surface knows.
     drop_mint_iso = _now_iso()
-    confirmed_open = {
-        _commitment_id(ev)
-        for ev in split_pending_review(load_open_commitments(
-            str(_events_path(ws)), workspace_root=str(ws)))[0]
-    }
+    confirmed, pending_rows = split_pending_review(load_open_commitments(
+        str(_events_path(ws)), workspace_root=str(ws)))
+    confirmed_open = {_commitment_id(ev) for ev in confirmed}
+    pending_ids = {_commitment_id(ev) for ev in pending_rows}
+    # OBSERVED1 — the set-aside rows this queue now also answers (same
+    # routing rule as confirm_items: id membership; the id schemes cannot
+    # collide). REVIEW E1 — the observed index is a second full-log scan, so
+    # it is built only when some id is neither a queue member nor a
+    # confirmed open item (i.e. could be a set-aside row or a closed id).
+    observed: dict = {}
+    if any(str(c) not in confirmed_open and str(c) not in pending_ids
+           for c in (ids or [])):
+        observed = _observed_by_id(workspace_root)
     results: list[dict] = []
     n_dropped = n_already = n_refused = n_failed = 0
     for cid in ids or []:
         cid = str(cid)
+        if cid in observed:
+            res = _drop_observed_row(
+                workspace_root, observed[cid], resolved_by=resolved_by,
+                evidence=evidence, source_skill=source_skill,
+                source_ref=source_ref, mint_iso=drop_mint_iso,
+                confirmed_open=confirmed_open)
+            results.append(res)
+            if res["status"] == "closed":
+                n_dropped += 1
+            elif res["status"] == "already_resolved":
+                n_already += 1
+            elif res["status"] == "confirmed_open":
+                n_refused += 1
+            else:
+                n_failed += 1
+            continue
         if cid in confirmed_open:
             results.append({
                 "commitment_id": cid, "status": "confirmed_open",
@@ -1359,6 +2119,14 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
+                            "detail": str(exc)})
+            n_failed += 1
+            continue
+        except AmbiguousTargetError as exc:
+            # CLOSEID2 — a session-lane surface reaching this drop path has no
+            # per-row door to state; the refusal is one row's, never the run's
+            # (the same refuse-the-row contract close_commitments keeps).
+            results.append({"commitment_id": cid, "status": "refused",
                             "detail": str(exc)})
             n_failed += 1
             continue
@@ -1706,9 +2474,26 @@ def undo_confirm_items(workspace_root, ids, *, restored_by: str,
 
     Returns {"results": [...], "n_restored", "n_already", "n_refused",
              "n_failed"}.
+
+    OBSERVED1 (REVIEW C3) — a cached `obs_` id reverses through the
+    commitment its confirm minted: the id is translated to the promoted
+    ref before resolution, so the ack's "say undo" promise holds for a
+    set-aside confirm too. The undone item returns to the QUEUE as an
+    unconfirmed row (promotion is permanent — the tier defines no
+    un-promote), carrying the promotion's own review reason.
     """
     from commitment_state import (CommitmentIdError, _currently_closed,
                                   restore_review_flags)
+
+    ids = [str(i) for i in (ids or [])]
+    if ids:
+        # An undo is a rare, user-typed gesture — the observed index's one
+        # extra scan is acceptable here where it was not on the hot verbs.
+        observed = _observed_by_id(workspace_root)
+        ids = [(_promoted_commitment_ref(
+                    workspace_root, _observed_promote_ref(observed[i])) or i)
+               if i in observed else i
+               for i in ids]
 
     index, canon, errs = _resolve_targets(workspace_root, ids)
     pending = set(_pending_by_id(workspace_root))
@@ -2014,20 +2799,83 @@ def build_queue_data_view(view: dict, *, header: str | None = None,
     for group in view.get("groups") or []:
         items = []
         for row in group.get("items") or []:
-            items.append({
+            # CLUSTER1 — a folded row never becomes its own widget row: it
+            # rides its survivor's read-only expand below, number kept.
+            if row.get("folded_into"):
+                continue
+            item = {
                 "n": row["commitment_id"],       # wire id, verbatim
                 "display_n": row["display_n"],   # what the row SHOWS
                 "name": row["title"],
                 "context_tag": _row_context_tag(row),
                 "data": {"id": row["commitment_id"]},
                 "actions": list(QUEUE_ROW_ACTIONS),
-            })
+            }
+            cluster = row.get("cluster")
+            if cluster:
+                # ONE line per real-world item: the survivor carries the
+                # fold count, the read-only expand, the widget-embedded ids
+                # (the CLOSEID2 "id" door — dispatch reads data.folded_ids
+                # verbatim, never resolves ids itself), and the one tap.
+                from commitment_cluster import CLUSTER_ACTION, folded_line
+                item["context_tag"] += (f" · +{cluster['n_folded']} folded "
+                                        f"— the same real-world item")
+                item["folded_rows"] = [
+                    folded_line(f.get("display_n"),
+                                f.get("title") or "(untitled)",
+                                f.get("group") or "")
+                    for f in cluster["folded"]]
+                item["data"]["folded_ids"] = list(cluster["folded_ids"])
+                item["actions"] = item["actions"] + [CLUSTER_ACTION]
+            items.append(item)
         if items:
-            sections.append({"title": f"{group['name']} ({len(items)})",
+            # `count` alone — the shared renderer appends "(N)" to any titled
+            # section carrying one, so a count baked into the title here
+            # rendered twice: "A CALL ON JUN 2 (3) (3)". The renderer owns
+            # that chrome; this producer only says what the number is (the
+            # EXCH1 held-review rider's fix, applied to the site it was
+            # copied from — REVIEW_PR57 F-1 sweep).
+            sections.append({"title": group["name"],
                              "count": len(items), "items": items})
+    # OBSERVED1 — the set-aside tier, ONE trailing section under the tier's
+    # own banner (grouping-by-call matters for the queue's group answers,
+    # which deliberately do not reach this tier — see `ids_for_group` — so
+    # the widget keeps the tier visually one thing). Rows carry the tier's
+    # OWN verb list: confirm/drop, defined once in `capture_gate` beside the
+    # tier itself.
+    if view.get("n_observed"):
+        from capture_gate import OBSERVED_ROW_ACTIONS, OBSERVED_SECTION_TITLE
+        obs_items = []
+        for group in view.get("observed_groups") or []:
+            for row in group.get("items") or []:
+                obs_items.append({
+                    "n": row["commitment_id"],
+                    "display_n": row["display_n"],
+                    "name": row["title"],
+                    "context_tag": _row_context_tag(
+                        row, meeting_label=group.get("name") or ""),
+                    "data": {"id": row["commitment_id"]},
+                    "actions": list(OBSERVED_ROW_ACTIONS),
+                })
+        if obs_items:
+            # REVIEW_PR57 F-1 — `count` alone. This title baked "(N)" into a
+            # string both shared renderers append "({count})" to, so the
+            # section header rendered "SET ASIDE — … (2) (2)". Producer-side
+            # fix, the e44a283c pattern: the renderer owns the count chrome.
+            sections.append({
+                "title": OBSERVED_SECTION_TITLE,
+                "count": len(obs_items),
+                "items": obs_items,
+            })
+    # REVIEW OBSERVED1 R3 — an observed-only view's counted header would
+    # read "0 unconfirmed extractions from 0 calls" above a populated
+    # section; the widget takes the same zero-lead the text render takes.
+    default_header = view.get("header") or "Needs your call"
+    if not view.get("total") and view.get("n_observed"):
+        default_header = _observed_only_lead(view.get("n_observed") or 0)
     out = {
         "source_skill": SOURCE_SKILL,
-        "header": header or view.get("header") or "Needs your call",
+        "header": header or default_header,
         "sections": sections,
     }
     # REVSCHED1 §3-1 — carried through so the widget path shows the same offer
@@ -2187,28 +3035,59 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
         shown.append(group)
         n_rows += count
 
+    # CLUSTER1 — fold on this surface too (same view annotations, same
+    # rules), but ONLY when the cluster's surviving line is itself on the
+    # page: hiding a row behind a survivor the volume guard cut would hide
+    # it behind nothing.
+    shown_cids = {row["commitment_id"] for g in shown for row in g["items"]}
+    n_folded_here = 0
     items: list[dict] = []
     for group in shown:
         for row in group["items"]:
-            items.append({
+            if row.get("folded_into") and row["folded_into"] in shown_cids:
+                n_folded_here += 1
+                continue
+            item = {
                 "n": row["commitment_id"],
                 "name": row["title"],
                 "context_tag": _row_context_tag(
                     row, meeting_label=group["name"]),
                 "data": {"id": row["commitment_id"]},
                 "actions": list(QUEUE_ROW_ACTIONS),
-            })
+            }
+            cluster = row.get("cluster")
+            if cluster:
+                from commitment_cluster import CLUSTER_ACTION, folded_line
+                item["context_tag"] += (f" · +{cluster['n_folded']} folded "
+                                        f"— the same real-world item")
+                item["folded_rows"] = [
+                    folded_line(f.get("display_n"),
+                                f.get("title") or "(untitled)",
+                                f.get("group") or "")
+                    for f in cluster["folded"]]
+                item["data"]["folded_ids"] = list(cluster["folded_ids"])
+                item["actions"] = item["actions"] + [CLUSTER_ACTION]
+            items.append(item)
     if not items:
         return None
 
+    # SPEC CLUSTER1 §0-4 — the fold's headline number is the INFORMATION
+    # count when the view clustered; the true row count stays in the title.
+    # Byte-identical when nothing clustered.
+    total_info = total_rows - int(view.get("n_folded") or 0)
     item_noun = "item" if total_rows == 1 else "items"
     # RIDERS1 item 4 — the same phrase the on-demand header uses. This title
     # used to count `total_groups`, which includes the not-from-a-meeting
     # bucket, so the fold said "47 calls" beside a header saying "46" for the
     # same queue — and the bucket is not a call in either sentence.
-    title = (f"{STAFF_SECTION_TITLE} ({total_rows} {item_noun}, "
-             f"{source_count_phrase(groups)})")
-    if len(items) < total_rows:
+    if view.get("n_folded"):
+        info_noun = "item" if total_info == 1 else "items"
+        title = (f"{STAFF_SECTION_TITLE} ({total_info} {info_noun} covering "
+                 f"{total_rows} captures, {source_count_phrase(groups)})")
+    else:
+        title = (f"{STAFF_SECTION_TITLE} ({total_rows} {item_noun}, "
+                 f"{source_count_phrase(groups)})")
+    if len(items) < total_info:
         title += (f" — showing {len(items)}; say `needs your call` for the "
                   f"rest")
     return {"title": title, "count": len(items), "items": items}

@@ -1,0 +1,27 @@
+{
+  "version": "5.19.0",
+  "headline": "The evening close gets fast without getting thin, tomorrow stops proposing the past, and every count means items.",
+  "items": [
+    {
+      "id": "v5190_instruct_reassert_schedules",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One thing to do once, on each computer you use Command Room from: say \"set up command room schedules\". This update teaches the background maintenance pass to capture your meetings during the day, so the 5 PM close verifies instead of fetching and lands in minutes — but that instruction lives inside your registered task, which only refreshes when you say the phrase on this machine. Until you do, nothing breaks: the close simply keeps working the old, slower way. Takes seconds, changes nothing else, safe to say more than once.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v5190_announce_tomorrow_filter",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Tomorrow's plan can no longer contain the past: an item anchored to the day being closed — \"tonight\", a same-day time, a due date already behind you — is never proposed for the next day. And every due date you see now reads against today: \"due Aug 6 — 19 days ago\", never a stale \"before Thursday\".",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5190_announce_information_counts",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your morning brief and evening close now count the way the queues do: items, not fragments. Where several captures are one real piece of work, the headline says so — \"9 items, 41 rows\" — so the number you see is the number of decisions in front of you.",
+      "action": "announce_only"
+    }
+  ]
+}

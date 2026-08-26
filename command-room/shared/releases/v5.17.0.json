@@ -1,0 +1,13 @@
+{
+  "version": "5.17.0",
+  "headline": "The evening close starts coaching from the record: patterns across your closes, and whether the day did what you said it would be about.",
+  "items": [
+    {
+      "id": "v5170_announce_eod_coach",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your evening close now remembers its own history. When something has sat still across several closes, it says so with the count. When you set what tomorrow was about and the day went elsewhere, it names that plainly — and when the day did what you intended, it says that too. At most a sentence or two, always drawn from your own record, never a score or a lecture: if it has raised the same thing three closes running it says so once more and then lets it rest for a few evenings. Nothing new to tap; the one question about tomorrow stays the only question.",
+      "action": "announce_only"
+    }
+  ]
+}

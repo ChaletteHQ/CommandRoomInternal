@@ -1036,8 +1036,28 @@ def fold_suspected_duplicates(events: list) -> tuple[list, int]:
     triage pin block keeps rendering both rows with the merge verbs, and
     the flagged event stays open in the substrate. A pointer at a row NOT
     in the set folds nothing (there is nothing on the page to collapse
-    into). Returns (folded_events, n_folded)."""
-    from cru_match import _commitment_id
+    into). Returns (folded_events, n_folded).
+
+    THE FOLD ANNOTATES SO THE FLOOR CAN CONSULT (SPEC DEDUPFLOOR1). The fold
+    runs BEFORE the confidence floor by design (FX-3 above — a fold is an
+    identity operation and the counts must see it), and that ordering had a
+    side effect nobody wired for: the survivor is elected by lowest seq, not
+    by confidence, so a low-confidence ORIGINAL with a high-confidence
+    duplicate folded into it met a per-row floor that judged the survivor
+    alone — and the whole component vanished from the surface. The
+    high-confidence duplicate would have rendered on its own.
+
+    So the survivor also carries `data._component_max_confidence`: the
+    highest floor-comparable confidence in the component, survivor included
+    (`cru_match.surface_floor_value` — an unscored member reads as the top of
+    the scale, because an unscored row clears every floor). It is a
+    SURFACE-LAYER TRANSIENT on the projected copy, exactly like the two
+    back-reference fields beside it — this function never mutates its inputs
+    and nothing writes its output back, so the annotation must never reach an
+    event on disk. The leading underscore says so at every read site.
+    Survivor election and fold ordering are unchanged; the only thing that
+    moves is what the floor downstream is able to know."""
+    from cru_match import _commitment_id, surface_floor_value
 
     events = [ev for ev in (events or []) if isinstance(ev, dict)]
     ids = [_commitment_id(ev) for ev in events]
@@ -1098,7 +1118,7 @@ def fold_suspected_duplicates(events: list) -> tuple[list, int]:
         root = root_of.get(i, i)
         if root == i:
             continue
-        fold_into.setdefault(root, []).append(ids[i])
+        fold_into.setdefault(root, []).append(i)
         dropped.add(i)
 
     if not dropped:
@@ -1110,8 +1130,37 @@ def fold_suspected_duplicates(events: list) -> tuple[list, int]:
         folded = fold_into.get(i)
         if folded:
             d = dict(ev.get("data") or {})
-            d["duplicate_fold_ids"] = list(folded)
+            d["duplicate_fold_ids"] = [ids[n] for n in folded]
             d["duplicate_fold_count"] = len(folded) + 1
+            # DEDUPFLOOR1 — the fold ANNOTATES so the floor can CONSULT.
+            # Highest member confidence in the whole component, survivor
+            # included. Written here because this is the last moment the
+            # members exist: one line further down they are gone, and the
+            # per-row floor downstream would judge the component on the
+            # survivor alone.
+            # REVIEW R-2 — a member whose confidence cannot even be READ must
+            # not be able to no-op the entire fold. `surface_floor_value` reads
+            # through `float()`, which raises OverflowError on an
+            # out-of-float-range integer — the exact shape CONFCLAMP1 clamps at
+            # the WRITE seam but which is, by its own preamble, already in the
+            # append-only history. This function's caller (`_fold_dups`)
+            # swallows every exception and returns the set UNFOLDED, so one
+            # such legacy row inside any component un-folded every duplicate on
+            # the surface, double-counted the header, and — because the row
+            # then survived to `_apply_confidence_floor`, whose except-clause
+            # does the same — disabled the confidence floor for the whole
+            # surface. None of that was reachable before this build: the fold
+            # did no arithmetic on captured values at all. An unreadable member
+            # simply does not vote, and a component with no readable member
+            # gets no annotation, which is byte-for-byte the pre-build floor.
+            vals = []
+            for n in [i] + folded:
+                try:
+                    vals.append(surface_floor_value(events[n]))
+                except Exception:
+                    continue
+            if vals:
+                d["_component_max_confidence"] = max(vals)
             ev = {**ev, "data": d}
         out.append(ev)
     return out, len(dropped)

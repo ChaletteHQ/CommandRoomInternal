@@ -114,6 +114,13 @@ _OK_STATUSES = frozenset({
     # answer. ONE person_candidate_suppressed row landed, and the row must
     # stop being offered: the question has been answered permanently.
     "suppressed",
+    # HELDREVIEW1 — the held-tier review's one verb and the two switches
+    # beside it. `captured` is an objection landing (one held_review_objection
+    # row; the commitment itself is deliberately untouched — the write is the
+    # note, and there is nothing else it was supposed to do). `enabled` is
+    # `turn_on_held` having gone through held_tier.enable_held_routing, which
+    # is a routing write and a receipt.
+    "captured", "enabled",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -176,6 +183,12 @@ _NOOP_STATUSES = frozenset({
     #     rows blocked on the name are cleared and the row must stop being
     #     offered. An honest no-op on the create, not a failure.
     "already_suppressed", "already_on_file",
+    # HELDREVIEW1 — the review's objection is ONE capture per row, forever:
+    # a second click on a row that already carries one writes nothing and says
+    # so. That is the verb working as designed (an objection is a note, never
+    # a queue), so it is a no-op and not a refusal. `ignored` is the same
+    # shape for an empty id — nothing to object to, nothing written.
+    "already_captured", "ignored",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({

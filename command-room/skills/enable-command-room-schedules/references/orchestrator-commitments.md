@@ -229,6 +229,12 @@ for send in <list of sends since window>:
                 score=r['score'],
                 evidence=evidence,
                 next_seq=None,  # appender stamps in-lock
+                # SPEC TITLEMINT1 — the matched commitment's own name, which
+                # this result row already carries. The builder REFUSES an empty
+                # title now, so a forgotten argument raises at the writer
+                # instead of writing a subject-less row onto every review
+                # surface (70 of those on one 2026-08-19 fire).
+                title=r['title'],
                 # WATCHGATE — the matcher's own fulfillment finding + WHEN the
                 # evidence was observed (this send's own timestamp), so the
                 # accept surface screens on the finding rather than on prose.
@@ -427,6 +433,9 @@ for r in results:
             score=r['score'],
             evidence=r['evidence'],
             next_seq=None,  # appender stamps in-lock
+            # SPEC TITLEMINT1 — the row's own name; the builder refuses an
+            # empty title rather than accepting one.
+            title=r['title'],
             has_completion_signal=r.get('has_completion_signal'),
             evidence_ts='<this message send ts — the same value as send_ts>',
         ))

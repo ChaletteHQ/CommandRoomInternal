@@ -2,7 +2,7 @@
 name: command-room-update-bridge
 surfaces: cowork
 slack_fallback: "Updates apply on desktop — open Cowork and run the update there; Slack picks up the new version automatically."
-description: "Applies product updates to this workspace: default dashboards, release notes, and pending workspace-file migrations — additively, archive-never-delete. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Idempotent — re-runs are safe; detects which defaults are already installed and which release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room — opt-in add-ons menu), 'rebuild [artifact]' (the owning enable-* skill), or 'restart onboarding' (command-room-onboarding). Migration mechanics and manifest contract: Routing section in the body."
+description: "Applies product updates to this workspace: default dashboards, release notes, and pending workspace-file migrations — additively, archive-never-delete. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Idempotent — re-runs are safe; detects which defaults are already installed and which release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room — opt-in add-ons menu), 'rebuild [artifact]' (the owning enable-* skill), or 'restart onboarding' (command-room-onboarding)."
 ---
 
 # Command Room Update Bridge — v3.13.0+ (Option B canonical-edit-surface migrations added)
@@ -272,6 +272,14 @@ WORKSPACE_MIGRATIONS = [
     type: "silent_append",                                     // no calibration question — product-integrity default (mirror of claude_md_email_rule_v1)
     blocking: false,
     apply_once: true                                           // a deliberate deletion is respected, never re-added
+  },
+  {
+    id: "claude_md_diet_v1",                                   // SPEC STYLE1 step 3b (D9 ruling 2026-08-25 — the hot-cache diet)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "IMPORTANT: Every email",                          // the compressed-form sentinel — present means the diet already applied (fresh installs get it from the template)
+    type: "announce_with_replacement_block",                   // NEVER silent: the file is the customer's; show the compressed sections and let them take or leave the rewrite
+    blocking: false,
+    apply_once: true                                           // a declined diet is respected — the long-form rules still bind
   },
   {
     id: "staff_meeting_cadence_mwf_v1",                        // FB-20 (M ruling 2026-07-16 — the brief went read-only; the staff meeting is now the sole adjudication surface)
@@ -754,14 +762,13 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 **Approach (silent append — no calibration question, per the Phase 4.7 silent-add precedent and CONTRACT Rule 28's auto_apply default):** surgical edit only.
 
-1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append these two bullets at the end of that section's bullet list (preserving existing bullets exactly):
+1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append this bullet at the end of that section's bullet list (preserving existing bullets exactly — STYLE1 step 3b compressed the pre-diet two-bullet form into one; the marker phrase and both rule stems survive verbatim):
 
 ```markdown
-- Every email you compose — a draft, a reply, a follow-up, or an email that comes up mid-task as part of something bigger — goes through the **email-writer** skill, end to end. It carries my saved voice, length, and review rules; composing anywhere else loses all of them.
-- Never write email text directly with a mail connector tool. If an email is worth drafting, run it through email-writer first, then show me the result.
+- IMPORTANT: Every email — a draft, a reply, a follow-up, or one that comes up mid-task — goes through the **email-writer** skill, end to end; it carries my saved voice, length, and review rules, and composing anywhere else loses all of them. Never write email text directly with a mail connector tool.
 ```
 
-2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only these two bullets at the end of the file. This is the sanctioned exception to Rule 6's skip-if-missing (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
+2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only this bullet at the end of the file. This is the sanctioned exception to Rule 6's skip-if-missing (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
 3. Re-check the marker phrase is now present, then log `workspace_migration_applied` with `migration_id: "claude_md_email_rule_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
 
 **Surface ONE plain-English line in the update summary (no question, no confirm):**
@@ -779,7 +786,7 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 1. Locate the `## Preferences` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append this bullet at the end of that section (preserving existing content exactly):
 
 ```markdown
-- **Draft posture (queue-on-click):** Show the editable draft first — nothing touches your mail drafts until you click Save draft or Send. On that click, the draft is saved to your mail backend's Drafts (never auto-sent) and the draft record + voice snapshot are written at the same moment. Drafts are never queued on render/compose.
+- **Draft posture (queue-on-click):** Show the editable draft first — nothing touches your mail drafts until you click Save draft or Send; on that click it is saved to your mail Drafts (never auto-sent), with the draft record + voice snapshot written at the same moment.
 ```
 
 2. If the `## Preferences` heading is missing (older or hand-edited installs): skip per Rule 6 (do not fabricate the section) and note the skip in the summary — the posture still holds via the email-writer contract; only the standing CLAUDE.md note is deferred.
@@ -800,8 +807,8 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append these two bullets at the end of that section's bullet list (preserving existing bullets exactly):
 
 ```markdown
-- Every Command Room widget — commitments, staff meeting, any row-list or action card — is produced by `widget_transport.render_and_persist` and its returned `html` passed to show_widget **byte-exact**. Never hand-compose widget HTML, never restyle, never re-derive the data inline: hand-built widgets skip the validators (leak scan, action contract, dedup against closures) and have shipped stale rows and broken wire formats. If the helper errors, say so and stop — do not improvise a widget.
-- After a successful `render_and_persist`, the show_widget call with `transport["html"]` is not optional — it is the immediate next step, before any prose. Summarizing the data as chat text while a fitted, validated page sits persisted is a contract violation (it strips my one-tap actions). Text-instead-of-widget is allowed only when the transport itself failed or `pagination["over_budget"]` is set — and then say so explicitly.
+- IMPORTANT: Every Command Room widget — commitments, staff meeting, any row-list or action card — is produced by `widget_transport.render_and_persist` and its returned `html` passed to show_widget **byte-exact**; never hand-compose, restyle, or re-derive widget HTML — hand-built widgets skip the validators and have shipped stale rows and broken wire formats.
+- IMPORTANT: After a successful render, the show_widget call with `transport["html"]` is not optional — relay the render_and_persist page before any prose (summarizing as text strips my one-tap actions); text-instead-of-widget only when the transport itself failed or `pagination["over_budget"]` is set, and then say so explicitly.
 ```
 
 2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only these two bullets at the end of the file — the same sanctioned Rule-6 exception `claude_md_email_rule_v1` uses (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
@@ -811,6 +818,22 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 > *"New: your action cards (commitments, staff meeting) now always come through the checked build path — every page is validated before it reaches your screen, and it always arrives with its one-tap buttons, never as a text summary."*
 
+### Migration: `claude_md_diet_v1` (SPEC STYLE1 step 3b — the hot-cache diet, announce with replacement)
+
+**Trigger gate (apply-once):** pending ONLY when the compressed-form sentinel `IMPORTANT: Every email` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate reports this id `unadjudicated`. A workspace already carrying the compressed form (fresh onboarding, or a prior accept) never re-flags; a declined diet is durable.
+
+**Why this migration exists:** community-measured adherence to always-loaded instructions degrades past ~80 lines, and pre-diet CLAUDE.md files run well past that — the six long enforcement paragraphs and the retired email-exclusion tables pay context tax every turn while the structured replacements (sender-scope overrides, the compressed binding layer) do the same job in a third of the lines. Fresh onboardings get the dieted form from `references/claude-md-template.md`; this migration OFFERS it to existing installs.
+
+**Approach (announce with replacement block — NEVER silent; a hand-edited CLAUDE.md is the customer's):**
+
+1. Build the replacement for the `## Session Rules` section from the CURRENT template's compressed bullets (read `references/claude-md-template.md` at apply time — never restate them here, one source of truth) plus every hand-authored bullet in the live section that is NOT one of the six pre-diet long-form rules. Run `claude_md_guard.report(before, after)` on the candidate: every removed line must be one of the six known long-form rules — anything else in `removed` aborts the offer for that section and keeps the live text.
+2. If the file still carries an `## Email Exclusions` section: note in the offer that sender-shaped rules are handled by `email_exclusion_rules_to_sender_scope_v1` (run it first if pending) and that the tables can then be deleted; pattern-shaped rules stay until the customer moves them. Never delete the section yourself in the same turn as the offer.
+3. Show the before/after line counts and the replacement block; apply ONLY on the customer's yes. Then log `workspace_migration_applied` with `migration_id: "claude_md_diet_v1"`; on a decline, log the skip with `user_deferred` so `redo workspace migrations` can re-offer.
+
+**Surface ONE plain-English line in the update summary:**
+
+> *"Offer: your always-loaded memory file can drop ~30 lines of plumbing (same rules, compressed — nothing about you is removed). Say yes to apply, no to keep it as is."*
+
 ### Migration: `claude_md_research_rule_v1` (RSR1 — the research-routing session rules, silent append)
 
 **Trigger gate (apply-once — see the detection-logic bullet in Phase 1):** pending ONLY when the marker phrase `never the generic built-in deep-research` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event in events.jsonl. A customer who deliberately deletes the rules is respected — the bridge never re-adds them; a logged skip is equally durable.
@@ -819,14 +842,13 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 **Approach (silent append — no calibration question, per the Phase 4.7 silent-add precedent and CONTRACT Rule 28's auto_apply default):** surgical edit only.
 
-1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append these two bullets at the end of that section's bullet list (preserving existing bullets exactly):
+1. Locate the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md`. Append this bullet at the end of that section's bullet list (preserving existing bullets exactly — STYLE1 step 3b compressed the pre-diet two-bullet form into one; the marker phrase survives verbatim and the source-tier line folds into the same bullet):
 
 ```markdown
-- Any research ask — "research [X]", "deep dive on [X]", "look into [X]", "what's the story on [X]", "background on [person]" — runs through the **research** skill, never the generic built-in deep-research skill. The built-in one can't see my workspace: it skips the entity framing, skips the Tavily and Vibe Prospecting connectors, and its findings evaporate instead of being saved where call-prep and briefings can reuse them.
-- When research runs, the chat reply names which source tier actually ran (Vibe Prospecting / Tavily / built-in web) in one line. Built-in web is the fallback floor, not the default — if an upgrade connector is connected it must be used.
+- IMPORTANT: Any research ask — "research [X]", "deep dive on [X]", "look into [X]", "background on [person]" — runs through the **research** skill, never the generic built-in deep-research skill; the built-in one can't see my workspace and its findings evaporate. The reply names which source tier actually ran, in one line.
 ```
 
-2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only these two bullets at the end of the file — the same sanctioned Rule-6 exception `claude_md_email_rule_v1` and `claude_md_widget_rule_v1` use (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
+2. If the `## Session Rules` heading is missing (older or hand-edited installs): append a NEW `## Session Rules` section containing only this bullet at the end of the file — the same sanctioned Rule-6 exception `claude_md_email_rule_v1` and `claude_md_widget_rule_v1` use (appending a whole new section can't mangle existing structure — still surgical, still additive). Do NOT create the section anywhere but end-of-file, and do NOT attempt to rebuild any other missing section.
 3. Re-check the marker phrase is now present, then log `workspace_migration_applied` with `migration_id: "claude_md_research_rule_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
 
 **Surface ONE plain-English line in the update summary (no question, no confirm):**

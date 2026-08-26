@@ -1,7 +1,7 @@
 ---
 name: check-deliverables
 surfaces: both
-description: "Pre-send sweep of what Command Room produced — flags anything that does not sound like the CEO or leaks internal language, BEFORE it gets forwarded. Fires on: 'check my deliverables', 'scan my deliverables', 'scan before I send' / 'scan before sending' / 'scan this before I send', 'check my output before I send', 'voice and privacy check', 'did this pass the quality check', 'scan my output for voice tells'. Read-only and flag-only — never edits, moves, or deletes; findings feed the voice-corrections corpus silently. Does NOT fire on 'automation scan' / 'where am I wasting time' (automation-scanner), 'weekly cleanup' (cleanup — runs this same sweep weekly as backstop), or 'value receipt' (value-receipt). Detector list and flag format: Routing section in the body."
+description: "Pre-send sweep of what Command Room produced — flags anything that does not sound like the CEO or leaks internal language, BEFORE it gets forwarded. Fires on: 'check my deliverables', 'scan my deliverables', 'scan before I send' / 'scan before sending' / 'scan this before I send', 'check my output before I send', 'voice and privacy check', 'did this pass the quality check', 'scan my output for voice tells'. Read-only and flag-only — never edits, moves, or deletes; findings feed the voice-corrections corpus silently. Does NOT fire on 'automation scan' / 'where am I wasting time' (automation-scanner), 'weekly cleanup' (cleanup — runs this same sweep weekly as backstop), or 'value receipt' (value-receipt)."
 ---
 
 # check-deliverables

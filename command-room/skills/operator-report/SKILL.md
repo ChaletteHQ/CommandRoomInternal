@@ -1,7 +1,7 @@
 ---
 name: operator-report
 surfaces: both
-description: "Generates the CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered unasked, and a conservative time-absorbed estimate, every number computed in code. Fires on: 'operator report', 'show me the value', 'portfolio velocity', 'monthly operating report', plus 'tune operator-report' and 'customize operator-report'. Output: chat summary plus forwardable .docx with trend context. Does NOT fire on 'weekly recap' / 'what happened this month' (weekly-recap — events digest, not lift accounting), 'value receipt' (value-receipt — the forwardable ROI receipt), or 'usage report' (usage-report — cost/volume telemetry). Full trigger list and section spec: Routing section in the body."
+description: "Generates the CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered unasked, and a conservative time-absorbed estimate, every number computed in code. Fires on: 'operator report', 'show me the value', 'portfolio velocity', 'monthly operating report', plus 'tune operator-report' and 'customize operator-report'. Output: chat summary plus forwardable .docx with trend context. Does NOT fire on 'weekly recap' / 'what happened this month' (weekly-recap — events digest, not lift accounting), 'value receipt' (value-receipt — the forwardable ROI receipt), or 'usage report' (usage-report — cost/volume telemetry)."
 ---
 
 # operator-report

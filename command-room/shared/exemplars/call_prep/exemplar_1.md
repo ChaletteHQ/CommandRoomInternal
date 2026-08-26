@@ -62,3 +62,6 @@ NEEDED    Nothing from you before the call. [nothing-form is legal and encourage
 
 ## Risks / Watch-outs
 [2–3 bullets max; a $480K exposure claim would carry its source and a hedge when single-sourced]
+
+## Sources
+[DO NOT COMPOSE THIS SECTION — it is shown only so the structure is complete. `assemble_prep_sections` appends it from what the render actually consumed; a hand-built "Sources" section raises `PrepContractError` and ships no brief at all. One line, "Built from: …".]

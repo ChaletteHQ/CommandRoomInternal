@@ -1,7 +1,7 @@
 ---
 name: one-pager-composer
 surfaces: both
-description: "Turn any topic, question, or pile of notes into a polished one-page executive brief in under 60 seconds. Fires on: 'one-pager on [topic]', 'make me a one-pager', 'one page summary of [topic]', 'I need a one-pager on [topic]', 'throw together a one-pager for [audience]', plus 'tune one-pager-composer'. Pulls evidence from the workspace when the topic names tracked entities, renders in the CEO's voice to the one-page discipline, output .docx routed to the matching project folder. Does NOT fire on 'memo on [topic]' (memo-writer — multi-page, directive), 'board pack' (board-pack-assembler), or 'research [topic]' (research — verified cited brief; the one-pager can consume its output). Section discipline and voice rules: Routing section in the body."
+description: "Turn any topic, question, or pile of notes into a polished one-page executive brief in under 60 seconds. Fires on: 'one-pager on [topic]', 'make me a one-pager', 'one page summary of [topic]', 'I need a one-pager on [topic]', 'throw together a one-pager for [audience]', plus 'tune one-pager-composer'. Pulls evidence from the workspace when the topic names tracked entities, renders in the CEO's voice to the one-page discipline, output .docx routed to the matching project folder. Does NOT fire on 'memo on [topic]' (memo-writer — multi-page, directive), 'board pack' (board-pack-assembler), or 'research [topic]' (research — verified cited brief; the one-pager can consume its output)."
 
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default

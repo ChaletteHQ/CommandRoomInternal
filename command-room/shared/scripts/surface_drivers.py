@@ -306,18 +306,15 @@ def _age_days(ts: str, now_iso: str) -> int | None:
 
 
 def _due_phrase(due, now_iso: str) -> str:
-    if not due:
-        return "undated"
-    try:
-        d = _dt.date.fromisoformat(str(due)[:10])
-        today = _dt.date.fromisoformat(now_iso[:10])
-        if d == today:
-            return "due today"
-        if d < today:
-            return f"overdue since {d.strftime('%b')} {d.day}"
-        return f"due {d.strftime('%b')} {d.day}"
-    except ValueError:
-        return f"due {due}"
+    """The queue row's due phrase (SPEC TOMFILT1 §2, golden-pinned) —
+    delegates to `due_reanchor.render_due_phrase`, the ONE renderer the
+    slipped line and the tomorrow block also call. Re-anchored to `now_iso`
+    on every call: past-due always carries its age ("due Aug 6 — 19 days
+    ago"), never a bare "overdue since Aug 6" that goes stale the moment it
+    sits on screen."""
+    from due_reanchor import render_due_phrase
+
+    return render_due_phrase(due, now_iso)
 
 
 def _people_by_id(ws: Path) -> dict:
@@ -815,7 +812,17 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     # and is merely relocated into the strip). The 225-vs-226 class was a row
     # counted by one predicate and skipped by another, rendering nowhere; a
     # residual here is that class, and it is visible instead of silent.
+    # CLUSTER1 — render-level clustering, DEFAULT-ON, over the OPEN sections
+    # (the Unowned / age lanes; the unconfirmed pin strip is left alone — its
+    # rows are queue members and cluster on the queue surface, and the
+    # WALKFIX1 slices arithmetic above is a fact about that strip). One line
+    # per real-world item: survivor + "+N folded" + read-only expand + the
+    # one `keep as one` tap, ids widget-embedded. Additive and drop-empty:
+    # with no clusters the view is byte-identical to before this existed.
+    _apply_triage_clusters(view, by_cid, ws, now_iso)
+
     rendered_rows = sum(len(s.get("items") or []) for s in sections)
+    n_cluster_folded = int(view.get("n_folded") or 0)
     view["count_reconciliation"] = {
         "headline_total": h["total"],
         "queue_total": h.get("unconfirmed"),
@@ -824,9 +831,116 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         "pin_escalated": pin_escalated,
         "pin_crossing": slices["crossing"],
         "queue_not_rendered": slices["remainder"],
-        "residual": rendered_rows - (h["total"] + pin_escalated),
+        # CLUSTER1 — folded rows are still rendered work (they ride their
+        # survivor's expand), so the identity adds them back rather than
+        # reading a fold as a vanished row.
+        "residual": (rendered_rows + n_cluster_folded
+                     - (h["total"] + pin_escalated)),
     }
+    if n_cluster_folded:
+        view["count_reconciliation"]["n_cluster_folded"] = n_cluster_folded
     return view
+
+
+def _apply_triage_clusters(view: dict, by_cid: dict, ws, now_iso) -> None:
+    """CLUSTER1 — fold the triage view's open sections, in place.
+
+    Clusters are computed at render by `commitment_cluster.render_clusters`
+    (the shipped duplicate scorer + roster counterparty conjunct + temporal
+    adjacency — precision over recall) over the events behind the rendered
+    OPEN rows. The unconfirmed pin strip ("lane" == unconfirmed) is skipped:
+    its rows are needs-your-call queue members and cluster there. Rows
+    carrying sub-items never fold (hiding a family behind an expand hides
+    its children — the same caution `auto_merge_eligible` takes).
+
+    Survivor rows gain: "+N folded" on the context tag, `folded_rows` (the
+    read-only expand, numbers kept), `data.id` + `data.folded_ids` (the
+    CLOSEID2 "id" door), and the `keep as one` tap. Folded rows leave their
+    sections; an emptied section leaves the page. The header's headline
+    number becomes the information count with the true open count kept in
+    the same sentence (SPEC §0-4). Additive keys only; no clusters -> no
+    change, byte for byte. Defensive throughout — a clustering failure
+    must never take the triage surface down."""
+    from commitment_state import UNCONFIRMED_LANE
+
+    try:
+        from commitment_cluster import (CLUSTER_ACTION, folded_line,
+                                        render_clusters)
+
+        open_sections = [s for s in (view.get("sections") or [])
+                         if s.get("lane") != UNCONFIRMED_LANE]
+        row_home: dict = {}
+        for sec in open_sections:
+            for row in sec.get("items") or []:
+                if row.get("sub_items"):
+                    continue
+                cid = str(row.get("n") or "")
+                ev = by_cid.get(cid)
+                if not cid or ev is None:
+                    continue
+                d = ev.get("data") or {}
+                n_open_subs = d.get("n_subitems_open")
+                if isinstance(n_open_subs, int) and n_open_subs > 0:
+                    continue
+                row_home[cid] = (sec, row)
+        if len(row_home) < 2:
+            return
+        clusters = render_clusters([by_cid[c] for c in row_home],
+                                   workspace_root=str(ws), now_iso=now_iso)
+        # A cluster only folds when EVERY member is a foldable rendered row.
+        clusters = [c for c in clusters
+                    if all(m in row_home for m in c["member_ids"])]
+        if not clusters:
+            return
+        n_folded = 0
+        for c in clusters:
+            _sec, srow = row_home[c["survivor_id"]]
+            folded_meta = []
+            for fid in c["folded_ids"]:
+                fsec, frow = row_home[fid]
+                fsec["items"] = [r for r in fsec.get("items") or []
+                                 if r is not frow]
+                fsec["count"] = len(fsec["items"])
+                folded_meta.append((frow, fsec))
+                n_folded += 1
+            srow["context_tag"] = (str(srow.get("context_tag") or "")
+                                   + f" · +{len(folded_meta)} folded — the "
+                                     f"same real-world item")
+            srow["folded_rows"] = [
+                folded_line(fr.get("display_n"),
+                            fr.get("name") or "(untitled)",
+                            str(fs.get("title") or ""))
+                for fr, fs in folded_meta]
+            data = dict(srow.get("data") or {})
+            data.setdefault("id", c["survivor_id"])
+            data["folded_ids"] = list(c["folded_ids"])
+            srow["data"] = data
+            srow["actions"] = list(srow.get("actions") or []) \
+                + [CLUSTER_ACTION]
+        view["sections"] = [s for s in (view.get("sections") or [])
+                            if s.get("items")]
+        view["n_clusters"] = len(clusters)
+        view["n_folded"] = n_folded
+        # SPEC §0-4 — the headline count is the information count; the true
+        # open count stays in the sentence. The counter tiles keep their
+        # reconciled meanings (true counts, one level down).
+        header = str(view.get("header") or "")
+        h_total = None
+        for counter in view.get("counters") or []:
+            if counter.get("label") == "Open":
+                h_total = counter.get("value")
+        if h_total is not None and header.startswith(
+                f"Commitment triage — {h_total} open"):
+            info = int(h_total) - n_folded
+            info_noun = "item" if info == 1 else "items"
+            view["header"] = header.replace(
+                f"Commitment triage — {h_total} open",
+                f"Commitment triage — {info} {info_noun} "
+                f"({h_total} open)", 1)
+    except Exception as exc:  # pragma: no cover — the surface must render
+        import sys as _sys
+        _sys.stderr.write(f"[surface_drivers] triage clustering skipped: "
+                          f"{exc}\n")
 
 
 # WATCHGATE §2.3 — the expiry question's verbs. Canonical ids only: "mark
@@ -1400,15 +1514,65 @@ def _apply_confidence_floor(ws, opens: list) -> tuple[list, int]:
     `confidence.surface_min(ws)` — so the per-workspace calibration override
     finally moves the filter that matters. Returns (kept, n_filtered);
     defensive — any failure keeps the full set (a broken floor must never
-    blank a daily surface)."""
+    blank a daily surface).
+
+    COMPONENT-AWARE (SPEC DEDUPFLOOR1). `_fold_dups` has already run, so some
+    rows here are duplicate-component SURVIVORS standing in for members the
+    floor will never see. Survivors are elected by lowest seq, not by
+    confidence, so judging one on its own row killed components whose
+    high-confidence member would have rendered alone. A row passes if EITHER
+    it clears the floor or its component does — see
+    `_component_clears_floor`."""
     try:
         from confidence import surface_min
         from cru_match import passes_surface_floor
         floor = surface_min(ws)
-        kept = [ev for ev in opens if passes_surface_floor(ev, floor=floor)]
+        kept = [ev for ev in opens
+                if passes_surface_floor(ev, floor=floor)
+                or _component_clears_floor(ev, floor)]
         return kept, len(opens) - len(kept)
     except Exception:
         return opens, 0
+
+
+def _component_clears_floor(ev, floor: float) -> bool:
+    """Does this row's duplicate component clear the floor, if it has one?
+
+    Reads the transient `_component_max_confidence` annotation that
+    `commitment_dedup.fold_suspected_duplicates` stamps on a fold survivor.
+    A row that was never folded has no annotation and answers False — it is
+    floored on its own confidence, unchanged. A non-numeric or absent value
+    reads as "no component": this is a rescue for a real folded group, never
+    a bypass a malformed payload can talk its way into.
+
+    REVIEW DEDUPFLOOR1 R-1 — the annotation ALONE is not enough. `data` is a
+    free-form object in `events.schema.json` and the capture gate whitelists
+    no keys, so an event on disk can carry any field name at all; a numeric
+    `_component_max_confidence` read on its own is a floor bypass that needs
+    no fold and shows nothing on the row. So the rescue is gated on the
+    fold's OWN back-reference, `duplicate_fold_count` — written on the same
+    three lines as the annotation, and the exact field `_dup_fold_note`
+    renders as "N records — merge?". A row can therefore only be rescued
+    while it is visibly saying it stands for a group. That is the difference
+    between a rescue and a bypass: not that the value is well-formed, but
+    that the reader can see it happening.
+
+    The comparison is deliberately NOT written `float(m) >= floor`: `float()`
+    raises OverflowError on an out-of-float-range integer, and this function
+    runs inside `_apply_confidence_floor`'s `except Exception`, which answers
+    a raise by returning the WHOLE open set unfiltered. Python compares int
+    and float exactly and without converting, so the bare comparison is both
+    correct and total. Same lesson as R-2 one layer down: in this pair of
+    functions, a raise is not an error — it is the floor switching itself off
+    for the entire surface, silently."""
+    d = ev.get("data") or {}
+    m = d.get("_component_max_confidence")
+    if isinstance(m, bool) or not isinstance(m, (int, float)):
+        return False
+    n = d.get("duplicate_fold_count")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 2:
+        return False
+    return m >= floor
 
 
 def _fold_dups(surfaced: list) -> tuple[list, int]:
@@ -1745,13 +1909,45 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     from commitment_state import cap_needs_attention
     lane = cap_needs_attention(state.get("needs_attention") or [],
                                now_iso=now_iso)
+    # SPEC EODSYNTH1 R-3 — THE OVERDUE ASK ARRIVES IN THE MORNING.
+    #
+    # The "Done, new date, or drop?" fork used to live in the evening's slipped
+    # block. M's ruling moves it here, and the rule itself is UNCHANGED — same
+    # threshold, same rest-until-answered fold, same `commitment_state.mark_asked`
+    # write. `end_of_day.apply_overdue_ask` is the shared implementation both
+    # bookends now call, which is the BOOKENDS1 discipline applied to a second
+    # rule: one helper, so the two surfaces cannot ask two different questions
+    # about the same row on the same day.
+    #
+    # It runs AFTER the cap, deliberately. Resting a row that the cap had
+    # already pushed below the fold would mark a question the reader never
+    # saw — the disappearance OVERDUE1's own `asked_ids` derivation is written
+    # to avoid, one surface over. The asked rows then lead the lane, because a
+    # question at the bottom of a five-row list is a question that gets
+    # scrolled past.
+    import end_of_day as _eod
+    _ask = _eod.apply_overdue_ask(
+        lane["shown"], now_iso=now_iso,
+        ask_after_days=_eod.overdue_ask_after_days(ws), ask=True)
     brief_state = {
         "headline": (state.get("counts") or {}).get("headline") or {},
-        "needs_attention": lane["shown"],
+        "needs_attention": _ask["rows"],
+        # UNCHANGED, and that is the point: a resting row is still on the
+        # you-owe list, so the denominator still counts it. A total that
+        # quietly shrank the morning a row went quiet would be the cap
+        # doctrine's own dishonesty wearing the fatigue rule's clothes.
         "needs_attention_total": lane["n_total"],
         "needs_attention_more": lane["n_more"],
         "needs_attention_more_line": lane["more_line"],
         "reconcile_stale": state.get("reconcile_stale"),
+        # SPEC EODSYNTH1 R-3 — what the fatigue rule did this morning. The
+        # orchestrator prints `resting_line` when it is non-empty and calls
+        # `commitment_state.mark_asked` for `asked_ids` AFTER the post.
+        "asked_ids": _ask["asked_ids"],
+        "resting_ids": _ask["resting_ids"],
+        "n_resting": _ask["n_resting"],
+        "resting_line": _ask["resting_line"],
+        "ask_after_days": _ask["ask_after_days"],
     }
 
     try:
@@ -1919,6 +2115,7 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     the driver keeps its own; the pack is identical either way.
     """
     import end_of_day as eod
+    import eod_synthesis as _eod_syn
     from chat_output_renderer import validate_chat_output
     from commitment_state import cap_needs_attention, compute_brief_state
     from cru_match import load_open_commitments
@@ -1999,12 +2196,25 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             thread_activity=_brief_thread_activity(ws))
         lane = cap_needs_attention(state.get("needs_attention") or [],
                                    now_iso=now_iso)
+        # SPEC EODSYNTH1 §3.6 — THE HELD FENCE, ONE LEVEL UP FROM WHERE IT
+        # USED TO BE ENOUGH. `compute_confirm` has always fenced held rows out
+        # of the confirm block, because that block asks about things. This
+        # spec gives the evening two NEW doors onto the same rows — the
+        # synthesized prose, and the tomorrow block's rollover, which is what
+        # the one interaction proposes — and a held row reaching either makes
+        # the flip a lie with extra steps. So the lane is fenced ONCE, here,
+        # before anything downstream reads it. Naming it at the chokepoint
+        # rather than in each consumer is what stops the next block that reads
+        # this lane from needing to remember.
+        _fenced = _eod_syn.visible_rows(lane["shown"], held_ids=held_ids,
+                                        workspace_root=ws)
         brief_state = {
             "headline": (state.get("counts") or {}).get("headline") or {},
-            "needs_attention": lane["shown"],
+            "needs_attention": _fenced["rows"],
             "needs_attention_total": lane["n_total"],
             "needs_attention_more": lane["n_more"],
             "dropped": state.get("dropped") or [],
+            "n_withheld": _fenced["n_withheld"],
         }
         # `in` is the open book this phase read; `out` is the lane the surface
         # will actually show. The gap between them IS the drop-and-cap work,
@@ -2067,7 +2277,16 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             # workspace's End of Day config. The block stays a pure function
             # of what it is handed, so the config read lives out here with
             # every other I/O this driver owns.
-            ask_after_days=eod.overdue_ask_after_days(ws))
+            ask_after_days=eod.overdue_ask_after_days(ws),
+            # SPEC EODSYNTH1 R-3 — THE EVENING ASKS NOTHING. The confirm/drop
+            # queues and the "Done, new date, or drop?" fork move to the
+            # MORNING surfaces, where the operator is in triage mode; 5 PM is
+            # wind-down. The marker itself is untouched — `apply_overdue_ask`
+            # is the same rule and `commitment_state.mark_asked` is the same
+            # write — it is simply the morning that performs it now, and
+            # `asked_ids` therefore comes back EMPTY here, so
+            # `mark_slipped_asked` has nothing to do on this surface.
+            ask=False)
         _p.count(n_in=len(brief_state["needs_attention"]),
                  out=len(slipped.get("rows") or []))
     with phases.phase(eod.PHASE_CONFIRM) as _p:
@@ -2124,6 +2343,96 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         catchup = eod.compute_catchup_read(lateness=lateness or {},
                                            workspace_root=ws, now_iso=now_iso)
 
+    # THE SYNTHESIS (SPEC EODSYNTH1). The evening says how the day WENT; the
+    # score is computed above and rendered nowhere (R-1). Everything below is
+    # render layer: no connector, no new fetch, no write. The ledger goes in
+    # WHOLE rather than as extracted counts, because §3.5's pin is that the
+    # prose reads the same fields the receipt carries — hand the composer a
+    # pre-flattened count and the two can drift apart again, which is the
+    # F-W1 class ("closed 4" on one surface, "0 closed" on another, same day).
+    with phases.phase(eod.PHASE_SYNTHESIS) as _p:
+        import eod_synthesis as syn
+
+        decisions = eod.todays_decisions(ws, since_ts, now_iso=now_iso)
+        notes = eod.todays_notes(ws, since_ts, now_iso=now_iso)
+        arcs = eod.declared_arcs(ws, for_date=for_date, now_iso=now_iso)
+        # Tier 3 is ABSENT BY DEFAULT and this driver supplies no candidates:
+        # a precedent echo needs a recorded precedent with an outcome, and
+        # nothing in this fire's inputs carries one. The seam is here, wired
+        # and empty, so the block that adds echoes adds a producer rather than
+        # a render path — and so the "rationed to two, each citing an id"
+        # fence is already load-bearing the day the first one arrives.
+        # SPEC EODARC1 — the OPEN BOOK enters the arc read: the unmoved-
+        # with-consequence paragraph is a claim about what is WAITING, and
+        # the open commitments this fire already loaded are that claim's
+        # rows. Deal state enters nowhere (ruling 3): nothing below reads
+        # the deal tracker, so its absence, staleness, or corruption cannot
+        # subtract an arc or raise.
+        open_rows = eod.open_commitment_rows(opens, workspace_root=ws,
+                                             now_iso=now_iso)
+        synthesis = syn.build_synthesis(
+            ledger=ledger,
+            closures=list(closures),
+            meetings=todays_meetings,
+            decisions=decisions,
+            notes=notes,
+            arcs=arcs,
+            # The rows Tier 2 may join FROM: today's closes, today's meetings
+            # and today's decisions. Slipped rows are deliberately NOT here —
+            # a thing that did not happen did not land on an arc.
+            arc_rows=list(closures) + list(todays_meetings or []) + decisions,
+            open_rows=open_rows,
+            for_date=for_date,
+            slipped_rows=slipped.get("rows") or [],
+            echo_candidates=(),
+            held_ids=held_ids,
+            workspace_root=ws,
+            # SPEC TOMFILT1 §2 — re-anchors the slipped line's due clause to
+            # THIS fire's own clock, the same `now_iso` every other phase
+            # here reads from.
+            now_iso=now_iso)
+        _p.count(n_in=len(arcs), out=len(syn.synthesis_refs(synthesis)))
+
+        # SPEC EODCOACH2 — the two coaching layers on top of the arc read:
+        # pattern memory across closes, and the intent-vs-outcome delta plus
+        # one push line. Timed inside THIS phase rather than a new one —
+        # `end_of_day.PACK_PHASES` is a pinned 16-name vocabulary
+        # (EODPHASE1) and this build does not grow it; the coach's cost
+        # scales with the same "how much the day did" driver synthesis
+        # already does, so it shares the phase honestly.
+        #
+        # `today_closures` / `today_open_rows` are a THIRD door onto rows
+        # `build_synthesis` already had to fence (EODARC1 §3.6) — the arc
+        # read and the tomorrow rollover were the first two. `open_rows`
+        # above is the UNFENCED projection; fence it here exactly as
+        # `build_synthesis` fences its own copy, rather than trust the
+        # caller's copy is still safe to read a second time.
+        import eod_coach as _eod_coach
+
+        _fenced_closures_for_coach = syn.visible_rows(
+            list(closures), held_ids=held_ids, workspace_root=ws)["rows"]
+        _fenced_open_rows_for_coach = syn.visible_rows(
+            open_rows, held_ids=held_ids, workspace_root=ws)["rows"]
+        # The arc label map the arc read itself would have built internally
+        # (declared arcs plus the SAME minted commitment arcs
+        # `compute_what_it_meant` mints from this fire's own open book) —
+        # reconstructed here, from the same two inputs, so Layer 1's
+        # stillness sentences can name an arc the same way the arc read
+        # already did rather than inventing a second label source.
+        _all_arcs_for_coach = list(arcs) + syn.mint_commitment_arcs(
+            _fenced_open_rows_for_coach, arcs)
+        _arc_label_by_ref = {
+            syn.arc_ref(a): (a.get("label") or a.get("arc_id"))
+            for a in _all_arcs_for_coach if syn.arc_ref(a)
+        }
+        coach = _eod_coach.build_coach(
+            workspace_root=ws, for_date=for_date,
+            today_what_it_meant=synthesis[syn.BLOCK_WHAT_IT_MEANT],
+            today_slipped_prose=synthesis[syn.BLOCK_SLIPPED_PROSE],
+            today_closures=_fenced_closures_for_coach,
+            today_open_rows=_fenced_open_rows_for_coach,
+            arc_label_by_ref=_arc_label_by_ref)
+
     pack = {
         "surface": eod.SURFACE,
         "task_id": eod.TASK_ID,
@@ -2142,6 +2451,26 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "confirm": confirm,
         "tomorrow": tomorrow,
         "sign_off": sign_off,
+        # SPEC EODSYNTH1 — the five prose blocks, plus each one flattened to a
+        # top-level key so `RENDER_ORDER` can be walked over the pack directly.
+        # Two spellings of one object, not two objects: the flattened keys ARE
+        # the entries of `synthesis`, so a renderer reading either finds the
+        # same text and the same refs.
+        "synthesis": synthesis,
+        syn.BLOCK_DAY_WENT: synthesis[syn.BLOCK_DAY_WENT],
+        syn.BLOCK_WHAT_IT_MEANT: synthesis[syn.BLOCK_WHAT_IT_MEANT],
+        syn.BLOCK_WORTH_REMEMBERING: synthesis[syn.BLOCK_WORTH_REMEMBERING],
+        syn.BLOCK_SLIPPED_PROSE: synthesis[syn.BLOCK_SLIPPED_PROSE],
+        syn.BLOCK_ECHOES: synthesis[syn.BLOCK_ECHOES],
+        # SPEC EODCOACH2 — the two coaching layers, prose only, rendered
+        # directly under the synthesis and above `tomorrow` (never inside
+        # `render_order`/`BLOCK_ORDER`: precisely the `catchup` precedent —
+        # a key the fire renders by instruction, not by tuple membership,
+        # because those tuples are pinned by exact equality elsewhere and
+        # this build touches none of them).
+        _eod_coach.BLOCK_COACH: coach,
+        "render_order": list(eod.RENDER_ORDER),
+        "computed_only": list(eod.COMPUTED_ONLY),
         "brief_state": brief_state,
         "connector_gaps": list(connector_gaps or []),
         "unsourced_closes": unsourced,
@@ -2173,6 +2502,25 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     with phases.phase(eod.PHASE_RENDER) as _p:
         pack["confirm_ids"] = eod.confirm_ids_from_pack(pack)
 
+        # SPEC EODSYNTH1 R-1 — THE SCORE DOES NOT REACH THE SCREEN. The
+        # composers each check their own output; this checks the ASSEMBLY,
+        # over exactly the strings this driver declares renderable, because
+        # two ungraded halves can be a grade together. It raises rather than
+        # warns: a surface that grades the day is the one thing this build
+        # exists to remove, and a fence that degrades to a log line is a fence
+        # the next refactor deletes.
+        rendered_text = "\n".join(
+            list(coverage.get("lines") or [])
+            + list(catchup.get("lines") or [])
+            + [syn.synthesis_text(synthesis)]
+            # SPEC EODCOACH2 — the coach's own composed text joins the same
+            # ASSEMBLY check the synthesis text does: two ungraded halves can
+            # still be a grade together, and this is a THIRD prose surface
+            # that fence has to see.
+            + [l for l in [coach.get("text"), sign_off.get("line"),
+                           tomorrow.get("line")] if l])
+        syn.assert_no_score(rendered_text, where="end_of_day_render")
+
         # Leak-scan every text line the pack hands the orchestrator. Loud by
         # design, in the driver, before any of it reaches a chat turn.
         scannable = "\n".join(
@@ -2195,6 +2543,16 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                            sign_off.get("line"),
                            tomorrow.get("line")] if l]
             + list(score.get("notes") or [])
+            # SPEC EODSYNTH1 — the synthesized prose is the LARGEST text
+            # surface this fire produces and the newest, so it is scanned like
+            # every other one. A composed sentence naming a person is exactly
+            # the shape a leak travels in, and it is the shape the row-lists
+            # never had.
+            + [syn.synthesis_text(synthesis)]
+            # SPEC EODCOACH2 — the coach's composed text (patterns, delta,
+            # push) is new prose naming rows and people, scanned exactly like
+            # the synthesis it sits beside.
+            + [coach.get("text") or ""]
         )
         if scannable.strip():
             validate_chat_output(scannable)

@@ -1,7 +1,7 @@
 ---
 name: weekly-recap
 surfaces: both
-description: "Pulls 7 (or 30) days of context across every connected source — Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, and every meeting-transcript source — into one structured recap: what happened, decisions made over email, threads of note, new people, anomalies, and what Command Room chats produced. Fires on: 'weekly recap', 'what happened this week', 'recap my week', 'monthly recap', 'what happened this month', plus 'tune weekly-recap'. Runs as the Friday-wrap scheduled chat's engine and on demand. Does NOT fire on 'operator report' / 'show me the value' (operator-report — lift accounting), 'value receipt' (value-receipt), or 'weekly insights' (insight-generator — pattern synthesis, not events digest). Section list and source map: Routing section in the body."
+description: "Pulls 7 (or 30) days of context across every connected source — Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, and every meeting-transcript source — into one structured recap: what happened, decisions made over email, threads of note, new people, anomalies, and what Command Room chats produced. Fires on: 'weekly recap', 'what happened this week', 'recap my week', 'monthly recap', 'what happened this month', plus 'tune weekly-recap'. Runs as the Friday-wrap scheduled chat's engine and on demand. Does NOT fire on 'operator report' / 'show me the value' (operator-report — lift accounting), 'value receipt' (value-receipt), or 'weekly insights' (insight-generator — pattern synthesis, not events digest)."
 ---
 
 # Weekly Recap — 7-Day Cross-Connector Synthesis

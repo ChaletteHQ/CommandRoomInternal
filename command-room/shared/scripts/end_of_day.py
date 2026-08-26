@@ -108,6 +108,28 @@ MORNING_TASK_ID = "morning-brief"
 
 RECEIPT_EVENT = "pack_run"
 
+# SPEC EODSPEED1 §4 — the stated budget: a close on a day whose captures are
+# current lands within FIVE MINUTES of the slot, at full checking depth. The
+# budget is met by moving work earlier (the incremental capture pass), never
+# by trimming a check — nothing anywhere reads this constant to skip work.
+# The receipt stamps `close_budget` (see log_end_of_day_receipt) so the
+# EODPHASE1 phase records plus this one verdict are the before/after
+# instrument on M's own fires.
+CLOSE_BUDGET_MS = 5 * 60 * 1000
+
+
+def close_budget_read(duration_ms) -> Optional[dict]:
+    """The budget verdict the receipt carries: `{"budget_ms", "duration_ms",
+    "within_budget"}`, or None when the fire did not report a duration —
+    absent, never a fabricated pass (the MC2 rule: "not measured" and
+    "within budget" are different claims)."""
+    if not isinstance(duration_ms, int) or isinstance(duration_ms, bool) \
+            or duration_ms < 0:
+        return None
+    return {"budget_ms": CLOSE_BUDGET_MS,
+            "duration_ms": duration_ms,
+            "within_budget": duration_ms <= CLOSE_BUDGET_MS}
+
 
 # ---------------------------------------------------------------------------
 # Per-phase instrumentation (SPEC EODPHASE1)
@@ -137,6 +159,11 @@ PHASE_SIGN_OFF = "sign_off"
 PHASE_COVERAGE = "coverage"
 PHASE_CATCHUP = "catchup"
 PHASE_WEEK_ROLLUP = "week_rollup"
+# SPEC EODSYNTH1 — the synthesis composition. A phase of its own because it is
+# the one leg whose cost scales with how much the day DID rather than with how
+# much the workspace holds, and because it is the leg a reader will suspect
+# first the day the evening gets slow.
+PHASE_SYNTHESIS = "synthesis"
 PHASE_RENDER = "render"
 
 # The phases `build_end_of_day_pack` itself runs, in execution order.
@@ -147,7 +174,7 @@ PACK_PHASES = (
     PHASE_ALARMS, PHASE_BRIEF_STATE, PHASE_MORNING_READ, PHASE_CLOSURES,
     PHASE_LEDGER, PHASE_SCORE, PHASE_WINS, PHASE_SLIPPED, PHASE_CONFIRM,
     PHASE_TOMORROW, PHASE_SIGN_OFF, PHASE_COVERAGE, PHASE_CATCHUP,
-    PHASE_WEEK_ROLLUP, PHASE_RENDER,
+    PHASE_WEEK_ROLLUP, PHASE_SYNTHESIS, PHASE_RENDER,
 )
 
 # Legs the ORCHESTRATOR runs around the pack build — the capture leg and the
@@ -298,6 +325,48 @@ class _PhaseTimer:
 BLOCK_ORDER = ("alarm_lines", "coverage", "score", "wins", "slipped",
                "confirm", "tomorrow", "sign_off")
 
+# ---------------------------------------------------------------------------
+# SPEC EODSYNTH1 — WHAT RENDERS, AND WHAT IS ONLY COMPUTED
+# ---------------------------------------------------------------------------
+#
+# M's ruling (2026-08-23): the evening SYNTHESIZES the day instead of scoring
+# it, and asks exactly one thing — tomorrow. So the render order below is no
+# longer `BLOCK_ORDER`, and the difference between the two lists is the ruling
+# written down:
+#
+#   `RENDER_ORDER`      what reaches the screen, in this order.
+#   `COMPUTED_ONLY`     what still runs, still lands on the `pack_run` receipt,
+#                       and renders NOWHERE — chat or widget.
+#
+# `BLOCK_ORDER` STAYS, and it is not dead. It is the RECEIPT's vocabulary:
+# `blocks_rendered` has named these eight since EOD1 and weekly-recap, the
+# watchdog and the trend surfaces join on it. Renaming or truncating it would
+# rewrite the meaning of every receipt already on disk. UN-RENDER, DON'T
+# UNBUILD is the whole of R-1, and this pair of tuples is where that lives:
+# `score` is still computed, still carries `n_planned`/`n_closed`, and still
+# reaches the receipt through `log_end_of_day_receipt` — it simply has no
+# sentence on the surface any more.
+#
+# Why `wins`, `slipped` and `confirm` are here too, and this is NOT scope
+# creep. Each of them was a RENDERED ROW-LIST and each is now an INPUT:
+# `wins` and the ledger feed the how-the-day-went paragraph, `slipped` feeds
+# the with-consequences prose (and its ask moves to the morning, R-3), and
+# `confirm` renders on the morning surfaces where the operator is in triage
+# mode. Leaving them in the render order would have been the pile M's ruling
+# removes, wearing a new heading.
+RENDER_ORDER = ("alarm_lines", "coverage", "day_went", "what_it_meant",
+                "worth_remembering", "slipped_prose", "echoes", "tomorrow",
+                "sign_off")
+
+# Computed, receipted, NEVER rendered. A block in this tuple that acquires a
+# sentence on the surface is the defect EODSYNTH1 exists to remove.
+COMPUTED_ONLY = ("score", "wins", "slipped", "confirm")
+
+# The synthesis blocks, in their render order. Spelled from the module that
+# composes them so the two can never drift into two orders.
+SYNTHESIS_BLOCKS = ("day_went", "what_it_meant", "worth_remembering",
+                    "slipped_prose", "echoes")
+
 # Render bounds. A cap is a render bound, never a silence (the :299 doctrine).
 MAX_SLIPPED_ROWS = 3
 MAX_CONFIRM_ROWS = 5
@@ -332,6 +401,130 @@ OVERDUE_ASK_AFTER_DAYS = 3
 # inside it, and nothing here bounds the value beyond "a positive whole number"
 # — a workspace that sets 10 has decided it wants ten days of reminders.
 OVERDUE_ASK_CONFIG_KEY = "overdue_ask_after_days"
+
+
+# ---------------------------------------------------------------------------
+# SPEC EODSYNTH1 — SECTION NAMES ARE JOIN KEYS (the renamed-section gotcha)
+# ---------------------------------------------------------------------------
+#
+# A section name in this product is not a label, it is a KEY: the FRP1 config
+# stores per-section decisions under it, and a rename that does not carry the
+# stored value across does not fail — it DEFAULTS, silently, and the workspace
+# quietly loses a decision its owner made. That is the recorded gotcha
+# (`cr-renamed-section-orphans-learned-config`), and this build renames a
+# section, so the migration is written out rather than hoped for.
+#
+# ONE rename and ONE retirement, both explicit:
+#
+#   `slipped_section`  ->  `slipped_prose_section`
+#       The slipped ROW-LIST became the slipped-with-consequences PROSE. The
+#       operator's on/off decision is about "does the evening tell me what
+#       slipped", which is the same question about a different rendering, so
+#       the stored value travels. An owner who turned it OFF still has it off.
+#
+#   `tone: "scoreboard"`  ->  `tone: "journal"`
+#       "Scoreboard" named a surface that no longer exists — R-1 un-renders
+#       the score. Leaving the value in place would point a live preference at
+#       a retired rendering, which is the orphan in the other direction. The
+#       old value is PRESERVED under `tone_before_eodsynth1` rather than
+#       overwritten, because a migration that destroys the thing it migrated
+#       cannot be reviewed after the fact.
+#
+# Idempotent by construction: a config already carrying the new key is left
+# alone, so re-running this over an already-migrated workspace is a no-op and
+# a later hand-edit of the new key is never clobbered by the old one.
+SECTION_KEY_MIGRATIONS = (("slipped_section", "slipped_prose_section"),)
+TONE_RETIRED_VALUE = "scoreboard"
+TONE_SUCCESSOR_VALUE = "journal"
+TONE_PRESERVED_KEY = "tone_before_eodsynth1"
+
+
+def migrate_section_config(config: Optional[dict]) -> dict:
+    """Carry the FRP1 section decisions across EODSYNTH1's renames. PURE.
+
+    Returns `{"config": <new dict>, "migrated": [(old, new, value), ...],
+    "changed": bool}`. Never mutates the input — a migration that edits the
+    caller's dict is one that has already half-run when it raises.
+
+    Takes and returns a CONFIG rather than a workspace so the rule is testable
+    without a disk, and so the one writer (`migrate_section_config_on_disk`)
+    is the only thing that can persist it.
+    """
+    src = dict(config or {})
+    migrated = []
+    for old, new in SECTION_KEY_MIGRATIONS:
+        if new in src:
+            continue  # already migrated, or set by hand: leave it alone
+        if old in src:
+            src[new] = src[old]
+            migrated.append((old, new, src[old]))
+    tone = src.get("tone")
+    if tone == TONE_RETIRED_VALUE:
+        src.setdefault(TONE_PRESERVED_KEY, tone)
+        src["tone"] = TONE_SUCCESSOR_VALUE
+        migrated.append(("tone", "tone", TONE_SUCCESSOR_VALUE))
+    return {"config": src, "migrated": migrated, "changed": bool(migrated)}
+
+
+def migrate_section_config_on_disk(workspace_root, *,
+                                   origin: str = "eodsynth1") -> dict:
+    """Persist `migrate_section_config` for this workspace, once.
+
+    Writes NOTHING when nothing moved — a no-op migration that still writes is
+    a `skill_reconfigured` event per fire, which is noise in the one log a
+    reader consults to find out what changed a setting.
+    """
+    # THE RAW STORED CONFIG, not the defaulted one, and the difference is
+    # load-bearing. `get_config` merges `held_tier.CONFIG_DEFAULTS` over what
+    # is on disk, so the moment the new key acquires a default the migration
+    # would see it as already present and skip forever — the rename would then
+    # silently default on every workspace, which is precisely the gotcha this
+    # function exists to close. Reading raw means "present" means "this
+    # workspace decided it", which is the only reading the skip is safe under.
+    # (`slipped_prose_section` is deliberately NOT in `CONFIG_DEFAULTS` for the
+    # same reason: absent means never decided, and `slipped_prose_enabled`
+    # answers that as ON.)
+    try:
+        from skill_config_writer import load_skill_config, save_skill_config
+        record = load_skill_config(workspace_root, SKILL_NAME)
+        # `load_skill_config` hands back the whole envelope
+        # (`schema_version` / `configured_at` / `skill_name` / `config`); the
+        # knobs are the inner dict, and `save_skill_config` takes that inner
+        # dict back. Passing the envelope in would be rejected as unknown keys.
+        cfg = (record or {}).get("config") if isinstance(record, dict) else None
+    except Exception:  # noqa: BLE001 — a config that cannot be read is a
+        # config this migration leaves exactly as it found it.
+        return {"changed": False, "migrated": [], "error": "unreadable"}
+    if not isinstance(cfg, dict):
+        # Never configured, so there is no decision to carry across. Writing a
+        # config here would manufacture a first-run the owner never had.
+        return {"changed": False, "migrated": []}
+    result = migrate_section_config(cfg)
+    if not result["changed"]:
+        return {"changed": False, "migrated": []}
+    try:
+        save_skill_config(workspace_root, SKILL_NAME, result["config"],
+                          is_reconfigure=True, origin=origin)
+    except Exception:  # noqa: BLE001
+        return {"changed": False, "migrated": result["migrated"],
+                "error": "unwritable"}
+    return {"changed": True, "migrated": result["migrated"]}
+
+
+def slipped_prose_enabled(config: Optional[dict]) -> bool:
+    """Is the slipped-with-consequences section on for this workspace?
+
+    Reads the MIGRATED key first and falls back to the pre-rename one, so a
+    workspace whose migration has not run yet still honours the decision its
+    owner made. The fallback is the belt to the migration's braces and it is
+    deliberately not removable: a read that only knows the new key is exactly
+    the silent default-to-on this whole section exists to prevent.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    for key in ("slipped_prose_section", "slipped_section"):
+        if key in cfg:
+            return str(cfg[key]).strip().lower() != "off"
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1111,6 +1304,11 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
             "commitment_id": str(cid) if cid else None,
             "title": title,
             "title_source": title_source if title else None,
+            # SPEC EODARC1 — the thread the closing event itself named, so a
+            # close can JOIN the arc that tracks it. Read off the event, never
+            # inferred; absent stays absent.
+            "thread_id": (ev.get("primary_thread_id") or data.get("thread_id")
+                          or data.get("primary_thread_id")),
             "ts": ev.get("ts"),
             "resolved_by": data.get("resolved_by"),
             "resolution": data.get("resolution") or "done",
@@ -1122,6 +1320,338 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
         })
     return ClosureWindow(out, window_source=window_source,
                          since=since.isoformat())
+
+
+# ---------------------------------------------------------------------------
+# SPEC EODSYNTH1 — the synthesis INPUTS. Reads only; nothing here composes.
+# ---------------------------------------------------------------------------
+#
+# These four readers exist HERE rather than in `eod_synthesis` on purpose:
+# that module composes prose and touches no disk, so every claim it makes can
+# be reproduced from its arguments alone. Splitting the I/O out is what makes
+# the grounding pins testable without a workspace — plant a row, compose, read
+# the sentence.
+
+_DECISION_TYPES = ("decision",)
+_NOTE_TYPES = ("note",)
+
+
+def todays_decisions(workspace_root, since_ts, *, now_iso=None) -> list:
+    """Decision events inside this fire's own window. Same window resolution
+    (`_window`) every other block on this surface uses, so a day with no
+    morning brief floors to workspace-local midnight rather than reading the
+    whole history (the WINSFLOOR1 failure, one block over)."""
+    since, _src = _window(workspace_root, since_ts, now_iso=now_iso)
+    until = _parse_iso(now_iso) if now_iso else None
+    out = []
+    for ev in _load_events(workspace_root):
+        if ev.get("type") not in _DECISION_TYPES:
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts is None or ts < since:
+            continue
+        if until is not None and ts > until:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        out.append({"decision_id": data.get("decision_id") or data.get("id"),
+                    "title": str(data.get("decision") or data.get("title")
+                                 or "").strip(),
+                    "decision": str(data.get("decision") or "").strip(),
+                    "thread_id": data.get("thread_id")
+                    or data.get("primary_thread_id"),
+                    "ts": ev.get("ts"), "data": data})
+    return out
+
+
+def todays_notes(workspace_root, since_ts, *, now_iso=None) -> list:
+    """Explicit `note` rows inside the same window. `note` is the ONE type
+    read here: a takeaway the user wrote down is a takeaway; a takeaway
+    inferred from a cluster of activity is the manufactured profundity §3.4
+    bans, one tier down."""
+    since, _src = _window(workspace_root, since_ts, now_iso=now_iso)
+    until = _parse_iso(now_iso) if now_iso else None
+    out = []
+    for ev in _load_events(workspace_root):
+        if ev.get("type") not in _NOTE_TYPES:
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts is None or ts < since:
+            continue
+        if until is not None and ts > until:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        out.append({"id": data.get("id") or ev.get("seq") or ev.get("ts"),
+                    "note": str(data.get("note") or data.get("text")
+                                or "").strip(),
+                    "thread_id": data.get("thread_id"),
+                    "ts": ev.get("ts"), "data": data})
+    return out
+
+
+def declared_arcs(workspace_root, *, for_date: str, now_iso=None) -> list:
+    """The arcs this substrate DECLARES — never one a model infers (§3.3).
+
+    Five sources and no sixth, each of them a row somebody put on the record
+    saying "this is a thing we are working toward":
+
+      objectives  open `objective_created` rows (completed / archived ones are
+                  no longer arcs; a finished objective is history, and today
+                  cannot land on it)
+      day intent  TODAY's stated intent (`load_day_intent`, default
+                  `include_proposed=False` — a proposal is a guess and may
+                  never stand as an arc)
+      org         (SPEC EODARC1) an org RELATIONSHIP with a live thread —
+                  every non-self org the entity register carries that has at
+                  least one active/scoping thread affiliated to it. Read from
+                  the register through `entities_io`, NEVER from the deal
+                  tracker: ruling 3 is that deals are context, never state,
+                  so an org with a live thread IS an arc whether or not a
+                  deal row tracks it, and nothing in this read raises when
+                  deal state is absent, stale, or malformed.
+      workstream  active threads in `entities.json` that no org arc already
+                  carries — the product tracks and internal lanes. A thread
+                  an org arc claims is that arc's linkage, not a second arc:
+                  one relationship, one sentence.
+      deal        deals carrying a recorded stage — kept, and deliberately
+                  ADDITIVE ONLY: a deal row can add an arc, its absence can
+                  never subtract one (ruling 3 again, from the other side).
+
+    The sixth class ruling 2 names — consequence-carrying commitments — is
+    minted from the OPEN BOOK inside the composer
+    (`eod_synthesis.mint_commitment_arcs`), because it is a function of rows
+    the driver already holds, not a disk read of its own.
+
+    Everything comes back through `eod_synthesis.declared_arc`, which REFUSES
+    an arc with no id — so an arc-shaped string can never enter the join.
+    """
+    import eod_synthesis as syn
+
+    arcs, seen = [], set()
+
+    def _add(kind, arc_id, label, thread_id=None, thread_ids=None):
+        key = (kind, str(arc_id))
+        if not str(arc_id or "").strip() or key in seen:
+            return
+        try:
+            arcs.append(syn.declared_arc(kind, arc_id, label,
+                                         thread_id=thread_id,
+                                         thread_ids=thread_ids))
+            seen.add(key)
+        except ValueError:
+            pass
+
+    retired = set()
+    objectives = {}
+    for ev in _load_events(workspace_root):
+        etype = ev.get("type")
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if etype == "objective_created":
+            oid = data.get("objective_id") or data.get("id")
+            if oid:
+                objectives[str(oid)] = (str(data.get("title")
+                                            or data.get("objective") or "").strip(),
+                                        data.get("thread_id"))
+        elif etype in ("objective_completed", "objective_archived"):
+            oid = data.get("objective_id") or data.get("id")
+            if oid:
+                retired.add(str(oid))
+        elif etype in ("deal_created", "deal_updated", "deal_stage_changed"):
+            did = data.get("deal_id") or data.get("id")
+            if did and data.get("stage"):
+                _add(syn.ARC_DEAL, did,
+                     str(data.get("title") or data.get("name")
+                         or data.get("stage") or "").strip(),
+                     thread_id=data.get("thread_id"))
+    for oid, (label, thread_id) in objectives.items():
+        if oid not in retired:
+            _add(syn.ARC_OBJECTIVE, oid, label, thread_id=thread_id)
+
+    try:
+        from day_intent import load_day_intent
+        record = load_day_intent(workspace_root, for_date)
+    except Exception:  # noqa: BLE001 — a read never breaks the fire
+        record = None
+    if isinstance(record, dict) and record.get("stated"):
+        goal = str(record.get("goal") or record.get("intent") or "").strip()
+        if not goal:
+            items = [i for i in (record.get("items") or [])
+                     if isinstance(i, dict)]
+            goal = str(items[0].get("text") or "").strip() if items else ""
+        _add(syn.ARC_DAY_INTENT, f"day:{for_date}", goal or for_date)
+
+    try:
+        path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        ents = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        ents = {}
+
+    def _coll(name):
+        # The canonical wrapper-aware read (`entities_io`) with the pre-EODARC1
+        # tolerant fallback behind it: a register this fire cannot read is a
+        # register with no arcs, never a fire that dies declaring them.
+        rows = None
+        if isinstance(ents, dict):
+            try:
+                from entities_io import entities_collection
+                rows = entities_collection(ents, name)
+            except Exception:  # noqa: BLE001
+                rows = ents.get(name)
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        return [r for r in (rows or []) if isinstance(r, dict)]
+
+    live_threads = []
+    for collection in ("projects", "threads"):
+        for row in _coll(collection):
+            if str(row.get("status") or "").strip().lower() not in (
+                    "active", "scoping"):
+                continue
+            tid = row.get("id") or row.get("thread_id")
+            if str(tid or "").strip():
+                live_threads.append(row)
+
+    # SPEC EODARC1 — ORG ARCS FIRST, so a row that reaches both the org and
+    # its thread lands on the relationship. `affiliation_id` is the canonical
+    # spelling, `org_id` the legacy one (`org_activity.thread_org_map` reads
+    # both; so does this).
+    org_threads: dict = {}
+    for row in live_threads:
+        tid = str(row.get("id") or row.get("thread_id") or "").strip()
+        oid = str(row.get("affiliation_id") or row.get("org_id") or "").strip()
+        if tid and oid:
+            org_threads.setdefault(oid, []).append(tid)
+    claimed: set = set()
+    for org in _coll("orgs"):
+        oid = str(org.get("id") or "").strip()
+        if not oid:
+            continue
+        if str(org.get("relationship_type") or "").strip().lower() == "self":
+            # The workspace itself is not a relationship; its threads are the
+            # product tracks and stay workstream arcs below.
+            continue
+        tids = org_threads.get(oid) or []
+        if not tids:
+            continue
+        _add(syn.ARC_ORG, oid,
+             str(org.get("canonical_name") or org.get("name") or "").strip()
+             or oid,
+             thread_ids=tids)
+        if (syn.ARC_ORG, oid) in seen:
+            claimed.update(tids)
+
+    for row in live_threads:
+        tid = str(row.get("id") or row.get("thread_id") or "").strip()
+        if tid in claimed:
+            continue
+        _add(syn.ARC_WORKSTREAM, tid,
+             str(row.get("canonical_name") or row.get("name") or "").strip(),
+             thread_id=tid)
+    return arcs
+
+
+def _people_names(workspace_root) -> dict:
+    """`{person_id: display name}` through the canonical wrapper-aware read.
+
+    SPEC EODARC1 — the arc read narrates who is WAITING on an unmoved
+    commitment, and a person renders by name or not at all: a raw
+    `person_...` id in prose is a leak of the substrate's plumbing into a
+    sentence. Same defensive posture as `_entity_names`, one collection over.
+    """
+    out = {}
+    try:
+        from entities_io import entities_collection
+        raw = json.loads((Path(workspace_root) / "_hq" / "data"
+                          / "entities.json").read_text(encoding="utf-8"))
+        rows = entities_collection(raw, "people")
+    except Exception:  # noqa: BLE001 — a read never breaks a fire
+        return out
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        pid = str(row.get("id") or "").strip()
+        name = str(row.get("canonical_name") or row.get("name") or "").strip()
+        if pid and name:
+            out[pid] = name
+    return out
+
+
+def open_commitment_rows(opens: Iterable[dict], *, workspace_root=None,
+                         now_iso=None) -> list:
+    """The OPEN BOOK, projected for the arc read (SPEC EODARC1). PURE over
+    its arguments except for two register reads (names, timezone), both
+    defensive.
+
+    Takes the `load_open_commitments` projection the driver already holds and
+    returns consequence-checkable rows:
+
+        {"commitment_id", "title", "due", "overdue", "thread_id",
+         "waiting_person", "counterparty_name", "blocker", "gates_meeting",
+         "gates_meeting_id", "ts", "data"}
+
+    Three rules, each load-bearing:
+
+      * `overdue` is COMPUTED here, against the fire's own workspace-local
+        day — never trusted from a stored flag, because the open book's rows
+        were written on their own days and a staleness claim is a claim about
+        NOW.
+      * `counterparty_name` resolves through the entity register
+        (`_people_names`); an id that does not resolve stays None and the
+        person-waiting consequence simply does not fire for it. A sentence
+        naming `person_0042` is worse than no sentence.
+      * NOTHING here reads deal state (ruling 3). The projection is of
+        commitments; a deal tracker in any condition — absent, stale,
+        malformed — changes no field of it.
+
+    `data` rides along whole so the §3.6 visibility fence
+    (`eod_synthesis.visible_rows`) can still see `data.held` on the projected
+    row: a held capture must be as invisible to the arc read as to every
+    other surface.
+    """
+    today = None
+    if workspace_root is not None:
+        try:
+            today = workspace_today(workspace_root, now=now_iso)
+        except Exception:  # noqa: BLE001
+            today = None
+    if today is None and now_iso:
+        parsed = _parse_iso(now_iso)
+        today = parsed.date() if parsed is not None else None
+    people = _people_names(workspace_root) if workspace_root is not None else {}
+    out = []
+    for ev in (opens or []):
+        if not isinstance(ev, dict):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        cid = data.get("id") or data.get("commitment_id")
+        due = str(data.get("due") or data.get("due_date") or "").strip() or None
+        overdue = False
+        if due and today is not None:
+            try:
+                overdue = _dt.date.fromisoformat(due[:10]) < today
+            except Exception:  # noqa: BLE001 — an unparseable date is no date
+                overdue = False
+        counterparty = (str(data.get("counterparty_name") or "").strip()
+                        or people.get(str(data.get("counterparty_id") or ""))
+                        or None)
+        out.append({
+            "commitment_id": str(cid) if cid else None,
+            "title": str(data.get("title") or "").strip(),
+            "due": due,
+            "overdue": overdue,
+            "thread_id": (ev.get("primary_thread_id") or data.get("thread_id")
+                          or data.get("primary_thread_id")),
+            "waiting_person": (str(data.get("waiting_person") or "").strip()
+                               or None),
+            "counterparty_name": counterparty,
+            "blocker": (str(data.get("blocker") or data.get("blocked_on")
+                            or "").strip() or None),
+            "gates_meeting": (data.get("gates_meeting")
+                              or data.get("blocks_meeting")),
+            "gates_meeting_id": data.get("gates_meeting_id"),
+            "ts": ev.get("ts"),
+            "data": data,
+        })
+    return out
 
 
 def unsourced_closes(closures: Iterable[dict]) -> list:
@@ -1423,11 +1953,25 @@ def compute_coverage(workspace_root, *, close_result=None,
         ))
         meetings_line = COVERAGE_MEETINGS.format(since=since, span=span,
                                                  counts=counts)
+        backlog_clause = (
+            COVERAGE_MEETINGS_BACKLOG.format(n_backlog=n_backlog)
+            if isinstance(n_backlog, int) and not isinstance(n_backlog, bool)
+            else COVERAGE_MEETINGS_BACKLOG_UNREAD)
     else:
         meetings_line = COVERAGE_MEETINGS_UNKNOWN
+        since = span = None
+        backlog_clause = None
+    # `since` / `span` / `backlog_clause` are STASHED for one caller:
+    # `reconcile_meetings_line` (SPEC MEETCOUNT1) rebuilds this row's sentence
+    # from the render set after the capture leg has run, and it must keep the
+    # window phrasing and the backlog half EXACTLY as this fire computed them
+    # — recomputing either there would be a second producer for a sentence
+    # whose whole point is having one.
     caps[CAP_MEETINGS] = {"capability": CAP_MEETINGS,
                           "read": bool(ap.get("known")),
-                          "aperture": ap or None, "line": meetings_line}
+                          "aperture": ap or None, "line": meetings_line,
+                          "since": since, "span": span,
+                          "backlog_clause": backlog_clause}
     lines.append(meetings_line)
 
     try:
@@ -1440,6 +1984,201 @@ def compute_coverage(workspace_root, *, close_result=None,
 
     return {"lines": [l for l in lines if l], "capabilities": caps,
             "note": note, "n_unsourced": n_unsourced}
+
+
+# ---------------------------------------------------------------------------
+# SPEC MEETCOUNT1 — the coverage line reconciles with its own render
+# ---------------------------------------------------------------------------
+#
+# THE DEFECT. The meetings line's count came off `capture_aperture` — a
+# Phase-C read of the ledger's own `meeting` events — while the briefs the
+# same screen renders come off the capture leg's discovery, a Phase-D
+# outcome. Two producers, one sentence apart: the live fire said "1 on
+# record in that span" above two rendered briefs, on a day whose backend
+# held three meetings. A count the same screen disproves is worse than no
+# count.
+#
+# THE RULE. The stated count and the rendered briefs derive from ONE
+# producer — `meeting_render_set`, one row per meeting the capture leg found
+# in the window — consumed by both, so they cannot diverge. And anything
+# that reduces the displayed number (an already-processed exclusion, a
+# duplicate fold, a deliberate skip, a failed brief save) is said IN THE
+# SAME SENTENCE. Silent reduction is the bug, whatever the mechanism: a row
+# whose status this fire cannot name is still a NAMED reduction ("not
+# briefed for a reason this fire did not state"), never a quiet subtraction.
+#
+# WHAT THIS IS NOT. Meeting dedup itself is MEETDUP1's build, not this one.
+# This spec owns only the reconciliation of the stated count to the rendered
+# set — when an upstream fold happens, the fold is NAMED here, and nothing
+# here decides what to fold.
+
+# The statuses a render-set row may carry. `briefed` is the rendered lane;
+# every other status is a REDUCTION and gets a clause in the sentence. A
+# status outside this vocabulary folds to `unstated` — visible, never silent.
+MEETING_BRIEFED = "briefed"
+# SPEC EODSPEED1 — a meeting the incremental capture pass (the silent
+# `meeting-capture` maintenance job) already processed, whose brief is on
+# disk. It COUNTS AS BRIEFED — the brief renders, the ref rides
+# `briefed_refs` — because the pass is silent by fence and the close is the
+# one narrator: folding these into `already_processed` would make the day's
+# briefs reach nobody. The counts clause still NAMES them ("captured earlier
+# by the background pass"), because a number that moved producer mid-day is a
+# number the sentence must explain.
+MEETING_BRIEFED_PRIOR = "briefed_prior"
+MEETING_ALREADY_PROCESSED = "already_processed"
+MEETING_DUPLICATE_FOLDED = "duplicate_folded"
+MEETING_SKIPPED = "skipped"
+MEETING_BRIEF_FAILED = "brief_failed"
+MEETING_UNSTATED = "unstated"
+MEETING_RENDER_STATUSES = (
+    MEETING_BRIEFED, MEETING_BRIEFED_PRIOR, MEETING_ALREADY_PROCESSED,
+    MEETING_DUPLICATE_FOLDED, MEETING_SKIPPED, MEETING_BRIEF_FAILED,
+    MEETING_UNSTATED)
+
+# EODSPEED1 — the briefed-prior clause, singular and plural. NOT a member of
+# MEETING_REDUCTION_LABELS: these rows are IN `n_briefed`, so putting them in
+# the reductions dict would break the render-set invariant. They get their
+# own clause inside the same parenthetical instead.
+MEETING_BRIEFED_PRIOR_LABELS = (
+    "{n} captured earlier by the background pass",
+    "{n} captured earlier by the background pass")
+
+# THE WORDS for each reduction, singular and plural, rendered inside one
+# parenthetical: "(1 duplicate capture folded, 1 already processed)". Order
+# here is render order.
+MEETING_REDUCTION_LABELS = {
+    MEETING_DUPLICATE_FOLDED: ("{n} duplicate capture folded",
+                               "{n} duplicate captures folded"),
+    MEETING_ALREADY_PROCESSED: ("{n} already processed",
+                                "{n} already processed"),
+    MEETING_SKIPPED: ("{n} deliberately skipped",
+                      "{n} deliberately skipped"),
+    MEETING_BRIEF_FAILED: ("{n} brief could not be saved",
+                           "{n} briefs could not be saved"),
+    MEETING_UNSTATED: ("{n} not briefed for a reason this fire did not state",
+                       "{n} not briefed for a reason this fire did not state"),
+}
+
+# The reconciled counts clause. The braces are filled by `meeting_render_set`
+# and the whole clause replaces `COVERAGE_MEETINGS_N` in the sentence — the
+# two claims ("on record" and "briefed") always travel together, because the
+# gap between them is exactly what the reductions parenthetical explains.
+COVERAGE_MEETINGS_RECONCILED = "{n_on_record} on record, {n_briefed} briefed"
+# The reconciled sentence when the capture window itself could not be read:
+# the window claim stays honest (unknown) while the counts still reconcile
+# with the render, because the render happened whether or not the cursor
+# could be read.
+COVERAGE_MEETINGS_RECONCILED_NO_WINDOW = (
+    "Meetings: the capture window could not be read, so this fire cannot say "
+    "how far back it looked; of what it found, {counts}.")
+
+
+def meeting_render_set(rows) -> dict:
+    """THE ONE PRODUCER (SPEC MEETCOUNT1). One row per meeting the capture
+    leg found in the window; the coverage line's counts AND the Meeting
+    briefs section both consume this return, so they cannot diverge.
+
+    `rows`: iterable of `{"source_ref": str, "status": str}` — one per
+    meeting the discovery leg returned for the span, status per
+    `MEETING_RENDER_STATUSES`. A missing or unrecognized status folds to
+    `unstated`, which renders as its own named reduction: a row this fire
+    cannot explain still moves the stated arithmetic in the open.
+
+    Returns `{"known": True, "n_on_record", "n_briefed", "reductions"
+    (ordered {status: n}, only non-zero, never `briefed`), "briefed_refs"
+    (input order), "counts_clause" (the sentence fragment both the line and
+    a test can pin)}`. Invariant, by construction and asserted anyway:
+    n_on_record == n_briefed + sum(reductions.values()).
+    """
+    n_briefed = 0
+    n_briefed_prior = 0
+    briefed_refs = []
+    tallies = {s: 0 for s in MEETING_RENDER_STATUSES}
+    n_on_record = 0
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        n_on_record += 1
+        status = str(row.get("status") or "").strip().lower()
+        if status not in MEETING_RENDER_STATUSES:
+            status = MEETING_UNSTATED
+        if status in (MEETING_BRIEFED, MEETING_BRIEFED_PRIOR):
+            # EODSPEED1 — briefed-prior rows ARE briefed: the brief renders
+            # and the ref rides briefed_refs. They are tallied separately so
+            # the sentence can name where they came from.
+            n_briefed += 1
+            if status == MEETING_BRIEFED_PRIOR:
+                n_briefed_prior += 1
+            ref = str(row.get("source_ref") or "").strip()
+            briefed_refs.append(ref)
+        else:
+            tallies[status] += 1
+    reductions = {s: tallies[s] for s in MEETING_REDUCTION_LABELS
+                  if tallies[s]}
+    assert n_on_record == n_briefed + sum(reductions.values())
+    clause = COVERAGE_MEETINGS_RECONCILED.format(
+        n_on_record=n_on_record, n_briefed=n_briefed)
+    parts = []
+    if n_briefed_prior:
+        one, many = MEETING_BRIEFED_PRIOR_LABELS
+        parts.append((one if n_briefed_prior == 1 else many).format(
+            n=n_briefed_prior))
+    for status, n in reductions.items():
+        one, many = MEETING_REDUCTION_LABELS[status]
+        parts.append((one if n == 1 else many).format(n=n))
+    if parts:
+        clause += " (" + ", ".join(parts) + ")"
+    return {"known": True, "n_on_record": n_on_record,
+            "n_briefed": n_briefed, "n_briefed_prior": n_briefed_prior,
+            "reductions": reductions,
+            "briefed_refs": briefed_refs, "counts_clause": clause}
+
+
+def reconcile_meetings_line(coverage, render_set) -> dict:
+    """Rebuild the coverage strip's meetings sentence from the render set —
+    called by the fire AFTER the capture leg has run and BEFORE the receipt
+    is logged, so the strip the reader sees and the strip the receipt
+    carries both state the numbers the render can back.
+
+    The Phase-C aperture line was a statement about what the fire was ABOUT
+    to look at; this replaces its count with what the fire found and
+    rendered, from `meeting_render_set` — the same producer the Meeting
+    briefs section draws its rows from. The window phrasing and the backlog
+    half are kept EXACTLY as `compute_coverage` computed them (they are
+    stashed on the meetings row for this call), because this function's one
+    job is to change which producer the COUNT reads, not to re-derive the
+    window.
+
+    Returns a NEW coverage dict; the input is not mutated. A malformed
+    `coverage` or `render_set` returns the input unchanged — a reconcile
+    that cannot run must not eat the strip.
+    """
+    if not isinstance(coverage, dict) or not isinstance(render_set, dict) \
+            or not render_set.get("known"):
+        return coverage
+    caps = coverage.get("capabilities")
+    if not isinstance(caps, dict) or CAP_MEETINGS not in caps:
+        return coverage
+    row = dict(caps[CAP_MEETINGS] or {})
+    old_line = row.get("line")
+    # THE ONE PRODUCER: the counts clause comes off the render set, verbatim.
+    counts = render_set["counts_clause"]
+    backlog_clause = row.get("backlog_clause")
+    if backlog_clause:
+        counts = ", ".join((counts, backlog_clause))
+    if row.get("since") is not None and row.get("span") is not None:
+        new_line = COVERAGE_MEETINGS.format(since=row["since"],
+                                            span=row["span"], counts=counts)
+    else:
+        new_line = COVERAGE_MEETINGS_RECONCILED_NO_WINDOW.format(counts=counts)
+    row["line"] = new_line
+    row["render_set"] = render_set
+    out = dict(coverage)
+    out["capabilities"] = dict(caps)
+    out["capabilities"][CAP_MEETINGS] = row
+    out["lines"] = [new_line if l == old_line else l
+                    for l in (coverage.get("lines") or [])]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2218,6 +2957,121 @@ def overdue_ask_after_days(workspace_root) -> int:
     return value
 
 
+ASK_STATE_ASK = "ask"
+ASK_STATE_REST = "rest"
+ASK_STATE_NONE = "none"
+
+
+def overdue_ask_state(row: dict, *, now_iso: Optional[str],
+                      ask_after_days: int = OVERDUE_ASK_AFTER_DAYS) -> dict:
+    """ONE row's fatigue verdict (SPEC OVERDUE1), as a pure function.
+
+    Returns `{"state": "ask"|"rest"|"none", "days_over": int|None,
+    "ask_line": str|None}`.
+
+    EXTRACTED, NOT REWRITTEN (SPEC EODSYNTH1 R-3). The rule is unchanged down
+    to the comparison: a mark suppresses only while its `due_at_ask` still
+    equals the row's CURRENT due, so re-dating an item is an answer and the
+    clock re-arms from the new date, with no second write and nothing to
+    schedule. What moved is WHO ASKS. R-3 takes the confirm/drop asks out of
+    the evening and gives them to the morning surfaces, and the marker is
+    "written by whichever surface asks" — so the verdict had to stop living
+    inside `compute_slipped`, which is an evening-only function. Two callers,
+    one implementation: the morning lane (`apply_overdue_ask`) and the
+    evening's own selection, which now asks nothing and only rests.
+
+    `now_iso` GATES THE ASK AND NOT THE REST, exactly as before: with no clock
+    there is no "days overdue" so nothing new is asked, but a row that already
+    carries a live mark still rests — the mark is a fact about the row (the
+    CEO was asked and has not answered), not a fact about the clock.
+    """
+    from commitment_state import overdue_days as _overdue_days
+
+    if not isinstance(row, dict):
+        return {"state": ASK_STATE_NONE, "days_over": None, "ask_line": None}
+    try:
+        threshold = int(ask_after_days)
+    except (TypeError, ValueError):
+        threshold = OVERDUE_ASK_AFTER_DAYS
+    if threshold < 1:
+        threshold = OVERDUE_ASK_AFTER_DAYS
+
+    due = row.get("due")
+    mark = row.get("asked") if isinstance(row.get("asked"), dict) else None
+    if mark is not None and str(mark.get("due_at_ask") or "").strip() == str(
+            due or "").strip():
+        return {"state": ASK_STATE_REST, "days_over": None, "ask_line": None}
+    days_over = _overdue_days(due, now_iso) if now_iso else None
+    if isinstance(days_over, int) and days_over >= threshold:
+        title = str(row.get("title") or "").strip()
+        return {"state": ASK_STATE_ASK, "days_over": days_over,
+                "ask_line": overdue_ask_label(title, days_over)}
+    return {"state": ASK_STATE_NONE, "days_over": days_over, "ask_line": None}
+
+
+def apply_overdue_ask(rows: Optional[Iterable[dict]] = None, *,
+                      now_iso: Optional[str] = None,
+                      ask_after_days: int = OVERDUE_ASK_AFTER_DAYS,
+                      ask: bool = True) -> dict:
+    """The fatigue rule over a needs-attention LANE (SPEC EODSYNTH1 R-3).
+
+    Returns `{"rows", "asked_ids", "resting_ids", "n_resting", "resting_line",
+    "ask_after_days"}`. The returned rows are the lane MINUS the resting ones,
+    with `ask_line` / `ask_now` / `days_over` stamped on the rows being asked
+    about tonight — the same three keys the evening block has carried since
+    OVERDUE1, so a renderer that already knew them needs no new vocabulary.
+
+    THIS IS THE MORNING'S ENTRY POINT. R-3 moved the "Done, new date, or
+    drop?" question off the evening and onto the morning brief's
+    needs-attention lane, and the ask-once marker is unchanged: whichever
+    surface ASKS writes it, through `commitment_state.mark_asked`, and the
+    rest-until-answered fold holds exactly as before.
+
+    `ask=False` is the EVENING's call. It rests what is resting — a row the
+    CEO has already been asked about must not come back as narrative prose the
+    next night either — and asks nothing, which is what makes the evening's
+    ask count zero.
+    """
+    out, asked, resting = [], [], []
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        verdict = overdue_ask_state(row, now_iso=now_iso,
+                                    ask_after_days=ask_after_days)
+        cid = str(row.get("commitment_id") or "")
+        if verdict["state"] == ASK_STATE_REST:
+            if cid:
+                resting.append(cid)
+            continue
+        new = dict(row)
+        if ask and verdict["state"] == ASK_STATE_ASK:
+            new["ask_now"] = True
+            new["days_over"] = verdict["days_over"]
+            new["ask_line"] = verdict["ask_line"]
+            # THE FORK'S ANSWERS TRAVEL WITH THE QUESTION, unchanged from the
+            # evening block that used to ask it. The question is "Done, new
+            # date, or drop?" and these are those three answers; a row that
+            # carried the question without them would be asking something the
+            # reader has no listed way to answer.
+            #
+            # NAMED HONESTLY (see the BUILD record): the morning brief
+            # one-taps `mark done [n]` today and routes a new date or a drop
+            # through `my plate`, which is one extra hop for two of the three
+            # answers. That hop is a cost of the move, not a defect in this
+            # list — the verbs are what the row OFFERS, and closing the hop is
+            # an apply-choices route on the morning surface, which is a build.
+            new.setdefault("verbs", list(SLIPPED_VERBS))
+            if cid:
+                asked.append(cid)
+        out.append(new)
+    # The asked rows lead: a question the reader never sees is not a question.
+    out.sort(key=lambda r: (not r.get("ask_now"),))
+    return {"rows": out, "asked_ids": sorted(asked),
+            "resting_ids": sorted(resting), "n_resting": len(resting),
+            "resting_line": resting_line(len(resting)),
+            "ask_after_days": ask_after_days}
+
+
 def compute_slipped(*, brief_state: dict, morning: dict,
                     todays_meetings: Optional[Iterable[dict]] = None,
                     processed_meeting_ids: Optional[Iterable[str]] = None,
@@ -2225,6 +3079,7 @@ def compute_slipped(*, brief_state: dict, morning: dict,
                     cap: int = MAX_SLIPPED_ROWS,
                     softened: bool = False,
                     lane_total: Optional[int] = None,
+                    ask: bool = True,
                     ask_after_days: int = OVERDUE_ASK_AFTER_DAYS) -> dict:
     """The ball-is-on-you rows, and ONLY those.
 
@@ -2304,10 +3159,6 @@ def compute_slipped(*, brief_state: dict, morning: dict,
                    if isinstance(d, dict) and d.get("commitment_id")}
     planned = {str(i) for i in ((morning or {}).get("needs_attention_ids") or [])}
 
-    # ONE derivation of "how late is this", shared with `is_overdue` so a row
-    # can never render `overdue: True` beside a day count that disagrees.
-    from commitment_state import overdue_days as _overdue_days
-
     try:
         threshold = int(ask_after_days)
     except (TypeError, ValueError):
@@ -2323,30 +3174,34 @@ def compute_slipped(*, brief_state: dict, morning: dict,
         cid = str(row.get("commitment_id") or "")
         if not cid or cid in dropped_ids:
             continue
-        due = row.get("due")
-        days_over = _overdue_days(due, now_iso) if now_iso else None
-        mark = row.get("asked") if isinstance(row.get("asked"), dict) else None
-        # A mark whose `due_at_ask` is not this row's due date is STALE — the
-        # user moved the deadline, which is an answer — so it suppresses
-        # nothing and the row re-arms against the new date.
-        if mark is not None and str(mark.get("due_at_ask") or "").strip() == str(
-                due or "").strip():
+        # SPEC EODSYNTH1 R-3 — ONE implementation of the fatigue verdict,
+        # shared with the morning lane (`apply_overdue_ask`). The rule is
+        # unchanged; what changed is that `ask` is now a parameter, because
+        # the evening no longer asks and the morning does.
+        verdict = overdue_ask_state(row, now_iso=now_iso,
+                                    ask_after_days=threshold)
+        if verdict["state"] == ASK_STATE_REST:
             resting_ids.append(cid)
             continue
         candidate = {
             "commitment_id": cid,
             "title": str(row.get("title") or "").strip(),
-            "due": due,
+            "due": row.get("due"),
             "overdue": bool(row.get("overdue")),
             "on_this_mornings_plan": cid in planned,
             "gate_source": "brief_state.needs_attention",
             "verbs": list(SLIPPED_VERBS),
         }
-        if isinstance(days_over, int) and days_over >= threshold:
+        # SPEC EODSYNTH1 — the ask itself is CONDITIONAL now. With `ask=False`
+        # (the evening's own call) nothing is stamped and `asked_ids` comes
+        # back empty, so `mark_slipped_asked` has nothing to write and the
+        # evening's ask count is zero. Resting is NOT conditional: a row the
+        # CEO has already been asked about must not return as narrative prose
+        # the next night either.
+        if ask and verdict["state"] == ASK_STATE_ASK:
             candidate["ask_now"] = True
-            candidate["days_over"] = days_over
-            candidate["ask_line"] = overdue_ask_label(candidate["title"],
-                                                      days_over)
+            candidate["days_over"] = verdict["days_over"]
+            candidate["ask_line"] = verdict["ask_line"]
         candidates.append(candidate)
 
     # Rank: the one being ASKED about first, then overdue, then what the
@@ -2439,13 +3294,54 @@ def mark_slipped_asked(workspace_root, pack: dict, *,
     """
     slipped = pack.get("slipped") if isinstance(pack, dict) else None
     slipped = slipped if isinstance(slipped, dict) else {}
-    ids = [str(i) for i in (slipped.get("asked_ids") or []) if str(i).strip()]
+    return _write_asks(workspace_root,
+                       ids=slipped.get("asked_ids") or [],
+                       rows=slipped.get("rows") or [],
+                       source_skill=source_skill, surface=SURFACE,
+                       now_iso=now_iso)
+
+
+def mark_lane_asked(workspace_root, brief_state: dict, *,
+                    source_skill: str = MORNING_TASK_ID,
+                    now_iso: Optional[str] = None) -> dict:
+    """The MORNING's half of the same write (SPEC EODSYNTH1 R-3).
+
+    R-3 moved the "Done, new date, or drop?" ask to the morning, and the
+    marker's rule is "written by whichever surface asks". So this is the same
+    writer with the same body, reading the morning pack's `brief_state`
+    instead of the evening's `slipped` block, and stamping `surface` with the
+    morning's own id — because "which surface asked" is a fact the fold and
+    any later audit need, and a morning ask recorded as an evening one is a
+    record that cannot be read back.
+
+    Called AFTER the morning post, for the same reason its evening twin is:
+    the mark means the CEO has been asked, and writing it before the question
+    reaches the screen rests a row nobody saw.
+    """
+    state = brief_state if isinstance(brief_state, dict) else {}
+    return _write_asks(workspace_root,
+                       ids=state.get("asked_ids") or [],
+                       rows=state.get("needs_attention") or [],
+                       source_skill=source_skill, surface=MORNING_TASK_ID,
+                       now_iso=now_iso)
+
+
+def _write_asks(workspace_root, *, ids, rows, source_skill: str,
+                surface: str, now_iso: Optional[str]) -> dict:
+    """ONE implementation of the ask write, shared by both bookends.
+
+    Extracted by SPEC EODSYNTH1 rather than copied: two writers over one
+    marker is two things to keep in step, and the whole safety property of
+    the fatigue rule is that the mark records WHICH deadline was asked about.
+    A second implementation is a second chance to record a different one.
+    """
+    ids = [str(i) for i in (ids or []) if str(i).strip()]
     out = {"n_marked": 0, "n_already": 0, "n_closed": 0, "n_failed": 0,
            "results": []}
     if not ids:
         return out
     due_by_id = {str(r.get("commitment_id")): r.get("due")
-                 for r in (slipped.get("rows") or [])
+                 for r in (rows or [])
                  if isinstance(r, dict)}
     try:
         from commitment_state import asked_commitment_marks, mark_asked
@@ -2462,7 +3358,7 @@ def mark_slipped_asked(workspace_root, pack: dict, *,
             res = mark_asked(workspace_root, cid,
                              due_at_ask=due_by_id.get(cid),
                              source_skill=source_skill,
-                             surface=SURFACE, now_iso=now_iso,
+                             surface=surface, now_iso=now_iso,
                              known_asked=known)
         except Exception as exc:  # noqa: BLE001
             out["n_failed"] += 1
@@ -2595,8 +3491,20 @@ def compute_tomorrow(workspace_root, *, for_date: str,
     renders its intent half, and the caller receipts the missing leg. A skipped
     leg is a stated absence, never an empty section that reads as "nothing
     tomorrow".
+
+    SPEC TOMFILT1 §1 — TOMORROW NEVER PROPOSES THE PAST. `for_date` is
+    tomorrow, so the day being CLOSED is `for_date` minus one — resolved
+    from `for_date` itself (already workspace-local by the time it reaches
+    here) rather than a fresh clock read, so this stays a pure function of
+    its own arguments. An item ANCHORED to that day — a due date on or
+    before it, or same-day text ("tonight", a bare time with no future day
+    named) — is excluded from the AUTO-DRAFT. The informational `rollover`
+    list is untouched: it is "what's on your plate", not "what tomorrow is
+    about", and the fence belongs to the proposer alone.
     """
     from day_intent import load_day_intent
+    from due_reanchor import is_anchored_to_day, is_same_day_text, \
+        parse_date, render_due_phrase
 
     record = None
     try:
@@ -2617,12 +3525,23 @@ def compute_tomorrow(workspace_root, *, for_date: str,
         })
     events.sort(key=lambda e: str(e.get("start") or ""))
 
+    # The day being closed. `for_date` parses cleanly by construction (every
+    # caller resolves it through `day_intent.resolve_for_date`); a defensive
+    # None here just means the anchor fence sits out rather than the whole
+    # block raising over a caller's malformed date.
+    _for_date_d = parse_date(for_date)
+    today = (_for_date_d - _dt.timedelta(days=1)) if _for_date_d else None
+
     lane = [r for r in ((brief_state or {}).get("needs_attention") or [])
             if isinstance(r, dict)]
     rollover = [{"commitment_id": str(r.get("commitment_id") or ""),
                  "title": str(r.get("title") or "").strip(),
                  "due": r.get("due"),
-                 "overdue": bool(r.get("overdue"))}
+                 "overdue": bool(r.get("overdue")),
+                 # SPEC TOMFILT1 §2 — re-anchored to TODAY on every render,
+                 # never a stale weekday name. `today` may be None only on a
+                 # malformed `for_date`; the phrase then names the date alone.
+                 "due_phrase": render_due_phrase(r.get("due"), today)}
                 for r in lane][:cap]
 
     proposal = None
@@ -2631,13 +3550,27 @@ def compute_tomorrow(workspace_root, *, for_date: str,
         # back to the top of the lane. At most three items — the day_intent
         # cap is the point of that record, and a proposal that would be
         # refused at the writer is not a proposal.
+        #
+        # THE POOL IS THE FULL LANE, NOT THE DISPLAY-CAPPED `rollover`.
+        # SPEC TOMFILT1's anchor fence runs FIRST, over every needs-attention
+        # row; running it after `rollover`'s own `cap` slice would let three
+        # anchored (excluded) rows fill the cap and starve a real candidate
+        # sitting fourth — the fence would be correct and the draft would
+        # come up empty anyway on any evening whose top rows are all
+        # carryover from today.
         titles = [t for t in (e["title"] for e in events) if t]
         picked = []
-        for r in rollover:
-            if not r["title"]:
+        for r in lane:
+            title = str(r.get("title") or "").strip()
+            if not title:
                 continue
-            hit = any(_shares_words(r["title"], t) for t in titles)
-            picked.append({"text": r["title"], "commitment_id": r["commitment_id"],
+            if today is not None and is_anchored_to_day(r.get("due"), today):
+                continue
+            if is_same_day_text(title):
+                continue
+            hit = any(_shares_words(title, t) for t in titles)
+            picked.append({"text": title,
+                           "commitment_id": str(r.get("commitment_id") or ""),
                            "matched_meeting": hit})
         picked.sort(key=lambda p: (not p["matched_meeting"],))
         items = picked[:3]
@@ -3077,40 +4010,61 @@ def compute_catchup_read(*, lateness: dict, window=None, workspace_root=None,
 # The receipt — written BEFORE the post, and it is what taps resolve against
 # ---------------------------------------------------------------------------
 
+# The blocks whose rows the EVENING numbers, in numbering order.
+#
+# SPEC EODSYNTH1 R-2/R-3 — THIS TUPLE IS NOW EMPTY, AND THAT IS THE BUILD.
+# The evening's one interaction is the tomorrow block, and it does not resolve
+# by number: `resolve_intent_confirm` reads the PROPOSAL off the same receipt,
+# so a confirm needs no numbered row and never did. Everything that used to be
+# numbered here — the slipped rows and their push/draft/drop verbs, the confirm
+# rows, the person candidates — renders on the MORNING surfaces now, where the
+# operator is in triage mode and where those surfaces keep their own maps.
+#
+# NUMBERING A ROW THAT DOES NOT RENDER IS THE DEFECT, not a spare capability.
+# `log_end_of_day_receipt` records `confirm_ids` as a claim about what was on
+# screen and `surfaced` counts it; a map entry for a row the surface never drew
+# makes every tap past it resolve against something invisible. That is the
+# PERSONLOOP1 N-1 finding, and this is the same rule applied in the direction
+# the ruling moved: the rows left, so their numbers left with them.
+#
+# The invariant the suite pins: every block named here is also in
+# `RENDER_ORDER`. A future build that brings a numbered row back to the evening
+# has to put its block in both lists, in the same commit.
+NUMBERED_BLOCKS: tuple = ()
+
+
 def confirm_ids_from_pack(pack: dict) -> list:
     """The one-tap id map, in the order the surface numbers them.
 
     ORDER IS THE CONTRACT. `apply-choices` resolves `[n]` positionally against
-    this list, so it is built from the pack's own rendered rows and in the
-    pack's own order: slipped rows first (they carry the push/draft/drop
-    verbs), then the confirm rows, then (PERSONLOOP1) the confirm block's
-    person-candidate rows. A surface that renumbers without rewriting this
-    list is the wrong-close hazard, which is why the list is DERIVED here
-    instead of typed by the orchestrator.
+    this list, so it is built from the pack's own RENDERED rows and in the
+    pack's own order. A surface that renumbers without rewriting this list is
+    the wrong-close hazard, which is why the list is DERIVED here instead of
+    typed by the orchestrator.
 
-    The candidate rows are APPENDED LAST on purpose: every number a pre-
-    PERSONLOOP1 receipt handed out keeps pointing at the same row, so the
-    change cannot renumber anything that already existed. A candidate entry
-    also carries its own `data` (name key, spellings, org) because a
-    candidate has no substrate id to look up — the row IS the payload, and
-    the alternative is session state.
+    SPEC EODSYNTH1 — the evening renders no numbered rows, so this returns an
+    EMPTY list and the receipt records `surfaced: 0`. That is not a regression
+    and it is not a silence: zero rows were offered for a tap, which is exactly
+    R-2 ("everything else is read-only") measured. The tomorrow confirm resolves
+    through `resolve_intent_confirm` off `day_intent_proposal` on this same
+    receipt and is unaffected — it never used this map.
+
+    The walk over `NUMBERED_BLOCKS` is kept rather than replaced with a bare
+    `return []` so that restoring a numbered row to this surface is a one-line
+    change in ONE place, next to the invariant that says the block must render
+    first.
     """
     ids = []
-    for row in ((pack or {}).get("slipped") or {}).get("rows") or []:
-        cid = row.get("commitment_id")
-        if cid:
-            ids.append({"n": len(ids) + 1, "id": str(cid), "block": "slipped"})
-    confirm = (pack or {}).get("confirm") or {}
-    for row in confirm.get("rows") or []:
-        cid = row.get("commitment_id")
-        if cid:
-            ids.append({"n": len(ids) + 1, "id": str(cid), "block": "confirm"})
-    for row in confirm.get("person_rows") or []:
-        wire = row.get("n")
-        if wire:
-            ids.append({"n": len(ids) + 1, "id": str(wire),
-                        "block": PERSON_CANDIDATE_BLOCK,
-                        "data": dict(row.get("data") or {})})
+    for block in NUMBERED_BLOCKS:
+        rows = ((pack or {}).get(block) or {}).get("rows") or []
+        for row in rows:
+            cid = row.get("commitment_id") or row.get("n")
+            if cid:
+                entry = {"n": len(ids) + 1, "id": str(cid), "block": block}
+                payload = row.get("data")
+                if isinstance(payload, dict):
+                    entry["data"] = dict(payload)
+                ids.append(entry)
     return ids
 
 
@@ -3201,8 +4155,49 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
         "for_date": pack.get("for_date"),
         "branch": pack.get("branch"),
         "confirm_ids": confirm_ids_from_pack(pack),
-        "blocks_rendered": [b for b in BLOCK_ORDER if pack.get(b) is not None],
+        # SPEC EODSYNTH1 — `blocks_rendered` now means what it says. It walks
+        # `RENDER_ORDER`, so it names what reached the screen; the blocks that
+        # are computed and un-rendered (R-1) are recorded BESIDE it under their
+        # own key rather than smuggled into this one. Two claims, two keys: a
+        # reader joining on `blocks_rendered` across the EODSYNTH1 boundary
+        # gets a truthful answer on both sides of it, which is more than a
+        # widened single list could have given them.
+        "blocks_rendered": [b for b in RENDER_ORDER if pack.get(b) is not None],
+        "blocks_computed_only": [b for b in COMPUTED_ONLY
+                                 if pack.get(b) is not None],
     }
+    # The synthesis JOIN — every source ref behind the evening's prose. The
+    # chat shows sentences; this is the record that makes each one checkable
+    # (§3.1). Counts and refs only, never the prose itself: the paragraph is
+    # already persisted with the pack, and a receipt is not a second copy of
+    # the surface.
+    synth = pack.get("synthesis") if isinstance(pack.get("synthesis"), dict) else None
+    if synth is not None:
+        try:
+            import eod_synthesis as _syn
+            data["synthesis"] = {
+                "refs": _syn.synthesis_refs(synth),
+                "blocks": [b for b in _syn.SYNTHESIS_BLOCKS
+                           if str(((synth.get(b) or {}) if isinstance(
+                               synth.get(b), dict) else {}).get("text")
+                               or "").strip()],
+                "n_unreferenced_dropped": synth.get("n_unreferenced_dropped"),
+                "n_withheld": synth.get("n_withheld"),
+                "n_echoes": len((synth.get("echoes") or {}).get("sentences")
+                                or []),
+            }
+        except Exception:  # noqa: BLE001 — the join is diagnostics; a receipt
+            # that cannot describe its own prose still has to write, because
+            # the receipt is what the tomorrow confirm resolves against.
+            pass
+    # SPEC EODCOACH2 — deliberately NOT added here. `pack["coach"]` already
+    # carries its own full `refs` (per sentence, on `patterns`/`delta`/`push`
+    # and pooled at the top level) and `push_state` — the record this
+    # writer's own "nine keys ... and nothing else" pin (EODLEDGER1) closes
+    # over. The pack IS the grounding record for this block (EODARC1's
+    # contract, extended): the audit copy on disk is what
+    # `eod_coach.read_prior_packs` reads back, and the receipt does not need
+    # a second copy of it to satisfy that.
     score = pack.get("score") if isinstance(pack.get("score"), dict) else None
     if score is not None:
         data["score"] = {"status": score.get("status"),
@@ -3219,9 +4214,21 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
         # mistake the draft for the CEO's own word.
         data["day_intent_proposal"] = tomorrow["proposal"]
     if isinstance(capture_leg, dict) and capture_leg:
+        # SPEC EODSPEED1 adds three keys to this whitelist. The two ledger
+        # counts are the 237-row class's own measurement — walks the CRU
+        # ledger let this fire skip, and the stale refusals those recorded
+        # walks already made — zero-written by the orchestrator, never
+        # omitted. `n_review_proposals_suppressed` is TITLEMINT1's mandated
+        # receipt key: the orchestrator has passed it since that spec and
+        # this whitelist silently dropped it, so the cap ran with no count on
+        # any receipt — the exact silence the key exists to prevent.
         for key in ("window_start", "window_end", "window_incomplete_before",
                     "n_meetings", "n_processed", "n_skipped",
-                    "n_stale_evidence_skipped", "capture_counts",
+                    "n_stale_evidence_skipped",
+                    "n_review_proposals_suppressed",
+                    "n_cru_walks_ledger_skipped",
+                    "n_stale_evidence_ledger_honored",
+                    "capture_counts",
                     "held_routing", "n_held"):
             if key in capture_leg and capture_leg[key] is not None:
                 data[key] = capture_leg[key]
@@ -3237,7 +4244,17 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
             "n_candidates": pc.get("n_candidates"),
             "n_rows_blocked": pc.get("n_rows_blocked"),
             "n_top_rows_blocked": pc.get("n_top_rows_blocked"),
-            "n_shown": len(confirm_block.get("person_rows") or []),
+            # SPEC EODSYNTH1 — `n_shown` ASSERTS THAT ROWS REACHED THE SCREEN,
+            # and on the evening none do any more: the confirm block is
+            # computed-only (R-3, the queues moved to the morning). Reporting
+            # `len(person_rows)` here would receipt a render that never
+            # happened, in the optimistic direction — the exact PERSONLOOP1
+            # N-1 defect, arriving through the other door. `n_selected` keeps
+            # the pre-build signal readable so "did the waiting pile shrink?"
+            # stays answerable across the boundary.
+            "n_shown": (len(confirm_block.get("person_rows") or [])
+                        if "confirm" not in COMPUTED_ONLY else 0),
+            "n_selected": len(confirm_block.get("person_rows") or []),
         }
     # SPEC OVERDUE1 — the fatigue rule's own arithmetic, on the SAME receipt
     # and to the same discipline `person_candidate_counts` keeps: counts and
@@ -3280,6 +4297,14 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
                 data[key] = value
     except Exception:  # noqa: BLE001
         pass
+
+    # SPEC EODSPEED1 — the budget verdict, from the fire's own reported
+    # duration. Absent when no duration was reported: "not measured" is not
+    # "within budget". Additive; a reader that does not know the key is
+    # unaffected.
+    budget = close_budget_read(duration_ms)
+    if budget is not None:
+        data["close_budget"] = budget
 
     for k, v in (extra_data or {}).items():
         data.setdefault(k, v)
@@ -3528,6 +4553,15 @@ __all__ = [
     "PACK_PHASES", "LEG_PHASES", "ALL_PHASES", "PhaseLedger",
     "BLOCK_ORDER", "MAX_SLIPPED_ROWS", "MAX_CONFIRM_ROWS",
     "MAX_TOMORROW_ROLLOVER",
+    # SPEC EODSYNTH1
+    "RENDER_ORDER", "COMPUTED_ONLY", "SYNTHESIS_BLOCKS", "NUMBERED_BLOCKS",
+    "SECTION_KEY_MIGRATIONS", "TONE_RETIRED_VALUE", "TONE_SUCCESSOR_VALUE",
+    "TONE_PRESERVED_KEY", "migrate_section_config",
+    "migrate_section_config_on_disk", "slipped_prose_enabled",
+    "ASK_STATE_ASK", "ASK_STATE_REST", "ASK_STATE_NONE",
+    "overdue_ask_state", "apply_overdue_ask",
+    "PHASE_SYNTHESIS", "todays_decisions", "todays_notes", "declared_arcs",
+    "mark_lane_asked",
     "NO_PLAN_LINE", "NOT_RECORDED", "NOT_RECORDED_LINE", "NO_CLOSE_RECORDED",
     "NO_SCORE_RECORDED",
     "SIGN_OFF_CLEAR", "SOFTEN_LINE", "NO_WINS_LINE",
@@ -3554,6 +4588,16 @@ __all__ = [
     "COVERAGE_MEETINGS_BACKLOG", "COVERAGE_MEETINGS_BACKLOG_UNREAD",
     "COVERAGE_UNSOURCED",
     "compute_coverage", "capture_aperture",
+    # SPEC MEETCOUNT1 — the ONE producer for the meetings count + the briefs.
+    "MEETING_BRIEFED", "MEETING_ALREADY_PROCESSED",
+    "MEETING_DUPLICATE_FOLDED", "MEETING_SKIPPED", "MEETING_BRIEF_FAILED",
+    "MEETING_UNSTATED", "MEETING_RENDER_STATUSES",
+    # SPEC EODSPEED1 — the incremental-capture vocabulary + the budget.
+    "MEETING_BRIEFED_PRIOR", "MEETING_BRIEFED_PRIOR_LABELS",
+    "CLOSE_BUDGET_MS", "close_budget_read",
+    "MEETING_REDUCTION_LABELS", "COVERAGE_MEETINGS_RECONCILED",
+    "COVERAGE_MEETINGS_RECONCILED_NO_WINDOW",
+    "meeting_render_set", "reconcile_meetings_line",
     "NO_OPENING_FIGURE", "NO_OPENING_FIGURE_LINE", "LEDGER_LINE",
     "LEDGER_MOVEMENT", "LEDGER_NO_OPENING_FIGURE", "LEDGER_STATUSES",
     "LEDGER_RESIDUAL_LINE", "OPENING_FIGURE_ORIGIN",

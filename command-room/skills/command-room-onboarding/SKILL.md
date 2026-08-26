@@ -2,7 +2,7 @@
 name: command-room-onboarding
 surfaces: cowork
 slack_fallback: "Setup runs on desktop — open Cowork to onboard Command Room; once set up, just talk to me here."
-description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that names the AI operator, scans every connected source, builds the workspace data layer, calibrates the writing voice from sent mail, and proves the system back before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately). Full phase map and fences: Routing section in the body."
+description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that names the AI operator, scans every connected source, builds the workspace data layer, calibrates the writing voice from sent mail, and proves the system back before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately)."
 ---
 
 # Command Room Onboarding — M1 (2026-05-23)
@@ -571,6 +571,7 @@ Key files written during the scan, with narration:
 - **PROJECT_CONTEXT.md** + **PROJECT_BRAIN.md** + **SESSION_NOTES_[NAME].md** — one set per project.
 - **_people/ folder** — `_team-config.md` + one `PERSON.md` per detected team member.
 - **DECISION_LOG.md**, **PEOPLE.md** — views regenerated from entities.json + events.jsonl.
+- **Style profile (SPEC STYLE1, D1/D7) — inferred, provisional, disclosed at the reveal.** From the SAME material the voice scan just read (never a second fetch): distill the sent-mail mechanics (emails analyzed, median words, greeting rate, exclamation/emoji rate), the customer's spoken-turn asks from any transcripts (bottom-line vs walk-me-through counts), and dominant language share into the documented `signals` shape, then run `style_inference.propose(workspace_root, signals=...)` (read-only; every proposal carries evidence + confidence, low-confidence knobs stay default). Write ONLY the proposed knobs — `skill_config_writer.save_skill_config(ws, "chat_persona", {...}, origin="inferred_provisional")` and, for document-shape knobs, the same call on `"output_profile"` — then append ONE `style_changed` event per written layer via `chat_persona.build_style_changed_event(layer=..., origin="inferred_provisional", changes=..., source_skill="command-room-onboarding")` + `event_gate.append_event`, and run `python3 shared/scripts/render_claude_md.py <workspace_root>` so the persona block lands in CLAUDE.md. No proposals → write NOTHING (the workspace stays byte-identical to a pre-STYLE1 install; silence is the honest outcome). NEVER a question in this beat — the customer sees and adjusts it at the Phase 2a reveal.
 - **entities.json** — `person_001` with `canonical_name`, `workspace.brain_name`, all org records, project records. `workspace.first_go_months: 1`.
 
 After this sub-beat, entities.json has the full primary user + org + project picture written.
@@ -640,6 +641,28 @@ When Chat 4 opens via `show me what you know about me`, the skill's first messag
 After the Mirror prose lands, anchor it to a workspace file:
 
 > *"What I just said is saved as files in your workspace folder, `[BrainName]'s Brain`. The main one is `CLAUDE.md` — that's the file I read at the start of every conversation so I remember who you are without you re-explaining. Open it any time and edit if I got something wrong — these are your files."*
+
+#### 2a.i-bis — How I'll approach you (SPEC STYLE1 — the persona disclosure, D7)
+
+Fires ONLY when 1a.v's style beat wrote a provisional persona (skip silently otherwise — no
+"nothing personalized" filler). Three or four sentences of prose, first person, evidence-first —
+this is a disclosure, not a settings menu:
+
+> *"One more thing I picked up: [the evidence sentences from the inference proposals, verbatim —
+> e.g. "your last 30 sent emails run a median of 38 words, and in meetings you ask for the bottom
+> line"]. So I'll talk to you that way — [the persona in plain English: "short and direct, answer
+> first"]. That's my read, not a setting you filled in — if I've got you wrong, say the word and
+> I'll adjust it right now. Any time later: 'show my style' shows you exactly how I'm set up, and
+> 'recalibrate my style' makes me re-read you."*
+
+- An adjustment here IS the confirm flow: apply it via the workspace-manager tune path's write
+  discipline (validate → `save_skill_config(..., is_reconfigure=True)` → `style_changed` origin
+  `asked` → re-render CLAUDE.md) — the reveal chat may do the write itself, same helpers, same
+  events, nothing bespoke.
+- A plain "sounds right" (or just moving on) leaves the provisional set standing — provisional is
+  a live posture, not a pending one (D7); no re-write, no extra event.
+- NEVER present knob names or a settings table here — plain English only; the card ("show my
+  style") is where the full inventory lives.
 
 #### 2a.ii — Voice contrast (3-way prompt-AND-output)
 

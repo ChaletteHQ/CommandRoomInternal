@@ -137,9 +137,20 @@ self-owed). Everything else is stored as a `commitment_observed` event
 (`data.tier: "observed"`): third-party↔third-party items, and **amber** items
 whose attribution can't be confidently resolved — amber is SILENT by default,
 not ask. Observed items are searchable, feed prep context, and are promotable
-— but create **no open item, no count, no triage row, no confirm-section
-row** (a dedicated event type keeps them out of every open-set reader by
-construction; see `EVENT_TYPES.md`).
+— but create **no open item, no count, no triage row** (a dedicated event
+type keeps them out of every open-set reader by construction; see
+`EVENT_TYPES.md`).
+
+**The confirm queues read the tier (OBSERVED1, 2026-08-24).** Live observed
+items (unexpired, never promoted — `capture_gate.live_observed`) render as a
+labelled SET ASIDE section on needs-your-call and on `show watching`, with
+confirm/drop verbs. Confirm = `promote_observed` + `clear_review_flags` (one
+gesture — an ordinary open commitment); drop = `promote_observed` +
+`close_commitment(resolution="dropped")` (the standard tombstone). Both are
+appends dispatched by `needs_review_queue.confirm_items` / `drop_items`; the
+observed WRITE path is unchanged. This closes the state the tier shipped in
+for six weeks: rows prep cited as live work that no surface could confirm,
+drop, or expire by hand.
 
 **Modes (customize layer — SCL1 directives under `_hq/custom/`, the
 `scan-for-commitments` policy file governs every capture writer; read fresh
