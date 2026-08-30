@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -55,6 +56,20 @@ class TZResolutionError(RuntimeError):
 
 
 _ENTITIES_REL = Path("_hq") / "data" / "entities.json"
+
+# SPEC TZFLAKE1 — how many times `ZoneInfo(tz_name)` is constructed before the
+# not-found branch is believed, and the pause between attempts. `zoneinfo`
+# resolves a key it has never seen by importing `tzdata.zoneinfo.<region>` and
+# opening the resource file, and it maps EVERY load failure it recognises
+# (ImportError / FileNotFoundError) to ZoneInfoNotFoundError — including
+# transient ones a loaded machine can produce while the tz database is
+# installed and healthy. Only the FIRST construction in a process is exposed:
+# zoneinfo caches per key on success, so one transient there is one silent
+# wrong-timezone answer that no later call can correct. A genuinely absent tz
+# database fails every attempt identically, so retrying narrows the fallback
+# to the case it was written for without changing what it means.
+_ZONEINFO_ATTEMPTS = 3
+_ZONEINFO_RETRY_SLEEP_S = 0.05
 
 
 def _resolve_workspace_path(workspace_path: Union[str, Path, None]) -> Optional[Path]:
@@ -150,19 +165,41 @@ def load_workspace_tz(workspace_path: Union[str, Path, None] = None):
             "command-room-onboarding or 'set my timezone to <name>'."
         )
 
-    try:
-        return ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
-        logger.warning(
-            "tz.py: tz database missing for %r (likely Windows without `tzdata` package). "
-            "Install `pip install tzdata` to enable workspace TZ rendering. Falling back to UTC.",
-            tz_name,
-        )
-        return _utc_fallback()
-    except Exception as exc:
-        raise TZResolutionError(
-            f"tz.py: invalid timezone name {tz_name!r} in entities.json ({exc})."
-        ) from exc
+    # SPEC TZFLAKE1 (2026-08-29). A ZoneInfoNotFoundError is retried before it
+    # is believed — see the constants above for why one transient here is
+    # otherwise a silent wrong-timezone answer for the rest of the call. The
+    # cost of being wrong is not hypothetical: one first-construction
+    # transient under a 12-worker battery sent a correctly configured fixture
+    # down the UTC branch, stamped the evening pack's for_date one day
+    # forward, and redded run_end_of_day_pack_test 342/343 while the suite
+    # alone was green (2026-08-29, the fleet's first FLAKEFIX-class red since
+    # honest1). A retry that succeeds still WARNS: a transient that self-heals
+    # silently is a transient nobody ever counts.
+    for attempt in range(1, _ZONEINFO_ATTEMPTS + 1):
+        try:
+            zone = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            if attempt < _ZONEINFO_ATTEMPTS:
+                time.sleep(_ZONEINFO_RETRY_SLEEP_S)
+            continue
+        except Exception as exc:
+            raise TZResolutionError(
+                f"tz.py: invalid timezone name {tz_name!r} in entities.json ({exc})."
+            ) from exc
+        if attempt > 1:
+            logger.warning(
+                "tz.py: ZoneInfo(%r) failed transiently and succeeded on "
+                "attempt %d — the tz database is installed; the load raced "
+                "something on this machine.",
+                tz_name, attempt,
+            )
+        return zone
+    logger.warning(
+        "tz.py: tz database missing for %r — %d attempts (likely Windows without `tzdata` package). "
+        "Install `pip install tzdata` to enable workspace TZ rendering. Falling back to UTC.",
+        tz_name, _ZONEINFO_ATTEMPTS,
+    )
+    return _utc_fallback()
 
 
 def to_local(
