@@ -35,11 +35,12 @@ End-of-Day-specific scope notes:
 
 The EODPHASE1 phase records measured it: the pack build costs 7–10 seconds; the 9–27-minute wall clock was connector fetching and redundant re-scans at close time. The fix moves the day's fetching EARLIER, never does less of it. Four parts, and the fences under them are binding:
 
-**1. The incremental capture pass.** The capture leg (Phases 3 → 4.8 of this file) also runs as the `meeting-capture` job inside the already-authorized `maintenance` scheduled task (6:45 / 12:45 / 17:45 — `maintenance_dispatcher.MAINTENANCE_JOBS`), so the day's meetings are captured as they land. **The job executes those phases VERBATIM** — same canonical writers, same admission gates, no relaxed floors, `source_skill` values exactly as written — with exactly three differences:
+**1. The incremental capture pass.** The capture leg (Phases 3 → 4.8 of this file) also runs as the `meeting-capture` job inside the already-authorized `maintenance` scheduled task (6:45 / 12:45 / 16:30 / 17:45 — CAPSLOT1, 2026-08-27, added the 16:30 pre-close slot to close the structural 12:45→17:00 blind window the EODSPEED1 live test measured; `maintenance_dispatcher.MAINTENANCE_JOBS`), so the day's meetings are captured as they land. **The job executes those phases VERBATIM** — same canonical writers, same admission gates, no relaxed floors, `source_skill` values exactly as written — with exactly three differences:
 
 - **Window:** `catchup.catchup_window(<workspace_root>, 'meeting-capture', floor_hours=24, cap_days=30)` instead of the `past-meetings` window. Its receipt carries `window_incomplete_before` under the batch-cap gate exactly as Phase 3 requires, and the next pass resumes from it.
 - **Silence (fence):** the pass posts NOTHING — no chat surface, no widget, no notification, no lateness banner. Writes, briefs on disk, and receipts only. The close remains the one narrator.
 - **Receipt:** the pass ends with ONE `eod_incremental.log_capture_pass_receipt(...)` call — a `pack_run` under task id `meeting-capture`, carrying the window fields and counts. **NEVER `log_end_of_day_receipt`, and NEVER any receipt under `past-meetings`:** a pack_run on the day-close series would arm `skip_render` against the real 5 PM close and split the series EOD2 keeps whole. Phase C, Phase 5's day-close receipt, and Phase 6 do not run in the job.
+- **⛔ MANDATORY (SPEC EODLEG1) — the pass times its own capture leg.** Record `capture_leg_start` (UTC ISO) before the window computation above and `capture_leg_end` (UTC ISO) right before the receipt call; pass `capture_leg_ms=<the elapsed milliseconds>` to `log_capture_pass_receipt`. This job executes Phases 3 → 4.8 VERBATIM, so its wall time IS a capture leg in the same sense the 5 PM close's `PHASE_CAPTURE` is, and it is stamped under that SAME constant — never a second name invented for this surface — so a reader joining `phase_durations_ms` across the `meeting-capture` and `past-meetings` series sees one leg measured twice a day, not two dialects of it. Best-effort: if the elapsed milliseconds cannot be computed, call `log_capture_pass_receipt` without `capture_leg_ms` — the receipt is owed either way (BRIEFFIX1 Item C).
 
 **2. The close re-verifies over disk.** Nothing about THIS fire's own window computation changes — Phase 3 still computes `catchup_window('past-meetings', floor_hours=24, cap_days=30)`, Phase A still fetches from the mail/chat cursors (which the 6:45/12:45 maintenance legs have usually already advanced). What changes is what the fire FINDS: meetings the incremental pass captured come back `skip_processed` from Phase 3.5's dedup, so this fire fetches transcripts only for what arrived since the last pass. **The close's window is NEVER narrowed because incremental receipts exist** — that asymmetry is the machine-off fence: a day where no pass ran (laptop closed) degrades to today's fetch-at-close exactly, slower and complete, never a thinner close.
 
@@ -50,6 +51,18 @@ The EODPHASE1 phase records measured it: the pack build costs 7–10 seconds; th
 **The budget (stated and measured):** a close on a day whose captures are current lands within **5 minutes** of the slot at full checking depth (`end_of_day.CLOSE_BUDGET_MS`). The receipt writer stamps `close_budget` from this fire's own `duration_ms` — the EODPHASE1 phase records plus that verdict are the before/after instrument. The budget is met by moving work earlier; **trimming any check, sampling meetings, or capping mail windows for speed is out of scope and stays out.**
 
 **The equivalence fence:** the same day's material, arriving incrementally or in bulk, yields a byte-identical verdict set — closures found, slipped, confirm rows, synthesis grounding. Pinned by `tests/run_eodspeed1_test.py`. Nothing in this spec adds a write path, relaxes a floor, or changes what the close checks.
+
+---
+
+## ⛔ SPEC EODLEG1 — the fire times its own legs (2026-08-27)
+
+EODSPEED1's own live measurement found `phase_order` covering the pack build alone — 0.45% of a 1,855,666 ms fire — because `phase_ledger` was an OPTIONAL argument and no fire ever passed it. **It is optional no longer.** Three timestamp pairs, recorded as plain UTC-ISO wall-clock deltas (never a monotonic timer — this fire's own phases run in separate `python3 -c` processes, and monotonic time carries no meaning across that boundary): `close_leg_start`/`close_leg_end` in Phase A, `capture_leg_start`/`capture_leg_end` around Phase D, `post_leg_end` (its start is `capture_leg_end`, reused) at the top of the reconcile in Phase 5. Phase 5 folds all three into ONE `PhaseLedger` — seeded with the pack's own fourteen `PACK_PHASES` via `merge_snapshot` so they are not silently discarded — and passes it as `phase_ledger=led` to `log_end_of_day_receipt`, which is now a MANDATORY step, not the optional one EODPHASE1 shipped. Each of the three ⛔ markers below (Phase A, Phase D, Phase 5) is load-bearing on its own; skip any one and that leg is simply absent from `phase_order` — never fabricated, never zero, per Ruling 4. Receipt shape is UNCHANGED: same four keys, same reader contract, same vocabulary (`end_of_day.ALL_PHASES` — never invent a phase name). The code half of the mandate is `end_of_day.receipt_missing_capture_phase`, run in the battery's guard tier: a receipt with `n_processed > 0` and no `PHASE_CAPTURE` in `phase_order` fails it by name, because a prose mandate in this file is not code the battery can execute on its own.
+
+---
+
+## ⛔ SPEC CAPFENCE1 — the capture leg gets a time fence (2026-08-27)
+
+The first live `close_budget` verdict put `duration_ms` at 30.9 minutes against the 5-minute budget, ~86% of it the capture leg. The batch cap (Phase 3) bounds meetings by COUNT — 5 — but nothing bounds the fire by TIME, and at that fire's own pace the count cap alone authorized roughly 33 minutes. **`end_of_day.CLOSE_BUDGET_MS` does not move** — it stays the standing 5-minute promise, and it keeps failing honestly until real closes pass it; widening it to fit a failing fire is fixing the thermometer. The fix instead is a NEW, separate constant: `end_of_day.CAPTURE_FENCE_MS` (15 minutes), a stopping rule for Phase D's capture leg alone. Between meetings — never mid-meeting — check the ledger-elapsed time since `capture_leg_start` (EODLEG1's own timestamp, never a second clock read invented here) against the fence via `end_of_day.capture_fence_should_defer`. Crossed, and this fire has already captured at least one meeting at full depth (**the substance floor, Ruling 3 — never zero briefed on a day that had meetings, and the floor is one, not a knob**): finish the in-flight meeting (never half-capture), then STOP — every meeting still queued defers whole, via the SAME `receipt_window_marker`/`window_incomplete_before` machinery the batch cap already uses (`end_of_day.capture_fence_window_marker`), counted on the receipt as `n_time_fence_deferred`. **Every meeting that DID enter Phase 4 still runs every downstream pass (4.5–4.8) at full, unreduced depth — the fence bounds ENTRY into Phase 4, never what happens to a meeting once it is in.** The exact check, the substance floor, and the deferral live in Phase 4, right after step 9, below. The close's own narration names a fence-triggered deferral distinctly from an ordinary batch-cap one — `end_of_day.coverage_disclosure_lead` leads with "N meetings deferred to tonight's background pass — tomorrow's brief will carry them" whenever `n_time_fence_deferred` is present, pointing the reader at MORNCAP1's morning recovery rather than the generic batch-cap wording.
 
 ---
 
@@ -133,6 +146,8 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 
 Record `fire_start` (UTC ISO) **now, before anything below writes**. Phases 4.6 and 4.6.b both need it and it must predate every append this fire makes.
 
+**⛔ MANDATORY (SPEC EODLEG1) — `close_leg_start = fire_start`, the same instant.** This IS the close leg's own start: the mail/chat reconcile below is `end_of_day.PHASE_CLOSE`. Its wall time is measured as a plain UTC-ISO delta rather than a monotonic timer, because this leg's start, its own reconcile calls, and the receipt call that reports it (Phase 5) each run in a SEPARATE `python3 -c` process (line 99's rule) and a monotonic clock carries no meaning across a process boundary — `PhaseLedger`'s own docstring says "monotonic, never the wall clock," and wall-clock is the right tool the one time two different processes have to agree on an elapsed span. Immediately after `close_result` is built below, record `close_leg_end` (UTC ISO). Keep both timestamps in whatever this fire uses to carry state between its own phases (a temp file, same as the pack driver's `--close-json`) — Phase 5 computes `close_leg_ms = close_leg_end − close_leg_start` from them and folds it into the mandatory ledger there.
+
 Run the SAME machinery the maintenance jobs run — same functions, same cursor, same audit event. Not a copy of it: `reconcile-sent` and `reconcile-chat` are jobs inside the `maintenance` task and this fire calls their entry points directly, so the 17:45 maintenance pass finds an ALREADY-ADVANCED cursor and closes nothing twice. A second implementation here would be a second cursor, and two cursors over one mailbox is how a close gets written twice.
 
 **Ask per capability, and skip-and-receipt what is absent.** Resolve mail through the seam (`tool_discovery.discover_for_category("email", "search", tools, declared=connector_config.declared_backend("email"))`) and chat through `chat_seam.resolve_chat_provider`. A capability that is not present is not an error and not a silence: pass the plain-English reason as `fetch_blocked=` so the leg records a BLOCKED run (which never advances a cursor), and carry the reason into Phase 5's `connector_gaps`. This build reaches for **email, calendar and chat** and nothing else; CONN1/CONN2 add Drive and DocuSign later by adding rows to this list, not by redesigning the fire.
@@ -166,6 +181,8 @@ chat = reconcile_chat_and_receipt(
 close_result = {"mail": mail, "chat": chat}
 ```
 
+**⛔ MANDATORY (SPEC EODLEG1) — record `close_leg_end` (UTC ISO) now, immediately after `close_result` is built.** This closes the window `close_leg_start` opened above; carry both onto Phase 5.
+
 **Every close this fire writes carries its pointer.** `reconcile_and_receipt` and `reconcile_chat_and_receipt` already close through `commitment_state.close_commitment` with the sent message's artifact key / the chat pointer; any close YOU write in this fire (a CRU auto-resolve, a tap the user applies later in the turn) passes `source_ref=` the same way — `granola:<meeting_id>` for a transcript close, and for a human one **the ref the resolver RETURNED**: `resolve_choice(...)["source_ref"]` for a numbered tap, `resolve_intent_confirm(...)["source_ref"]` for the tomorrow confirm. Never compose that string yourself and never reuse one across two gestures: a pointer that is the same for every act of an evening resolves to nothing while still counting as "has a pointer" in the coverage metric. A close with nothing to point at still lands — since SPEC PROVMINT1 the writer mints `session:past-meetings:<now>` for it and marks the ref as surface-minted, so it points at the act rather than at nothing. That floor is not a licence: a close that silently drops a pointer it HAD is still the defect (SPEC PROV1), and it now shows up as a surface-minted row in the coverage split instead of hiding inside one flattering percentage.
 
 **THE SOFTEN FLOOR.** If NEITHER leg advanced its cursor, the score and slipped blocks soften and the surface says so in exactly one line. `end_of_day.soften_floor(close_result)` returns that line; do not compose one, and do not suppress it because the numbers "look right". A score computed over a stale mail cursor understates the closes and overstates the slips, and the CEO is the person who would be blamed for the difference. A leg SKIPPED for want of a connector does not soften on its own — a workspace with no chat backend is not a workspace whose chat is behind.
@@ -195,7 +212,7 @@ Omit `--calendar-json` when no calendar capability is present. The `tomorrow` bl
 
 **`--lateness-json` is Phase 2.9's return, VERBATIM.** Do not edit it, do not re-key it, do not recompute lateness. On the degrade tier the pack composes the catch-up label from it; on every other tier `pack["catchup"]["renders"]` is False and there is nothing to place.
 
-**Every non-empty RENDERED pack block is a MANDATORY placement, in this order:** `alarm_lines` · `coverage` · `day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes` · `tomorrow` · `sign_off`. That list is `end_of_day.RENDER_ORDER` and the pack carries it as `render_order`; read it off the pack rather than retyping it. A turn that stops with an unplaced non-empty rendered block is INVALID, not "done early". On a degrade-tier fire, `catchup.lines` goes ABOVE all of them (see Phase 2.9). `coach` (SPEC EODCOACH2) is placed the same way `catchup` is — by instruction, not by list membership — right after `echoes` and above `tomorrow`.
+**Every non-empty RENDERED pack block is a MANDATORY placement, in this order:** `alarm_lines` · `coverage` · `day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes` · `tomorrow` · `sign_off`. That list is `end_of_day.RENDER_ORDER` and the pack carries it as `render_order`; read it off the pack rather than retyping it. A turn that stops with an unplaced non-empty rendered block is INVALID, not "done early". On a degrade-tier fire, `catchup.lines` goes ABOVE all of them (see Phase 2.9). `coach` (SPEC EODCOACH2) is placed the same way `catchup` is — by instruction, not by list membership — right after `echoes` and above `tomorrow`. **`coverage` is the one exception to "non-empty means placed" (SPEC COVERQUIET1):** `coverage["lines"]` is non-empty on every fire (`compute_coverage` always composes it), but the block is placed ONLY when `end_of_day.coverage_has_disclosure(pack)` is True — see the `coverage` bullet below for the gate and Phase 5 for where it is evaluated.
 
 # ⛔ SPEC EODSYNTH1 — THE EVENING SYNTHESIZES THE DAY AND ASKS ONE THING (M's ruling, 2026-08-23)
 
@@ -203,7 +220,7 @@ Omit `--calendar-json` when no calendar capability is present. The `tomorrow` bl
 
 **R-1 — THE SCORE IS NOT RENDERED.** `n_closed` / `n_planned`, *"0 of 5 closed"*, *"no net change"*, the ledger's book-at-open arithmetic — none of it reaches the chat and none of it reaches the widget. The FIELDS are still computed and still land on the `pack_run` receipt, because weekly-recap and the trend surfaces read them: **un-render, don't unbuild.** The pack still carries `score` and `score["ledger"]`; you place NEITHER. `eod_synthesis.assert_no_score` is a code fence over the composed text and it RAISES — if you find yourself wanting to say a number about how much of the plan got done, the answer is that this surface no longer says one.
 
-**R-2 — ONE INTERACTION, AND IT IS TOMORROW.** Confirm or edit tomorrow's intent (goal first, then up to three moves under it). Everything else on this surface is READ-ONLY. `pack["confirm_ids"]` is now EMPTY by construction (`end_of_day.NUMBERED_BLOCKS` is `()`), so there is nothing numbered to tap and a `[n]` tap is refused in plain English. That is not a degraded surface; it is the ruling measured.
+**R-2 — ONE INTERACTION, AND IT IS TOMORROW.** Confirm or edit tomorrow's intent — up to three ranked CANDIDATES for what tomorrow is about (SPEC TOMPICK1, never padded to three), each with its one-line why. A bare "confirm" takes rank 1, the default door; "1"/"2"/"3" takes that candidate positionally. Everything else on this surface is READ-ONLY. `pack["confirm_ids"]` is now EMPTY by construction (`end_of_day.NUMBERED_BLOCKS` is `()`), so there is nothing numbered to tap and a `[n]` tap is refused in plain English — the tomorrow pick is a SEPARATE positional resolver (`resolve_intent_confirm`'s own `pick=`), never a `confirm_ids` entry. That is not a degraded surface; it is the ruling measured.
 
 **R-3 — THE CONFIRM/DROP QUEUES LEFT THE EVENING.** The slipped rows' *"Done, new date, or drop?"* fork, the needs-your-call rows and the person candidates render on the MORNING surfaces (the morning brief's needs-attention lane, the `needs-your-call` and `my-plate` chats). They are still COMPUTED here — `pack["slipped"]`, `pack["confirm"]` — because the receipt and the synthesis read them; you place none of them and you offer no verb on any of them. **The OVERDUE1 ask-once marker is unchanged; the morning performs it** (`end_of_day.mark_lane_asked`, orchestrator-morning-brief Phase 6.1), so this file's Phase 6.3 no longer asks. Net asks per day must not go UP — that is the thing M counts on the walk.
 
@@ -211,13 +228,15 @@ Omit `--calendar-json` when no calendar capability is present. The `tomorrow` bl
 
 Binding notes the pack does not enforce for you:
 
-- **coverage — PRINT EVERY LINE VERBATIM, FIRST, UNDER THE ALARMS (SPEC EODLEDGER1 part 1).** `coverage["lines"]` is composed in code and rendered as given: one line per capability saying what this fire actually READ. Mail and chat through their own cursors — **and when a cursor is behind, the line names the span** ("read through Friday, July 24 — 5 days behind"), which is the sentence that did not exist while M's chat cursor sat five days stale and the surface reported the day's closes with no qualification at all. Calendar present or absent. The capture leg's window, with what is on record in it and what is still owed — **as reconciled in Phase 5 (SPEC MEETCOUNT1)**: the meetings line you print is the post-reconcile one, whose count derives from the SAME `meeting_render_set` the Meeting briefs section renders from, with every reduction named in the sentence. Printing the pre-reconcile Phase-C aperture line next to rendered briefs is the two-producer divergence this spec removes.
+- **coverage — RENDERS ONLY WHEN IT HAS SOMETHING TO DISCLOSE (SPEC COVERQUIET1, superseding EODLEDGER1 part 1's "always render").** `end_of_day.coverage_has_disclosure(pack)` is THE gate — a reduction clause, a deferral (`window_incomplete_before` set), a TASKALARM1 dark-surface line, a `connector_gaps` entry, or a rendering catch-up/degrade note (`catchup["renders"]`). A day with NONE of those is genuinely quiet — no boilerplate "5 meetings on record, 4 processed, all current" — and the briefs section speaks for itself. **The receipt still keeps the full record either way** (`log_end_of_day_receipt` moves `coverage` to `blocks_computed_only` on a quiet day rather than dropping it — this is bookkeeping, not a second render decision you have to make; do not call the gate again for the receipt, only for whether you PLACE the block below). See Phase 5 for where the gate is evaluated and cached onto `pack["coverage_disclosed"]`.
 
-  **NEVER SUPPRESS IT AND NEVER SOFTEN IT.** Same posture as `alarm_lines`, same reason: a degraded read is exactly when the reader most needs to know what the aperture was, and a strip that goes quiet on a bad night is a strip that only ever says everything was fine. Do not re-word a line to sound better, do not drop the stale-cursor clause because the numbers "look right", and do not add a reassuring sentence of your own after it.
+  **WHEN IT RENDERS: `end_of_day.coverage_render_lines(pack)`, PRINTED VERBATIM, FIRST, UNDER THE ALARMS.** Never `coverage["lines"]` directly — `coverage_render_lines` is the disclosure-first composition (§0 ruling 3): its first line names WHAT is being disclosed, with the count scoped to that one clause ("1 meeting deferred to tonight's pass" — never "5 meetings on record, 4 processed, 1 deferred"), followed by every per-capability line `compute_coverage` / the Phase 5 reconcile already composed, unchanged. Mail and chat through their own cursors — **and when a cursor is behind, the line names the span** ("read through Friday, July 24 — 5 days behind"), which is the sentence that did not exist while M's chat cursor sat five days stale and the surface reported the day's closes with no qualification at all. Calendar present or absent. The capture leg's window, with what is on record in it and what is still owed — **as reconciled in Phase 5 (SPEC MEETCOUNT1)**: the meetings line derives from the SAME `meeting_render_set` the Meeting briefs section renders from, with every reduction named in the sentence. Printing the pre-reconcile Phase-C aperture line next to rendered briefs is the two-producer divergence MEETCOUNT1 removes.
+
+  **ONCE IT IS RENDERING, NEVER SUPPRESS A LINE AND NEVER SOFTEN ONE.** Same posture as `alarm_lines`, same reason: a degraded read is exactly when the reader most needs to know what the aperture was, and COVERQUIET1's day-level on/off switch does not license per-line editing underneath it — the gate is ALL-OR-NOTHING. Do not re-word a line to sound better, do not drop the stale-cursor clause because the numbers "look right", and do not add a reassuring sentence of your own after it.
 
   **"Not read" and "nothing there" are different claims and the strip is where they are separated.** A calendar outage and a genuinely empty tomorrow rendered identically before this. `coverage["capabilities"]["calendar"]["read"]` and `tomorrow["calendar_available"]` are ONE boolean by construction — they cannot disagree, so never write a sentence that puts them in conflict.
 
-  The strip's last line, when present, is the data-quality note: the COUNT of closes in this window that cite no artifact anyone can open. A count, not a section, and not a thing to apologise for or explain away.
+  The strip's last line, when present, is the data-quality note: the COUNT of closes in this window that cite no artifact anyone can open. A count, not a section, and not a thing to apologise for or explain away. It is NOT on the §0.1 disclosure list by itself — an unsourced count on an otherwise quiet day does not, alone, put the strip up.
 - **score / score.ledger / score.first_move — COMPUTED, RENDERED NOWHERE (SPEC EODSYNTH1 R-1).** All three still arrive on the pack and all three still land on the receipt; you place none of them. There is no *"No plan on record this morning"* line on this surface any more, no *"Open book: 41 this morning…"*, and no *"This morning's first move was X"*. The reason the fields survive is that the surfaces that legitimately grade — weekly-recap, the trend reads, the Monday roll-up — read them off the receipt. The reason the SENTENCES do not is M's ruling: the score anchors on the morning plan, so a day that drifted from its 7 AM plan scored as a failure regardless of what actually got done, and the grade sat next to three closed wins reading as a contradiction. What replaces it is the paragraph below, which is about the day rather than about the plan.
 - **wins — COMPUTED, RENDERED NOWHERE.** The named closes feed `day_went`; they are no longer a block of their own. Do not print `wins["rows"]`, `wins["line"]` or `wins["more_line"]`.
 - **slipped / confirm — COMPUTED, RENDERED NOWHERE (R-3).** They feed `slipped_prose` and the MORNING surfaces respectively. No Slipped section, no Needs-your-call section, no person-candidate section, no `more_line`, no `resting_line`, and no verbs on any of it — in the prose or in the widget. **A verb offered here is a dead button:** `confirm_ids` is empty, so nothing resolves.
@@ -260,6 +279,8 @@ Binding notes the pack does not enforce for you:
 **HOLD the pack.** Do not post yet. Phase D runs next, then Phase 5 writes the receipt, then Phase 6 posts what you built here. The pack you post is the pack you built BEFORE capture ran — that is the fence, and re-deriving any block after Phase D defeats it.
 
 # Phase D — CAPTURE, last and fenced (SPEC EOD1 §2.4)
+
+**⛔ MANDATORY (SPEC EODLEG1) — record `capture_leg_start` (UTC ISO) NOW, before Phase 3 below runs.** Everything from here to the end of Phase 4.8 is `end_of_day.PHASE_CAPTURE`, timed the same wall-clock way `close_leg` is (see Phase A): a UTC-ISO delta, never a monotonic timer, because this leg spans its own `python3 -c` processes. Record `capture_leg_end` (UTC ISO) at the END of Phase 4.8, before Phase 5 begins — unconditionally, whether or not any meeting was actually found in the window: Phase D always runs, and a leg that ran and did no work still has a wall time worth recording. Both timestamps carry onto Phase 5.
 
 Everything from Phase 3 to Phase 4.8 below IS this phase, unchanged in what it writes and unchanged in its doctrine. Two things about it are new:
 
@@ -327,6 +348,7 @@ Up to 5 unprocessed meetings to process this fire.
 - A meeting deliberately excluded (personal, internal-only, `meeting_skipped`) is NOT unprocessed — it is handled. Only meetings this fire still owes work for count.
 - **Carry the marker forward.** If this fire processed nothing (Granola unavailable, zero capacity) and the previous receipt already carried a `window_incomplete_before`, the receipt this fire writes carries the SAME value. A receipt without the marker means "everything before this point is handled" — writing one while a backlog is outstanding is the orphaning bug, restated.
 - Only when the fire drained its entire window does the receipt omit the field.
+- **A second, TIME-based trigger can also leave meetings unhandled (SPEC CAPFENCE1, 2026-08-27).** The count cap above is not the only reason a meeting inside `[start, end]` might go unprocessed this fire — the capture leg's own 15-minute stopping rule (`end_of_day.CAPTURE_FENCE_MS`) can stop it earlier, between meetings, subject to the substance floor (never zero briefed on a day that had meetings). See Phase 4's own CAPTURE FENCE block, right after step 9, for the check and the deferral. It writes the SAME `window_incomplete_before` this section describes, via the SAME `receipt_window_marker` call (wrapped as `end_of_day.capture_fence_window_marker`) — a fence-triggered defer is not a second kind of incompleteness, just a second reason for it, and the two never disagree on the resume point for one window.
 
 ## Phase 3.5 — Discovery + attendance classification + meeting-level dedup (SPEC GRANOLA1 §A/§A2)
 
@@ -489,6 +511,45 @@ For each meeting:
 8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. **Construct via `meeting_capture.build_meeting_event()` (BUG-8244 — the one sanctioned constructor; hand-rolled dicts are how 4 incompatible attendee shapes shipped),** passing `brief_path` through the returned event's `data` before appending. Shape the builder produces: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees: [<every invitee EMAIL from the calendar invite / backend metadata, verbatim, resolved or not — identity-reconcile corroborates merges from these and the backfill repairs history with them>], attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. Pass `source_had_attendees=True` whenever the backend listed ANY participants — an empty binding then stamps `data.binding_missing` for the audit instead of vanishing silently. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
 
 9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. Build it with `meeting_capture.build_meeting_processed_event(..., capture_summary=routed)` — passing Phase 4 step 5's `route_meeting_captures` return stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, n_deduped, n_fusion_inert, floor_reasons, skipped_reasons}`, which is the ONLY record anywhere of what the admission gates did. `n_floor_gated` is the share of `n_review` the capture floor routed — a SUBSET of it, never added to it — `n_deduped` counts twin captures of one act that FLOOR3's collapse pass folded into a surviving row (never written, so no other count moves), `n_fusion_inert` counts written rows the fusion guardrail could NOT check at all (a transcript-less fire stamps every row it writes — see the guardrail section below; it cuts across all three lanes, so it is a subset of nothing and is never added to another count), and `floor_reasons` tallies which `FLOOR_*` condition gated each one; together they are what make the floor's tuning measurable, and without them a mis-tuned floor is undetectable and the acceptance re-measure has nothing to read. None of it goes in the chat card. Counts and reason tallies only — never a title. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist.
+
+## ⛔ SPEC CAPFENCE1 — THE CAPTURE FENCE (between meetings, 2026-08-27)
+
+**Initialize `n_time_fence_deferred = None` once, before this fire's first meeting starts.** Only the `defer: true` branch below ever sets it to a real count — a fire where the fence never binds carries it through Phase 5 as None, which is what keeps that fire's receipt byte-identical to the pre-CAPFENCE1 shape (§Acceptance's no-op pin).
+
+**Between meetings, never mid-meeting.** After THIS meeting's step 9 above (`meeting_processed` written) and BEFORE starting the NEXT meeting in the oldest-first set Phase 3 handed you, check whether the capture leg's own clock has crossed its stopping rule:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from end_of_day import capture_fence_elapsed_ms, capture_fence_should_defer, CAPTURE_FENCE_MS
+elapsed = capture_fence_elapsed_ms('<capture_leg_start recorded at the top of Phase D>')
+defer = capture_fence_should_defer(elapsed, <n_captured_full_depth — how many meetings THIS fire has finished step 9 for so far, including the one that just finished>)
+print(json.dumps({'elapsed_ms': elapsed, 'fence_ms': CAPTURE_FENCE_MS, 'defer': defer}))
+"
+```
+
+`elapsed` is LEDGER-ELAPSED — the SAME `capture_leg_start` EODLEG1 already records at the top of Phase D, never a fresh clock read composed for this check alone. `CAPTURE_FENCE_MS` is the ONE constant this check reads; `end_of_day.CLOSE_BUDGET_MS` is a different constant with a different job (§0 Ruling 1) and nothing here reads it.
+
+**THE SUBSTANCE FLOOR (Ruling 3) already lives inside `capture_fence_should_defer` — do not re-implement it in prose, and do not pass a different threshold.** Below one captured meeting the function returns False regardless of `elapsed`, so this fire's FIRST meeting always finishes even if the fence was already crossed before it started (a slow transcript fetch, a cold connector). The floor is one, not a knob.
+
+**`defer: false`** — continue to the next meeting in the oldest-first set exactly as before this spec. Nothing about Phase 4's own steps changes for it.
+
+**`defer: true`** — STOP. Every meeting still left in the oldest-first set (not yet started this fire) is deferred, WHOLE, to the next pass — never trimmed, never half-captured. Compute the resume marker via the SAME machinery the batch cap already uses:
+
+```python
+from end_of_day import capture_fence_window_marker
+marker = capture_fence_window_marker(
+    window,  # the SAME window object Phase 3 computed
+    oldest_deferred_start='<the earliest start time among the meetings just deferred>')
+n_time_fence_deferred = <count of meetings just deferred>
+```
+
+`capture_fence_window_marker` IS `catchup.receipt_window_marker` under a name this spec's own call site can grep for — never a second dialect of the batch cap's own honesty gate. If Phase 3's own count cap ALSO left meetings unhandled beyond its 5-meeting limit, this still resolves correctly: `receipt_window_marker` clamps to the oldest unhandled start regardless of WHICH mechanism made it unhandled, so the two triggers never produce two different resume points for the same window.
+
+**Carry `n_time_fence_deferred` to Phase 5, exactly like `window_incomplete_before` itself: present with the real count when the fence actually deferred something THIS fire, OMITTED when it did not.** A fence that never bound produces a receipt byte-identical to the pre-CAPFENCE1 shape — never write a phantom zero for a mechanism that never engaged. This travels in the SAME `capture_leg` dict `window_incomplete_before` already rides, and it also folds onto the pack (`pack["n_time_fence_deferred"]`, alongside `pack["window_incomplete_before"]` in Phase 5) so the coverage strip's disclosure-first lead can name it.
+
+**⛔ RULING 4, restated at the one place it is load-bearing: nothing about Phase 4.5 / 4.6 / 4.6.b / 4.7 / 4.8 below changes when the fence trips.** Those passes each iterate whatever Phase 4 actually processed — the fence bounds ENTRY into Phase 4, never the depth of what already entered it. A deferred meeting never reaches ANY of those passes (it never entered Phase 4 at all), and every meeting that DID enter Phase 4 runs every one of them exactly as it would on a day the fence never bound. The fence defers whole meetings; it never trims a gate, a floor, or a verification on the meetings it processes.
 
 **Idempotency note:** if the orchestrator re-fires on a transcript that already has both events, skip the writes (use `source_ref` dedup). Do NOT write a second `meeting` event for the same Granola meeting_id.
 
@@ -920,6 +981,8 @@ How the lane routes, and why each way (nothing below reaches the open book):
 
 Best-effort, silent, and it never blocks the fire: on any error swallow it, append a `pack_run.data.errors[]` entry with `{"phase": "4.8_nonattendee_shadow", …}`, and carry on. Nothing from this phase is narrated in chat — Phase 6's surface is unchanged by it.
 
+**⛔ MANDATORY (SPEC EODLEG1) — record `capture_leg_end` (UTC ISO) NOW**, closing the window `capture_leg_start` opened at the top of Phase D. Carry both timestamps into Phase 5.
+
 # Phase 5 — Memory updates + THE RECEIPT, written BEFORE the post (silent per Rule 9)
 
 Append to events.jsonl:
@@ -964,6 +1027,54 @@ pack["coverage"] = reconcile_meetings_line(pack["coverage"], render_set)
 
 The count and the briefs now derive from ONE producer, so they cannot diverge — and any reduction (a duplicate fold, an already-processed exclusion, a failed brief save, a deliberate skip) is named IN THE SAME SENTENCE. Never subtract a meeting from the stated count without its clause: silent reduction is the bug, whatever the mechanism. Phase 6's Meeting briefs section renders EXACTLY `render_set["briefed_refs"]`, in order — never a list composed a second time.
 
+**⛔ MANDATORY (SPEC COVERQUIET1) — fold the deferral marker onto the pack and settle the render decision, in that order, right here.** `end_of_day.coverage_has_disclosure(pack)` only takes the pack — it never re-fetches, never re-derives — and `window_incomplete_before` is only knowable now, after Phase D. Without this fold the gate would silently miss a real deferral and render a quiet strip on a day one is genuinely owed.
+
+```python
+from end_of_day import coverage_has_disclosure, coverage_render_lines
+
+# The SAME value Phase D computed for the batch-cap gate above (`marker`,
+# from `catchup.receipt_window_marker`) — None when the fire drained its
+# window. Do not recompute it a second way.
+pack["window_incomplete_before"] = marker
+# SPEC CAPFENCE1 — folded the SAME instant, so coverage_disclosure_lead can
+# tell a fence-triggered defer apart from an ordinary batch-cap one. The
+# SAME `n_time_fence_deferred` Phase 4's CAPTURE FENCE block computed —
+# None (never 0) on a fire where it never deferred anything.
+pack["n_time_fence_deferred"] = n_time_fence_deferred  # None or the count
+
+pack["coverage_disclosed"] = coverage_has_disclosure(pack)
+coverage_disclosed = pack["coverage_disclosed"]
+coverage_lines = coverage_render_lines(pack)   # [] on a quiet day
+if coverage_lines:
+    from chat_output_renderer import validate_chat_output
+    validate_chat_output("\n".join(coverage_lines))
+```
+
+**Carry `coverage_disclosed` and `coverage_lines` to Phase 6 — do not recompute either there.** Phase 6 places `coverage_lines` (never `coverage["lines"]` directly) at the position the `coverage` bullet in Phase C names, and ONLY when `coverage_lines` is non-empty — an empty list means the fire places nothing for this block, exactly like every other drop-empty section. `log_end_of_day_receipt` below calls `coverage_has_disclosure(pack)` itself for the receipt's `blocks_rendered` / `blocks_computed_only` split, so the two answers are guaranteed to agree without this file passing a flag into the writer.
+
+**⛔ MANDATORY (SPEC EODLEG1) — record `post_leg_end` (UTC ISO) now, and build the ONE ledger the receipt call below requires.** Everything from `capture_leg_end` (the end of Phase D) to this instant is `end_of_day.PHASE_POST` — the reconcile above plus whatever else this fire still has to do before the receipt is written. `post_leg_start = capture_leg_end`, the same instant reused, exactly as `close_leg_start = fire_start` was in Phase A. This is the window the EODSPEED1 live-test measurement (2026-08-26) found unaccounted for and labelled "downstream + post" — 186,259 ms, 10.04% of that fire — by reading file mtimes after the fact. EODLEG1 exists so the next fire's receipt carries the number instead of needing the archaeology.
+
+```python
+from end_of_day import PhaseLedger, PHASE_CAPTURE, PHASE_CLOSE, PHASE_POST
+
+led = PhaseLedger()
+# Fold in the pack build's OWN phase record (the fourteen PACK_PHASES the
+# Phase C driver already measured) — merge_snapshot is what keeps this
+# ledger from silently DISCARDING them: log_end_of_day_receipt's explicit
+# `phase_ledger` argument WINS over `pack["phase_timings"]` outright, so a
+# ledger that knows only its own three legs would erase the pack's fourteen
+# the moment it is passed below.
+led.merge_snapshot(pack.get("phase_timings"))
+# The three legs THIS FILE measured, each a wall-clock UTC-ISO delta across
+# a process boundary — `record_leg`, never `with led.phase(...)`, which only
+# works inside one continuous process (see the note in Phase A and Phase D).
+led.record_leg(PHASE_CLOSE, <(close_leg_end − close_leg_start) in ms>)
+led.record_leg(PHASE_CAPTURE, <(capture_leg_end − capture_leg_start) in ms>)
+led.record_leg(PHASE_POST, <(post_leg_end − post_leg_start) in ms>)
+```
+
+**Best-effort, and it must never block Phase 5 (§0 Ruling 4: instrumentation never costs the fire its receipt).** `record_leg` and `merge_snapshot` are no-ops on bad input rather than raises, so build the ledger with whichever legs you actually have timestamps for — a leg you cannot time is a leg you skip, not a reason to skip the others. If constructing `led` raises for a reason you did not anticipate, catch it and call `log_end_of_day_receipt` below WITHOUT `phase_ledger` at all: the pack's own `phase_timings` fallback (EODPHASE1) still carries the pack-build phases, and the receipt is owed regardless of what this block could measure.
+
 **ONE call, and it is the End of Day writer — never a hand-rolled receipt JSON** (the hand-rolled `past_meetings`/`cr-past-meetings`/`lateness_tier` drift of FINDINGS F-49/F-50 P2c came from this file's old prose). `end_of_day.log_end_of_day_receipt` wraps `receipts.log_receipt` and writes the SAME `pack_run` shape under the SAME `past-meetings` taskId, so every existing reader — the watchdog, `catchup_window`, `late_fire`, `usage report` — keeps working byte-for-byte:
 
 ```python
@@ -982,6 +1093,12 @@ log_end_of_day_receipt(
         # WINDOW_INCOMPLETE_FIELD is the one spelling — an improvised synonym is
         # invisible to the reader and re-opens the orphaning bug, F-50 P2c).
         "window_incomplete_before": <ISO or omit>,
+        # SPEC CAPFENCE1 — the count of meetings the 15-minute capture
+        # fence, not the batch cap, left unhandled this fire. `None` (from
+        # the loop-top initializer above) means omit the key entirely — the
+        # SAME omission rule `window_incomplete_before` keeps, never a
+        # written 0 for a fence that never bound.
+        "n_time_fence_deferred": n_time_fence_deferred,
         "n_meetings": n_meetings, "n_processed": n_processed, "n_skipped": n_skipped,
         # EVORDER layer 3's refusals across every transcript this fire. Write 0
         # rather than omitting it: an absent key reads as "this rail has no fence".
@@ -1005,9 +1122,15 @@ log_end_of_day_receipt(
         "held_routing": routed.get("held_routing"),
         "n_held": routed["summary"].get("n_held", 0),
     },
-    # `phase_ledger=<ledger>` is the one OPTIONAL argument — see the note
-    # directly below this block. Omit it and the receipt still carries the pack
-    # build's per-phase times.
+    # ⛔ MANDATORY (SPEC EODLEG1) — `phase_ledger=led`, the ledger this same
+    # Phase built directly above. This is no longer the optional argument it
+    # was under EODPHASE1: a receipt whose phase_order lacks capture on a
+    # fire that captured is a defect, and the battery's own guard tier
+    # (`end_of_day.receipt_missing_capture_phase`) now names it. Passing
+    # `led` is what makes `phase_order` describe the whole fire — close leg,
+    # capture leg and post, on top of the fourteen pack-build phases —
+    # instead of the pack build alone.
+    phase_ledger=led,
     extra_data={"errors": [], "nonattendee_shadow": shadow_counts,
                 # SPEC EODLEDGER1 — on a degrade-tier fire this is the record
                 # that the day-close was DELIVERED rather than withheld, plus
@@ -1037,16 +1160,9 @@ The receipt is owed on **every completed fire**, including a degrade-tier fire (
 
 **The receipt's `data` shape did NOT change for any of this.** `log_end_of_day_receipt` still writes the same `pack_run` under the same `past-meetings` taskId with the same keys, `confirm_ids` is still derived from the pack in render order, and a numbered tap still resolves positionally — the coverage strip and the ledger sit ABOVE the numbered section and do not renumber it. Every existing reader (the watchdog, `catchup_window`, `late_fire`, the usage report, the week roll-up) keeps working byte-for-byte.
 
-**SPEC EODPHASE1 (2026-08-22) adds per-phase timing, and it is additive too.** Do nothing and the receipt carries the pack build's own phase times (`phase_durations_ms` / `phase_counts` / `phase_order`), lifted off the pack by the writer. Two things it cannot give you that way, and both are worth the four extra lines: the partial record when a phase RAISES and no pack comes back at all — the fire that dies in its slowest phase is exactly the one whose numbers matter — and the capture and close legs on the SAME timeline as the build, which is what makes one receipt describe one fire instead of a build with two unaccounted neighbours. To take it:
+**SPEC EODPHASE1 (2026-08-22) put per-phase timing on the receipt; SPEC EODLEG1 (2026-08-27) is what made it TRUE about the whole fire, not the pack build alone.** Before this spec, `phase_durations_ms` / `phase_counts` / `phase_order` carried only the fourteen `PACK_PHASES` the driver itself timed — the ledger block above was the OPTIONAL argument that almost no fire ever passed, and the live measurement is what that omission costs: receipt `eod_20260827T003743Z-48e3f23f`'s `phase_order` covered 0.45% of a 1,855,666 ms fire (the EODSPEED1 live-test measurement, 2026-08-26). The block above is no longer optional, and this is why: the partial record when a phase RAISES and no pack comes back at all — the fire that dies in its slowest phase is exactly the one whose numbers matter — and the capture, close and post legs on the SAME timeline as the build, which is what makes one receipt describe one fire instead of a build with two unaccounted neighbours.
 
-```python
-from end_of_day import PhaseLedger, PHASE_CAPTURE, PHASE_CLOSE, PHASE_POST
-led = PhaseLedger()                       # before Phase B
-with led.phase(PHASE_CLOSE):   ...        # the title-match close leg
-pack = build_end_of_day_pack(..., phase_ledger=led)   # the build times in here
-with led.phase(PHASE_CAPTURE): ...        # Phase D
-# ...then pass `phase_ledger=led` to log_end_of_day_receipt above.
-```
+**⛔ §0 Ruling 1's fence, verbatim: "a receipt whose phase_order lacks capture on a fire that captured is a defect."** This is not only a style rule: `end_of_day.receipt_missing_capture_phase` is the code half of this sentence, it runs in the battery's guard tier over exactly this shape, and it exists BECAUSE a prose mandate in an orchestrator file is not code the battery can execute — the next edit to this file that quietly drops the ledger block above is caught there, by name, rather than inferred from mtimes a second time.
 
 **Never invent a phase name.** The declared set is `end_of_day.ALL_PHASES`; these names are a vocabulary anything reading these receipts joins on, so a name spelled here rather than there is a number no reader can ever join to. The phases deliberately do NOT sum to `duration_ms` unless you timed every leg into the ledger, and `phase_order` is what says which ones you did.
 
@@ -1068,9 +1184,9 @@ Drop any surfaced item the CEO has taught the system to stop showing (insight-ge
 
 Pre-EOD1 this phase posted one widget per fire listing every processed meeting with its pending sub-items. That is the pile M's ruling removes ("the client is never handed a pile"). Everything else in this phase — the renderer pre-flight, the ZERO-MANIPULATION CONTRACT, the transport, the links sections, the H2 opener rules — applies UNCHANGED to the new surface. Only what goes into `data_view` changed:
 
-- **The prose blocks** — the personified intro, `catchup["lines"]` (degrade-tier fires only) above everything, `alarm_lines` verbatim, then `coverage["lines"]` verbatim, then the synthesis in `render_order` (`day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes`), then `coach["text"]` (SPEC EODCOACH2, not in `render_order` — see Phase C), then `sign_off`, and on Monday the week roll-up — are the markdown half of the turn, composed in Phase C and posted here.
+- **The prose blocks** — the personified intro, `catchup["lines"]` (degrade-tier fires only) above everything, `alarm_lines` verbatim, then `coverage_lines` (SPEC COVERQUIET1 — the `coverage_render_lines(pack)` result Phase 5 already computed; **omit the whole block when it is `[]`**, never `coverage["lines"]` directly), then the synthesis in `render_order` (`day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes`), then `coach["text"]` (SPEC EODCOACH2, not in `render_order` — see Phase C), then `sign_off`, and on Monday the week roll-up — are the markdown half of the turn, composed in Phase C (and, for `coverage_lines`, finalized in Phase 5) and posted here.
 
-**⛔ THE WIDGET IS THE TOMORROW BLOCK, AND NOTHING ELSE (SPEC EODSYNTH1 R-2, absorbing EODCOACH1 ask 2).** One widget, carrying tomorrow's goal and up to three moves with confirm / edit, and it **renders ABOVE the prose** — the ask is what the reader acts on, so it is what they see first. No Slipped section, no Needs-your-call section, no person-candidate section, no score, no ledger line. Those rows are computed and they render on the MORNING surfaces (R-3); a section for them here would be the pile M's ruling removes, wearing a new heading.
+**⛔ THE WIDGET IS THE TOMORROW BLOCK, AND NOTHING ELSE (SPEC EODSYNTH1 R-2, absorbing EODCOACH1 ask 2; candidate shape per SPEC TOMPICK1).** One widget, carrying UP TO THREE RANKED CANDIDATES for what tomorrow is about — never padded when fewer survive TOMFILT1's full-lane anchor fence — each with its one-line why, with confirm / edit, and it **renders ABOVE the prose** — the ask is what the reader acts on, so it is what they see first. No Slipped section, no Needs-your-call section, no person-candidate section, no score, no ledger line. Those rows are computed and they render on the MORNING surfaces (R-3); a section for them here would be the pile M's ruling removes, wearing a new heading.
 
 ```python
 data_view = {
@@ -1078,15 +1194,15 @@ data_view = {
     "source_skill": "end-of-day",   # W4 — stamped into every Apply-all tuple as src
     "header": <the day-close header line>,
     "sections": [
-        {"title": "Tomorrow", "count": len(<the proposal's items>), "items": [<one item per move, in the proposal's own `rank` order>]},
+        {"title": "Tomorrow", "count": len(<the proposal's items>), "items": [<one item per candidate, in the proposal's own `rank` order, each carrying its `why`>]},
     ],
-    "quick_read": <the tomorrow goal line, already computed>,
+    "quick_read": <the top-ranked candidate's text, already computed>,
 }
 ```
 
 **Drop-empty, same as every other section on every other surface.** No `proposal` and no `intent` → **no widget at all**, and `tomorrow["line"]` (*"Nothing on file yet for tomorrow."*) is the whole of it. Never improvise an all-clear widget.
 
-**The goal leads and the moves sit under it.** `pack["tomorrow"]["proposal"]` is a DRAFT the system guessed: render it as a question with the confirm / edit taps, and NEVER as a statement of what tomorrow is about. `pack["tomorrow"]["intent"]` — present when the CEO already stated one — is their own word and renders as fact. It is written only on tap (Phase 6.2).
+**Up to three ranked candidates render in rank order, each its own line with its own why — never a bundle the CEO accepts or rejects as a whole.** `pack["tomorrow"]["proposal"]` is a DRAFT the system guessed: render it as a question with the confirm / edit taps, and NEVER as a statement of what tomorrow is about. A bare "confirm" picks rank 1 (today's default door); "1"/"2"/"3" picks that candidate instead — Phase 6.2 below. `pack["tomorrow"]["intent"]` — present when the CEO already stated one — is their own word and renders as fact. It is written only on tap (Phase 6.2), and it is always ONE item: the candidate the CEO picked, never the whole set.
 
 **The meetings this fire processed** contribute their `.docx` links to the `Meeting briefs:` section below and NOTHING ELSE. No meeting rows, no per-meeting sub-items, no counters widget. Their ambiguous items are already in the queue and reach the CEO through the MORNING surfaces.
 
@@ -1096,24 +1212,31 @@ data_view = {
 
 **`confirm_ids` IS EMPTY AND THAT IS THE CONTRACT.** `end_of_day.confirm_ids_from_pack` walks `NUMBERED_BLOCKS`, which is `()`: the evening numbers nothing because it renders no numbered rows. Do not number the tomorrow moves into it — the confirm resolves through `end_of_day.resolve_intent_confirm` off `day_intent_proposal` on the same receipt and never used the map. **Never number a row you are not rendering**, and never render a row the pack did not hand you: a map entry for an invisible row makes every tap past it resolve against something nobody saw, which is the PERSONLOOP1 N-1 finding.
 
-**The empty day still posts.** No proposal and no intent means no widget at all, and the prose blocks are the whole turn: the coverage strip, whatever the day-went paragraph could honestly say, and the sign-off. **The coverage strip renders on an empty day too** — "nothing happened" and "I could not look" are the two readings of an empty surface and the strip is what tells them apart.
+**The empty day still posts.** No proposal and no intent means no widget at all, and the prose blocks are the whole turn: `coverage_lines` when non-empty, whatever the day-went paragraph could honestly say, and the sign-off. **The coverage strip renders on an empty day IFF it has a disclosure (SPEC COVERQUIET1)** — "nothing happened" and "I could not look" are two different claims and, when the fire genuinely could not look (a reduction, a deferral, a dark surface, a connector gap, a catch-up note), the strip is what tells them apart. A day that is empty AND fully covered — nothing happened and every capability read clean — says so through the day-went paragraph and the sign-off alone; a boilerplate "nothing to report" coverage strip under an already-honest empty day is the noise this spec removes.
 
-## Phase 6.2 — the tomorrow tap (SPEC BK1 writer, EOD1 caller)
+## Phase 6.2 — the tomorrow tap (SPEC BK1 writer, EOD1 caller; positional pick per SPEC TOMPICK1)
 
-The `tomorrow` block's confirm/change taps arrive through `apply-choices` like every other verb. On confirm:
+The `tomorrow` block's confirm/change taps arrive through `apply-choices` like every other verb. **The CEO is picking ONE of up to three ranked candidates, positionally** — a bare "confirm" means rank 1 (today's default door, unchanged), and a bare digit ("1", "2", "3") means that rank instead. Parse the reply for a leading digit before falling through to "confirm"; anything else that isn't "edit"/"change" is not this route. On confirm:
 
 ```python
 from end_of_day import resolve_intent_confirm
 from day_intent import write_from_proposal
-res = resolve_intent_confirm(WORKSPACE_ROOT)          # refuses on a stale/absent map
+# pick=None for a bare "confirm" (rank 1); pick=<int> for a bare "1"/"2"/"3".
+res = resolve_intent_confirm(WORKSPACE_ROOT, pick=<the digit typed, or None>)
 if res["ok"]:
     write_from_proposal(WORKSPACE_ROOT, res["proposal"],
                         origin="wrap",                 # the CEO tapped: it is stated now
                         source_ref=res["source_ref"],  # session:<receipt id>:confirm
                         source_skill="past-meetings")
+else:
+    ...  # say res["refusal"] verbatim and write nothing — an out-of-range
+         # pick ("4" when only 2 candidates were offered) refuses the same
+         # way a stale map does, never clamped to the nearest real one.
 ```
 
-**Pass the PROPOSAL, never a list of its texts.** `write_from_proposal` takes the resolver's output whole, so each item keeps the `commitment_id` it was drafted from and the morning brief can join tomorrow's stated intent back to the open book. The shape this replaces handed `write_day_intent` a plain list of the items' `text` values, which dropped every id on the way in — and it dropped them because this file used to instruct exactly that. The `for_date` comes off the proposal too: re-resolving "tomorrow" at write time files a tap that lands either side of midnight under the wrong day.
+**Pass the PROPOSAL, never a list of its texts.** `write_from_proposal` takes the resolver's output whole, so the item keeps the `commitment_id` it was drafted from and the morning brief can join tomorrow's stated intent back to the open book. The shape this replaces handed `write_day_intent` a plain list of the items' `text` values, which dropped every id on the way in — and it dropped them because this file used to instruct exactly that. The `for_date` comes off the proposal too: re-resolving "tomorrow" at write time files a tap that lands either side of midnight under the wrong day.
+
+**`resolve_intent_confirm` already narrows the proposal to the ONE chosen candidate, re-ranked to 1, before it reaches this call** (SPEC TOMPICK1 §0.3) — `write_from_proposal` and `day_intent.write_day_intent` underneath it are UNCHANGED and always write exactly what they are handed. The widening from one candidate to up to three lives entirely in `compute_tomorrow` and in `resolve_intent_confirm`'s positional resolution, never in the writer: **one intent is written, every time**, whichever candidate the CEO picked.
 
 `origin="wrap"` because a tap is the CEO's own word. The pre-confirm draft is `origin="proposed"`, exists transiently, and is NEVER written silently and NEVER rendered as a statement of fact — `load_day_intent` skips proposed rows by default, so a surface cannot render a guess as the CEO's intent by forgetting a flag. On "change", take the CEO's sentence and write it the same way (`write_day_intent(..., origin="wrap")`); do not merge it with the draft.
 

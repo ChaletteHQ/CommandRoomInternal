@@ -14,7 +14,7 @@ Per-workspace schedule customization. Built v2.14.10+ alongside the schedule_con
 2. Shows the current state in plain English (cron-to-english helper), in two groups: **Registered** and **Available, not added**.
 3. Parses what the user wants to change — natural-language patterns, listed below. User-requested times mean the WORKSPACE timezone (what "8am" means to the user); the stored cron is machine-local (R8 — Cowork evaluates cron on the machine clock), converted at write time.
 4. Atomic-writes the updated config to entities.json.
-5. **Pushes the new cadence to the live task itself** via `mcp__scheduled-tasks__update_scheduled_task` (Step 7). Cron re-anchoring is THIS skill's job; the registration skill deliberately never re-anchors a registered task's cron.
+5. **Pushes the new cadence to the live task itself** via `mcp__scheduled-tasks__update_scheduled_task` (Step 7). Cron re-anchoring for a CUSTOMIZED task is THIS skill's job; the registration skill never re-anchors a customer-customized cron. The one exception (BRIDGESIL1, 2026-08-27) is a task whose cron is NOT customized — no `cron` override recorded here at all AND the live cron is one core itself shipped (`schedule_config.SHIPPED_CRON_HISTORY`; a live cron core never shipped is an out-of-band customization and is always preserved) — and core shipped a new default cron for it: `enable-command-room-schedules` Step 1.C2 silently carries an uncustomized cron forward to core's current default, receipted (`schedule_refreshed`) and announced once on the next morning brief, never through this skill. The moment this skill writes a `cron` override for that task, it is customized again and BRIDGESIL1's silent path stops touching it, permanently, until the customer clears the override (`back to defaults`).
 
 ## Read-only mode (`list my schedules` / `show my scheduled chats`)
 
@@ -29,7 +29,8 @@ Your current Command Room schedule:
   Friday Wrap         — 1 PM Fridays
 
 Background maintenance (runs quietly, no chat output):
-  Maintenance         — 6:45 AM, 12:45 PM, and 5:45 PM daily
+  Maintenance         — 6:30 AM, 6:45 AM, 12:30 PM, 12:45 PM, 4:30 PM,
+                        4:45 PM, 5:30 PM, and 5:45 PM daily
                         (sent-mail reconcile, chat reconcile,
                         meeting capture, session sweep,
                         weekly cleanup, weekly insights, deal signals,
@@ -67,7 +68,7 @@ Stop. No changes, no prompt for input.
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -248,7 +249,7 @@ If `no` / `cancel` / `wait` → exit cleanly. No changes written.
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')

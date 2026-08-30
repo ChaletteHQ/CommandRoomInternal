@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 
 import event_refs
+from entities_io import entities_collection
 
 # Inherited (pre-split umbrella) events count for less than direct events.
 INHERITED_WEIGHT = 0.5
@@ -63,7 +64,7 @@ def derive_roster(workspace_root: str | Path, thread_id: str) -> list[dict]:
     workspace_root = Path(workspace_root)
     ent = _entities(workspace_root)
     people = ent.get("people", [])
-    threads = ent.get("threads", []) or ent.get("projects", [])
+    threads = entities_collection(ent, "projects")
     pmap = {p.get("id"): p.get("canonical_name") for p in people}
 
     thread = _thread_by_id(threads, thread_id) or {}

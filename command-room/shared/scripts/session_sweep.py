@@ -39,8 +39,19 @@ The recovered items reuse the EXISTING `commitment` / `decision` / `interaction`
 Deliverables recovered from a chat land as `note` events tagged
 `data.recovered_kind = "deliverable"`.
 
+  4. Narrative (SESSSTORY1, 2026-08-27) — a fourth, OPTIONAL leg. Facts were
+     already end-session-proof; the human-readable session-notes BLOCK was
+     not — it only wrote inside the "end session" ritual, which most sessions
+     never run. `sweep_and_receipt`'s optional `sessions` argument lets the
+     nightly pass compose that block too, per session, from that session's
+     `session_chapter` markers plus this run's own recovered-item counts —
+     see `session_narrative.py` for the composer and the workspace-manager
+     dedup handshake. The receipt gains `n_narratives_composed`.
+
 stdlib only. Shared by the nightly sweep (R1) and — via the same `_sweep` core —
 the one-time historical backfill (R2), so both dedup and write identically.
+The narrative leg (4) runs ONLY from `sweep_and_receipt` — `backfill_and_receipt`
+never passes `sessions`, so a historical catch-up never rewrites old notes files.
 """
 from __future__ import annotations
 
@@ -61,6 +72,7 @@ from capture_gate import (  # noqa: E402
     workspace_capture_context,
 )
 from event_gate import append_event  # noqa: E402
+import session_narrative  # noqa: E402
 import source_ref_index  # noqa: E402
 
 # The event families the sweep may recover. Deliberately a small, closed set of
@@ -220,6 +232,51 @@ _RECEIPT_TASK_IDS = {
 }
 
 
+def _compose_narratives(
+    workspace_root,
+    recovered: list[dict],
+    sessions: Optional[Iterable[dict]],
+    *,
+    source_skill: str,
+) -> int:
+    """SESSSTORY1 narrative leg. For each session descriptor in `sessions`,
+    compose + append that session's notes block from ITS chapter markers
+    (already supplied, never re-read here) plus a per-type count of what
+    THIS run recovered for that session_id — grouped from `recovered`, the
+    same list `_sweep` just appended. Returns the number of blocks actually
+    WRITTEN (n_narratives_composed); every fence (already composed, nothing
+    to say, no notes file) is a silent 0 for that session, never a raised
+    error — a narrative miss must never fail the sweep run that recovers the
+    session's real events."""
+    if not sessions:
+        return 0
+    by_session: dict[str, Counter] = {}
+    for ev in recovered:
+        sid = (ev.get("data") or {}).get("session_id")
+        if sid:
+            by_session.setdefault(sid, Counter())[ev["type"]] += 1
+    composed = 0
+    for s in sessions:
+        if not isinstance(s, dict):
+            continue
+        sid = s.get("session_id")
+        if not sid:
+            continue
+        result = session_narrative.compose_and_append(
+            workspace_root,
+            session_id=sid,
+            thread_id=s.get("thread_id"),
+            for_date=s.get("for_date"),
+            chapter_lines=s.get("chapter_lines"),
+            recovered_counts=dict(by_session.get(sid, {})),
+            source_skill=source_skill,
+            origin=session_narrative.ORIGIN_SWEPT,
+        )
+        if result.get("composed"):
+            composed += 1
+    return composed
+
+
 def _sweep(
     workspace_root,
     items: Iterable[dict],
@@ -230,9 +287,16 @@ def _sweep(
     window_desc: str,
     extra_receipt: Optional[dict] = None,
     fired_via: str = "scheduled",
+    sessions: Optional[Iterable[dict]] = None,
 ) -> dict:
     """Dedup + write + receipt. The one write path shared by the nightly sweep
-    and the historical backfill. Returns a receipt dict the skill renders."""
+    and the historical backfill. Returns a receipt dict the skill renders.
+
+    `sessions` (SESSSTORY1, nightly sweep only — `backfill_and_receipt` never
+    passes it): an optional list of session descriptors
+    `{session_id, thread_id, for_date, chapter_lines}` the narrative leg
+    composes a notes-file block for, one per session, counts-only from
+    material already in hand — see session_narrative.py."""
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
 
     # W4c relevance gate: resolve the capture context once per run (who the
@@ -279,6 +343,13 @@ def _sweep(
         # `.source_refs.idx` maintenance happen inside atomic_append_jsonl.
         append_event(events_path, recovered, holder=source_skill)
 
+    # SESSSTORY1 narrative leg — runs AFTER the recovered items land, so a
+    # session's "already-promoted events" (per §0 Ruling 2) genuinely
+    # includes this run's own recoveries when grouping counts below.
+    narratives_composed = _compose_narratives(
+        workspace_root, recovered, sessions, source_skill=source_skill
+    )
+
     receipt_data = {
         # v4.5.2 R1 receipt-contract fields (shared/RECEIPT_CONTRACT.md):
         # canonical task identity + fired_via + machine on every receipt.
@@ -291,6 +362,10 @@ def _sweep(
         "skipped_dedup": skipped,
         "by_type": dict(by_type),
         "window": window_desc,
+        # SESSSTORY1 §0 Ruling 2 — zero-written, always present, never just
+        # "present when sessions was passed": a receipt reader must be able
+        # to trust the field exists on every session_sweep_run row.
+        "n_narratives_composed": narratives_composed,
     }
     try:
         # SCHED1 — the shared stamp helper, so the machine token and its
@@ -314,6 +389,7 @@ def _sweep(
         "sessions_scanned": int(sessions_scanned),
         "by_type": dict(by_type),
         "recovered_summaries": [e["data"]["summary"] for e in recovered],
+        "n_narratives_composed": narratives_composed,
     }
 
 
@@ -326,6 +402,7 @@ def sweep_and_receipt(
     window_hours: int = 24,
     window_desc: Optional[str] = None,
     fired_via: str = "scheduled",
+    sessions: Optional[Iterable[dict]] = None,
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
     `session_sweep_run` receipt. `items` is the skill's extraction; every write
@@ -335,7 +412,18 @@ def sweep_and_receipt(
     default `last-Nh` label on a cursor-scoped run is the F-08 P2c / F-33
     receipt-metadata inaccuracy (record the real window, not a default).
     `fired_via`: "scheduled" on the nightly cron; "manual" on a chat-phrase
-    or Run Now fire (v4.5.2 receipt contract)."""
+    or Run Now fire (v4.5.2 receipt contract).
+
+    `sessions` (SESSSTORY1): optional list of
+    `{session_id, thread_id, for_date, chapter_lines}` descriptors — one per
+    session active this window that did NOT already run "end session". The
+    narrative leg composes a session-notes block for each (dedup'd against
+    both this writer and the "end session" ritual writer — see
+    session_narrative.already_composed) and the receipt's
+    `n_narratives_composed` counts how many were actually written. Omit (or
+    pass an empty list) on a run with no session-transcript access — the
+    receipt still lands with `n_narratives_composed: 0`, same skip-not-fail
+    posture as an empty `items`."""
     return _sweep(
         workspace_root,
         items,
@@ -345,6 +433,7 @@ def sweep_and_receipt(
         window_desc=window_desc or f"last-{int(window_hours)}h",
         extra_receipt={"window_hours": int(window_hours)},
         fired_via=fired_via,
+        sessions=sessions,
     )
 
 

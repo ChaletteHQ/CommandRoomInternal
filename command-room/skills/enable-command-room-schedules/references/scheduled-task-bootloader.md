@@ -6,8 +6,8 @@ This file is the canonical bootloader template registered into Cowork's schedule
 
 Per the Cowork diagnostic 2026-05-06: `userSelectedFolders` is NOT a passable parameter to `create_scheduled_task` / `update_scheduled_task` (silently dropped). Folder binding is implicit at fire time — Cowork mounts whatever folders are connected when the fire runs. v2.14.26+ works around this by:
 
-1. **At registration time** (`enable-command-room-schedules` Phase 0+1): the skill runs workspace discovery via `find $SESSION_DIR/mnt -name events.jsonl`, presents matches to the customer, asks which workspace to bind, then bakes that folder's BASENAME into each task's bootloader as the `<WORKSPACE_BASENAME>` placeholder.
-2. **At fire time:** the bootloader's Step 1 first tries `WORKSPACE="$SESSION_DIR/mnt/<baked_basename>"`. If that path has `_hq/data/events.jsonl`, use it. If not (folder renamed, customer connected different folder, etc.), fall back to discovery — `find -name events.jsonl` and pick the most-recently-modified candidate. If still nothing, abort with plain English asking the customer to connect the right folder.
+1. **At registration time** (`enable-command-room-schedules` Phase 0+1): the skill runs workspace discovery via `find $SESSION_DIR/mnt -name events.jsonl` (`_archive/` and `_demo-framework/` pruned — HQRESOLVE1), presents matches to the customer, asks which workspace to bind, then bakes that folder's BASENAME into each task's bootloader as the `<WORKSPACE_BASENAME>` placeholder.
+2. **At fire time:** the bootloader's Step 1 first tries `WORKSPACE="$SESSION_DIR/mnt/<baked_basename>"`. If that path has `_hq/data/events.jsonl`, use it. If not (folder renamed, customer connected different folder, etc.), fall back to discovery — `find -name events.jsonl` (`_archive/` and `_demo-framework/` pruned — an archived or demo substrate must never win on mtime) and pick the most-recently-modified candidate. If still nothing, abort with plain English asking the customer to connect the right folder.
 
 This handles all three Cowork folder-binding semantics (snapshot-at-registration, snapshot-at-first-approval, live-at-fire) — the bootloader degrades gracefully from "explicit baked-in path" to "discover what's mounted" to "abort loudly."
 
@@ -41,7 +41,7 @@ The registration skill (`enable-command-room-schedules/SKILL.md` Phase 1) reads 
 
 - Every literal `<TASK_ID>` → the canonical taskId (e.g., `cr-inbox`)
 - Every literal `<ORCHESTRATOR_FILENAME>` → the orchestrator filename from `ORCHESTRATOR_MAP` (e.g., `orchestrator-inbox.md`)
-- (v2.14.26+) Every literal `<WORKSPACE_BASENAME>` → the basename of the customer-confirmed workspace folder. Cowork mounts the connected folder under `mnt/<basename>/`, so whatever the customer named their folder is what the basename becomes — could be anything. NEVER substitute a hardcoded folder name from these docs; resolve at runtime via `shared/CONTRACT.md` Rule 22 (`find $SESSION_DIR/mnt -name _hq`).
+- (v2.14.26+) Every literal `<WORKSPACE_BASENAME>` → the basename of the customer-confirmed workspace folder. Cowork mounts the connected folder under `mnt/<basename>/`, so whatever the customer named their folder is what the basename becomes — could be anything. NEVER substitute a hardcoded folder name from these docs; resolve at runtime via `shared/CONTRACT.md` Rule 22 (the hardened workspace-discovery snippet: shallowest `_hq` wins, `_archive/` and `_demo-framework/` pruned — HQRESOLVE1).
 - (Phase 3 / W4, 2026-07) Every literal `<PLUGIN_VERSION>` → the installed plugin version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` at registration time. This stamp is DIAGNOSTIC ONLY — fire behavior always comes from the freshly-resolved plugin, so a "stale" stamp never changes what runs. It exists so the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) can DETECT registered-prompt drift (a bootloader registered under an old plugin) instead of hoping Rule 16 is obeyed. Side effect worth knowing: the stamp makes the composed bootloader's hash change across plugin versions, so the Step 1.C hash-compare refreshes prompts on the first `set up command room schedules` (or update-bridge Phase 4.7) run after any upgrade — that refresh is intentional and idempotent.
 
 Then passes the substituted body to `create_scheduled_task` / `update_scheduled_task` as the `prompt` parameter.
@@ -90,7 +90,7 @@ if [ ! -f "$WORKSPACE/_hq/data/events.jsonl" ]; then
   # Baked-in path didn't resolve — fall back to discovery. Find any mounted folder that has
   # the canonical _hq/data/events.jsonl marker. Prefer most-recently-modified events.jsonl
   # as a mtime-based tiebreak when multiple workspaces are mounted.
-  CANDIDATE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type f -name "events.jsonl" -path "*/_hq/data/*" 2>/dev/null | while read f; do echo "$(stat -c %Y "$f") $f"; done | sort -rn | head -1 | awk '{$1=""; print substr($0,2)}')
+  CANDIDATE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type f -name "events.jsonl" -path "*/_hq/data/*" -print 2>/dev/null | while read f; do echo "$(stat -c %Y "$f") $f"; done | sort -rn | head -1 | awk '{$1=""; print substr($0,2)}')
   if [ -n "$CANDIDATE" ]; then
     WORKSPACE=$(dirname "$(dirname "$(dirname "$CANDIDATE")")")
   else
@@ -140,6 +140,38 @@ For `ABORT_ORCHESTRATOR_NOT_FOUND` (plugin clones exist but none contain the can
 For `ABORT_WORKSPACE_NOT_FOUND`:
 
 > ⚠️ Command Room scheduled task `<TASK_ID>` could not find your workspace. Either no folder with `_hq/data/events.jsonl` is connected to Cowork right now, or the workspace I was registered to (`<WORKSPACE_BASENAME>`) isn't connected. Please connect your Command Room workspace folder in Cowork's Settings → Folders, then type `set up command room schedules` to re-bind. This task will work tomorrow once the workspace is reachable.
+
+## Step 1.4 — Fire-time root guard (SPEC PATHREPAIR1)
+
+Step 1 found a LIVE `$WORKSPACE` (baked-in basename or discovery fallback) — but that is not the same question as whether this workspace's OWN registration record (`_hq/workspace_config.json`'s `workspace_root`) still agrees with it. A folder rename/move leaves the stored value stale even on a fire that resolved fine here: this step corrects that stale self-reference against the now-confirmed live `$WORKSPACE`, or aborts loudly rather than letting a task keep running on a registration nobody can trust (ruling 1's fire-time leg — "fails LOUD into the health surface... instead of silently producing nothing").
+
+Run this bash:
+
+```bash
+ROOT_REPAIR=$(cd "$PLUGIN_ROOT" 2>/dev/null && python3 -c '
+import sys, json
+sys.path.insert(0, "shared/scripts")
+try:
+    import path_repair as pr
+except Exception:
+    raise SystemExit(0)
+result = pr.fire_time_guard(sys.argv[1])
+print(json.dumps(result, default=str))
+' "$WORKSPACE" 2>/dev/null)
+BLOCKED=$(printf '%s' "$ROOT_REPAIR" | python3 -c "import sys, json
+d = sys.stdin.read().strip()
+print('1' if d and json.loads(d).get('blocked') else '0')" 2>/dev/null)
+echo "ROOT_REPAIR=$ROOT_REPAIR"
+echo "BLOCKED=$BLOCKED"
+```
+
+**Silence is the FALL-THROUGH, never a short-circuit** — the same posture Step 1.5 takes below: if `path_repair` cannot be imported, or `ROOT_REPAIR` is empty for any reason, `BLOCKED` stays `0` and the fire proceeds unchanged. A live task must never be silenced by an infra hiccup in the guard itself; the cost of guessing wrong in that direction is one unchecked fire, not a silenced chat.
+
+If `BLOCKED=1`, post EXACTLY this message in chat and STOP (same discipline as the ABORT_* messages above — do not improvise, do not produce a widget, do not continue):
+
+> ⚠️ Command Room scheduled task `<TASK_ID>` can't confirm your workspace registration. Your workspace folder doesn't match what's on record — it may have moved or been renamed, and I found more than one folder (or none) that could be it, so I won't guess. Please open Command Room and say "set up command room schedules" to reconnect it. This task will work again once the registration is confirmed.
+
+If `BLOCKED=0`, continue to Step 1.5 unchanged — a self-heal (`repaired: true` inside `ROOT_REPAIR`) is silent here by design: the registration is now correct and the fire proceeds exactly as it would have on a workspace that was never renamed. Same silence when `ROOT_REPAIR`'s `state` is `"UNKNOWN"` (SPEC PATHREPAIR1 v2, ruling 1/2/3) — the fire is running inside a Cowork session mount, or this workspace's registration belongs to a different machine's own `machines` entry: neither is evidence the workspace moved, so nothing repairs, nothing alarms, and BLOCKED stays `0` exactly like a healthy root. This is the fix for the class of bug this guard used to CAUSE: a v1 build compared the stored root against `$WORKSPACE` by plain existence, which reads DEAD on every single cloud fire (the session mount never matches a real machine path) and would self-heal by writing the ephemeral `/sessions/...` path into `workspace_config.json` every time — the exact defect WALKFIX1 exists to purge.
 
 ## Step 1.5 — Is this task RETIRED? (SPEC RETIREGATE1)
 

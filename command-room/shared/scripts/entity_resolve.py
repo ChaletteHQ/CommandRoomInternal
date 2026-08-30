@@ -62,9 +62,13 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from entities_io import entities_collection  # noqa: E402
 
 try:
     from read_alarm import SubstrateReadError, record_read_alarm, remedy_line
@@ -302,12 +306,12 @@ def _find_entity_by_id(entities: dict, entity_id: str) -> tuple[EntityType, dict
             if o.get("id") == entity_id:
                 return ("org", o)
     elif entity_id.startswith("project_"):
-        # NB: project records live under `threads` in M's data shape, but
-        # the canonical schema also names this `projects`. Try both.
-        for collection in ("projects", "threads"):
-            for proj in e.get(collection, []):
-                if proj.get("id") == entity_id:
-                    return ("project", proj)
+        # SPEC DUALKEY1: entities_collection(e, "projects") is now an alias
+        # for the canonical `threads` list — a single call is safe by
+        # construction, no more try-both.
+        for proj in entities_collection(e, "projects"):
+            if proj.get("id") == entity_id:
+                return ("project", proj)
     return None
 
 
@@ -349,13 +353,13 @@ def _iter_match_surfaces(entities: dict):
             if isinstance(alias, str) and alias.strip():
                 yield ("org", o, alias, "alias")
 
-    # Projects (under both `projects` and `threads` per data-shape variance)
-    for collection in ("projects", "threads"):
-        for proj in e.get(collection, []):
-            for field_name in ("canonical_name", "display_name", "folder_name"):
-                v = proj.get(field_name)
-                if isinstance(v, str) and v.strip():
-                    yield ("project", proj, v, "canonical")
+    # Projects. SPEC DUALKEY1: entities_collection(e, "projects") is now an
+    # alias for the canonical `threads` list.
+    for proj in entities_collection(e, "projects"):
+        for field_name in ("canonical_name", "display_name", "folder_name"):
+            v = proj.get(field_name)
+            if isinstance(v, str) and v.strip():
+                yield ("project", proj, v, "canonical")
 
 
 # ---------- public API ----------
@@ -616,6 +620,75 @@ def _sort_by_observed_recency(candidates: list, workspace_root) -> list:
     return sorted(candidates, key=recency_key, reverse=True)
 
 
+def linked_projects_for_org(
+    workspace_root: str | Path,
+    org_id: str,
+    *,
+    entities: dict | None = None,
+) -> list[dict]:
+    """Every non-archived project/thread affiliated with `org_id`, ranked by
+    OBSERVED recency (HYG1 Item 3 — events via `thread_activity`, never the
+    deprecated `last_activity` fossil).
+
+    Extracted from `resolve_to_linked_project`'s org branch (SPEC THREADBIND1)
+    so a caller that already has an org id in hand — never a free-text
+    query — can get the SAME candidate set and ranking without re-deriving
+    the filter/sort, and without paying `resolve()`'s fuzzy-match cost. The
+    org branch below calls this too: one candidate computation, two callers,
+    zero duplicated logic (the equivalence pin this buys is load-bearing —
+    see `thread_resolve.py`).
+
+    Returns [] for an org with no linked projects. PURE read — no writes,
+    no clock.
+    """
+    workspace_root = Path(workspace_root)
+    ents = _unwrap_entities(entities if entities is not None
+                             else _load_entities(workspace_root))
+    candidates = []
+    for proj in entities_collection(ents, "projects"):
+        if proj.get("status") == "archived":
+            continue
+        if proj.get("affiliation_id") == org_id or proj.get("org_id") == org_id:
+            candidates.append(proj)
+    if not candidates:
+        return []
+    return _sort_by_observed_recency(candidates, workspace_root)
+
+
+def person_org_ids(entities: dict, person_id: str) -> set:
+    """The org(s) a person's record asserts. `primary_org_id` when set (the
+    schema's own primacy field), else ALL of their `affiliation_ids` — the
+    schema documents NO ordering on that list ("all orgs this person is
+    affiliated with"), so a caller must never treat entry [0] as a stronger
+    pick than any other (REVIEW THREADBIND1 F3 — the exact bug this
+    ordering-blindness avoids).
+
+    Extracted from `thread_resolve._person_org_ids` (SPEC THREADANN1) so a
+    second caller (`thread_subjects`'s cluster detector) gets the IDENTICAL
+    org-evidence read instead of re-deriving it — the same "one candidate
+    computation, zero duplicated logic" shape `linked_projects_for_org`
+    already buys for the org-walk side above.
+    `thread_resolve._person_org_ids` now delegates here unchanged;
+    behavior is pinned by the pre-existing `run_thread_resolve_test.py`
+    (which predates this extraction and never moved).
+
+    `entities` is the already-loaded raw dict — pass what you have; this
+    does not re-load or unwrap.
+    """
+    for p in entities_collection(entities, "people"):
+        if isinstance(p, dict) and p.get("id") == person_id:
+            org = p.get("primary_org_id")
+            org = org.strip() if isinstance(org, str) else ""
+            if org:
+                return {org}
+            affil = p.get("affiliation_ids")
+            if isinstance(affil, list):
+                return {a.strip() for a in affil
+                       if isinstance(a, str) and a.strip()}
+            return set()
+    return set()
+
+
 def resolve_to_linked_project(
     workspace_root: str | Path,
     query: str,
@@ -649,16 +722,15 @@ def resolve_to_linked_project(
         person_id = base.record.get("id")
         primary_org_id = base.record.get("primary_org_id")
         candidates = []
-        for collection in ("projects", "threads"):
-            for proj in entities.get(collection, []):
-                if proj.get("status") == "archived":
-                    continue
-                if proj.get("key_contact_id") == person_id:
-                    candidates.append(proj)
-                elif primary_org_id and proj.get("affiliation_id") == primary_org_id:
-                    candidates.append(proj)
-                elif primary_org_id and proj.get("org_id") == primary_org_id:
-                    candidates.append(proj)
+        for proj in entities_collection(entities, "projects"):
+            if proj.get("status") == "archived":
+                continue
+            if proj.get("key_contact_id") == person_id:
+                candidates.append(proj)
+            elif primary_org_id and proj.get("affiliation_id") == primary_org_id:
+                candidates.append(proj)
+            elif primary_org_id and proj.get("org_id") == primary_org_id:
+                candidates.append(proj)
         if not candidates:
             return None
         # HYG1 Item 3: rank by OBSERVED recency (events, via the
@@ -684,17 +756,13 @@ def resolve_to_linked_project(
     # If org: pick most recently active project under that org
     if base.entity_type == "org":
         org_id = base.record.get("id")
-        candidates = []
-        for collection in ("projects", "threads"):
-            for proj in entities.get(collection, []):
-                if proj.get("status") == "archived":
-                    continue
-                if proj.get("affiliation_id") == org_id or proj.get("org_id") == org_id:
-                    candidates.append(proj)
+        # THREADBIND1 — the filter/sort now lives in linked_projects_for_org
+        # (one candidate computation, shared with thread_resolve.py). Passing
+        # the already-unwrapped `entities` avoids a second entities.json read.
+        candidates = linked_projects_for_org(workspace_root, org_id,
+                                             entities=entities)
         if not candidates:
             return None
-        # HYG1 Item 3 — observed-recency tiebreak, same rule as the sort above.
-        candidates = _sort_by_observed_recency(candidates, workspace_root)
         proj = candidates[0]
         return ResolveResult(
             entity_type="project",

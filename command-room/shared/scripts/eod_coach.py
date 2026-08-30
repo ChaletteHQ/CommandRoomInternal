@@ -186,6 +186,18 @@ PUSH_NAMED_PREFIX = ("This is the {ordinal} close running I've raised this, so "
                       "I'll say it once more and then hold off: ")
 
 
+def _ref_set(refs) -> frozenset:
+    """A sentence's refs, normalized to a frozenset for identity comparison.
+
+    SPEC COACHONE1 §0 ruling 1 — dedup at the render chokepoint keyed on the
+    insight's REF SET, never by fuzzy text match. `push`'s candidate is
+    always `patterns_kept[0]` itself (see `compute_push`), so when the push
+    renders, its `refs` and that pattern's `refs` are literally the SAME
+    list drawn from the SAME candidate dict — comparing the two as sets is
+    exact identity, not a heuristic."""
+    return frozenset(str(r) for r in (refs or []) if str(r or "").strip())
+
+
 def _ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
         suffix = "th"
@@ -715,13 +727,41 @@ def build_coach(*, workspace_root, for_date: str,
         syn.sentence(c["text"], c["refs"], tier=syn.TIER_MEANT, kind="pattern")
         for c in patterns["kept"]
     ]
+    # `pattern_block` is the FULL Layer 1 computed content — EODCOACH2's own
+    # refs contract, untouched — and is what this function returns under
+    # "patterns" below (the pack's audit/receipt copy, per COACHONE1 §0
+    # ruling 2: dedup is presentation-only, the computed record stays whole).
     pattern_block = syn.compose(pattern_sentences)
 
-    parts = [t for t in (pattern_block["text"], delta.get("text"),
+    # -----------------------------------------------------------------
+    # COACHONE1 §0 ruling 1 — THE RENDER CHOKEPOINT. One insight renders
+    # once per close. `compute_push`'s candidate is always
+    # `patterns_kept[0]` (the strongest kept pattern) restated as a fact
+    # plus its concrete cost — so whenever the push actually renders, it
+    # names the SAME insight as one of the sentences Layer 1 already kept,
+    # under a different template. Presentation drops that pattern
+    # sentence in favor of the push's fuller (count + cost, and on the
+    # naming close, the repetition itself) restatement — identity by
+    # exact ref-SET equality (never fuzzy text match), so a genuinely
+    # distinct pattern that merely shares no refs with the push is never
+    # touched. Ruling 3: cadence, push_state, and pattern selection
+    # (`patterns["kept"]` itself) do not move — only which ALREADY-KEPT
+    # sentences join the presentation text is affected here.
+    # -----------------------------------------------------------------
+    push_renders = bool(push.get("renders"))
+    push_ref_set = _ref_set(push.get("refs")) if push_renders else frozenset()
+    render_sentences = [
+        s for s in pattern_sentences
+        if not (push_renders and push_ref_set
+                and _ref_set(s.get("refs")) == push_ref_set)
+    ]
+    pattern_render_block = syn.compose(render_sentences)
+
+    parts = [t for t in (pattern_render_block["text"], delta.get("text"),
                           push.get("text")) if t]
     text = "\n".join(parts)
     refs: List[str] = []
-    for block in (pattern_block, delta, push):
+    for block in (pattern_render_block, delta, push):
         for r in (block.get("refs") or []):
             if r not in refs:
                 refs.append(r)
@@ -752,6 +792,7 @@ __all__ = [
     "DELTA_NEG", "DELTA_POS",
     "PUSH_STILLNESS", "PUSH_MENTION", "PUSH_SURVIVAL", "PUSH_NAMED_PREFIX",
     "read_prior_packs",
+    "_ref_set",
     "detect_stillness", "detect_mention", "detect_survival",
     "compute_patterns",
     "compute_intent_delta",

@@ -44,6 +44,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import event_refs  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 from prospect_conversion_detector import (  # noqa: E402
     _conversion_markers,
     _event_org_ids,
@@ -212,7 +213,7 @@ def detect_deal_signals(workspace_root: str | Path, *,
     workspace_root = Path(workspace_root)
     ent = _entities(workspace_root)
     orgs = ent.get("orgs") or []
-    threads = ent.get("threads") or ent.get("projects") or []
+    threads = entities_collection(ent, "projects")
 
     tracked = {
         o["id"]: o for o in orgs

@@ -260,6 +260,11 @@
     "required": [["batch_id"]],
     "properties": {"batch_id": "string", "n_auto_added": "number", "n_linked": "number", "n_merge_proposed": "number", "n_clustered": "number", "n_annotations": "number", "n_annotations_resolved": "number", "n_expired": "number", "n_kept_open": "number", "n_errors": "number", "caps": "object", "spilled": "object", "people_added": "array", "annotations_resolved": "array"}
   },
+  "path_repair": {
+    "description": "SPEC PATHREPAIR1 v2 — a workspace-root registration repointed (or an undo of one). WRITTEN ONLY via path_repair.repair / path_repair.undo, and ONLY on success (or on undoing a success) — an unrepairable finding (ambiguous, zero candidates, or an ephemeral-only candidate) writes nothing, and neither does an UNKNOWN vantage (a session mount, another machine's registration, a disconnected drive) — ruling 1/2's NO-WRITE posture; task_alarm.classify_dark_surfaces recomputes that verdict live instead of reading an event. data.status is repaired|undone. trusted=true means the caller supplied its own already-verified live root (the dispatch-preamble / bridge-update call shape) rather than this module discovering one via marker+fingerprint search. pre_repair_config (present on status=repaired) is the workspace_root/workspace_basename/root_fingerprint triple as it read immediately before this repair wrote over it — the DURABLE undo record (ruling 5): path_repair.undo() reads this straight off the event, with no in-memory receipt required.",
+    "required": [["status"], ["new_root"]],
+    "properties": {"status": "string", "old_root": "string", "new_root": "string", "task_ids": "array", "trusted": "boolean", "pre_repair_config": "object"}
+  },
   "schedule_retire_proposed": {
     "description": "The suppression record for ONE offer to switch off a RETIRED scheduled task (SPEC LIFECYCLE1 §4 — the mirror of schedule_add_proposed, for the retirement direction). WRITTEN ONLY via schedule_proposals.log_retire_proposal after the offer was surfaced. Retirement is PROPOSE-NEVER-SILENT: this event records that the customer was asked, so schedule_proposals.propose_task_retirements suppresses the same offer for RETIRE_SUPPRESSION_WEEKS. It records an OFFER, never a disable — nothing in the system disables a registered task on its own.",
     "required": [["taskId"]],

@@ -284,8 +284,8 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["initiative", "deal", "objective", "coaching", "cohort", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "other"],
-          "description": "The semantic kind of this thread. SPEC COACH1 §4.1 adds 'coaching' (one coaching engagement with one client — the arc a coach reads) and 'cohort' (a group/peer-group engagement with a roster; carries the `cohort` sub-object below). Widening only — no existing kind changed meaning, and no reader keys off the enum's length."
+          "enum": ["initiative", "deal", "objective", "coaching", "cohort", "advisory", "investment", "board", "relationship", "theme", "concern", "ritual", "personal", "product", "engagement", "operating", "venture", "prospect", "marketing", "project", "other"],
+          "description": "The semantic kind of this thread. SPEC COACH1 §4.1 adds 'coaching' (one coaching engagement with one client — the arc a coach reads) and 'cohort' (a group/peer-group engagement with a roster; carries the `cohort` sub-object below). SPEC THREADBIND1 §0 ruling 4 closes the vocabulary and widens it to match every real-substrate spelling `tests/fixtures/thread_shapes/entities.json` carries: 'product' plus 'engagement', 'operating', 'venture', 'prospect', 'marketing' (all previously off-enum and unvalidated). 'product_build' is a typo-split of 'product' and is NOT a valid value — `thread_writer.repair_thread_kind_drift` self-heals it to 'product' on read (`thread_writer.KIND_MIGRATION_MAP`), additive: a future drifted spelling earns its own map line, never a silent enum admission. Widening only — no existing kind changed meaning, and no reader keys off the enum's length. THREADBIND1 also closes the vocabulary at the writer: `thread_writer.create_thread` / `update_thread` reject a `kind` not in this enum (previously unvalidated — `_validate_thread` checked `status` but never `kind`)."
         },
         "project_class": {
           "type": "string",

@@ -80,6 +80,8 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from entities_io import entities_collection  # noqa: E402
+
 # --- The lifecycle thresholds (ORG_AND_THREAD_MODEL 30/60/180, unchanged from
 # --- the Pulse Phase 4 prose they replace). Days of quiet.
 PROPOSE_DORMANT_DAYS = 30      # 4b — ask
@@ -211,10 +213,8 @@ def _entities(workspace_root) -> dict:
 
 def _threads(workspace_root) -> list:
     ent = _entities(workspace_root)
-    threads = ent.get("threads")
-    if not isinstance(threads, list):
-        threads = ent.get("projects")
-    return [t for t in (threads or []) if isinstance(t, dict) and t.get("id")]
+    threads = entities_collection(ent, "projects")
+    return [t for t in threads if isinstance(t, dict) and t.get("id")]
 
 
 def _load_events(workspace_root) -> list:

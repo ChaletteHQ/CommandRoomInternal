@@ -1,0 +1,20 @@
+{
+  "version": "5.21.0",
+  "headline": "Your scheduled tasks get self-checking fire-time guards and a pre-close capture slot, the evening close proposes tomorrow and coaches without repeating itself, and the morning brief narrates what was captured while you were away.",
+  "items": [
+    {
+      "id": "v5210_instruct_schedule_reregistration",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "This update improves your scheduled tasks: every one now checks at fire time that it is running against the right workspace, the background maintenance task gains an afternoon capture slot so your evening close opens already caught up, and twin fire slots guard against double runs. To apply the new schedule, say \"set up command room schedules\" once — it refreshes your registered tasks in place, preserves any times you have customized, and tells you exactly what changed.",
+      "action": "instruct_user"
+    },
+    {
+      "id": "v5210_announce_close_and_brief",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your daily bookends learned some manners. The evening close now offers up to three ranked candidates for what tomorrow is about — reply with a number to pick one — names anything it deferred, and its coach makes each point once. The morning brief opens with what was captured since your last close, and status lines appear only when there is something to disclose. Ad-hoc work sessions you simply walk away from are composed into your session notes overnight — saying \"end session\" is still welcome, just no longer required.",
+      "action": "announce_only"
+    }
+  ]
+}

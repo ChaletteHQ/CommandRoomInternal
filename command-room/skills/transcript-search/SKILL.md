@@ -71,8 +71,15 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAU
 python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
-from tool_discovery import discover_transcript_tool
-result = discover_transcript_tool()
+from tool_discovery import discover_transcript_tool, ToolDescriptor
+# Build the actual tool list from Cowork's available tools — orchestrator
+# passes the real list at fire time, not stub data (same construction as
+# every other tool_discovery call site).
+tools = [
+    ToolDescriptor(tool_id=t['name'], name=t.get('display', ''), description=t.get('description', ''))
+    for t in CR_AVAILABLE_TOOLS  # injected by orchestrator runtime
+]
+result = discover_transcript_tool(tools)
 print(f'TOOL_ID={result.tool_id}')
 print(f'PLATFORM={result.platform}')
 "
@@ -109,7 +116,7 @@ Session 22 (Phase 2E test) verified that Cowork called Granola NL and got correc
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT"
 python3 -c "
 import sys

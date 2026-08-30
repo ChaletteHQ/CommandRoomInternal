@@ -49,7 +49,8 @@ receipt, and renders nowhere. **Un-render, don't unbuild.**
 | Block | What it is | The rule that governs it |
 |---|---|---|
 | `alarm_lines` | `substrate_health.substrate_alarm_lines` | Verbatim, pinned top, never suppressed |
-| `coverage` | What this fire actually READ, per capability | Verbatim, first under the alarms, **never suppressed and never softened** — the honesty floor under the prose. See below |
+| `dark_surface_lines` | TASKALARM1 — the dead-surface alarm, task_alarm.dark_surface_lines | Verbatim, directly under `alarm_lines`, render-once per (task, dark-window). See below |
+| `coverage` | What this fire actually READ, per capability | Renders IFF `end_of_day.coverage_has_disclosure(pack)` (SPEC COVERQUIET1) — computed on every fire, but placed only when it has something to disclose. When it renders: first under the alarms, disclosure-first, **never suppressed and never softened underneath that gate**. See below |
 | `day_went` | One grounded paragraph: what moved today | Composed in code by `eod_synthesis.compute_day_went` from the LEDGER's own fields and today's named closes. Printed verbatim; never extended |
 | `what_it_meant` | THE ARC READ (SPEC EODARC1): which arcs moved today, which consequence-carrying arcs did not move, where the day's weight went | Composed in code by `eod_synthesis.compute_what_it_meant` over DECLARED arcs only. A sentence with no arc attached does not belong in the section (`eod_synthesis.drop_rows_only`); a genuinely empty day says so honestly in one grounded line; never an arc the model inferred |
 | `worth_remembering` | Decisions and notes logged today, 1–4 lines | Each line IS a row, not a summary of one |
@@ -217,30 +218,75 @@ nothing to place.
 the surface: it renders by instruction, right after `echoes` and above
 `tomorrow`, and it is not in `RENDER_ORDER` either — see "The coach" above.
 
-### `coverage` — say what you read before you say what you found
+### `coverage` — say what you read before you say what you found, and only when there is something to say
 
 The fire asks for email, calendar and chat per capability and receipts every
-gap under `connector_gaps` — and said nothing about any of it in chat, by
-design. The cost was measured: a chat cursor sat five days behind while the
-surface reported the day's closes with no qualification at all, and a calendar
-outage rendered byte-identically to a genuinely empty tomorrow. The reader
-could not tell *nothing happened* from *I could not look*.
+gap under `connector_gaps`. EODLEDGER1's original cost measurement stands: a
+chat cursor sat five days behind while the surface reported the day's closes
+with no qualification at all, and a calendar outage rendered byte-identically
+to a genuinely empty tomorrow. The reader could not tell *nothing happened*
+from *I could not look*.
 
-`coverage["lines"]` is composed in code and printed VERBATIM, first, under the
-alarms. One line per capability: mail and chat through their own cursors —
-**naming the span when a cursor is behind** — calendar present or absent, and
-the capture leg's window with what is on record in it and what is still owed. A
-capability that was skipped says so in the plain English the leg already
-receipted. The last line, when present, is the data-quality note: the count of
-closes in this window citing no artifact anyone can open.
+**SPEC COVERQUIET1 (2026-08-27) narrows WHEN this block renders, not what it
+says once it does.** M's live-walk intake named the strip "extra garbage" on
+days it had nothing to disclose — "5 meetings on record, 4 processed, all
+current" is boilerplate the briefs section already implies. `end_of_day.
+coverage_has_disclosure(pack)` is THE gate: a reduction clause (duplicate
+fold, already-processed exclusion, deliberate skip, a brief that failed to
+save), a deferral (`window_incomplete_before` set), a TASKALARM1 dark-surface
+line, a `connector_gaps` entry, or a rendering catch-up/degrade note. Any ONE
+is enough, and it is checked on every fire — the receipt keeps the full
+reconciled strip regardless (`log_end_of_day_receipt` moves `coverage` from
+`blocks_rendered` to `blocks_computed_only` on a quiet day rather than
+dropping it: presentation changed, bookkeeping did not).
 
-**Never suppressed and never softened**, the same posture as `alarm_lines` and
-for the same reason. A degraded read is exactly when the reader most needs to
-know what the aperture was. Do not re-word a line, do not drop the stale-cursor
-clause because the numbers look right, and do not add a reassuring sentence
-after it. `coverage["capabilities"]["calendar"]["read"]` and
-`tomorrow["calendar_available"]` are ONE boolean by construction; never write a
-sentence that puts them in conflict.
+**When it renders,** `end_of_day.coverage_render_lines(pack)` — never
+`coverage["lines"]` directly — is composed in code and printed VERBATIM,
+first, under the alarms. Its FIRST line is the disclosure itself, count
+scoped to that one clause ("1 meeting deferred to tonight's pass", never "5
+meetings on record, 4 processed, 1 deferred" — §0 ruling 3), followed by
+every per-capability line unchanged: mail and chat through their own cursors
+— **naming the span when a cursor is behind** — calendar present or absent,
+and the capture leg's window with what is on record in it and what is still
+owed. A capability that was skipped says so in the plain English the leg
+already receipted. The last line, when present, is the data-quality note: the
+count of closes in this window citing no artifact anyone can open (not itself
+one of the five disclosures — it does not, alone, put the strip up).
+
+**Never suppressed and never softened UNDERNEATH the gate**, the same posture
+as `alarm_lines` and for the same reason: a degraded read is exactly when the
+reader most needs to know what the aperture was, and the day-level on/off
+switch above is the only suppression this spec licenses. Do not re-word a
+line, do not drop the stale-cursor clause because the numbers look right, and
+do not add a reassuring sentence after it. `coverage["capabilities"]
+["calendar"]["read"]` and `tomorrow["calendar_available"]` are ONE boolean by
+construction; never write a sentence that puts them in conflict.
+
+**A stale cursor alone is NOT a disclosure.** A mail or chat cursor a day or
+two behind is ordinary, ongoing detail — ordinary enough that it is not on
+the §0.1 list — and does not by itself put the strip up. It still renders (as
+detail, not as the lead) on any day the strip is already showing for one of
+the five reasons above.
+
+### `dark_surface_lines` (TASKALARM1) — the dead-surface alarm, right under `alarm_lines`
+
+A tenth key not in `RENDER_ORDER`, for the same reason `catchup` and `coach`
+are not: it renders by instruction, directly under `alarm_lines` — same
+never-suppressed posture, timed inside the same `PHASE_ALARMS` phase rather
+than growing `end_of_day.PACK_PHASES`' pinned 16-name vocabulary for one
+more line shaped exactly like the alarms.
+
+`task_alarm.dark_surface_lines` is the source (SPEC TASKALARM1) — the
+watchdog's own `late` / `receipt_gap` / `never_authorized` classes, zero new
+detection logic, capped at 3 worst-first with an "and N more" tail, and
+render-once per (task, dark-window) through the module's own ledger. A
+`never_authorized` task reads "was never set up on this machine"; a `late` or
+`receipt_gap` task reads "has stopped firing" / "hasn't recorded any work" —
+never the other sentence, never conflated. **The ledger is shared across
+every surface that calls it** (morning brief, end of day, and any future
+one): a dark spell that already alarmed on this morning's brief stays quiet
+here — one alarm per dead surface, not one per fire. Empty list → nothing
+renders, never a padded all-clear.
 
 ### `score.ledger` — what the day did to the open book
 
@@ -557,7 +603,7 @@ refused in plain English — never clamped, never guessed.
 | `draft [n]` | slipped | Hands off to `email-writer` per the EW1 delegation rules |
 | `drop [n]` | slipped, confirm | The existing drop path, unchanged |
 | `confirm [n]` | confirm | The existing confirm path, unchanged |
-| tomorrow confirm | tomorrow | `end_of_day.resolve_intent_confirm`, then `day_intent.write_day_intent(..., origin="wrap")` |
+| tomorrow confirm (bare = rank 1) / `1`\|`2`\|`3` | tomorrow | SPEC TOMPICK1 — `end_of_day.resolve_intent_confirm(..., pick=<rank or None>)` narrows the up-to-three ranked candidates to the ONE picked, then `day_intent.write_from_proposal(..., origin="wrap")` writes that one intent |
 | `add person [n]` | person_candidate | `person_candidates.resolve_candidate(action="add person")` — creates the contact with every observed spelling as an alias, then drains every capture that was blocked on the name |
 | `same as [existing] [n]` | person_candidate | Same call, `action="same as [existing]"` — the alias write, then the same drain |
 | `not a person [n]` | person_candidate | Same call, `action="not a person"` — suppresses the PROPOSAL for that name, permanently and per org. Never a capture |

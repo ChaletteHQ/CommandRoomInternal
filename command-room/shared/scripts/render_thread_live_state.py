@@ -22,6 +22,7 @@ from pathlib import Path
 
 import event_refs
 import render_brain_block
+from entities_io import entities_collection
 from thread_roster import derive_roster
 
 EPOCH_THRESHOLD = 10 ** 10
@@ -62,7 +63,7 @@ def _human_latest_seq(events: list[dict], thread_ids: set[str]) -> int | None:
 
 def _thread(workspace_root: Path, thread_id: str) -> dict:
     ent = _entities(workspace_root)
-    threads = ent.get("threads", []) or ent.get("projects", [])
+    threads = entities_collection(ent, "projects")
     return next((t for t in threads if t.get("id") == thread_id), {})
 
 

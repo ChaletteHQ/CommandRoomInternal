@@ -111,6 +111,7 @@ expected until its phase lands.
 | `schedule_config_healed` | reliability watchdog / change-schedule heal path (Phase 3) — registered for the heal path; R2 landed FLAG-ONLY under sparse-config semantics (no safe additive heal identified: the only orphan-override remedy is a removal, which cleanup never does), so nothing writes it yet | cleanup (Monday note), insight-generator |
 | `schedule_parity_checked` | cleanup schedule-parity check (Phase 3, R2) — one audit event per weekly check with ghost/orphan mismatch counts; detect + report, NO config writes | cleanup (Monday note), insight-generator, usage-report |
 | `schedule_add_proposed` | cleanup Monday note via schedule_proposals.py (Phase 3, R3) — one event per surfaced later-add proposal; the suppression record (no re-propose for 6 weeks) | schedule_proposals (suppression check), usage-report |
+| `schedule_refreshed` | `schedule_refresh.log_schedule_refreshed` (SPEC BRIDGESIL1, 2026-08-27) — one event per FIELD a core plugin upgrade silently re-anchored on a task the customer never customized. `cron`/`label` rows are written by `enable-command-room-schedules` Step 1.C2 via `schedule_refresh.plan_schedule_refresh` + `apply_schedule_refresh` (the classify+apply pair — never a hand-rolled write, Rule 2's one-writer discipline); `old`/`new` carry the literal cron/label value. `prompt` rows are written by Step 1.C directly on a genuine (post-stamp-normalization) content diff; `old`/`new` carry a short `schedule_refresh.prompt_fingerprint` digest, never the full bootloader body (events.jsonl is additive-forever). `command-room-update-bridge` Phase 4.7 W4 reaches both through the same `enable-command-room-schedules` invocation — it has no separate writer. Shape: `{task_id, field: cron\|label\|prompt, old, new, origin: "bridge"}`. Undoable via the existing `change-schedule` override path exactly like any other cron edit — this writer never touches `workspace.schedule_config` itself, so "customized" reverts to true the moment the customer changes it back. A CUSTOMIZED field never reaches this writer (`plan_schedule_refresh` classifies it `preserve`, not `silent_apply`) — see the mutation fence in `schedule_refresh.py`. | morning-briefing (`schedule_refresh.announce_lines` — one render-once line per `cron`/`label` row since the last brief, Ruling §0.3; `prompt` rows are never announced, plumbing only) — the only wired reader as of this build; `prompt`/system-health/usage-report are read-tolerated future consumers of the raw event, not yet wired |
 | `late_fire` | `late_fire.check_lateness` on scheduled-context fires ONLY, against an unserved slot (Phase 3 R4; served-slot ledger + run-mode gate v4.5.2 R2 — manual fires and schedule-change re-anchors never write it; carries `data.fired_via: catchup`) | cleanup (chronic-lateness detection), insight-generator (better-default-time proposals), system-health (R3 cadence truth) |
 | `clock_untrusted` | `late_fire._clock_field` via `trusted_now`, ONCE PER PROCESS, only when the machine clock is provably wrong (SPEC CLOCK1) — `{direction: stale|ahead, source, skew_seconds, machine_now, corroborated_now}`. Telemetry only: it never blocks a fire, and a workspace with a healthy clock never writes one | cleanup (chronic-skew detection), insight-generator |
 | `pulse_run` | Pulse orchestrator (Phase 3/6 quick win B) | insight-generator (cadence baseline), usage-report, value-receipt |
@@ -129,6 +130,7 @@ expected until its phase lands.
 | `session_sweep_run` | session-sweep nightly skill (Phase 5, R1) — one audit event per run: sessions scanned, events recovered | cleanup (R10 scheduled-output self-audit), value-receipt, weekly-recap |
 | `session_backfill_run` | session-sweep historical backfill (Phase 5, R2) — one audit event per confirmed backfill batch | cleanup, value-receipt, usage-report |
 | `maintenance_run` | `maintenance_dispatcher.maintenance_receipt` (MAINT1) — exactly one per `maintenance` task fire: `{fired_at_slot, jobs_due, jobs_completed, jobs_failed, skipped_disabled}`. The dispatcher's own receipt; each job's success stays its own receipt type | `maintenance_dispatcher.validate_maintenance_ran`, task_watchdog (task freshness + `check_maintenance_jobs` gate), usage-report |
+| `path_repair` | `path_repair.repair` / `path_repair.undo` (SPEC PATHREPAIR1 v2) — written ONLY on a SUCCESSFUL repair or undo, never on an unrepairable finding AND never on an UNKNOWN vantage (ruling 1/2: ambiguous, zero-candidate, ephemeral-only-candidate, or "can't be probed from here at all" — session mount / another machine's registration / disconnected drive — are all NO-WRITE, and UNKNOWN is additionally never alarm-worthy; `task_alarm.classify_dark_surfaces` recomputes the DEAD-and-unrepairable verdict live from the registration record every render, exactly like the `late`/`receipt_gap`/`never_authorized` classes it sits beside, so no event is needed to surface it and none is spammed per fire). `data.status` is `repaired` or `undone`; carries `old_root`, `new_root`, `task_ids` (the registered bindings the repointed `workspace_root` now serves), `trusted` (true when the caller supplied its own live root rather than this module discovering one), and — present only when `data.status` is `repaired` — `pre_repair_config` (the workspace_root/workspace_basename/root_fingerprint triple as they read immediately before this repair, ruling 5's durable-undo record) | `path_repair.undo` (reads the LATEST `path_repair` event for a root straight off `events.jsonl` — no in-memory receipt required — and restores `pre_repair_config` when the event's `data.status` is `repaired`), any future audit/diagnostic read of a workspace's move history |
 | `m1_voice_proof_shown` | command-room-onboarding Phase 5b voice proof (shipped v4.4.0; registered here retroactively — it was written without enum registration, the exact drift this registry stops) | usage-report, coach (onboarding-beat telemetry) |
 | `commitment_reclassified` | `commitment_state.promote_task_to_commitment` (Phase 2 Stage D — triage `make task`/`promote` verbs) + `shared/scripts/migrate_commitment_kinds.py` (S6 one-time partition, dry-run default) | the projector (`load_open_commitments` kind-override fold), `commitment_counts` by_kind, commitment-triage, `stale_tasks` |
 | `commitment_reopened` | `commitment_state.reopen_commitment` (Phase 2 Stage D — S4 triage undo; also the reconcile-sent `undo` affordance may migrate here) | the projector (`load_open_commitments` order-aware closure state), `close_commitment` idempotency (a reopened item may be re-closed), commitment-triage |
@@ -189,6 +191,58 @@ The commitments/decisions/interactions the session sweep RECOVERS are written
 as the existing `commitment` / `decision` / `interaction` types through
 `append_event()` (dedup via `source_ref = "session:{session_id}"` in
 `.source_refs.idx`) — no parallel "swept" variants of existing families.
+
+## Session chapter lane (SPEC SESSSTORY1, 2026-08-27)
+
+The raw material session-sweep's NARRATIVE leg composes from. Facts
+(commitment/decision/interaction/note) were already end-session-proof; the
+human-readable session-notes BLOCK was not — it wrote only inside the "end
+session" ritual, which most sessions never run. This lane is the one new
+registered type SESSSTORY1 adds; the narrative leg itself introduces no
+second one (see the hard rule below).
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `session_chapter` | `shared/scripts/session_chapter.py::log_chapter` — an OPTIONAL, one-line marker a session may append at a natural work boundary (a deliverable produced, a decision logged, a topic closed); `data.text` is exactly one line (embedded newlines reject at the writer), `data.source_ref = "session:<id>"` | `shared/scripts/session_chapter.py::load_chapters` / `chapter_lines_for` — read by `shared/scripts/session_narrative.py` (the sweep's narrative leg) to compose that session's notes-file block without re-reading the transcript |
+
+Hard rules:
+
+- **One line, always.** `log_chapter` raises `SessionChapterError` on empty
+  or multi-line text — a chapter marker is a pointer into a moment, not a
+  paragraph. Full detail belongs in the ordinary commitment/decision/
+  interaction/note capture, which already exists for it.
+- **Advisory, never mandatory (SPEC SESSSTORY1 §0 Ruling 1).** A session that
+  writes zero chapters is not a defect: the narrative leg falls back to the
+  session-sweep SKILL's own transcript summarization at sweep time, exactly
+  as it already does for the other three recovered families.
+- **No mid-chat .md write, ever.** `session_chapter` is the ONLY substrate
+  this lane touches during a live session. The composed session-notes block
+  itself is written later — overnight by the sweep, or on-the-spot by "end
+  session" — never from inside a chapter-marker append (§0 rationale: sync
+  churn + the bundling rule).
+- **The compose-dedup marker rides the EXISTING `note` family — no second new
+  type.** Both the sweep (`origin: "swept"`) and the "end session" ritual
+  (`origin: "ritual"`) that successfully compose a session's block land the
+  SAME kind of row: a `note` event, `data.recovered_kind: "session_narrative"`,
+  `data.source_ref` = `session:<id>:narrative` (session_narrative.py's
+  `narrative_source_ref` — deliberately NOT the plain `session:<id>` ref the
+  table above already uses per-item, since that string is shared across every
+  capture of one session and is explicitly not a valid whole-session dedup
+  key). Indexed through the ordinary `.source_refs.idx` sidecar; whichever
+  writer lands first wins and the other skips via
+  `session_narrative.already_composed`.
+- **Counts-only, never transcript content.** The composed .md block itself
+  may (and should) read as real prose — it is literally the session notes —
+  but it is built ONLY from a session's own chapter one-liners plus
+  structural counts of recovered items (`"Captured: 2 commitments, 1
+  decision."`), never from a fresh raw-transcript read inside the write-side
+  module. The substrate marker event above carries no text from the block at
+  all, just bookkeeping — same discipline as every other sweep receipt.
+- **Never creates a notes file (§0 Ruling 4).** `session_narrative.
+  compose_and_append` appends only to an ALREADY-EXISTING
+  `SESSION_NOTES*.md`; a project with no notes convention gets `session_chapter`
+  / recovered-item events only, same as any other silent-skip fence in this
+  codebase.
 
 ## Balance lane (SPEC BAL1, 2026-07-19) — personal, m_facing only
 
@@ -322,6 +376,75 @@ Hard rules:
   declined ⇒ 60d fingerprint cooldown via the shared ledger, and a proposal
   whose `action_tuples` map to no registered verb is rejected at `propose()`
   (no-consumer proposals never enter the queue).
+
+## Thread-binding lane (SPEC THREADBIND1, 2026-08-28)
+
+Write-time thread resolution (`shared/scripts/thread_resolve.py`) rides the
+Living Brain lane above for its below-floor queue row (a `brain_proposal`
+with `data.kind: "thread_binding"` — no new event type, the existing rail).
+These three types exist for the one gap the Living Brain lane cannot cover:
+`prep_brief` receipts are append-only (§ Receipt contract below), so binding
+one AFTER it was written — the 30-day backfill one-shot,
+`scripts/backfill_prep_briefs.py` — cannot mutate the receipt in place and
+instead appends an additive marker, exactly the `commitment_reclassified`
+precedent (Phase 2 Stage D S6) applied to a different append-only record.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `prep_brief_thread_backfilled` | `backfill_prep_briefs.apply_backfill()` (propose-first, `thb_`-batch, `brain_undo`-reversible) | `thread_resolve._meeting_bound_thread_id` (folds it in as an already-resolved binding, same as a `meeting` event's `primary_thread_id` or a `prep_brief`'s own `data.thread_id` — minus any later `prep_brief_thread_backfill_undone` for the same meeting) |
+| `prep_brief_thread_backfill_undone` | `brain_undo`'s registered `prep_brief_thread_backfill` reverser (`undo_batch`, additive tombstone — the backfill marker stays in history) | `thread_resolve._meeting_bound_thread_id` (a tombstoned backfill reads as absent again) |
+| `prep_brief_backfill_run` | `backfill_prep_briefs.apply_backfill()` (ONE receipt per apply run — rows walked, deltas found, applied, unadjudicable; same receipt discipline `exchange_backfill_run` uses) | usage-report, cleanup (Monday-note card-health counts) |
+
+Doctrine, mirrored from EXCHBACK1 (`exchange_backfill.py`'s own §0):
+propose-first (nothing changes state without an explicit confirmed meeting id
+or the literal `"all"`), 30-day window only (outputs read recent memory; a
+brief older than that is risk without value — EXCHBACK1's own pile-walk
+posture), and **honest absence**: a brief whose meeting no longer resolves
+(no `meeting` event left to read attendees from) is reported
+`unadjudicable`, never guessed at.
+
+## Subject annotation lane (SPEC THREADANN1, 2026-08-28)
+
+Heavy threads get subjects, not surgery (M's standing CLUSTFAM1 ruling —
+annotation beats fence). `shared/scripts/thread_subjects.py` detects
+evidence-scored subject clusters over a thread's bound events (org +
+attendee + commitment-text agreement, riding THREADBIND1's `thread_basis`
+machinery) in the weekly cleanup job and ANNOTATES — records never move.
+An actual split rides the Living Brain lane above for its propose-only row
+(a `brain_proposal` with `data.kind: "thread_split"` — no new event type,
+the existing rail, same posture the Thread-binding lane above takes for
+`thread_binding`); confirming it fires the two types below.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `thread_annotation` | `thread_subjects.annotate_thread()` (idempotent — a re-detection producing the SAME cluster membership writes nothing) | `thread_subjects.subjects_for()` (the ONE reader every consumer below goes through) |
+| `thread_split_executed` | `thread_subjects.execute_split()` (propose-first, `user_confirmed=True` required, `tha_`-batched, `brain_undo`-reversible via the registered `thread_split` reverser) | none yet — a summary receipt (REVIEW THREADANN1 F7: undo resolves the batch from the reclassifications' own `data.brain_batch_id` stamps, never from this receipt; it exists for the audit trail and any future counting surface) |
+
+**`thread_annotation` is GENERIC by design, not a `thread_subjects`-only
+type.** `data.annotation_kind` names the content class (`"subjects"` is the
+only value this build writes); CLUSTFAM1's capture-dedup consumer is
+expected to ride the SAME writer/event shape next train with a different
+`annotation_kind` rather than mint a second annotation rail.
+
+Hard rules:
+
+- **Records never move.** `thread_annotation` never edits the annotated
+  thread's own record — it is a parallel, additive layer, always reachable
+  by `subjects_for(thread_id)` and safely ignorable by every other reader.
+- **Splits are re-tagged, never re-written.** A confirmed split's per-event
+  moves are `reclassification` events (`supersedes_seq` = the ORIGINAL
+  event; SPEC's own re-tag mechanism, the same idiom OBJ2's objective-link
+  confirm/dismiss pair and THREADBIND1's decision-event fallback both use)
+  — the original event is never edited. Undo (`brain_undo.undo_batch` on
+  the `thread_split_executed` receipt's `batch_ref`) appends a RESTORING
+  `reclassification` per retagged event (later seq wins the fold) and
+  archives the split-created child thread — never deletes it.
+- **Consumers opt in.** `subjects_for()` / `scope_events_to_subject()` are
+  pure reads; a thread with no annotation returns the caller's input
+  UNCHANGED (the byte-identity fence — SPEC §0 ruling 3).
+- **One proposal per thread per 30 days, ledgered** — narrower than, and
+  checked independently of, `proposal_ledger`'s shared 60d decline-only
+  cooldown (SPEC §0 ruling 4's own "never nagged").
 
 ## Entity history & lineage lane (SPEC HIST1, 2026-07-18)
 
@@ -956,14 +1079,19 @@ priority order.
   argument and the complete strike set live at `RECOMMEND_ONLY_SUPERSEDES` in
   `shared/scripts/decision_match.py`.
 
-## Style lane (SPEC STYLE1, 2026-08-25)
+## Style lane (SPEC STYLE1, 2026-08-25; STYLEROUTE1, 2026-08-26)
 
 - `style_changed` — **writers:** `workspace-manager` (the "tune how [name]
-  talks" / "tune my style" / "recalibrate my style" verbs, ALWAYS after an
-  explicit user confirm) and `command-room-onboarding` (exactly once, the
-  D7 provisional initial set — the ONLY unconfirmed write this lane permits).
-  Events are BUILT by `chat_persona.build_style_changed_event` and appended
-  via `event_gate.append_event`; nothing hand-shapes the payload.
+  talks" / "tune my style" / "recalibrate my style" verbs AND any in-passing
+  style correction with no tune verb — "never open with X", "stop saying Y" —
+  ALWAYS after an explicit user confirm), `command-room-onboarding` (exactly
+  once, the D7 provisional initial set — the ONLY unconfirmed write this lane
+  permits), and `shared/scripts/migrate_style_claude_md.py` (the STYLEROUTE1
+  one-shot, supervised — `--apply` only, never scheduled — that migrates a
+  freelanced CLAUDE.md style rule into this store; origin `asked`, same as
+  workspace-manager's tune path). Events are BUILT by
+  `chat_persona.build_style_changed_event` and appended via
+  `event_gate.append_event`; nothing hand-shapes the payload.
   `data: {layer: chat_persona|output_profile, origin: inferred_provisional|
   inferred_confirmed|asked|recalibrated, changes: [{knob, from, to}],
   evidence?}`. One event per confirmed batch per layer.

@@ -1346,8 +1346,9 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
         if path_leaks:
             msg_parts.append(
                 "Path fix (Rule 25): emit absolute paths using the runtime-resolved "
-                "$WORKSPACE (per CONTRACT.md Rule 22 discovery — "
-                "`find $SESSION_DIR/mnt -name _hq`). Never copy a path from "
+                "$WORKSPACE (per CONTRACT.md Rule 22 discovery — the hardened "
+                "shallowest-`_hq` snippet with `_archive`/`_demo-framework` "
+                "pruned, copied verbatim). Never copy a path from "
                 "docstrings, references, or CHANGELOG examples — those land on "
                 "the author's machine, not the user's, and click 404s on user surfaces."
             )

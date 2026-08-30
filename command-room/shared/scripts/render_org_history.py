@@ -36,6 +36,7 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text  # noqa: E402
 from cru_match import load_events_defensively  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 from event_time import event_time  # noqa: E402
 from org_activity import event_org_ids, thread_org_map  # noqa: E402
 from quantify import money_time_tag  # noqa: E402
@@ -94,13 +95,12 @@ def _name_index(view: dict) -> dict[str, str]:
     for o in view.get("orgs") or []:
         if isinstance(o, dict) and o.get("id"):
             idx[o["id"]] = o.get("canonical_name") or "(unnamed company)"
-    for coll in ("threads", "projects"):
-        for t in view.get(coll) or []:
-            if isinstance(t, dict) and t.get("id"):
-                idx[t["id"]] = (
-                    t.get("display_name") or t.get("canonical_name")
-                    or t.get("folder_name") or "(unnamed thread)"
-                )
+    for t in entities_collection(view, "projects"):
+        if isinstance(t, dict) and t.get("id"):
+            idx[t["id"]] = (
+                t.get("display_name") or t.get("canonical_name")
+                or t.get("folder_name") or "(unnamed thread)"
+            )
     for pr in view.get("people") or []:
         if isinstance(pr, dict) and pr.get("id"):
             idx[pr["id"]] = pr.get("canonical_name") or "(unnamed person)"
@@ -205,21 +205,20 @@ def _org_deals(view: dict, org_id: str) -> tuple[list[dict], int, int]:
     open_deals: list[dict] = []
     total = 0
     closed = 0
-    for coll in ("threads", "projects"):
-        for t in view.get(coll) or []:
-            if not isinstance(t, dict):
-                continue
-            oid = t.get("affiliation_id") or t.get("org_id")
-            if oid != org_id:
-                continue
-            deal = t.get("deal")
-            if t.get("kind") != "deal" and not isinstance(deal, dict):
-                continue
-            total += 1
-            if isinstance(deal, dict) and deal.get("outcome"):
-                closed += 1
-            else:
-                open_deals.append(t)
+    for t in entities_collection(view, "projects"):
+        if not isinstance(t, dict):
+            continue
+        oid = t.get("affiliation_id") or t.get("org_id")
+        if oid != org_id:
+            continue
+        deal = t.get("deal")
+        if t.get("kind") != "deal" and not isinstance(deal, dict):
+            continue
+        total += 1
+        if isinstance(deal, dict) and deal.get("outcome"):
+            closed += 1
+        else:
+            open_deals.append(t)
     return open_deals, total, closed
 
 

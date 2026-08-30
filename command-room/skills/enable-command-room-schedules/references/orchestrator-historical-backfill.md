@@ -123,7 +123,7 @@ For each cluster, IF the project doesn't already exist in entities.json, append 
 {"type":"project_proposed","ts":"<ISO>","data":{"proposed_name":"<inferred>","attendees":["<email>","..."],"signal_count":<N>,"signal_types":["email","calendar","drive"],"earliest_signal":"<date>","latest_signal":"<date>","auto_status":"<active|dormant|archived>","inferred_from":["historical_backfill_clustering"],"pending_review":true}}
 ```
 
-These are PROPOSED projects — they don't enter `entities.projects[]` automatically. The user reviews them via `cleanup` or via insight-generator Pass 9. The `auto_status` field tells the proposal review whether to default the new project to active vs dormant vs archived if the user confirms the proposal.
+These are PROPOSED projects — they don't enter `entities.threads[]` automatically. The user reviews them via `cleanup` or via insight-generator Pass 9. The `auto_status` field tells the proposal review whether to default the new project to active vs dormant vs archived if the user confirms the proposal.
 
 This is the rule that prevents the 12-month historical backfill from cluttering the active workspace with closed deals from 8 months ago — they land as `archived` proposals, invisible in daily flows, accessible by name if the user ever needs them.
 

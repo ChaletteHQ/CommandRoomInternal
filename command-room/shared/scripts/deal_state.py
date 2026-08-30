@@ -106,11 +106,10 @@ def _load_entities(ws: Path) -> dict:
 
 
 def _threads(data: dict) -> list:
-    threads = entities_collection(data, "threads")
-    projects = entities_collection(data, "projects")
-    if projects and not threads:
-        return projects
-    return threads
+    """SPEC DUALKEY1: `entities_collection(data, "projects")` is now an
+    alias for the canonical `threads` list — a single call is safe by
+    construction, no more dual-fetch-and-prefer."""
+    return entities_collection(data, "projects")
 
 
 def _find_thread(data: dict, thread_id: str) -> Optional[dict]:

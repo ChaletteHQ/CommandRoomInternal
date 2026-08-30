@@ -164,6 +164,15 @@ _VERSION_STAMP_RE = re.compile(r"plugin-version:\s*v?([0-9][0-9A-Za-z.\-]*)")
 _AUTHORIZATION_GRACE_WEEKDAYS = 3
 _FIRE_GRACE = _dt.timedelta(minutes=90)  # dispatch jitter + long fires
 
+# MAINTGAP1 (2026-08-27) — the maintenance dispatcher's own min-gap guard
+# (`maintenance_dispatcher._check_min_gap`) makes the LATER twin of any pair
+# of nominal fire instants closer than this many minutes a guaranteed,
+# receipted no-op (first-fire-wins). `effective_fires` below is the
+# watchdog-side mirror of that same threshold, kept as ONE literal here and
+# imported by the dispatcher rather than duplicated — see that module's own
+# comment on its import line.
+MIN_GAP_MINUTES = 20
+
 
 def _now_local() -> _dt.datetime:
     """Naive MACHINE-local now — the clock cron actually evaluates in.
@@ -286,6 +295,91 @@ def expected_fires(cron: str, now: Optional[_dt.datetime] = None, count: int = 2
                             return fires
         day -= _dt.timedelta(days=1)
     return fires
+
+
+def expected_fires_multi(cron_spec, now: Optional[_dt.datetime] = None,
+                          count: int = 2) -> list[_dt.datetime]:
+    """Like `expected_fires`, but `cron_spec` may be a single 5-field cron
+    string OR a tuple of them — the union of every sub-cron's expected-fire
+    instants, newest `count` first.
+
+    CAPSLOT1 (2026-08-27) — exists for a job whose true slot set cannot be
+    expressed as ONE 5-field cron without an unwanted minute x hour cross
+    product. `meeting-capture`'s nominal cadence is the case that motivated
+    this: three hours (6/12/17) share minute :45 and a fourth (16) needs
+    minute :30, and a flat cron field pairs every listed minute with every
+    listed hour — there is no way to tie :30 to hour 16 alone in one
+    expression (`expected_fires` above walks exactly that cross product,
+    `for h in hour_set: for m in minute_set`, so this is a property of the
+    field, not a bug). Its registry row instead carries a TUPLE of two
+    clean, non-cross-product cron strings, and this function reads that
+    shape so due-ness for that job stays exact — no extra due-ness slots
+    the outer `maintenance` task's own (cross-product) registered cron
+    doesn't actually need served.
+
+    A plain string behaves identically to calling `expected_fires` directly
+    (a 1-tuple has nothing to union). Duplicate instants across sub-crons
+    collapse to one.
+    """
+    crons = (cron_spec,) if isinstance(cron_spec, str) else tuple(cron_spec)
+    merged: list[_dt.datetime] = []
+    for c in crons:
+        merged.extend(expected_fires(c, now=now, count=count))
+    merged.sort(reverse=True)
+    out: list[_dt.datetime] = []
+    for candidate in merged:
+        if not out or out[-1] != candidate:
+            out.append(candidate)
+        if len(out) >= count:
+            break
+    return out
+
+
+def effective_fires(cron: str, now: Optional[_dt.datetime] = None, count: int = 2,
+                     min_gap_minutes: int = MIN_GAP_MINUTES) -> list[_dt.datetime]:
+    """Like `expected_fires`, but adjacent nominal fire instants closer than
+    `min_gap_minutes` apart collapse to ONE effective slot — the EARLIER of
+    the pair, newest `count` first.
+
+    MAINTGAP1 F3 (2026-08-27, off REVIEW CAPSLOT1's finding): the
+    maintenance dispatcher's min-gap guard makes the LATER twin of a close
+    pair (e.g. the :45 fire 15 minutes after its :30 sibling) a guaranteed,
+    receipted no-op by construction — first-fire-wins. `check_tasks`'s
+    lateness tolerance ("one missed fire is holiday tolerance" — missing
+    BOTH of the two most recent expected fires reads `late`, R5) was tuned
+    for a cadence where consecutive nominal fires are HOURS apart. Left
+    reading the raw nominal cron, a task whose fires now come in 15-minute
+    PAIRS turns that one-missed-fire tolerance into effectively ZERO
+    tolerance for an ordinary short nap that straddles one pair (a 12:15-
+    14:00 laptop close reads `late` at 14:00, where the pre-pairing cadence
+    read `ok` for hours more) — the exact regression the review's F3 named.
+    Evaluating lateness against EFFECTIVE slots (the earlier / ":30" server
+    of each pair) restores the intended tolerance: a pair counts as ONE
+    serving opportunity, never two, so a genuinely missed pair still alarms
+    exactly as before and a merely-napped-through single fire does not.
+
+    A no-op for every cron with no adjacent pair (every task but
+    `maintenance` today — DEFAULT_SCHEDULES has exactly one multi-minute
+    row) — collapsing never fires when there is nothing within
+    `min_gap_minutes` of anything else, so this is a strict generalization
+    of `expected_fires`, safe to call unconditionally.
+
+    Reads more raw fires than requested so collapsing can never starve the
+    returned count short.
+    """
+    now = now or _now_local()
+    raw = expected_fires(cron, now=now, count=max(count * 3 + 6, count))
+    ascending = list(reversed(raw))  # oldest first — mirrors the dispatcher's
+    kept: list[_dt.datetime] = []    # own first-fire-wins scan direction
+    gap = _dt.timedelta(minutes=min_gap_minutes)
+    for candidate in ascending:
+        if kept and (candidate - kept[-1]) < gap:
+            continue  # within min-gap of the earlier kept slot — the later
+                      # twin collapses into it, same pairing the dispatcher
+                      # itself performs at fire time
+        kept.append(candidate)
+    kept.reverse()  # newest first, matching expected_fires's own contract
+    return kept[:count]
 
 
 def next_fire(cron: str, now: Optional[_dt.datetime] = None) -> Optional[_dt.datetime]:
@@ -545,7 +639,11 @@ def check_tasks(
         last_fired = receipts.get(tid)
         last_run_at = _to_local_naive(parse_ts((rec or {}).get("lastRunAt") or ""))
         try:
-            recent = expected_fires(spec["cron"], now=now, count=2)
+            # MAINTGAP1 F3 — EFFECTIVE slots, not raw nominal ones (see
+            # effective_fires's own docstring): a strict generalization of
+            # expected_fires that only changes anything for a cron carrying
+            # adjacent min-gap pairs (today: `maintenance` alone).
+            recent = effective_fires(spec["cron"], now=now, count=2)
         except CronParseError:
             recent = []
         expected_latest = recent[0] if recent else None
@@ -685,7 +783,7 @@ def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
     findings = []
     for job_id, spec in MAINTENANCE_JOBS.items():
         try:
-            recent = expected_fires(spec["nominal_cron"], now=now, count=2)
+            recent = expected_fires_multi(spec["nominal_cron"], now=now, count=2)
         except CronParseError:
             continue
         last = receipts.get(job_id)
@@ -1422,6 +1520,26 @@ def check_prompt_versions(task_records, installed_version: str) -> list[dict]:
     return findings
 
 
+def normalize_prompt_stamp(prompt: str) -> str:
+    """BRIDGESIL1 (2026-08-27) — blind a bootloader-prompt comparison to the
+    diagnostic plugin-version stamp, one direction of the same parse
+    `_VERSION_STAMP_RE` already does the other way in `check_prompt_versions`
+    above. Every version bump changes the stamp, so a raw hash/string compare
+    of two composed bootloaders always differs across a release even when
+    nothing a customer would call "content" changed — exactly the defect
+    BUG_2026-08-16 and BUG_2026-08-19 filed: the bridge's W4 refresh and
+    `enable-command-room-schedules` Step 1.C both hash-compared the RAW
+    strings, so every plugin upgrade rewrote every registered prompt (seven
+    `update_scheduled_task` calls on M's own v5.13.0 install, for a diff
+    `git diff` proved was empty). Normalizing here — not deleting the stamp —
+    keeps the watchdog's own read (`check_prompt_versions`, which parses the
+    UNNORMALIZED registered prompt) unaffected; this is a write-gate helper
+    only, used exclusively to decide whether a refresh has anything real to
+    do.
+    """
+    return _VERSION_STAMP_RE.sub("plugin-version: <normalized>", prompt or "")
+
+
 def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> list[str]:
     """One sentence per problem — the ONLY watchdog voice any surface uses.
 
@@ -1508,11 +1626,15 @@ __all__ = [
     "check_workspace_binding",
     "check_prompt_versions",
     "detect_registry_vantage",
+    "effective_fires",
     "expected_fires",
+    "expected_fires_multi",
     "health_verdict",
+    "MIN_GAP_MINUTES",
     "last_receipts",
     "late_signals",
     "next_fire",
+    "normalize_prompt_stamp",
     "plain_english_lines",
     "read_workspace_config",
 ]

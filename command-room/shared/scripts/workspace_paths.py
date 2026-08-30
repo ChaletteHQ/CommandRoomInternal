@@ -135,6 +135,15 @@ LEGACY_ABSOLUTE_SHAPES: tuple = (
 # `/sessions/<slug>/mnt/<workspace-basename>/` — Cowork's per-session sandbox
 # mount. The slug is machine-generated and never reproduced here.
 _SESSION_MOUNT_RE = re.compile(r"^/sessions/[^/]+/mnt/[^/]+/")
+
+# The wider shape for classifying a ROOT rather than a file POINTER (SPEC
+# PATHREPAIR1 v2). `_SESSION_MOUNT_RE` above requires content AFTER the
+# workspace basename with a trailing slash — correct for a pointer to a FILE
+# inside a mounted workspace, but a workspace ROOT (or the bare session
+# directory, or the `mnt` mount point itself, before any basename is even
+# known) is ephemeral the moment it is anywhere under `/sessions/<slug>/`,
+# mounted or not — the whole session directory dies with the session.
+_SESSION_ROOT_RE = re.compile(r"^/sessions/[^/]+(?:/|$)")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[/\\]")
 _UNC_RE = re.compile(r"^\\\\[^\\]+\\")
 
@@ -307,6 +316,28 @@ def _anchor_split(norm: str) -> Optional[str]:
     if len(offsets) != 1:
         return None
     return norm[offsets[0]:]
+
+
+def is_session_mount_root(value) -> bool:
+    """True when `value` — a workspace ROOT, never a file pointer — sits
+    inside a Cowork per-session sandbox: `/sessions/<slug>/...` in any
+    shape, including the bare session directory and the `mnt/<workspace>`
+    mount point itself (SPEC PATHREPAIR1 v2, ruling 2: 'ephemeral roots are
+    unwritable, ever'). Wider than `_SESSION_MOUNT_RE` (which requires
+    content after the workspace basename, because it classifies FILE
+    POINTERS) because a ROOT is ephemeral from the moment it is anywhere
+    under `/sessions/`, not only once something is stored inside it.
+
+    >>> is_session_mount_root("/sessions/abc123/mnt/My Workspace")
+    True
+    >>> is_session_mount_root("/sessions/abc123")
+    True
+    >>> is_session_mount_root("C:/Users/name/My Workspace")
+    False
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    return bool(_SESSION_ROOT_RE.match(_norm_sep(value)))
 
 
 def classify_pointer(value) -> str:
@@ -594,6 +625,7 @@ __all__ = [
     "attach_line",
     "classify_pointer",
     "is_absolute_pointer",
+    "is_session_mount_root",
     "is_workspace_relative_doc",
     "machine_absolute",
     "normalize_persisted_path",

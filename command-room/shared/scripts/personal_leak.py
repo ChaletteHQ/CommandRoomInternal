@@ -195,33 +195,41 @@ def business_thread_ids(workspace_root) -> frozenset:
     tie-touching row withheld, and counted)."""
     try:
         import json as _json
+        try:
+            from entities_io import entities_collection
+        except ImportError:  # pragma: no cover — direct-path fallback
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from entities_io import entities_collection
         p = Path(workspace_root) / "_hq" / "data" / "entities.json"
         data = _json.loads(p.read_text(encoding="utf-8"))
         view = (data.get("entities")
                 if isinstance(data.get("entities"), dict) else data)
         out = set()
-        for coll in ("threads", "projects"):
-            for t in view.get(coll) or []:
-                if not isinstance(t, dict):
-                    continue
-                tid = t.get("id")
-                if not isinstance(tid, str) or not tid:
-                    continue
-                # Casefolded (CONFIRM #3 D-3): `kind` is written verbatim by
-                # create_thread with no enum validation — the enum lives only
-                # in ORG_AND_THREAD_MODEL.md prose, so a hand-edited or
-                # prose-following record plausibly arrives capitalised, and an
-                # exact-match exclusion FAILS OPEN (the personal thread reads
-                # as business). This is a privacy fence; it fails closed.
-                kind = t.get("kind")
-                if (isinstance(kind, str)
-                        and kind.strip().casefold() == _PERSONAL_THREAD_KIND):
-                    continue
-                oid = t.get("affiliation_id") or t.get("org_id")
-                if (isinstance(oid, str)
-                        and oid.strip().casefold() == _UNAFFILIATED_ORG_ID):
-                    continue
-                out.add(tid)
+        # SPEC DUALKEY1: entities_collection(view, "projects") is now an
+        # alias for the canonical `threads` list, so a single call replaces
+        # the old two-key loop.
+        for t in entities_collection(view, "projects"):
+            if not isinstance(t, dict):
+                continue
+            tid = t.get("id")
+            if not isinstance(tid, str) or not tid:
+                continue
+            # Casefolded (CONFIRM #3 D-3): `kind` is written verbatim by
+            # create_thread with no enum validation — the enum lives only
+            # in ORG_AND_THREAD_MODEL.md prose, so a hand-edited or
+            # prose-following record plausibly arrives capitalised, and an
+            # exact-match exclusion FAILS OPEN (the personal thread reads
+            # as business). This is a privacy fence; it fails closed.
+            kind = t.get("kind")
+            if (isinstance(kind, str)
+                    and kind.strip().casefold() == _PERSONAL_THREAD_KIND):
+                continue
+            oid = t.get("affiliation_id") or t.get("org_id")
+            if (isinstance(oid, str)
+                    and oid.strip().casefold() == _UNAFFILIATED_ORG_ID):
+                continue
+            out.add(tid)
         return frozenset(out)
     except Exception:
         return frozenset()

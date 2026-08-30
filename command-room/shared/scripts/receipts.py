@@ -81,7 +81,7 @@ from __future__ import annotations
 import datetime as _dt
 import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -664,6 +664,7 @@ def log_prep_receipt(
     fired_via: str = "scheduled",
     refreshed: bool = False,
     meeting_start: Optional[str] = None,
+    attendee_person_ids: Optional[List[str]] = None,
     extra_data: Optional[dict] = None,
 ) -> dict:
     """THE per-brief receipt writer. Both prep paths (scheduled auto-prep and
@@ -687,6 +688,20 @@ def log_prep_receipt(
     rewrites it), and `prep_leg` treats a receipt with no `meeting_start` as
     unprovable and REGENERATES. Callers that have the value must pass it; the
     cost of omitting it is a duplicate document, never a stale one.
+
+    `attendee_person_ids` (SPEC THREADBIND1 §0 ruling 3 — "prep_brief binds
+    going forward"). Optional evidence for `thread_resolve.resolve_thread_binding`:
+    a caller that already resolved the meeting's attendees for the brief's
+    own content can pass them here at no extra lookup cost. Bound: the
+    receipt's `data` gains `thread_id` next to `meeting_id`, plus
+    `thread_basis`. Below the floor with an askable candidate set: ONE
+    capped queue row fires through the standing adjudication queue,
+    exactly as it would for any other canonical writer — the receipt itself
+    still lands (fail-open; a resolver misfire never blocks the receipt).
+    Omitting `attendee_person_ids` still lets the MEETING'S OWN prior
+    binding resolve (evidence order step 1 needs only `meeting_id`, which
+    this function always has) — the attendee fallback is the one extra
+    resolution the caller's evidence unlocks.
     """
     if not isinstance(meeting_id, str) or not meeting_id.strip():
         raise ValueError("meeting_id is required (the calendar event id)")
@@ -718,6 +733,33 @@ def log_prep_receipt(
         for k, v in extra_data.items():
             if k not in data:
                 data[k] = v
+
+    # SPEC THREADBIND1 §0 ruling 3 — "prep_brief binds going forward". Only
+    # when the caller (or extra_data) did not already supply one — an
+    # explicit id always wins (evidence order step 0) and this never
+    # overwrites it. Fail-open: a resolver misfire must never block the
+    # brief's own receipt from landing (the floor is never below today).
+    if not data.get("thread_id"):
+        try:
+            from thread_resolve import (
+                BIND_CONFIDENCE_FLOOR,
+                PROPOSABLE_BASES,
+                propose_binding_row,
+                resolve_thread_binding,
+            )
+
+            evidence = {"meeting_id": data["meeting_id"],
+                       "attendee_person_ids": list(attendee_person_ids or [])}
+            result = resolve_thread_binding(evidence, workspace_root=workspace_root)
+            if result["thread_id"] and result["confidence"] >= BIND_CONFIDENCE_FLOOR:
+                data["thread_id"] = result["thread_id"]
+                data["thread_basis"] = result["basis"]
+            elif result["basis"] in PROPOSABLE_BASES:
+                propose_binding_row(workspace_root, evidence, result,
+                                    detector="prep-brief-thread-resolve",
+                                    title=data["slug"])
+        except Exception:
+            pass
 
     event = {
         "type": PREP_RECEIPT_TYPE,

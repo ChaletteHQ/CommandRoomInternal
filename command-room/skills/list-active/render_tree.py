@@ -223,9 +223,22 @@ def build_tree(
         else:
             root_orgs.append(org)
 
-    # Projects (called "threads" in schema for stability)
+    # Projects (called "threads" in schema for stability). SPEC DUALKEY1:
+    # entities_collection(entities, "projects") is now an alias for the
+    # canonical `threads` list. Try the canonical helper first (never-brick
+    # posture — list-active is standalone-runnable); degrade to the
+    # historical two-key read only if shared/scripts is unreachable.
+    try:
+        shared = Path(__file__).resolve().parents[2] / "shared" / "scripts"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        from entities_io import entities_collection
+
+        projects_source = entities_collection(entities, "projects")
+    except Exception:
+        projects_source = entities.get("threads") or entities.get("projects") or []
     projects_by_id: dict[str, ProjectNode] = {}
-    for proj in entities.get("threads", entities.get("projects", [])):
+    for proj in projects_source:
         pid = proj.get("id")
         if not pid:
             continue

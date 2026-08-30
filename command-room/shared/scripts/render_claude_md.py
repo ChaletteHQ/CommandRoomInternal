@@ -114,8 +114,7 @@ def _open_deal_org_ids(data: dict) -> set:
     writer and the twin check use (non-terminal status, no recorded outcome).
     Read-only and defensive: this is a renderer, not a writer."""
     out = set()
-    threads = (entities_collection(data, "threads")
-               or entities_collection(data, "projects"))
+    threads = entities_collection(data, "projects")
     for t in threads:
         if not isinstance(t, dict) or t.get("kind") != "deal":
             continue
@@ -196,8 +195,7 @@ def _org_body(data: dict) -> str:
 def _workstream_body(data: dict) -> str:
     orgs = {o.get("id"): o for o in entities_collection(data, "orgs")
             if isinstance(o, dict)}
-    threads = [t for t in (entities_collection(data, "threads")
-                           or entities_collection(data, "projects"))
+    threads = [t for t in entities_collection(data, "projects")
                if isinstance(t, dict)]
     listed, hidden = [], 0
     for t in sorted(threads, key=lambda t: (t.get("canonical_name")

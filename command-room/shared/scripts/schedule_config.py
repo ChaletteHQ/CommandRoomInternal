@@ -200,9 +200,87 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # past-meetings (17:00) and after relationship-moves on Sundays (17:00).
     # Daily (not weekday-only) so Sunday work (cleanup, insights) has a slot
     # and the Saturday sweep runs; a fire with nothing due is a fast no-op.
+    #
+    # CAPSLOT1 (2026-08-27) — gained the 16:30 pre-close slot. The EODSPEED1
+    # live test measured a structural 12:45->17:00 blind window: the
+    # incremental capture leg's last chance to help the 17:00 close was
+    # 12:45, so every workday had a 4h15m gap the close's own fetch had to
+    # cover cold. 16:30 is 30 minutes before the close — late enough to
+    # catch the afternoon, early enough to finish before 17:00 — and
+    # `maintenance_dispatcher.MAINTENANCE_JOBS["meeting-capture"]` is the
+    # only job whose nominal cadence gains it (see that registry's own
+    # comment for how its due-ness stays exact without inheriting this
+    # task's extra fires).
+    #
+    # SPELLING, PER CRON-LIBRARY REALITY (SPEC CAPSLOT1 §0.1): this cron is
+    # the literal string handed to Cowork's `create_scheduled_task` /
+    # `update_scheduled_task` as `cronExpression` — ONE 5-field expression,
+    # verified against the live tool contract (a single string field, no
+    # compound/list form). A flat cron field cannot pair a distinct minute
+    # to one hour among several sharing a different minute (6/12/17 at :45,
+    # 16 at :30) without the parser's own minute x hour cross product —
+    # `task_watchdog.expected_fires` already walks `for h in hour_set: for m
+    # in minute_set`, so this is a fact about the field, not a bug to work
+    # around. The alternative was a second registered taskId purely to
+    # carry one more trigger time, which reopens exactly the "every new
+    # taskId needs a fleet-wide manual Run Now" risk this task exists to
+    # retire (see this task's own comment above) — and the spec's own work
+    # list never mentions a new SILENT_TASKS entry. So this cron fires
+    # 6:30/6:45/12:30/12:45/16:30/16:45/17:30/17:45 daily. The intended
+    # slots are 6:45/12:45/16:30/17:45. Of the four extras: 12:30 and 16:45
+    # always find nothing newly due (fast no-ops, the same "a fire with
+    # nothing due is a fast no-op" tolerance this task already relies on for
+    # the six weekday fires that find no Sunday-only job due); 6:30 and
+    # SUNDAY 17:30 genuinely SERVE work — see MAINTGAP1 below, which is
+    # where these two stopped being an open question.
+    #
+    # MAINTGAP1 (2026-08-27) — M's Option A ruling (binding, cited on this
+    # comment per that ruling's own instruction): the moved effective serving
+    # times are ACCEPTED AS DESIGN, not a defect to route around. Session-
+    # sweep now serves at 6:30 (its midnight nominal slot has passed —
+    # previously served at 6:45; still strictly before the 7:00 brief, and
+    # reconcile-sent stays at 6:45 itself, so the Bug #98-v3 anchor holds
+    # exactly as before) and monthly-report serves on the 1st at 6:30 too.
+    # The entire Sunday-17:00 job family now serves at 17:30 instead of
+    # 17:45 — the deliberate after-relationship-moves(17:00) buffer narrows
+    # from 45 to 30 minutes, still a real buffer, and Sunday 17:45 becomes
+    # the no-op. Record this here so the label (below, lockstep-pinned to
+    # `cron_to_english(cron)`) and this comment both match what actually
+    # serves, not the pre-CAPSLOT1 four-bare-times mental model.
+    #
+    # REVIEW CAPSLOT1's F2 — the OTHER half of the :30/:45 pair spacing, the
+    # part that was genuinely open: a fire whose job chain runs longer than
+    # ~15 minutes (the Sunday 7-job family is the expected case every week)
+    # could still be mid-chain when the same task's NEXT fire (15 minutes
+    # later) asks the dispatcher what is due, and every not-yet-receipted
+    # job — including the `--apply` jobs — would be listed due again if
+    # Cowork ran same-task fires concurrently. That risk is guarded
+    # MECHANICALLY: `maintenance_dispatcher.dispatch_plan`'s min-gap guard
+    # (`_check_min_gap`) refuses to dispatch ANYTHING on a `scheduled` fire
+    # whose predecessor maintenance fire's own START landed under
+    # `task_watchdog.MIN_GAP_MINUTES` (20) minutes ago — the :45 twin of
+    # every pair is thereby a guaranteed, receipted no-op. "Predecessor's
+    # own start" is marker-or-receipt (SPEC_FIREGAP2, 2026-08-28): every
+    # scheduled fire now writes a fire-start marker BEFORE due-ness is ever
+    # evaluated, so a :30 chain still in flight is visible to the :45
+    # dispatcher from its first second, not only once its receipt lands at
+    # completion — the receipt-LESS in-flight case
+    # REVIEW_MAINTGAP1_2026-08-27.md F1 found open (a detector confined to
+    # existing receipts could not see it) is closed for real, not merely
+    # narrowed. Manual Run Now presses stay exempt (RUNNOW1 posture), and a
+    # manual fire's own receipt no longer counts as a predecessor either
+    # (SPEC_FIREGAP2 closing REVIEW_MAINTGAP1 F2). See
+    # `maintenance_dispatcher`'s own module docstring ("THE MIN-GAP GUARD" /
+    # "THE FIRE-START MARKER") and `handoffs/REVIEW_CAPSLOT1_2026-08-27.md`
+    # F2/F3 for the full reasoning this guard addresses.
+    #
+    # `label` is `cron_to_english(cron)` verbatim (lockstep-pinned) —
+    # cron_to_english gained a mixed-minute-set rendering branch for this
+    # shape.
     "maintenance": {
-        "cron": "45 6,12,17 * * *",
-        "label": "6:45 AM, 12:45 PM, and 5:45 PM daily",
+        "cron": "30,45 6,12,16,17 * * *",
+        "label": ("6:30 AM, 6:45 AM, 12:30 PM, 12:45 PM, 4:30 PM, 4:45 PM, "
+                  "5:30 PM, and 5:45 PM daily"),
         "enabled": True,
     },
     # REL1 — Relationship Moves: weekly proactive outreach action pack. Fires
@@ -277,6 +355,50 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # task in MAINT1 (2026-07) — their cadences live on as job-level nominal
     # crons in maintenance_dispatcher.MAINTENANCE_JOBS, and the old taskIds
     # are disabled on migration per SUPERSEDED_BY below.
+}
+
+
+# -----------------------------------------------------------------------------
+# SHIPPED_CRON_HISTORY — the shipped-default TABLE (SPEC BRIDGESIL1, "the
+# work" item 3; added at second-eyes review, 2026-08-27)
+# -----------------------------------------------------------------------------
+# Every cron core has ever declared silently-refreshable for a task, oldest
+# first, CURRENT default last. `schedule_refresh.plan_schedule_refresh`
+# classifies a live cron `silent_apply` ONLY when it appears here (and no
+# schedule_config override exists) — a live value in this tuple is one core
+# itself shipped, so the customer demonstrably never moved it. A live cron in
+# NEITHER this tuple nor the override store was set by something other than
+# core (an out-of-band edit in the Cowork UI, a hand-fixed task, an override
+# write that never landed) and is always `preserve`: silent refresh is for
+# core-authored values only (Ruling §0.1), never a guess about provenance.
+#
+# SEEDED CURRENT-ONLY, deliberately. Pre-BRIDGESIL1 default changes each
+# carry their own ruled migration posture and must NOT be re-adjudicated
+# silently by listing their old crons here:
+#   * staff-meeting Mon-only -> MWF is `staff_meeting_cadence_mwf_v1` —
+#     PROPOSED, never imposed, and a decline is honored forever (the decline
+#     writes no override, so only this table's silence protects it).
+#   * friday-wrap 16:00 -> 13:00 moves only via the chronic-late proposal.
+#   * inbox 7:00 -> 7:15 shipped "existing installs keep their value".
+# BRIDGESIL1 is forward-looking: it governs default changes shipped AFTER it.
+#
+# MAINTAINER CONTRACT (lockstep-pinned in run_bridgesil1_test.py): when you
+# change a DEFAULT_SCHEDULES cron, append the NEW value here and KEEP the old
+# one — the old entry is exactly what lets the fleet's uncustomized installs
+# follow the change silently. Keys mirror DEFAULT_SCHEDULES exactly; the last
+# element must equal the current DEFAULT_SCHEDULES cron.
+SHIPPED_CRON_HISTORY: dict[str, tuple[str, ...]] = {
+    "morning-brief": ("0 7 * * 1-5",),
+    "inbox": ("15 7 * * 1-5",),
+    "waiting-on": ("30 8 * * 1-5",),
+    "my-plate": ("45 8 * * 1-5",),
+    "end-of-day": ("0 17 * * 1-5",),
+    "friday-wrap": ("0 13 * * 5",),
+    # CAPSLOT1 (2026-08-27) appended the 16:30 slot; the 6:45/12:45/17:45-only
+    # form is KEPT so an uncustomized install still on it silent-applies.
+    "maintenance": ("45 6,12,17 * * *", "30,45 6,12,16,17 * * *"),
+    "relationship-moves": ("0 17 * * 0",),
+    "staff-meeting": ("0 9 * * 1,3,5",),
 }
 
 
@@ -364,16 +486,59 @@ SILENT_TASKS: dict[str, dict] = {
             "hand-author an alert). EXIT IMMEDIATELY: run NO jobs, write NO receipts. "
             "Every job stays due and auto re-fires next slot, and reconcile_forward "
             "self-heals any quarantined batches on the next healthy fire — zero manual "
-            "recovery. Only when ok=true proceed to step 1.\n"
+            "recovery. Only when ok=true proceed to step 0.5.\n"
+            "0.5. DETERMINE THE RUN MODE (MAINTGAP1, mirrors the chat orchestrators' "
+            "DOGFIX1 Step 2.5 — this prompt is not evidence of it either way): "
+            "`manual` if a human-authored message exists anywhere in this session, or "
+            "a human clicked Run Now / asked for a re-run, OR YOU CANNOT TELL; "
+            "`scheduled` only if the scheduler started this session with no human "
+            "message initiating the turn AND you are sure. When uncertain, it is "
+            "`manual` — a mis-labeled manual costs one skipped min-gap check on a "
+            "fire that would have skipped anyway most of the time; a mis-labeled "
+            "scheduled could refuse a person's Run Now press. Hold this word as "
+            "`<fired_via>` and carry it into every dispatcher call below — the CLI "
+            "call in step 1 AND every maintenance_receipt call this fire makes.\n"
             "1. Ask the dispatcher what is due — NEVER judge due-ness yourself: run "
-            "`python3 shared/scripts/maintenance_dispatcher.py <workspace_root>` from "
-            "the plugin root and hold its JSON plan. The `due` list is ordered — that "
-            "order is the contract (reconcile-sent first at 6:45, before the 7:00 "
-            "morning brief; weekly-insights after cleanup). A due job that carries a "
-            "`periods` list is PARTITIONED — obey step 2b for it. If nothing is due, "
-            "append the run receipt via maintenance_dispatcher.maintenance_receipt "
-            "(empty lists, plus any skipped_disabled from the plan) and exit "
-            "silently.\n"
+            "`python3 shared/scripts/maintenance_dispatcher.py <workspace_root> "
+            "--fired-via <fired_via>` from the plugin root and hold its JSON plan. "
+            "FIRST check `root_repair` (SPEC "
+            "PATHREPAIR1): if `root_repair.blocked` is true, `due` is forced empty and "
+            "this is NOT a quiet nothing-due exit — the workspace's own registration "
+            "doesn't match where it's actually running and could not be auto-repaired. "
+            "Write NO receipt (there is nothing due to receipt) and instead surface, in "
+            "substance: \"Command Room's background maintenance couldn't confirm this "
+            "workspace's registration — it may have moved or been renamed. Say 'set up "
+            "command room schedules' to reconnect it.\" Then STOP; do not run step 2. "
+            "When `root_repair.repaired` is true, the registration self-healed against "
+            "this fire's own live root — say nothing about it and continue normally. "
+            "When `root_repair.state` is \"UNKNOWN\" (SPEC PATHREPAIR1 v2 — a "
+            "session-mount vantage, a different machine's registration, or a "
+            "disconnected drive), treat it EXACTLY like a healthy root: say nothing, "
+            "never repair, never alarm, continue normally — this is the ruling-1/2/3 "
+            "posture, not a degraded one. The vantage's own state still rides the "
+            "audit trail: pass `root_repair_state=root_repair.get(\"state\")` into "
+            "every `maintenance_dispatcher.maintenance_receipt` call this fire makes "
+            "(both the empty-due exit below and step 4's completion receipt) — one "
+            "durable diagnostic field on the EXISTING receipt, never a new write, "
+            "never a chat line. "
+            "NEXT check `min_gap` (SPEC MAINTGAP1): if `min_gap.skipped` is true, "
+            "`due` is forced empty for a DIFFERENT reason than root_repair — the "
+            "predecessor maintenance fire's own slot landed under 20 minutes before "
+            "this fire's own slot (the guaranteed-no-op :45 twin of a :30/:45 pair, "
+            "or any scheduled re-fire that close), and due-ness was never even "
+            "evaluated. Say NOTHING to the CEO — this is exactly as silent as an "
+            "ordinary empty-due fire (below), just for a different reason the receipt "
+            "records. "
+            "The `due` list is ordered — that order is the contract (reconcile-sent "
+            "first at 6:45, before the 7:00 morning brief; weekly-insights after "
+            "cleanup). A due job that carries a `periods` list is PARTITIONED — obey "
+            "step 2b for it. If `root_repair.blocked` is false and `due` is genuinely "
+            "empty (whether because nothing is due OR because `min_gap.skipped` is "
+            "true), append the run receipt via "
+            "maintenance_dispatcher.maintenance_receipt (empty lists, "
+            "fired_via=<fired_via>, root_repair_state=root_repair.get(\"state\"), "
+            "skipped_min_gap=min_gap.get(\"skipped\", False), plus any "
+            "skipped_disabled from the plan) and exit silently.\n"
             "2. Execute each due job's skill END-TO-END, one at a time in plan order, "
             "never in parallel: reconcile-sent -> skills/reconcile-sent/SKILL.md; "
             "meeting-capture -> the End of Day capture leg run INCREMENTALLY "
@@ -478,7 +643,12 @@ SILENT_TASKS: dict[str, dict] = {
             "self-heals at the next fire; list it in jobs_failed instead.\n"
             "4. Finish with ONE maintenance_dispatcher.maintenance_receipt call "
             "(jobs_due / jobs_completed / jobs_failed / skipped_disabled from what "
-            "actually happened) and confirm it landed via validate_maintenance_ran.\n\n"
+            "actually happened, plus fired_via=<fired_via> from step 0.5, "
+            "root_repair_state=root_repair.get(\"state\") and "
+            "skipped_min_gap=min_gap.get(\"skipped\", False) both from step 1's "
+            "plan — this fire genuinely reached step 4, so min_gap.skipped is False "
+            "here in the ordinary case) and confirm it landed via "
+            "validate_maintenance_ran.\n\n"
             "Each job keeps its own skill's surfacing rules — stay silent unless a "
             "job's contract says something needs the CEO eyes (a closure line, the "
             "Monday note, the monthly report links). This is silent maintenance, NOT "
@@ -1169,6 +1339,24 @@ def cron_to_english(expr: str) -> str:
                 time_str = f"{times[0]} and {times[1]}"
             else:
                 time_str = ", ".join(times[:-1]) + f", and {times[-1]}"
+        elif len(hour_set) * len(minute_set) <= 8:
+            # CAPSLOT1 — a genuinely mixed schedule (more than one minute
+            # value AND more than one hour), e.g. the maintenance task's
+            # 6:45/12:45/16:30/17:45 cadence spelled as one 5-field cron
+            # (minute="30,45", hour="6,12,16,17"). A flat cron field cannot
+            # pair a minute to a SPECIFIC hour, so the true fire set is the
+            # full minute x hour cross product — render every pair, in
+            # chronological order, rather than silently dropping the ones
+            # the single-minute branch above can't see. Bounded at 8 pairs
+            # (a 2-minute x 4-hour cross product, the largest shape any
+            # DEFAULT_SCHEDULES row uses today) so a genuinely unreadable
+            # cron still falls through to the raw-string branch below.
+            pairs = sorted((h, m) for h in hour_set for m in minute_set)
+            times = [_format_time(h, m) for h, m in pairs]
+            if len(times) == 2:
+                time_str = f"{times[0]} and {times[1]}"
+            else:
+                time_str = ", ".join(times[:-1]) + f", and {times[-1]}"
         else:
             return expr  # too complex; raw cron
 
@@ -1765,6 +1953,7 @@ def rm_supersede_plan(registered_tasks: list) -> dict | None:
 __all__ = [
     "rm_supersede_plan",
     "DEFAULT_SCHEDULES",
+    "SHIPPED_CRON_HISTORY",
     "FIRST_INSTALL_TASK_IDS",
     "SILENT_TASKS",
     "SUPERSEDED_BY",

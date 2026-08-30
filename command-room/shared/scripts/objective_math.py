@@ -44,6 +44,14 @@ except ImportError:  # pragma: no cover — direct-path fallback
     _sys_pv.path.insert(0, str(_Path_pv(__file__).resolve().parent))
     from connector_adapters.provenance import dedup_key_of
 
+try:
+    from entities_io import entities_collection
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_ei
+    from pathlib import Path as _Path_ei
+    _sys_ei.path.insert(0, str(_Path_ei(__file__).resolve().parent))
+    from entities_io import entities_collection
+
 DIRECTIONAL = ("on_track", "at_risk", "off_track", "blocked")
 
 DEFAULT_CONFIG = {
@@ -660,7 +668,7 @@ def load_objective_inputs(workspace_root) -> dict:
                            .read_text(encoding="utf-8"))
         container = (data.get("entities")
                      if isinstance(data.get("entities"), dict) else data)
-        for t in (container.get("threads") or container.get("projects") or []):
+        for t in entities_collection(container, "projects"):
             if isinstance(t, dict) and t.get("id"):
                 threads_by_id[t["id"]] = t
         # USERKEY1 — routed through THE shared seam. This used to be an inline

@@ -84,6 +84,7 @@ from pathlib import Path
 from typing import TypedDict
 
 sys.path.insert(0, str(Path(__file__).parent))
+from entities_io import entities_collection  # noqa: E402
 from skill_config_writer import load_skill_config  # noqa: E402
 from thread_activity import derive_thread_activity  # noqa: E402
 
@@ -204,28 +205,21 @@ def detect_stalled_projects(workspace_root: str | Path) -> list[StallFlag]:
 
 def _extract_threads(raw: dict) -> list[dict]:
     """Defensive extraction — handles both canonical (nested under `entities`)
-    and flat (top-level) entities.json shapes, plus both `threads` (canonical
-    per ORG_AND_THREAD_MODEL) and `projects` (legacy schema key).
+    and flat (top-level) entities.json shapes. SPEC DUALKEY1:
+    `entities_collection(container, "projects")` is now an alias for the
+    canonical `threads` list, so a single call replaces the old prefer-
+    threads-then-fall-back-to-projects dedup dance.
 
-    Returns the threads list, deduping by `id` if both shapes happen to
-    coexist.
+    Returns the threads list, deduping by `id` defensively (a record with no
+    `id` or a repeated `id` is dropped, matching the old contract).
     """
     container = raw.get("entities") if isinstance(raw.get("entities"), dict) else raw
     threads: list[dict] = []
     seen_ids: set[str] = set()
-
-    # Prefer canonical `threads` key
-    for record in container.get("threads", []) or []:
+    for record in entities_collection(container, "projects"):
         if isinstance(record, dict) and record.get("id") and record["id"] not in seen_ids:
             threads.append(record)
             seen_ids.add(record["id"])
-
-    # Fall back to legacy `projects` key
-    for record in container.get("projects", []) or []:
-        if isinstance(record, dict) and record.get("id") and record["id"] not in seen_ids:
-            threads.append(record)
-            seen_ids.add(record["id"])
-
     return threads
 
 

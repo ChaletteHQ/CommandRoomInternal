@@ -29,12 +29,21 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
+import task_alarm as ta
 import task_watchdog as tw
 ws = '<workspace_root>'
 records = <the list_scheduled_tasks result, as a Python list of task dicts>
 verdict = tw.health_verdict(ws, task_records=records)
 installed = json.loads(open('.claude-plugin/plugin.json', encoding='utf-8').read()).get('version', '')
 drift = tw.check_prompt_versions(records, installed)
+# TASKALARM1 — the dead-surface table, ALWAYS the current truth. A health
+# check is an explicit ask, and it must answer with what is dark RIGHT NOW —
+# never with 'nothing to report' because the morning brief already alarmed
+# this same dead surface earlier today. record=False is load-bearing: it is
+# the raw classification with the proactive render-once ledger never
+# consulted and never written, the escape hatch that keeps an on-demand ask
+# from being silenced by an earlier fire's own alarm.
+dark = ta.dark_surfaces(ws, task_records=records, record=False)
 print(json.dumps({
     'vantage': verdict['vantage'],
     'summary_line': verdict['summary_line'],
@@ -42,6 +51,7 @@ print(json.dumps({
     'info_lines': verdict['info_lines'],
     'reports': verdict['reports'],
     'stale_prompts': [f for f in drift if f.get('stale')],
+    'dark_surfaces': dark,
 }))
 "
 ```
@@ -69,9 +79,11 @@ and the verdict already dropped it — don't resurrect it in prose.
 
 **Vantage blocked (`vantage` non-null — F-40):** render `summary_line` and STOP. This chat cannot see the machine-local scheduler (cloud/remote session, or a different computer); the line already says so and points to a local chat. NEVER report tasks as unregistered, NEVER name 'set up command room schedules' from here — running it in this chat would register everything into the wrong place and create duplicates.
 
-**Everything healthy (empty `lines` + empty `info_lines`, no stale prompts):** render `summary_line` verbatim and stop — it is the "Everything's running. All [N]…" one-liner, with the count computed from tasks that actually have on-schedule receipts.
+**Everything healthy (empty `lines` + empty `info_lines`, no stale prompts, empty `dark_surfaces`):** render `summary_line` verbatim and stop — it is the "Everything's running. All [N]…" one-liner, with the count computed from tasks that actually have on-schedule receipts.
 
 **Anything else:** render `summary_line`, then every `info_lines` entry, then every `lines` entry — all verbatim, one per line (they're already plain English with dates and the fix named — never re-narrate with taskIds, cron strings, or event names).
+
+**`dark_surfaces` (TASKALARM1) — the on-demand per-task verdict table.** When non-empty, render every entry's `line` verbatim, worst-first (the list already comes sorted `never_authorized` → `late` → `receipt_gap`) — the full table, uncapped and unfiltered by the proactive ledger, because this chat was asked directly. Never collapse it into `summary_line`'s count and never drop an entry because a proactive surface already said it once today — "check my schedules" answers with what is dark right now, full stop. A `never_authorized` entry always reads "was never set up on this machine"; a `late` or `receipt_gap` entry always reads "has stopped firing" / "hasn't recorded any work" — the two sentences must never be swapped or blended. Empty list → render nothing here (folded into "everything healthy" above).
 
 **Truth rules (R3 — binding on this render, F-43/F-40/F-10):**
 - A task only "ran on its normal schedule" if it has a run receipt on time — `summary_line` already encodes this; never widen its claim.

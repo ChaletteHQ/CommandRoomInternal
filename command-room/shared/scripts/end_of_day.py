@@ -132,6 +132,118 @@ def close_budget_read(duration_ms) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# SPEC CAPFENCE1 — the capture leg's own stopping rule (2026-08-27)
+# ---------------------------------------------------------------------------
+#
+# §0 Ruling 1, RE-ASSERTED: CLOSE_BUDGET_MS above does not move and gains no
+# control-flow reader here or anywhere else in this module. It stays the
+# standing 5-minute promise the fire keeps failing honestly until a real
+# close passes it — widening it to fit a failing fire is fixing the
+# thermometer, and nothing below does that. `CAPTURE_FENCE_MS` is a SEPARATE,
+# NEW constant with a narrower job: a stopping rule for the close's own
+# capture leg (Phase D) only. Nothing reads CLOSE_BUDGET_MS to decide whether
+# to run this check, skip the substance floor, or trim a gate — see
+# `run_capfence1_test.py`'s source-scan pin, which greps this file for every
+# occurrence of the name and fails if a new one appears outside
+# `close_budget_read`.
+#
+# Ramp M-ruled: 15 minutes now, walked down by a LATER ruling once CAPSLOT1's
+# own receipts show the fence rarely binding — never silently, and never by
+# this constant moving on its own.
+CAPTURE_FENCE_MS = 15 * 60 * 1000  # 15 minutes
+
+
+def capture_fence_elapsed_ms(capture_leg_start, now=None) -> Optional[int]:
+    """Milliseconds since the capture leg's own start — LEDGER-ELAPSED, the
+    SAME `capture_leg_start` EODLEG1 already records at the top of Phase D,
+    never a second timestamp invented for this check alone.
+
+    `now` is the instant to measure against; omitted, this reads the actual
+    current UTC time. A caller replaying a fixture passes a fixed ISO string
+    instead of monkeypatching the clock.
+
+    Returns None — never a fabricated elapsed — when either timestamp is
+    unparseable, or when the computed delta is negative (a clock that moved
+    backwards mid-fire is not a real elapsed reading; the 5 PM fire often
+    runs on a machine that just woke up, the same condition CLOCK1 and
+    `PhaseLedger`'s own `monotonic` note both guard against one level down).
+    `capture_fence_should_defer` treats a None elapsed as "the fence has not
+    bound" — an instrumentation read that cannot be trusted must not stop a
+    fire's capture leg (§0 Ruling 4's own posture, `PhaseLedger.record_leg`'s
+    posture one level up: instrumentation never costs the fire its work).
+    """
+    start = _parse_iso(capture_leg_start)
+    end = (_parse_iso(now) if now is not None
+           else _dt.datetime.now(_dt.timezone.utc))
+    if start is None or end is None:
+        return None
+    delta_ms = (end - start).total_seconds() * 1000.0
+    if delta_ms < 0:
+        return None
+    return int(round(delta_ms))
+
+
+def capture_fence_should_defer(elapsed_ms, n_captured_full_depth) -> bool:
+    """Whether Phase D's between-meetings check should stop and defer every
+    meeting still left in this fire's oldest-first set (§0 Rulings 2 and 3).
+
+    `elapsed_ms` is `capture_fence_elapsed_ms`'s own reading. `n_captured_
+    full_depth` is how many meetings THIS fire has already finished Phase 4
+    steps 1-9 for — full checking depth, §0 Ruling 4 — before this check
+    runs.
+
+    THE SUBSTANCE FLOOR (Ruling 3), and it is not a knob: this function
+    takes no floor argument, so a future call site cannot widen it by
+    passing a bigger number. Below one captured meeting the fence is
+    completely inert regardless of `elapsed_ms` — an empty evening on a day
+    that had meetings is worse than a long one, so the fire always finishes
+    at least its FIRST meeting even if the fence was already crossed before
+    that meeting started (a slow transcript fetch, a cold connector). Once
+    one meeting has cleared full depth, the fence is live: the very next
+    check after `elapsed_ms` reaches `CAPTURE_FENCE_MS` defers everything
+    still queued.
+    """
+    if not isinstance(n_captured_full_depth, int) \
+            or isinstance(n_captured_full_depth, bool) \
+            or n_captured_full_depth < 1:
+        return False
+    if not isinstance(elapsed_ms, (int, float)) \
+            or isinstance(elapsed_ms, bool):
+        return False
+    if elapsed_ms != elapsed_ms:  # NaN != NaN
+        return False
+    return elapsed_ms >= CAPTURE_FENCE_MS
+
+
+def capture_fence_window_marker(window, oldest_deferred_start) -> Optional[str]:
+    """The resume marker for a FENCE-triggered defer — the SAME
+    `window_incomplete_before` value the batch cap already writes
+    (`catchup.receipt_window_marker`), named for this spec's own call site
+    so a fence-triggered defer never grows a second dialect of the batch
+    cap's own honesty gate (§0 Ruling 2: "the EXISTING receipt_window_marker
+    /window_incomplete_before machinery").
+
+    `oldest_deferred_start` is the earliest start time among the meetings
+    THIS check is about to defer — the same "oldest still-unprocessed"
+    reading the batch cap already computes, just handed in from the fence's
+    own stopping point rather than the cap's. If Phase 3's batch cap ALSO
+    left meetings unhandled beyond its 5-meeting count, this still resolves
+    to the correct resume point: `receipt_window_marker` clamps to the
+    oldest unhandled start regardless of WHICH mechanism made it unhandled,
+    so the two triggers never produce two different resume points for the
+    same window.
+
+    Call this ONLY when there is something to defer (`capture_fence_
+    should_defer` returned True and at least one meeting remains in the
+    oldest-first set) — it always passes `incomplete=True` and never returns
+    None for a real remaining set.
+    """
+    from catchup import receipt_window_marker
+    return receipt_window_marker(window, incomplete=True,
+                                 oldest_unhandled=oldest_deferred_start)
+
+
+# ---------------------------------------------------------------------------
 # Per-phase instrumentation (SPEC EODPHASE1)
 # ---------------------------------------------------------------------------
 #
@@ -188,6 +300,81 @@ PHASE_POST = "post"
 LEG_PHASES = (PHASE_CAPTURE, PHASE_CLOSE, PHASE_POST)
 
 ALL_PHASES = PACK_PHASES + LEG_PHASES
+
+
+# ---------------------------------------------------------------------------
+# SPEC EODLEG1 — the receipt-shape guard (battery, guard tier)
+# ---------------------------------------------------------------------------
+#
+# EODPHASE1 made PHASE_CAPTURE nameable; it did not make it MANDATORY. The
+# live measurement (`Penelopes Brain/_hq/audit-reports/EODSPEED1_live_test_
+# 2026-08-26/REPORT.md`, receipt `eod_20260827T003743Z-48e3f23f`) found
+# `phase_order` covering the pack build alone — 0.45% of a 1,855,666 ms fire
+# that captured four meetings — on the first `close_budget` verdict ever
+# stamped. §0 rulings 1 and 3 make the ledger MANDATORY in the orchestrator
+# CONTRACT, but DEVELOPMENT.md's own architecture invariant is the reason
+# this function exists at all: "Prose contracts don't hold; code chokepoints
+# do... a prose-only mandate is presumed skipped (Bug #98 class)." An
+# orchestrator `.md` is read and executed by a model, not compiled, so the
+# battery cannot run it — this predicate is the code half: a receipt shaped
+# like the regression is a defect the guard tier can name BY ITSELF, so the
+# next orchestrator edit that quietly drops the ledger threading is caught
+# here rather than inferred from file mtimes a second time.
+def receipt_missing_capture_phase(data: dict) -> bool:
+    """True when a `past-meetings`/`end-of-day` `pack_run` receipt's own
+    `data` claims work the phase vocabulary does not corroborate: it
+    processed at least one meeting (`data["n_processed"]`, the EODSPEED1
+    `capture_leg` whitelist key `log_end_of_day_receipt` flattens onto the
+    receipt) and `phase_order` — EODPHASE1's own execution-order record —
+    does not contain `PHASE_CAPTURE`.
+
+    A fire that captured nothing (`n_processed` 0, absent, or not a plain
+    int) is NEVER flagged: an untimed leg that did no work is not the
+    defect this guards against, and flagging it would make the guard noisy
+    on the ordinary case where a day's meetings were all captured
+    incrementally and this fire's own `n_processed` is 0 by design
+    (EODSPEED1). Only a receipt that says it did the work and cannot show
+    when is the shape this refuses.
+    """
+    if not isinstance(data, dict):
+        return False
+    n_processed = data.get("n_processed")
+    if not isinstance(n_processed, int) or isinstance(n_processed, bool) \
+            or n_processed <= 0:
+        return False
+    order = data.get("phase_order")
+    if not isinstance(order, list):
+        return True
+    return PHASE_CAPTURE not in order
+
+
+def scan_capture_phase_violations(workspace_root) -> list:
+    """Every `past-meetings`/`end-of-day` `pack_run` receipt on this
+    workspace that fails `receipt_missing_capture_phase`, oldest first —
+    the guard's "red BY NAME" half.
+
+    Read-only and best-effort: a workspace this cannot read returns `[]`,
+    never a raise. Returns
+    `[{"ts": iso|None, "task_id": str|None, "n_processed": int}, ...]`.
+    """
+    out: list = []
+    try:
+        from receipts import iter_receipts
+        rows = iter_receipts(workspace_root, task_ids=[TASK_ID, "end-of-day"])
+    except Exception:  # noqa: BLE001
+        return out
+    for r in rows:
+        if r.get("type") != RECEIPT_EVENT:
+            continue
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        if not receipt_missing_capture_phase(data):
+            continue
+        dt = r.get("dt")
+        out.append({"ts": dt.isoformat() if dt else None,
+                    "task_id": r.get("task_id"),
+                    "n_processed": data.get("n_processed")})
+    return out
 
 
 class PhaseLedger:
@@ -263,6 +450,76 @@ class PhaseLedger:
             self._order.append(name)
             self._ms[name] = 0.0
         self._ms[name] += ms
+
+    def record_leg(self, name: str, ms, *, n_in=None, out=None,
+                   failed: bool = False) -> None:
+        """Record a leg's wall time from an EXTERNALLY measured duration
+        (SPEC EODLEG1) — for a leg that ran in a DIFFERENT process than this
+        ledger. `with ledger.phase(...)` only works inside one continuous
+        Python process; the orchestrator's close/capture/post legs each run
+        in their own `python3 -c` invocation (this fire's own module
+        docstring rule: "each is its own process"), so nothing here can hold
+        a live monotonic timer open across the boundary — the caller times
+        the leg as a wall-clock UTC-ISO delta instead and hands the already-
+        computed milliseconds to this method.
+
+        `ms` must be a non-negative real number; anything else (missing,
+        unparseable, negative — the shape a failed timestamp computation
+        leaves behind) is a silent no-op rather than a corrupt or fabricated
+        entry, which is what lets a caller try/except the whole timing block
+        and still call this unconditionally (BRIEFFIX1 Item C: instrumentation
+        never costs the fire its receipt).
+        """
+        try:
+            ms = float(ms)
+        except (TypeError, ValueError):
+            return
+        if ms < 0 or ms != ms:  # NaN != NaN
+            return
+        self.add_ms(name, ms)
+        if failed:
+            self.mark_failed(name)
+        if n_in is not None or out is not None:
+            self._Phase(self, name).count(n_in=n_in, out=out)
+
+    def merge_snapshot(self, snapshot: Optional[dict]) -> None:
+        """Absorb a PRIOR `.snapshot()` dict (SPEC EODLEG1) — e.g. the pack
+        build's own `phase_timings`, computed inside a SEPARATE subprocess
+        (the Phase C driver) and handed back as JSON rather than as a live
+        object this ledger could have held onto. Without this, an explicit
+        `phase_ledger` passed to `log_end_of_day_receipt` WINS over the
+        pack's own snapshot outright (that function's own docstring: "the
+        explicit ledger WINS") — so an orchestrator that built its own
+        ledger for the close/capture/post legs and forgot to fold the pack's
+        own phase record into it would silently DISCARD the fourteen
+        pack-build phases the driver already measured, the exact regression
+        this method exists to prevent.
+
+        Order-preserving: the snapshot's own `phase_order` is walked in
+        order, so its phases are recorded ahead of anything this ledger
+        times afterward. A malformed or empty snapshot is a no-op — the same
+        posture every other read in this class takes: an instrumentation
+        read that cannot be trusted is skipped, never fatal to the fire it
+        is trying to describe.
+        """
+        if not isinstance(snapshot, dict):
+            return
+        durations = snapshot.get("phase_durations_ms")
+        order = snapshot.get("phase_order")
+        if not isinstance(durations, dict) or not isinstance(order, list):
+            return
+        counts = (snapshot.get("phase_counts")
+                 if isinstance(snapshot.get("phase_counts"), dict) else {})
+        failed = (snapshot.get("phases_failed")
+                 if isinstance(snapshot.get("phases_failed"), list) else [])
+        for name in order:
+            name = str(name)
+            if name not in durations:
+                continue
+            row_counts = counts.get(name) if isinstance(counts.get(name), dict) else {}
+            self.record_leg(name, durations[name],
+                            n_in=row_counts.get("in"), out=row_counts.get("out"),
+                            failed=name in failed)
 
     def snapshot(self) -> dict:
         """The additive receipt payload, or `{}` when nothing was timed.
@@ -935,8 +1192,21 @@ CONFIRM_VERBS = ("confirm", "drop")
 # lazily at the row-build site so this module stays import-light.
 PERSON_CANDIDATE_BLOCK = "person_candidate"
 
-# The tomorrow block's two taps.
+# The tomorrow block's two taps. SPEC TOMPICK1 does not add a verb here — a
+# bare digit ("1"/"2"/"3") is a POSITION, resolved by `resolve_intent_confirm`
+# off the SAME candidates `confirm` already reads, not a new tap type. Adding
+# digits to this tuple would also break the byte-identical pin TOMFILT1's
+# suite already carries (`eod.TOMORROW_VERBS == ("confirm", "edit [change]")`).
 TOMORROW_VERBS = ("confirm", "edit [change]")
+
+# SPEC TOMPICK1 §0.1 — each ranked candidate carries its one-line why, so the
+# CEO is picking between reasons, not just text. Two shapes only: it lines up
+# with something already on tomorrow's calendar, or it is simply the next
+# open item on tonight's list. `{title}` is the matched meeting's own title —
+# never paraphrased, so the why can be checked against the calendar row it
+# names.
+TOMORROW_CANDIDATE_WHY_MATCHED = "lines up with tomorrow's \"{title}\""
+TOMORROW_CANDIDATE_WHY_OPEN = "still open on tonight's list"
 
 # Refusals, plain English, when a tap cannot be resolved.
 NO_MAP_REFUSAL = (
@@ -956,6 +1226,16 @@ ORPHAN_LINE = (
     "Your End of Day posted without recording that it ran, so its numbers "
     "cannot be used for one-tap actions right now. Say 'end of day' once and "
     "the numbers will line up again."
+)
+
+# SPEC TOMPICK1 §0.2 — a positional pick outside the offered candidates.
+# `{rank}` is what the CEO typed; `{n}`/`{plural}`/`{span}` describe what was
+# actually on the receipt, so the refusal names the real range rather than a
+# generic "invalid choice".
+NO_SUCH_CANDIDATE_REFUSAL = (
+    "There's no option {rank} in tonight's tomorrow proposal — I offered "
+    "{n} candidate{plural}. Say 1{span}, or tell me what tomorrow is about "
+    "and I will write that down."
 )
 
 # Kept as a module constant so a wording change is one edit and the pin above
@@ -1367,12 +1647,28 @@ def todays_notes(workspace_root, since_ts, *, now_iso=None) -> list:
     """Explicit `note` rows inside the same window. `note` is the ONE type
     read here: a takeaway the user wrote down is a takeaway; a takeaway
     inferred from a cluster of activity is the manufactured profundity §3.4
-    bans, one tier down."""
+    bans, one tier down.
+
+    SESSSTORY1's compose-dedup MARKER also rides the `note` family
+    (`data.recovered_kind: "session_narrative"`, one per composed session,
+    both origins — see session_narrative.mark_composed / EVENT_TYPES.md
+    "Session chapter lane"). That row is bookkeeping, not a takeaway: its
+    only text is a fixed-shape `summary` ("Session notes composed (...)"),
+    and the swept ones land nightly — unfiltered they would print one
+    "Noted: Session notes composed ..." line per session into Worth
+    Remembering EVERY day and compete with real takeaways for its cap
+    (REVIEW SESSSTORY1 F1). Excluded here, at the reader this docstring's
+    own doctrine defines — the writer stays exactly as EVENT_TYPES.md
+    documents it."""
     since, _src = _window(workspace_root, since_ts, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     out = []
     for ev in _load_events(workspace_root):
         if ev.get("type") not in _NOTE_TYPES:
+            continue
+        _d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if _d.get("recovered_kind") == "session_narrative":
+            # session_narrative._MARKER_KIND — the dedup marker, never a takeaway.
             continue
         ts = _parse_iso(ev.get("ts"))
         if ts is None or ts < since:
@@ -1500,15 +1796,19 @@ def declared_arcs(workspace_root, *, for_date: str, now_iso=None) -> list:
             rows = list(rows.values())
         return [r for r in (rows or []) if isinstance(r, dict)]
 
+    # SPEC DUALKEY1: `entities_collection(ents, "projects")` is now an alias
+    # for the canonical `threads` list, so this used to double-count every
+    # live thread once the alias landed (the pre-alias two-key loop existed
+    # because "threads"/"projects" could each hold a disjoint slice; post-
+    # alias they are the SAME list object). Single collection, single pass.
     live_threads = []
-    for collection in ("projects", "threads"):
-        for row in _coll(collection):
-            if str(row.get("status") or "").strip().lower() not in (
-                    "active", "scoping"):
-                continue
-            tid = row.get("id") or row.get("thread_id")
-            if str(tid or "").strip():
-                live_threads.append(row)
+    for row in _coll("projects"):
+        if str(row.get("status") or "").strip().lower() not in (
+                "active", "scoping"):
+            continue
+        tid = row.get("id") or row.get("thread_id")
+        if str(tid or "").strip():
+            live_threads.append(row)
 
     # SPEC EODARC1 — ORG ARCS FIRST, so a row that reaches both the org and
     # its thread lands on the relationship. `affiliation_id` is the canonical
@@ -2182,6 +2482,264 @@ def reconcile_meetings_line(coverage, render_set) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SPEC COVERQUIET1 — coverage speaks only when it has something to say
+# ---------------------------------------------------------------------------
+#
+# THE FENCE THIS MUST NOT BREAK. The strip exists because of MEETCOUNT1 /
+# CATCHUP1 F-1: never subtract a meeting from a stated count without its
+# clause; silent reduction is the bug. EODLEDGER1's own posture — "NEVER
+# SUPPRESSED AND NEVER SOFTENED" — was right for every day the strip has
+# something to say and wrong for the days it does not: "5 meetings on
+# record, 4 processed, all current" on an ordinary day is the extra garbage
+# M's live-walk intake named (2026-08-25/26). Quiet is only honest when
+# there is NOTHING TO DISCLOSE — the gate below is what tells the two apart,
+# and it is deliberately narrower than "the day looked ordinary": a day can
+# be ordinary in every other respect and still owe a disclosure.
+#
+# THE FIVE-ITEM LIST (§0 ruling 1), read verbatim off the pack and nothing
+# else:
+#   1. a REDUCTION clause   — `meeting_render_set`'s own non-briefed tallies
+#                              on the RECONCILED meetings row (duplicate
+#                              fold, already-processed exclusion, deliberate
+#                              skip, a brief that could not be saved, or an
+#                              unstated drop).
+#   2. a DEFERRAL            — `window_incomplete_before` is set. Read
+#                              generically off the pack: whatever wrote it
+#                              (today's past-meetings batch-cap marker, or
+#                              CAPFENCE1's fence once that spec lands) uses
+#                              the SAME field, `catchup.WINDOW_INCOMPLETE_
+#                              FIELD`, so this reads the field, never a
+#                              producer.
+#   3. a TASKALARM1 dark-surface line — `dark_surface_lines` non-empty.
+#   4. a CONNECTOR GAP       — `connector_gaps` non-empty: a leg this fire
+#                              asked for and could not read.
+#   5. a CATCH-UP / DEGRADE note — SPEC EODLEDGER1 part 3's labelled span,
+#                              `catchup["renders"]` True.
+#
+# ANY ONE of the five is enough — this is an OR, not a weighting. And the
+# HONESTY FLOOR (§Acceptance's own name for it): a reduction, however small
+# or ordinary its cause, MUST return True on its own. That is the load-
+# bearing pin of this whole build — a reduction with the strip suppressed IS
+# the silent-reduction bug, MEETCOUNT1/CATCHUP1 F-1 restated one gate up.
+#
+# `pack["window_incomplete_before"]` is NOT written by `build_end_of_day_pack`
+# — Phase C runs before the capture leg, and the marker is only knowable
+# after it. The orchestrator folds it onto the pack in Phase 5, the same
+# instant it already reads the value to build `capture_leg` for the receipt,
+# and BEFORE this predicate (or the render decision) is consulted. See
+# orchestrator-past-meetings.md Phase 5.
+
+COVERAGE_DISCLOSURE_REDUCTION_LEAD = "Meetings: {clause}."
+COVERAGE_DISCLOSURE_DEFERRAL_LEAD_ONE = "1 meeting deferred to tonight's pass."
+COVERAGE_DISCLOSURE_DEFERRAL_LEAD = "{n} meetings deferred to tonight's pass."
+COVERAGE_DISCLOSURE_DEFERRAL_LEAD_UNKNOWN = (
+    "Some of today's meetings are deferred to tonight's pass.")
+COVERAGE_DISCLOSURE_CONNECTOR_GAP_LEAD = (
+    "A connector this fire needed was not read.")
+# SPEC CAPFENCE1 — the close's own narration for a TIME-fence-triggered
+# defer (§0 item 3), distinct from the generic batch-cap lead above: it
+# names WHERE the rest went (tonight's background pass — CAPSLOT1's
+# incremental capture, running again before tomorrow's close) and WHEN the
+# reader sees them (MORNCAP1's morning narration), which the generic lead
+# names neither.
+COVERAGE_DISCLOSURE_FENCE_LEAD_ONE = (
+    "1 meeting deferred to tonight's background pass — "
+    "tomorrow's brief will carry it.")
+COVERAGE_DISCLOSURE_FENCE_LEAD = (
+    "{n} meetings deferred to tonight's background pass — "
+    "tomorrow's brief will carry them.")
+
+
+def coverage_has_disclosure(pack: dict) -> bool:
+    """SPEC COVERQUIET1 — THE gate, and the ONLY place render intent for
+    `coverage` is decided. True iff the pack carries at least one of the
+    five §0.1 disclosures above; False on a genuinely clean day. Both the
+    orchestrator's Phase 6 render bullet and `log_end_of_day_receipt`'s
+    `blocks_rendered` / `blocks_computed_only` split call THIS function —
+    nothing re-derives the answer from a shortcut (a stale cursor alone, an
+    unsourced-close count alone, a non-empty `coverage["lines"]` alone are
+    all deliberately NOT on the list: they are ordinary detail, not a
+    disclosure, and folding them in would make an unremarkable day noisy
+    again by a different door).
+
+    PURE and best-effort: a malformed or partial pack reads as "nothing
+    disclosed in what is readable" rather than raising. A gate that cannot
+    evaluate itself must not crash the fire over it — the same posture every
+    other read in this module takes, and specifically NOT the direction a
+    silent-reduction bug could hide in, because the one signal this function
+    is not allowed to miss (the reduction tally) is read off a plain dict
+    walk with no external I/O to fail.
+    """
+    if not isinstance(pack, dict):
+        return False
+
+    # 1. REDUCTION — the meetings capability's own reconciled render_set.
+    # THE HONESTY FLOOR: this branch alone must return True on any non-zero
+    # reduction, full stop (§Acceptance's mutation-by-removal pin targets
+    # exactly this branch).
+    coverage = pack.get("coverage")
+    if isinstance(coverage, dict):
+        caps = coverage.get("capabilities")
+        if isinstance(caps, dict):
+            meetings = caps.get(CAP_MEETINGS)
+            if isinstance(meetings, dict):
+                render_set = meetings.get("render_set")
+                if isinstance(render_set, dict):
+                    reductions = render_set.get("reductions")
+                    if isinstance(reductions, dict) and any(
+                            isinstance(n, int) and not isinstance(n, bool)
+                            and n > 0
+                            for n in reductions.values()):
+                        return True
+
+    # 2. DEFERRAL — window_incomplete_before, however it was produced.
+    if pack.get("window_incomplete_before"):
+        return True
+
+    # 3. TASKALARM1 — a dead-surface line this fire is carrying.
+    if pack.get("dark_surface_lines"):
+        return True
+
+    # 4. CONNECTOR GAP — a leg this fire asked for and could not read.
+    if pack.get("connector_gaps"):
+        return True
+
+    # 5. CATCH-UP / DEGRADE note — SPEC EODLEDGER1 part 3's labelled span.
+    catchup = pack.get("catchup")
+    if isinstance(catchup, dict) and (catchup.get("renders")
+                                       or catchup.get("lines")):
+        return True
+
+    return False
+
+
+def coverage_disclosure_lead(pack: dict) -> Optional[str]:
+    """THE disclosure-first sentence (§0 ruling 3) — "1 meeting deferred to
+    tonight's pass", never "5 meetings on record, 4 processed, 1 deferred":
+    the count survives only inside the ONE clause that needs it. Checked in
+    the SAME priority order `coverage_has_disclosure` checks, and the first
+    category actually present supplies the lead — a day can carry more than
+    one disclosure and the strip still leads with exactly one sentence.
+
+    Every branch either composes from a fixed template plus a bare count (no
+    names, nothing this module has not already leak-scanned once) or reuses
+    a string `compute_coverage` / `dark_surface_lines` / `compute_catchup_read`
+    already composed and the orchestrator already scanned — this function
+    never introduces new free text.
+
+    Returns `None` when nothing is disclosed. The caller's own
+    `coverage_has_disclosure` is still the render decision; this only
+    composes the sentence for a day that already cleared it.
+    """
+    if not isinstance(pack, dict):
+        return None
+
+    coverage = pack.get("coverage")
+    caps = coverage.get("capabilities") if isinstance(coverage, dict) else None
+    meetings = caps.get(CAP_MEETINGS) if isinstance(caps, dict) else None
+
+    # 1. REDUCTION.
+    render_set = meetings.get("render_set") if isinstance(meetings, dict) \
+        else None
+    reductions = render_set.get("reductions") if isinstance(render_set, dict) \
+        else None
+    if isinstance(reductions, dict):
+        parts = []
+        for reduction_status, reduction_n in reductions.items():
+            if not isinstance(reduction_n, int) \
+                    or isinstance(reduction_n, bool) or reduction_n <= 0:
+                continue
+            labels = MEETING_REDUCTION_LABELS.get(reduction_status)
+            if not labels:
+                continue
+            one, many = labels
+            parts.append((one if reduction_n == 1 else many)
+                         .format(n=reduction_n))
+        if parts:
+            return COVERAGE_DISCLOSURE_REDUCTION_LEAD.format(
+                clause=", ".join(parts))
+
+    # 2. DEFERRAL.
+    if pack.get("window_incomplete_before"):
+        # SPEC CAPFENCE1 — a TIME-fence-triggered defer carries its own
+        # count (`n_time_fence_deferred`, folded onto the pack in Phase 5
+        # exactly like `window_incomplete_before` itself) and its own lead.
+        # Checked FIRST: a fence-triggered defer is always also a
+        # `window_incomplete_before` defer (Ruling 2 — same machinery), so
+        # without this branch the generic batch-cap wording below would
+        # silently absorb it and the MORNCAP1 pointer would never render.
+        n_fence = pack.get("n_time_fence_deferred")
+        if isinstance(n_fence, int) and not isinstance(n_fence, bool) \
+                and n_fence > 0:
+            return (COVERAGE_DISCLOSURE_FENCE_LEAD_ONE if n_fence == 1
+                    else COVERAGE_DISCLOSURE_FENCE_LEAD.format(n=n_fence))
+        n_backlog = None
+        aperture = meetings.get("aperture") if isinstance(meetings, dict) \
+            else None
+        if isinstance(aperture, dict):
+            n_backlog = aperture.get("n_backlog")
+        if isinstance(n_backlog, int) and not isinstance(n_backlog, bool) \
+                and n_backlog > 0:
+            return (COVERAGE_DISCLOSURE_DEFERRAL_LEAD_ONE if n_backlog == 1
+                    else COVERAGE_DISCLOSURE_DEFERRAL_LEAD.format(
+                        n=n_backlog))
+        return COVERAGE_DISCLOSURE_DEFERRAL_LEAD_UNKNOWN
+
+    # 3. TASKALARM1 — reuse the dark line verbatim; it is already scanned.
+    dark = pack.get("dark_surface_lines")
+    if dark:
+        return dark[0]
+
+    # 4. CONNECTOR GAP — reuse the strip's own NOT-READ sentence for the
+    # first gapped capability, so the lead names the same reason the detail
+    # repeats rather than composing a second wording for one fact.
+    if pack.get("connector_gaps"):
+        if isinstance(caps, dict):
+            for cap_name in COVERAGE_CAPABILITIES:
+                row = caps.get(cap_name)
+                if isinstance(row, dict) and row.get("read") is False \
+                        and row.get("line"):
+                    return row["line"]
+        return COVERAGE_DISCLOSURE_CONNECTOR_GAP_LEAD
+
+    # 5. CATCH-UP / DEGRADE — reuse the label; it is `catchup["lines"][0]`,
+    # already scanned as part of `catchup.lines`.
+    catchup = pack.get("catchup")
+    if isinstance(catchup, dict) and catchup.get("renders") \
+            and catchup.get("label"):
+        return catchup["label"]
+
+    return None
+
+
+def coverage_render_lines(pack: dict) -> list:
+    """The coverage strip AS RENDERED (SPEC COVERQUIET1) — `[]` on a quiet
+    day, else the disclosure-first lead followed by every line
+    `compute_coverage` / `reconcile_meetings_line` already composed,
+    unchanged.
+
+    THE GATE IS ALL-OR-NOTHING BY DESIGN. EODLEDGER1's rule — the strip is
+    one unit, never suppressed and never softened ONCE it is showing — is
+    still in force; this build adds only the day-level on/off switch on top
+    of it. It does not turn per-capability suppression on: a day with one
+    reduction still shows the mail/chat/calendar detail alongside it, exactly
+    as before.
+    """
+    if not coverage_has_disclosure(pack):
+        return []
+    coverage = pack.get("coverage") if isinstance(pack, dict) else None
+    lines = list(coverage.get("lines") or []) if isinstance(coverage, dict) \
+        else []
+    lead = coverage_disclosure_lead(pack)
+    if lead:
+        # A lead borrowed verbatim from an existing line (a dark surface, a
+        # blocked capability) must not repeat itself as the strip's second
+        # line.
+        lines = [lead] + [l for l in lines if l != lead]
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # Block: score
 # ---------------------------------------------------------------------------
 
@@ -2698,7 +3256,10 @@ def _entity_names(workspace_root) -> dict:
                           / "entities.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — a read never breaks a fire
         return out
-    for name in ("threads", "orgs", "projects"):
+    # SPEC DUALKEY1: "projects" dropped from this tuple — entities_collection
+    # now aliases it to the same `threads` list, so keeping both names here
+    # would process every thread twice for no new coverage.
+    for name in ("threads", "orgs"):
         try:
             rows = entities_collection(raw, name)
         except Exception:  # noqa: BLE001
@@ -3546,10 +4107,12 @@ def compute_tomorrow(workspace_root, *, for_date: str,
 
     proposal = None
     if record is None:
+        # SPEC TOMPICK1 §0.1 — UP TO THREE RANKED CANDIDATES, never padded.
         # The auto-draft: top needs-attention ∩ tomorrow's meetings, falling
         # back to the top of the lane. At most three items — the day_intent
         # cap is the point of that record, and a proposal that would be
-        # refused at the writer is not a proposal.
+        # refused at the writer is not a proposal. Fewer than three eligible
+        # rows means fewer than three candidates; nothing here fills the gap.
         #
         # THE POOL IS THE FULL LANE, NOT THE DISPLAY-CAPPED `rollover`.
         # SPEC TOMFILT1's anchor fence runs FIRST, over every needs-attention
@@ -3568,16 +4131,23 @@ def compute_tomorrow(workspace_root, *, for_date: str,
                 continue
             if is_same_day_text(title):
                 continue
-            hit = any(_shares_words(title, t) for t in titles)
+            # The FIRST calendar title this candidate shares a content word
+            # with — kept as text (not just a bool) so the why line can name
+            # what tomorrow's brief will show, not just say "it matched".
+            matched_title = next(
+                (t for t in titles if _shares_words(title, t)), None)
             picked.append({"text": title,
                            "commitment_id": str(r.get("commitment_id") or ""),
-                           "matched_meeting": hit})
-        picked.sort(key=lambda p: (not p["matched_meeting"],))
+                           "matched_title": matched_title})
+        picked.sort(key=lambda p: (p["matched_title"] is None,))
         items = picked[:3]
         if items:
             rows = []
             for n, i in enumerate(items, start=1):
-                row = {"text": i["text"], "rank": n}
+                why = (TOMORROW_CANDIDATE_WHY_MATCHED.format(
+                           title=i["matched_title"])
+                       if i["matched_title"] else TOMORROW_CANDIDATE_WHY_OPEN)
+                row = {"text": i["text"], "rank": n, "why": why}
                 # An EMPTY id is an absent id, and writing the key with an
                 # empty value is how a downstream reader learns to treat "" as
                 # a real commitment id (`day_intent.normalize_items` refuses
@@ -4147,6 +4717,31 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     from receipts import log_receipt, normalize_fired_via
 
     pack = pack or {}
+    # SPEC COVERQUIET1 — `coverage` is the one `RENDER_ORDER` member whose
+    # presence on the pack does NOT settle whether it reached the screen.
+    # Every other block's rule stays `pack.get(b) is not None`; coverage's
+    # rule is that PLUS `coverage_has_disclosure(pack)` — a quiet day still
+    # computes the full reconciled strip (ruling 2: the receipt keeps the
+    # record either way) but does not RENDER it, so it must not count as
+    # rendered below. `coverage_has_disclosure` is the ONE decision-maker
+    # (nothing here re-derives it); the orchestrator's Phase 6 posting
+    # bullet calls the SAME function over the SAME pack, so the two answers
+    # cannot drift apart.
+    #
+    # `RENDER_ORDER` and `COMPUTED_ONLY` themselves stay UNTOUCHED and
+    # disjoint (the EODSYNTH1 pin) — this is the RECEIPT'S OWN two lists
+    # doing the per-fire moving `coverage` needs, not the module-level
+    # tuples: "coverage moves between the two lists per the disclosure
+    # test" (§0 ruling 2) is implemented here, once.
+    _coverage_disclosed = coverage_has_disclosure(pack)
+    blocks_rendered = [b for b in RENDER_ORDER if pack.get(b) is not None
+                       and (b != "coverage" or _coverage_disclosed)]
+    blocks_computed_only = [b for b in COMPUTED_ONLY if pack.get(b) is not None]
+    if not _coverage_disclosed and pack.get("coverage") is not None:
+        # Leads the list the same way `coverage` leads `BLOCK_ORDER` — first,
+        # not appended, so a reader scanning either list meets it in the same
+        # relative place.
+        blocks_computed_only = ["coverage"] + blocks_computed_only
     data: dict = {
         "surface": SURFACE,
         # THE FIRE'S ID. Minted here, once, and read back by `choice_map` so
@@ -4162,9 +4757,8 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
         # reader joining on `blocks_rendered` across the EODSYNTH1 boundary
         # gets a truthful answer on both sides of it, which is more than a
         # widened single list could have given them.
-        "blocks_rendered": [b for b in RENDER_ORDER if pack.get(b) is not None],
-        "blocks_computed_only": [b for b in COMPUTED_ONLY
-                                 if pack.get(b) is not None],
+        "blocks_rendered": blocks_rendered,
+        "blocks_computed_only": blocks_computed_only,
     }
     # The synthesis JOIN — every source ref behind the evening's prose. The
     # chat shows sentences; this is the record that makes each one checkable
@@ -4222,12 +4816,22 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
         # receipt key: the orchestrator has passed it since that spec and
         # this whitelist silently dropped it, so the cap ran with no count on
         # any receipt — the exact silence the key exists to prevent.
+        # SPEC CAPFENCE1 adds `n_time_fence_deferred` — the count of
+        # meetings the 15-minute capture fence, not the batch cap, left
+        # unhandled this fire. It rides the SAME omission convention
+        # `window_incomplete_before` already keeps: present with the real
+        # count when the fence actually deferred something THIS fire,
+        # absent when it did not — never a phantom zero for a mechanism
+        # that never engaged, which is what keeps a fence-never-bound
+        # receipt byte-identical to the pre-CAPFENCE1 shape (§Acceptance's
+        # no-op pin).
         for key in ("window_start", "window_end", "window_incomplete_before",
                     "n_meetings", "n_processed", "n_skipped",
                     "n_stale_evidence_skipped",
                     "n_review_proposals_suppressed",
                     "n_cru_walks_ledger_skipped",
                     "n_stale_evidence_ledger_honored",
+                    "n_time_fence_deferred",
                     "capture_counts",
                     "held_routing", "n_held"):
             if key in capture_leg and capture_leg[key] is not None:
@@ -4474,16 +5078,31 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
     return out
 
 
-def resolve_intent_confirm(workspace_root, *, now=None) -> dict:
-    """The tomorrow block's one-tap confirm, resolved off the SAME receipt.
+def resolve_intent_confirm(workspace_root, *, pick: Optional[int] = None,
+                           now=None) -> dict:
+    """The tomorrow block's confirm, resolved POSITIONALLY off the SAME
+    receipt `choice_map` already reads (SPEC TOMPICK1 §0.2).
 
-    Returns `{"ok", "proposal", "refusal", "source_ref"}`. The caller writes it
-    through `day_intent.write_from_proposal(...)` — the CEO tapped, so the
-    record is now stated, and the proposal's ITEMS travel whole so the written
-    intent keeps the commitment ids it was drafted from (SPEC EODFIX1 §2-5).
+    `pick` is the 1-based RANK the CEO named — "2" picks the second ranked
+    candidate. Omitted (a bare "confirm"), it takes rank 1 — today's default
+    door, unchanged (§0.2's "bare confirm takes rank 1"). Resolution is
+    against the candidate's OWN `rank` field, never list position, so a
+    proposal whose rows ever arrived out of rank order still resolves to the
+    candidate the CEO actually saw at that number.
+
+    Returns `{"ok", "proposal", "refusal", "source_ref"}`. The `proposal` on
+    success carries exactly ONE item — the chosen candidate, re-ranked to 1 —
+    so `day_intent.write_from_proposal` (UNCHANGED, SPEC TOMPICK1 §0.3) writes
+    ONE intent exactly as it always has; the widening lives entirely here and
+    in `compute_tomorrow`'s candidate list, never in the writer. The written
+    intent keeps the commitment id it was drafted from (SPEC EODFIX1 §2-5).
     Nothing here writes, and a proposal that is not on the newest receipt is
     refused rather than reconstructed: a re-derived proposal is a NEW guess
     wearing the CEO's confirmation.
+
+    A pre-TOMPICK1 receipt (a single-item proposal, rank 1 only) still
+    resolves: the default `pick=None` -> rank 1 finds that one item exactly
+    as it always did — the backward door SPEC TOMPICK1's acceptance requires.
 
     `source_ref` is this gesture's pointer — `session:<receipt id>:confirm` —
     returned for the same reason `resolve_choice` returns its own.
@@ -4493,13 +5112,32 @@ def resolve_intent_confirm(workspace_root, *, now=None) -> dict:
         return {"ok": False, "proposal": None, "refusal": mapping["refusal"],
                 "source_ref": None}
     proposal = mapping.get("proposal")
-    if not isinstance(proposal, dict) or not proposal.get("items"):
+    items = proposal.get("items") if isinstance(proposal, dict) else None
+    if not isinstance(proposal, dict) or not items:
         return {"ok": False, "proposal": None, "source_ref": None,
                 "refusal": ("The last End of Day did not put a suggestion on "
                             "the table for tomorrow, so there is nothing to "
                             "confirm. Tell me what tomorrow is about and I "
                             "will write that down.")}
-    return {"ok": True, "proposal": proposal, "refusal": None,
+    try:
+        rank = 1 if pick is None else int(pick)
+    except (TypeError, ValueError):
+        rank = None
+    by_rank = {int(i["rank"]): i for i in items
+              if isinstance(i, dict) and isinstance(i.get("rank"), int)}
+    chosen = by_rank.get(rank) if rank is not None else None
+    if chosen is None:
+        n = len(items)
+        return {"ok": False, "proposal": None, "source_ref": None,
+                "refusal": NO_SUCH_CANDIDATE_REFUSAL.format(
+                    rank=(pick if pick is not None else 1), n=n,
+                    plural=("" if n == 1 else "s"),
+                    span=("" if n <= 1 else f" through {n}"))}
+    single = dict(chosen)
+    single["rank"] = 1
+    narrowed = dict(proposal)
+    narrowed["items"] = [single]
+    return {"ok": True, "proposal": narrowed, "refusal": None,
             "source_ref": gesture_ref(mapping["receipt_id"], "confirm")}
 
 
@@ -4551,6 +5189,8 @@ __all__ = [
     "PHASE_COVERAGE", "PHASE_CATCHUP", "PHASE_WEEK_ROLLUP", "PHASE_RENDER",
     "PHASE_CAPTURE", "PHASE_CLOSE", "PHASE_POST",
     "PACK_PHASES", "LEG_PHASES", "ALL_PHASES", "PhaseLedger",
+    # SPEC EODLEG1 — the receipt-shape guard.
+    "receipt_missing_capture_phase", "scan_capture_phase_violations",
     "BLOCK_ORDER", "MAX_SLIPPED_ROWS", "MAX_CONFIRM_ROWS",
     "MAX_TOMORROW_ROLLOVER",
     # SPEC EODSYNTH1
@@ -4595,9 +5235,19 @@ __all__ = [
     # SPEC EODSPEED1 — the incremental-capture vocabulary + the budget.
     "MEETING_BRIEFED_PRIOR", "MEETING_BRIEFED_PRIOR_LABELS",
     "CLOSE_BUDGET_MS", "close_budget_read",
+    # SPEC CAPFENCE1 — the capture leg's own stopping rule.
+    "CAPTURE_FENCE_MS", "capture_fence_elapsed_ms",
+    "capture_fence_should_defer", "capture_fence_window_marker",
+    "COVERAGE_DISCLOSURE_FENCE_LEAD_ONE", "COVERAGE_DISCLOSURE_FENCE_LEAD",
     "MEETING_REDUCTION_LABELS", "COVERAGE_MEETINGS_RECONCILED",
     "COVERAGE_MEETINGS_RECONCILED_NO_WINDOW",
     "meeting_render_set", "reconcile_meetings_line",
+    # SPEC COVERQUIET1 — coverage renders only when it has something to say.
+    "COVERAGE_DISCLOSURE_REDUCTION_LEAD", "COVERAGE_DISCLOSURE_DEFERRAL_LEAD_ONE",
+    "COVERAGE_DISCLOSURE_DEFERRAL_LEAD", "COVERAGE_DISCLOSURE_DEFERRAL_LEAD_UNKNOWN",
+    "COVERAGE_DISCLOSURE_CONNECTOR_GAP_LEAD",
+    "coverage_has_disclosure", "coverage_disclosure_lead",
+    "coverage_render_lines",
     "NO_OPENING_FIGURE", "NO_OPENING_FIGURE_LINE", "LEDGER_LINE",
     "LEDGER_MOVEMENT", "LEDGER_NO_OPENING_FIGURE", "LEDGER_STATUSES",
     "LEDGER_RESIDUAL_LINE", "OPENING_FIGURE_ORIGIN",
@@ -4606,6 +5256,10 @@ __all__ = [
     "CATCHUP_CAPPED_LINE", "compute_catchup_read",
     "NO_TOMORROW_INTENT_LINE",
     "SLIPPED_VERBS", "CONFIRM_VERBS", "TOMORROW_VERBS", "ROUTES",
+    # SPEC TOMPICK1 — up to three ranked tomorrow candidates, picked
+    # positionally.
+    "TOMORROW_CANDIDATE_WHY_MATCHED", "TOMORROW_CANDIDATE_WHY_OPEN",
+    "NO_SUCH_CANDIDATE_REFUSAL",
     "NO_MAP_REFUSAL", "STALE_MAP_REFUSAL", "ORPHAN_LINE",
     "workspace_today", "day_branch",
     "morning_fire", "read_morning_digest", "closures_since", "ClosureWindow",

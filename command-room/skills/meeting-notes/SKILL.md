@@ -288,6 +288,7 @@ For each decision extracted in Step 2, append a `decision` event through the `de
 # After the Rule 22 preamble + cd "$PLUGIN_ROOT" (same pattern as Step 5e)
 import sys; sys.path.insert(0, "shared/scripts")
 from meeting_capture import build_decision_event
+from thread_resolve import bind_event_thread
 from event_gate import append_event
 
 ev = build_decision_event(
@@ -303,6 +304,18 @@ ev = build_decision_event(
     source_event_seq=<seq of the parent meeting event>,
     confidence=<attribution confidence 0.0-1.0>,   # below 0.75 the builder forces data.pending_review: true
 )
+# SPEC THREADBIND1 §0 ruling 1 — a FALLBACK, not a second source of truth.
+# "<same as parent meeting event>" above is step 1 of the evidence order
+# (the meeting's own binding) done by hand; when the parent meeting was
+# ITSELF unbound (primary_thread_id came through empty), this gives the
+# resolver one more shot at the attendees' org before the decision ships
+# unbound. A no-op (byte-identical `ev`) whenever primary_thread_id is
+# already set — never overwrites a real binding.
+ev = bind_event_thread(
+    "<WORKSPACE>", ev,
+    evidence={"meeting_id": "granola:<meeting_id>",
+             "attendee_person_ids": ["<canonical decider id>",
+                                     "<others party to it>"]})
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.decisions")
 ```
 

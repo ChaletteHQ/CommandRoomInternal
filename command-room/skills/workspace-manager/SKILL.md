@@ -1,7 +1,7 @@
 ---
 name: workspace-manager
 surfaces: both
-description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name]' / 'go [org] all' / 'go [org] rollup', 'new project' / 'new client' / 'new prospect' / 'new vendor' / 'new org', '[name] is now a client', 'archive [project]', 'pull up [name]' / 'catch me up on [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', a bare 'undo', accounts & connectors ('what accounts do I have', '[address] is my personal account', 'set my email backend to [connector]'), and vocative address by the workspace AI name. Default handler when nothing else fits: loose input naming a tracked entity, and the day's intent ('tomorrow is about [X]', 'today is about [X]', 'what's tomorrow about'), no name needed. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full triggers/fences: Routing section in body."
+description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', and how-Claude-talks style feedback: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style', or an in-passing correction. Also: 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', accounts & connectors ('what accounts do I have'), vocative address by the AI name. Default handler when nothing else fits: loose input naming a tracked entity, and the day's intent ('tomorrow is about [X]', 'today is about [X]', 'what's tomorrow about'), no name needed. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full triggers/fences: in body."
 ---
 
 # Workspace Manager — Command Room
@@ -152,11 +152,11 @@ insight-generator proposal the user confirms, and onboarding's STYLE1 style prop
 derived knobs only, origin inferred_provisional, disclosed at the reveal). Never confuse it with a per-skill `tune <skill>`
 (those knobs stay with their skills).
 
-### Style — how [BrainName] talks to you, and the style card (SPEC STYLE1)
+### Style — how [BrainName] talks to you, and the style card (SPEC STYLE1 / STYLEROUTE1)
 
-This skill owns the four style verbs. The chat persona (how the assistant SPEAKS to this
-customer) lives in `_hq/data/skill_config/chat_persona.json`, written ONLY via
-`skill_config_writer.save_skill_config(workspace_root, "chat_persona", {...})` after
+This skill owns the four style verbs, plus the no-verb-at-all shape below. The chat persona (how
+the assistant SPEAKS to this customer) lives in `_hq/data/skill_config/chat_persona.json`, written
+ONLY via `skill_config_writer.save_skill_config(workspace_root, "chat_persona", {...})` after
 `chat_persona.validate_chat_persona` passes; the document half is the output profile above.
 Contract: `shared/PERSONIFICATION.md` § "Per-client persona". Every confirmed change appends ONE
 `style_changed` event per layer, built by `chat_persona.build_style_changed_event(...)` and
@@ -164,6 +164,19 @@ appended via `event_gate.append_event` — origin `asked` for tunes, `recalibrat
 recalibrations. **Confirm-first, no exceptions here (D4/D7):** the ONLY unconfirmed style write in
 the product is onboarding's provisional initial set; nothing on this surface writes without an
 explicit yes, and there is NO drift watch to route around that.
+
+**NEVER a CLAUDE.md edit (STYLEROUTE1, binding).** How-Claude-talks feedback — in any shape, tune
+verb or in-passing remark — writes ONLY through the chat_persona/output_profile store described
+above. It NEVER touches CLAUDE.md, in this workspace or any project's, not even as a single
+throwaway bullet under Working style or Session Rules. `render_claude_md.py`'s persona block is the
+ONE place this store reaches CLAUDE.md, and that block is machine-owned, dirty-check-gated,
+LIVE-STATE-fenced generated output (§ "Style render into CLAUDE.md" below) — never a manual prose
+edit from this or any skill. This is the STYLEROUTE1 root-cause fix: a 2026-08-26 live session
+heard "Never open with pleasantries" as a standing rule, found no frontmatter trigger for it (the
+verbs below lived body-only), and freelanced the line straight into CLAUDE.md's Working style
+section instead — zero `style_changed` events, the store never touched. The frontmatter fix is
+above (Routing corpus); this paragraph is the code-and-prose half: even when routing works and a
+turn lands here, the ONLY legal write is the one described in this section.
 
 - **"show my style" / "how do you talk to me"** → run `style_card.render(workspace_root)` (it
   regenerates `_hq/views/STYLE.md` — a view, never an input) and relay `chat_block` verbatim: both
@@ -176,6 +189,16 @@ explicit yes, and there is NO drift watch to route around that.
   via skill_config_writer (`is_reconfigure=True`, `origin="tune"`) → append the `style_changed`
   event (origin `asked`) → run `python3 shared/scripts/render_claude_md.py <workspace_root>` so
   the persona block re-renders → one-line ack. On anything short of a yes, write NOTHING.
+- **An in-passing style correction with no tune verb at all** — "never open with pleasantries",
+  "stop saying 'happy to help'", "that came off too formal", "shorter next time" said about how
+  THIS assistant talks (not a document, not a third party) — is the SAME flow as "tune my style"
+  above, entered from a different door: map the remark to the nearest knob (a flat standing rule
+  like "never open with X" is `never_line`, validated by `chat_persona.validate_chat_persona`
+  against the D5 bounds fence) → show the delta → confirm → save + `style_changed` (origin
+  `asked`) → re-render. The only difference from the tune verb is which sentence started it; the
+  write path, the confirm gate, and the CLAUDE.md prohibition two paragraphs up are identical.
+  Never write the remark into CLAUDE.md as a standing rule instead — that is the exact freelancing
+  this spec exists to stop.
 - **"tune my documents"** → alias of "tune output" above (same store, same flow); on save, also
   append the `style_changed` event (layer `output_profile`, origin `asked`).
 - **"recalibrate my style"** (optional window: "from the last 2 weeks") → the standalone
@@ -864,6 +887,19 @@ Capture and update everything. This is the save button — nothing persists with
 **Step 2: Capture session work**
 4. Review what was worked on this session
 5. For each project touched:
+   - **Reconcile check (SPEC SESSSTORY1, 2026-08-27) — run BEFORE writing the block.** The nightly session-sweep may already have composed tonight's (or an earlier, still-open) session's notes block while this session was still running — end session is a reconcile now, not the only capture path. Call `session_narrative.already_composed(workspace_root, session_id)`: **True** → the sweep got there first — SKIP the fresh append below entirely (do not duplicate it) and note in the Step 9 summary that tonight's notes were already caught by the sweep. **False** → proceed with the normal append below, then — immediately after it lands — call `session_narrative.mark_composed(workspace_root, session_id, origin="ritual", source_skill="workspace-manager", thread_id=<this project's thread id>)` so a later sweep run recognizes this session as covered and skips it in turn (same dedup marker, either direction — see `shared/EVENT_TYPES.md` "Session chapter lane").
+
+     ```python
+     import sys; sys.path.insert(0, "shared/scripts")
+     import session_narrative
+     if session_narrative.already_composed("<workspace_root>", "<this session/receipt id>"):
+         pass  # sweep already composed this session's block — skip the append below
+     else:
+         # ... normal SESSION_NOTES append below happens here ...
+         session_narrative.mark_composed("<workspace_root>", "<this session/receipt id>",
+                                          origin="ritual", source_skill="workspace-manager",
+                                          thread_id="<this project's thread id, or None>")
+     ```
    - Append session log to SESSION_NOTES (most recent first)
    - Carry forward ALL open items from previous entries — nothing gets dropped
    - Update "Current Status" section at the top of the file
@@ -1385,11 +1421,11 @@ When workspace-manager is already active in a session (e.g., during a "go [proje
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
+> Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'new prospect', 'new vendor', 'new org', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
 
 > Also owns the cross-skill output profile (SPEC OUT2 §5 — output is not a skill name, so the bare-tune router rule can't resolve it) — use when the CEO says 'tune output', 'tune my output', 'show output settings', 'reset output to defaults'. DOES NOT fire on 'tune [skill-name]' when the name resolves to an actual skill (that skill's own FRP1 family owns it).
 
-> Also owns the style layer (SPEC STYLE1) — use when the CEO says 'show my style', 'how do you talk to me', 'tune my style', 'tune how [BrainName] talks' (any AI name), 'tune my documents', 'recalibrate my style', 'recalibrate how [BrainName] talks'. DOES NOT fire on 'voice calibration' / 'calibrate my voice' (the outbound-drafting voice — email-writer's calibration lane, untouched by STYLE1). DOES NOT fire on 'tune [skill-name]' (per-skill FRP1).
+> Also owns the style layer (SPEC STYLE1) — use when the CEO says 'show my style', 'how do you talk to me', 'talk to me differently', 'tune my style', 'tune how [BrainName] talks' (any AI name), 'tune my documents', 'recalibrate my style', 'recalibrate how [BrainName] talks' — AND on an in-passing style correction with no verb at all: 'never open with pleasantries', 'never open with...', 'stop saying...', 'stop saying [phrase]', 'change your tone', 'change your style', 'that's too formal' / 'that's too long' / 'shorter next time' said about how THIS assistant talks (SPEC STYLEROUTE1 — routing is frontmatter-driven; these are front-loaded in the description, not body-only). Machine-matchable stems for the mechanical matcher: 'how do you talk to me', 'talk to me differently', 'never open with', 'stop saying', 'change your tone', 'change your style'. Every shape below writes ONLY to the chat_persona/output_profile store via skill_config_writer + event_gate.append_event('style_changed') — NEVER a CLAUDE.md edit, not even a throwaway one-line addition to Working style or Session Rules; see the Style section in the body for the full contract and the D5 bounds it must never cross. DOES NOT fire on 'voice calibration' / 'calibrate my voice' (the outbound-drafting voice — email-writer's calibration lane, untouched by STYLE1). DOES NOT fire on 'tune [skill-name]' (per-skill FRP1).
 
 > Deal fences (SPEC PIPE1 — one per line):
 > DOES NOT fire on 'new deal' (pipeline-tracker — a deal thread on an existing org; the new-project MUST-gate carves it out).

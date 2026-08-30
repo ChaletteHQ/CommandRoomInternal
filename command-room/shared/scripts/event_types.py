@@ -223,6 +223,7 @@ THREAD_BOUND_TYPES: FrozenSet[str] = frozenset({
     "meeting",
     "memo",
     "note",
+    "session_chapter",
     "thread_resolved",
 })
 

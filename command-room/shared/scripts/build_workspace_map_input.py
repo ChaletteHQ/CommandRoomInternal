@@ -53,6 +53,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 from build_dcc_input import _format_last_built  # noqa: E402
 from cru_match import _commitment_field, _commitment_confidence  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 
 # ----- defensive field readers (handle both schemas A and B) -----
 
@@ -94,8 +95,10 @@ def _is_primary_user(person: dict[str, Any], primary_id: str) -> bool:
 
 
 def _projects_array(entities: dict[str, Any]) -> list[dict[str, Any]]:
-    """Top-level projects array: schema A uses 'projects', schema B uses 'threads'."""
-    return entities.get("projects") or entities.get("threads") or []
+    """Top-level projects array. SPEC DUALKEY1: canonical collection is
+    `threads`; `entities_collection(entities, "projects")` is now an alias
+    for it, so a single call is safe by construction."""
+    return entities_collection(entities, "projects")
 
 
 def _org_note(org: dict[str, Any]) -> str:

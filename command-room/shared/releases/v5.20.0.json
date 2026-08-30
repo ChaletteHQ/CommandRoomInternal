@@ -1,0 +1,20 @@
+{
+  "version": "5.20.0",
+  "headline": "Telling Command Room how to talk to you now works from any chat, and the improved promise-reading can be applied to your existing review pile.",
+  "items": [
+    {
+      "id": "v5200_announce_style_routing",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "You can now shape how Command Room talks to you from any fresh chat — say \"how do you talk to me\", \"never open with pleasantries\", \"be more direct\", or correct the tone in passing. Your preference is saved once, in your workspace's style settings, and your chats honor it from then on. (Scheduled briefings pick the preference up in an upcoming update.)",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5200_announce_exchange_backfill",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "A recent update taught Command Room to read the full exchange in a meeting — the offer AND the reply — before deciding whether a promise was accepted. Items captured before that fix can now be re-checked the same way, in a supervised pass that proposes each change for your confirmation and never rewrites anything on its own. Chalette will run this with you when your workspace is ready for it.",
+      "action": "announce_only"
+    }
+  ]
+}

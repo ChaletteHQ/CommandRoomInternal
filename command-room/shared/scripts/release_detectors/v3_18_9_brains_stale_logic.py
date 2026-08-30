@@ -32,9 +32,11 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+from entities_io import entities_collection  # noqa: E402
+
 
 def _active_threads(ent: dict) -> list[dict]:
-    threads = ent.get("threads") or ent.get("projects") or []
+    threads = entities_collection(ent, "projects")
     return [t for t in threads if t.get("status") != "archived"]
 
 

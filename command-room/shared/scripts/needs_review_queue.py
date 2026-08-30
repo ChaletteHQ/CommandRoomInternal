@@ -2206,6 +2206,17 @@ _NON_TOUCH_TYPES = {
     "thread_updated": "thread lifecycle, not a commitment adjudication",
     "thread_repaired": "a substrate repair on a thread record",
     "thread_resurrected": "thread lifecycle, not a commitment adjudication",
+    # SPEC THREADANN1 — a derived subject label on a thread; it references
+    # no commitment id/seq and adjudicates nothing about a needs-your-call
+    # item.
+    "thread_annotation": "a derived subject-cluster label on a thread, not "
+                         "a commitment adjudication",
+    # A confirmed thread split's summary receipt; the actual per-event moves
+    # are `reclassification` events (already outside this scope — not
+    # thread-/commitment-prefixed), which touch a THREAD's ownership, never
+    # a commitment's confirm/review state.
+    "thread_split_executed": "a thread-split receipt naming child threads, "
+                             "not a commitment adjudication",
 }
 
 

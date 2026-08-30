@@ -16,7 +16,9 @@ folders and real data):
   - ARCHIVE-ONLY policy (Command Room build, 2026-06): nothing is ever deleted —
     not even machine cruft. The lock sweep MOVES `*.lock.stale.*` sentinels older
     than 1 hour (only inside `_hq/data/` and `_hq/.system/`) into
-    `_archive/stale-locks/`, mirroring their original path. A non-technical CEO is
+    `_archive/stale-locks/`, mirroring their original path (with the `_hq`
+    component renamed `hq-system-locks` — HQRESOLVE1: the archive tree must
+    never contain a dir literally named `_hq`). A non-technical CEO is
     never surprised by a vanished file; everything that leaves its working spot
     lands in `_archive/` instead. ONE ruled exception (LB2 D5, M 2026-07-19):
     `*.readalarm.json` sidecars >30 days past their last recorded failure are
@@ -70,8 +72,8 @@ import render_master_tracker  # noqa: E402
 # embedded epoch) so a clock skew on the writing host can't strand them.
 #
 # ARCHIVE-ONLY (Command Room build, 2026-06): aged sentinels are MOVED into
-# `_archive/stale-locks/` (mirroring their workspace-relative path), never
-# unlinked. Same selection logic, same return value (the original relative paths
+# `_archive/stale-locks/` (mirroring their workspace-relative path, `_hq`
+# renamed `hq-system-locks` per HQRESOLVE1), never unlinked. Same selection logic, same return value (the original relative paths
 # that were cleared from their working spot) — only the disposition changed from
 # delete to archive.
 _LOCK_GLOB = "*.lock.stale.*"
@@ -93,14 +95,28 @@ def _never_clobber(dest: Path) -> Path:
     return dest
 
 
+# HQRESOLVE1 (attended-walk F-4): a mirrored path component literally named
+# `_hq` would recreate the workspace-root marker INSIDE `_archive/` — e.g.
+# `_archive/stale-locks/_hq/data/` — and any `_hq`-seeking discovery that does
+# not prune `_archive/` binds the decoy and silently reads/writes an archived
+# substrate. The mirror therefore renames that one component; the mapping is
+# fixed and documented, so an archived file stays traceable to where it lived.
+_HQ_MIRROR_RENAME = "hq-system-locks"
+
+
 def _archive_dest(root: Path, src: Path, bucket: str) -> Path:
     """Where `src` lands under `root/_archive/<bucket>/`, mirroring its
     workspace-relative path so an archived file is always traceable back to
-    where it lived. Creates the parent; applies the never-clobber suffix."""
+    where it lived — except that a path component named `_hq` mirrors as
+    `hq-system-locks` (HQRESOLVE1: the archive tree must never contain a
+    directory literally named `_hq`, the workspace-root discovery marker).
+    Creates the parent; applies the never-clobber suffix."""
     try:
         rel = src.relative_to(root)
     except ValueError:
         rel = Path(src.name)
+    rel = Path(*(_HQ_MIRROR_RENAME if part == "_hq" else part
+                 for part in rel.parts))
     dest = root / _ARCHIVE_ROOT / bucket / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     return _never_clobber(dest)

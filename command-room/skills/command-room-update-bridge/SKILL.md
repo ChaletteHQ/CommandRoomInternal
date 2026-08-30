@@ -24,7 +24,7 @@ This skill is the bridge for both. It:
 4. **Applies missing defaults + workspace migrations** with a single user confirmation (calibration question per migration where applicable)
 5. **Logs a `plugin_update` event** so this skill is idempotent on re-runs
 
-It is **conservative by design.** It does not modify existing data, does not run schema migrations (no schema changed in v2.7.9), and does not force install or force apply. The user always sees the list of what will change before committing, and workspace-migration items that need calibration always ask the calibration question rather than guessing. The one automatic, non-confirmation exception is the substrate-corruption self-heal (Phase 4.4) — it is purely protective (quarantine, never delete), idempotent, and surfaces a friendly note only when it actually repaired something.
+It is **conservative by design.** It does not modify existing data, does not run schema migrations (no schema changed in v2.7.9), and does not force install or force apply. The user always sees the list of what will change before committing, and workspace-migration items that need calibration always ask the calibration question rather than guessing. The automatic, non-confirmation exceptions are the substrate-corruption self-heal (Phase 4.4) and the dual-project-key repair (Phase 4.4b, SPEC DUALKEY1) — both are purely protective (quarantine, never delete), idempotent, and surface a friendly note only when they actually repaired something.
 
 **Skill behavioral updates** (e.g., the entity-aware intel-intake in v2.7.9) are NOT handled by this skill — those apply automatically when the plugin SKILL.md files update through Anthropic's standard plugin distribution. This skill only handles the gaps that distribution can't bridge: artifact installations and workspace-folder file edits.
 
@@ -52,6 +52,33 @@ It is **conservative by design.** It does not modify existing data, does not run
 ---
 
 ## Phase 1: Detect plugin version + installed artifacts
+
+**Step 0 — Fire-time root guard (SPEC PATHREPAIR1 v2, ruling 3: "once at bridge update").** Before ANY workspace file is read (including the version-triple resolve directly below), confirm this workspace's own registration record still agrees with where it's actually running. Resolve `$PLUGIN_ROOT` / `$WORKSPACE` per the CONTRACT.md Rule 22 preamble (below), then in the SAME bash invocation:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+ROOT_REPAIR=$(python3 -c '
+import sys, json
+sys.path.insert(0, "shared/scripts")
+try:
+    import path_repair as pr
+except Exception:
+    raise SystemExit(0)
+result = pr.fire_time_guard(sys.argv[1])
+print(json.dumps(result, default=str))
+' "$WORKSPACE" 2>/dev/null)
+BLOCKED=$(printf '%s' "$ROOT_REPAIR" | python3 -c "import sys, json
+d = sys.stdin.read().strip()
+print('1' if d and json.loads(d).get('blocked') else '0')" 2>/dev/null)
+echo "ROOT_REPAIR=$ROOT_REPAIR"
+echo "BLOCKED=$BLOCKED"
+```
+
+Same fall-through discipline as the scheduled-task bootloader's Step 1.4 (`references/scheduled-task-bootloader.md`) — this is the SAME `path_repair.fire_time_guard` function, the one place this decision is ever made: if `path_repair` can't be imported or `ROOT_REPAIR` comes back empty, `BLOCKED` stays `0` and the update proceeds unchecked (an infra hiccup in the guard itself must never silence the whole update flow). A self-heal (`repaired: true`) or an `"UNKNOWN"` state (a session-mount vantage, or a registration belonging to a different machine's `machines` entry — ruling 1/2/3) are BOTH silent by design: continue straight to the version-triple resolve below, say nothing.
+
+If `BLOCKED=1`, post EXACTLY this message and STOP the whole bridge run (no artifact detection, no migrations, nothing further this fire):
+
+> ⚠️ Command Room's update check can't confirm this workspace's registration. Your workspace folder doesn't match what's on record — it may have moved or been renamed, and I found more than one folder (or none) that could be it, so I won't guess. Please open Command Room and say "set up command room schedules" to reconnect it, then try the update again.
 
 **MANDATORY — resolve the version triple ONCE per run (WALKFIX1 Item I).** Before anything else in this phase, run this and keep the result for the WHOLE run — every later pass, every receipt, and the chat sentence read from this one struct, never from a fresh disk read:
 
@@ -347,7 +374,7 @@ Detection logic per migration:
 - **Adjudication gate runs FIRST — mechanized, keyed on migration id, NEVER on marker phrases (FB-5, T3).** Before any marker/validator check, run the durable adjudication lookup ONCE for the full candidate id list:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
 python3 shared/scripts/migration_adjudication.py "$WORKSPACE" <migration_id_1> <migration_id_2> ...
 ```
 
@@ -478,7 +505,7 @@ Do NOT invent variants (`orgs-map-v2`, `quick-commands-canonical`, etc.) — the
 
 > *"You may have older dashboards in your sidebar from earlier versions — feel free to unpin them. Their content now lives in the scheduled chats (including the new Friday Wrap weekly recap)."*
 
-**Path resolution.** `$PLUGIN_ROOT` is the absolute install path of this plugin on the user's machine — the directory containing `skills/`, `shared/`, etc. `$WORKSPACE` is the user's workspace folder (the directory containing `_hq/data/`). Both are resolved deterministically per CONTRACT.md Rule 22 at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')`. Never improvise a placeholder. Never hardcode a folder name. If discovery returns empty for either path, that's a hard fail — surface it, log `artifact_install_failed` with reason `"plugin_root_unresolvable"` or `"workspace_unresolvable"`, and STOP. Do NOT fall back to writing HTML inline.
+**Path resolution.** `$PLUGIN_ROOT` is the absolute install path of this plugin on the user's machine — the directory containing `skills/`, `shared/`, etc. `$WORKSPACE` is the user's workspace folder (the directory containing `_hq/data/`). Both are resolved deterministically per CONTRACT.md Rule 22 at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')`. Never improvise a placeholder. Never hardcode a folder name. If discovery returns empty for either path, that's a hard fail — surface it, log `artifact_install_failed` with reason `"plugin_root_unresolvable"` or `"workspace_unresolvable"`, and STOP. Do NOT fall back to writing HTML inline.
 
 Both enable-* skills have built-in idempotency: if their artifact is already installed (existing `artifact_installed` event), they skip silently. So calling on a partial-install state is safe.
 
@@ -545,7 +572,7 @@ Run it automatically whenever the update proceeds (independent of which dashboar
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||')
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -561,6 +588,35 @@ print(summary.get('customer_message') or '')
 > *"[customer message]"*
 
 If `HEAL_RAN=False` (the log was already clean — nothing to heal), **say nothing** — no news is good news. Never surface file paths, quarantine filenames, raw line counts, or the words corruption/malformed/`events.jsonl` to the customer (CONTRACT Rule 4). Use the helper's `customer_message` as-is; do not paraphrase technical detail back in. The `corruption_recovery` event the helper appends is the audit trail — do not log a duplicate.
+
+---
+
+## Phase 4.4b: Heal the dual project key (automatic, non-destructive — SPEC DUALKEY1)
+
+Same automatic, non-confirmation posture as Phase 4.4 immediately above, for a different landmine: a pre-DUALKEY1 `entities.json` can carry BOTH the canonical `threads` collection and a vestigial `projects` key (created the instant any older reader called the pre-alias `entities_collection("projects")`, which minted a SECOND, separately-writable list). Left alone, one stray record under `projects` made every dual-key reader in the product silently drop from the real thread count to just that one record. This delivers the fix on update, immediately, rather than waiting for the next Sunday `cleanup` self-heal — same reasoning as 4.4, same reason it runs BEFORE the workspace migrations below (any migration that reads `entities.json` sees the repaired shape).
+
+It is **safe and idempotent by design**, via `thread_writer.repair_dual_project_key`: non-empty `projects` records merge into `threads` deduped by id (an id already in `threads` keeps the `threads` copy; the `projects` duplicate is quarantined under `_recovery`, never dropped), then the `projects` key is deleted. A workspace with no `projects` key at all is a true no-op — zero writes, zero events.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
+cd "$PLUGIN_ROOT" && python3 -c "
+import sys
+sys.path.insert(0, 'shared/scripts')
+from thread_writer import repair_dual_project_key
+counts = repair_dual_project_key('$WORKSPACE', source_skill='command-room-update-bridge')
+print('DUALKEY1_RAN=' + str(counts.get('n_deleted_keys', 0) > 0))
+print('DUALKEY1_MERGED=' + str(counts.get('n_merged', 0)))
+print('DUALKEY1_QUARANTINED=' + str(counts.get('n_quarantined', 0)))
+"
+```
+
+**Surface only if it actually merged or quarantined something.** If `DUALKEY1_MERGED` or `DUALKEY1_QUARANTINED` is greater than 0, show one friendly line — never name the internal key, never surface a count or a record id (CONTRACT Rule 4):
+
+> *"I found a couple of project records filed under an old internal spelling and folded them back into your live list — nothing was lost."*
+
+If `DUALKEY1_RAN=False`, or it ran but merged/quarantined nothing (an empty vestigial key was simply deleted), **say nothing** — no news is good news. The repair's own counts are the audit trail; do not log a duplicate event.
 
 ---
 
@@ -1007,7 +1063,7 @@ For each returned offer, surface its `line` VERBATIM (one line, built from the r
 
 **Do not confuse this with a missing chat.** `end-of-day` is a first-install id, so the "is this workspace's schedule complete?" reflex will want to register it. It is already served — `schedule_config.is_task_served("end-of-day", registered_ids)` is the check — and registration's `registration_target_set()` fences it out of the silent-invoke path above for exactly this reason. Never register `end-of-day` from this skill.
 
-**Unconditional prompt refresh (Phase 3 / W4):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1 hash-compare against every registered prompt — never skip it because "the tasks look registered." Bootloaders are stamped with the plugin version at registration (Phase 1.B `<PLUGIN_VERSION>` substitution), so after any plugin upgrade the composed bootloader's hash differs from the registered one and the refresh lands automatically; the watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`) is the detector for prompts this refresh hasn't reached yet. This replaces hoping Rule 16 was obeyed.
+**Unconditional prompt COMPARE, conditional refresh (Phase 3 / W4; BRIDGESIL1, 2026-08-27):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1.C compare against every registered prompt — never skip it because "the tasks look registered." But the compare itself is `schedule_refresh.prompts_equivalent`, not a raw hash: it normalizes the diagnostic plugin-version stamp (Phase 1.B `<PLUGIN_VERSION>` substitution) out of both sides first, so a version-only bump — the ONLY thing that changed on most releases — compares equal and writes nothing (Ruling §0.2, the fix for BUG_2026-08-16 / BUG_2026-08-19: the prior raw-hash compare rewrote every registered prompt on every version bump for zero behavioral gain — proof on file is a `git diff` across a real release showing the pinned bootloader template byte-identical while seven prompts were rewritten anyway). A prompt whose content genuinely changed still refreshes exactly as before, silently, no confirmation — bootloader text has no customer customization surface. Step 1.C2, same invocation, ALSO silently re-anchors an uncustomized cron to core's current shipped default when core changed it (Ruling §0.1/§0.3), receipted via `schedule_refreshed` and narrated once on the next morning brief — never here, never as a prompt. (`label` needs no separate re-anchor: it has no live Cowork-side field and is derived fresh from cron whenever uncustomized, so a cron re-anchor already carries it forward.) The watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`, which reads the UNNORMALIZED registered prompt) is still the detector for a prompt this refresh hasn't reached yet (its own stamp read is unaffected by the write-side normalization above). This replaces hoping Rule 16 was obeyed.
 
 The schedule skill creates the chat orchestrators with sensible defaults silently — no calibration questions on first install. Defaults: time zone from entities.json primary user, work hours 8 AM–6 PM weekdays, per-chat times read from `schedule_config.DEFAULT_SCHEDULES` (never a time typed here). Users who want different cadences fire `change my schedule cadence` later for per-task customization.
 
@@ -1118,7 +1174,7 @@ It prints a JSON array `[{"version", "path", "headline", "n_items"}, ...]` alrea
 For each manifest, for each item, run the detector via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json, importlib
 sys.path.insert(0, 'shared/scripts')
@@ -1135,7 +1191,7 @@ Skip items whose detector returns `{"applies": False}`. For items returning `{"a
 - **action: `auto_apply` (v3.14.4+)** — invoke the action module's function via bash python (same plugin-root resolution as the detector), passing `(events_jsonl_path, workspace_root, detector_context)`. Handle the result per the auto_apply contract in Step 4.8b. See `references/RELEASE_MANIFEST.md` "Action contract" for the full schema.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 -type d -name "_hq" 2>/dev/null | head -1 | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json, importlib
 sys.path.insert(0, 'shared/scripts')

@@ -177,7 +177,7 @@ If a category returns 0, omit the bullet entirely (don't say "0 commitments capt
 
 Snapshot counts from `entities.json`:
 - People tracked with relationship context (count `entities.people` where `last_interaction` is within the last 90 days — i.e., relationship is alive, not just a name).
-- Active projects with session history (count `entities.projects` where `session_count` ≥ 1 OR there's at least one event with `primary_thread_id` matching).
+- Active projects with session history (count `entities.threads` where `session_count` ≥ 1 OR there's at least one event with `primary_thread_id` matching).
 - Emails read / triaged (count `interaction` events with `source: gmail` or `source_skill: inbox-triage` in window — the canonical event type per events.schema.json; pre-v3.13.6 this spec called for `email_triaged` which isn't in the enum).
 - Meetings processed (count `meeting_processed` events in window).
 

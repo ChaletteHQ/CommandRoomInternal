@@ -66,6 +66,7 @@ from typing import Any
 
 from atomic_write import atomic_write_json_locked, atomic_append_jsonl  # noqa: E402
 from entities_io import entities_collection  # noqa: E402
+from entities_io import repair_dual_project_key as entities_io_repair  # noqa: E402
 
 THREAD_ID_RE = re.compile(r"^project_[a-z0-9_]+$")
 
@@ -179,6 +180,46 @@ VALID_STATUSES = {
     "active", "dormant", "paused", "blocked", "archived",
     "exploring", "scoping", "resolved",
 }
+
+# SPEC THREADBIND1 §0 ruling 4 — the `kind` vocabulary CLOSES. Mirrors
+# entities.schema.json `$defs.project.kind`'s enum EXACTLY (unlike
+# VALID_STATUSES above, which is a deliberately WIDER observed superset) —
+# a `kind` outside this set is refused at write time by `_validate_thread`,
+# not merely left undocumented. Widen both together; never one alone.
+#
+# GROUNDING CORRECTION (re-verified against CURRENT main, 2026-08-28): the
+# spec's own summary ("13 observed values including the product/
+# product_build typo-split") undercounted what `tests/fixtures/
+# thread_shapes/entities.json` — ONE RECORD PER DISTINCT FIELD-SET SIGNATURE
+# OBSERVED IN REAL SUBSTRATE (see `run_thread_writer_real_shape_test.py`'s
+# own docstring) — actually carries: `engagement`, `operating`, `venture`,
+# `prospect`, `marketing` are ALL real, on-disk, real-shape kinds with NO
+# enum home before this change (`product` is real too — 3 of the fixture's
+# 12 records already carry it, corroborating ruling 4's target spelling
+# even though this fixture carries no `product_build` row itself). `project`
+# was found the same way but LATER — the full battery (`run_lifecycle1_
+# test.py`'s own fixture, a real production-code exercise, not a synthetic
+# placeholder) is what caught it, after the real-shape fixture's 12 records
+# happened not to carry it. Shipping "writers reject novel kinds" against
+# the schema's PRE-THREADBIND1 14-value enum alone would have started
+# rejecting kinds real substrate and the battery's own fixtures already use
+# — a regression the fleet rule ("the floor is never below today") forbids.
+# All six are added here as a widening, same posture as every other enum
+# growth in this module.
+VALID_KINDS = {
+    "initiative", "deal", "objective", "coaching", "cohort", "advisory",
+    "investment", "board", "relationship", "theme", "concern", "ritual",
+    "personal", "product", "engagement", "operating", "venture",
+    "prospect", "marketing", "project", "other",
+}
+
+# SPEC THREADBIND1 §0 ruling 4 — off-enum spellings observed on live
+# substrate, healed to their canonical value by `repair_thread_kind_drift`
+# (DUALKEY1-style: a pure mutator + an owner-writer wrapper that persists
+# only when something actually changed). `product_build` was a typo-split of
+# `product` — the same semantic kind, two spellings in the wild. Additive: a
+# future drifted spelling earns its own line here, never a silent drop.
+KIND_MIGRATION_MAP = {"product_build": "product"}
 
 # ENTITY1 §4a: a project belongs to an org, and "deliberately unaffiliated"
 # must stay distinguishable from "never set". The sentinel is the SAME one the
@@ -438,13 +479,86 @@ def resolve_folder_name(workspace_root: str | Path,
 
 
 def _threads(data: dict) -> list:
-    """Live thread collection. Real data stores under `threads`; the legacy
-    schema also names it `projects`. Prefer the one that already has rows."""
+    """Live thread collection. SPEC DUALKEY1: `entities_collection(data,
+    "projects")` is now an alias for the canonical `threads` list (never a
+    second, separately-creatable collection), so a single call is safe by
+    construction — no more dual-fetch-and-prefer."""
+    return entities_collection(data, "projects")
+
+
+def repair_dual_project_key(workspace_root: str | Path,
+                             source_skill: str = "cleanup") -> dict:
+    """SPEC DUALKEY1 — the owner-writer repair for the vestigial `projects`
+    key. Delegates the merge/quarantine/delete logic to
+    `entities_io.repair_dual_project_key` (the pure, in-place mutator);
+    this wrapper is the ONLY place that persists the result, using the same
+    version-bump + `last_writer` + locked atomic write every other thread
+    mutation goes through — no second write path onto entities.json.
+
+    True no-op (zero writes) when the workspace has no `projects` key at
+    all, matching cleanup's idempotence contract. Returns the counts dict
+    from `entities_io.repair_dual_project_key` unchanged:
+    `{"n_merged": int, "n_quarantined": int, "n_deleted_keys": int}`.
+    """
+    ws = Path(workspace_root)
+    data = _load_entities(ws)
+    counts = entities_io_repair(data)
+    if counts["n_deleted_keys"] > 0:
+        _save_entities(ws, data, source_skill)
+    return counts
+
+
+def migrate_thread_kind_drift(data: dict) -> dict:
+    """SPEC THREADBIND1 §0 ruling 4 — PURE, in-place mutator (DUALKEY1's own
+    shape: `entities_io.repair_dual_project_key` is the precedent this
+    mirrors). Rewrites every thread whose `kind` is a KNOWN off-enum
+    spelling (`KIND_MIGRATION_MAP`) to its canonical value. A kind that is
+    off-enum but NOT in the map is left untouched here — an unmapped drift
+    is a new spelling this function does not know the answer to, and
+    guessing one would be worse than the gap it is closing (same posture as
+    `entities_io.repair_dual_project_key`'s quarantine-not-discard for a
+    malformed record).
+
+    Mutates `data` in place (same in-place contract as
+    `entities_io.repair_dual_project_key` — the caller writes `data` back).
+    Returns `{"n_migrated": int, "migrated": [{"id", "from", "to"}, ...]}`,
+    both keys ALWAYS present (zero-written, never omitted) — the counts a
+    caller's own cleanup receipt narrates (ruling 4: "counted on receipt").
+    A workspace with no drifted kind at all is a true no-op.
+    """
     threads = entities_collection(data, "threads")
-    projects = entities_collection(data, "projects")
-    if projects and not threads:
-        return projects
-    return threads
+    migrated: list = []
+    for t in threads:
+        if not isinstance(t, dict):
+            continue
+        old_kind = t.get("kind")
+        new_kind = KIND_MIGRATION_MAP.get(old_kind)
+        if new_kind is None:
+            continue
+        migrated.append({"id": t.get("id"), "from": old_kind, "to": new_kind})
+        t["kind"] = new_kind
+    return {"n_migrated": len(migrated), "migrated": migrated}
+
+
+def repair_thread_kind_drift(workspace_root: str | Path,
+                              source_skill: str = "cleanup") -> dict:
+    """SPEC THREADBIND1 §0 ruling 4 — the owner-writer repair for
+    off-enum thread kinds (`product_build` -> `product`, and any future
+    line added to `KIND_MIGRATION_MAP`). Same shape as
+    `repair_dual_project_key` immediately above: delegates the pure mutation
+    to `migrate_thread_kind_drift`, persists ONLY when something actually
+    changed, through the same version-bump + `last_writer` + locked atomic
+    write every other thread mutation goes through.
+
+    True no-op (zero writes) on a workspace with no drifted kind. Returns
+    the counts dict from `migrate_thread_kind_drift` unchanged.
+    """
+    ws = Path(workspace_root)
+    data = _load_entities(ws)
+    counts = migrate_thread_kind_drift(data)
+    if counts["n_migrated"] > 0:
+        _save_entities(ws, data, source_skill)
+    return counts
 
 
 def _next_project_id(threads: list) -> str:
@@ -479,6 +593,17 @@ def _validate_thread(record: dict) -> None:
     if record.get("status") not in VALID_STATUSES:
         raise ValueError(
             f"status must be one of {sorted(VALID_STATUSES)}, got: {record.get('status')!r}")
+    # SPEC THREADBIND1 §0 ruling 4 — `kind` is optional (many threads carry
+    # none), but a PRESENT kind must be on the closed list. `None` is legal;
+    # an off-enum string is not — that used to pass silently (deep-audit gap:
+    # this function validated `status` but never `kind`).
+    kind = record.get("kind")
+    if kind is not None and kind not in VALID_KINDS:
+        raise ValueError(
+            f"kind must be one of {sorted(VALID_KINDS)} or omitted, got: "
+            f"{kind!r}. If this is a genuinely new kind, widen "
+            "entities.schema.json $defs.project.kind AND VALID_KINDS "
+            "together first.")
     stage = record.get("stage")
     if stage is not None and (not isinstance(stage, int) or isinstance(stage, bool)):
         raise ValueError(f"stage must be an integer or null, got: {stage!r}")

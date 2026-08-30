@@ -43,6 +43,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from entities_io import entities_collection  # noqa: E402
 from thread_activity import (  # noqa: E402
     CONFIDENCE_FLOOR,
     ALL_TYPES,
@@ -97,19 +98,19 @@ def thread_org_map(entities: dict) -> dict[str, str]:
     """{thread_id: org_id} from the entities registry — `affiliation_id`
     first, legacy `org_id` accepted (reader back-compat over rewrite).
     Wrapper-aware callers pass the collections dict (flat or the inner
-    `entities` object); both `threads` and `projects` keys are read
-    (real-data fixture shape: live workspaces carry either)."""
+    `entities` object). SPEC DUALKEY1: `entities_collection(view,
+    "projects")` is now an alias for the canonical `threads` list, so a
+    single call replaces the old two-key loop."""
     out: dict[str, str] = {}
     if not isinstance(entities, dict):
         return out
     view = entities.get("entities") if isinstance(entities.get("entities"), dict) else entities
-    for coll in ("threads", "projects"):
-        for t in view.get(coll) or []:
-            if not isinstance(t, dict) or not t.get("id"):
-                continue
-            oid = t.get("affiliation_id") or t.get("org_id")
-            if isinstance(oid, str) and oid and oid != "personal":
-                out[t["id"]] = oid
+    for t in entities_collection(view, "projects"):
+        if not isinstance(t, dict) or not t.get("id"):
+            continue
+        oid = t.get("affiliation_id") or t.get("org_id")
+        if isinstance(oid, str) and oid and oid != "personal":
+            out[t["id"]] = oid
     return out
 
 

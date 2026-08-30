@@ -1,5 +1,72 @@
 # Command Room — Changelog
 
+## v5.21.0 — 2026-08-29 — The schedule-trust train: fire-time guards, a pre-close capture slot, and bookends that reconcile
+
+**Twenty-one merges since v5.20.0 (PRs #70–#90), each independently reviewed; the largest fan-out delta shipped to date.** Verified by the full `cr test --attended` walk of 2026-08-28/29 (record: ATTENDED_WALK_v521 in the operator workspace) — tiers 0–4 green, attended Half 1 walked live on the operator's real workspace, and the PATHREPAIR1 supervised live-fire gate (spec §0.7) satisfied on record.
+
+### What shipped — schedule trust
+
+- **PATHREPAIR1** (#77) — every scheduled task checks at fire time that its registration matches the workspace it is actually running against. Tri-state model: a healthy root proceeds, a repairable move self-heals silently, and an UNKNOWN vantage (session mount, another machine's registration, a disconnected drive) is treated exactly like healthy — never repaired, never alarmed, with `root_repair_state` riding the existing receipt as the only trace. §0.7 supervised live fire on record: two consecutive scheduled fires, state UNKNOWN, zero repairs, zero config writes — the fleet-manifest line ships ungated.
+- **CAPSLOT1 + MAINTGAP1** (#78, #74-era) — the maintenance cron gains the 16:30 pre-close capture slot (`30,45 6,12,16,17` daily); a min-gap guard makes the :30/:45 twin pairs safe (a fire landing under 20 minutes after its predecessor's slot skips silently, receipted); every fire classifies its own run mode and carries `fired_via` into every receipt.
+- **TASKALARM1** (#70) — dark scheduled surfaces produce alarm lines on the daily briefs; their correct absence is silence, never boilerplate.
+- **FIREGAP2** (#82) — crash-day cadence math: late wakes inside the pair window provably resume by the next pair; no state can skip forever.
+- **BRIDGESIL1** (#73) — the update bridge refreshes schedules silently from the next cut onward, preserving shipped-cron history and every operator override.
+- **CAPFENCE1** (#79) — a 15-minute capture fence plus substance floor on the capture legs.
+- **HQRESOLVE1** (#90) — workspace discovery never binds a decoy: the canonical resolution snippet (32 replica sites) now prefers the shallowest data-folder match and excludes archived and demo copies; cleanup no longer archives lock files into a data-folder-shaped path; the scheduled-task bootloader's fallback got the same hardening. New guard G43 plants real decoy layouts and executes the shipped snippet. Found live by the attended walk (F-4), fixed and independently re-reviewed same day.
+
+### What shipped — bookends and capture
+
+- **EODSPEED1 + EODLEG1** (#67-era, #72) — the close reconciles the day's already-captured work instead of re-fetching; capture runs incrementally and silently in the maintenance slots; the 5 PM close is the one narrator.
+- **TOMPICK1** (#85) — the close offers up to three ranked candidates for tomorrow; a bare number picks one, positional confirms never collide with other confirm rows.
+- **COACHONE1** (#86) — the close's coach says each insight once (ref-set dedup).
+- **MORNCAP1** (#76) — the morning brief opens with "captured since your last close."
+- **COVERQUIET1** (#75) — coverage and status lines render only when disclosing something.
+- **SESSSTORY1** (#83) — "end session" becomes optional: the nightly sweep composes a session-notes block (`origin: swept`) for sessions simply walked away from, and a later "end session" reconciles against it rather than duplicating. Verified live both directions in the walk.
+- **THREADBIND1** (#84) + **THREADANN1** (#87) — write-time thread binding for commitments and prep briefs (multi-org ambiguity refuses rather than guessing); heavy threads get subject annotations, not surgery.
+- **DUALKEY1** (#71) — the projects/threads dual-key landmine defused across ~30 reader sites (two live double-count bugs fixed).
+- **QUICKCMD2** (#89) — the quick-commands cheat sheet rebuilt: three tabs, evidence-mined use cases, the dead "what's on my plate" row fixed. NOTE: the card installs through Cowork's artifact tools; see What's NOT below.
+
+### Dev-side (no customer surface)
+
+SNIPSIG1/G41 snippet-shape guard, COPYRACE1/G42 + FLAKEFIX1 flake-class retirements, RELTAG1 release tags, STYLE-era guard extensions. Battery grew 496 → 535 suites across the span.
+
+### Release manifest
+
+One `instruct_user` item (say "set up command room schedules" once to apply the new cron and fire-time guards — refresh preserves operator overrides) and one `announce_only` (the bookends improvements). This cut also corrects the v5.20.0 manifest's style-routing line to scope the claim to chat surfaces — scheduled surfaces do not yet read the persona store (tracked as the next train's fix).
+
+### Verification
+
+`cr test --attended` walked 2026-08-28/29: battery 533/533 at the base tree and 534/534 with #90 (twice, builder + independent reviewer); synthetic runtime 110/110; bug-regression catalog 0 regressions across 24 Tier-1 anchors; ship-readiness-gate PROMOTE; attended Half 1 walked live (schedules re-registration, morning brief, style routing end-to-end, evening close, session-sweep both directions, §0.7 supervised fires); review records for every PR on file, all mutation pins reproduced by genuine source removal. Operator ruling on record: fresh-workspace onboarding walk and quick-commands card verification descoped for this cut.
+
+### What's NOT in this ship
+
+- Scheduled surfaces honoring the persona store (walk F-6) — briefs still open with their own template salutation; next train.
+- The decision-log renderer's timezone localization (walk F-12 — evening decisions date-stamp a day late) and `supersedes_seq` reader parity (walk F-11); next train.
+- QUICKCMD2's card install could not be verified: Cowork sessions on the operator's machines have not exposed artifact tools since ~Aug 22 (platform question, not plugin code — the skill's Rule-7 refusal path was exercised three times and behaved correctly). Commands work by voice regardless.
+- One-shot migration of decoy data-folder copies already present on live workspaces (HQRESOLVE1 stops binding them; removal is a promote-time decision).
+- The memory/routing program (reader/migration branches) — sequenced after this train lands, per operator ruling.
+
+## v5.20.0 — 2026-08-26 — Style routes, and the pile gets the exchange window
+
+**Two merges since v5.19.0, each independently reviewed** (Sonnet builders, top-tier reviewers, per the standing model split).
+
+### What shipped
+
+- **STYLEROUTE1** (#69) — style feedback routes in a fresh chat, and lands in the store, never in CLAUDE.md. Root cause: routing is frontmatter-description-driven and the style triggers lived body-only, so a fresh chat never reached the style surface and one session freelanced a workspace-CLAUDE.md edit instead. The trigger family ("how do you talk to me", "never open with…", in-passing tone corrections) is now front-loaded in the workspace-manager description (G11 green at 979/980); the write path is store-only (`chat_persona` via the canonical writer + one `style_changed` event, pinned to touch zero CLAUDE.md files); a supervised idempotent one-shot (`migrate_style_claude_md.py`) migrates a freelanced CLAUDE.md rule into the store as `origin: "asked"` and only proposes the CLAUDE.md line removal.
+- **EXCHBACK1** (#68) — the standing below-floor pile gets the exchange window. `exchange_backfill.py` re-runs EXCH1's adjudication (imported, never duplicated — equivalence-pinned) over each pile row's stored evidence: `--propose` is provably write-free (byte-identity pinned), `--apply` is confirmation-gated through canonical writers with `exb_` undo batches and run receipts; rows whose evidence window is off disk are reported unadjudicable, never guessed; the release gate honors the LIVE verdict (a rescue with a standing fusion refusal stays held — the review's F1, fence-pinned).
+
+### Release manifest
+
+Two `announce_only` items; no `instruct_user`. **The at-promote backfill one-shot is deliberately HELD** (review F7): nothing in production populates the transcript evidence cache yet, so a client-run pass could only answer "unadjudicable" — the manifest line ships when the transcript-fetching surface exists.
+
+### Verification
+
+Review records REVIEW_EXCHBACK1_2026-08-26 (PASS-WITH-FIXES; F1 FAIL-class release-gate fix reproduced live and fence-pinned) and REVIEW_STYLEROUTE1_2026-08-26 (PASS-WITH-FIXES; one silent desc-only routing regression restored) on file; all mutation pins reproduced by genuine source removal in both reviews; batteries 500/500 green per branch and 501/501 expected on the combined tree (recorded at cut). Full v5.15→v5.19 replay on the operator's book landed alongside: 6/318 rescued review→book, 0 regressions, audited junk flat at 8.3%.
+
+### What's NOT in this ship
+
+The backfill's client-side manifest instruction (held, above). The transcript-fetching surface for `_hq/data/transcripts/` rides intake. Next train = schedule-trust (PATHREPAIR1, TASKALARM1, INCAP2, CLUSTFAM1, COACHONE1, TOMPICK1, COVERQUIET1, bridge silent-refresh, never-fired-honesty, release tags).
+
 ## v5.19.0 — 2026-08-26 — The close gets fast without getting thin
 
 **The EOD-completion train** — M's ruling: everything EOD ships before the test. Three merges since v5.18.0, each independently reviewed.

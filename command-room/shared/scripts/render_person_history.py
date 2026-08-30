@@ -43,6 +43,7 @@ from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 from cru_match import (  # noqa: E402
     load_events_defensively,
     load_open_commitments,
@@ -117,13 +118,12 @@ def _name_index(view: dict) -> dict[str, str]:
     for o in view.get("orgs") or []:
         if isinstance(o, dict) and o.get("id"):
             idx[o["id"]] = o.get("canonical_name") or "(unnamed company)"
-    for coll in ("threads", "projects"):
-        for t in view.get(coll) or []:
-            if isinstance(t, dict) and t.get("id"):
-                idx[t["id"]] = (
-                    t.get("display_name") or t.get("canonical_name")
-                    or t.get("folder_name") or "(unnamed thread)"
-                )
+    for t in entities_collection(view, "projects"):
+        if isinstance(t, dict) and t.get("id"):
+            idx[t["id"]] = (
+                t.get("display_name") or t.get("canonical_name")
+                or t.get("folder_name") or "(unnamed thread)"
+            )
     for pr in view.get("people") or []:
         if isinstance(pr, dict) and pr.get("id"):
             idx[pr["id"]] = pr.get("canonical_name") or "(unnamed person)"

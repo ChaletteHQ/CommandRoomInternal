@@ -47,6 +47,7 @@ from deal_signal_detector import (  # noqa: E402 — one vocabulary, never forke
     _parse_money,
     _source_phrase,
 )
+from entities_io import entities_collection  # noqa: E402
 from prospect_conversion_detector import (  # noqa: E402
     _event_org_ids,
     _event_text,
@@ -128,7 +129,7 @@ def detect_org_value_signals(workspace_root: str | Path,
     workspace_root = Path(workspace_root)
     ent = _entities(workspace_root)
     orgs = ent.get("orgs") or []
-    threads = ent.get("threads") or ent.get("projects") or []
+    threads = entities_collection(ent, "projects")
 
     tracked = {o["id"]: o for o in orgs
                if o.get("id") and o.get("status") != "archived"

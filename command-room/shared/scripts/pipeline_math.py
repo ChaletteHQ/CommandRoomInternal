@@ -99,6 +99,7 @@ def closing_this_month(open_deals: list[dict], today) -> tuple[int, float]:
 # Canonical stage order for the stage-mix composition (thread_writer.DEAL_STAGES
 # — imported value, not restated, so the two can't drift).
 from thread_writer import DEAL_STAGES  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 
 # Reader-facing stage labels for deliverable surfaces (the plain-language
 # glossary rule: no internal tokens like 'proposal_sent' in anything the CEO
@@ -196,7 +197,7 @@ def prospects_not_in_pipeline(entities: dict) -> list[dict]:
 
     ent = entities.get("entities") if isinstance(entities.get("entities"), dict) else entities
     orgs = ent.get("orgs") or []
-    threads = ent.get("threads") or ent.get("projects") or []
+    threads = entities_collection(ent, "projects")
     out = []
     for o in orgs:
         if not isinstance(o, dict) or not o.get("id"):

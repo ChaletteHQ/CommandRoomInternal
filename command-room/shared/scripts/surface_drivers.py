@@ -1807,7 +1807,33 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
                      The connector-fed inputs do not; see the call site for
                      the named degradation.
       watchdog_line  task_watchdog.brief_watchdog_line — append verbatim
-                     when non-None (S3 light pass).
+                     when non-None (S3 light pass). SPEC COVERQUIET1
+                     ruling 4 ("morning and evening both") is already this
+                     line's OWN posture and needed no change here: `None`
+                     on a healthy morning, never a padded all-clear — the
+                     same "speaks only when it has something to disclose"
+                     rule the evening's `coverage` strip now follows
+                     explicitly, applied here since S3.
+      dark_surface_lines  TASKALARM1 — task_alarm.dark_surface_lines, the
+                     per-task "X has not fired in N days" / "was never set
+                     up on this machine" lines, capped 3 worst-first with an
+                     "and N more" tail, render-once per (task, dark-window)
+                     via task_alarm's own ledger. Empty list → nothing
+                     renders (SPEC COVERQUIET1 ruling 4 — already true here,
+                     unchanged by this build). Append verbatim, same spot as
+                     watchdog_line.
+      prior_captures_lines / n_prior_captures_narrated  MORNCAP1 — "captured
+                     since your last close": meetings the background/
+                     catch-up passes briefed after the last day-close
+                     receipt, capped 3 with an "...and N more, filed." tail,
+                     render-once per meeting via morning_capture's own
+                     ledger (`morning_capture.narrated_since_close`). A
+                     deferred-then-recovered meeting (the close's own
+                     `window_incomplete_before` era) renders as "caught up
+                     overnight: X", never as a fresh capture.
+                     `n_prior_captures_narrated` is the TOTAL pending count
+                     (capped-render or not) — zero-written onto the receipt,
+                     never omitted.
       money_lines    FB-20's ONE carve-out: money-class proposals (deal
                      signals) as one prose sentence each, propose-only —
                      "Command Room thinks [Org] is a live deal — say staff
@@ -1955,6 +1981,48 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     except Exception:
         watchdog = None
 
+    # TASKALARM1 — the render-once dead-surface alarm. `brief_watchdog_line`
+    # above is the S3 LIGHT pass (a count + "say health check"); this is the
+    # per-task line the spec calls for ("meeting capture has not run in 2
+    # days"), sourced from the SAME watchdog classes through task_alarm's
+    # render-once ledger so the same dark spell never repeats across fires.
+    # Best-effort — a read failure here must never break the morning brief.
+    try:
+        from task_alarm import dark_surface_lines as _dark_surface_lines
+
+        dark_surface_lines = _dark_surface_lines(ws)
+    except Exception:  # noqa: BLE001
+        dark_surface_lines = []
+
+    # BRIDGESIL1 — the render-once announce line for a silently-applied
+    # semantic schedule change (Ruling §0.3: "announce, don't ask"). Same
+    # ledger shape and same best-effort posture as TASKALARM1 above; a
+    # `prompt`-field refresh never reaches this list (schedule_refresh.
+    # announce_lines only surfaces cron/label rows).
+    try:
+        from schedule_refresh import announce_lines as _schedule_refresh_announce_lines
+
+        schedule_refresh_announce_lines = _schedule_refresh_announce_lines(ws)
+    except Exception:  # noqa: BLE001
+        schedule_refresh_announce_lines = []
+
+    # MORNCAP1 — "captured since your last close": meetings the background/
+    # catch-up passes briefed after the last day-close receipt, narrated
+    # here because the pass itself is silent by fence (EODSPEED1) and the
+    # close's own narration only covers up to ITS OWN fire — nothing since
+    # narrates what happened overnight until this section exists. Same
+    # render-once posture as the two ledgers just above; best-effort, a
+    # read failure never breaks the morning brief.
+    try:
+        from morning_capture import narrated_since_close as _narrated_since_close
+
+        _prior_captures = _narrated_since_close(ws, now=now_iso)
+        prior_captures_lines = _prior_captures["lines"]
+        n_prior_captures_narrated = _prior_captures["n_narrated"]
+    except Exception:  # noqa: BLE001
+        prior_captures_lines = []
+        n_prior_captures_narrated = 0
+
     # FB-20 — the queue POINTER (not the queue). The brief names no rows and
     # renders no card; it points at the surface that adjudicates.
     #
@@ -1985,8 +2053,22 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
 
     # Leak-scan every text line the pack hands the orchestrator. Loud by
     # design — there is no widget validator behind this one any more.
+    #
+    # `prior_captures_lines` is deliberately EXCLUDED here, same as
+    # `prep_leg.meeting_lines` always has been (BRIEFMERGE §C / BRIEFFIX1
+    # Item A): both carry WORKSPACE-RELATIVE `.docx` hrefs, which this
+    # validator's own dead-link rule refuses on sight — correctly, because a
+    # relative pointer is dead in chat and only becomes postable after
+    # Phase 6's `absolutize_doc_links` conversion. The driver runs long
+    # before that conversion, so scanning these lines HERE would refuse
+    # every real fire that ever narrates a capture. The orchestrator's
+    # Phase 6 already re-validates the FULL composed digest after
+    # absolutizing every doc link in it, which is where these lines get
+    # their real leak scan — not skipped, just scanned at the right layer.
     scannable = "\n".join(
         alarm_lines + changed_lines + ([watchdog] if watchdog else [])
+        + dark_surface_lines
+        + schedule_refresh_announce_lines
         + money_lines
         + ([queue_pointer["line"]] if queue_pointer["line"] else [])
         # CAPTUREFLOW §D — the lane's overflow pointer is a text line the
@@ -2005,6 +2087,10 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         "changed": {"since_ts": since_ts, "lines": changed_lines},
         "brief_state": brief_state,
         "watchdog_line": watchdog,
+        "dark_surface_lines": dark_surface_lines,
+        "schedule_refresh_announce_lines": schedule_refresh_announce_lines,
+        "prior_captures_lines": prior_captures_lines,
+        "n_prior_captures_narrated": n_prior_captures_narrated,
         "money_lines": money_lines,
         "queue_pointer": queue_pointer,
     }
@@ -2046,6 +2132,11 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                    top, never suppressed. Same block, same reason, same
                    degrade-honestly posture as the brief: a stale view here is
                    already LOUD, so the surface renders rather than vanishes.
+      dark_surface_lines  TASKALARM1 — task_alarm.dark_surface_lines,
+                   rendered directly under alarm_lines (same never-
+                   suppressed posture, same phase). Render-once per (task,
+                   dark-window) — a spell already alarmed on the morning
+                   brief today stays quiet here rather than repeating.
       coverage     SPEC EODLEDGER1 — what this fire actually READ, per
                    capability: mail and chat through their own cursors (naming
                    the span when one is behind), calendar present or absent,
@@ -2148,7 +2239,20 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 
     with phases.phase(eod.PHASE_ALARMS) as _p:
         alarm_lines = list(substrate_alarm_lines(ws) or [])
-        _p.count(out=len(alarm_lines))
+        # TASKALARM1 — the render-once dead-surface alarm, same never-
+        # suppressed posture as alarm_lines and timed inside the SAME phase
+        # rather than growing PACK_PHASES' pinned 16-name vocabulary
+        # (EODPHASE1) for one more line that shares alarm_lines' shape
+        # exactly: verbatim, never softened, source is task_watchdog's own
+        # classes read through task_alarm's render-once ledger. Best-effort
+        # — a read failure here must never break the evening close.
+        try:
+            from task_alarm import dark_surface_lines as _dark_surface_lines
+
+            dark_surface_lines = _dark_surface_lines(ws)
+        except Exception:  # noqa: BLE001
+            dark_surface_lines = []
+        _p.count(out=len(alarm_lines) + len(dark_surface_lines))
 
     soften = eod.soften_floor(close_result)
     softened = bool(soften.get("softened"))
@@ -2441,6 +2545,12 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "for_date": for_date,
         "branch": branch,
         "alarm_lines": alarm_lines,
+        # TASKALARM1 — rendered "by instruction" like `catchup` (see that
+        # key's own comment above): never inside `render_order`/`BLOCK_ORDER`,
+        # which are pinned by exact-equality guards elsewhere and this build
+        # touches none of them. Placed directly under alarm_lines/coverage in
+        # the orchestrator prose — the same never-suppressed spot.
+        "dark_surface_lines": dark_surface_lines,
         "coverage": coverage,
         "catchup": catchup,
         "close": close_result or {},
@@ -2512,6 +2622,7 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         rendered_text = "\n".join(
             list(coverage.get("lines") or [])
             + list(catchup.get("lines") or [])
+            + list(pack.get("dark_surface_lines") or [])
             + [syn.synthesis_text(synthesis)]
             # SPEC EODCOACH2 — the coach's own composed text joins the same
             # ASSEMBLY check the synthesis text does: two ungraded halves can
@@ -2525,6 +2636,9 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         # design, in the driver, before any of it reaches a chat turn.
         scannable = "\n".join(
             alarm_lines
+            # TASKALARM1 — the render-once dead-surface lines are composed
+            # prose the fire posts, scanned exactly like alarm_lines.
+            + list(pack.get("dark_surface_lines") or [])
             # EODLEDGER1 — the three new text surfaces are scanned like every
             # other one. The coverage strip carries connector reasons that
             # arrived from the orchestrator, which is exactly the shape a leak

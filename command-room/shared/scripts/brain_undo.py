@@ -56,6 +56,10 @@ def _events_path(workspace_root) -> Path:
     return Path(workspace_root) / "_hq" / "data" / "events.jsonl"
 
 
+def _entities_path(workspace_root) -> Path:
+    return Path(workspace_root) / "_hq" / "data" / "entities.json"
+
+
 def _load_events(workspace_root) -> list[dict]:
     import event_refs
 
@@ -395,6 +399,146 @@ def _reverse_day_intent(workspace_root, change, *, undone_by, source_skill):
                               undone_by=undone_by, source_skill=source_skill)
 
 
+def _reverse_prep_brief_thread_backfill(workspace_root, change, *, undone_by,
+                                        source_skill):
+    # SPEC THREADBIND1 §0 ruling 3 — reverse ONE backfilled prep_brief
+    # binding. The `prep_brief` receipt the backfill targeted is append-only
+    # (it is a RECEIPT, never rewritten), so the reversal cannot touch it —
+    # it appends `prep_brief_thread_backfill_undone`, and
+    # `thread_resolve._meeting_bound_thread_id` folds that in as "this
+    # meeting's backfilled binding no longer counts" (the marker itself
+    # stays in history, same additive-reversal doctrine as every reverser in
+    # this module).
+    meeting_id = str(change.get("meeting_id") or "")
+    if not meeting_id:
+        raise BrainUndoError(
+            "prep_brief_thread_backfill reversal needs the meeting_id the "
+            "backfill bound (backfill_prep_briefs.apply_backfill stamps it "
+            "on the prep_brief_thread_backfilled event's data)")
+    from event_gate import append_event
+
+    events_path = _events_path(workspace_root)
+    ev = append_event(events_path, {
+        "type": "prep_brief_thread_backfill_undone",
+        "source_skill": source_skill,
+        "data": {"meeting_id": meeting_id, "undone_by": undone_by},
+    }, holder=source_skill)
+    return {"status": "undone", "meeting_id": meeting_id, "event": ev}
+
+
+def _reverse_thread_split(workspace_root, change, *, undone_by, source_skill):
+    # SPEC THREADANN1 §0 ruling 4 — reverse ONE retagged event from a
+    # confirmed thread split. Additive, same doctrine as every reverser
+    # here: the split's own reclassification events and the new child
+    # thread records STAY in history (records never move / never delete —
+    # SPEC §0 ruling 1's invariant). This appends a RESTORING
+    # `reclassification` event with the SAME `supersedes_seq` (the
+    # ORIGINAL event the split retagged) — `thread_activity.
+    # apply_reclassifications`'s "highest reclassifying seq wins" means
+    # this later-seq restoring event wins the fold, so the original event
+    # reads as owned by the parent again.
+    #
+    # The child thread the batch created is archived (status -> archived,
+    # never deleted — the same posture `_reverse_person_org_creation`
+    # takes on an auto-created record) once its LAST retagged event has
+    # been restored; `undo_batch` calls this reverser once per retagged
+    # event, so the archive is idempotent-guarded (skip if already
+    # archived) rather than performed N times.
+    supersedes_seq = change.get("supersedes_seq")
+    old_primary = change.get("old_primary_thread_id")
+    new_primary = change.get("new_primary_thread_id")
+    if supersedes_seq is None or not old_primary:
+        raise BrainUndoError(
+            "thread_split reversal needs supersedes_seq + "
+            "old_primary_thread_id on the reclassification event (the "
+            "split executor stamps both in `data`)")
+    from event_gate import append_event
+    from thread_activity import apply_reclassifications
+
+    events_path = _events_path(workspace_root)
+
+    # REVIEW THREADANN1 F5 — undo restores ONLY what the split still owns.
+    # If the user (or any later write) has since moved this event somewhere
+    # OTHER than the child this batch retagged it to, that later move is
+    # the newer truth; appending a restoring reclassification here would
+    # win the fold and CLOBBER it. Skip, honestly, with no write — same
+    # left-in-place posture the executor's own stale-seq guard takes.
+    current_events = _load_events(workspace_root)
+    current_primary = None
+    for _fev in apply_reclassifications(current_events):
+        if (isinstance(_fev, dict) and _fev.get("seq") == supersedes_seq
+                and _fev.get("type") != "reclassification"):
+            current_primary = _fev.get("primary_thread_id")
+            break
+    if new_primary and current_primary != new_primary:
+        return {"status": "undone", "skipped": "moved_since_split",
+                "supersedes_seq": supersedes_seq,
+                "current_primary_thread_id": current_primary,
+                "note": "this event was moved again after the split — the "
+                        "later move is the newer truth; left in place"}
+
+    # REVIEW THREADANN1 F4 — restore the ORIGINAL related_thread_ids (the
+    # split's reclassification preserved them; stamping [] here erased
+    # them from the folded read on undo, breaking the byte-identical
+    # round-trip the spec acceptance pins).
+    related = change.get("old_related_thread_ids")
+    if not isinstance(related, list):
+        related = []
+    ev = append_event(events_path, {
+        "type": "reclassification",
+        "source_skill": source_skill,
+        "supersedes_seq": supersedes_seq,
+        "primary_thread_id": old_primary,
+        "related_thread_ids": related,
+        "classification_confidence": 1.0,
+        "data": {
+            "old_primary_thread_id": new_primary,
+            "new_primary_thread_id": old_primary,
+            "old_related_thread_ids": related,
+            "new_related_thread_ids": related,
+            "reason": "brain undo — thread split reversed",
+        },
+    }, holder=source_skill)
+    result = {"status": "restored", "supersedes_seq": supersedes_seq,
+             "restored_to": old_primary}
+    # REVIEW THREADANN1 F5 — after THIS restore, does the child still own
+    # anything? (The event just restored no longer counts; anything else —
+    # including an event the user added to the child AFTER the split —
+    # keeps the child alive: archiving a thread that still owns live
+    # records would strand them. `current_events` was loaded before this
+    # restore's append, so exclude this seq explicitly.)
+    child_still_owns_any = any(
+        isinstance(_fev, dict) and _fev.get("type") != "reclassification"
+        and _fev.get("primary_thread_id") == new_primary
+        and _fev.get("seq") != supersedes_seq
+        for _fev in apply_reclassifications(current_events)
+    )
+    if new_primary and child_still_owns_any:
+        result["child_archive"] = "kept_alive_still_owns_events"
+        return {"status": "undone", **result, "event": ev}
+    if new_primary:
+        try:
+            # THE chokepoint (ARCHFIX census — exactly three modules may set
+            # a thread's status to "archived": thread_archive.py itself,
+            # deal_state.py, objective_state.py). This reverser calls
+            # `archive_thread`, it does not stamp `update_thread(status=
+            # "archived")` directly, so it is never a fourth. Idempotent —
+            # `undo_batch` calls this reverser once per retagged event, and
+            # `archive_thread` on an already-archived child is a documented
+            # no-op ("already_archived", writes nothing).
+            import thread_archive
+
+            arch = thread_archive.archive_thread(
+                workspace_root, new_primary,
+                reason="thread split reversed — the split-created thread "
+                      "has no more events of its own",
+                source_skill=source_skill, regenerate_view=False)
+            result["child_archive"] = arch.get("status")
+        except Exception as exc:  # per-item, contained per-batch
+            result["child_archive_error"] = f"{type(exc).__name__}: {exc}"
+    return {"status": "undone", **result, "event": ev}
+
+
 def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
                                        source_skill):
     # T2.2 (backlog sweep) — reverse an expire/skip tombstone on a person
@@ -556,6 +700,35 @@ REVERSERS: dict[str, dict] = {
                        "complete); the decision returns to the human as a "
                        "confirm row",
     },
+    # SPEC THREADBIND1 §0 ruling 3 — the 30-day prep_brief backfill
+    # one-shot's own `thb_` batch. NEVER a candidate for
+    # brain_proposals.AUTO_ALLOWED: the backfill is propose-first and
+    # human-confirmed by design (§0 ruling 1's fail-open posture), the same
+    # UNCONFIRM1 reasoning as commitment_confirm/commitment_done above.
+    "prep_brief_thread_backfill": {
+        "reverse": _reverse_prep_brief_thread_backfill,
+        "reverses_via": "prep_brief_thread_backfill_undone",
+        "description": "un-bind a thread the 30-day prep_brief backfill "
+                       "assigned — the receipt's own backfill marker stays "
+                       "in history; the undo marker is what "
+                       "thread_resolve reads as 'no longer bound'",
+    },
+    # SPEC THREADANN1 §0 ruling 4 — the ONE-TAP confirmed thread-split's own
+    # `tha_` batch. NEVER a candidate for `brain_proposals.AUTO_ALLOWED`:
+    # a split is propose-first and human-confirmed by design (ruling 4's
+    # "never auto-executed"), the same UNCONFIRM1/day_intent/
+    # prep_brief_thread_backfill reasoning above.
+    "thread_split": {
+        "reverse": _reverse_thread_split,
+        "reverses_via": "reclassification (restoring, supersedes the "
+                        "SAME original event) + a status->archived on "
+                        "the split-created child thread",
+        "description": "move a retagged event back to its parent thread "
+                       "after a confirmed split, and archive the child "
+                       "once its last event is restored — the split's own "
+                       "reclassification events and the child thread "
+                       "record stay in history (records never move)",
+    },
 }
 
 
@@ -650,7 +823,21 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
                     # AUTOAPPLY §4c — the merge reverser needs BOTH sides to
                     # name the pair it is putting back on the flag tier
                     # (supersede_commitment stamps superseded_by + the score).
-                    "superseded_by", "auto_merge_score"):
+                    "superseded_by", "auto_merge_score",
+                    # SPEC THREADBIND1 §0 ruling 3 — the prep_brief backfill
+                    # reverser's anchor: which meeting's binding to undo.
+                    "meeting_id",
+                    # SPEC THREADANN1 §0 ruling 4 — the thread_split
+                    # reverser's anchor: which original event to restore
+                    # (supersedes_seq — the reclassification's own
+                    # top-level field is ALSO mirrored into `data` so this
+                    # data-driven scan can see it) and which thread pair
+                    # to restore it between. `old_related_thread_ids`
+                    # (REVIEW THREADANN1 F4) is what lets the reverser put
+                    # the ORIGINAL related ids back instead of erasing
+                    # them with [].
+                    "supersedes_seq", "old_primary_thread_id",
+                    "new_primary_thread_id", "old_related_thread_ids"):
             if data.get(key) is not None:
                 change[key] = data[key]
         out.append(change)
@@ -821,6 +1008,8 @@ _CLASS_PHRASES = {
     "entity_fact_structured": "noted a fact",
     "person_proposal_tombstone": "cleared an identity row",
     "chat_dismissal": "muted a row",
+    "prep_brief_thread_backfill": "bound a past brief to a thread",
+    "thread_split": "moved an event back after a thread split",
 }
 
 

@@ -39,6 +39,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import event_refs  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 
 # Bilingual overlay (Spanish beta) — inert for English installs. See
 # shared/scripts/lexicon.py + references/SPANISH_BUILD_PLAN.md.
@@ -159,7 +160,7 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
     ent = _entities(workspace_root)
     orgs = ent.get("orgs") or []
     engagements = ent.get("engagements") or []
-    threads = ent.get("threads") or ent.get("projects") or []
+    threads = entities_collection(ent, "projects")
 
     prospects = {o["id"]: o for o in orgs if o.get("id") and o.get("relationship_type") == "prospect"}
     if not prospects:

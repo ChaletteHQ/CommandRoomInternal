@@ -70,6 +70,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_write import atomic_write_text, atomic_write_json_locked  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 from event_time import event_time, parse_ts  # noqa: E402
 
 # Optional: tz module for timezone localization. Fall back to UTC if missing.
@@ -134,16 +135,15 @@ def _build_name_index(entities: dict) -> dict[str, str]:
         oid = o.get("id")
         if oid:
             idx[oid] = o.get("canonical_name") or oid
-    for collection in ("projects", "threads"):
-        for proj in entities.get(collection, []):
-            pid = proj.get("id")
-            if pid:
-                idx[pid] = (
-                    proj.get("display_name")
-                    or proj.get("canonical_name")
-                    or proj.get("folder_name")
-                    or pid
-                )
+    for proj in entities_collection(entities, "projects"):
+        pid = proj.get("id")
+        if pid:
+            idx[pid] = (
+                proj.get("display_name")
+                or proj.get("canonical_name")
+                or proj.get("folder_name")
+                or pid
+            )
     return idx
 
 

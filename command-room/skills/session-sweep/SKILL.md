@@ -30,8 +30,9 @@ visible deliverable when co-located, so this never folds into a brief).
 Every write goes through the locked, gated helper — never a hand-rolled append:
 
 - The recovered `commitment` / `decision` / `interaction` / `note` items **and** the one `session_sweep_run` audit event — via `session_sweep.sweep_and_receipt` (one call). It dedups through the existing `.source_refs.idx` sidecar and appends through `append_event()` (the F1 gatekeeper), so swept events get the same seq/ts stamping, schema-enum validation, and commitment identity (`cmt_<ulid>` + required `data.kind`) as any other writer. There is exactly one append path.
+- **The narrative leg (SPEC SESSSTORY1, 2026-08-27) rides the SAME call.** Pass `sessions=[{session_id, thread_id, for_date, chapter_lines}, ...]` to `sweep_and_receipt` and it composes + appends each session's notes-file block through `session_narrative.compose_and_append` before landing the receipt — see Step 3.5 and Step 4 below. This is what turns "end session" from the only place the human-readable session-notes BLOCK gets written into a courtesy: facts were already end-session-proof (95.3% write live); this leg makes the narrative end-session-proof too.
 
-Before writing to any workspace file, this skill follows `shared/WORKSPACE_API.md`. It implements `shared/PASSIVE_CAPTURE.md`: reading a session transcript on the CEO's behalf is the authorization to persist a summary of what it contains (never the raw transcript text — summaries + entity references + source reference only). Reads: the session-transcript MCP, `entities.json`, `events.jsonl`. No view renders; no other files touched.
+Before writing to any workspace file, this skill follows `shared/WORKSPACE_API.md`. It implements `shared/PASSIVE_CAPTURE.md`: reading a session transcript on the CEO's behalf is the authorization to persist a summary of what it contains (never the raw transcript text — summaries + entity references + source reference only). Reads: the session-transcript MCP, `entities.json`, `events.jsonl`, that session's own `session_chapter` events (`session_chapter.chapter_lines_for`). No view renders; the narrative leg is the ONE exception that touches a file outside `_hq/data/` — and only an ALREADY-EXISTING `SESSION_NOTES*.md`, never a new one (§0 Ruling 4).
 
 ## When this runs
 
@@ -111,7 +112,29 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAU
    ```
    Resolve `person_ids` / `primary_thread_id` against `entities.json` when confident; omit when not (capture always succeeds). Set top-level `classification_confidence` (0–1) on recovered commitments — the daily surfaces filter on it, and the write core stamps `pending_review` below threshold. Summaries only — never the raw transcript text.
 
-4. **Write + receipt — ONE call.** It dedups every item on its content hash through `.source_refs.idx`, appends the survivors via `append_event()`, and lands the `session_sweep_run` receipt:
+3.5. **Build the narrative descriptor for each session (SPEC SESSSTORY1).** For every session in the window that did **not** run "end session" this run (check `session_narrative.already_composed("<abs workspace root>", session_id)` — a session the ritual already wrapped gets skipped here too, not just inside the write core), gather:
+
+   ```python
+   import session_chapter
+   chapter_lines = session_chapter.chapter_lines_for("<abs workspace root>", session_id)
+   # No chapters for this session? Advisory, not mandatory (§0 Ruling 1) — fall
+   # back to your OWN short summary of the session's natural work boundaries,
+   # read straight off the transcript you already have open for Step 3. Keep
+   # each line to one sentence, same discipline as a chapter marker itself:
+   # this is the ONE place in the whole pass a fresh transcript read is
+   # allowed to feed the narrative, and it still never reaches a receipt —
+   # only the composed .md block, exactly like a chapter-derived line would.
+   sessions.append({
+       "session_id": session_id,
+       "thread_id": <primary_thread_id you resolved for this session's items, or None>,
+       "for_date": <the session's own local date (tz.py), NOT today>,
+       "chapter_lines": chapter_lines,  # or your transcript-derived fallback lines
+   })
+   ```
+
+   Never invent thread_id or for_date — an unresolvable thread means the leg silently skips that session's file write (events still land; §0 Ruling 4), and for_date must be the day the session actually happened so a sweep that runs late doesn't misdate the entry.
+
+4. **Write + receipt — ONE call.** It dedups every item on its content hash through `.source_refs.idx`, appends the survivors via `append_event()`, composes+appends each session's narrative block via `session_narrative.compose_and_append` (Step 3.5's `sessions` list), and lands the `session_sweep_run` receipt — `n_narratives_composed` counts how many blocks actually landed:
 
    ```python
    receipt = sweep_and_receipt("<abs workspace root>", items,
@@ -121,7 +144,11 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAU
                                             window, not the default label (F-08 P2c)>,
                                fired_via=<"scheduled" on the nightly fire;
                                           "manual" on a 'run session sweep' chat
-                                          phrase or Run Now — v4.5.2 receipt contract>)
+                                          phrase or Run Now — v4.5.2 receipt contract>,
+                               sessions=sessions)  # Step 3.5's list; omit/empty is a
+                                                    # clean no-op, same skip-not-fail
+                                                    # posture as an empty items list
+   # receipt["n_narratives_composed"] — zero-written, always present.
    ```
 
 5. **Self-validate against the event (mandatory).**
@@ -133,22 +160,24 @@ SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAU
    - `v["ok"] is True` → the sweep genuinely ran. Done.
    - `v["ok"] is False` → no fresh receipt landed. Do not report success; re-run Steps 2–4 or report the failure plainly.
 
-6. **Surface only if something was recovered (otherwise stay silent — this is a background task).**
+6. **Surface only if something was recovered or composed (otherwise stay silent — this is a background task).**
    - `receipt["events_recovered"] > 0` → one plain line, delivered the way other scheduled tasks deliver (per the workspace's delivery preference):
 
      > *"I caught 3 things from your chats that weren't on your list yet — [titles]. They're logged now."*
 
-   - Nothing recovered → no output. Silence is correct; the receipt is the proof it ran.
+   - `receipt["n_narratives_composed"] > 0` (and nothing recovered) → still silent per the same background-task posture; the composed session-notes blocks are a courtesy for the CEO to find on the next "go [project]", not a thing worth interrupting for. Never narrate WHAT a composed block says (§0 scope fence: counts-only outside the notes file itself).
+   - Nothing recovered and nothing composed → no output. Silence is correct; the receipt is the proof it ran.
 
 ## Self-guard
-An empty window (no active sessions, no session-transcript MCP, or a fresh workspace) is a clean silent no-op: `sweep_and_receipt` with an empty item list still lands a zero-recovered receipt, so the watchdog sees the task fired without any noise reaching the CEO.
+An empty window (no active sessions, no session-transcript MCP, or a fresh workspace) is a clean silent no-op: `sweep_and_receipt` with an empty item list still lands a zero-recovered receipt, so the watchdog sees the task fired without any noise reaching the CEO. Same posture for the narrative leg — an empty/omitted `sessions` list still lands `n_narratives_composed: 0` on the very same receipt.
 
 ## What it does NOT do
 - It does not render a brief or a commitments list — the brief and the list read what this pass wrote.
 - It does not capture MEETING transcripts (Granola) — that's `past-meetings` / `meeting-notes`; this runs after them and takes only the leftovers.
-- It does not store raw transcript text — summaries, entity references, and a source reference only (`shared/PASSIVE_CAPTURE.md`).
-- It never re-captures an item already logged — the extraction drops known items and the content-hash dedup makes a re-run over the same window a no-op.
-- It is not the historical catch-up — the supervised last-60-days sweep is `session-backfill`.
+- It does not store raw transcript text — summaries, entity references, and a source reference only (`shared/PASSIVE_CAPTURE.md`); the narrative leg's composed .md block carries only chapter one-liners and structural counts, and the marker event it lands is counts-only, never the block's own text.
+- It never re-captures an item already logged — the extraction drops known items and the content-hash dedup makes a re-run over the same window a no-op. Same rule for a session's narrative: dedup'd against BOTH this leg's own prior run AND against "end session" already having composed it (`session_narrative.already_composed`).
+- It never creates a `SESSION_NOTES*.md` file that doesn't already exist (§0 Ruling 4) — a project with no notes convention gets events only, silently, forever (not scaffolded — that is cleanup's `backfill_session_notes`, a different call this skill never makes).
+- It is not the historical catch-up — the supervised last-60-days sweep is `session-backfill`, and it never runs the narrative leg (no retroactive rewriting of old notes files).
 
 ## Reliability
 Runs as a scheduled task and follows `shared/RELIABILITY.md`: skip-not-fail when the workspace or the session-transcript MCP isn't ready, connector budgets respected, no fabricated data when a source is down (write an empty-window receipt and exit clean).

@@ -64,6 +64,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import events_io  # noqa: E402
 from atomic_write import atomic_write_text  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 from thread_activity import ALL_TYPES, derive_from_events  # noqa: E402
 
 # Shape-safe commitment reads (REQUIRED per VIEW_GENERATION.md MASTER_TRACKER
@@ -155,13 +156,12 @@ def _name_index(view: dict) -> dict[str, str]:
     for o in view.get("orgs") or []:
         if isinstance(o, dict) and o.get("id"):
             idx[o["id"]] = o.get("canonical_name") or o["id"]
-    for coll in ("threads", "projects"):
-        for t in view.get(coll) or []:
-            if isinstance(t, dict) and t.get("id"):
-                idx[t["id"]] = (
-                    t.get("display_name") or t.get("canonical_name")
-                    or t.get("folder_name") or t["id"]
-                )
+    for t in entities_collection(view, "projects"):
+        if isinstance(t, dict) and t.get("id"):
+            idx[t["id"]] = (
+                t.get("display_name") or t.get("canonical_name")
+                or t.get("folder_name") or t["id"]
+            )
     for pr in view.get("people") or []:
         if isinstance(pr, dict) and pr.get("id"):
             idx[pr["id"]] = pr.get("canonical_name") or pr["id"]
@@ -179,10 +179,7 @@ def _thread_org_id(t: dict) -> str | None:
 
 
 def _threads(view: dict) -> list[dict]:
-    coll = view.get("threads")
-    if not isinstance(coll, list) or not coll:
-        coll = view.get("projects") or []
-    return [t for t in coll if isinstance(t, dict)]
+    return [t for t in entities_collection(view, "projects") if isinstance(t, dict)]
 
 
 def _badge(o: dict | None) -> str:

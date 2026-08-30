@@ -137,7 +137,7 @@ This phase runs FIRST, before any task registration. It produces the `WORKSPACE_
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
 echo "SESSION_DIR=$SESSION_DIR"
-find "$SESSION_DIR/mnt" -maxdepth 5 -type f -name "events.jsonl" -path "*/_hq/data/*" 2>/dev/null | while read f; do
+find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type f -name "events.jsonl" -path "*/_hq/data/*" -print 2>/dev/null | while read f; do
   WS=$(dirname "$(dirname "$(dirname "$f")")")
   BASENAME=$(basename "$WS")
   MTIME=$(stat -c "%y" "$f" | cut -d'.' -f1)
@@ -384,13 +384,63 @@ print(f'workspace-bound-to: {workspace_basename}')
 
 The composed bootloader for each task is what gets passed as the `prompt` parameter to `create_scheduled_task` / `update_scheduled_task`. NOT the orchestrator body. The orchestrator body is read fresh by the bootloader at every fire. Each task's bootloader contains the customer-confirmed workspace basename in its Step 1 path-resolution logic.
 
-**Step 1.C — For each `taskId`, hash the composed bootloader and compare against the prompt currently registered in Cowork's scheduled-tasks DB** (returned by `list_scheduled_tasks`). Three outcomes:
+**Step 1.C — For each `taskId`, compare the composed bootloader against the prompt currently registered in Cowork's scheduled-tasks DB** (returned by `list_scheduled_tasks`). **BRIDGESIL1 (2026-08-27) — compare via `shared/scripts/schedule_refresh.py::prompts_equivalent(composed, registered)`, never a raw hash/string compare.** It normalizes the diagnostic plugin-version stamp out of both sides first (`task_watchdog.normalize_prompt_stamp`) — the fix for BUG_2026-08-16 and BUG_2026-08-19: the stamp made every version bump look like a content diff, so every plugin upgrade rewrote every registered prompt for zero behavioral gain (proof on file: `git diff` across a real release showed the pinned bootloader template byte-identical, yet seven prompts were rewritten on the stamp alone). Three outcomes:
 
 - **No registered taskId** → call `create_scheduled_task(taskId, prompt=bootloader_body, ...)`. Pass the FULL composed bootloader string as the `prompt` parameter.
-- **Existing taskId with matching hash** → skip. Idempotent.
-- **Existing taskId with different hash** → call `update_scheduled_task(taskId, prompt=bootloader_body)`. Preserve `cronExpression`, `description`, `enabled`, `notifyOnCompletion` — only the prompt updates.
+- **`prompts_equivalent(composed, registered)` is True** → skip. Zero writes, zero prompts, zero receipt churn — this covers BOTH an exact match and a stamp-only diff (Ruling §0.2: "stamp-only diffs write NOTHING"). Idempotent.
+- **`prompts_equivalent(composed, registered)` is False (a genuine content diff survives normalization)** → call `update_scheduled_task(taskId, prompt=bootloader_body)`. Preserve `cronExpression`, `description`, `enabled`, `notifyOnCompletion` — only the prompt updates. Never a confirmation first — bootloader text has no customer-facing customization surface, so a real diff here is always core-authored (Ruling §0.1). Then write the ONE receipt Ruling §0.4 requires: `schedule_refresh.log_schedule_refreshed(WORKSPACE_ROOT, task_id, "prompt", schedule_refresh.prompt_fingerprint(registered), schedule_refresh.prompt_fingerprint(composed), source_skill="enable-command-room-schedules")` — a short content fingerprint, never the full multi-KB body (events.jsonl is additive-forever; the template already lives on disk). This receipt is never announced (Ruling §0.3's morning-brief line is cron/label-only, per `SEMANTIC_FIELDS` — a prompt refresh is plumbing, not something a customer asked about).
 
 **Surface in the install summary:** `Migrated N tasks to bootloader pattern (plugin upgrades will now auto-propagate)` for v2.14.24-from-prior migrations, or `All 7 bootloaders already current` if nothing changed (post-v3.11.0; pre-v3.11.0 was 6).
+
+**Step 1.C2 — the SAME run, silently re-anchor an uncustomized CRON to core's current shipped default (BRIDGESIL1, "the work" item 1).** This is the one exception to "registration never re-anchors a cron" below — read that paragraph's carve-out before touching this step. **Cron only, not label:** `label` has no independent live counterpart on the Cowork task — the registered `description` is the fixed `"{display} - Command Room"` string (Per-task registration template above), never the config's `label` text, and `load_schedule_config`'s own merged `label` is *derived* (`override.get("label") or cron_to_english(cron)`) whenever no override exists. An uncustomized label is therefore already current the instant its cron is: there is nothing separate to write, and nothing separate to classify. (`schedule_refresh.plan_schedule_refresh` accepts any field name generically — `SEMANTIC_FIELDS` includes `"label"` so the morning-brief announce ledger stays field-agnostic for a future surface that DOES store a label live — but this skill only ever calls it with `field="cron"`.)
+
+For each `taskId` already registered:
+
+```python
+import sys
+sys.path.insert(0, 'shared/scripts')
+from schedule_config import DEFAULT_SCHEDULES, SHIPPED_CRON_HISTORY
+from schedule_refresh import plan_schedule_refresh, apply_schedule_refresh
+
+entities_path = f'{WORKSPACE_ROOT}/_hq/data/entities.json'
+
+# has_override reads the RAW store, never the merged load_schedule_config()
+# view — the merged view already folds the current default in when nothing
+# was overridden, which is exactly the "current core" comparison Ruling
+# §0.3 forbids using as the customization test.
+import json
+try:
+    raw_overrides = (json.load(open(entities_path, encoding='utf-8'))
+                      .get('workspace', {}).get('schedule_config') or {})
+except Exception:
+    raw_overrides = {}
+
+pending_cron_updates = {}
+for task_id, live_task in registered_tasks.items():   # from list_scheduled_tasks
+    default = DEFAULT_SCHEDULES.get(task_id)
+    if not default:
+        continue  # not a chat-orchestrator default (silent tasks handled in Step 1.D)
+    has_override = 'cron' in (raw_overrides.get(task_id) or {})
+    plan = plan_schedule_refresh(
+        task_id, 'cron',
+        live_value=live_task.get('cronExpression'),
+        new_default=default['cron'],
+        has_override=has_override,
+        # The shipped-default TABLE (spec item 3): silent_apply requires the
+        # live cron to be one core itself shipped. A live cron in neither the
+        # table nor the override store is an out-of-band customization
+        # (Cowork-UI edit, declined migration, hand-fix) -> preserve.
+        shipped_defaults=SHIPPED_CRON_HISTORY.get(task_id, (default['cron'],)),
+    )
+    if plan['decision'] == 'silent_apply':
+        result = apply_schedule_refresh(WORKSPACE_ROOT, plan,
+                                        source_skill='enable-command-room-schedules')
+        if result['applied']:
+            pending_cron_updates[task_id] = plan['new']
+    # noop / preserve → no write, no call, no receipt (Ruling §0.1 / §0.2)
+```
+
+Then, for each `taskId` in `pending_cron_updates`, call `update_scheduled_task(taskId, cronExpression=pending_cron_updates[task_id])` — the ONLY place in this skill that ever passes `cronExpression` to a refresh (not a create) call, and only for a task `plan_schedule_refresh` classified `silent_apply`. **Never call this for a task whose live cron already equals the default (`noop`) or whose cron carries a customer override (`preserve`)** — the classify pass above is the gate, not a suggestion. This never asks first (Ruling §0.1: "drop the confirm prompt from this path") and never surfaces a per-change line in THIS skill's own install summary — the customer-visible narration is the morning brief's `schedule_refresh_announce_lines` (Ruling §0.3), rendered once, after the fact, not here and not twice.
 
 **Why this matters (v2.14.24 architecture).** The bootloader closes the drift bug structurally — fires read from disk fresh every time, so a plugin upgrade is enough to update fire behavior (lineage: v2.14.20 → v2.14.21 → v2.14.24 in references/HISTORY.md). **Customers no longer have to re-run `set up command room schedules` after every plugin upgrade.** The hard read happens at fire time, not at registration time.
 
@@ -398,7 +448,7 @@ The composed bootloader for each task is what gets passed as the `prompt` parame
 
 The silent background tasks are NOT chat-orchestrators (no widget, no `orchestrator-*.md`) — they are skill-invoking prompts registered separately from the chats. As of Phase 3 (2026-07) they are **data-driven from the `SILENT_TASKS` registry in `shared/scripts/schedule_config.py`** — one loop registers all of them, and a silent task added to that registry in a future release registers here with zero edits to this file. (Pre-registry, each task had its own prose block, and each block was a place to forget one — Bug #82 was exactly that miss; see references/HISTORY.md § Bug #82 silent-task registration miss.)
 
-As of MAINT1 (2026-07) the registry holds exactly one task: `maintenance` (`45 6,12,17 * * *` daily). It carries the seven silent JOBS — reconcile-sent (first at 6:45, BEFORE the 7:00 morning brief, Bug #98-v3's load-bearing ordering), session-sweep, cleanup, weekly-insights, deal-signals (LB1 — Sunday, after insights), identity-reconcile (PID1 — Sunday, after deal-signals), monthly-report — dispatched per fire by `shared/scripts/maintenance_dispatcher.py` (`due_jobs()` decides in code from receipts; the prompt never judges due-ness). One taskId means ONE Run Now grant ever: a future silent job lands inside the already-authorized task instead of creating a new fleet-wide permission gap per release (`task_watchdog`'s `never_authorized` class).
+As of MAINT1 (2026-07) the registry holds exactly one task: `maintenance` (`30,45 6,12,16,17 * * *` daily — CAPSLOT1, 2026-08-27, added the 16:30 pre-close slot onto the pre-existing 6:45/12:45/17:45 anchors; see `schedule_config.py`'s own comment on that row for why the cron is a minute x hour cross product rather than four bare times). It carries the silent JOBS — reconcile-sent (first at 6:45, BEFORE the 7:00 morning brief, Bug #98-v3's load-bearing ordering), session-sweep, cleanup, weekly-insights, deal-signals (LB1 — Sunday, after insights), identity-reconcile (PID1 — Sunday, after deal-signals), monthly-report — dispatched per fire by `shared/scripts/maintenance_dispatcher.py` (`due_jobs()` decides in code from receipts; the prompt never judges due-ness). One taskId means ONE Run Now grant ever: a future silent job lands inside the already-authorized task instead of creating a new fleet-wide permission gap per release (`task_watchdog`'s `never_authorized` class).
 
 **Supersede step (MAINT1, D5 — data-driven):** after registering each registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py`; every listed taskId still registered+enabled is disabled via `update_scheduled_task(enabled: false)`. Idempotent, never deletes (no delete API exists — disable is the only removal). This is the same disable-don't-delete pattern as the Phase 1 legacy migration table; the map is data so the bridge's Phase 4.7 loop applies the identical migration with zero prose duplication.
 
@@ -536,10 +586,10 @@ The migration semantics:
 Per Phase 1's `ORCHESTRATOR_MAP`, each taskId in `tasks_to_register` goes through one of three paths based on detection:
 
 - **Not yet registered** → call `mcp__scheduled-tasks__create_scheduled_task` with `prompt=body` from Phase 1's read step. Full registration.
-- **Already registered with stale prompt (hash mismatch)** → call `mcp__scheduled-tasks__update_scheduled_task(taskId, prompt=body)`. Refresh in place. Cron, description, enabled, notify all preserved.
-- **Already registered with current prompt (hash match)** → skip. No-op idempotent.
+- **Already registered with a stale prompt (`schedule_refresh.prompts_equivalent` returns False — a genuine content diff survives the plugin-version-stamp normalization)** → call `mcp__scheduled-tasks__update_scheduled_task(taskId, prompt=body)`. Refresh in place. Cron, description, enabled, notify all preserved (subject to the Step 1.C2 cron-only carve-out immediately below).
+- **Already registered with a current or stamp-only-diff prompt (`prompts_equivalent` returns True)** → skip. No-op idempotent (BRIDGESIL1 Ruling §0.2).
 
-**Custom-cron preservation (MANDATORY on every re-run).** When a task is already registered, NEVER pass `cronExpression` to `update_scheduled_task` — pass `prompt` only, so the registered cron is preserved verbatim. An operator (or the user) may have moved a task via `change-schedule`; that override is stored in entities.json `workspace.schedule_config` AND already reflected in the live task. Re-applying `DEFAULT_SCHEDULES` cron on a refresh would silently stomp it back to the shipped default — the exact "my 6 AM brief jumped back to 7 AM after an update" complaint. `cronExpression` is set ONLY on the create path (a task not yet registered), and even there it comes from `load_schedule_config()` (which merges the operator's entities.json overrides), not from raw `DEFAULT_SCHEDULES`. If you genuinely need to re-anchor a cron, that is `change-schedule`'s job, not registration's.
+**Custom-cron preservation (MANDATORY on every re-run) — with ONE BRIDGESIL1 exception.** When a task is already registered, do NOT pass `cronExpression` to this `update_scheduled_task(taskId, prompt=body)` prompt-refresh call — pass `prompt` only, so the registered cron is preserved verbatim here. An operator (or the user) may have moved a task via `change-schedule`; that override is stored in entities.json `workspace.schedule_config` AND already reflected in the live task. Blindly re-applying `DEFAULT_SCHEDULES` cron on every refresh would silently stomp it back to the shipped default — the exact "my 6 AM brief jumped back to 7 AM after an update" complaint. `cronExpression` is set on the create path (a task not yet registered) from `load_schedule_config()` (which merges the operator's entities.json overrides, never raw `DEFAULT_SCHEDULES`) — and, as of BRIDGESIL1, on ONE other path: **Step 1.C2 below**, which re-anchors a task's cron ONLY when `schedule_refresh.plan_schedule_refresh` classifies it `silent_apply` — meaning the live cron still equals the OLD shipped default (no override was ever recorded for it), so the change is core-authored and the customer never touched it. A cron carrying an override, or a live cron that already diverges from every shipped default, is always `preserve`: it is never touched by anything but `change-schedule`. If you need to re-anchor a CUSTOMIZED cron, that stays `change-schedule`'s job, not registration's.
 
 **Pass the full `body` string from Phase 1 as the `prompt` parameter. NEVER paraphrase, summarize, or extract a "mission section" instead.** The orchestrator IS the work — there's no separate runner code; the Claude session executes everything from the prompt. Loss of the v2.13.0 OUTPUT CONTRACT preamble (which lives in the first ~50 lines of every chat-emitting orchestrator) means the fire bypasses every validator + the renderer + the STOP CONTRACT enforcement chain. That's the v2.14.20 regression this v2.14.21 spec exists to prevent.
 

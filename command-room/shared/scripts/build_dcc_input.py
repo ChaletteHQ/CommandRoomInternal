@@ -43,6 +43,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from tz import to_local, TZResolutionError  # noqa: E402
+from entities_io import entities_collection  # noqa: E402
 
 
 def _primary_user_id(data: dict) -> str:
@@ -196,7 +197,7 @@ def _project_matters_fallback(
 
     # Build lookup tables
     people_by_id = {p.get("id"): p for p in entities.get("people", [])}
-    projects_by_id = {p.get("id"): p for p in (entities.get("projects") or entities.get("threads") or [])}
+    projects_by_id = {p.get("id"): p for p in entities_collection(entities, "projects")}
 
     def _name_of(rec: dict[str, Any] | None) -> str:
         if not rec:
@@ -327,7 +328,7 @@ def _project_matters_fallback(
                 workspace_root, honor_reclassifications=True)  # RECL1
         except Exception:
             _activity = {}
-        projects = entities.get("projects") or entities.get("threads") or []
+        projects = entities_collection(entities, "projects")
         stale_projects = []
         for p in projects:
             stage = (p.get("stage") or p.get("status") or "active").lower()

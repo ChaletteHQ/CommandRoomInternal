@@ -76,6 +76,8 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from entities_io import entities_collection  # noqa: E402
+
 # The daily card renders at most this many items (D3). The weekly insights
 # widget keeps its own GLOBAL_PROPOSAL_CAP = 7 (unchanged — learning-loop
 # proposals ride the weekly widget, never this card).
@@ -410,9 +412,16 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
             "surface_hint": data.get("surface_hint") or "",
             # PID1 — merge-propose row payloads (D4): the target ids the
             # apply-choices handlers dispatch on, embedded VERBATIM (F2).
+            # REVIEW THREADANN1 F1 — `parent_thread_id` + `clusters` join the
+            # same verbatim embed: the apply-choices `thread_split` handler
+            # dispatches `execute_split(<parent_thread_id>, <clusters>)` off
+            # THIS row, and a payload the projector drops is a confirm tap
+            # with no inputs (the exact THREADBIND1-F2 "no confirm-side
+            # consumer" gap, one layer down).
             **{k: data[k] for k in ("cluster_seqs", "cluster_fingerprints",
                                     "keep_id", "duplicate_id", "alias_name",
-                                    "matched_name") if data.get(k)},
+                                    "matched_name", "parent_thread_id",
+                                    "clusters") if data.get(k)},
         })
     return out
 
@@ -1688,7 +1697,7 @@ def _adapt_org_project_proposals(workspace_root, events: list[dict],
         ent_path = Path(workspace_root) / "_hq" / "data" / "entities.json"
         ent = json.loads(ent_path.read_text(encoding="utf-8"))
         ent = ent.get("entities") if isinstance(ent.get("entities"), dict) else ent
-        for t in (ent.get("threads") or ent.get("projects") or []):
+        for t in entities_collection(ent, "projects"):
             nm = (t.get("display_name") or t.get("name") or "").strip().lower()
             if nm:
                 threads_names.add(nm)
@@ -1789,7 +1798,7 @@ def _entity_display_names(workspace_root) -> dict:
         data = json.loads(ent_path.read_text(encoding="utf-8"))
         ent = data.get("entities") if isinstance(data.get("entities"), dict) \
             else data
-        for t in (ent.get("threads") or ent.get("projects") or []):
+        for t in entities_collection(ent, "projects"):
             nm = (t.get("display_name") or t.get("name") or "").strip()
             if t.get("id") and nm:
                 out[str(t["id"])] = nm
@@ -2264,6 +2273,12 @@ def _row_target_ids(item: dict) -> dict:
               # answerable in the projector and unanswerable on screen.
               "target_id",
               "cluster_seqs",
+              # REVIEW THREADANN1 F1 — the thread_split confirm's own dispatch
+              # payload (parent + the annotation's cluster assignment,
+              # verbatim, never re-derived at dispatch time). Same rule as the
+              # PID1 cluster keys: a rendered card row must equip its handler
+              # as well as the projector row does.
+              "parent_thread_id", "clusters",
               "cluster_fingerprints", "keep_id", "duplicate_id",
               # BUG C/D — the resolved possible-match candidate, so the
               # populated `same as [existing]` verb dispatches without a re-type.

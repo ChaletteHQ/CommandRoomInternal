@@ -260,6 +260,7 @@ def record_walk(workspace_root, *, evidence_ref: str, evidence_ts,
 def log_capture_pass_receipt(workspace_root, *,
                              fired_via: str = "scheduled",
                              duration_ms: Optional[int] = None,
+                             capture_leg_ms: Optional[int] = None,
                              window: Optional[dict] = None,
                              n_meetings: int = 0,
                              n_processed: int = 0,
@@ -277,6 +278,21 @@ def log_capture_pass_receipt(workspace_root, *,
     `catchup_window("meeting-capture", ...)` resumes from exactly where this
     pass reached, including a batch-capped pass that left meetings owed.
     Counts only, never a title: the standard receipt discipline.
+
+    SPEC EODLEG1 — `capture_leg_ms`, OPTIONAL and additive. The module
+    docstring's part 1 is the reason this is honest rather than redundant:
+    "the job executes those phases VERBATIM" — same canonical writers, same
+    gates as the 5 PM close's own Phase D — so this pass's wall time IS a
+    capture leg in the same sense the close's `PHASE_CAPTURE` is, and it is
+    stamped under the SAME vocabulary constant (`end_of_day.PHASE_CAPTURE`)
+    rather than a second name invented for this surface. A reader joining
+    `phase_durations_ms` across the `meeting-capture` and `past-meetings`
+    receipt series then sees one leg measured twice a day, not two
+    dialects of it. Omit it and this receipt's shape is unchanged from
+    before this spec — never omitted silently by this function, only by a
+    caller that has not passed it, matching BRIEFFIX1 Item C: a caller
+    whose OWN duration measurement failed still gets its receipt, just
+    without the phase fields.
     """
     from catchup import WINDOW_INCOMPLETE_FIELD
     from receipts import log_receipt, normalize_fired_via
@@ -294,6 +310,18 @@ def log_capture_pass_receipt(workspace_root, *,
             data["window_end"] = window.get("end")
     if window_incomplete_before:
         data[WINDOW_INCOMPLETE_FIELD] = window_incomplete_before
+    if isinstance(capture_leg_ms, (int, float)) \
+            and not isinstance(capture_leg_ms, bool) \
+            and capture_leg_ms == capture_leg_ms and capture_leg_ms >= 0:
+        # NEVER an invented name — the constant is imported, not spelled,
+        # so a rename of PHASE_CAPTURE moves both receipt series together.
+        try:
+            from end_of_day import PHASE_CAPTURE
+            data["phase_durations_ms"] = {PHASE_CAPTURE: int(round(capture_leg_ms))}
+            data["phase_order"] = [PHASE_CAPTURE]
+        except Exception:  # noqa: BLE001 — instrumentation never costs this
+            # pass its receipt (BRIEFFIX1 Item C, extended to this surface).
+            pass
     for k, v in (extra_data or {}).items():
         data.setdefault(k, v)
     return log_receipt(workspace_root, CAPTURE_JOB_ID,
@@ -334,12 +362,50 @@ def last_capture_pass(workspace_root, *, now=None) -> dict:
 # The prior-capture briefs read (the close narrates what the passes wrote)
 # ---------------------------------------------------------------------------
 
+def last_close_receipt(workspace_root) -> Optional[dict]:
+    """The newest past-meetings/end-of-day `pack_run` receipt — THE last
+    day-close, by construction (SPEC MORNCAP1 item 1). A named, reusable
+    entry point onto the exact receipt `prior_briefed_refs` bounds itself
+    against, so a second reader (the morning brief, reading the same
+    receipt's `window_incomplete_before` for the deferral marker) does not
+    re-derive "which receipt is the last close" independently and risk
+    disagreeing with the first — the two would silently drift apart on any
+    day with more than one candidate receipt (a `rerun` tier, a catch-up
+    fire). Returns the `receipts.iter_receipts` row (`dt` aware, `raw` the
+    original event) or None when no close is on record. Never raises."""
+    try:
+        from receipts import iter_receipts
+    except Exception:  # noqa: BLE001
+        return None
+    newest = None
+    try:
+        for r in iter_receipts(workspace_root, task_ids=["past-meetings", "end-of-day"]):
+            if r.get("type") != "pack_run":
+                continue
+            dt = r.get("dt")
+            if dt is None:
+                continue
+            dt = dt if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)
+            if newest is None or dt > newest["dt"]:
+                row = dict(r)
+                row["dt"] = dt
+                newest = row
+    except Exception:  # noqa: BLE001
+        return None
+    return newest
+
+
 def prior_briefed_refs(workspace_root, *, now=None) -> list:
     """Briefs the background pass wrote since the last day-close, so the
     close can render them (`end_of_day.MEETING_BRIEFED_PRIOR`).
 
-    Rows: `[{"source_ref", "brief_path", "title", "processed_at"}]`, oldest
-    first. A row qualifies when ALL hold:
+    Rows: `[{"source_ref", "brief_path", "title", "processed_at",
+    "meeting_ts"}]`, oldest first. `meeting_ts` is the meeting event's own
+    `ts` (the meeting's start time, per `meeting_capture.build_meeting_event`
+    — "backdate to meeting time, not processing time") when the meeting event
+    carries one, else None — added for SPEC MORNCAP1's deferred-then-
+    recovered join (§0 Ruling 2), additive and never read by the close. A row
+    qualifies when ALL hold:
 
       * a `meeting_processed` event with `source_skill == "past-meetings"`
         landed AFTER the newest `past-meetings` pack_run receipt (the last
@@ -360,22 +426,8 @@ def prior_briefed_refs(workspace_root, *, now=None) -> list:
     """
     now_dt = _now_utc(now)
     floor = now_dt - _dt.timedelta(days=EVIDENCE_WINDOW_DAYS)
-    last_close = None
-    try:
-        from receipts import iter_receipts
-
-        for r in iter_receipts(workspace_root,
-                               task_ids=["past-meetings", "end-of-day"]):
-            if r.get("type") != "pack_run":
-                continue
-            dt = r.get("dt")
-            if dt is None:
-                continue
-            dt = dt if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)
-            if last_close is None or dt > last_close:
-                last_close = dt
-    except Exception:  # noqa: BLE001
-        return []
+    close_receipt = last_close_receipt(workspace_root)
+    last_close = close_receipt["dt"] if close_receipt else None
     if last_close is not None:
         bound = max(last_close, floor)
     else:
@@ -402,7 +454,15 @@ def prior_briefed_refs(workspace_root, *, now=None) -> list:
                     # one meeting.
                     briefs[dedup_key_of(ref) or ref] = {
                         "brief_path": path,
-                        "title": str(data.get("title") or "")}
+                        "title": str(data.get("title") or ""),
+                        # MORNCAP1 — the meeting's OWN start time (never the
+                        # append time; see meeting_capture.build_meeting_event
+                        # / meeting-notes SKILL.md's "backdate to meeting
+                        # time"), read straight off the event's own `ts`, not
+                        # `event_dt` — a meeting event's `ts` IS its start
+                        # time by contract, so no fallback-to-append-time
+                        # applies here the way it does for a receipt.
+                        "meeting_ts": ev.get("ts")}
             elif etype == "meeting_processed":
                 if ev.get("source_skill") != "past-meetings":
                     continue
@@ -446,15 +506,35 @@ def prior_briefed_refs(workspace_root, *, now=None) -> list:
         if not info:
             continue  # no brief on record → nothing to link (never a guess)
         seen.add(key)
+        # meeting_ts always comes off the `meeting` event (the only writer
+        # that carries the meeting's own start time) — even when brief_path
+        # was read off the meeting_processed row instead.
         out.append({"source_ref": ref,
                     "brief_path": info["brief_path"],
                     "title": info.get("title") or "",
-                    "processed_at": row["processed_at"]})
+                    "processed_at": row["processed_at"],
+                    "meeting_ts": (briefs.get(key) or {}).get("meeting_ts")})
     return out
+
+
+def briefed_since_last_close(workspace_root, *, now=None) -> list:
+    """SPEC MORNCAP1 §0 Ruling 4 — the morning's own entry point onto the
+    SAME reader the close uses. `prior_briefed_refs` already computes
+    exactly what the morning needs (briefs written since the last
+    past-meetings/end-of-day close, deduped, joined to brief_path / title /
+    meeting_ts) — this generalizes that reader beyond "the close's own
+    read" (its docstring and its name both say `prior_briefed`, a promise of
+    one caller) into a name a second surface can call without reaching past
+    it. No new computation, no widened window of its own: same bound
+    (`last_close_receipt`), same dedup, same join. If the render map either
+    caller joins on ever changes, BOTH move together because both resolve
+    through the one producer above — never re-derived here."""
+    return prior_briefed_refs(workspace_root, now=now)
 
 
 __all__ = [
     "CAPTURE_JOB_ID", "EVIDENCE_WINDOW_DAYS", "WALK_LEDGER_RELPATH",
     "load_walk_ledger", "already_walked", "record_walk",
-    "log_capture_pass_receipt", "last_capture_pass", "prior_briefed_refs",
+    "log_capture_pass_receipt", "last_capture_pass",
+    "last_close_receipt", "prior_briefed_refs", "briefed_since_last_close",
 ]

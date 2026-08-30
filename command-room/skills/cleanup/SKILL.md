@@ -326,7 +326,7 @@ The `--mark` run appends one `seq_repaired` marker per NEWLY-found duplicated se
 ### 3e. Append the run record + conflicts
 
 - Append schema/integrity violations to `_hq/CONFLICTS.md` (same as the old audit).
-- Append ONE `cleanup_run` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — **this receipt is REQUIRED on every run, even a nothing-to-do run**: cleanup fired receiptless for ~6 weeks during the v4.5.1 dogfood and its silent failures were indistinguishable from silent successes (FINDINGS F-39/F-43/F-54). One line: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "cleanup", receipt_type="cleanup_run", fired_via="scheduled", extra_data={"actions_taken": [...], "items_flagged_for_user": [...], "tail_hash": "..."})` — `"manual"` for fired_via on `run cleanup` chat fires.
+- Append ONE `cleanup_run` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — **this receipt is REQUIRED on every run, even a nothing-to-do run**: cleanup fired receiptless for ~6 weeks during the v4.5.1 dogfood and its silent failures were indistinguishable from silent successes (FINDINGS F-39/F-43/F-54). One line: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "cleanup", receipt_type="cleanup_run", fired_via="scheduled", extra_data={"actions_taken": [...], "items_flagged_for_user": [...], "tail_hash": "...", "dualkey1_repair": {"n_merged": <int>, "n_quarantined": <int>, "n_deleted_keys": <int>}})` — `"manual"` for fired_via on `run cleanup` chat fires. `dualkey1_repair` carries the three counts from Phase 3.5a-bis verbatim, on EVERY run (zero-written, never omitted — see that phase for why).
 - **tail_hash backward compatibility:** when computing the append-only mutation check, look up the previous run's `tail_hash` from the most recent `cleanup_run` **OR** legacy `audit_run` event (accept either type). New events are always written as `cleanup_run`. Never rewrite old `audit_run` events.
 
 ## Phase 3.5: Brain self-heal (Live State render + one-time migration)
@@ -364,7 +364,10 @@ ws = '<workspace_root>'
 # -> 0 threads -> migration silently processed nothing (the #84 outcome via a 2nd cause).
 _d = json.load(open(ws + '/_hq/data/entities.json'))
 ent = _d['entities'] if isinstance(_d.get('entities'), dict) else _d
-threads = ent.get('threads') or ent.get('projects') or []
+# SPEC DUALKEY1: single canonical read — entities_collection aliases the
+# retired 'projects' spelling to the canonical `threads` collection.
+from entities_io import entities_collection
+threads = entities_collection(ent, 'projects')
 migrated, errors, skipped = [], [], []
 for t in threads:
     # FOLDERGUARD: terminal threads are not migrated. This loop had NO status
@@ -393,6 +396,76 @@ if skipped: print('NO-FOLDER-SKIPPED:', skipped)
 ```
 Two distinct failure modes: a **missing/broken module** is a loud ABORT (the assert-import above) — surface it, never skip Phase 3.5a; a **per-thread** exception is collected and surfaced in the run log but does not abort the sweep. `migrate_brain` **NEVER deletes a hand-written person** — anyone with no events relocates to a "Manually tracked" durable list, never dropped. Record into `actions_taken[]` only the brains it actually changed.
 
+### 3.5a-bis — Repair the dual project key (idempotent — SPEC DUALKEY1)
+
+Runs BEFORE 3.5b's Live State re-render, so a workspace that still carries the vestigial `projects` key gets its threads merged and de-duped before anything downstream iterates them. A pre-DUALKEY1 `entities.json` can carry BOTH the canonical `threads` collection and a `projects` key created the instant any older reader called the pre-alias `entities_collection("projects")`, which minted a SECOND, separately-writable list. Left unrepaired, one stray record under `projects` silently drops every dual-key reader in the product from the real thread count to just that one record. This is the weekly backstop; Phase 4.4b of `command-room-update-bridge` delivers the same repair immediately at update time so most workspaces never reach this fire with anything to do.
+
+Safe and idempotent by construction: non-empty `projects` records merge into `threads` deduped by id (an id already in `threads` keeps the `threads` copy; the `projects` duplicate is quarantined under `_recovery`, never dropped), then the `projects` key is deleted. A workspace with no `projects` key at all is a true no-op — zero writes.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+cd "$PLUGIN_ROOT" && python3 -c "
+import sys
+sys.path.insert(0, 'shared/scripts')
+from thread_writer import repair_dual_project_key
+counts = repair_dual_project_key('<workspace_root>', source_skill='cleanup')
+print('n_merged=' + str(counts['n_merged']))
+print('n_quarantined=' + str(counts['n_quarantined']))
+print('n_deleted_keys=' + str(counts['n_deleted_keys']))
+"
+```
+
+**Stamp all three counts on the Phase 3e `cleanup_run` receipt's `extra_data`, every run, zero-written and never omitted** — `extra_data.dualkey1_repair = {"n_merged": <int>, "n_quarantined": <int>, "n_deleted_keys": <int>}`, even when every count is 0. A receipt that only appears when there was something to report is indistinguishable from a fire that skipped the step; a receipt that always carries the field is proof the step ran. Record into `actions_taken[]` only when `n_merged` or `n_quarantined` is greater than 0 — a quiet workspace (no `projects` key, or the key was already gone) stays quiet (HONEST1, same reporting rule as 3.5b below).
+
+### 3.5a-ter — Heal off-enum thread kinds (idempotent — SPEC THREADBIND1 §0 ruling 4)
+
+Runs right after 3.5a-bis, same DUALKEY1-style shape: a pure mutator plus an owner-writer wrapper that persists only when something actually changed. The thread `kind` vocabulary closed under THREADBIND1 (`thread_writer.VALID_KINDS`, mirrored in `entities.schema.json` $defs.project.kind) — `create_thread` / `update_thread` now reject a novel kind at write time, but a THREAD ALREADY ON DISK from before the enum closed can carry a KNOWN off-enum spelling (today: `product_build`, a typo-split of `product`). This step heals those in place, additive: `thread_writer.KIND_MIGRATION_MAP` gets a new line the day a new drifted spelling is confirmed — this step never guesses at one on its own.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+cd "$PLUGIN_ROOT" && python3 -c "
+import sys
+sys.path.insert(0, 'shared/scripts')
+from thread_writer import repair_thread_kind_drift
+counts = repair_thread_kind_drift('<workspace_root>', source_skill='cleanup')
+print('n_migrated=' + str(counts['n_migrated']))
+print('migrated=' + str(counts['migrated']))
+"
+```
+
+**Stamp on the same Phase 3e `cleanup_run` receipt's `extra_data`, every run, zero-written and never omitted** — `extra_data.thread_kind_repair = {"n_migrated": <int>}`. Record into `actions_taken[]` only when `n_migrated` is greater than 0 (HONEST1, same reporting rule as 3.5a-bis and 3.5b) — list each `{"id", "from", "to"}` so the receipt names what changed.
+
+### 3.5a-quater — Thread subject detection (idempotent — SPEC THREADANN1 §0 ruling 2)
+
+Runs right after 3.5a-ter, over every non-archived thread: an evidence-scored
+cluster detector (`shared/scripts/thread_subjects.py`) reads each thread's
+bound events (org + attendee + commitment-text agreement, riding
+THREADBIND1's `thread_basis` machinery) and, only when the evidence clears
+the floor, ANNOTATES the thread with derived subject labels (`records never
+move` — SPEC §0 ruling 1) and fires ONE propose-only "split it?" row through
+the standing Living Brain queue (SPEC §0 ruling 4 — never auto-executed,
+never nagged more than once per thread per 30 days). Below the floor: no
+annotation, no proposal, no noise. Idempotent by construction: re-detecting
+the same clustering writes nothing (HONEST1).
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+cd "$PLUGIN_ROOT" && python3 -c "
+import sys
+sys.path.insert(0, 'shared/scripts')
+from thread_subjects import scan_workspace
+counts = scan_workspace('<workspace_root>', source_skill='cleanup')
+print('n_threads_scanned=' + str(counts['n_threads_scanned']))
+print('n_annotated=' + str(counts['n_annotated']))
+print('n_split_proposals=' + str(counts['n_split_proposals']))
+"
+```
+
+**Stamp on the same Phase 3e `cleanup_run` receipt's `extra_data`, every run, zero-written and never omitted** — `extra_data.threadann1_scan = {"n_threads_scanned": <int>, "n_annotated": <int>, "n_split_proposals": <int>}`. Record into `actions_taken[]` only when `n_annotated` or `n_split_proposals` is greater than 0 (HONEST1, same reporting rule as 3.5a-bis and 3.5a-ter) — a workspace with no thread heavy enough to cluster stays quiet.
+
 ### 3.5b — Re-render every active thread's Live State (dirty-checked, cheap)
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
@@ -415,7 +488,10 @@ ws = '<workspace_root>'
 # Shape-defensive read (Bug #84-followup) — flat OR wrapped entities.json.
 _d = json.load(open(ws + '/_hq/data/entities.json'))
 ent = _d['entities'] if isinstance(_d.get('entities'), dict) else _d
-threads = ent.get('threads') or ent.get('projects') or []
+# SPEC DUALKEY1: single canonical read — entities_collection aliases the
+# retired 'projects' spelling to the canonical `threads` collection.
+from entities_io import entities_collection
+threads = entities_collection(ent, 'projects')
 refreshed, unlinked, missing_folder, errors = [], [], [], []
 for t in threads:
     # FOLDERGUARD: the filter existed but covered ONE terminal status, so a

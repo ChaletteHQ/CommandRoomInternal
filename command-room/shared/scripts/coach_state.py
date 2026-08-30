@@ -231,20 +231,22 @@ def _collection(data: dict, name: str) -> list:
     from a read. Same nested-wrapper tolerance, no mutation.
     """
     container = unwrap_entities(data if isinstance(data, dict) else {})
-    coll = container.get(name)
+    # SPEC DUALKEY1 — mirrors entities_io.entities_collection's alias
+    # (canonical collection = `threads`; "projects" is a rejected spelling
+    # that resolves to the same key) without this helper's no-create
+    # contract above changing.
+    key = "threads" if name == "projects" else name
+    coll = container.get(key)
     return coll if isinstance(coll, list) else []
 
 
 def _threads(workspace_root, entities: Optional[dict] = None) -> list[dict]:
-    """Live thread collection under either the nested or flat shape. Mirrors
-    thread_writer._threads: real data stores under `threads`, the legacy schema
-    names it `projects`; prefer whichever already has rows."""
+    """Live thread collection under either the nested or flat shape. SPEC
+    DUALKEY1: `_collection(data, "projects")` is now an alias for the
+    canonical `threads` list — a single call is safe by construction, no
+    more dual-fetch-and-prefer."""
     data = entities if entities is not None else load_entities(workspace_root)
-    threads = _collection(data, "threads")
-    projects = _collection(data, "projects")
-    if projects and not threads:
-        return projects
-    return threads
+    return _collection(data, "projects")
 
 
 def _thread_name(thread: dict) -> str:

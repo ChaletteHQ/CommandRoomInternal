@@ -32,6 +32,14 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
+try:
+    from entities_io import entities_collection
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_ei
+    from pathlib import Path as _Path_ei
+    _sys_ei.path.insert(0, str(_Path_ei(__file__).resolve().parent))
+    from entities_io import entities_collection
+
 
 # Money fields read off the org (and, as a fallback, the item itself), in
 # priority order. The label is appended after the amount when present
@@ -140,7 +148,7 @@ def _resolve_thread(item: dict, entities) -> Optional[dict]:
     completed from the substrate (no raise)."""
     if not isinstance(entities, dict):
         return None
-    threads = _index_by_id(entities.get("threads") or entities.get("projects"))
+    threads = _index_by_id(entities_collection(entities, "projects"))
 
     # Find the relevant thread id: a commitment points at primary_thread_id;
     # a thread IS the item (its own id).

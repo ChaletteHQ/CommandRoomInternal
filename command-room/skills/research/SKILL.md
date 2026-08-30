@@ -27,7 +27,7 @@ If the skill is invoked with a name-bearing trigger ("research [company]", "back
 
 research does NOT write substrate directly. It READS and DELEGATES every write to a canonical owner:
 
-- **Reads:** `entities.json` (people / orgs / projects / threads, via `resolve_all`) and `events.jsonl` (recent interactions, prior `intel_logged`, meetings) to frame the question. Defensive reads only — handle both `entities.threads` and legacy `entities.projects` shapes, flat and nested.
+- **Reads:** `entities.json` (people / orgs / projects / threads, via `resolve_all`) and `events.jsonl` (recent interactions, prior `intel_logged`, meetings) to frame the question. Defensive reads only — `entities.threads` is the one canonical collection (SPEC DUALKEY1 retired the `projects` spelling; read via `entities_io.entities_collection`), flat and nested shapes both.
 - **Saves findings via `intel-intake`:** verified brief content is handed to intel-intake, which writes the `intel_logged` event and the `_hq/intel/` artifact with entity cross-references. research adds no new event type.
 - **Records decision-makers via `people-crm`:** any person discovered through enrichment is passed to `people_writer` (dedup-first: `find_existing_person` → `update_person` or `create_person`). This is the ONLY place enriched contact PII lands — never loose notes.
 
