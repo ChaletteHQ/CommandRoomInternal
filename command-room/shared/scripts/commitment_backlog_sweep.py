@@ -2204,17 +2204,38 @@ REVIEW_SOURCE_SKILL = f"{SOURCE_SKILL}:review-amnesty"
 # `VALID_RESOLUTIONS` is not this module's to widen.
 REVIEW_TIER_RESOLUTION = "dropped"
 
-# §0-2 — the expiry window, in days. Unconfirmed extractions age much faster
-# than confirmed work does (30 days there): a guess nobody answered in two
-# weeks is a guess whose context has gone, and the answer will not improve by
-# waiting. Overridable per run ("expire the review pile past 30 days") and
+# §0-2 / UNCONFEXP1 — the nag window, in days: how long an unconfirmed
+# extraction gets to ask before it lapses on its own. THE OPERATOR RULING
+# (M, 2026-08-30, verbatim intent): "They should close out. They should hide
+# and close out, not act like that. It can nag for like a day or two." That
+# ruling SUPERSEDES both the REVAMN1 14-day default and the QUEUE1 ruling
+# (2026-08-12) that the unconfirmed drain stays M-driven/escalate-only —
+# measured on the live workspace, the escalate-and-nag posture produced
+# accumulation (~156 unconfirmed, ~110 escalated, oldest 34 days), not drain.
+#
+# SEMANTICS (reviewer-visible default): the clock starts at CAPTURE — the
+# row's own ts seeds `last_activity_map` — and resets only on REAL movement
+# on the item (re-wording, re-dating, re-owning, an adjudication, an undo).
+# Being RENDERED on a surface is deliberately NOT movement: a nag that
+# extends its own life by being seen never expires, which is the exact
+# pathology this window ends.
+#
+# Overridable per run ("expire the review pile past 30 days") and
 # configurable per workspace — see `_configured_review_expiry_days`.
-REVIEW_EXPIRY_DAYS = 14
+UNCONFIRMED_NAG_DAYS = 2
 
-# §1 — the hard floor, in days. Under three days the phrase stops meaning
+# The pre-UNCONFEXP1 spelling, kept because the plan/offer/receipt plumbing
+# and their suites read it. ONE number, two names for it — never assign these
+# independently.
+REVIEW_EXPIRY_DAYS = UNCONFIRMED_NAG_DAYS
+
+# §1 — the hard floor, in days. Under ONE day the phrase stops meaning
 # "clear what has gone stale" and starts meaning "clear what I heard this
 # morning", which is a different act. Refused with an honest line, no writes.
-REVIEW_EXPIRY_MIN_DAYS = 3
+# UNCONFEXP1 lowered it from 3: the ruled default window is 2 days, and a
+# floor sitting ABOVE the product's own default would refuse the product's
+# own policy at every scheduled fire.
+REVIEW_EXPIRY_MIN_DAYS = 1
 
 # How many rows the preview names PER GROUP before it starts counting. Per
 # group and not per pile, deliberately (§0-5): the whole point of the split is
@@ -3060,13 +3081,20 @@ REVIEW_EXPIRY_RECEIPT_TYPE = "pack_run"
 def run_review_expiry_job(workspace_root, *, apply: bool = False,
                           now_iso=None, fired_via: str = "scheduled",
                           batch_id=None) -> dict:
-    """REVSCHED1 §3-2 — the weekly drain, as a maintenance JOB.
+    """REVSCHED1 §3-2 — the scheduled drain, as a maintenance JOB.
 
-    §0-2 RULED: auto-run weekly. Plan internally, apply when the plan is
+    §0-2 RULED: auto-run. Plan internally, apply when the plan is
     non-empty, leave ONE receipt either way, and let the standing `undo` be
-    the safety. A weekly confirm nobody answers recreates the exact pathology
-    the measurement above records (3 of 224 answered), so the confirm is not
-    the design here — reversibility is.
+    the safety. A recurring confirm nobody answers recreates the exact
+    pathology the measurement above records (3 of 224 answered), so the
+    confirm is not the design here — reversibility is.
+
+    UNCONFEXP1 (M's 2026-08-30 ruling — see UNCONFIRMED_NAG_DAYS): the drain
+    now fires DAILY at the day's first maintenance slot with a 2-day default
+    window, so an unconfirmed extraction nags for its window and then lapses
+    the next morning — it no longer waits for a Sunday. The cadence lives on
+    the job's `nominal_cron` in `maintenance_dispatcher.MAINTENANCE_JOBS`;
+    nothing about the registered task or its prompt changed.
 
     WHY A JOB AND NOT A TASK, and this is the load-bearing part:
 
@@ -3561,6 +3589,7 @@ __all__ = [
     "ACCEPT_ACTION",
     "REVIEW_SOURCE_SKILL",
     "REVIEW_TIER_RESOLUTION",
+    "UNCONFIRMED_NAG_DAYS",
     "REVIEW_EXPIRY_DAYS",
     "REVIEW_EXPIRY_MIN_DAYS",
     "REVIEW_PREVIEW_ROWS",

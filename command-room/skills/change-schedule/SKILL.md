@@ -36,7 +36,7 @@ Background maintenance (runs quietly, no chat output):
                         weekly cleanup, weekly insights, deal signals,
                         identity reconcile, project lifecycle,
                         unconfirmed cleanup, silent work cleanup,
-                        monthly report
+                        memory coverage check, monthly report
                         — each runs when due)
 
 Available, not added yet:

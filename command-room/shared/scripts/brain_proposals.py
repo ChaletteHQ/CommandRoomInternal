@@ -78,6 +78,15 @@ if str(_HERE) not in sys.path:
 
 from entities_io import entities_collection  # noqa: E402
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 # The daily card renders at most this many items (D3). The weekly insights
 # widget keeps its own GLOBAL_PROPOSAL_CAP = 7 (unchanged — learning-loop
 # proposals ride the weekly widget, never this card).
@@ -950,10 +959,20 @@ _MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def _short_date(ts: str) -> str:
+def _short_date(ts: str, workspace_path=None) -> str:
     """"Jul 8" from an ISO ts — empty string when unparseable (a dated
-    evidence phrase NEVER invents a date, the deal-detector rule)."""
+    evidence phrase NEVER invents a date, the deal-detector rule).
+
+    TZDATE3 — when `workspace_path` is passed, the ISO ts is localized via
+    `tz.localize_date` FIRST (an evening-Pacific capture must not read as
+    tomorrow's UTC date), then reformatted. `workspace_path=None` (the
+    default) keeps the pre-TZDATE3 raw-UTC behavior for any caller that
+    hasn't been updated."""
     ts = str(ts or "")
+    if workspace_path and ts:
+        localized = _localize_date(ts, workspace_path)
+        if localized:
+            ts = localized
     if len(ts) >= 10 and ts[4] == "-" and ts[7] == "-":
         try:
             return f"{_MONTH_ABBR[int(ts[5:7])]} {int(ts[8:10])}"
@@ -1078,7 +1097,8 @@ def _possible_match_multi_consequence(count: int, name: str) -> str:
 
 def _person_render_line(p: dict, *,
                         consequence: str = _PERSON_NO_RECORD,
-                        org_names: Optional[dict] = None) -> str:
+                        org_names: Optional[dict] = None,
+                        workspace_path=None) -> str:
     """FS-17 — the enriched identity row: `{badge} · {source-ref-with-date} ·
     {snippet, when evidence exists} · {consequence}`, the same shape the deal
     rows carry. Provenance-honest: the source noun comes from the proposal's
@@ -1114,7 +1134,7 @@ def _person_render_line(p: dict, *,
         noun = "a Slack message"
     else:
         noun = "a captured note"
-    date = _short_date(p.get("captured_ts"))
+    date = _short_date(p.get("captured_ts"), workspace_path)
     evid = f"surfaced in {noun}" + (f" on {date}" if date else "")
     snippet = _evidence_snippet(p.get("evidence"))
     if snippet:
@@ -1149,7 +1169,8 @@ def _person_row_title(p: dict, person_names: Optional[dict] = None) -> str:
 
 def _cluster_render_line(cluster: dict, *,
                          consequence: str = _PERSON_NO_RECORD,
-                         org_names: Optional[dict] = None) -> str:
+                         org_names: Optional[dict] = None,
+                         workspace_path=None) -> str:
     """D3 — the identity-clustered row's evidence line: the FS-17 enriched
     shape for a single mention, prefixed "seen N× — " with the newest
     source phrases when the cluster merged multiple proposals. Provenance-
@@ -1168,9 +1189,11 @@ def _cluster_render_line(cluster: dict, *,
     best["inferred_org"] = cluster.get("inferred_org")
     if len(rows) <= 1:
         return _person_render_line(best, consequence=consequence,
-                                   org_names=org_names)
+                                   org_names=org_names,
+                                   workspace_path=workspace_path)
     base = _person_render_line(best, consequence=consequence,
-                               org_names=org_names)
+                               org_names=org_names,
+                               workspace_path=workspace_path)
     # base = "{badge} · surfaced in {noun}[ on {date}][ · {snippet}] ·
     # {consequence}" — swap the source segment for the multi-mention phrase;
     # the snippet (recomputed, never index-parsed) rides after it (D-B2).
@@ -1178,7 +1201,8 @@ def _cluster_render_line(cluster: dict, *,
     seen = []
     for r in rows[:3]:  # newest-first, capped (T2.2 density)
         src = _person_render_line({**r, "name": cluster.get("name")},
-                                  org_names=org_names)
+                                  org_names=org_names,
+                                  workspace_path=workspace_path)
         mid = src.split(" · ")[1] if src.count(" · ") >= 2 else ""
         mid = mid.replace("surfaced in ", "")
         if mid and mid not in seen:
@@ -1577,7 +1601,8 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "action_tuples": _person_actions_with_candidates(cands),
             "render_line": _cluster_render_line(cluster,
                                                 consequence=consequence,
-                                                org_names=org_names),
+                                                org_names=org_names,
+                                                workspace_path=workspace_root),
             "opened_at": min((r.get("captured_ts") or "")
                              for r in cluster["rows"]) if cluster["rows"]
                          else "",
@@ -1633,7 +1658,8 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
             "fingerprint": f"person:{p.get('seq')}",
             "evidence": evidence,
             "action_tuples": list(_PERSON_ROW_ACTIONS),
-            "render_line": _person_render_line(p, org_names=org_names),
+            "render_line": _person_render_line(p, org_names=org_names,
+                                               workspace_path=workspace_root),
             "opened_at": p.get("captured_ts") or "",
             "expires_at": "",
             "detector": "confirm-flow",

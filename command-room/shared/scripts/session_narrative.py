@@ -41,6 +41,29 @@ EXISTING `SESSION_NOTES*.md` inside the resolved project folder only. No
 file, no folder, no thread resolvable → nothing is written except (on a real
 compose) the marker event; a session with nowhere to land its narrative is a
 silent, receipted no-op, exactly like an empty sweep window.
+
+STRUCTURAL QUARANTINE (SPEC SESSQUAR1, 2026-08-28).
+----------------------------------------------------
+A SWEPT compose never lands inline in `SESSION_NOTES*.md`. It lands in a
+SIDECAR next to the notes file — `SESSION_NOTES[_NAME].swept.md`, same
+folder — created only when the main notes file already exists (the §0.4
+never-create rule extends to the sidecar: no notes file, no sidecar). The
+point is structural, not advisory: client-facing composing surfaces
+(call-prep, one-pager-composer, boardroom, morning-briefing) load the
+SESSION_NOTES file at fire time with no origin awareness, so unconfirmed
+machine-composed narrative must not be IN that file at all. Owner surfaces
+("go", briefs) may still read the sidecar — it sits right next to the notes
+file.
+
+A confirming human touch promotes: `promote_swept(notes_path)` moves the
+sidecar's entries inline (headings re-marked `origin: swept, confirmed`)
+and removes the sidecar. It is invoked automatically from
+`mark_composed(origin="ritual", ...)` — the call workspace-manager's
+"end session" reconcile step (Step 2) already makes — so the end-session
+ritual IS the confirming touch, with no new wiring on the skill side.
+A RITUAL compose (`origin="ritual"`) still writes inline directly: it is
+human-driven by definition. The sweep's own marker (`origin="swept"`)
+never promotes — self-confirmation would defeat the quarantine.
 """
 from __future__ import annotations
 
@@ -66,6 +89,18 @@ ORIGIN_RITUAL = "ritual"
 _VALID_ORIGINS = frozenset({ORIGIN_SWEPT, ORIGIN_RITUAL})
 
 _MARKER_KIND = "session_narrative"
+
+# SESSQUAR1 — the sidecar's filename suffix and the promoted-heading marker.
+_SWEPT_SUFFIX = ".swept.md"
+_CONFIRMED_SUFFIX = ", confirmed"
+
+# SWEEPSTALE1 (review N-1) — where promote_swept PRESERVES sidecar content it
+# cannot parse as entries, instead of destroying it on unlink:
+# `SESSION_NOTES.swept.md` -> `SESSION_NOTES.swept.rejected.md`. The name
+# keeps the `.swept.` infix so every notes-file fence (resolve_notes_path
+# here, cleanup_actions._iter_session_notes) still excludes it from being
+# adopted or rolled over as a live notes file.
+_REJECTED_SUFFIX = ".swept.rejected.md"
 
 # H2 heading line: any level-2 markdown heading. Used only to find the FIRST
 # existing dated entry so a new block can be inserted before it (the
@@ -134,7 +169,33 @@ def mark_composed(
     if thread_id:
         event["primary_thread_id"] = thread_id
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    return append_event(events_path, event, holder=source_skill)
+    receipts = append_event(events_path, event, holder=source_skill)
+    if origin == ORIGIN_RITUAL:
+        # SESSQUAR1 confirming touch. `origin="ritual"` means a human ran the
+        # "end session" ritual over this project (workspace-manager Step 2
+        # calls this exact function after its hand-written append) — that IS
+        # the confirmation, so any swept blocks quarantined in the sidecar
+        # promote inline now. Origin-gated on purpose: the sweep's own
+        # `origin="swept"` marker (written via compose_and_append) must never
+        # promote — a nightly job confirming its own output would defeat the
+        # quarantine. Best-effort: a promote failure never voids the marker
+        # append that already landed.
+        try:
+            notes = resolve_notes_path(workspace_root, thread_id)
+            if notes is not None:
+                promote_swept(notes)
+        except Exception:
+            pass
+    return receipts
+
+
+def sidecar_path(notes_path) -> Path:
+    """The swept-narrative sidecar for a notes file (SESSQUAR1):
+    `SESSION_NOTES.md` -> `SESSION_NOTES.swept.md`,
+    `SESSION_NOTES_Pat.md` -> `SESSION_NOTES_Pat.swept.md` — same folder.
+    Derivation only; never touches disk."""
+    p = Path(notes_path)
+    return p.with_name(p.stem + _SWEPT_SUFFIX)
 
 
 def _load_entities(workspace_root) -> dict:
@@ -188,6 +249,12 @@ def resolve_notes_path(workspace_root, thread_id: Optional[str]) -> Optional[Pat
     for p in sorted(folder.glob("SESSION_NOTES*.md")):
         name = p.name.upper()
         if "_ARCHIVE" in name or name.endswith("_INDEX.MD") or "TEMPLATE" in name:
+            continue
+        # SESSQUAR1: the swept sidecar matches the SESSION_NOTES*.md glob but
+        # is never THE notes file — resolving it as one would let the sweep
+        # append inline to its own quarantine. Infix check (not endswith) so
+        # the SWEEPSTALE1 `.swept.rejected.md` preserve file is fenced too.
+        if ".SWEPT." in name:
             continue
         if p.is_file():
             candidates.append(p)
@@ -266,6 +333,194 @@ def _insert_entry(existing_text: str, block_text: str) -> str:
     return prefix + new_block + suffix
 
 
+def _split_swept_blocks(text: str) -> List[str]:
+    """The sidecar's H2 entries, in file order, each normalized to end with a
+    single newline. Anything before the first H2 (there should be nothing) is
+    ignored — the sidecar is entries-only by construction."""
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, ln in enumerate(lines) if _H2_LINE_RE.match(ln)]
+    blocks: List[str] = []
+    for j, s in enumerate(starts):
+        end = starts[j + 1] if j + 1 < len(starts) else len(lines)
+        block = "".join(lines[s:end]).rstrip("\n")
+        if block:
+            blocks.append(block + "\n")
+    return blocks
+
+
+def _confirm_heading(block: str) -> str:
+    """Re-mark one swept block's heading as human-confirmed:
+    `## 2026-06-15 — origin: swept` -> `## 2026-06-15 — origin: swept, confirmed`.
+    A heading without the swept marker (defensive) passes through unchanged."""
+    lines = block.splitlines(keepends=True)
+    if not lines:
+        return block
+    head = lines[0].rstrip("\n")
+    if head.endswith(f"origin: {ORIGIN_SWEPT}"):
+        head += _CONFIRMED_SUFFIX
+    return head + "\n" + "".join(lines[1:])
+
+
+# SWEEPSTALE1 — heading date for staleness disclosure: the leading ISO date of
+# a sidecar entry heading (`## 2026-06-15 — origin: swept`). Mirrors the
+# date-prefix contract compose_block already writes (and cleanup_actions'
+# `_entry_date` reads) — structure only, never entry text.
+_H2_DATE_RE = re.compile(r"^##[ \t]+(\d{4}-\d{2}-\d{2})")
+
+# SWEEPSTALE1 — directory fence for the workspace-wide sidecar walk, matching
+# cleanup_actions._iter_session_notes' posture exactly (dot-directories,
+# the `_archive/` root, any folder whose name says archive/backup): a sidecar
+# that was archived is history, not pending work.
+_SKIP_DIR_RE = re.compile(r"archive|backup", re.I)
+_ARCHIVE_ROOT = "_archive"
+
+
+def pending_swept(workspace_root) -> List[Dict[str, Any]]:
+    """SWEEPSTALE1 — the silent-accumulation disclosure: every live swept
+    sidecar still awaiting its confirming touch, so a maintenance surface can
+    say "N swept blocks pending in <project>, oldest <date>" instead of a
+    sweep-only project hoarding an unpromoted sidecar forever, silently
+    (SESSQUAR1 review, reviewer-concurred default #3).
+
+    READ-ONLY by contract: walks and reads, never creates, renames, or
+    unlinks anything — disclosure belongs to promote_swept/the ritual, not
+    the counter.
+
+    Discovery runs the SAME fencing posture this module (resolve_notes_path)
+    and cleanup_actions._iter_session_notes already apply: skip anything
+    under a dot-directory, the `_archive/` root, or an archive/backup-named
+    folder; skip archived/index/template-named files. A sidecar whose main
+    notes file has since vanished is still counted — an orphaned quarantine
+    is the WORST silent-accumulation case (promote's §0.4 fence can never
+    reach it).
+
+    Returns one dict per pending sidecar, sorted by sidecar path:
+      {notes_path, sidecar_path, n_blocks, oldest_date}
+    Paths are workspace-relative, forward-slash (same adjudication as
+    compose_and_append's notes_path). `n_blocks` counts parseable H2 entries
+    (0 for a malformed-but-present sidecar — still disclosed: it exists, so
+    it is pending); `oldest_date` is the earliest entry-heading ISO date, or
+    None when no heading carries one. Empty list when nothing is pending —
+    the caller renders NO line in that case (COVERQUIET1 posture: disclose
+    only when there is something to disclose)."""
+    root = Path(workspace_root)
+    out: List[Dict[str, Any]] = []
+    for p in sorted(root.rglob(f"SESSION_NOTES*{_SWEPT_SUFFIX}")):
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        parts = rel.parts[:-1]
+        if any(part.startswith(".") or part == _ARCHIVE_ROOT
+               or _SKIP_DIR_RE.search(part) for part in parts):
+            continue
+        name = p.name.upper()
+        if "_ARCHIVE" in name or name.endswith("_INDEX.MD") or "TEMPLATE" in name:
+            continue
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Unreadable ≠ absent: disclose it (n_blocks 0), never touch it.
+            text = ""
+        blocks = _split_swept_blocks(text)
+        dates = sorted(
+            m.group(1)
+            for b in blocks
+            for m in [_H2_DATE_RE.match(b)]
+            if m
+        )
+        # The main notes file this sidecar quarantines for (inverse of
+        # sidecar_path). Derivation only — reported even when it no longer
+        # exists on disk, so the caller can name the orphan case.
+        notes = p.with_name(p.name[: -len(_SWEPT_SUFFIX)] + ".md")
+        out.append({
+            "notes_path": str(notes.relative_to(root)).replace("\\", "/"),
+            "sidecar_path": str(rel).replace("\\", "/"),
+            "n_blocks": len(blocks),
+            "oldest_date": dates[0] if dates else None,
+        })
+    return out
+
+
+def promote_swept(notes_path) -> Dict[str, Any]:
+    """SESSQUAR1's confirming touch: move every entry quarantined in the
+    sidecar inline into the notes file (most-recent-first position, headings
+    re-marked `origin: swept, confirmed`), then remove the sidecar.
+
+    Fences, same posture as compose_and_append:
+      - notes file missing -> no-op, never creates one (Ruling §0.4);
+      - no sidecar -> no-op (nothing pending);
+      - a block already present verbatim in the notes file is skipped, so a
+        crash between the notes write and the sidecar unlink cannot duplicate
+        entries on the next promote.
+
+    SWEEPSTALE1 (SESSQUAR1 review N-1): content the entry parser cannot claim
+    — anything before the first H2 heading, or a whole sidecar with no H2 at
+    all — is PRESERVED to `SESSION_NOTES*.swept.rejected.md` (same folder)
+    before the sidecar is removed, never silently destroyed. Appended, never
+    overwritten, with a verbatim-dedup skip so the crash-window replay (write
+    landed, unlink did not) cannot duplicate the residue either. This does
+    not collide with the entry crash-window semantics above: a machine-
+    written sidecar is entries-only by construction, so residue only ever
+    exists after a human edited the quarantine file directly.
+
+    Returns {"promoted": int, "reason": str|None, "notes_path": str|None,
+    "rejected_path": str|None} (return value only — never event data, same
+    adjudication as compose_and_append's notes_path)."""
+    notes_path = Path(notes_path)
+    if not notes_path.is_file():
+        return {"promoted": 0, "reason": "no_notes_file", "notes_path": None,
+                "rejected_path": None}
+    sidecar = sidecar_path(notes_path)
+    if not sidecar.is_file():
+        return {"promoted": 0, "reason": "no_sidecar", "notes_path": None,
+                "rejected_path": None}
+
+    try:
+        from atomic_write import atomic_write_text
+    except ImportError:
+        sys.path.insert(0, str(_HERE))
+        from atomic_write import atomic_write_text
+
+    notes_text = notes_path.read_text(encoding="utf-8")
+    sidecar_text = sidecar.read_text(encoding="utf-8")
+    pending = []
+    for block in _split_swept_blocks(sidecar_text):
+        confirmed = _confirm_heading(block)
+        if confirmed not in notes_text:
+            pending.append(confirmed)
+
+    # N-1 residue: everything before the first H2 (the whole file when there
+    # is no H2). _split_swept_blocks claims first-H2-to-EOF, so this is the
+    # only content it can drop.
+    residue_end = len(sidecar_text)
+    for m in re.finditer(r"(?m)^##[ \t]+\S", sidecar_text):
+        residue_end = m.start()
+        break
+    residue = sidecar_text[:residue_end]
+    rejected_path = None
+    if residue.strip():
+        rejected = sidecar.with_name(
+            sidecar.name[: -len(_SWEPT_SUFFIX)] + _REJECTED_SUFFIX
+        )
+        prior = rejected.read_text(encoding="utf-8") if rejected.is_file() else ""
+        if residue not in prior:  # crash-window replay: preserve once
+            joined = (prior.rstrip("\n") + "\n\n" if prior.strip() else "") + residue
+            atomic_write_text(rejected, joined, create_parents=False)
+        rejected_path = str(rejected)
+
+    if pending:
+        combined = "\n".join(pending)
+        atomic_write_text(notes_path, _insert_entry(notes_text, combined),
+                          create_parents=False)
+    sidecar.unlink()
+    reason = "unparseable_sidecar" if (rejected_path and not pending) else None
+    return {"promoted": len(pending), "reason": reason,
+            "notes_path": str(notes_path), "rejected_path": rejected_path}
+
+
 def compose_and_append(
     workspace_root,
     *,
@@ -285,6 +540,12 @@ def compose_and_append(
     file — the receipt's `n_narratives_composed` counts this field, not
     "a session got as far as this function" (Acceptance fixture parity:
     "notes file appended in-format, receipt n=1").
+
+    SESSQUAR1: a swept compose (`origin="swept"`) writes to the SIDECAR
+    (`sidecar_path(notes)`), never inline — `notes_path` in the return names
+    the file actually written. The main notes file must still exist for the
+    sidecar to be created (§0.4 extends to the sidecar); a ritual compose
+    writes inline as before.
     """
     if already_composed(workspace_root, session_id):
         return {"composed": False, "reason": "already_composed", "notes_path": None}
@@ -312,14 +573,18 @@ def compose_and_append(
         sys.path.insert(0, str(_HERE))
         from atomic_write import atomic_write_text
 
-    existing = notes_path.read_text(encoding="utf-8")
+    # SESSQUAR1 routing: swept narrative is quarantined in the sidecar next
+    # to the notes file (created iff the notes file exists — resolve_notes_path
+    # just proved it does); only a human-driven ritual compose writes inline.
+    target = notes_path if origin == ORIGIN_RITUAL else sidecar_path(notes_path)
+    existing = target.read_text(encoding="utf-8") if target.is_file() else ""
     new_text = _insert_entry(existing, block)
     # create_parents=False (FOLDERGUARD): this is the CEO's project folder,
     # never ours to fabricate — and it already exists, since notes_path came
     # from resolve_notes_path finding a real file inside it.
-    atomic_write_text(notes_path, new_text, create_parents=False)
+    atomic_write_text(target, new_text, create_parents=False)
 
-    rel_path = str(notes_path.relative_to(Path(workspace_root))).replace("\\", "/")
+    rel_path = str(target.relative_to(Path(workspace_root))).replace("\\", "/")
     mark_composed(
         workspace_root,
         session_id,
@@ -337,6 +602,9 @@ __all__ = [
     "already_composed",
     "mark_composed",
     "resolve_notes_path",
+    "sidecar_path",
     "compose_block",
     "compose_and_append",
+    "promote_swept",
+    "pending_swept",
 ]

@@ -34,4 +34,18 @@ preserved at events_quarantine_*.jsonl.
 
 Anything destructive (delete, overwrite without backup) MUST stay instruct_user
 so the customer explicitly consents to the operation.
+
+Second contract — apply_workspace_migration (MIGRATE2, 2026-09-02; DORMANT
+until a manifest item names it). For migrations that touch files the customer
+READS (today: migrate_seed_anchors.run_bridge_migration). Signature:
+
+    def fn(workspace_root, *, apply: bool, answers: dict | None = None) -> dict
+
+returning status (planned | needs_answer | blocked | noop | applied | error),
+ran, counts{planned, seeded, refused, blocking}, blocking_rows, question,
+next_line, undo_command, error. `apply=False` is a pure read. The function
+enforces its own question gate on apply=True. Driven by
+shared/scripts/bridge_migration_runner.py under the bridge's safety posture
+(decoy-root refusal, refuse-all on ambiguity, dry-run first, blocking rows
+disclosed not seeded). Contract prose: references/RELEASE_MANIFEST.md.
 """

@@ -1,0 +1,13 @@
+{
+  "version": "5.25.0",
+  "headline": "Your morning brief now reads the same trust-gated project memory as everything else, past records can be filed to their project with one tap, and decisions that were carried out finally leave the active list.",
+  "items": [
+    {
+      "id": "v5250_announce_brief_and_bindings",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Three things you will notice. (1) The morning brief's per-project lines draw on the same canonical, trust-gated read of each project's history that preps, project loads and drafts already use — steadier one-liners, nothing to do. (2) Say 'review project bindings' when you have a minute: it shows past notes and captures that name a project they were never filed under, one tap each — Bind or Not this project — with a single undo for the batch. Nothing is filed automatically. (3) Decisions your record shows were carried out now sit in a Resolved bucket instead of lingering as active; nothing is deleted and the history stays. Also: the cards in your people directory no longer show an internal id next to each name.",
+      "action": "announce_only"
+    }
+  ]
+}

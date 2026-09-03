@@ -235,6 +235,7 @@
         "prep_brief_thread_backfilled",
         "prep_brief_thread_backfill_undone",
         "prep_brief_backfill_run",
+        "binding_backfill_run",
         "maintenance_run",
         "lifecycle_run",
         "path_repair",

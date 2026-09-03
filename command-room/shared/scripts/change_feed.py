@@ -92,10 +92,22 @@ def changes_since(
         "facts_noted": 0,
         "cleanup_runs": 0, "maintenance_jobs": 0,
         "proposals_resolved": 0, "proposals_declined": 0,
-        "proposals_expired": 0, "changes_undone": 0,
+        "proposals_expired": 0, "unconfirmed_expired": 0,
+        "changes_undone": 0,
         "new_proposals": 0,
     }
     refs: dict[str, list] = {k: [] for k in counts}
+
+    # UNCONFEXP1 — the auto-expiry's disclosure is narrated from the WRITTEN
+    # closures themselves (the PID1 receipt-honesty rule: the event IS the
+    # receipt), keyed on the canonical reason vocabulary rather than a
+    # hand-spelled string, so a human's Drop, a `done`, and every other
+    # closure stay out of this count by construction.
+    try:
+        from event_types import RESOLUTION_REASON_KEY as _RRK
+        from event_types import REVIEW_EXPIRY_REASON as _RER
+    except Exception:  # pragma: no cover — vocabulary home unreadable
+        _RRK, _RER = "resolution_reason", "review_expired"
 
     for ev in _load_events(workspace_root):
         if not _in_window(ev):
@@ -188,6 +200,17 @@ def changes_since(
         elif etype == "brain_change_undone":
             counts["changes_undone"] += 1
             refs["changes_undone"].append(seq)
+        elif etype == "commitment_resolved":
+            # UNCONFEXP1 — one counted line for the unconfirmed-pile expiry
+            # (COVERQUIET1 posture: speaks only when N>0, and the standing
+            # `undo` rides in the sentence because the batch is one gesture
+            # away). Counts every closure stamped with the canonical lapse
+            # reason — the scheduled daily drain and a hand-typed `review
+            # amnesty` write the identical event, and they are the same fact
+            # to the reader: captures lapsed unanswered.
+            if (str(data.get(_RRK) or "").strip().lower() == _RER):
+                counts["unconfirmed_expired"] += 1
+                refs["unconfirmed_expired"].append(seq)
 
     lines: List[dict] = []
 
@@ -248,6 +271,16 @@ def changes_since(
     if n:
         _line("changes_undone",
               f"Undid {n} {_plural(n, 'change')} you reversed.")
+    n = counts["unconfirmed_expired"]
+    if n:
+        # UNCONFEXP1 — the quiet line, only when something actually lapsed
+        # (never filler), with the recovery affordance in the same sentence:
+        # the whole batch reopens on one `undo`, back into the queue exactly
+        # as it left.
+        _line("unconfirmed_expired",
+              f"Closed {n} stale unconfirmed "
+              f"{_plural(n, 'extraction')} nobody answered — say `undo` "
+              f"to put {'it' if n == 1 else 'them'} back.")
     n = counts["proposals_expired"]
     if n:
         _line("proposals_expired",

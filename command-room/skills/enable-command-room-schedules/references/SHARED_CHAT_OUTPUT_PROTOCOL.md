@@ -1,5 +1,19 @@
 # Shared Chat-Output Protocol (v2.10.6+ · v3.13.0+ empty-state contract)
 
+## Persona precedence (STYLE1 D6 — applies to every scheduled orchestrator)
+
+The workspace CLAUDE.md every scheduled chat loads may carry the per-client
+persona block (`## How {brain_name} talks to …`, rendered from
+`_hq/data/skill_config/chat_persona.json` by `render_claude_md.py`). When it
+is present, it OUTRANKS any tone or opening prescription in an orchestrator
+body — including any "intro line" or greeting shape an orchestrator names. A
+persona that says skip pleasantries, or whose Never-line forbids greeting
+openers, means the fire opens with substance and manufactures no salutation.
+The persona adjusts chat framing TONE only (STYLE1 D5): output contracts,
+widgets, receipts, leak scans, and `— {brain_name}` signatures are untouched.
+An absent persona block = the product voice, exactly as each orchestrator
+prescribes it.
+
 ## Empty-state contract (v3.13.0+ — applies to every scheduled orchestrator)
 
 Per M's 2026-05-20 feedback #26: when a scheduled task fires and surfaces zero items, the chat output must NOT be a one-line "nothing today" dead-end. Three things every empty-state surface must do:

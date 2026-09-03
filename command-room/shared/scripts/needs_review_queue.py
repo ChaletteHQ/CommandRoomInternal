@@ -72,6 +72,15 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 NO_COUNTERPARTY = "(no counterparty)"
 SOURCE_SKILL = "needs-your-call"
 DROP_EVIDENCE = "dropped from needs-your-call queue"
@@ -319,8 +328,13 @@ def _ref_keys(ref) -> set:
     return _norm_ref_keys(ref)
 
 
-def _pretty_date(value) -> str:
-    s = str(value or "").strip()[:10]
+def _pretty_date(value, workspace_path=None) -> str:
+    """"Aug 3" from an ISO ts. TZDATE3 — localizes via `tz.localize_date`
+    first when `workspace_path` is passed, so an evening-local meeting
+    doesn't read as tomorrow's UTC date; `workspace_path=None` (the
+    default) keeps the pre-TZDATE3 raw-UTC-slice behavior."""
+    raw = str(value or "").strip()
+    s = _localize_date(raw, workspace_path)[:10] if workspace_path and raw else raw[:10]
     try:
         y, m, d = int(s[0:4]), int(s[5:7]), int(s[8:10])
         return f"{_MONTHS[m - 1]} {d}"
@@ -351,7 +365,7 @@ def _meeting_index(ws: Path) -> dict:
             if not keys:
                 continue
             title = str(d.get("title") or "").strip()
-            date = _pretty_date(d.get("meeting_date") or ev.get("ts"))
+            date = _pretty_date(d.get("meeting_date") or ev.get("ts"), ws)
             for k in keys:
                 slot = index.setdefault(k, {"title": "", "date": ""})
                 # A `meeting` event carries the real title; `meeting_processed`
@@ -365,7 +379,7 @@ def _meeting_index(ws: Path) -> dict:
     return index
 
 
-def _meeting_group(ev: dict, index: dict) -> tuple:
+def _meeting_group(ev: dict, index: dict, workspace_path=None) -> tuple:
     """(group_key, display_label, sort_date) for one queue row.
 
     A row is FROM A MEETING when its source ref resolves in the meeting index
@@ -387,7 +401,7 @@ def _meeting_group(ev: dict, index: dict) -> tuple:
         return (NOT_FROM_A_MEETING, NOT_FROM_A_MEETING, "")
 
     row_date = _pretty_date(_commitment_field(ev, "meeting_date")
-                            or ev.get("ts"))
+                            or ev.get("ts"), workspace_path)
     title = (hit or {}).get("title") or ""
     date = (hit or {}).get("date") or row_date
     key = sorted(keys)[0] if keys else NOT_FROM_A_MEETING
@@ -572,7 +586,7 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
     info_noun = "item" if info == 1 else "items"
 
     if scope == SCOPE_WOULD_HOLD:
-        header = would_hold_header(total, week_span_phrase(items),
+        header = would_hold_header(total, week_span_phrase(items, ws),
                                    n_lines=info if clusters else None)
     elif by_meeting:
         if clusters:
@@ -662,7 +676,7 @@ def _bucket_and_order(events, *, by_meeting: bool, people: dict, index: dict,
     dates: dict[str, str] = {}
     for ev in events:
         if by_meeting:
-            key, label, date = _meeting_group(ev, index)
+            key, label, date = _meeting_group(ev, index, ws)
             labels.setdefault(key, label)
             if date and not dates.get(key):
                 dates[key] = date
@@ -878,16 +892,24 @@ def would_hold_header(total: int, window: str = "", *,
     return f"{head} {window}" if window else head
 
 
-def week_span_phrase(events) -> str:
+def week_span_phrase(events, workspace_path=None) -> str:
     """"From the weeks of Aug 3, Aug 10 and Aug 17." — or "".
 
     The window is DERIVED from the rows in hand rather than imposed on them:
     a review of what would be hidden that silently drops part of what would be
     hidden is the one thing this surface must not do. Weeks are ISO weeks
-    named by their Monday, oldest first."""
+    named by their Monday, oldest first.
+
+    TZDATE3 — each row's ts localizes via `tz.localize_date` first when
+    `workspace_path` is passed, so a late-evening-local capture is grouped
+    (and named) under its local ISO week rather than the next UTC day's.
+    `workspace_path=None` (the default) keeps the pre-TZDATE3 raw-UTC-slice
+    behavior."""
     mondays = set()
     for ev in events or []:
-        ts = str((ev or {}).get("ts") or "")[:10]
+        raw = str((ev or {}).get("ts") or "")
+        ts = (_localize_date(raw, workspace_path)[:10]
+              if workspace_path and raw else raw[:10])
         try:
             day = _dt.date.fromisoformat(ts)
         except Exception:
@@ -1851,7 +1873,9 @@ def done_items(workspace_root, ids, *, resolved_by: str,
             "file, say so instead of closing the item.")
     pending = _pending_by_id(workspace_root)
     named = {str(x) for x in (attested_ids or ())}
-    evidence = f"{DONE_ATTESTATION} ({source_skill}, {str(now_iso)[:10]})"
+    # TZDATE3 — localized via `tz.localize_date` so an attestation made
+    # late-evening-local doesn't stamp tomorrow's UTC date into the record.
+    evidence = f"{DONE_ATTESTATION} ({source_skill}, {_localize_date(str(now_iso), workspace_root)})"
     stamp = {
         "completion_basis": COMPLETION_BASIS_ATTESTATION,
         "attested_at": now_iso,

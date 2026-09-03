@@ -83,12 +83,15 @@ from cru_match import (  # noqa: E402
 # aggregators in the 2026-07-01 audit (104 vs 54 vs 105).
 from commitment_state import count_commitments  # noqa: E402
 
-# Optional tz localization for activity dates. Fall back to ts[:10] if missing.
+# Date localization is canonical in tz.localize_date (TZDATE2 — the TZDATE1
+# helper hoisted; this module's local copy is deleted). Every call site MUST
+# pass workspace_path. UTC-slice stub only when tz.py itself is missing,
+# matching the old _HAS_TZ=False behavior exactly.
 try:
-    from tz import to_local  # noqa: E402
-    _HAS_TZ = True
+    from tz import localize_date as _localize_date  # noqa: E402
 except ImportError:
-    _HAS_TZ = False
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
 
 CONFIDENCE_FLOOR = 0.40
 
@@ -130,24 +133,6 @@ def _load_collections(p: Path) -> dict:
     except (json.JSONDecodeError, OSError):
         return {}
     return data.get("entities") if isinstance(data.get("entities"), dict) else data
-
-
-def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
-    """ISO timestamp → workspace-local date string. Date-only inputs pass
-    through unchanged. Falls back to ts[:10] if tz localization is unavailable.
-    Mirrors render_decision_log._localize_date."""
-    if not isinstance(ts, str) or not ts:
-        return ""
-    if len(ts) == 10 and ts.count("-") == 2:
-        return ts
-    if _HAS_TZ and workspace_path:
-        try:
-            local_dt = to_local(ts, workspace_path=workspace_path)
-            if local_dt:
-                return local_dt.strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return ts[:10]
 
 
 def _name_index(view: dict) -> dict[str, str]:
@@ -416,7 +401,11 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
             org = org_by_id.get(_thread_org_id(t) or "")
             body.append(
                 f"| {name_idx.get(t.get('id', ''), t.get('display_name') or '—')} "
-                f"| {(org or {}).get('canonical_name') or '—'} | {(t.get('archived_at') or '—')[:10]} "
+                # TZDATE1: localized like every other date in this view — a raw
+                # [:10] here stamped the UTC date (evening-Pacific archives
+                # dated a day late).
+                f"| {(org or {}).get('canonical_name') or '—'} "
+                f"| {_localize_date(t.get('archived_at') or '', ws_str) or '—'} "
                 f"| {t.get('archive_reason') or '—'} |"
             )
         body.append("")
@@ -459,9 +448,12 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
         body.append("")
     if provisional:
         body += [
-            f"> _{provisional} open commitment(s) are on events with "
-            f"classification_confidence < 0.40 or pending review — not shown above. "
-            f"Run `insight-generator` to review._", "",
+            # JARGONVIEWS1: this footnote used to name the raw schema field
+            # (`classification_confidence < 0.40`) in a view the customer
+            # reads. Same threshold, same exclusion — said in English.
+            f"> _{provisional} open commitment(s) came through with low "
+            f"confidence or are still pending review — not shown above. "
+            f"Say `weekly insights` to review them._", "",
         ]
     if needs_review:
         # INTAKE — the excluded queue, named once. Not a commitment count.

@@ -1,5 +1,103 @@
 # Command Room — Changelog
 
+## v5.25.0 — 2026-09-02 — The brief reads memory, bindings get a one-tap review, carried-out decisions retire, and the gauge calibrates itself per workspace
+
+**Six reviewed builds via `train-v525` (full battery green after every merge; zero integration breaks).** Closes the memory/routing program's planned build list: every planned surface reads the canonical reader, the propose-confirm backfill has its widget lane, and the client-migration bridge action exists — dormant — for the day the operator says go.
+
+### What shipped
+
+- **ADOPT4** — the morning brief's per-project lines adopt the canonical reader through a new additive `brief-line` profile (the tightest budgets in the table; swept narrative excluded; cross-thread expansion off). One call per rendered line, scoped to the freshness-overlay leg only; frozen profile rows byte-untouched; no schedule re-registration (the orchestrator body is read at fire time).
+- **BACKFILL2** — the binding backfill's widget lane: `needs-your-call` gains a project-binding review (`review project bindings` / `backfill bindings` / `which project does this belong to`) rendered through `widget_transport.render_and_persist`, one tap Bind / Not this project, applied through the standing apply-choices rail into the R3 engine as one undoable `bkf_` batch. Engine untouched; no auto-apply path exists (mutation-proofed).
+- **DECSHAPES1** — decision self-status and `decision_resolved` fold into one shared vocabulary under latest-signal-wins: a closing signal is a signal, never a verdict (a later reaffirm out-ranks it); the newest closing signal's kind names the bucket. A new Resolved bucket appears in the decision log; the reader now filters every closed status, not just `superseded`. On the operator's record, 204 of 963 decisions leave "active".
+- **GAUGECAL1** — the binding gauge derives its generic terms per workspace from the workspace's own entities register (self-org, primary user's org, aliases) instead of carrying the vendor's brand as a literal — a client whose brand aliases exactly one thread is no longer penalized. READY thresholds (20 / 0.75, unchanged) become `binding_gauge` skill_config knobs; bad values fall back to defaults, never looser. Operator parity exact.
+- **PEOPLEID1** — PEOPLE.md person-card ids move from a visible parenthetical into an HTML comment; exact-match heading lookup accepts both shapes; the JARGONVIEWS1 F5 allowlist entry is retired so the guard goes red on regression. No migration — `regenerate()` rewrites the view on its next run.
+- **MIGRATE2 (dormant)** — the anchor-seeding migration graduates to an `apply_workspace_migration` release-bridge action with the full safety posture (decoy-root refusal, dry-run-then-apply, blocking rows disclosed with zero seeds, receipts + fsynced journal, undo stated) and a one-time per-client candor question when `brain_candor` is unset. **No release manifest references the action** — pinned by test. Activation is a future manifest item on the operator's explicit go.
+
+### Release manifest
+
+One `announce_only`: the brief reads project memory, `review project bindings` is available, carried-out decisions sit in Resolved, PEOPLE.md ids are hidden. Nothing to do.
+
+### Verification
+
+Six independent second-eyes reviews (`handoffs/REVIEW_NIGHT5_BATCH_2026-09-02.md`): ancestry, scope fences, org-name sweeps (0 hits across ~7,500 added lines), suites re-run from clean `git archive` extractions, dormancy and engine-untouched claims independently verified, blind routing read on the one frontmatter change. Serial integration on `train-v525` with a full battery after every merge. Also on file: `handoffs/SPEC_AUTOTHREAD1_draft_2026-09-02.md` — the automatic project-creation spec, awaiting rulings (not a build).
+
+## v5.24.0 — 2026-09-02 — Every planned surface reads memory, the memory writes like a chief of staff, and the pre-fleet gate ships
+
+**Six reviewed builds via `train-v524` (full battery green after every merge; three cross-build integration fixes caught by the train's own gates and the hardened privacy hook).**
+
+### What shipped
+
+- **ADOPT2 + ADOPT3** — email-writer and the workspace catch-all lane adopt the canonical reader, completing every planned R1 adoption. Drafts now draw trust-gated, swept-excluded, supersession-folded project context; loose "pull up X" asks get the same steadiness. The adoption ratchet supports multi-profile skills.
+- **RENDER2** — the anchor render moves from list-echo to synthesis: "Where things stand" reads as narrative state, "What's owed" is a direction-split ledger with ages, sections deduplicate, budgets cap with honest overflow counts. `logic_v` 2 re-renders every existing anchor automatically on next `go`.
+- **FIXANCHOR1** — the standing pre-fleet skill-safety gate: 121 checks driving 11 notes/brain-touching surfaces against tool-generated migrated fixtures (both seeded and rendered states), with marker round-trips after every operation. Green here is a necessary condition for any client migration fan-out; it proves code paths, not LLM prose behavior (that stays attended-tier).
+- **IDPOLISH1** — unresolved contacts render as "an unnamed contact (N events)" — a raw internal id never prints in chat (guard G47); scheduled-task watchdog display dates localize to the workspace timezone, with alarm logic proven immune to OS-vs-workspace tz divergence.
+- **FLAKEFIX2** — the date/second-boundary battery-flake family retired: both members root-caused to missing clock seams, fixed boundary-immune by construction, with midnight straddles now explicit tested cases. Both field incidents reproduce on demand against the old code and score 0/5 against the new.
+
+### Release manifest
+
+One `announce_only`: email drafts and general project questions now draw on the same trust-gated memory layer as preps and project loads — steadier context, nothing to do.
+
+### Verification
+
+Six independent second-eyes reviews (`handoffs/REVIEW_NIGHT4_BATCH_2026-09-02.md`); serial train integration with a full battery after every merge; three integration fixes with cited UPDATING commits; the hardened pre-commit privacy hook fail-closed on a real would-be leak during this train's own record-keeping (the HOOKFAIL1 fix proving itself in production use).
+
+## v5.23.0 — 2026-09-01 — The adoption train: surfaces start reading per-project memory, the first anchors render, and the trust gauge gets a heartbeat
+
+**Nine reviewed builds merged via the `train-v523` integration branch (final battery GREEN at every step; two cross-build breaks caught and fixed by the train's own batteries).** Ships together with v5.22.0 as one operator-tested release — v5.22.0 was cut but never installed anywhere, so this train rides the same canary.
+
+### What shipped — the memory loop closes
+
+- **GAUGEJOB1** — the binding gauge refreshes DAILY as a maintenance job (registered task untouched — internal cadence), applying the reclassification fold so binding corrections count. Receipt-first/artifact-after ordering keeps a fresh artifact from reading as stale to its own consumers. Quiet when nothing changed.
+- **ADOPT1** — call-prep is the first surface reading the canonical per-project payload: context comes from `load_thread_knowledge` (profile "call-prep"), trust-gated per §5c.5 (READY threads trust the payload; not-ready/unmeasured threads answer plainly with zero coverage apparatus; empty payloads never fabricate). Unconfirmed swept narrative is structurally unreachable by prep briefs.
+- **GORENDER1** — `go` adopts the reader (profile "go"), and the FIRST coverage-gated anchor render ships: on a gauge-READY project, `go` writes real content into the five memory sections MIGRATE1 seeded — concise, dated, names-never-ids. NOT-READY projects keep seeded-empty anchors (the coverage gate). Hand-edited anchor interiors are refused-with-disclosure, never clobbered. Landmines render at **full candor per the 2026-08-31 operator ruling**, implemented as a per-workspace `brain_candor` knob (default "full"; "process-only" withholds person-graph rows; invalid values fail closed). NOTE: client workspaces carry no anchors yet — the render is a silent no-op there until the client migration ships.
+- **BACKFILL1** — the R3 propose-confirm binding backfill one-shot (`backfill_bindings.py propose/apply/undo`): evidence-tiered candidate rows from the gauge's own walk, accepts ride the reclassification rail in single-undo `bkf_` batches with a gauge rebuild on apply, rejections recorded as the precision dataset. NO auto-bind lane exists, per the operator-ratified spec posture.
+
+### What shipped — hardening
+
+- **JARGONVIEWS1** — the no-jargon guard now renders every view from fixtures and scans the OUTPUT (7 renderers, 11 surfaces, run-time census): 6 real leaks found, 5 fixed in the renderers (the raw-id fallback class, a "substrate" token, a threshold footnote), 1 flagged for the operator (PEOPLE.md heading ids, load-bearing for name→id routing). Added to the pre-commit hook.
+- **EODFLAKE1** — the twice-flaked eodphase1 timing assertion replaced by a clock-free AST coverage-by-construction check that is measurably stronger (planted un-phased defects: old floor 1/5 and 0/5; replacement 5/5 deterministic; 10/10 under 5× oversubscription).
+- **TZDATE3** — the raw-UTC date class finished in chat-inline formatters (8 sites localized; behavior-coupled slices documented, deliberately untouched).
+- **G42RENUM** — the GUARDS.md id double-booking resolved (thread-kind enum guard → G46) plus a registry uniqueness/orphan-file pin so ids can't double-book again.
+
+### Release manifest
+
+One `announce_only`: project loads and meeting preps now draw on a canonical, trust-gated per-project memory read — more consistent context, no action needed. (The anchor-render and backfill surfaces are operator-side until the client migration ships; v5.22.0's manifest items chain normally for fleets coming from v5.21.0.)
+
+### Verification
+
+Every build second-eyes reviewed with re-run gates, org-name sweeps, and mutation proofs (records in `handoffs/REVIEW_*.md`); integrated serially on `train-v523` with a full battery after every merge; two deterministic integration breaks fixed forward with cited commits; two midnight-boundary flakes (honest1 — the known FLAKEFIX2 candidate — and capfence1, a new sighting of the same class) verified solo-green and battery-green past the boundary. Operator-tested as one release with v5.22.0 (single canary before any promote).
+
+## v5.22.0 — 2026-08-31 — The memory foundation: per-project memory anchors, the canonical reader, quarantined machine notes — and dates that tell the truth
+
+**Twenty-two reviewed merges since v5.21.0, each with an independent second-eyes record on file; one merge was reverted on a red battery and re-landed fixed (the process working as designed).** The memory/routing program's foundation ships here; its user-visible payoff (surfaces drawing on per-project memory) arrives with the adoption train that follows.
+
+### What shipped — the memory foundation
+
+- **SESSQUAR1 + SWEEPSTALE** — machine-composed session notes are structurally quarantined: the nightly sweep writes to a `.swept.md` sidecar next to the notes file, so client-facing composers (call-prep, one-pagers, board packs) physically cannot read unconfirmed narrative. Saying "end session" is the confirming touch that folds them in as `origin: swept, confirmed`. The weekly note discloses "N swept entries awaiting confirmation" when any are pending; unparseable sidecar content is preserved, never destroyed.
+- **READER1** — `load_thread_knowledge`, the canonical per-project memory reader: named profiles with per-section budgets and provenance, privacy-scoped event loading, cross-thread person-graph expansion, honest degradation (a thread whose substrate holds nothing flags `empty_payload` rather than answering thin). Ships with an empty adoption set — surfaces convert in the next train.
+- **Binding gauge** — per-project routing trust, measured and persisted: READY = 20+ substance events bound AND 75%+ of name-matched events actually bound, using the audit's exact methodology. Surfaces will key ask-first behavior on the persisted verdict, never a read-time guess.
+- **MIGRATE1 + companions** — the anchor-seeding migration (EOF-append-only, hash-pinned, journaled, witnessed, rollback with diff-guard) plus the duplicate-marker repair and decoy-data-folder quarantine one-shots. **Customer workspaces are NOT migrated by this release** — the tools ship dormant; migration remains a supervised operator action (run and verified on the operator's own workspace 2026-08-31: 39/39 files, zero bytes lost, byte-verified).
+
+### What shipped — trust fixes (walk findings F-6, F-11, F-12 all closed)
+
+- **TZDATE1 + TZDATE2** — every rendered view stamps workspace-local dates (decision log, master tracker, people, org and person history). Previously any decision logged after 5 PM Pacific rendered a day late. `tz.localize_date` is now the single canonical helper.
+- **SUPERSEQ1 + SUPERSEQ2** — a ruling superseded via any accepted write shape (including the top-level `supersedes_seq` field and the restamp shape) renders once, with the target chains living in ONE vocabulary home both readers import, and a drift guard that reds if a reader ever re-derives them. Supersede cross-links now name the superseding decision — `replaced by "the actual ruling" (date)` — never an internal seq token.
+- **PERSONASCHED1** — scheduled surfaces (morning brief, evening close, weekly recap, capture briefs) defer to the persona block: a saved "never open with pleasantries" now governs the brief's opener, not just ad-hoc chats. This completes the claim v5.20.0's manifest had to soften. Guard G45 pins the prose precedence.
+- **UNCONFEXP1** — operator ruling 2026-08-30 (supersedes the escalate-forever posture): unconfirmed commitment extractions nag for ~2 days, then close reversibly. The existing review-expiry maintenance job is retimed weekly→daily with a 2-day window; closures are one-undo batches with a quiet disclosure line in the next brief. **First fire after this update closes the standing backlog and says so — that is the ruling working, not a malfunction; `undo` restores everything.** Confirmed commitments are untouchable (mutation-pinned).
+- **TMPLFENCE1** — template files are never classified as conflict copies by the migration tooling.
+
+### Dev-side (no customer surface)
+
+HOOKFAIL1 — the pre-commit privacy guard is fail-closed after a reproduced fail-open (a lock-unreadable file silently skipped the scan); guard G44 replays the incident. Battery grew 535 → 558 suites across the span.
+
+### Release manifest
+
+Three `announce_only` items: the unconfirmed-extraction expiry behavior (with the first-fire backlog-drain expectation and the undo path), scheduled surfaces honoring saved tone preferences, and the swept-notes quarantine/confirm flow. No `instruct_user` — no schedule re-registration is needed (no registered task body changed; the expiry retime is internal job cadence).
+
+### Verification
+
+Every merge carries an independent second-eyes review record (`handoffs/REVIEW_*.md`) with re-run gates, org-name sweeps, and mutation proofs; full battery green on main after every merge (549 → 558 suites); one merge (SWEEPSTALE1) went red on a full-battery-only guard, was reverted per the batch rule, and re-landed fixed the same night. Attended-tier coverage for this cut: the operator's hand-run Cowork test suite against a byte-verified copy of the real workspace (update bridge rehearsal, `go`, plate/triage, decision-log dates and dedup verified in the rendered file, capture round-trip, call-prep on migrated data — all passed), plus the supervised live migration with byte-level verification. Fresh-workspace onboarding walk remains descoped by standing operator ruling (unchanged from v5.21.0). The retuned expiry drain was verified against a copy of the operator's real queue: first fire closes all 154 stale items in one reversible batch, second fire is a silent no-op.
+
 ## v5.21.0 — 2026-08-29 — The schedule-trust train: fire-time guards, a pre-close capture slot, and bookends that reconcile
 
 **Twenty-one merges since v5.20.0 (PRs #70–#90), each independently reviewed; the largest fan-out delta shipped to date.** Verified by the full `cr test --attended` walk of 2026-08-28/29 (record: ATTENDED_WALK_v521 in the operator workspace) — tiers 0–4 green, attended Half 1 walked live on the operator's real workspace, and the PATHREPAIR1 supervised live-fire gate (spec §0.7) satisfied on record.

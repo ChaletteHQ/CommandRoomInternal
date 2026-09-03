@@ -1,7 +1,7 @@
 ---
 name: needs-your-call
 surfaces: both
-description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Shows them grouped by the call it came from, numbered, oldest first, so you can answer in batches: 'confirm 1-40', 'drop 41-50', 'confirm that call'. Confirming turns one into an ordinary open commitment; dropping closes it as dropped and nothing is ever deleted. Nothing is confirmed or dropped until you name it — there is no auto-clear. Also fires on 'show watching' / 'what are you watching' / 'what's on watch' — the read-only list of items being checked on quietly, each still answerable by name. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage owns the full open set), 'show my list' (show-my-list), or 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep)."
+description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Confirming makes an ordinary open commitment; dropping closes it; nothing clears until you name it. Also 'show watching' / 'what are you watching' / 'what's on watch' — the read-only watch list. Also the project-binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to' — past records naming a project they were never filed under; one tap: Bind / Not this project. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' (show-my-list), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'revisit' a decision (decision-revisit), 'clean up my workspace' / 'maintenance' (cleanup)."
 ---
 
 # needs-your-call
@@ -20,6 +20,15 @@ Now an unconfirmed extraction is a **queue member, not an open commitment**.
 It counts in exactly one number — `counts["headline"]["unconfirmed"]`, which
 is a POINTER at this queue, not a slice of `total` — and it lives in exactly
 one list: this one.
+
+And since UNCONFEXP1 (M's ruling, 2026-08-30) a queue member does not wait
+here forever: it nags for its short window (`UNCONFIRMED_NAG_DAYS`, default
+2 days from capture, reset by real movement) and then LAPSES on its own —
+closed `dropped` with the `review_expired` reason by the daily maintenance
+drain, reversibly, in one batch one `undo` puts back. The queue renders
+what is still inside its window; a lapse is disclosed in the next brief's
+CHANGED line, and a re-mention of a lapsed item is fresh evidence that gets
+captured again. This supersedes the old escalate-until-answered posture.
 
 ## What lands here (CAPTUREFLOW, 2026-08-01)
 
@@ -135,7 +144,11 @@ tap away (expand, read-only, display numbers kept). What to know:
 | "clear the queue" / "review the queue" / "confirm queue" | this skill |
 | "unconfirmed extractions" | this skill |
 | "show watching" / "what are you watching" / "what's on watch" | this skill, Step 4 |
+| "review project bindings" / "backfill bindings" / "which project does this belong to" | this skill, Step 5 (BACKFILL2) |
 | "triage my commitments" / "commitment triage" | commitment-triage |
+| "revisit the [X] decision" / "revisit" a decision | decision-revisit |
+| "clean up my workspace" / "maintenance" / "deep clean" | cleanup |
+| "backfill commitments" / "scan for commitments" | scan-for-commitments |
 | "show my list" / "my list" | show-my-list |
 | "clean up my commitments" / "backlog sweep" | commitment-backlog-sweep |
 
@@ -143,15 +156,27 @@ tap away (expand, read-only, display numbers kept). What to know:
 
 - **Not commitment-triage.** That skill owns the FULL open set — everything
   confirmed, oldest first, with the whole verb ladder. It still pins
-  anything unconfirmed 7+ days in its labelled "Unconfirmed" block
-  (escalation, never age-buried) and points the rest here in one line. This
-  skill owns the queue itself. Neither renders the other's rows.
+  anything unconfirmed 7+ days in its labelled "Unconfirmed" block and
+  points the rest here in one line — though since UNCONFEXP1 (M's
+  2026-08-30 ruling) an unconfirmed extraction nags only for its short
+  window (`UNCONFIRMED_NAG_DAYS`, default 2 days) and then lapses on its
+  own, reversibly — so that block now reaches only rows real movement kept
+  alive. This skill owns the queue itself. Neither renders the other's
+  rows.
 - **Not show-my-list** (the retired discuss-later queue) and **not
   show-my-reminders** (the pin-until-cleared personal lane). Different
   ledgers; the word "list" alone never routes here.
 - **Not commitment-backlog-sweep.** That reads months of mail for evidence
   that confirmed promises were already kept. It deliberately excludes every
   unconfirmed extraction and says so in its digest.
+- **Not decision-revisit, not cleanup, not scan-for-commitments** (the
+  BACKFILL2 neighbours). "Revisit" is a DECISION verb and stays with
+  decision-revisit. "Clean up my workspace" / "maintenance" / "deep clean"
+  are the tidying pass — cleanup — even though the binding review is a
+  hygiene act; the review is a one-tap adjudication sitting, not a sweep.
+  "Backfill commitments" / "scan for commitments" is the historic
+  commitment scan (scan-for-commitments) — a different backfill of a
+  different ledger. Only the three binding stems (Step 5) route here.
 - **The staff meeting shows the same rows, and that is on purpose**
   (CAPTUREFLOW §C). Its "FROM YOUR MEETINGS" section renders the first few
   meeting groups from THIS queue, through the same builder and the same
@@ -544,13 +569,100 @@ If they want it to ask more or less often, say that is a setting you can turn
 up or down for them — and stop there. Do not name files, levels, windows, or
 scores.
 
+## Step 5 — "review project bindings" (BACKFILL2, 2026-09-02)
+
+A different ledger, the same question shape — *did the workspace file this
+right?* Some past records (a note, a meeting, an exchange) NAME a project by
+its distinctive term and were never filed under it, so that project's memory
+reads thinner than its history. The binding backfill (`backfill_bindings.py`,
+the R3 engine) proposes those rows; it never binds one on its own — M's
+ruling, 2026-08-31: **no auto-bind lane, ever**. This step is the one-tap
+surface for that sitting. Fires on `review project bindings`, `backfill
+bindings`, `which project does this belong to`.
+
+**The widget form — ONE call, paginated by PROJECT.** Same preamble as Step 1
+(discover `$PLUGIN_ROOT` and `$WORKSPACE`, `cd "$PLUGIN_ROOT"`), then:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")  # cwd == $PLUGIN_ROOT
+from backfill_widget import render_backfill_page
+
+transport = render_backfill_page("<WORKSPACE>", page=1)
+if transport["empty"]:
+    print(transport["line"])           # relay this one line and stop
+# transport["html"]              -> show_widget widget_code, byte-exact
+# transport["group_pagination"]  -> {page, total_pages, has_more, total_groups, …}
+```
+
+`render_backfill_page` runs the engine's read-only propose, drops rows the
+user snoozed, shapes ONE section per project — each row shows the record's
+own words, its date and kind, the term it names, the evidence behind the
+match in plain words, and where it is filed today — with the project's
+footer line saying what these taps buy it, and hands the page to
+`widget_transport.render_and_persist` with an explicit page and page size.
+Never hand-compose the rows and never render it unpaginated. `show more`
+re-fires it with `page=N+1`. An `empty` result is a one-line all-clear —
+relay `line` verbatim and stop; never pad it.
+
+**The rows carry three verbs, and the wire id carries the snapshot.** Every
+row offers `bind` / `not this project` / `skip`, from the ONE
+`backfill_widget.ROW_ACTIONS` list. Its wire id is
+`bind:<record>:<snapshot>` — the propose snapshot it was derived from rides
+the button, so a tap that lands hours later still tells the engine which
+list the user READ, and the engine refuses if the workspace moved past it.
+You never build, parse, or re-derive these ids; apply-choices hands them to
+`backfill_widget.apply_choices` verbatim.
+
+- **Bind** files the record under the project — one additive re-tag, the
+  project's history gains it. A record already filed under a DIFFERENT
+  project keeps that home and gains this one alongside (additive only, by
+  the engine's own fence). All the binds of one Apply land in ONE batch
+  that a single `undo` reverses.
+- **Not this project** records the no, with its evidence tier, in the run
+  receipt — the precision dataset M asked for — and the row is never
+  proposed again. A recorded no survives `undo` (undo reverses writes; a
+  human's ruling stands until re-ruled).
+- **Snooze (1 day)** (`skip`) hides the row until tomorrow. It adjudicates
+  nothing and records nothing; the row comes back.
+- **Nothing binds without a tap.** There is no "bind the rest", no default,
+  no confidence threshold, and the footer's *Snooze rest (1 day)* snoozes —
+  it never binds. Rows the engine refuses to propose (a name match with no
+  other signal, a term two projects both claim) never reach the page at all.
+
+**Typed answers.** If the user answers in chat instead of tapping ("bind 1
+and 3, not 2"), map the display numbers to the rows of the CURRENT render
+(`transport["report"]["rows"]`, in page order) and dispatch the same tuples
+through `backfill_widget.apply_choices` — never call the engine's `apply`
+directly, and never pass a seq the user did not name. `all` is NOT an answer
+here: it names no row, so it binds nothing; say so in one line.
+
+**Ack.** Relay `result["summary"]` verbatim — it carries the counts in plain
+words, the READY change when one happened, and the `undo` offer when a batch
+was written. `stale_snapshot` means the list went stale under the user's
+hand: relay the summary (it says to re-fire) and write nothing else.
+`refused` with no operator on file: the sitting needs an attributed
+adjudicator (the receipt IS the precision record) — snoozing still works;
+say so plainly, never invent a setup command.
+
+**Undo.** A follow-up `undo` in the same chat →
+`backfill_widget.undo_sitting(ws, <the batch id the result returned>,
+undone_by=user_id)` — the standing `bkf_` reverser plus ONE gauge rebuild.
+A bare `undo` in a later chat finds the same batch through the standing undo
+lane ("filed a past record under its project").
+
+**What Step 5 never does.** Never binds without a tap; never reads
+transcripts or mail (pure substrate); never touches the queue's own rows;
+never changes what the engine proposes, refuses, writes, or records —
+the CLI sitting and this widget produce the same receipts.
+
 ## What this skill does NOT do
 
 - Never confirms, closes or drops anything on its own — no sweep, no
   scheduled task, no inference, no "obvious ones" shortcut. Every write
   traces to a selection the user typed. `already done` is the strictest of
   them: it is unreachable without a row named on its own, because it asserts
-  something only the user knows.
+  something only the user knows. The same holds for the project-binding
+  review (Step 5): nothing binds without a tap.
 - Never deletes or edits an event.
 - Touches no connectors: no mail, calendar, or transcript fetches. Pure
   substrate read plus the two writes above.
@@ -570,6 +682,11 @@ scores.
   `review_flags_set` fold key and carries NO `suspected_duplicate_of`.
   `flag_duplicate_for_review` is the duplicate-PAIR writer and is never the
   reverser of a confirm.
+- `shared/scripts/backfill_widget.py` — the project-binding review (Step 5):
+  `render_backfill_page` (the ONE render call), `ROW_ACTIONS`,
+  `apply_choices` (the rail's one call for `bind:` rows), `undo_sitting`.
+  The engine underneath is `shared/scripts/backfill_bindings.py`
+  (BACKFILL1 — propose / apply / undo, untouched by the widget).
 - `shared/scripts/watch_gate.py` — the evidence-strength vocabulary, THE
   bulk-accept fence both accept surfaces call, the watch state, and the
   `show watching` view.

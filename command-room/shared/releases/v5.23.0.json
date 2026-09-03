@@ -1,0 +1,13 @@
+{
+  "version": "5.23.0",
+  "headline": "Project loads and meeting preps now draw on a canonical, trust-gated read of each project's memory — more consistent context with no action needed on your side.",
+  "items": [
+    {
+      "id": "v5230_announce_reader_adoption",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Opening a project and prepping for meetings just got more consistent. Behind the scenes, those surfaces now read each project's context through one canonical, trust-gated memory layer instead of assembling it fresh every time — projects with a well-bound history get richer, steadier context, and projects with thin history simply answer plainly rather than guessing. Nothing to do; it applies from your next project load or prep.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -582,6 +582,28 @@ VERB_TAXONOMY = (
                "AND ONLY THE PROPOSAL: no capture path reads the ledger, so "
                "an ignore can never silence a commitment — a mute of the "
                "record would lose real promises to a UI preference."),
+    # --- BACKFILL2 — the binding-review rows (needs-your-call) --------------
+    _row("bind", "Bind", "reclassification",
+         "File this past record under the project it names — the project's "
+         "history gains it. One batch per sitting; `undo` reverses it.",
+         ("needs-your-call",), family="review",
+         notes="BACKFILL2 (R3b, 2026-09-02). The accept tap of the binding "
+               "backfill widget (`backfill_widget.build_backfill_data_view`, "
+               "wire id `bind:<seq>:<snapshot>`). Dispatch: "
+               "backfill_widget.apply_choices → backfill_bindings.apply with "
+               "the row's seq in accept_seqs — ONE reclassification through "
+               "the event gate, bkf_ batch stamp, evidence tier in the run "
+               "receipt (the precision dataset). Never auto: only an explicit "
+               "tap puts a seq here."),
+    _row("not this project", "Not this project", "binding_backfill_run",
+         "The name match is a false lead — recorded so it is never proposed "
+         "again; nothing else changes.",
+         ("needs-your-call",), family="review",
+         notes="BACKFILL2. The reject tap: backfill_bindings.apply records "
+               "the seq (with its evidence tier) in the binding_backfill_run "
+               "receipt's `rejected` rows — the other half of the precision "
+               "dataset. Survives `undo` (undo reverses writes; a recorded "
+               "human no stands until re-ruled)."),
     _row("proposal not relevant", "Not relevant (permanent)",
          "person_proposal_resolved",
          "The name isn't worth tracking — the proposal is retired for good "

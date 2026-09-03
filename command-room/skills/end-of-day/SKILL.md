@@ -546,7 +546,13 @@ byte-identical to no flip at all, and that is asserted, not assumed.
 - **Personification.** Read `shared/PERSONIFICATION.md` and call
   `personification.get_brain_name(workspace_root)`. The evening intro is
   `"Evening, {first_name} — {brain_name} closing out your day."` — the ONLY
-  greeting. One name in the intro, one in the sign-off; nowhere else.
+  greeting permitted, and it renders only if the persona block permits:
+  when the workspace CLAUDE.md persona block (`## How {brain_name} talks
+  to …`) says skip pleasantries, or its Never-line forbids greeting
+  openers, drop the intro line and open with the day's substance (STYLE1
+  D6 — the persona outranks this shape). One name in the intro (when it
+  renders), one in the sign-off; nowhere else. The sign-off signature
+  stays either way — identity, not pleasantry.
 - **Receipt BEFORE post (BRIEFFIX1 Item C).** `end_of_day.log_end_of_day_receipt`
   is the ONE receipt writer for this fire and it runs before the surface posts.
   It carries `confirm_ids` (the numbered map, in the order the surface numbers

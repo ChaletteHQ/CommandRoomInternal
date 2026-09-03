@@ -211,6 +211,17 @@ print(json.dumps({'n': out['n'], 'lines': out['lines']}, indent=2))
 "
 ```
 
+14. **Unconfirmed swept session-notes disclosure** (SWEEPSTALE1 — the SESSQUAR1 follow-up): the nightly sweep quarantines machine-composed session-notes blocks in a `.swept.md` sidecar next to each project's notes file; the "end session" ritual is what folds them in. A project that is only ever swept and never end-sessioned accumulates an unpromoted sidecar forever, silently — this item is the weekly disclosure. Run the code block below (read-only — it counts, it never promotes, creates, or removes anything; promotion stays the CEO's confirming touch). If the list is non-empty, add ONE plain-English line per project to the Monday note's "worth a glance" tier, oldest-first, capped at 3 projects with an "…and N more" tail: *"[Project] has N session-note entries I drafted overnight that you haven't confirmed yet (oldest [date]) — say 'end session' next time we work on [Project] to fold them in."* An empty list adds nothing — no line, no "all confirmed" filler (COVERQUIET1 posture). Record nothing into `actions_taken[]` (reporting only).
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import session_narrative as sn
+pending = sn.pending_swept('<workspace_root>')  # [] on a fully-confirmed workspace
+print(json.dumps(pending, indent=2))
+"
+```
+
 These rules are non-destructive by design — **nothing is ever deleted, with the ONE ruled exception of Rule 11's stale read-alarm sidecars (derived machine telemetry, LB2 D5).** Memory is compressed/archived in place; caches and >1h-stale locks are MOVED into `_archive/` (never a user's folders or files). Record each action taken into `actions_taken[]` for the `cleanup_run` event.
 
 ## Phase 3: Substrate Integrity (detect → remediate)

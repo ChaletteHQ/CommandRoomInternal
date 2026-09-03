@@ -270,7 +270,7 @@ Binding notes the pack does not enforce for you:
 
 **Timezone.** The fire's own day is `end_of_day.workspace_today`, resolved workspace-LOCAL through `tz.py`. Never the machine clock and never UTC: at 9 PM Pacific the UTC calendar has already rolled over, which is the window this fire runs in, so a UTC-derived "today" would score the wrong day and file tomorrow's intent under the day after. Every rendered connector timestamp goes through `to_local(value, workspace_path=<WORKSPACE>)` as it always has.
 
-**Personification.** The intro line is `"Evening, {first_name} — {brain_name} closing out your day."` from `personification.get_brain_name(WORKSPACE)`, and it is the ONLY greeting. One name in the intro, one at the sign-off, nowhere else.
+**Personification.** The intro line is `"Evening, {first_name} — {brain_name} closing out your day."` from `personification.get_brain_name(WORKSPACE)`, and it is the ONLY greeting permitted — and it renders ONLY if the persona block permits: when the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`) and it says skip pleasantries, or its Never-line forbids greeting openers, OMIT the intro line and open with the day's substance (STYLE1 D6 — the persona outranks this shape). One name in the intro (when it renders), one at the sign-off, nowhere else; the sign-off signature stays either way.
 
 **Writer wall.** Personal-account items may RENDER (the R9 ephemeral rule) and write nothing: no entity write, no commitment write, no capture from a personal-account read.
 

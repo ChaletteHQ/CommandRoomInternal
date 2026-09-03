@@ -170,7 +170,11 @@ def format_live_state(workspace_root: str | Path, thread_id: str):
 
     proposed = [r for r in roster if _propose(r)]
 
-    lines = [f"**Status:** {status}    *(live from substrate — {n_events} events)*", ""]
+    # JARGONVIEWS1: this block is rendered into the customer's PROJECT_BRAIN
+    # and read as prose. "live from substrate" named the internal event store;
+    # the point of the parenthetical is that the numbers are current, which
+    # "live" already carries.
+    lines = [f"**Status:** {status}    *(live — {n_events} events)*", ""]
     lines.append("| Person | Events | Last seen |")
     lines.append("|---|---|---|")
     for r in confirmed:
@@ -195,9 +199,27 @@ def _lineage(thread: dict) -> set[str]:
 
 def render_live_state(workspace_root: str | Path, thread_id: str, *,
                       brain_path: str | Path | None = None,
-                      anchor: str = DEFAULT_ANCHOR, force: bool = False) -> dict:
+                      anchor: str = DEFAULT_ANCHOR, force: bool = False,
+                      now_iso: str | None = None) -> dict:
     """Dirty-check then render the Live State block. Returns the render_block
-    status plus {'rendered': bool, 'source_seq': int|None}."""
+    status plus {'rendered': bool, 'source_seq': int|None}.
+
+    `now_iso` (SPEC FLAKEFIX2) is the instant stamped into the block's
+    `generated_at`. Omitted, this reads the actual current UTC time and
+    nothing about the behaviour changes — every existing caller is unaffected.
+
+    THE SEAM EXISTS BECAUSE `generated_at` IS SECOND-GRANULAR AND SITS INSIDE
+    THE TEXT THE IDEMPOTENCE CHECK COMPARES. `render_block` reports
+    `unchanged` only when the whole rewritten region — start marker included —
+    is byte-identical to what is already there. So two renders that agree on
+    every fact still differ when they land in different UTC seconds, and the
+    second one legitimately reports `written`. On a QUIET workspace that is
+    reachable on every sweep: with no events `source_seq` is None, so
+    `needs_render` is unconditionally True and the comparison is reached every
+    time. A caller replaying a fixture passes a fixed ISO string here rather
+    than racing the clock — the same posture `end_of_day.capture_fence_
+    elapsed_ms`'s own `now` argument already takes one module over.
+    """
     workspace_root = Path(workspace_root)
     if brain_path:
         path, reason = Path(brain_path), "ok"
@@ -215,7 +237,8 @@ def render_live_state(workspace_root: str | Path, thread_id: str, *,
         return {"status": "unchanged", "rendered": False, "source_seq": source_seq}
 
     import datetime
-    ga = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    ga = (str(now_iso) if now_iso else
+          datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
     r = render_brain_block.render_block(
         path, BLOCK_ID, body, generated_at=ga, source_seq=source_seq,
         logic_version=LIVE_STATE_LOGIC_VERSION, create_after_heading=anchor,

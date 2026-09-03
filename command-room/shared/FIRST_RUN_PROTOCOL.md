@@ -142,6 +142,28 @@ document-shape knobs from the client's own record and onboarding writes ONLY the
 inference confidently proposed (origin `inferred_provisional`, disclosed at the reveal, D7).
 Unproposed knobs stay byte-stable defaults. Do not add a first-fire row for it here.
 
+**The binding gauge's READY thresholds are NOT in this catalog — same fence, same reason
+(GAUGECAL1).** `_hq/data/skill_config/binding_gauge.json` carries two knobs read by
+`binding_gauge.ready_thresholds(workspace_root)`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ready_min_substance` | `20` | Substance events bound to a thread before it can be READY. Positive whole number; anything else falls back to the default. |
+| `ready_min_ratio` | `0.75` | Bound / (bound + name-matched-unbound) a thread must clear to be READY. Float in `(0, 1]`; anything else falls back to the default. |
+
+Both defaults are the gauge audit's, measured on the operator's own ledger — which is exactly why
+they are knobs and not constants: a workspace with a shorter history or a different capture cadence
+has no reason to inherit another workspace's bar. **The gauge is substrate infra, not a skill.** It
+has no first-run block, no first-fire footer, and no `tune` verb — nothing offers these
+proactively, and onboarding should leave them alone unless a client's own coverage audit says
+otherwise. Both floors must be cleared for READY, so RAISING either makes the reader's ask-first
+posture *more* cautious and LOWERING either makes it less; `load_thread_knowledge` trusts the
+artifact's stored verdict and never re-derives, so a change takes effect on the next gauge refresh
+(`binding-gauge` maintenance job) and moves `coverage.gauge.state` with it — there is no second
+place to keep in sync. **Onboarding note for fan-out:** the generic-term calibration that sits
+underneath these thresholds needs no per-client tuning at all — it derives the client's own
+org/brand from `entities.json` (self-org / primary user's org). Nobody lists anything.
+
 ---
 
 ## Lifecycle

@@ -75,6 +75,15 @@ from connector_adapters.provenance import (  # noqa: E402
     resolve_mail_provider,
 )
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 # Bug #102 — ONE exception type across both reconcile rails, so a caller that
 # already catches the sent rail's abort catches this one too. Importing it
 # rather than declaring a sibling is deliberate: two names for one failure is
@@ -199,10 +208,18 @@ def _coverage_for(opens, user_person_id) -> dict:
     return out
 
 
-def _short_date(ts):
-    """'2026-05-31T14:00:00' → '2026-05-31'. Defensive — return '' on junk."""
+def _short_date(ts, workspace_path=None):
+    """'2026-05-31T14:00:00' → '2026-05-31'. Defensive — return '' on junk.
+
+    TZDATE3 — localizes via `tz.localize_date` when a workspace path is
+    passed (the evidence line is chat-facing prose, so an evening-local
+    reply must not read as tomorrow's UTC date). `workspace_path=None`
+    (the default) keeps the pre-TZDATE3 raw-UTC-slice behavior for any
+    caller that hasn't been updated."""
     if not isinstance(ts, str) or not ts:
         return ""
+    if workspace_path:
+        return _localize_date(ts, workspace_path)
     return ts[:10]
 
 
@@ -540,7 +557,7 @@ def reconcile_inbound(
             evidence = (
                 lede
                 + (f" \"{msg.get('subject')}\"" if msg.get("subject") else "")
-                + (f" ({_short_date(ts)})" if _short_date(ts) else "")
+                + (f" ({_short_date(ts, workspace_root)})" if _short_date(ts, workspace_root) else "")
             )
             if rec == "partial_received":
                 slot = partial_by_cid.setdefault(cid, {

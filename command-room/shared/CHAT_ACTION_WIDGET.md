@@ -359,6 +359,18 @@ Rows are UNCONFIRMED EXTRACTIONS — a capture the extractor was not sure about,
 
 **Undo (UNCONFIRM1 2026-08-03).** A confirm reverses via `needs_review_queue.undo_confirm_items` and an `already done` via `undo_done_items` (reopen THEN un-confirm — a bare reopen leaves an OPEN, CONFIRMED item, which is not what the user had before they tapped). A SET ASIDE confirm (OBSERVED1) reverses through the SAME `undo_confirm_items` call with the SAME cached ids — it translates an observed id to the commitment its confirm minted — and the undone item returns to the QUEUE as an unconfirmed row (promotion is permanent; the tier defines no un-promote); a SET ASIDE drop reverses via `commitment_state.reopen_commitment` on the result's `promoted_id`. Both write through `commitment_state.restore_review_flags`, the purpose-built un-confirm writer: one additive `commitment_updated` carrying the existing `data.review_flags_set` fold key plus `review_flags_restored` provenance and the item's ORIGINAL `review_reason`, and carrying NO `suspected_duplicate_of`. `flag_duplicate_for_review` is the duplicate-PAIR writer and is never the reverser of a confirm. An un-confirm REFUSES an item that has been independently touched since (`touched_since_confirm`, naming what happened). Never edit or delete prior events.
 
+### Project bindings — the binding-backfill review (BACKFILL2, 2026-09-02)
+
+Rows are PAST SUBSTRATE RECORDS that name a project by its distinctive term and were never filed under it — the R3 binding backfill's propose report (`backfill_bindings.propose`, the gauge's own walk), shaped by `backfill_widget.build_backfill_data_view` and rendered by `backfill_widget.render_backfill_page` on the needs-your-call source (`src: "needs-your-call"`, needs-your-call Step 5). `n` = `bind:<seq>:<snapshot_max_seq>` — the propose snapshot rides the wire id, so apply hands the engine the list the user actually read and the engine's exact-match fence refuses a stale one. One section per project; the section footer says what the taps buy that project. Rows the engine refuses (name-only with no corroborator, contested terms) never render. There is no proposal event and no commitment behind a row.
+
+| Action | Display | What it does |
+|---|---|---|
+| `bind` | Bind | `backfill_widget.apply_choices` → `backfill_bindings.apply(accept_seqs=…)` — ONE `reclassification` through the event gate (one-hop supersede, corrected envelope, `data.origin: "backfilled"`, evidence tier + `bind_basis`), all binds of one Apply in ONE `bkf_` batch; a record already filed elsewhere keeps its primary and gains this project as related (additive only). Gauge rebuilt in the same gesture. |
+| `not this project` | Not this project | Same call, `reject_seqs=…` — recorded with its evidence tier in the `binding_backfill_run` receipt (the precision dataset's "no" half); never re-proposed; survives `undo`. |
+| `skip` | Snooze (1 day) | `backfill_widget.skip_rows` — the standard one-day `chat_dismissal` targeting the wire id verbatim; the render filters live mutes upstream. Adjudicates nothing, records nothing. |
+
+**Undo.** One Apply = one `bkf_` batch: `backfill_widget.undo_sitting` (→ `backfill_bindings.undo` → `brain_undo.REVERSERS["binding_backfill"]` + one gauge rebuild); a bare `undo` in a fresh chat lists it as "filed a past record under its project". **The no-auto fence:** nothing reaches `apply` without an explicit `bind` / `not this project` tuple; an unfamiliar verb on a `bind:` row is refused per row; the footer's *Snooze rest (1 day)* snoozes and never binds.
+
 ### Deliberation extension (Phase 4 2026-07-02 — same pre-authorized set, grown once)
 
 | Action | Display | What it does |

@@ -1,0 +1,13 @@
+{
+  "version": "5.24.0",
+  "headline": "Email drafts and general project questions now draw on the same trust-gated project memory as your preps and project loads — steadier context everywhere, nothing to do on your side.",
+  "items": [
+    {
+      "id": "v5240_announce_full_adoption",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The memory layer now reaches everything. Email drafts and loose project questions (\"pull up Northstar\", \"where are we with the pilot\") draw on the same canonical, trust-gated read of each project's history that meeting preps and project loads adopted in the last update. Projects with a well-bound record get steadier, richer context; thin-history projects answer plainly instead of guessing. Nothing to do — it applies from your next draft or question.",
+      "action": "announce_only"
+    }
+  ]
+}

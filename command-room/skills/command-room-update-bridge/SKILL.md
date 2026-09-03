@@ -1202,11 +1202,50 @@ print(json.dumps(result))
 "
 ```
 
+- **action: `apply_workspace_migration` (MIGRATE2, 2026-09-02 — DORMANT: no shipped manifest carries it yet; this block executes only once a deliberate manifest item lands with the operator's go)** — a versioned migration of files the customer READS (the first behind it: the memory-section seed into every safe PROJECT_BRAIN.md). Run it through the runner, never by importing the migration directly — the runner IS the safety posture: it refuses a decoy root (`_archive` / `_demo-framework` in the path, or no `_hq/data/entities.json`), refuses when two workspace candidates tie at the shallowest depth (pass the full discovery list as `candidates` so it can see the tie — never pick one yourself), runs the migration's dry-run first, applies ONLY when the dry-run plans cleanly with zero blocking rows, and otherwise returns the blocking rows as a disclosure having seeded nothing. Contract: `references/RELEASE_MANIFEST.md` "Action types".
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json
+sys.path.insert(0, 'shared/scripts')
+import bridge_migration_runner
+result = bridge_migration_runner.run_apply_workspace_migration(<the manifest item as a dict>, '${WORKSPACE}', answers=None, manifest_version='<manifest version>')
+print(json.dumps(result))
+"
+```
+
+  Read `result["status"]` and do exactly one of:
+
+  - `refused` — the workspace could not be trusted (decoy, unanchored, ambiguous). Say so in one plain line ("I couldn't tell which folder is your workspace, so I left your project files alone") and STOP this item. Nothing was written or logged. Do NOT retry with a hand-picked path.
+  - `needs_answer` — the migration needs the customer's ONE decision before it seeds (today: whether the judgment section of the memory notes may hold candid notes about people, or process observations only — the operator's 2026-08-31 ruling made this a per-workspace onboarding question; a workspace that already carries the setting, such as the operator's own, is never asked). Ask `result["question"]["prompt"]` verbatim, as a plain chat question, then record the reply and re-invoke:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json
+sys.path.insert(0, 'shared/scripts')
+import bridge_migration_runner
+answer = bridge_migration_runner.record_answer('${WORKSPACE}', <result['question']>, '<the customer reply, verbatim>')
+if not answer['ok']:
+    print(json.dumps(answer)); sys.exit(0)
+result = bridge_migration_runner.run_apply_workspace_migration(<the manifest item as a dict>, '${WORKSPACE}', answers={answer['key']: answer['value']}, manifest_version='<manifest version>')
+print(json.dumps(result))
+"
+```
+
+    If `answer["ok"]` is false the reply did not parse — ask once more, offering the two options in plain words; never seed under a default the customer did not choose. The recorded answer is written to the workspace's settings BEFORE the first seed, so the first render already honours it.
+  - `blocked` — surface `result["surface"]` as an instruct_user-style disclosure (it already carries the rows). Nothing was seeded; a blocked outcome is receipted. Do NOT mark applied — the next update re-evaluates.
+  - `noop` — already applied. Silent; do NOT mark applied (same as auto_apply's ran=False).
+  - `applied` — surface `result["surface"]` (the notice, the honest what-happens-next line, and the undo line) in the Step 4.8b block; mark applied. The receipt lands in the workspace's own records beside the migration's journal (`result["receipt_path"]`). **Undo path:** if the customer later asks to reverse it, run `result["undo_command"]` exactly as given (it is the migration's own rollback for THIS workspace — it restores every seeded file from its backup and refuses any file edited since); never compose a rollback by hand.
+  - `failed` — the failure is receipted; say nothing to the customer (same posture as a failed auto_apply without a fallback).
+
 **Idempotency — type-aware (v3.13.8.3+, Bug #73 fix; v3.14.4+ extends to auto_apply):** prior-seen items are filtered based on their `action` type:
 
 - **`action: announce_only` items:** skip if the item's `id` already appears in `applied_remediation_ids` or `skipped_remediation_ids` in any prior `plugin_update` or `plugin_update_remediation` event. Fire-once idempotency — these are informational and don't need re-surfacing.
 - **`action: instruct_user` items:** ignore prior-seen state and re-evaluate the detector. If the detector still returns `{"applies": True}` (pending state still exists — e.g., user never named their AI, never picked a workspace shape), re-surface the prompt this run. If the detector now returns `applies: False` (user took the action), it's already filtered out by the detector check above. The detector IS the idempotency check for instruct_user — that's what makes the contract honest: the bridge re-nudges until the action lands or the user explicitly declines.
 - **`action: auto_apply` items (v3.14.4+):** rely on the underlying action's own idempotency (typically a `_already_ran` check inside the wrapped helper). On each bridge run: re-evaluate the detector; if applies=True, invoke the action; the action returns `ran=False` if it short-circuited (already-applied) — bridge skips surfacing and does NOT mark applied. If `ran=True`, surface the notice and mark applied. Customers never see a "we already did this" message because the action surfaces only on the first effective run.
+- **`action: apply_workspace_migration` items (MIGRATE2):** the migration's own dry-run is the idempotency check — a second run reports `noop` (nothing planned) and surfaces nothing; a workspace still carrying a blocking row re-surfaces the disclosure until a human clears it. Mark applied only on `applied`.
 - **User-declined items** (`reason: "user_declined_permanently"` in a prior `plugin_update_remediation` event with `decline_kind: "permanent"`): always skip regardless of action type. The user opted out; respect that. They can opt back in by saying `redo release remediations`.
 
 v3.13.8.3 makes the contract state-aware: announce when there's nothing to do, re-nudge when there is (the fire-once regression this fixed is in references/HISTORY.md § Bug #73). v3.14.4 adds auto_apply on top — the system DOES the thing rather than nudging the customer to type a phrase.
@@ -1285,6 +1324,7 @@ The item_id is what makes future re-runs idempotent **for `announce_only` items*
 - **Detector returns malformed result (missing "applies" key, etc.):** treat as `{"applies": False}`, log `release_detector_malformed_result`, skip.
 - **Action module import fails (auto_apply, v3.14.4+):** log `release_action_import_failed` with `{module, error}`. Surface skipped silently OR fall back to instruct_user if `fallback_prompt_template` provided.
 - **Action function raises (auto_apply, v3.14.4+):** caught by the action wrapper itself — should return `success=False error=<traceback>`. If the action wrapper itself crashes (not the wrapped logic), log `release_action_raised` and treat as silent skip.
+- **Migration runner (apply_workspace_migration, MIGRATE2):** never raises — every failure comes back as `status: failed` with the failure already receipted by the runner (a bad item, an import that fails, a migration that raises). Silent skip for the customer. A `refused` status is NOT a failure and is never logged into the refused tree — say the one plain line above and stop.
 
 The goal: a broken manifest, detector, or action never blocks the rest of the update flow. The user gets the items that worked; the broken ones land in the failure log for the maintainer.
 

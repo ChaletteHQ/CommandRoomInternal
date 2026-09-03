@@ -28,6 +28,15 @@ from pathlib import Path
 import event_refs
 from entities_io import entities_collection
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 # Inherited (pre-split umbrella) events count for less than direct events.
 INHERITED_WEIGHT = 0.5
 # A person needs at least this much direct signal to be auto-confirmed "high".
@@ -113,7 +122,7 @@ def derive_roster(workspace_root: str | Path, thread_id: str) -> list[dict]:
             "n_direct": nd,
             "n_inherited": ni,
             "n_events": nd + ni,
-            "last_ts": rec["last"][:10],
+            "last_ts": _localize_date(rec["last"], workspace_root),
             "score": round(score, 2),
             "source": source,
             "confidence": confidence,

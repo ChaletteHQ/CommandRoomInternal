@@ -1207,6 +1207,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "review-expiry": "Unconfirmed Cleanup",  # REVSCHED1 §3-2 — silent weekly unconfirmed-pile drain (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
     "age-out": "Silent Work Cleanup",  # SWEEPSCHED1 — silent weekly confirmed-pile drain (a maintenance JOB, not a task; same reason for the row). "Silent Work", not "Age Out": the render is read by a CEO, and the noun has to name what is being cleared rather than the mechanism clearing it
     "meeting-capture": "Meeting Capture",  # EODSPEED1 — the incremental End of Day capture pass (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
+    "binding-gauge": "Memory Coverage Check",  # GAUGEJOB1 — the daily binding-gauge refresh (a maintenance JOB, not a task; same reason for the row). "Memory Coverage Check", not "Binding Gauge": the render is read by a CEO, and the noun has to name what is being measured rather than the mechanism measuring it
 }
 
 

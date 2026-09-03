@@ -32,7 +32,7 @@ The email section of morning-briefing is intentionally summary-only — if the u
 
 ## Personification Contract (v3.13.8.4+)
 
-Before rendering the briefing, read `shared/PERSONIFICATION.md` and call `shared/scripts/personification.py::get_brain_name(workspace_root)`. The briefing chat intro line uses the shape `"Morning, {first_name} — {brain_name} here with today's read."` (default `{brain_name}` = `"Penelope"`); the scheduled-task .docx signature line is `"— {brain_name}"` (already implemented in v3.13.8 scheduled-task orchestrators). Don't over-name — one reference in the intro + one in the signature is the rhythm.
+Before rendering the briefing, read `shared/PERSONIFICATION.md` and call `shared/scripts/personification.py::get_brain_name(workspace_root)`. The briefing chat intro line uses the shape `"Morning, {first_name} — {brain_name} here with today's read."` (default `{brain_name}` = `"Penelope"`); the scheduled-task .docx signature line is `"— {brain_name}"` (already implemented in v3.13.8 scheduled-task orchestrators). Don't over-name — one reference in the intro + one in the signature is the rhythm. **Persona precedence (STYLE1 D6):** that intro shape is the DEFAULT, not a mandate — if the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`), the persona outranks it. When the persona calls for skipping pleasantries (minimal encouragement, or a Never-line forbidding greeting openers), drop the salutation entirely and open with the synthesis lead; the `— {brain_name}` signature stays (identity, not pleasantry).
 
 ## Writer Contract
 
@@ -160,7 +160,7 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-render the di
 Read only what's needed — this must be lightweight:
 1. Read `_hq/MASTER_TRACKER.md` — project list, commitments, next actions, waiting-on
 2. Read `CLAUDE.md` if it exists (hot cache for people, projects, terms)
-3. Do NOT read per-project session notes or brains — this is a scan, not a deep dive
+3. Do NOT read per-project session notes or brains — this is a scan, not a deep dive (the per-project context load in Step 3a carries no narrative section, by profile, so it keeps this rule rather than bending it)
 
 ## Step 2: Scan Connected Sources
 
@@ -242,24 +242,59 @@ Procedure:
 
 PERSON.md files are still fine to read for static profile context (role, working style, flags) — just not for the overdue / dormancy counts that drive the surfaced flag list.
 
-### Step 3a: Layer events.jsonl on top of the tracker (v3.11.1 — REQUIRED)
+### Step 3a: Layer the live substrate on top of the tracker — the per-project lines (v3.11.1 overlay; payload-fed since READER1 ADOPT4 — REQUIRED)
 
 MASTER_TRACKER.md is a **periodic snapshot**, not a live view. It's regenerated when entities or events change, but a workspace that hasn't triggered a regen for 10 days will surface stale "Last touched" / "quiet since" values for projects that had activity today (the 2026-05-20 overlay incident — see references/HISTORY.md § Overlay bug class).
 
-**Required overlay procedure — apply before rendering ANY "Last touched" / "Waiting On" / "Next Action" value:**
+**Required overlay procedure — apply before rendering ANY per-project detail line (the `• [Thread] — Next: … | Last touched: …` lines under the org sections and Other relationships) and its "Last touched" / "Waiting On" / "Next Action" values:**
 
-1. Read the tracker's stamp. MASTER_TRACKER.md is generated with `<!-- generated-at: YYYY-MM-DD HH:MM -->` near the top (per `references/VIEW_GENERATION.md`). Parse it. If both the comment-style stamp and a body line like `> Last updated: …` are present, the comment-style stamp wins.
-2. If the stamp is **older than 24 hours**, the tracker is stale-by-default — proceed to step 3 for every thread the digest will surface. (If the stamp is within 24h, the tracker is current enough; you may still overlay if helpful but it's not required.)
-3. For every thread you're about to render under a primary-focus org section or call out under Needs Attention, scan `_hq/data/events.jsonl` for events where `primary_thread_id == thread.id` AND `ts > tracker_stamp` AND `classification_confidence >= 0.40` (matches the `computed_last_activity` rule in VIEW_GENERATION.md). Use `shared/scripts/atomic_write.py` read helpers if you need a streaming scan; for ≤5000 events a single read pass is fine.
-4. If newer events exist, override:
-   - **Last touched** → max(ts) of the newer events, rendered with `to_local(ts, workspace_path=<WORKSPACE>)` per B1.
-   - **Next Action** → if any newer event has `data.next_step` populated, use the most recent one. Otherwise keep the tracker's Next Action.
-   - **Waiting On** → if any newer `commitment_resolved` / `thread_resolved` event closes the item the tracker listed as Waiting On, clear it. If a newer `commitment` event opens a new wait, surface that instead.
+1. Read the tracker's stamp. MASTER_TRACKER.md is generated with `<!-- generated-at: YYYY-MM-DD HH:MM -->` near the top (per `references/VIEW_GENERATION.md`). Parse it. If both the comment-style stamp and a body line like `> Last updated: …` are present, the comment-style stamp wins. If it can't be parsed, treat the tracker as stale.
+2. **Substance — the canonical thread payload, one call per rendered line.** For every thread that renders its own detail line, load `load_thread_knowledge(workspace_root, thread_id, "brief-line")` per the MANDATORY per-project context load below — never a by-hand pass over the substrate for the thread's state. The payload is the live truth the tracker line is a snapshot of, so it runs on every fire regardless of the stamp's age; the stamp decides only how much of the tracker's own copy survives (step 3). Threads collapsed into "+ N more", hidden personal threads, and threads the digest does not name get NO call.
+3. Override from the payload:
+   - **Next Action** → if the payload's `open_commitments` carries a confirmed row whose `ts` is newer than the tracker stamp, the newest such row's title is the Next. Otherwise keep the tracker's Next Action. (Within 24h of the stamp the tracker's copy is current enough to stand when the payload adds nothing newer.)
+   - **Waiting On** → the payload's open rows owned by someone other than the user ARE the wait, named via `owner_name`. A tracker Waiting On item that no longer appears among the payload's open rows is closed — the projection is closure-folded at the source — so clear it. Never re-derive a closure from a by-hand read of the ledger.
+   - **Decisions on the record** → only when the line's shape calls for one (a decision-shaped Next), from the payload's `decisions` section — supersession already folded, so a superseded call never renders as the standing one.
+4. **Recency — the fire's own map, never a per-thread rescan.** **Last touched** and the `⚠️ quiet [X] days` marker come from the `thread_activity` map Step 3d already derives ONCE for every thread in the fire (`derive_from_events` with `activity_types=BOOKEND_ACTIVITY_TYPES, honor_reclassifications=True` — the canonical, reclassification-honoring fold), rendered with `to_local(ts, workspace_path=<WORKSPACE>)` per B1. A thread the map has no entry for keeps the tracker's value. One fold, one day-count per fire (F-54): the per-project line and the drop rules quote the same recency, and the payload carries no recency section on purpose.
 5. The overlay is read-only. **Do not** regenerate MASTER_TRACKER.md from morning-brief — that's workspace-manager's job. Just render with the freshened values.
 
-If the tracker stamp can't be parsed, treat the tracker as stale and apply the overlay to every thread. Better to over-overlay than to ship a digest that says "quiet since April 25" about work that happened today.
+Better to over-overlay than to ship a digest that says "quiet since April 25" about work that happened today.
 
 (The original acceptance criteria for this overlay are recorded in references/HISTORY.md § Overlay bug class.)
+
+### MANDATORY context load — the per-project lines (READER1 ADOPT4)
+
+The morning brief is a many-thread, SCHEDULED surface. Exactly ONE leg of it adopts the canonical reader: the per-project detail lines — where the digest names a project and summarizes its state and open items (Step 3a above; the org-section and Other-relationships lines in Step 4). Route ONLY the per-project detail lines through this load. Everything else on the surface is UNTOUCHED by it: the calendar / email / chat legs of Step 2, the Needs Attention lane and every other pack block (alarm lines, CHANGED lines, header counts, watchdog, dark-surface and schedule-refresh lines, "Captured since your last close", money sentences, the queue pointer), the confirm pointer, reminders, the persona-governed opener, and the scheduled fire's bootloader and orchestrator plumbing. The substrate-side context for each rendered line comes from the canonical reader, in ONE call per line:
+
+```python
+# Canonical preamble — resolve the plugin root first (CONTRACT Rule 22).
+import sys
+from pathlib import Path
+SCRIPTS = Path(PLUGIN_ROOT) / "shared" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+from load_thread_knowledge import load_thread_knowledge
+# ONE call per thread that renders its own detail line — none for a thread
+# collapsed into "+ N more", a hidden personal thread, or a thread the digest
+# does not name. The profile is the tightest in the table by design.
+payloads = {tid: load_thread_knowledge(workspace_root, tid, "brief-line")
+            for tid in threads_to_render}
+```
+
+Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
+
+- **Thread state comes from the JSON payload and ONLY from that payload.** The line's open items, its Waiting On, a decision-shaped Next, the thread's status and key contact — payload sections (`identity`, `open_commitments`, `decisions`). Do not re-derive a thread's state with a freelance substrate read: no direct events read for thread facts, no re-reading `entities.json` for what `identity` already carries, and no reading SESSION_NOTES or a project brain (Step 1's rule stands — the profile carries no narrative section at all). Even if the user asks you to open a substrate file directly, run the loader instead.
+- **Names, never ids.** Payload rows carry resolved display names beside their ids (`owner_name`, `org_name`, `key_contact_name`); render the names — never surface a raw `person_`/`org_` id to the CEO. **A null name is not license to fall back to the id.** When a row's name field is empty (the id didn't resolve), render it as "an unnamed contact" — plus the row's own event count if the payload carries one, e.g. "an unnamed contact (6 events)" — and point at the fix in words, not tokens: "say `cleanup` to resolve it." The id itself never prints, in the row or in the nudge.
+- **If the payload doesn't carry it, the line doesn't claim it.** A thread fact absent from the payload is absent from the line — omit the fragment (omit-don't-pad); never backfill from a by-hand substrate read. A line with nothing to add beyond the tracker's copy renders the tracker's copy.
+- **Degraded, one clause at most.** When `payload["degraded"]` is non-empty for a thread, that thread's line renders from the tracker snapshot alone (its pre-payload shape); if the gap changes what the line says, note it in one plain-language clause on that line — never an internal code, never a section of its own, never a per-thread roll call of gaps.
+- **Held extractions never become a line item.** This profile's open-commitments rows are the CONFIRMED set (the held_disclosed split); the unconfirmed extractions held back are counted in the payload's `coverage.needs_review_held`. On THIS surface that count is not printed per line — the header's `unconfirmed` bucket already carries the workspace-wide number from the counting API, and the confirm pointer is its handoff — so the per-line count is simply not rendered. Never promote a held guess into the open list, and never let one shape a Next.
+- **No swept narrative, by construction.** The brief is a scheduled surface and never narrates unconfirmed machine notes: the profile carries no narrative section, and its `origin: swept` exclusion is ON as defense in depth. Nothing swept can reach a brief line through this payload.
+- **Connector material stays a separate stage (§0.6).** Live connector reads (mail, calendar, chat) are Step 2's legs and merge into the DIGEST, never into the payload — the reader complements connector retrieval, never replaces it.
+
+**Trust gating (§5c.5 — the line-71 ruling; key on `coverage.gauge.state == "ready"`):**
+
+- `coverage.gauge.state == "ready"` → the payload is trusted context. Its provenance and coverage notes may inform the digest's EXISTING disclosure lines. Surface behavior is otherwise unchanged.
+- Any other state (`not_ready`, `unmeasured`) → render the line exactly as specified above, with NO coverage apparatus: no gauge language, no coverage line, no ask-first question, no mention of measurement state — on the line, anywhere in the digest, or in chat. Until R3's backfill lands, coverage disclosure activates only on gauge-READY threads.
+- `coverage.empty_payload` true → the substrate holds nothing reachable for this thread. Do NOT fabricate thread context: the line renders the tracker snapshot's values alone, and where the tracker has none the thread renders as its name and status only. Never render thread context the payload did not supply.
 
 ### Step 3a-bis: Read what the reconcile-sent task closed — the brief is a READER, not the reconciler (v3.18.12 — Bug #98-v3)
 
@@ -685,6 +720,13 @@ Overnight inbox ([X] worth your attention from [Y] total)
 [Top 5 max. Apply self-reply filter per v3.11.1 — drop threads where M is latest sender. Show sort reasoning inline so the order isn't a black box.]
 
 [Primary focus org sections — one per is_primary_focus=true org.]
+[Every thread line below — here, under nested holdings, and under Other
+relationships — is a PER-PROJECT DETAIL LINE: its Next / open items / Waiting On
+come from that thread's canonical payload (Step 3a + the MANDATORY per-project
+context load — one `"brief-line"` call per line rendered, none for a thread
+collapsed into "+ N more"); its Last touched / quiet-N come from the Step 3d
+thread_activity map. Names, never ids. The payload never adds a line the layout
+rules below would not render, and never grows the brief past its caps.]
 
 Command Room
   External (business / GTM)
@@ -777,14 +819,14 @@ The Morning Brief chat IS the surface. The `morning-brief` orchestrator (registe
 
 ## Tone
 
-Direct and specific, like a calm chief of staff. **Opening order (the one canonical answer):** (1) the personified intro line from the Personification section — `"Morning, {first_name} — {brain_name} here with today's read."` — renders first and is the ONLY greeting; (2) the `Morning briefing — [Day, Month DD, YYYY]` header; (3) the synthesis lead. No other greeting anywhere ("Good morning!" / "Here's what's happening!" — never). The content itself reads as friendly plain English, not engineer status-board ("3 commitments aging past 14 days" is fine; "DRIFT: 3 commitments aged past threshold" is not). Per CONTRACT Rule 4 — no all-caps section headers, no scores, no internal mechanism names.
+Direct and specific, like a calm chief of staff. **Opening order (the one canonical answer):** (1) the personified intro line from the Personification section — `"Morning, {first_name} — {brain_name} here with today's read."` — renders first and is the ONLY greeting permitted, AND it renders only if the persona block permits: when the workspace CLAUDE.md persona block (`## How {brain_name} talks to …`) says skip pleasantries or its Never-line forbids greeting openers, omit the intro line and open directly with (2); (2) the `Morning briefing — [Day, Month DD, YYYY]` header; (3) the synthesis lead. No other greeting anywhere ("Good morning!" / "Here's what's happening!" — never). The content itself reads as friendly plain English, not engineer status-board ("3 commitments aging past 14 days" is fine; "DRIFT: 3 commitments aged past threshold" is not). Per CONTRACT Rule 4 — no all-caps section headers, no scores, no internal mechanism names.
 
 ## Gotchas
 
 - **Scheduling threads close on the calendar, not the inbox.** The latest-sender check (Step 3c) only sees email replies. When the user answers "can we set a time?" by creating a calendar invite, the thread's newest *message* is still the counter-party's, so the email-only check keeps surfacing "reply to X to lock the time" for days (the v3.14.7 live bug). Step 3c-bis is the fix — for any scheduling-flavored "ball is on you" item you MUST also check the calendar and drop it if the user organized / the counter-party accepted a matching event. A counter-party invite-acceptance is a close signal, not inbox noise.
 - **Don't duplicate "what's going on."** This briefing is shorter and proactive — it fires before the user asks. "What's going on" is the comprehensive interactive version. They complement each other.
 - **Don't update the tracker.** This is read-only toward the tracker, entities, and views — surface what you find; don't change them. The user decides what to act on during their actual work session. **Read-only does NOT cover passive capture** (BUG-8244): the Writer Contract's `interaction`/`meeting` event emissions from connector reads are MANDATORY on every fire — skipping them because "the brief is read-only" starves relationship cadence and every last-touch computation.
-- **Don't read session notes.** The tracker has enough for a morning scan. Per-project deep dives happen on "go [project]." Keep this fast.
+- **Don't read session notes.** The tracker has enough for a morning scan. Per-project deep dives happen on "go [project]." Keep this fast. The per-project context load (Step 3a) keeps this true by profile — it carries no narrative section, so it never opens a session-notes file either.
 - **Respect quiet periods.** If the tracker shows no active projects (all Steady State or Archived), output a minimal briefing: "Quiet day. Calendar: [events]. Inbox: [count] new." Don't pad.
 - **Weekend handling.** If configured as a weekday-only scheduled task, this won't fire on weekends. If the user manually says "morning briefing" on a weekend, run it normally — they're choosing to check in.
 - **First-time setup.** If `_hq/MASTER_TRACKER.md` doesn't exist, this workspace hasn't been set up. Output: "Looks like your Command Room isn't set up yet. Say 'set up my command room' and I'll walk you through it." Don't attempt to scan.

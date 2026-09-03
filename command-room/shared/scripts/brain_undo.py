@@ -539,6 +539,93 @@ def _reverse_thread_split(workspace_root, change, *, undone_by, source_skill):
     return {"status": "undone", **result, "event": ev}
 
 
+def _reverse_binding_backfill(workspace_root, change, *, undone_by,
+                              source_skill):
+    # SPEC_BACKFILL1 §M.4 — reverse ONE accepted re-bind from the R3
+    # binding backfill. Additive, same doctrine as `_reverse_thread_split`
+    # directly below (the idiom this mirrors): the backfill's own
+    # `reclassification` stays in history; this appends a RESTORING
+    # `reclassification` with the SAME `supersedes_seq` re-asserting the
+    # ORIGINAL envelope — later reclassifying seq wins the fold, so the
+    # event reads exactly as it did before the batch.
+    #
+    # Moved-since guard (the THREADANN1 F5 posture): if a LATER write moved
+    # this event somewhere other than what THIS batch set — the primary no
+    # longer matches, or the additively-added target thread is no longer
+    # among the event's refs — that later move is the newer truth; restoring
+    # here would clobber it. Skip honestly, no write. (Shared limitation
+    # with thread_split: a later ADDITIVE change on top of this batch's is
+    # folded away by the restore — the guard catches moves, not additions.)
+    #
+    # NO gauge rebuild here — a per-change rebuild would walk the whole
+    # substrate N times per sitting. `backfill_bindings.undo` (the CLI
+    # wrapper) rebuilds ONCE after the batch; a bare `undo` through another
+    # surface leaves the artifact honestly stale (`events_max_seq` says so)
+    # until the next scheduled refresh.
+    supersedes_seq = change.get("supersedes_seq")
+    old_primary = change.get("old_primary_thread_id")
+    new_primary = change.get("new_primary_thread_id")
+    target_tid = change.get("target_thread_id")
+    if supersedes_seq is None or not target_tid:
+        raise BrainUndoError(
+            "binding_backfill reversal needs supersedes_seq + "
+            "target_thread_id on the reclassification event (the backfill "
+            "stamps both in `data`)")
+    from event_gate import append_event
+    from event_refs import threads_of
+    from thread_activity import apply_reclassifications
+
+    current_events = _load_events(workspace_root)
+    current = None
+    for _fev in apply_reclassifications(current_events):
+        if (isinstance(_fev, dict) and _fev.get("seq") == supersedes_seq
+                and _fev.get("type") != "reclassification"):
+            current = _fev
+            break
+    if current is not None:
+        current_primary = current.get("primary_thread_id")
+        if current_primary != new_primary:
+            return {"status": "undone", "skipped": "moved_since_backfill",
+                    "supersedes_seq": supersedes_seq,
+                    "current_primary_thread_id": current_primary,
+                    "note": "this event was moved again after the backfill "
+                            "— the later move is the newer truth; left in "
+                            "place"}
+        if (new_primary != target_tid
+                and target_tid not in threads_of(current)):
+            return {"status": "undone", "skipped": "moved_since_backfill",
+                    "supersedes_seq": supersedes_seq,
+                    "note": "the backfilled related-ref was already removed "
+                            "by a later write — left in place"}
+
+    related = change.get("old_related_thread_ids")
+    if not isinstance(related, list):
+        related = []
+    restoring = {
+        "type": "reclassification",
+        "source_skill": source_skill,
+        "supersedes_seq": supersedes_seq,
+        "related_thread_ids": related,
+        "classification_confidence": 1.0,
+        "data": {
+            "old_primary_thread_id": new_primary,
+            "new_primary_thread_id": old_primary,
+            "old_related_thread_ids": related,
+            "new_related_thread_ids": related,
+            "reason": "brain undo — binding backfill reversed",
+        },
+    }
+    # A bound-nowhere accept's original primary is NONE — the key is omitted
+    # rather than stamped null (the fold reads an absent key as None either
+    # way; a null in the canonical slot is a write-shape smell).
+    if old_primary:
+        restoring["primary_thread_id"] = old_primary
+    ev = append_event(_events_path(workspace_root), [restoring],
+                      holder=source_skill)
+    return {"status": "undone", "supersedes_seq": supersedes_seq,
+            "restored_to": old_primary, "event": ev[0]}
+
+
 def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
                                        source_skill):
     # T2.2 (backlog sweep) — reverse an expire/skip tombstone on a person
@@ -718,6 +805,21 @@ REVERSERS: dict[str, dict] = {
     # a split is propose-first and human-confirmed by design (ruling 4's
     # "never auto-executed"), the same UNCONFIRM1/day_intent/
     # prep_brief_thread_backfill reasoning above.
+    # SPEC_BACKFILL1 §M.4 — the R3 binding-backfill one-shot's own `bkf_`
+    # batch. NEVER a candidate for `brain_proposals.AUTO_ALLOWED`: the
+    # one-shot is 100% propose-confirm BY M'S RULING (spec §0.1 — no auto
+    # lane exists in the module at all), the same UNCONFIRM1/thread_split
+    # reasoning as its neighbors; any future auto tier lives in a separate
+    # maintenance job gated on the §V measured-precision gate, never here.
+    "binding_backfill": {
+        "reverse": _reverse_binding_backfill,
+        "reverses_via": "reclassification (restoring, supersedes the SAME "
+                        "original event — later seq wins the fold)",
+        "description": "release a re-bind the R3 binding backfill applied "
+                       "— the backfill's own reclassification stays in "
+                       "history; the original envelope reads back through "
+                       "the fold",
+    },
     "thread_split": {
         "reverse": _reverse_thread_split,
         "reverses_via": "reclassification (restoring, supersedes the "
@@ -837,7 +939,13 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
                     # the ORIGINAL related ids back instead of erasing
                     # them with [].
                     "supersedes_seq", "old_primary_thread_id",
-                    "new_primary_thread_id", "old_related_thread_ids"):
+                    "new_primary_thread_id", "old_related_thread_ids",
+                    # SPEC_BACKFILL1 §M.4 — the binding_backfill reverser's
+                    # second anchor: WHICH thread this batch bound the event
+                    # to (for a bound-elsewhere row the primary pair is
+                    # unchanged, so the target is the only way to know what
+                    # to check before restoring).
+                    "target_thread_id"):
             if data.get(key) is not None:
                 change[key] = data[key]
         out.append(change)
@@ -1010,6 +1118,9 @@ _CLASS_PHRASES = {
     "chat_dismissal": "muted a row",
     "prep_brief_thread_backfill": "bound a past brief to a thread",
     "thread_split": "moved an event back after a thread split",
+    # BACKFILL2 — the binding-review widget's `bkf_` batch, listed by a bare
+    # `undo` in a fresh chat. Never written by an auto detector.
+    "binding_backfill": "filed a past record under its project",
 }
 
 

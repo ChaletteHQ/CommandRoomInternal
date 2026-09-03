@@ -1,7 +1,7 @@
 ---
 name: commitment-backlog-sweep
 surfaces: both
-description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles, then asks about the rest in ONE digest. Add `show me first` to preview. The drain also runs weekly, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'."
+description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles, then asks about the rest in ONE digest. Add `show me first` to preview. Both drains also run on their own, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'."
 ---
 
 # commitment-backlog-sweep
@@ -24,9 +24,11 @@ registers nothing, and it does not touch the schedule set-up. It runs because
 somebody asked.
 
 **The two DRAINS are the exceptions, and neither of them is that pass.** Since
-REVSCHED1 the review-tier drain runs weekly, silently, as a job inside the
-`maintenance` task the workspace already has (Review amnesty, section E); since
-SWEEPSCHED1 the confirmed-tier drain runs the same way (Amnesty, section D).
+REVSCHED1 the review-tier drain runs silently as a job inside the
+`maintenance` task the workspace already has — daily since UNCONFEXP1 (M's
+2026-08-30 ruling: an unconfirmed extraction nags for its short window, then
+closes out on its own; Review amnesty, section E); since
+SWEEPSCHED1 the confirmed-tier drain runs the same way, weekly (Amnesty, section D).
 Both still add no scheduled task of this skill's own and both still register
 nothing: each rides that existing taskId. Nothing else above this line ever
 fires on a schedule.
@@ -454,15 +456,19 @@ plan = sweep.review_expiry_plan(WORKSPACE, user_person_id=user_id)
 ```
 
 The bar resolves itself, in this order: the number in the phrase, else the
-workspace's configured `review_expiry_days`, else **14 days**. That is a much
-shorter fuse than the confirmed pile's 30, deliberately: a guess nobody answered
-in two weeks is a guess whose context has gone, and waiting will not improve the
-answer. `review_expiry_days` is a separate config key from `age_out_days` — one
+workspace's configured `review_expiry_days`, else **2 days**
+(`UNCONFIRMED_NAG_DAYS` — UNCONFEXP1, from M's 2026-08-30 ruling: an
+unconfirmed extraction "can nag for like a day or two", then it closes out).
+That is a much shorter fuse than the confirmed pile's 30, deliberately: a
+guess nobody answered while the conversation was still warm is a guess whose
+context has gone, and waiting will not improve the answer — the old
+escalate-and-nag posture measurably produced accumulation, not answers.
+`review_expiry_days` is a separate config key from `age_out_days` — one
 number for both piles would silently move whichever was tuned second.
 
-`plan["ok"]` is False in two cases. Under **3 days** the bar is below the floor:
+`plan["ok"]` is False in two cases. Under **1 day** the bar is below the floor:
 say `plan["reason"]` and stop, because anything younger is what the workspace
-heard this week and one confirm is the wrong shape for it. And when the primary
+heard this morning and one confirm is the wrong shape for it. And when the primary
 user cannot be resolved it refuses outright — "yours vs not yours" computed
 against nobody is a wrong answer, not a smaller one.
 
@@ -579,24 +585,33 @@ the door WOULD have reached — i.e. how many are being held out by an undo and
 nothing else. Say it when the user asks why the pile is not draining. Do not act
 on it.
 
-### E — the drain also runs weekly, on its own
+### E — the drain also runs daily, on its own
 
-Since REVSCHED1 the expiry runs as a silent weekly job inside the already-
+Since REVSCHED1 the expiry runs as a silent job inside the already-
 registered `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`,
-`review-expiry`, Sunday, last of the Sunday group). It plans internally, applies
+`review-expiry`) — DAILY since UNCONFEXP1, served at the day's first fire,
+before the morning brief (M's 2026-08-30 ruling: an unconfirmed extraction
+nags for its short window — `UNCONFIRMED_NAG_DAYS`, default 2 days — and
+then closes out on its own, superseding the old escalate-until-answered
+posture). It plans internally, applies
 when the plan is non-empty, and writes one receipt either way — the empty plan is
 a silent no-op. Nothing about that path is yours to fire from a chat: the
 dispatcher decides due-ness in code, and the registered prompt runs
 `commitment_backlog_sweep.py review-expiry --apply`.
 
-Two consequences for what you say to the user:
+Three consequences for what you say to the user:
 
 - when the job's `receipt_line` is non-empty, the next staff meeting / end-of-day
   reads THAT ONE LINE out verbatim and nothing else. It names the count, the
   window, the standing `undo`, and `needs your call` for what remains;
+- the morning brief's CHANGED line discloses a lapse the same way every other
+  brain act is disclosed: `change_feed` counts the written `review_expired`
+  closures and renders ONE quiet line with the count and the `undo`
+  affordance — only when something actually lapsed, never filler;
 - the scheduled path never uses the door. It always runs the ordinary closed-door
   window, so a row the user put back stays put back until they say the door
-  phrase themselves.
+  phrase themselves (the undo is movement, so it also restarts that row's
+  quiet clock for a fresh window).
 
 ### What these two verbs are NOT
 

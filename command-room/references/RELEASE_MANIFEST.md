@@ -47,11 +47,14 @@ Each manifest enumerates these and the update-bridge plays them in order.
 | `detector_module` | yes | Python module under `shared/scripts/release_detectors/`. Imported via `from release_detectors.<module> import ...`. Use `release_detectors.always` for items that should always show to users coming from a prior version. |
 | `detector_function` | yes | Function name inside the module. Signature: `def fn(events_jsonl_path: str) -> dict`. Returns `{"applies": bool, "context": {key: value, ...}}`. The context dict provides values for `prompt_template` substitution. |
 | `prompt_template` | yes | User-facing prompt shown when the detector returns `applies: True`. Uses Python `.format(**context)` — every placeholder must be a key in the detector's returned `context` dict (or `{count}`/`{by_shape}` etc. that the detector always returns). Plain English; no dev-internal noise. |
-| `action` | yes | One of `instruct_user`, `announce_only`, or `auto_apply` (v3.14.4+). See the per-action contracts below. |
+| `action` | yes | One of `instruct_user`, `announce_only`, `auto_apply` (v3.14.4+), or `apply_workspace_migration` (MIGRATE2, 2026-09-02 — built dormant; see below). See the per-action contracts below. |
 | `action_module` | only for `auto_apply` | Python module under `shared/scripts/release_actions/`. Imported via `from release_actions.<module> import ...`. |
 | `action_function` | only for `auto_apply` | Function name inside the action_module. Signature: `def fn(events_jsonl_path, workspace_root, detector_context) -> dict`. See the action contract below. |
-| `notice_template` | only for `auto_apply` | Plain-English notice shown to the user AFTER the action runs (replaces `prompt_template` for `auto_apply` items). Formatted with `.format(**merged_context)` where `merged_context = {**detector_context, **action_context}`. |
+| `notice_template` | `auto_apply` and `apply_workspace_migration` | Plain-English notice shown to the user AFTER the action runs (replaces `prompt_template` for these items). Formatted with `.format(**merged_context)` where `merged_context = {**detector_context, **action_context}` (for `apply_workspace_migration`: the result's `counts` plus `next_line`). |
 | `fallback_prompt_template` | optional, only for `auto_apply` | Used if the action fails AND returns `fallback_prompt` in its result. Falls back to surfacing as an `instruct_user`-style prompt. If omitted, action failures are logged silently with no user surface. |
+| `migration_module` | only for `apply_workspace_migration` | Python module under `shared/scripts/release_actions/` (must start with `release_actions.`). |
+| `migration_function` | only for `apply_workspace_migration` | Function inside the migration_module. Signature: `def fn(workspace_root, *, apply: bool, answers: dict | None = None) -> dict`. See the migration contract below. |
+| `blocked_template` | optional, only for `apply_workspace_migration` | Plain-English disclosure shown when the dry-run finds blocking rows and the bridge STOPS without seeding. Formatted with the result's `counts` (`{blocking}` etc.); the runner appends the rows themselves. Omitted → the runner's built-in plain-English default. |
 
 ## Action types
 
@@ -60,6 +63,18 @@ Each manifest enumerates these and the update-bridge plays them in order.
 **`instruct_user`** (v3.4.5+) — the prompt itself tells the customer what to type or click. No skill-side execution. Use ONLY for actions that genuinely need customer input the system can't provide (assistant name, workspace shape choice, opt-in/out decisions). Default to `auto_apply` first; reach for `instruct_user` only when you've ruled it out.
 
 **`auto_apply`** (v3.14.4+) — the bridge runs the action silently and surfaces a plain-English notice about what it did. Use for: substrate hygiene, default-registration of new chats/skills, additive backfills, anything where the system can pick the right answer and the customer doesn't need to be involved in the decision.
+
+**`apply_workspace_migration`** (MIGRATE2, 2026-09-02 — **DORMANT**: no shipped manifest references it; activation = a future manifest item + the operator's go) — a versioned workspace-FILE migration the bridge runs under its full safety posture, via `shared/scripts/bridge_migration_runner.run_apply_workspace_migration(item, workspace_root, answers=None, manifest_version=None, candidates=None)`. The first (and today only) migration behind it is the anchor seed, `release_actions.migrate_seed_anchors:run_bridge_migration` (MIGRATE1's hash-pinned, journaled, receipted, rollback-able seed of the five memory sections into every safe PROJECT_BRAIN.md). Where `auto_apply` is for substrate hygiene the customer never sees, this action is for migrations that touch files the customer reads — so the posture is stricter:
+
+- **Never on a decoy root.** A workspace path with `_archive` or `_demo-framework` as a component is refused outright (HQRESOLVE1 / G43), as is any root without `_hq/data/entities.json`. Nothing is written or logged into a refused tree.
+- **Refuse-all if canonical is ambiguous.** When the bridge passes its full `_hq` candidate list (`candidates=`), the runner prunes decoys and takes the shallowest; two candidates tied at the shallowest depth → refused, never a lexical pick.
+- **Dry-run first, always.** Apply happens only if the dry-run plans cleanly with ZERO blocking rows. Otherwise the blocking rows are surfaced to the user as an `instruct_user`-style disclosure (`blocked_template` + the rows) and the run stops having seeded nothing.
+- **One question, once.** If the migration reports it needs the customer's answer (status `needs_answer` with a `question` spec — today: the `brain_candor` knob unset on this workspace), the bridge asks that ONE plain question, records the reply with `bridge_migration_runner.record_answer(workspace_root, question, reply)`, and re-invokes with `answers={key: value}`. The answer is written to the skill_config store BEFORE the first seed. A workspace already carrying the knob (the operator's own) is never asked.
+- **Receipts** land in the workspace's own `_hq/data/migrate1/` — the same directory the CLI uses, so the CLI `--rollback` reads the same fsynced journal. The runner writes `migrate1_receipt_bridge.json` beside MIGRATE1's dry-run/apply receipts, mirroring their shape (generated_at / mode / run_id / root / counts / row lists) plus the bridge verdict and the `undo_command`.
+- **Events**: `plugin_update_remediation` with `outcome: applied | blocked` (counts, rows, receipt path, undo command); `release_action_failed` / `release_action_import_failed` on errors. A `noop` (already applied) writes nothing and surfaces nothing — the `auto_apply` idempotency shape.
+- **Completion line** = `notice_template` formatted with counts + the migration's honest `next_line` (what the customer will and will not see), followed by the undo line (the bridge restores from backup on request; the restore refuses any file edited since).
+
+Migration-function contract (`migration_function`): `fn(workspace_root, *, apply, answers=None) -> dict` returning at least `status` (`planned | needs_answer | blocked | noop | applied | error`), `ran`, `counts{planned, seeded, refused, blocking}`, `blocking_rows[{rel, issue}]`, `question` (when `needs_answer`), `next_line`, `undo_command`, `error`. `apply=False` must be a pure read. The function itself must enforce its own question gate on `apply=True` (refuse to seed without the answer) — the runner orchestrates, the migration owns its safety. Idempotent: a second run reports `noop`.
 
 Safety constraint on `auto_apply`: actions MUST be additive, reversible, and no-data-loss. Substrate-rewriting actions (corruption recovery, backfills) are allowed because they quarantine sidecar-style — original data is preserved. Anything destructive (delete, overwrite without backup) MUST stay `instruct_user` so the customer explicitly consents.
 
@@ -142,7 +157,7 @@ The MVP shipping in v3.4.5 only supported `instruct_user` and `announce_only`. v
 
 `instruct_user` is no longer the safe default. Default to `auto_apply` first; reach for `instruct_user` only when the action genuinely needs customer input. The remaining `instruct_user` items in shipped manifests (brain_name_prompt, workspace_shape_question) genuinely need the customer's choice — they are not jargon-y migrations.
 
-Other planned actions like `apply_workspace_migration` (auto-append to CLAUDE.md) and `install_artifact` (auto-pin a sidebar dashboard) can be added as needed using the same action-module pattern.
+`apply_workspace_migration` landed 2026-09-02 (MIGRATE2) as a dormant action — see "Action types" above. Other planned actions like `install_artifact` (auto-pin a sidebar dashboard) can be added as needed using the same action-module pattern.
 
 ## Constraints on `prompt_template` content
 
@@ -160,4 +175,4 @@ Plain user-facing English. The same Rule 9 that governs the existing update-brid
 - Bug fixes where the fix takes effect on the next scheduled fire with zero user action and the user doesn't need to know → empty items.
 - Bug fixes where the user has accumulated state that should now surface (Sam-class) → write an `instruct_user` item with a detector that counts the recovered surface.
 - New skills users should discover → write an `announce_only` item using the `always_applies` detector.
-- Workspace-file migrations → write an `instruct_user` item for now; once the `apply_workspace_migration` action lands, swap to it.
+- Workspace-file migrations → `apply_workspace_migration` (dormant until the operator commissions the first manifest item; the anchor seed is the first migration behind it). Until that item lands, an `instruct_user` item remains the fallback.

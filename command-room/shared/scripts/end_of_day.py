@@ -4682,7 +4682,8 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
                            late_tier: Optional[str] = None,
                            capture_leg: Optional[dict] = None,
                            phase_ledger: Optional["PhaseLedger"] = None,
-                           extra_data: Optional[dict] = None) -> dict:
+                           extra_data: Optional[dict] = None,
+                           now=None) -> dict:
     """THE receipt. ONE per fire, written BEFORE the post (BRIEFFIX1 Item C).
 
     Carries the id map (`confirm_ids`) and the day-intent PROPOSAL, so a tap
@@ -4713,6 +4714,12 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     pack build is one leg of the fire, and the capture leg, the close leg and
     the post sit outside it unless the orchestrator timed them into the same
     ledger. `phase_order` says which legs are represented.
+
+    SPEC FLAKEFIX2 — `now` is handed straight to `receipts.log_receipt`, which
+    measures the receipt's SLOT PROVENANCE against it. Omitted (every shipped
+    call site), the provenance reads the real clock exactly as before. A
+    fixture that compares two receipt payloads pins it; see that function's
+    own note on why a minute boundary otherwise moves `slot_delta_minutes`.
     """
     from receipts import log_receipt, normalize_fired_via
 
@@ -4917,7 +4924,7 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     return log_receipt(workspace_root, TASK_ID,
                        fired_via=normalize_fired_via(fired_via) or "scheduled",
                        surfaced=surfaced, duration_ms=duration_ms,
-                       late_tier=late_tier, extra_data=data)
+                       late_tier=late_tier, extra_data=data, now=now)
 
 
 # ---------------------------------------------------------------------------

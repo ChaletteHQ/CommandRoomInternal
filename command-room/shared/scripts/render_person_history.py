@@ -51,6 +51,17 @@ from cru_match import (  # noqa: E402
 )
 from event_time import event_time  # noqa: E402
 
+# TZDATE2 (same class as walk finding F-12): every date this view renders —
+# timeline rows, first/last-touch stats, how-we-met, lineage and fact dates —
+# is the WORKSPACE-local day via the canonical tz.localize_date. A raw [:10]
+# slice stamped the UTC date, so an evening-Pacific meeting dated a day late.
+# UTC-slice stub only when tz.py itself is missing (stripped install).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 CONFIDENCE_FLOOR = 0.40
 
 # Touch semantics mirror render_people_view._last_interaction: meetings and
@@ -142,9 +153,11 @@ def _humanize(text: str, name_idx: dict[str, str]) -> str:
     return _INTERNAL_ID_RE.sub(_sub, str(text)).strip()
 
 
-def _event_date(ev: dict) -> str:
+def _event_date(ev: dict, workspace_path: str | None = None) -> str:
+    """Workspace-local event date. Callers MUST pass the workspace path —
+    without it every timestamp falls through to the UTC slice (F-12)."""
     ts = event_time(ev)
-    return (ts or "")[:10]
+    return _localize_date(ts or "", workspace_path)
 
 
 def _confident(ev: dict) -> bool:
@@ -303,6 +316,7 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
     the single assembly both the view writer and person_timeline_points
     read (one derivation, every surface — the F-54 lesson)."""
     ws = Path(workspace_root)
+    ws_str = str(ws)  # TZDATE2 — threaded to every date-rendering call
     view = _load_collections(ws)
     name_idx = _name_index(view)
 
@@ -319,7 +333,7 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
     retracted = _retracted_seqs(events)
 
     touches = [e for e in confident if e.get("type") in TOUCH_TYPES]
-    touch_dates = [d for d in (_event_date(e) for e in touches) if d]
+    touch_dates = [d for d in (_event_date(e, ws_str) for e in touches) if d]
 
     first_touch = touch_dates[0] if touch_dates else None
     last_touch = touch_dates[-1] if touch_dates else None
@@ -331,20 +345,20 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
         data = first.get("data") if isinstance(first.get("data"), dict) else {}
         text = _humanize(data.get("title") or data.get("summary") or "", name_idx)
         label = TIMELINE_LABELS.get(first.get("type") or "", "Touchpoint")
-        how_we_met = f"{_event_date(first)} — {label.lower()}" + (f": {text}" if text else "")
+        how_we_met = f"{_event_date(first, ws_str)} — {label.lower()}" + (f": {text}" if text else "")
 
     timeline = []
     for ev in reversed(confident):
         label = _timeline_label(ev, name_idx)
         if label:
-            timeline.append({"date": _event_date(ev) or "(undated)", "label": label})
+            timeline.append({"date": _event_date(ev, ws_str) or "(undated)", "label": label})
 
     lineage = []
     for ev in events:
         if ev.get("type") not in LINEAGE_TYPES:
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        date = _event_date(ev) or "(undated)"
+        date = _event_date(ev, ws_str) or "(undated)"
         if ev.get("type") == "person_role_changed":
             frm, to = data.get("from_role"), data.get("to_role")
             org = name_idx.get(data.get("org_id") or "", "")
@@ -371,7 +385,7 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
         if not fact:
             continue
         cat = data.get("category") if data.get("category") in CATEGORY_LABELS else "other"
-        facts.setdefault(cat, []).append(f"{fact} ({_event_date(ev) or 'undated'})")
+        facts.setdefault(cat, []).append(f"{fact} ({_event_date(ev, ws_str) or 'undated'})")
 
     org_id = person.get("primary_org_id") or person.get("org_id") or (
         (person.get("affiliation_ids") or [None])[0]
@@ -383,7 +397,8 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
         "role": person.get("role"),
         "org_name": name_idx.get(org_id, None) if org_id else None,
         "how_we_met": how_we_met,
-        "first_touch": first_touch or (person.get("first_seen") or "")[:10] or None,
+        "first_touch": first_touch
+        or _localize_date(person.get("first_seen") or "", ws_str) or None,
         "last_touch": last_touch,          # derived — never the stored field
         "touch_count": len(touches),
         "cadence_days": cadence,

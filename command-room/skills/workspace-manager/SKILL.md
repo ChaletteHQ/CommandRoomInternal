@@ -84,9 +84,9 @@ Workspace-manager is the catch-all. When a turn doesn't cleanly fire a specialis
 1. **Explicit lifecycle command** (new project, end session, let's work, what's going on, prep call, archive, etc.) → execute the matching section below.
 2. **Specialist skill matched cleanly** → step aside, let that skill run. (workspace-manager still silently updates activity counters but doesn't take the turn.)
 2a. **Day-intent phrasing** (SPEC BK1) → the MUST-language gate above already took the turn. Steps 3 and 4 are not reachable for `tomorrow is about [X]` / `today is about [X]` / `what's tomorrow about`, name or no name — a day-intent that mentions an org is still a day-intent, not a request to open that org's thread.
-3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware; pass `include_open_proposals=True` per the gate above). The helper returns a confidence-sorted match (tiers + confidences live in `shared/ENTITY_RESOLVE_PROTOCOL.md`, never re-explained here). If a tier-1 or tier-2 match returns, load that context and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. An `open_proposal` hit follows the gate's proposal-surface shape — never a cold "who is that?". **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — that's the 2026-05-20 routing-miss class this step exists to prevent (see references/HISTORY.md).** Await the user's next instruction after loading.
+3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware; pass `include_open_proposals=True` per the gate above). The helper returns a confidence-sorted match (tiers + confidences live in `shared/ENTITY_RESOLVE_PROTOCOL.md`, never re-explained here). If a tier-1 or tier-2 match returns, load that context — when the match is a tracked THREAD, the substrate side comes through the MANDATORY catch-all context load below (one reader call) — and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. An `open_proposal` hit follows the gate's proposal-surface shape — never a cold "who is that?". **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — that's the 2026-05-20 routing-miss class this step exists to prevent (see references/HISTORY.md).** Await the user's next instruction after loading.
 3a. **Deal-thread handoff (SPEC PIPE1, D11).** When the resolver's match (step 3 or 4) lands on a thread with `kind: "deal"` — "where are we with the Beacon Logistics deal", "status on the Acme pilot" — load it and hand the turn to pipeline-tracker's single-deal view (stage, days in stage, next step or the missing-next-step flag, value, recent activity) instead of the generic thread status. `go [deal name]` navigation itself stays here; the STATUS rendering for a deal is pipeline-tracker's.
-4. **Name-mention + action signal** — phrases like "prep", "follow up on", "status", "draft", "what did we decide with" paired with a name → load the name's context and route to the matching specialist (call-prep / follow-up-ritual / etc.).
+4. **Name-mention + action signal** — phrases like "prep", "follow up on", "status", "draft", "what did we decide with" paired with a name → load the name's context (a THREAD match loads through the MANDATORY catch-all context load below — same one-call rule as step 3) and route to the matching specialist (call-prep / follow-up-ritual / etc.).
 5. **Ambiguous** (no name, no clear intent — "help", "catch me up", "what now") → see **"Step 5 — Ambiguity handling (strict shape)"** below. The bug shape this prevents: emitting 4 open-ended clarifying questions instead of ONE question with concrete options.
 
 ### Step 5 — Ambiguity handling (strict shape)
@@ -102,6 +102,38 @@ When Step 5 fires, the response shape is constrained (v3.13.1+ enforcement). The
 - **Substrate before questions.** If the input mentions any name that could match a person/org/project, run `entity_resolve.py` first (step 3 above). Never ask clarifying questions on a name-bearing turn before checking the resolver. Content questions like *"what's the current offer?"* must never substitute for context that's already on disk.
 
 **Self-check before emitting:** if you're about to ask more than one question, or any of your questions is open-ended, stop. Either (a) collapse to one question with concrete options, (b) take a default and tell the user what you did, or (c) you missed a substrate check — re-run step 3 against the input.
+
+### MANDATORY context load — the catch-all thread lane (READER1 ADOPT3)
+
+When a catch-all ladder turn (step 3 or step 4 above — "pull up [name]", "status on [name]", "catch me up on [name]", or any loose input whose resolver match is a tracked THREAD) needs substrate-side thread context, that context comes from the canonical reader, in ONE call:
+
+```python
+# Canonical preamble — same as the go lane's required call sequence.
+import sys
+from pathlib import Path
+SCRIPTS = Path(PLUGIN_ROOT) / "shared" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+from load_thread_knowledge import load_thread_knowledge
+payload = load_thread_knowledge(workspace_root, thread_id, "catch-all")
+```
+
+A PERSON or ORG match keeps its own lanes (person history / org rollup renderers, people-crm handoffs) — this call is the THREAD lane only. Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
+
+- **Thread knowledge comes from the JSON payload and ONLY from that payload.** Do not re-derive thread context with a freelance substrate read: no direct events read for thread facts, no re-reading `entities.json` for what the payload already carries, no reading SESSION_NOTES directly for the narrative — the payload's `recent_activity` section (rows + session-notes blocks) is the feed. Even if the user asks you to open a substrate file directly, run the loader instead.
+- **Names, never ids.** Payload rows carry resolved display names beside their ids (`owner_name`, `person_names`, `org_name`, `key_contact_name`); render the names — never surface a raw `person_`/`org_` id to the CEO. **A null name is not license to fall back to the id.** When a row's name field is empty (the id didn't resolve), render it as "an unnamed contact" — plus the row's own event count if the payload carries one, e.g. "an unnamed contact (6 events)" — and point at the fix in words, not tokens: "say `cleanup` to resolve it." The id itself never prints, in the row or in the nudge.
+- **If the payload doesn't carry it, the response doesn't claim it.** A thread fact absent from the payload is absent from the response — omit the block (omit-don't-pad) or say plainly that the record holds nothing on it; never backfill from a by-hand substrate read.
+- **Degraded disclosure, one sentence.** When `payload["degraded"]` is non-empty, note the gap in one plain-language sentence where it affects an answer — never an internal code.
+- **Held extractions are disclosed, never shown as open items.** This profile's open-commitments rows are the CONFIRMED set (the held_disclosed split); the payload's `coverage.needs_review_held` carries the count of unconfirmed extractions held back. When that count is non-zero and open items are on screen, disclose it in one plain line ("N unconfirmed items are waiting in needs-your-call") — never promote a held guess into the open list.
+- **Swept narrative arrives LABELED and STAYS labeled (§0.7 — the owner catch-all keeps it).** Session-notes blocks whose heading carries `origin: swept` are IN this payload, each carrying its label ("origin: swept — unconfirmed narrative"). The label survives all the way to the response posture: present that content as captured-but-not-yet-confirmed, in the label's own terms — never strip the label, never present a swept block's content as confirmed fact, and never carry it into a durable file or an outbound deliverable (the outbound profiles exclude it at the source for exactly that reason).
+- **Cross-thread rows keep their labels too.** The catch-all person-graph expansion is mandatory (§0.4 — the sibling-thread landmine class); its rows arrive labeled "related, from [thread]" / "related, unbound" and are presented as related context under that label — never merged silently into the thread's own record.
+- **Connector material stays a separate stage (§0.6).** Live connector reads (mail, chat, transcripts, Drive) merge into the ANSWER, never into the payload — the reader complements connector retrieval, never replaces it.
+
+**Trust gating (§5c.5 — the line-71 ruling; key on `coverage.gauge.state == "ready"`):**
+
+- `coverage.gauge.state == "ready"` → the payload is trusted context. Its provenance and coverage notes may inform the response's EXISTING disclosure lines. Surface behavior is otherwise unchanged.
+- Any other state (`not_ready`, `unmeasured`) → answer directly, exactly as specified, with NO coverage apparatus: no gauge language, no coverage line, no ask-first question, no mention of measurement state — in the response or in chat. Until R3's backfill lands, coverage disclosure activates only on gauge-READY threads.
+- `coverage.empty_payload` true → the substrate holds nothing reachable for this thread. Do NOT fabricate thread context: say plainly that the record holds nothing yet, or build from the live connector reads alone. Never render thread context the payload did not supply.
 
 ### "customize command room" — the Layer 4 menu (SCL1)
 
@@ -466,7 +498,7 @@ Quick-load mode. The user is sitting down and wants to start working — load co
 3. Read `_hq/BUSINESS_CONTEXT.md` (first time per session only)
 4. If CLAUDE.md exists in workspace root, Cowork already loaded it — its hot cache (people, projects, terms) covers most quick questions without extra reads
 
-**Decision-driving reads in `let's work` mode** — if the user follows up with a question that needs current state (e.g. "what's overdue?", "did Sam reply?", "what changed yesterday?"), do NOT answer from the tracker. Switch to the canonical source: scan `_hq/data/events.jsonl` directly. The tracker is sufficient for "do I have a project called X?" but NOT for "is X still waiting on me?"
+**Decision-driving reads in `let's work` mode** — if the user follows up with a question that needs current state (e.g. "what's overdue?", "did Sam reply?", "what changed yesterday?"), do NOT answer from the tracker. Switch to the canonical source: a question about ONE tracked project/person/org is the catch-all ladder's step 3/4 shape — thread context arrives through `load_thread_knowledge(workspace_root, thread_id, "catch-all")` per the MANDATORY catch-all context load above (never a by-hand substrate read); a workspace-WIDE question (everything overdue, everything that changed) reads the canonical substrate the way "what's going on" Step 1a specifies. The tracker is sufficient for "do I have a project called X?" but NOT for "is X still waiting on me?"
 
 **What NOT to do:**
 - No connector scans (Gmail, Calendar, Slack, Drive, Granola)
@@ -508,7 +540,34 @@ This is the contract: when M (or any user) says `go [name]`, the next assistant 
 1. SESSION_NOTES + PROJECT_CONTEXT.md
 2. PROJECT_BRAIN.md (people, gotchas, active threads, custom workflows, trigger aliases) — skip silently if not present
 3. MASTER_TRACKER.md row — orientation only, per `references/SOURCE_OF_TRUTH.md`. The row's `Last touched` / `Next Action` / `Waiting On` columns are the projected values; step 4 below supplies the canonical freshened values that drive any surface decision the `go` response includes.
-4. `_hq/data/events.jsonl` — last 14 days of events with `primary_thread_id` matching this project (cached substrate for warm `go` calls). **This is the canonical source for "what's current."** If the tracker row's `<!-- generated-at -->` stamp is older than 24h, use the max ts of these events as `Last touched`, the most recent `data.next_step` as `Next Action`, and filter `Waiting On` by checking for `commitment_resolved` / `thread_resolved` events that close prior open items. Same overlay shape as `morning-briefing` Step 3a.
+4. **The canonical thread payload — MANDATORY context load (READER1 GORENDER1).** Every piece of substrate-side thread context this `go` response consumes — project identity, the verbatim live-state block, open commitments bound to the project, recent project activity + session-notes narrative, and decisions on the record — comes from the canonical reader, in ONE call:
+
+   ```python
+   # Canonical preamble — same as the required call sequence below.
+   import sys
+   from pathlib import Path
+   SCRIPTS = Path(PLUGIN_ROOT) / "shared" / "scripts"
+   sys.path.insert(0, str(SCRIPTS))
+
+   from load_thread_knowledge import load_thread_knowledge
+   payload = load_thread_knowledge(workspace_root, thread_id, "go")
+   ```
+
+   **This is the canonical source for "what's current."** Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
+
+   - **Thread knowledge comes from the JSON payload and ONLY from that payload.** Do not re-derive thread context with a freelance substrate read: no direct events read for project context, no re-reading `entities.json` for thread facts the payload carries, no reading SESSION_NOTES directly for the narrative — the payload's `recent_activity` events (14-day window, the same warm-`go` window as before) and session-notes blocks are the feed. Even if the user asks you to open a substrate file directly, run the loader instead.
+   - **Names, never ids.** Payload rows carry resolved display names beside their ids (`owner_name`, `person_names`, `org_name`, `key_contact_name`); render the names — never surface a raw `person_`/`org_` id to the CEO. **A null name is not license to fall back to the id.** When a row's name field is empty (the id didn't resolve), render it as "an unnamed contact" — plus the row's own event count if the payload carries one, e.g. "an unnamed contact (6 events)" — and point at the fix in words, not tokens: "say `cleanup` to resolve it." The id itself never prints, in the row or in the nudge.
+   - **If the payload doesn't carry it, the response doesn't claim it.** A thread fact absent from the payload is absent from the response — omit the section (omit-don't-pad) or say plainly that the record holds nothing on it; never backfill from a by-hand substrate read.
+   - **Degraded disclosure, one sentence.** When `payload["degraded"]` is non-empty, note the gap in one plain-language sentence where it affects a block — never an internal code.
+   - **Freshness overlay:** if the tracker row's `<!-- generated-at -->` stamp is older than 24h, the payload supplies the canonical values — the newest timestamp in the payload's `recent_activity` section as `Last touched`, the newest next-step value carried on those rows as `Next Action`, and the payload's `open_commitments` section (already closure-folded) as the live `Waiting On` set. Same overlay shape as `morning-briefing` Step 3a, now payload-fed.
+   - **Connector material stays a separate stage (§0.6).** Steps 5–8 below (mail, chat, Granola, Drive) run exactly as specified, after the payload returns, and merge into the response — the reader complements connector retrieval, never replaces it.
+   - The payload's `live_state` section is the canonical live-state block VERBATIM — the same content the Live State refresh below renders into the brain. The refresh still runs (it owns the brain-side WRITE); the payload is the read.
+
+   **Trust gating (§5c.5 — the line-71 ruling; key on `coverage.gauge.state == "ready"`):**
+
+   - `coverage.gauge.state == "ready"` → the payload is trusted context. Its provenance and coverage notes may inform the response's EXISTING disclosure lines. Surface behavior is otherwise unchanged.
+   - Any other state (`not_ready`, `unmeasured`) → build the response directly, exactly as specified, with NO coverage apparatus: no gauge language, no coverage line, no ask-first question, no mention of measurement state — in the response or in chat. Until R3's backfill lands, coverage disclosure activates only on gauge-READY threads.
+   - `coverage.empty_payload` true → the substrate holds nothing reachable for this thread. Do NOT fabricate thread context: omit the substrate-fed blocks and build the response from the connector legs alone (steps 5–8 — those run regardless). Never render thread context the payload did not supply.
 5. **Mail** (Gmail or Outlook, if connected) — recent threads from people in the brain's People table or PEOPLE.md, since the last session note's date
 6. **The declared chat backend** (if connected) — recent messages mentioning project or key people. Resolve with `tool_discovery.discover_chat_tool`; `connector_adapters.chat.resolve_chat_provider` returning None means there is no chat backend and this source is skipped silently. **Read-only and source-linked (SPEC CHATSCAN1 §C)** — a `go [name]` query is a live read at ask time: it closes nothing, captures nothing, and every surfaced line carries its link back to the message per `_hq/CONVENTIONS_SOURCE_LINKS.md`. Append `plan_scan(provider)["coverage_note"]` when the backend's sweep is partial.
 
@@ -556,6 +615,20 @@ It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-S
 
 **Surface the rendered block — mandatory (v3.18.2+, Bug #86).** After the renderer runs, READ BACK the `<!-- LIVE-STATE:people -->` region from `PROJECT_BRAIN.md` and surface it in the **People** block of the first response (see the response shape below). The **"Proposed — confirm to add"** line in particular MUST appear in the response whenever the renderer produced one — it is the actionable handle for the confirm-gate; if it's rendered into the brain but not surfaced, the confirm-people workflow dead-ends (Bug #86 — see references/HISTORY.md). Surface the block from the brain region; do not re-derive the People list by hand.
 
+**Memory-anchor render — runs on EVERY `go [project]`, after the Live State refresh (GORENDER1, coverage-gated).** The five memory sections MIGRATE1 seeded into `PROJECT_BRAIN.md` (`where-things-stand`, `what-we-decided`, `whats-owed`, `landmines-judgment`, `how-we-work-this`) are rendered from the canonical reader (profile "go-render") by the deterministic anchor renderer:
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/render_brain_anchors.py "<workspace_root>" "<thread_id>"
+```
+
+The renderer self-gates and self-limits — read its JSON result, never work around what it reports:
+
+- **Coverage gate (§5c.5):** it writes ONLY when the thread's persisted gauge verdict is READY. On `not_ready` / `unmeasured` it leaves the seeded anchors byte-identical — that IS the contract the seed placeholder promises, not a failure. Say nothing about it in chat (no gauge language on ungated threads, per the trust-gating rules above).
+- **Dirty-check:** an unchanged payload rewrites nothing (`skipped_clean`). Do not force a re-run, and NEVER hand-write content into the five anchor regions to "help" — the renderer owns their interiors, exactly like the `LIVE-STATE:people` block.
+- **Hand-edit refusal:** if a human typed content inside an anchor, the renderer refuses that anchor (`refused_hand_content` / `refused_hand_anchor`) and the human's text survives untouched. When that happens, disclose it in one plain sentence ("I left the [section] section as you wrote it") and move on — never overwrite it, never paste payload content over it.
+- **Candor:** the landmines-judgment section renders full candor by default (operator ruling 2026-08-31 — these files are private to the workspace). A client fleet can be set to `process-only` at onboarding via the `brain_render` skill-config (key `brain_candor`), which withholds person-sensitive judgment lines from the rendered file and says so in one counted line; the renderer handles this itself — never re-add withheld lines from chat context.
+
 **Entity history on `go` (SPEC HIST1 D7).** When the resolver's match is a PERSON (`go Sam Sample` — ENTITY_RESOLVE gated exactly like every name-bearing turn), render/refresh the durable person history and surface the compiled block instead of the thread shape:
 
 ```bash
@@ -574,7 +647,7 @@ Read the written view back from `_hq/views/people/` and surface it: how-we-met, 
 ```
 [Project name] · [stage / status]
 
-Last activity: [Mon DD] — [one-line summary from latest SESSION_NOTES entry or recent event]
+Last activity: [Mon DD] — [one-line summary from the payload's latest session-notes block or most recent event]
 
 Where things stand:
   [3-6 bullets covering current status, what's in progress, what's blocked]
@@ -585,18 +658,18 @@ People:
   (omit the People block only when the brain has no <!-- LIVE-STATE:people --> region at all)
 
 Open items / commitments:
-  [bullets from SESSION_NOTES open items + events.jsonl open commitments tied to this project, with owner + due if any]
+  [bullets from the payload's `open_commitments` rows + open items in its session-notes blocks, with owner + due if any — names, never ids]
 
 New since last session:
   [bullets from connector scans: emails, Slack, Granola transcripts, Drive doc updates]
   (omit this block entirely if nothing new found)
 
 Heads up:
-  [any gotchas from PROJECT_BRAIN, any anomalies from events.jsonl in the last 14d]
+  [any gotchas from PROJECT_BRAIN, any anomalies in the payload's `recent_activity` events]
   (omit if none)
 
 Next actions:
-  [2-4 bullets — what M flagged in last SESSION_NOTES or what's logically next given the open commitments]
+  [2-4 bullets — what the payload's latest session-notes block flags, or what's logically next given its open commitments]
 
 Also active under [org]: [Sibling A], [Sibling B]. Say `go [name]` to switch.
   (only when org has multiple active sub-threads — omit otherwise)

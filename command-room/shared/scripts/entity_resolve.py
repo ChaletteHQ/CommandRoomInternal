@@ -70,6 +70,15 @@ from typing import Any, Literal
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from entities_io import entities_collection  # noqa: E402
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 try:
     from read_alarm import SubstrateReadError, record_read_alarm, remedy_line
 except ImportError:  # pragma: no cover
@@ -565,7 +574,7 @@ def _match_open_proposals(workspace_root: Path, query: str) -> list[ResolveResul
     out: list[ResolveResult] = []
     for r in newest_by_name.values():
         name = (r.get("name") or "").strip()
-        date = str(r.get("captured_ts") or "")[:10]
+        date = _localize_date(str(r.get("captured_ts") or ""), workspace_root)
         out.append(ResolveResult(
             entity_type="open_proposal",
             record=r,

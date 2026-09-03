@@ -68,6 +68,217 @@ COMMITMENT_CLOSURE_ID_FIELDS = tuple(
     field for scope, field in COMMITMENT_CLOSURE_ID_CHAIN if scope == "data"
 ) + COMMITMENT_CLOSURE_SEQ_FIELDS
 
+# THE decision-supersede target chains (SUPERSEQ1, walk finding F-11,
+# 2026-08-29 — the THIRD instance of writer/reader field drift after BUG-8330
+# item 3 and the 2026-08-13 decision-log drift). Same one-list-not-two
+# reasoning as COMMITMENT_CLOSURE_ID_CHAIN: the schema/gate accept a
+# TOP-LEVEL `supersedes_seq` on any event ("if this event corrects or
+# overrides an earlier event, its seq number"), and decision-revisit's write
+# contract documents that field as THE link between a superseding write and
+# the ruling it retires — but the decision-log renderer honored only the
+# data-scope spellings on `decision_superseded` events, so a ruling
+# superseded ONLY via the field rendered TWICE (old and new both active)
+# until the other mechanism retired it. The attended walk hit this live on
+# restamped rulings. Readers bind to these chains through
+# `decision_supersede_targets`; the SUPERSEQ1 guard test asserts the chains
+# cover the schema/gate-accepted shapes AND that both readers
+# (render_decision_log, decision_match) are bound to this one implementation.
+#
+# Each limb is (scope, field): scope "data" reads ev["data"][field], scope ""
+# reads ev[field]. Order is read-side priority; all matching limbs key the
+# reader's maps (tolerant multi-key join, deduplicated by row identity).
+
+# Shapes on a decision OVERLAY event (`decision_superseded`) naming the
+# ruling it retires.
+DECISION_SUPERSEDE_ID_CHAIN = (("data", "decision_id"),)
+DECISION_SUPERSEDE_SEQ_CHAIN = (
+    ("data", "original_decision_seq"),
+    ("data", "supersedes_seq"),
+    ("data", "decision_event_seq"),
+    ("", "supersedes_seq"),
+)
+
+# Shapes on a `decision` event itself — a RESTAMP: the new ruling carries the
+# seq of the one it replaces (decision-revisit SKILL contract: "`supersedes_seq`
+# field links the two"). Deliberately narrower than the overlay chain:
+# `original_decision_seq` / `decision_event_seq` are overlay-target vocabulary
+# and name nothing on a decision row.
+DECISION_RESTAMP_SEQ_CHAIN = (
+    ("", "supersedes_seq"),
+    ("data", "supersedes_seq"),
+)
+
+
+# Shapes on a `decision_resolved` event naming the ruling it closes out — the
+# EXECUTION closer ("we signed it", "implementation kicked off"), as opposed to
+# a supersede ("a later ruling replaced it"). DECSHAPES1 (2026-09-02).
+#
+# WHY THIS IS THE SAME TWO CHAINS. `decision_resolved` and
+# `decision_superseded` are both decision OVERLAY events, they are handled by
+# the same `if et in (...)` limb in decision_match's loader, the gate applies
+# no decision-specific validation to either, and the schema's top-level
+# `supersedes_seq` ("if this event corrects or overrides an earlier event, its
+# seq number") is accepted on both. SUPERSEQ1 noted the resolved closer was
+# still id-only in decision_match and left it — the builder writes
+# `data.decision_id` always. But "the current builder only writes one spelling"
+# is exactly the sentence that preceded all three prior instances of the drift
+# class: the reader is narrower than what the gate accepts, and the day some
+# writer (a repair pass, a migration, a hand append) uses an accepted spelling,
+# the ruling is closed on the ledger and open in the reader with nothing
+# reporting anything. So the resolved closer reads the SAME accepted
+# vocabulary the supersede closer does, both readers bind to one walker, and
+# the guard drives every limb through both.
+DECISION_RESOLVE_ID_CHAIN = DECISION_SUPERSEDE_ID_CHAIN
+DECISION_RESOLVE_SEQ_CHAIN = DECISION_SUPERSEDE_SEQ_CHAIN
+
+# THE self-status shapes on a `decision` event — the WRITE-TIME status
+# snapshot (DECSHAPES1, closing SUPERSEQ1 delta #6/#7).
+#
+# THE READER/READER DISAGREEMENT THIS ENDS. `decision_match.load_open_decisions`
+# has always honored a decision's own `data.status` — anything other than
+# "superseded"/"resolved" is open — reading it through its `_decision_field`
+# alias table (`status`, `state`; data scope first, then top level). The
+# decision-log renderer never looked at the field at all, so the SAME decision
+# was closed for the matcher and ACTIVE in the customer-facing view. That is
+# the drift class with the readers swapped: not writer-vs-reader, but
+# reader-vs-reader over a field one of them alone knows about.
+#
+# WHY THE NAIVE FIX IS WRONG. The obvious repair — "renderer: if status ==
+# superseded, render superseded" — inverts latest-signal-wins. The status is
+# stamped at CREATE time and never updated (nothing in the vocabulary rewrites
+# an appended event); a `decision_reaffirmed` written afterwards is the exact
+# event a human reaches for when they read the log and disagree with it, and
+# WALKFIX1 FR-3 made supersede non-terminal precisely so that repair works. A
+# self-status honored unconditionally would be terminal again — and worse than
+# the bug it fixes, because it cannot even be pointed at by a repair event.
+#
+# THE FOLD. The self-field is a SIGNAL DATED AT THE DECISION'S OWN EVENT TIME,
+# folded into the same latest-signal-wins ordering as every other closer. A
+# reaffirm written LATER out-ranks it (the ruling is back); a reaffirm written
+# EARLIER does not (it predates the statement it would be overturning). The
+# decision's own time is the honest stamp: that is when the writer made the
+# claim, and it is the earliest any signal on this decision can be — so a
+# self-status is out-ranked by every genuine later repair and out-ranks nothing
+# that came after it.
+#
+# Alias order mirrors `decision_match._decision_field` exactly (data scope
+# across all aliases, then top level) so the two readers cannot disagree about
+# WHICH field they read, only agree on what it means.
+DECISION_SELF_STATUS_CHAIN = (
+    ("data", "status"),
+    ("data", "state"),
+    ("", "status"),
+    ("", "state"),
+)
+
+# The self-status values that CLOSE a ruling, normalized lowercase. Everything
+# else — "active", "Active", a legacy spelling, or no status at all — is open.
+# Kept as a mapping so the value a writer stamps and the status bucket a reader
+# folds to are one decision, in one place.
+DECISION_CLOSING_SELF_STATUSES = {
+    "superseded": "superseded",
+    "resolved": "resolved",
+}
+
+
+def _walk_supersede_chain(ev, chain):
+    """All non-empty values along a (scope, field) chain, first-seen order,
+    duplicates collapsed (one event spelling a target two ways names ONE
+    target)."""
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    out = []
+    for scope, field in chain:
+        holder = data if scope == "data" else ev
+        value = holder.get(field)
+        if value in (None, ""):
+            continue
+        if not any(value == seen for seen in out):
+            out.append(value)
+    return out
+
+
+def decision_supersede_targets(ev):
+    """(target_ids, target_seqs) this event names as superseded rulings.
+
+    - `decision_superseded`: every accepted spelling — id chain + seq chain,
+      both scopes.
+    - `decision`: the restamp link only (`supersedes_seq`, either scope),
+      excluding its own seq — a decision can never retire itself.
+    - any other type / non-dict: ((), ()) — nothing else is a
+      decision-supersede carrier.
+
+    THE single implementation both decision readers bind to (SUPERSEQ1). Do
+    not re-derive these fields in a reader — that is the drift class this
+    function retires.
+    """
+    if not isinstance(ev, dict):
+        return ((), ())
+    etype = ev.get("type")
+    if etype == "decision_superseded":
+        return (
+            tuple(_walk_supersede_chain(ev, DECISION_SUPERSEDE_ID_CHAIN)),
+            tuple(_walk_supersede_chain(ev, DECISION_SUPERSEDE_SEQ_CHAIN)),
+        )
+    if etype == "decision":
+        own_seq = ev.get("seq")
+        seqs = tuple(
+            s for s in _walk_supersede_chain(ev, DECISION_RESTAMP_SEQ_CHAIN)
+            if own_seq is None or s != own_seq
+        )
+        return ((), seqs)
+    return ((), ())
+
+
+def decision_resolve_targets(ev):
+    """(target_ids, target_seqs) this event names as RESOLVED (closed-out)
+    rulings.
+
+    `decision_resolved` only — every accepted spelling, the same id + seq
+    chains the supersede closer reads (see DECISION_RESOLVE_ID_CHAIN for why
+    they are the same two chains). Any other type / non-dict: ((), ()).
+
+    THE single implementation both decision readers bind to (DECSHAPES1).
+    """
+    if not isinstance(ev, dict):
+        return ((), ())
+    if ev.get("type") != "decision_resolved":
+        return ((), ())
+    return (
+        tuple(_walk_supersede_chain(ev, DECISION_RESOLVE_ID_CHAIN)),
+        tuple(_walk_supersede_chain(ev, DECISION_RESOLVE_SEQ_CHAIN)),
+    )
+
+
+def decision_self_status(ev):
+    """The CLOSING self-status a `decision` event stamps on itself, normalized
+    to "superseded" / "resolved" — or None when the decision is open.
+
+    Reads DECISION_SELF_STATUS_CHAIN in priority order (data scope first, then
+    top level), first non-empty value wins, matching
+    `decision_match._decision_field` exactly. Comparison is
+    case-insensitive and whitespace-tolerant: legacy writers stamp "Active",
+    and "Superseded" must not read as open just because it is title-cased.
+
+    Only a `decision` event carries a self-status — on an overlay event the
+    `status` field would be the OVERLAY's own state, not the ruling's.
+
+    This is a SIGNAL, not a verdict. Callers fold it at the decision's own
+    event time into latest-signal-wins alongside supersede / resolve /
+    reaffirm; a later reaffirm out-ranks it. See DECISION_SELF_STATUS_CHAIN
+    for why honoring it unconditionally would be wrong.
+    """
+    if not isinstance(ev, dict) or ev.get("type") != "decision":
+        return None
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    for scope, field in DECISION_SELF_STATUS_CHAIN:
+        holder = data if scope == "data" else ev
+        value = holder.get(field)
+        if value in (None, ""):
+            continue
+        return DECISION_CLOSING_SELF_STATUSES.get(str(value).strip().lower())
+    return None
+
+
 # THE non-dismissal closure reasons (SPEC REVAMN1 §0-3). Same one-list-not-two
 # reasoning as the chain above, for a different pair of readers.
 #
@@ -385,6 +596,16 @@ __all__ = [
     "KIND_VALUES",
     "LEGACY_SEQ_ID_RE",
     "COMMITMENT_CLOSURE_ID_FIELDS",
+    "DECISION_SUPERSEDE_ID_CHAIN",
+    "DECISION_SUPERSEDE_SEQ_CHAIN",
+    "DECISION_RESTAMP_SEQ_CHAIN",
+    "DECISION_RESOLVE_ID_CHAIN",
+    "DECISION_RESOLVE_SEQ_CHAIN",
+    "DECISION_SELF_STATUS_CHAIN",
+    "DECISION_CLOSING_SELF_STATUSES",
+    "decision_supersede_targets",
+    "decision_resolve_targets",
+    "decision_self_status",
     "PRE_REGISTRY_FOSSILS",
     "RESOLUTION_REASON_KEY",
     "REVIEW_EXPIRY_REASON",

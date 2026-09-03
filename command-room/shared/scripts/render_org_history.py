@@ -42,6 +42,17 @@ from org_activity import event_org_ids, thread_org_map  # noqa: E402
 from quantify import money_time_tag  # noqa: E402
 from thread_activity import apply_reclassifications  # noqa: E402
 
+# TZDATE2 (same class as walk finding F-12): every date this view renders —
+# timeline rows, first-seen/last-touch stats, people-movement and fact dates —
+# is the WORKSPACE-local day via the canonical tz.localize_date. A raw [:10]
+# slice stamped the UTC date, so an evening-Pacific meeting dated a day late.
+# UTC-slice stub only when tz.py itself is missing (stripped install).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 CONFIDENCE_FLOOR = 0.40
 
 TIMELINE_LABELS = {
@@ -117,9 +128,11 @@ def _humanize(text: str, name_idx: dict[str, str]) -> str:
     return _INTERNAL_ID_RE.sub(_sub, str(text)).strip()
 
 
-def _event_date(ev: dict) -> str:
+def _event_date(ev: dict, workspace_path: str | None = None) -> str:
+    """Workspace-local event date. Callers MUST pass the workspace path —
+    without it every timestamp falls through to the UTC slice (F-12)."""
     ts = event_time(ev)
-    return (ts or "")[:10]
+    return _localize_date(ts or "", workspace_path)
 
 
 def _confident(ev: dict) -> bool:
@@ -253,6 +266,7 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
     """Compile the structured history for one org — the single assembly the
     view writer, `go [org] rollup`, and board-pack-assembler read."""
     ws = Path(workspace_root)
+    ws_str = str(ws)  # TZDATE2 — threaded to every date-rendering call
     doc = _load_entities_doc(ws)
     view = _collections(doc)
     name_idx = _name_index(view)
@@ -271,15 +285,16 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
 
     # Derived recency (D6): events only — the stored last_interaction fossil
     # is never read; a zero-event org keeps first_seen as its only floor.
-    dated = [d for d in (_event_date(e) for e in confident) if d]
+    dated = [d for d in (_event_date(e, ws_str) for e in confident) if d]
     last_touch = max(dated) if dated else None
     meeting_dates = [
-        _event_date(e) for e in confident
-        if e.get("type") == "meeting" and _event_date(e)
+        _event_date(e, ws_str) for e in confident
+        if e.get("type") == "meeting" and _event_date(e, ws_str)
     ]
     cadence = _median_gap_days(meeting_dates)
 
-    first_seen = (org.get("first_seen") or "")[:10] or (dated[0] if dated else None)
+    first_seen = _localize_date(org.get("first_seen") or "", ws_str) \
+        or (dated[0] if dated else None)
 
     # Money tag through the ONE sanctioned tag composer. The grouped money
     # object rides in as item data so its inner (quantify-conventional) keys
@@ -311,7 +326,7 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
         if ev.get("type") != MOVE_TYPE:
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        date = _event_date(ev) or "(undated)"
+        date = _event_date(ev, ws_str) or "(undated)"
         who = _humanize(data.get("canonical_name") or "", name_idx) or \
             name_idx.get(data.get("person_id") or "", "(name on file)")
         if data.get("to_org_id") == org_id:
@@ -336,7 +351,7 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         fact = _humanize(data.get("fact") or "", name_idx)
         if fact:
-            facts.append(f"{fact} ({_event_date(ev) or 'undated'})")
+            facts.append(f"{fact} ({_event_date(ev, ws_str) or 'undated'})")
 
     # Account-value change trail (D4/D10): org_updated carries only the
     # BEFORE snapshot, so the after-state of update i is update i+1's before
@@ -359,7 +374,7 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
         if before_money != after_money and (before_money or after_money):
             tag = money_time_tag({"data": dict(after_money)}, view) if isinstance(after_money, dict) else None
             label = "Account value updated" + (f" — {tag}" if tag else "")
-            money_rows.append({"date": _event_date(ev) or "(undated)", "label": label})
+            money_rows.append({"date": _event_date(ev, ws_str) or "(undated)", "label": label})
 
     timeline = []
     for ev in reversed(confident):
@@ -369,7 +384,7 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
             continue  # a retracted fact disappears from EVERY block (D3/S1)
         label = _timeline_label(ev, name_idx)
         if label:
-            timeline.append({"date": _event_date(ev) or "(undated)", "label": label})
+            timeline.append({"date": _event_date(ev, ws_str) or "(undated)", "label": label})
     if money_rows:
         timeline.extend(reversed(money_rows))
         timeline.sort(key=lambda t: t["date"], reverse=True)

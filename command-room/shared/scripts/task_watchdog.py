@@ -198,6 +198,54 @@ def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:
     return dt
 
 
+# TZDATE3-flagged gap, closed here (IDPOLISH1). Guarded import — survives a
+# stripped install missing tz.py, same posture as brain_proposals._localize_
+# date.
+try:
+    from tz import localize_date as _localize_date
+except ImportError:  # pragma: no cover - defensive only
+    def _localize_date(ts, workspace_path=None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
+
+def _since_display(raw_iso: Optional[str], local_iso: Optional[str], *,
+                    workspace_path=None) -> str:
+    """Workspace-local "since <date>" for a watchdog sentence — DISPLAY
+    ONLY, never fed back into lateness/alarm math.
+
+    `raw_iso` is the receipt's ORIGINAL aware timestamp, from BEFORE
+    `_to_local_naive` stripped its tzinfo (`_last_receipt_times`'s output,
+    kept alongside the machine-local value additively — the id-never-
+    removed convention `load_thread_knowledge._open_rows` also follows).
+    `tz.localize_date` needs that real offset to place the calendar date
+    correctly. The already machine-local `local_iso` carries NO offset —
+    handing it to `tz.to_local` would have it read as UTC and shifted a
+    second time, the exact LATETZ double-hop this module's header warns
+    against (2026-07-28) — so this helper never does that.
+
+    Falls back to the pre-fix machine-local date slice (`local_iso[:10]`)
+    only when `raw_iso` or `workspace_path` isn't available at all — a
+    caller that hasn't passed `workspace_path` keeps its old behavior
+    byte-for-byte. When `workspace_path` IS given but the workspace has no
+    configured tz (or ZoneInfo can't resolve it), `tz.localize_date` itself
+    degrades to the raw ISO's UTC date slice rather than raising — the same
+    no-configured-tz posture TZDATE1-3 already established at every other
+    `localize_date` call site (see `run_tzdate3_test.py`'s "no-TZ
+    workspace" section); this helper doesn't second-guess that.
+
+    Machine-vs-workspace TZ can only ever change which CALENDAR DATE this
+    sentence names — never whether a task is late, caught up, or on
+    schedule; `_to_local_naive` and every comparison against it are
+    untouched. See BUILD_IDPOLISH1_2026-09-02.md for the logic-vs-display
+    classification of every `_to_local_naive` call site.
+    """
+    if workspace_path and raw_iso:
+        localized = _localize_date(raw_iso, workspace_path)
+        if localized:
+            return localized
+    return (local_iso or "")[:10]
+
+
 def _iter_events(workspace_root) -> Iterable[dict]:
     try:
         import events_io
@@ -610,6 +658,21 @@ def check_tasks(
                  default=None)
         for tid, ids in serving.items()
     }
+    # IDPOLISH1 — the same reduction, over the RAW (still tz-aware) receipt
+    # times, purely for the "since <date>" display helper below.
+    # `_to_local_naive` is order-preserving (`astimezone()` never reorders
+    # instants), so this picks the identical winning receipt id per task as
+    # `receipts` above — additive, never consulted by any status/lateness
+    # decision.
+    try:
+        raw_receipts_by_id = _last_receipt_times(workspace_root, receipt_ids)
+    except Exception:
+        raw_receipts_by_id = {}
+    raw_receipts = {
+        tid: max((d for d in (raw_receipts_by_id.get(t) for t in ids) if d is not None),
+                 default=None)
+        for tid, ids in serving.items()
+    }
     try:
         signals = late_signals(workspace_root, receipt_ids)
     except Exception:
@@ -740,6 +803,11 @@ def check_tasks(
             "first_install": tid in FIRST_INSTALL_TASK_IDS,
             "registered": is_registered,
             "last_fired": last_fired.isoformat() if last_fired else None,
+            # IDPOLISH1 — additive, display-only (see _since_display): the
+            # SAME receipt as "last_fired", still tz-aware. Never read by
+            # any status/lateness comparison.
+            "last_fired_raw": (raw_receipts.get(tid).isoformat()
+                               if raw_receipts.get(tid) else None),
             "last_run_at": last_run_at.isoformat() if last_run_at else None,
             "expected": expected_latest.isoformat() if expected_latest else None,
             "next_fire": upcoming.isoformat() if upcoming else None,
@@ -780,6 +848,13 @@ def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
 
     now = now or _now_local()
     receipts = last_receipts(workspace_root, list(MAINTENANCE_JOBS))
+    # IDPOLISH1 — raw (tz-aware) twin of `receipts`, additive and display-
+    # only (see _since_display); never consulted by the never/stale/ok
+    # decision below.
+    try:
+        raw_receipts = _last_receipt_times(workspace_root, list(MAINTENANCE_JOBS))
+    except Exception:
+        raw_receipts = {}
     findings = []
     for job_id, spec in MAINTENANCE_JOBS.items():
         try:
@@ -793,11 +868,13 @@ def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
             status = "stale"
         else:
             status = "ok"
+        raw_last = raw_receipts.get(job_id)
         findings.append({
             "job": job_id,
             "display_name": task_display_name(job_id),
             "status": status,
             "last_receipt": last.isoformat() if last else None,
+            "last_receipt_raw": raw_last.isoformat() if raw_last else None,
             "expected": recent[0].isoformat() if recent else None,
             "second_expected": recent[1].isoformat() if len(recent) >= 2 else None,
         })
@@ -853,7 +930,8 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
         if not flag:
             continue
         name = f["display_name"]
-        since = (f["last_receipt"] or "")[:10]
+        since = _since_display(f.get("last_receipt_raw"), f.get("last_receipt"),
+                                workspace_path=workspace_root)
         since_phrase = f" since {since}" if since else ""
         lines.append(
             f"Your Maintenance task is running, but its {name} pass hasn't "
@@ -1248,7 +1326,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
         else:
             on_schedule.append(r)
 
-    lines = plain_english_lines(reports, binding=binding)
+    lines = plain_english_lines(reports, binding=binding,
+                                workspace_path=workspace_root)
     info_lines = [_caught_up_line(r, now=now) for r in caught_up]
     info_lines += [_first_run_line(r, now=now) for r in first_run]
 
@@ -1314,7 +1393,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None) -> dict:
             "say 'set up command room schedules' to get started."
         )
         if fresh_unregistered:
-            lines = plain_english_lines([], binding=binding)
+            lines = plain_english_lines([], binding=binding,
+                                        workspace_path=workspace_root)
     elif not lines and not caught_up and not first_run:
         newest = max(
             (r for r in on_schedule if r["last_fired"]),
@@ -1540,7 +1620,8 @@ def normalize_prompt_stamp(prompt: str) -> str:
     return _VERSION_STAMP_RE.sub("plugin-version: <normalized>", prompt or "")
 
 
-def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> list[str]:
+def plain_english_lines(reports, *, binding=None, include_ok: bool = False,
+                        workspace_path=None) -> list[str]:
     """One sentence per problem — the ONLY watchdog voice any surface uses.
 
     Facts + the one action, never a cause the watchdog can't know (R3 —
@@ -1550,6 +1631,14 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> l
     AS the schedule's claim ("the schedule shows..."), never as fact — F-39
     proved they land without execution. No jargon, no taskIds, no event
     names — display names + the exact next action.
+
+    `workspace_path` (IDPOLISH1, additive/optional): when passed, the "since
+    <date>" sentence below localizes to the WORKSPACE's configured tz
+    instead of the machine's OS tz (see `_since_display`) — display only;
+    the `late` verdict itself was already decided by `check_tasks` on the
+    machine clock, upstream of this function, and stays that way regardless
+    of this argument. Omitted (the default), this renders byte-identical to
+    before IDPOLISH1.
     """
     lines: list[str] = []
     if binding:
@@ -1587,7 +1676,8 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False) -> l
                     f"permission. Open it in the Scheduled section and press Run Now once."
                 )
         elif r["status"] == "late":
-            since = (r["last_fired"] or "")[:10]
+            since = _since_display(r.get("last_fired_raw"), r.get("last_fired"),
+                                    workspace_path=workspace_path)
             since_phrase = f" since {since}" if since else ""
             if r["receipt_gap"]:
                 lines.append(

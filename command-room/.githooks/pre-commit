@@ -14,6 +14,21 @@
 #
 # v3.12.2 — added alongside the Layer 3 structural name allowlist conversion
 # in tests/run_no_real_customer_names_test.py.
+#
+# HOOKFAIL1 (2026-08-29) — hardened FAIL-CLOSED after a reproduced fail-open:
+# the guard scans the WORKING TREE, and a staged file that was momentarily
+# unreadable there (exclusive Windows lock from a concurrent process) was
+# silently skipped by the scan, so a handoffs/ record carrying real client
+# names committed with exit 0. Changes:
+#   * unique mktemp output file per invocation (the fixed /tmp path bled
+#     stale/foreign output across concurrent hook runs),
+#   * guard tests run under PYTHONUTF8=1 / PYTHONIOENCODING=utf-8 (a cp1252
+#     console crashed the report mid-print),
+#   * staged-vs-worktree parity check: any staged file the hook cannot open
+#     for reading RIGHT NOW blocks the commit (locks and rename windows are
+#     transient — retrying the commit clears a false positive),
+#   * a guard test that exits 0 WITHOUT printing its own "OK" verdict line is
+#     treated as a crashed guard and BLOCKS — never as a pass.
 
 set -e
 
@@ -32,6 +47,40 @@ else
 fi
 
 echo "pre-commit: running privacy guard..."
+
+# Unique per-invocation output file; removed on every exit path.
+OUT="$(mktemp "${TMPDIR:-/tmp}/cr-pre-commit-output.XXXXXX")" || {
+  echo "pre-commit: mktemp failed — blocking (fail-closed)"
+  exit 1
+}
+trap 'rm -f "$OUT"' EXIT
+
+# Staged-vs-worktree parity (fail-closed). The guard tests scan files on
+# disk, not the index: a staged file that is missing or locked in the working
+# tree is INVISIBLE to them, so its staged content cannot be declared clean.
+STAGED_LIST="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)" \
+  || STAGED_LIST="$(git ls-files -c 2>/dev/null)" || STAGED_LIST=""
+STAGED_UNREADABLE=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -d "$REPO_ROOT/$f" ] && continue   # gitlinks/submodules — not scannable files
+  if ! head -c1 -- "$REPO_ROOT/$f" > /dev/null 2>&1; then
+    echo "pre-commit: staged file missing or unreadable in working tree: $f"
+    STAGED_UNREADABLE=1
+  fi
+done <<EOF_STAGED
+$STAGED_LIST
+EOF_STAGED
+if [ "$STAGED_UNREADABLE" -ne 0 ]; then
+  echo ""
+  echo "pre-commit BLOCKED: the privacy scan reads the working tree, so a"
+  echo "staged file it cannot read cannot be cleared. This is usually a"
+  echo "transient lock (AV scan, indexer, concurrent test battery) — retry"
+  echo "the commit. To bypass deliberately: 'git commit --no-verify'"
+  echo "(NOT recommended — privacy leaks ship by accident this way)."
+  exit 1
+fi
+
 cd "$TEST_DIR"
 
 # Run the structural guards. Any failure blocks the commit.
@@ -42,13 +91,26 @@ for test in \
   tests/run_no_md_deliverables_test.py \
   tests/run_no_retired_skills_test.py \
   tests/run_no_jargon_in_customer_surfaces_test.py \
+  tests/run_no_jargon_in_rendered_views_test.py \
   tests/run_event_contract_test.py
 do
   if [ -f "$test" ]; then
-    if ! python "$test" > /tmp/cr-pre-commit-output 2>&1; then
+    # UTF-8 forced: a cp1252 console must never crash a guard mid-report.
+    if PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python "$test" > "$OUT" 2>&1; then
+      # Exit 0 must carry the guard's own "OK" verdict line (all seven print
+      # one). Zero exit WITHOUT it = the guard died without rendering a
+      # verdict (crash-exits-0 class) — block, never pass.
+      if ! grep -q "^OK" "$OUT"; then
+        echo ""
+        echo "=== pre-commit BLOCKED by $test (exit 0 but no OK verdict — crashed guard treated as failure) ==="
+        head -40 "$OUT"
+        echo ""
+        FAILED=1
+      fi
+    else
       echo ""
       echo "=== pre-commit BLOCKED by $test ==="
-      cat /tmp/cr-pre-commit-output | head -40
+      head -40 "$OUT"
       echo ""
       FAILED=1
     fi

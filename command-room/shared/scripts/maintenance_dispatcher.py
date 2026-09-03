@@ -343,17 +343,22 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "description": "ask about projects gone quiet; retire and revive the "
                        "ones the lifecycle rules already decided",
     },
-    # REVSCHED1 §3-2 — the unconfirmed-pile drain. Same Sunday slot, ordered
-    # LAST of the Sunday group and after `lifecycle`, and the order is the
-    # contract for a specific reason: this job argues FROM SILENCE, so it must
-    # read the substrate every other Sunday leg has already finished writing.
-    # A row that identity-reconcile re-owned or lifecycle touched twenty
-    # seconds earlier has moved, and moving is exactly what should keep it out
-    # of a lapse. Running before them would lapse rows the same fire was
-    # busy touching.
+    # REVSCHED1 §3-2 / UNCONFEXP1 — the unconfirmed-pile drain. Ordered after
+    # every substrate-writing leg above it, and the order is the contract for
+    # a specific reason: this job argues FROM SILENCE, so it must read the
+    # substrate the rest of the fire has already finished writing. A row that
+    # a reconcile leg or the session sweep touched twenty seconds earlier has
+    # moved, and moving is exactly what should keep it out of a lapse.
     #
-    # WEEKLY, not weekdaily: the bar is 14 quiet days, so a daily pass would
-    # re-derive the same pile six extra times to find nothing new.
+    # DAILY since UNCONFEXP1 (M's ruling, 2026-08-30: an unconfirmed
+    # extraction "can nag for like a day or two", then it closes out —
+    # superseding REVSCHED1's weekly cadence, which fit the old 14-day bar).
+    # With `UNCONFIRMED_NAG_DAYS = 2` a weekly pass would let a lapsed guess
+    # keep nagging up to 8 days; nominal midnight -> due once per day, served
+    # at the day's FIRST fire (6:45), before the 7:00 brief — so the brief's
+    # CHANGED line can disclose what lapsed the same morning (change_feed).
+    # On Sundays it still runs BEFORE `age-out` (insertion order), which is
+    # that sibling's ordering contract.
     #
     # It rides the already-authorized `maintenance` taskId, so it registers
     # ZERO scheduled tasks on any machine — and, because a job id is not a
@@ -366,18 +371,19 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "skill": "commitment-backlog-sweep review amnesty "
                  "(shared/scripts/commitment_backlog_sweep.py review-expiry "
                  "--apply — dry-run without the flag)",
-        "nominal_cron": "0 17 * * 0",
+        "nominal_cron": "0 0 * * *",
         "description": "lapse unconfirmed captures nobody answered inside the "
                        "review window (reversible, one batch)",
     },
-    # SWEEPSCHED1 — the CONFIRMED-pile drain. Same Sunday slot, ordered
+    # SWEEPSCHED1 — the CONFIRMED-pile drain. Sunday slot, ordered
     # IMMEDIATELY AFTER `review-expiry` and last of the Sunday group, for the
     # same reason `review-expiry` sits where it does and one more besides:
     # it argues FROM SILENCE, so it must read a substrate every other Sunday
-    # leg has already finished writing — and `review-expiry` runs one step
-    # earlier because a row it lapses is one this job then has no business
-    # looking at. Two drains arguing from silence in the same fire have to be
-    # ordered, not interleaved.
+    # leg has already finished writing — and `review-expiry` (daily since
+    # UNCONFEXP1, so due on Sundays too) runs one step earlier because a row
+    # it lapses is one this job then has no business looking at. Two drains
+    # arguing from silence in the same fire have to be ordered, not
+    # interleaved.
     #
     # WEEKLY, not weekdaily: the bar is 30 quiet days, so a daily pass would
     # re-derive the same pile six extra times a week to find nothing new.
@@ -399,6 +405,53 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "nominal_cron": "0 17 * * 0",
         "description": "let agreed work that has gone silent age out "
                        "(reversible, one batch; proposes before it acts)",
+    },
+    # GAUGEJOB1 (memory program R1 prerequisite) — the binding-gauge refresh.
+    # READER1 shipped the writer (`binding_gauge.write_gauge`) and the reader
+    # (`load_thread_knowledge._load_gauge`) with nothing running the writer on
+    # a schedule, so every reader saw the honest "unmeasured" forever. This
+    # job is the missing cadence.
+    #
+    # DAILY, nominal midnight -> due once per day, served at the day's FIRST
+    # fire (6:45), and ordered LAST of the substrate-facing legs — after BOTH
+    # silence-drains — deliberately: the gauge is a pure MEASUREMENT (it
+    # writes only its own `_hq/data/binding_gauge.json` sidecar artifact,
+    # never substrate), so it must read the substrate every writing leg of
+    # this same fire has already finished with, and it stamps the
+    # post-drain events high-water mark (`events_max_seq`) — which is what
+    # keeps the reader's stale_substrate flag honest for the rest of the day.
+    # Daily is affordable: measured 2026-08-31 at live scale (~13k events, 43
+    # threads) a full build_gauge pass — RECL1 fold included — runs ~2.5s.
+    # The artifact's own staleness detection covers intra-day drift between
+    # runs.
+    #
+    # Inserted BEFORE monthly-report so `age-out` keeps its pinned "review-
+    # expiry then age-out, adjacent" ordering contract intact, and the
+    # monthly reporting leg stays the registry's caboose.
+    #
+    # It rides the already-authorized `maintenance` taskId, so it registers
+    # ZERO scheduled tasks on any machine, and a job id is not a
+    # DEFAULT_SCHEDULES key, so `load_schedule_config`'s renamed-predecessor
+    # carry-over cannot reach it (the 2026-08-19 seam). The registered prompt
+    # is UNTOUCHED: this row's `skill` string carries the complete invocation,
+    # and the prompt's step 2 executes each due job's skill in plan order —
+    # the script writes its own pack_run receipt on a CHANGE run and leaves
+    # NO trace on a quiet one (binding_gauge's QUIET-RUN SEMANTICS note: a
+    # quiet receipt would advance the very high-water mark whose standstill
+    # made the run quiet, so on a zero-movement day the job simply stays due
+    # and quietly exits at each fire — a ~2s accepted trade), and it never
+    # says anything to the CEO. Entry point:
+    # `binding_gauge.run_gauge_refresh_job(ws, apply=True)`.
+    "binding-gauge": {
+        "skill": "binding-gauge refresh (shared/scripts/binding_gauge.py "
+                 "<workspace_root> --job --apply — dry-run without --apply; "
+                 "the script writes its own pack_run receipt on a change "
+                 "run, leaves no trace on a quiet one, and surfaces NOTHING "
+                 "to the CEO — its verdicts reach surfaces through "
+                 "load_thread_knowledge)",
+        "nominal_cron": "0 0 * * *",
+        "description": "re-measure per-project binding trust so memory "
+                       "surfaces read a fresh gauge instead of a stale one",
     },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled

@@ -36,7 +36,7 @@ brain_name = get_brain_name(workspace_root)  # "Penelope" by default
 
 ## Surface Shapes
 
-Each customer-facing surface has a canonical opening shape. Skills implement these literally; voice tests (`tests/run_customer_facing_voice_test.py`) check the patterns hold.
+Each customer-facing surface has a canonical opening shape. Skills implement these literally *as the defaults*; voice tests (`tests/run_customer_facing_voice_test.py`) check the patterns hold. **Persona precedence (STYLE1 D6):** when the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`, rendered from the per-client persona store — see § Per-client persona below), the persona OUTRANKS every opening shape in this table, on every surface including scheduled fires. A persona that says skip pleasantries — or whose Never-line forbids greeting openers — means the salutation half of the shape is dropped and the surface opens with its substance. Closing signatures (`— {brain_name}`) survive: they are identity, not pleasantry, and the persona's D5 bounds never strip them.
 
 ### workspace-manager
 

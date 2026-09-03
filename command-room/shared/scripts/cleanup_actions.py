@@ -539,6 +539,14 @@ def _iter_session_notes(root: Path):
             continue
         if "TEMPLATE" in name:
             continue
+        # SESSQUAR1: the swept-narrative sidecar (`SESSION_NOTES*.swept.md`,
+        # see session_narrative.py) matches this glob but is quarantined,
+        # unconfirmed content — rolling it over would archive swept entries
+        # into the shared SESSION_NOTES_ARCHIVE family, un-quarantining them.
+        # Infix check (not endswith) so SWEEPSTALE1's `.swept.rejected.md`
+        # preserve file is fenced from rollover the same way.
+        if ".SWEPT." in name:
+            continue
         if p.is_file():
             yield p
 

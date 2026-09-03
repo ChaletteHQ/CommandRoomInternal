@@ -69,6 +69,11 @@ _OK_STATUSES = frozenset({
     # has been dealt with — the page-set should stop offering it, exactly as
     # it stops offering a closed one.
     "watching",
+    # BACKFILL2: `backfill_widget.apply_choices` — a `not this project` tap
+    # whose rejection LANDED in the binding_backfill_run receipt (the
+    # precision dataset's "no" half). A write that happened and a row that
+    # is dealt with; the page-set should stop offering it.
+    "recorded",
     # DONE1 v5.9.3: `needs_review_queue.done_items` renames its landed closure
     # from the writer's "closed" to the verb's own word — `{"status": "done"}`
     # is a commitment_updated + commitment_resolved pair already on disk. It
@@ -174,6 +179,12 @@ _NOOP_STATUSES = frozenset({
     "already_open", "already_noted",
     "already_actioned", "already_held", "already_unconfirmed",
     "already_undone", "duplicate_open_legacy", "unchanged", "exists", "empty",
+    # BACKFILL2: `backfill_bindings.apply` reached from the binding widget's
+    # rail (`backfill_widget.apply_choices`). `no_op` = nothing adjudicated,
+    # nothing written (the no-auto fence's operational half); `skipped` = a
+    # seq that is no longer an applicable row (already bound, rejected
+    # earlier, or no longer name-matched) — honest no-ops, never failures.
+    "no_op", "skipped",
     # --- PERSONLOOP1: person_candidates.resolve_candidate ---------------------
     #   already_suppressed  the name was already set aside; a second
     #     tombstone for one decision is the 83-duplicate-row class, so the
@@ -198,6 +209,11 @@ _REFUSED_STATUSES = frozenset({
     # to the unknown-status default, so the reason is legible in the source
     # instead of inferred from a fall-through.
     "held_weak_evidence", "held_pending_review", "confirmed_open",
+    # BACKFILL2: the binding widget's snapshot fence — the substrate moved
+    # past the propose snapshot the row's wire id carried, so
+    # backfill_bindings.apply refused and NOTHING was written. Named so the
+    # refusal is a decision on the record, not the unknown-status default.
+    "stale_snapshot",
     # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
     # vocabulary. "error" is already the right outcome for each, but by
     # FALL-THROUGH — and a fall-through is indistinguishable from a status the

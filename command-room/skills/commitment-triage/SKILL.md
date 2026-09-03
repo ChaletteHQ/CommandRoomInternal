@@ -63,9 +63,14 @@ excluded from you-owe/owed-to-you until confirmed.
 `total` — an unconfirmed extraction is a queue member, not an open
 commitment, so it counts in that one tile and nowhere else. This surface
 still pins anything unconfirmed 7+ days in the labelled Unconfirmed block
-below (escalation, never age-buried); every OTHER pending row is out of the
+below; every OTHER pending row is out of the
 age sections entirely and belongs to the **needs-your-call** queue. The
 driver adds the one-line pointer for those — relay it, don't re-derive it.
+**UNCONFEXP1 (2026-08-30, M's ruling):** unconfirmed extractions no longer
+escalate until answered — they nag for `UNCONFIRMED_NAG_DAYS` (default 2
+days) and then lapse automatically via the daily `review-expiry` drain,
+reversibly (one batch, one `undo`). The 7-day pin therefore reaches only
+rows real movement has kept alive past their window.
 
 ## Step 2 — Sort + annotate (the full-list layout, delivered by design in pages)
 
@@ -97,9 +102,13 @@ one giant widget. One page's worth of the layout:
   clustering the view is byte-identical to before CLUSTER1. Nothing here
   auto-merges: that stays confined to `commitment_dedup.auto_merge_eligible`.
 - **Unconfirmed block — renders FIRST, above every age section (v4.6.1
-  W4b escalation; never age-buried):** anything unconfirmed 7+ days pins to
+  W4b escalation):** anything unconfirmed 7+ days pins to
   a dedicated **"Unconfirmed"** section at the TOP of the widget —
-  unconfirmed items don't age into the pool, they escalate to confirmation.
+  unconfirmed items don't age into the pool. Since UNCONFEXP1 (M's
+  2026-08-30 ruling) they also don't escalate until answered: the daily
+  `review-expiry` drain lapses anything past its nag window
+  (`UNCONFIRMED_NAG_DAYS`, default 2 quiet days), reversibly, so this pin
+  reaches only rows real movement kept alive.
   Build it in code: `from confirm_flow import select_unconfirmed_escalation`
   → `esc = select_unconfirmed_escalation(opens, "<now ISO>")`; render
   `esc["pin"]` rows with their `days_unconfirmed` age and `review_reason`

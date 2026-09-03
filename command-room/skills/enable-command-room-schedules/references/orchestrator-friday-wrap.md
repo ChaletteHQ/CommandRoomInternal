@@ -115,7 +115,7 @@ Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/eve
 
 Output the rendered markdown recap as the chat turn body. Follow the exact format from `skills/weekly-recap/SKILL.md` Phase 4 — Headline, Top Decisions, Commitments Captured (You Owe / They Owe), Notable Meetings, Email Threads of Note, New People Surfaced, Anomalies, By-Project Breakdown, What Now. Omit sections with no real content (the skill's "no placeholders" rule).
 
-**Tone:** crisp, direct, no preamble. The recap stands on its own — don't introduce it with "Here's your week" or "Wrapping up the week."
+**Tone:** crisp, direct, no preamble. The recap stands on its own — don't introduce it with "Here's your week" or "Wrapping up the week." If the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`), apply it to the chat framing — it outranks this section's tone defaults (STYLE1 D6).
 
 **Voice match:** if `<WORKSPACE>/_hq/.claude/brand-voice-guidelines.md` exists, match user voice for the "What Now" section. Otherwise neutral professional.
 

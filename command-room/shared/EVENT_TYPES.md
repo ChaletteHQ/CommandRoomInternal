@@ -243,6 +243,15 @@ Hard rules:
   `SESSION_NOTES*.md`; a project with no notes convention gets `session_chapter`
   / recovered-item events only, same as any other silent-skip fence in this
   codebase.
+- **Swept narrative is quarantined until confirmed (SPEC SESSQUAR1,
+  2026-08-28).** A swept compose lands in a SIDECAR next to the notes file
+  (`SESSION_NOTES[_NAME].swept.md`, created only when the notes file itself
+  exists), never inline — composing surfaces that load `SESSION_NOTES` at
+  fire time therefore never see unconfirmed narrative. The "end session"
+  ritual is the confirming touch: `mark_composed(origin="ritual", ...)`
+  promotes the sidecar's entries inline (headings re-marked
+  `origin: swept, confirmed`) via `session_narrative.promote_swept`. The
+  sweep's own `origin="swept"` marker never promotes.
 
 ## Balance lane (SPEC BAL1, 2026-07-19) — personal, m_facing only
 
@@ -394,6 +403,20 @@ precedent (Phase 2 Stage D S6) applied to a different append-only record.
 | `prep_brief_thread_backfilled` | `backfill_prep_briefs.apply_backfill()` (propose-first, `thb_`-batch, `brain_undo`-reversible) | `thread_resolve._meeting_bound_thread_id` (folds it in as an already-resolved binding, same as a `meeting` event's `primary_thread_id` or a `prep_brief`'s own `data.thread_id` — minus any later `prep_brief_thread_backfill_undone` for the same meeting) |
 | `prep_brief_thread_backfill_undone` | `brain_undo`'s registered `prep_brief_thread_backfill` reverser (`undo_batch`, additive tombstone — the backfill marker stays in history) | `thread_resolve._meeting_bound_thread_id` (a tombstoned backfill reads as absent again) |
 | `prep_brief_backfill_run` | `backfill_prep_briefs.apply_backfill()` (ONE receipt per apply run — rows walked, deltas found, applied, unadjudicable; same receipt discipline `exchange_backfill_run` uses) | usage-report, cleanup (Monday-note card-health counts) |
+| `binding_backfill_run` | `backfill_bindings.apply()` (SPEC_BACKFILL1 R3 — ONE receipt per adjudication sitting: applied rows + REJECTED rows with evidence tiers, refused-by-reason counts, and before/after gauge READY; the rejected rows are the hand-labeled precision dataset the §V auto-tier gate is computed from) | `backfill_bindings._rejected_pairs` (re-run idempotency — a rejected (seq, thread) pair is never re-proposed); the §V precision measurement (per-tier accept rates read off receipts) |
+
+The R3 binding backfill's ACCEPTED re-binds are NOT a new type: they ride
+the existing `reclassification` rail (SPEC_BACKFILL1 §0.3 — one hop,
+`supersedes_seq` = the original event, corrected envelope), distinguishable
+forever by `data.origin: "backfilled"` + `data.bind_basis` (the evidence
+string, THREADBIND1's `thread_basis` idiom). Named consumers of the write:
+`binding_gauge.build_gauge` (folds `thread_activity.apply_reclassifications`
+before its walk — the seam landed with BACKFILL1; GAUGEJOB1 adopts the same
+fold) and every `honor_reclassifications=True` reader. Bound-elsewhere rows
+only ever gain an additive `related_thread_ids` entry — the primary is
+never replaced (§0.4, enforced by `backfill_bindings._validate_composed`).
+Undo rides `brain_undo.REVERSERS["binding_backfill"]` (restoring
+reclassification, `bkf_` batch, one gesture per sitting).
 
 Doctrine, mirrored from EXCHBACK1 (`exchange_backfill.py`'s own §0):
 propose-first (nothing changes state without an explicit confirmed meeting id
@@ -1078,6 +1101,92 @@ priority order.
   strong enough to propose on and far too weak to write closures on. The full
   argument and the complete strike set live at `RECOMMEND_ONLY_SUPERSEDES` in
   `shared/scripts/decision_match.py`.
+
+### Decision-supersede target shapes (SUPERSEQ1, walk finding F-11, 2026-08-29)
+
+A decision is retired as superseded through TWO write shapes, and every
+accepted spelling of both is honored by every reader:
+
+- **The overlay shape** — a `decision_superseded` event naming its target by
+  `data.decision_id`, by a data-scope seq spelling (`original_decision_seq` /
+  `supersedes_seq` / `decision_event_seq`), or by the schema's TOP-LEVEL
+  `supersedes_seq` field ("if this event corrects or overrides an earlier
+  event, its seq number").
+- **The restamp shape** — a NEW `decision` event carrying `supersedes_seq`
+  (top level per the schema, or the data-scope drift twin) linking the ruling
+  it replaces. This is decision-revisit's documented write contract
+  ("`supersedes_seq` field links the two"); the new ruling stays active and
+  the old one folds to superseded. A decision naming its own seq folds
+  nothing.
+
+**One vocabulary home:** the chains live in `shared/scripts/event_types.py`
+(`DECISION_SUPERSEDE_ID_CHAIN` / `DECISION_SUPERSEDE_SEQ_CHAIN` /
+`DECISION_RESTAMP_SEQ_CHAIN`), walked by `decision_supersede_targets`. Both
+readers — `render_decision_log._categorize_decisions` (the status fold) and
+`decision_match.load_open_decisions` (the matcher's open list) — bind to that
+one implementation; never re-derive these fields in a reader. This is the
+THIRD instance of writer/reader field drift (BUG-8330 item 3, the 2026-08-13
+decision-log drift): a ruling superseded ONLY via the top-level field
+rendered TWICE — old and new both active — and stayed "open" to the matcher.
+The SUPERSEQ1 guard suite (`tests/run_superseq1_supersede_shapes_test.py`
+§1) asserts chain coverage against the schema and drives BOTH readers
+through every limb; extend the chains there, and the sweep exercises the new
+limb automatically.
+
+### Decision closure and status shapes (DECSHAPES1, 2026-09-02)
+
+SUPERSEQ1 fixed the supersede TARGET shapes and listed two status shapes it
+did not fix. Both are closed here, in the same vocabulary home.
+
+**A decision closes three ways, and every reader honors all three:**
+
+1. **An overlay closer names it** — `decision_superseded` (replaced by a later
+   ruling) or `decision_resolved` (carried out). Both read the SAME accepted
+   target vocabulary — the id chain plus every seq spelling, both scopes —
+   because both are decision overlay events, the gate validates neither, and
+   the schema's top-level `supersedes_seq` is accepted on both. Chains:
+   `DECISION_RESOLVE_ID_CHAIN` / `DECISION_RESOLVE_SEQ_CHAIN`, walked by
+   `decision_resolve_targets`.
+2. **A restamp retires it** — the SUPERSEQ1 shape above.
+3. **Its OWN record says so** — a `decision` event whose `data.status` (or
+   `data.state`, or either at top level) reads `superseded` or `resolved`,
+   case- and whitespace-insensitive. Chain:
+   `DECISION_SELF_STATUS_CHAIN`, read by `decision_self_status`; the closing
+   values live in `DECISION_CLOSING_SELF_STATUSES`.
+
+**The self-status is a SIGNAL, never a verdict.** It is stamped at CREATE time
+and nothing in the vocabulary rewrites an appended event, so a reader that
+honors it unconditionally makes it TERMINAL — re-opening, in a shape no repair
+event can even point at, the defect WALKFIX1 FR-3 closed for supersede. So it
+folds **dated at the decision's own event time**, into the same
+latest-signal-wins ordering as every other closer: a LATER `decision_reaffirmed`
+out-ranks it and restores the ruling; an EARLIER one does not.
+
+**Latest signal wins, across kinds.** Supersede, resolve, and self-status are
+ordered together against the newest reaffirm, and the newest closing signal's
+KIND names the status — not a fixed precedence, which would let a stale signal
+out-rank a fresh one purely by type. An exact tie resolves to `superseded`:
+only that reading answers "so what governs now?" by pointing at the
+replacement.
+
+**Status taxonomy is FIVE buckets**, not four: `active` / `reaffirmed` /
+`snoozed` / `resolved` / `superseded`. Before DECSHAPES1 there was no
+`resolved` bucket at all, so a decision the ledger said was carried out
+rendered under **Active** — 202 of the operator's 963 decisions on the day
+this shipped.
+
+**Standing asymmetry, deliberately unchanged:** `decision_match` has no
+reaffirm-restore on any path, so a closed-then-reaffirmed ruling is open in
+the renderer and closed for the matcher. Pre-existing (SUPERSEQ1 flagged it),
+pinned by the DECSHAPES1 suite §4 so a later build changes it knowingly.
+
+Guard: `tests/run_decshapes1_test.py` §1 pins the chains, pins
+`decision_match`'s own status alias table equal to the shared chain, asserts
+both readers are bound by object identity, and drives every limb through
+both; §4 drives both readers over one fixture and compares closed sets.
+Mutation pins D7/D8/D9 in
+`tests/run_decision_log_field_drift_mutation_test.py` — D8 specifically makes
+the NAIVE terminal fold go red.
 
 ## Style lane (SPEC STYLE1, 2026-08-25; STYLEROUTE1, 2026-08-26)
 

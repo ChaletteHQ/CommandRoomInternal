@@ -36,6 +36,15 @@ from chat_persona import (  # noqa: E402
 from output_profile import DEFAULT_OUTPUT_PROFILE, get_output_profile  # noqa: E402
 from personification import get_brain_name  # noqa: E402
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 _ORIGIN_EN = {
     "inferred_provisional": "my read of you — say the word to change it",
     "inferred_confirmed": "my read, confirmed by you",
@@ -90,11 +99,14 @@ def _knob_provenance(workspace_root: Path) -> Dict[Tuple[str, str], dict]:
     return out
 
 
-def _prov_phrase(prov: Optional[dict]) -> str:
+def _prov_phrase(prov: Optional[dict], workspace_path=None) -> str:
     if not prov:
         return "configured"
     phrase = _ORIGIN_EN.get(prov["origin"], "configured")
-    day = prov["ts"][:10]
+    # TZDATE3 — localized via `tz.localize_date` so a knob changed
+    # late-evening-local doesn't get provenance-stamped a day forward.
+    day = (_localize_date(prov["ts"], workspace_path) if workspace_path
+           else prov["ts"][:10])
     return f"{phrase} ({day})" if day else phrase
 
 
@@ -128,7 +140,7 @@ def render(workspace_root: Union[str, os.PathLike],
             else:
                 label = _PERSONA_EN.get(knob, {}).get(str(value), str(value))
             lines.append(f"- {label} — "
-                         f"{_prov_phrase(prov.get(('chat_persona', knob)))}")
+                         f"{_prov_phrase(prov.get(('chat_persona', knob)), ws)}")
 
     lines.append("")
     lines.append(f"**How {brain} shapes your documents**")
@@ -140,7 +152,7 @@ def render(workspace_root: Union[str, os.PathLike],
     else:
         for knob in changed:
             lines.append(f"- {knob.replace('_', ' ')}: {profile[knob]} — "
-                         f"{_prov_phrase(prov.get(('output_profile', knob)))}")
+                         f"{_prov_phrase(prov.get(('output_profile', knob)), ws)}")
 
     lines += [
         "",

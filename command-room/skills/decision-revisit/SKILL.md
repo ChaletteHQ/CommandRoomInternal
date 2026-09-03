@@ -63,7 +63,7 @@ Runs on-demand. Can also be scheduled through `change-schedule` (operator-led se
 
 ### Phase 1 — Load candidate decisions
 
-Read `_hq/data/events.jsonl` filtered to `type == "decision"` AND `status == "active"` (not superseded, not reaffirmed in the last 30 days, not snoozed). Build a candidate set.
+Load the candidate set through the canonical open-decision fold — `from decision_match import load_open_decisions; open_decisions = load_open_decisions(workspace_root / "_hq" / "data" / "events.jsonl")` — NEVER a freelance `status == "active"` filter over raw events. The loader is the one place that honors every accepted supersede shape (SUPERSEQ1: `decision_superseded` by id, by any data-scope seq spelling, or by the top-level `supersedes_seq` field, PLUS the restamp shape — a newer `decision` event carrying `supersedes_seq`); a hand-rolled status filter re-surfaces rulings the ledger already replaced. Then drop from the candidate set anything reaffirmed in the last 30 days or currently snoozed (`decision_reaffirmed` / `decision_revisit_scheduled` overlays referencing the decision by id or seq).
 
 **Named-decision branch ("revisit the hiring decision" / "revisit the pricing decision"):** when the trigger names a specific decision, resolve it against the candidate set (topic/entity fuzzy match; if two candidates tie, ask which). Skip Phases 2–3 entirely — no scoring, no ranking — and render Phase 4's widget with just that ONE decision card (same "why revisit?" snippet, same four actions). Only the bare scan-all triggers ("what decisions should I revisit", "decision audit") run the full rank.
 

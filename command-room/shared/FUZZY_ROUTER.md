@@ -8,6 +8,8 @@ This protocol defines how workspace-manager catches loose input, identifies what
 
 **Substrate note (v3.12.0):** This protocol references `_hq/ALIASES.md` and `_hq/PEOPLE.md` as name-lookup tables. Per `references/SOURCE_OF_TRUTH.md`, those are Tier 2 regenerated views (canonical alias data lives in `_hq/data/aliases.json`; canonical person data in `_hq/data/entities.json`). Name resolution is **name-lookup only** — workspace-manager uses these views to map "NorthStar" → `org_*` id, then routes to the right specialist. The specialist then reads canonical state from events.jsonl per the overlay rule. No state decisions ride on the Tier 2 views in this protocol.
 
+**Heading id marker (PEOPLEID1, operator ruling 2026-09-02):** `_hq/PEOPLE.md` person-card headings carry the id workspace-manager maps a spoken name to, but the id is no longer visible rendered text — it rides an HTML comment on the same heading line: `### Bo Stone <!-- id: person_002 -->` (old-shape files may still read `### Bo Stone (person_002)` until they next regenerate — both are valid to read). The name and id are still adjacent on one line; only the visible/invisible split changed. `shared/scripts/render_people_view.py::parse_person_headings` / `lookup_person_id` are the canonical backward-compatible readers implementing this exact-match step — deterministic, no fuzziness, distinct ids for similarly-named people. Fuzzy/phonetic fallback (misspellings, sound-alikes) is a separate step, `shared/scripts/entity_resolve.py`, which reads `entities.json` directly and never parses PEOPLE.md.
+
 ---
 
 ## Core Principle

@@ -59,6 +59,15 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 # ---------------------------------------------------------------------------
 # Policy constants (§0 rulings — widen by ruling, not by drift)
 # ---------------------------------------------------------------------------
@@ -1782,10 +1791,16 @@ def _link_differentiator(ws, matched) -> str:
     if date:
         from brain_proposals import _short_date
 
-        short = _short_date(str(date))
+        # TZDATE3 — `ws` (the workspace root already used above by
+        # `_record_org_name`) localizes the date through `tz.localize_date`
+        # before formatting, so an evening-local touch doesn't read as
+        # tomorrow's UTC date. The module-level `_localize_date` fallback
+        # (same localizer `_short_date` uses internally) replaces the old
+        # raw `str(date)[:10]` slice for the unparseable-Jul-8-format case.
+        short = _short_date(str(date), ws)
         if short:
             return f"last touched {short}"
-        return f"last touched {str(date)[:10]}"
+        return f"last touched {_localize_date(str(date), ws)}"
     return "no details on file"
 
 

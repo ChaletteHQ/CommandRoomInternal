@@ -59,6 +59,15 @@ from connector_adapters.provenance import (  # noqa: E402
     resolve_mail_provider,
 )
 
+# TZDATE3 — canonical date localizer (tz.py, hoisted TZDATE2). Guarded: a
+# stripped install missing tz.py keeps the pre-TZDATE3 UTC-slice behavior
+# exactly (matches the render_*.py precedent).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 
 # FS-11 (M ruling 2026-07-15): auto-close MODERATE-confidence sent-mail matches
 # too — the CEO said twice "if they are closed, just close them." Only
@@ -179,10 +188,18 @@ def _empty_signal_fields() -> dict:
     }
 
 
-def _short_date(ts):
-    """'2026-05-31T14:00:00' → '2026-05-31'. Defensive — return '' on junk."""
+def _short_date(ts, workspace_path=None):
+    """'2026-05-31T14:00:00' → '2026-05-31'. Defensive — return '' on junk.
+
+    TZDATE3 — localizes via `tz.localize_date` when a workspace path is
+    passed (the evidence/summary lines are chat-facing prose, so an
+    evening-local send must not read as tomorrow's UTC date).
+    `workspace_path=None` (the default) keeps the pre-TZDATE3
+    raw-UTC-slice behavior for any caller that hasn't been updated."""
     if not isinstance(ts, str) or not ts:
         return ""
+    if workspace_path:
+        return _localize_date(ts, workspace_path)
     return ts[:10]
 
 
@@ -406,7 +423,7 @@ def reconcile_sent(
                 evidence = (
                     "delivered by your sent message"
                     + (f" \"{msg.get('subject')}\"" if msg.get("subject") else "")
-                    + (f" ({_short_date(ts)})" if _short_date(ts) else "")
+                    + (f" ({_short_date(ts, workspace_root)})" if _short_date(ts, workspace_root) else "")
                 )
                 for cp_id in r.get("matched_counterparty_ids") or []:
                     if cp_id and cp_id not in seen_cps:
@@ -453,7 +470,7 @@ def reconcile_sent(
                 "evidence": (
                     lede
                     + (f" \"{msg.get('subject')}\"" if msg.get("subject") else "")
-                    + (f" ({_short_date(ts)})" if _short_date(ts) else "")
+                    + (f" ({_short_date(ts, workspace_root)})" if _short_date(ts, workspace_root) else "")
                 ),
             }
             prev = best.get(cid)
@@ -1271,14 +1288,14 @@ def reconcile_and_receipt(
         _append(events_path, [audit_event])
 
         if n_fetched == 0:
-            summary = (f"No new sent mail since {_short_date(cursor_before) or 'the last check'} "
+            summary = (f"No new sent mail since {_short_date(cursor_before, workspace_root) or 'the last check'} "
                        f"— nothing to reconcile.")
         elif n_auto == 0:
             summary = (f"Checked {n_fetched} sent message{'s' if n_fetched != 1 else ''} "
                        f"— nothing matched an open commitment.")
         else:
             tail = f", {n_pend} to confirm" if n_pend else ""
-            summary = (f"Reconciled your sent mail through {_short_date(cursor_after)}: "
+            summary = (f"Reconciled your sent mail through {_short_date(cursor_after, workspace_root)}: "
                        f"closed {n_auto} you'd already handled{tail}.")
         n_opened = capture["n_opened"] if isinstance(capture, dict) else 0
         if n_opened:

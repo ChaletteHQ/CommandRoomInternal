@@ -146,6 +146,7 @@ CANONICAL_TASK_IDS = frozenset({
     "identity-reconcile",  # PID1 D7 — the Sunday identity reconciler job inside `maintenance` (also the M-fired one-time backfill)
     "meeting-capture",  # EODSPEED1 — the incremental capture pass job inside `maintenance` (never a task of its own; its pack_run is the dispatcher's dueness signal and catchup_window's resume point — NEVER written under past-meetings, which would arm skip_render against the real close)
     "monthly-scorecard",  # SPEC OUT7 — the OPT-IN monthly KPI scorecard job inside `maintenance` (never auto-fires; its pack_run receipt self-limits it to monthly once opted in)
+    "binding-gauge",  # GAUGEJOB1 — the daily binding-gauge refresh job inside `maintenance` (never a task of its own; its pack_run is the dueness signal, written on CHANGE runs only — a quiet run leaves no trace, see binding_gauge.run_gauge_refresh_job's QUIET-RUN SEMANTICS)
 })
 
 # Renames where the canonical form is NOT just a cr-strip + underscore fix.
@@ -324,6 +325,18 @@ RECEIPT_TYPES: dict[str, dict] = {
     # or "applied"; a refusal that never reached a plan carries neither and is
     # therefore not counted.
     "age-out":            {"types": frozenset({"pack_run"})},
+    # GAUGEJOB1 — the daily binding-gauge refresh job's receipt. `pack_run`,
+    # the standard scheduled-job shape: the dispatcher's dueness rule reads it
+    # and self-limits the refresh to daily on any day with substrate
+    # movement. Written on CHANGE runs ONLY, and BEFORE the artifact — a
+    # deliberate departure from review-expiry's receipt-every-fire rule: the
+    # receipt is itself a ledger event, so a quiet-run receipt (or one
+    # written after the artifact) would advance the events high-water mark
+    # past the artifact's own stamp and flag every reader stale over the
+    # job's bookkeeping forever. A quiet run leaves no trace and simply
+    # re-runs at the next fire (~2s, the accepted trade — see
+    # binding_gauge's QUIET-RUN SEMANTICS note).
+    "binding-gauge":      {"types": frozenset({"pack_run"})},
     # SPEC OUT7 — the opt-in monthly KPI scorecard job's receipt. pack_run, the
     # standard scheduled-pack shape (like deal-signals / staff-meeting): the
     # dispatcher's due-ness rule reads it so a fired scorecard self-limits to
@@ -508,6 +521,7 @@ def log_receipt(
     duration_ms: Optional[int] = None,
     late_tier: Optional[str] = None,
     extra_data: Optional[dict] = None,
+    now=None,
 ) -> dict:
     """THE receipt writer. Every scheduled/manual task fire ends with one
     call here (directly or via the log_pack_run back-compat wrapper).
@@ -517,6 +531,19 @@ def log_receipt(
     through event_gate.append_event (enum check + locked writer + UTC
     auto-stamp), and returns the event dict as appended (minus seq/ts, which
     the writer lock stamps).
+
+    `now` (SPEC FLAKEFIX2) is the instant the SLOT PROVENANCE below is measured
+    against — machine-local naive, the clock cron evaluates in, or an ISO
+    string this function parses for you. Omitted, provenance reads the real
+    clock exactly as it always has and no caller sees any difference.
+
+    IT EXISTS BECAUSE `slot_provenance` STAMPS A MINUTE-GRANULAR WALL-CLOCK
+    READING (`slot_delta_minutes`) INTO EVERY RECEIPT'S `data`. Two receipts
+    written back to back therefore carry different payloads whenever the pair
+    straddles a wall-clock MINUTE — and a different `scheduled_for` whenever it
+    straddles the task's own daily slot. A fixture comparing two payloads for
+    equality must pin the instant here rather than race it; `slot_provenance`
+    has always taken a `now`, this threads it the one hop that was missing.
     """
     canonical = normalize_task_id(task_id)
     if canonical not in CANONICAL_TASK_IDS:
@@ -576,8 +603,13 @@ def log_receipt(
     try:
         from late_fire import slot_provenance
 
+        at = now
+        if isinstance(at, str):
+            at = _dt.datetime.fromisoformat(at.replace("Z", "+00:00"))
+            if at.tzinfo is not None:
+                at = at.astimezone().replace(tzinfo=None)
         for k, v in slot_provenance(workspace_root, canonical,
-                                    fired_via=via).items():
+                                    now=at, fired_via=via).items():
             data.setdefault(k, v)
     except Exception:  # noqa: BLE001 — provenance never blocks a receipt
         pass

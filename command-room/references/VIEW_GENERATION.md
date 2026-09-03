@@ -196,9 +196,16 @@ Projected from: `entities.json` (people + orgs arrays) + `events.jsonl` (interac
 
 **Helper — `people_list_for_org(org_id)`:**
 
+**PEOPLEID1 (operator ruling 2026-09-02):** the heading id moved from a
+visible parenthetical into an HTML comment on the same line — invisible in
+rendered markdown/HTML, still present in the raw source. Marker grammar:
+`<!-- id: <id> -->`, one space after `id:`, one space after the name. See
+`shared/scripts/render_people_view.py` (writer) and its `parse_person_headings`
+/ `lookup_person_id` (backward-compatible readers, accept old and new shape).
+
 ```
 <for each active person where primary_org_id == org_id (or org_id in org_ids if org_id is null → primary_org_id is null), sorted by canonical_name>
-### <canonical_name> (<id>)
+### <canonical_name> <!-- id: <id> -->
 
 - **Role:** <role or "—">
 - **Primary Org:** <canonical_name(primary_org_id)> <relationship_type_badge(primary_org_id)>
@@ -226,11 +233,15 @@ Projected from: `entities.json` (people + orgs arrays) + `events.jsonl` (interac
 
 Projected from: `events.jsonl` (type == "decision", with closure status from `decision_resolved` / `decision_superseded` events — v3.4.5+)
 
-**Regenerated when:** any `events.jsonl` append with `type: decision`, `type: decision_resolved` (v3.4.5+), `type: decision_superseded` (v3.4.5+), or `supersedes_seq` pointing to a decision event (including `reclassification` events that reroute a decision's primary thread).
+**Regenerated when:** any `events.jsonl` append with `type: decision`, `type: decision_resolved`, `type: decision_superseded`, `type: decision_reaffirmed`, `type: decision_revisit_scheduled`, or `supersedes_seq` pointing to a decision event (including `reclassification` events that reroute a decision's primary thread).
 
-**Closure model (v3.4.5+):** a decision's status is `Active` by default, `Resolved` if any later event of `type: decision_resolved` references it via `data.decision_id`, `Superseded` if any later event of `type: decision_superseded` references it. Closed decisions stay in the log — they're marked, never deleted — but get a visible badge so the active set is scannable. Decision-CRU writes closure events silently (CONTRACT.md Rule 24); the user discovers them via this view.
+**Status model (v3.13.0+, current — DECSHAPES1 2026-09-02).** FIVE buckets, each with its own section: `active` / `reaffirmed` / `snoozed` / `resolved` / `superseded`. The two CLOSED ones are exported as `render_decision_log.CLOSED_DECISION_STATUSES` — a consumer that filters the fold's output reads that set instead of spelling the statuses out. Closed decisions stay in the log; they're badged and moved, never deleted. Decision-CRU writes closure events silently (CONTRACT.md Rule 24); the user discovers them via this view.
 
-**Closure-id matching:** for each decision event, its id is `data.id` if set, else the synthesized `decision_seq_<seq>`. Closure events reference that same id via `data.decision_id`. Mirrors the `commitment` / `commitment_resolved` pairing pattern.
+**Latest signal wins.** A decision is closed by a `decision_superseded` (replaced), a `decision_resolved` (carried out), a restamping `decision` carrying `supersedes_seq`, or its OWN `data.status` reading `superseded`/`resolved`. Those closing signals are ordered TOGETHER by their own timestamps against the newest `decision_reaffirmed`, and the newest closing signal's KIND names the bucket. A later reaffirm out-ranks all of them and restores the decision to `reaffirmed`, carrying the reversed signal on the line as history (WALKFIX1 FR-3). A self-status is dated at the decision's own event time, so it is out-ranked by any genuine later repair — honoring it unconditionally would make it terminal, which is the defect that fold exists to avoid. An exact tie between the two closing kinds resolves to `superseded`.
+
+**Closure-id matching:** for each decision event, its id is `data.id` if set, else the synthesized `decision_seq_<seq>`. Closure events reference that id via `data.decision_id` — OR by any accepted seq spelling (`original_decision_seq` / `supersedes_seq` / `decision_event_seq`, data scope or top level). **Do not re-derive these fields in a reader:** the chains live once in `shared/scripts/event_types.py` and are walked by `decision_supersede_targets` / `decision_resolve_targets` / `decision_self_status`, which `render_decision_log` and `decision_match` both bind to. Re-deriving them is the writer/reader field-drift class (BUG-8330 item 3, the 2026-08-13 drift, SUPERSEQ1, DECSHAPES1). See `shared/EVENT_TYPES.md` → "Decision closure and status shapes".
+
+> **STALE BELOW (pre-existing, flagged DECSHAPES1 2026-09-02):** the template block and status-badge glyphs that follow describe the pre-v3.13.0 per-decision `## <ts> — <title>` format with `✓`/`⚠` badges. The renderer has not emitted that shape since v3.13.0 — it groups by status into sections with `[SUPERSEDED]`-style badges. Not rewritten here because it is outside the DECSHAPES1 change; `shared/EVENT_TYPES.md` is authoritative for the fold, and `render_decision_log.py`'s own docstring for the output.
 
 **Template (v3.4.5+):**
 

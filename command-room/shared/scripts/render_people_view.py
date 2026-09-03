@@ -17,8 +17,32 @@ deterministic; cleanup's weekly sweep (Phase 3.5) calls it so the view never
 falls behind canonical substrate. Wrapper-aware (nested-vs-flat entities shape)
 and shape-defensive on the deprecated `email`/`org_id` fields.
 
+PEOPLEID1 (operator ruling 2026-09-02) — heading id marker:
+Person-card headings used to render the id as a visible parenthetical —
+`### Bo Stone (person_002)` — which leaked an internal token into a
+customer-facing rendered view (JARGONVIEWS1 F5). The id is load-bearing
+(`shared/FUZZY_ROUTER.md` documents PEOPLE.md as the name -> id lookup table
+workspace-manager reads), so it could not simply be deleted. The ruling: keep
+the id on the same heading line but move it into an HTML comment, invisible
+when the view renders as markdown/HTML but still present in the raw text any
+reader (human, script, or Claude reading the file) sees:
+
+  ### Bo Stone <!-- id: person_002 -->
+
+Marker grammar: `<!-- id: <id> -->`, one space after `id:`, immediately
+following the name with a single space, nothing else on the line. Greppable
+via `<!-- id: (person_[0-9a-z]+) -->`. `parse_person_headings()` /
+`lookup_person_id()` below are the canonical backward-compatible readers —
+they accept BOTH this shape and the old parenthetical shape, so a client
+workspace whose PEOPLE.md has not yet regenerated still resolves correctly.
+A workspace flips to the new shape automatically the next time this module's
+`regenerate()` runs (any "cleanup" invocation, or any people-touching write
+from workspace-manager / people-crm) — no separate migration step.
+
 PUBLIC API:
   regenerate(workspace_root) -> dict   (counts; idempotent; atomic-write)
+  parse_person_headings(rendered) -> dict[str, str]   (name -> id, both shapes)
+  lookup_person_id(rendered, name) -> str | None       (exact-name lookup)
 
 USAGE:
   python3 shared/scripts/render_people_view.py <workspace_root>
@@ -27,6 +51,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -37,12 +62,77 @@ from atomic_write import atomic_write_text  # noqa: E402
 from entities_io import entities_collection  # noqa: E402
 from event_time import event_time  # noqa: E402
 
+# TZDATE2 (same class as walk finding F-12): first-seen / last-interaction
+# dates render the WORKSPACE-local day via the canonical tz.localize_date —
+# a raw [:10] slice stamped the UTC date, so an evening-Pacific interaction
+# dated a day late. Every call site passes the workspace path. UTC-slice
+# stub only when tz.py itself is missing (stripped install).
+try:
+    from tz import localize_date as _localize_date  # noqa: E402
+except ImportError:
+    def _localize_date(ts: str | None, workspace_path: str | None = None) -> str:
+        return ts[:10] if isinstance(ts, str) and ts else ""
+
 CONFIDENCE_FLOOR = 0.40
 REL_TYPE_ORDER = [
     "operating", "partner", "client", "board", "advisory", "investment",
     "portfolio_company", "beneficiary", "service_provider", "vendor",
     "prospect", "other",
 ]
+
+
+# ---------------------------------------------------------------------------
+# PEOPLEID1 — person-card heading id marker: writer + backward-compatible
+# reader. See the module docstring for the ruling and the marker grammar.
+# ---------------------------------------------------------------------------
+
+# Matches a person-card heading in EITHER shape and captures the id:
+#   new:  ### Bo Stone <!-- id: person_002 -->
+#   old:  ### Bo Stone (person_002)
+_HEADING_ID_RE = re.compile(
+    r"^###\s+(?P<name>.+?)"
+    r"(?:\s*<!--\s*id:\s*(?P<id_new>person_[0-9a-z]+)\s*-->"
+    r"|\s*\((?P<id_old>person_[0-9a-z]+)\))"
+    r"\s*$"
+)
+
+
+def parse_person_headings(rendered: str) -> dict[str, str]:
+    """Backward-compatible reader: {canonical_name: id} for every person-card
+    heading in a rendered PEOPLE.md, regardless of whether that heading was
+    written in the old visible-parenthetical shape or the new HTML-comment
+    marker shape (both are accepted for the transition — see module
+    docstring). EXACT strings only: no fuzzing, no edit-distance, no Soundex.
+    Fuzzy/phonetic name matching is entity_resolve.py's job, reading
+    entities.json directly; this function's contract is deterministic exact
+    lookup only, so two similarly-named people (e.g. "Bo Stone" and "Mira
+    Stone") never collide here.
+    """
+    out: dict[str, str] = {}
+    for line in rendered.splitlines():
+        m = _HEADING_ID_RE.match(line.strip())
+        if not m:
+            continue
+        pid = m.group("id_new") or m.group("id_old")
+        name = m.group("name").strip()
+        if name and pid:
+            out[name] = pid
+    return out
+
+
+def lookup_person_id(rendered: str, name: str) -> str | None:
+    """Exact (case- and whitespace-insensitive) name -> id lookup against a
+    rendered PEOPLE.md. This is the canonical implementation of the
+    name -> id step `shared/FUZZY_ROUTER.md` documents PEOPLE.md as providing
+    for workspace-manager's Layer 3 name-mention routing: deterministic,
+    no fuzziness, and unaffected by whether the source view is old-shape or
+    new-shape. Returns None on no exact match — ambiguous / fuzzy resolution
+    is out of scope here (see entity_resolve.resolve_all for that ladder)."""
+    index = {
+        " ".join(n.split()).casefold(): pid
+        for n, pid in parse_person_headings(rendered).items()
+    }
+    return index.get(" ".join(name.split()).casefold())
 
 
 def _events_path(ws: Path) -> Path:
@@ -120,7 +210,8 @@ def _person_emails(p: dict) -> list[str]:
     return [single] if single else []
 
 
-def _last_interaction(person_id: str, events: list[dict], first_seen: str) -> str:
+def _last_interaction(person_id: str, events: list[dict], first_seen: str,
+                      workspace_path: str | None = None) -> str:
     latest = None
     for ev in events:
         if ev.get("type") not in ("interaction", "meeting"):
@@ -134,16 +225,21 @@ def _last_interaction(person_id: str, events: list[dict], first_seen: str) -> st
         ts = event_time(ev)
         if ts and (latest is None or ts > latest):
             latest = ts
-    return (latest or first_seen or "")[:10]
+    return _localize_date(latest or first_seen or "", workspace_path)
 
 
-def _person_card(p: dict, name_idx: dict[str, str], events: list[dict]) -> str:
+def _person_card(p: dict, name_idx: dict[str, str], events: list[dict],
+                 workspace_path: str | None = None) -> str:
     name = p.get("canonical_name") or p.get("id") or "(unnamed)"
-    out = [f"### {name} ({p.get('id', '')})", ""]
+    out = [f"### {name} <!-- id: {p.get('id', '')} -->", ""]
     out.append(f"- **Role:** {p.get('role') or '—'}")
     org_id = _person_org_id(p)
     if org_id:
-        out.append(f"- **Primary Org:** {name_idx.get(org_id, org_id)}")
+        # JARGONVIEWS1: an org id that is not in the index (pruned, merged, or
+        # written before the org landed) used to render the raw `org_001`
+        # token into the customer's registry. Fall back to the view's own
+        # missing-value mark instead of an internal id.
+        out.append(f"- **Primary Org:** {name_idx.get(org_id) or '—'}")
     emails = _person_emails(p)
     out.append(f"- **Email:** {', '.join(emails) if emails else '—'}")
     aliases = p.get("aliases") or []
@@ -151,11 +247,17 @@ def _person_card(p: dict, name_idx: dict[str, str], events: list[dict]) -> str:
         out.append(f"- **Aliases:** {', '.join(aliases)}")
     threads = p.get("project_ids") or []
     if threads:
-        out.append(f"- **Threads:** {', '.join(name_idx.get(t, t) for t in threads)}")
-    fs = (p.get("first_seen") or "")[:10]
+        # JARGONVIEWS1: same dangling-reference class as Primary Org above —
+        # an unresolvable thread id is DROPPED from the list rather than
+        # printed raw. A shorter honest list beats one carrying `project_003`.
+        names = [n for n in (name_idx.get(t) for t in threads) if n]
+        if names:
+            out.append(f"- **Threads:** {', '.join(names)}")
+    fs = _localize_date(p.get("first_seen") or "", workspace_path)
     if fs:
         out.append(f"- **First seen:** {fs}")
-    li = _last_interaction(p.get("id", ""), events, p.get("first_seen", ""))
+    li = _last_interaction(p.get("id", ""), events, p.get("first_seen", ""),
+                           workspace_path)
     if li:
         out.append(f"- **Last interaction:** {li}")
     notes = p.get("notes")
@@ -170,6 +272,7 @@ def regenerate(workspace_root: str | Path) -> dict[str, Any]:
     view (+ back-compat copy). Returns counts. Idempotent (content-stable apart
     from the regenerated-at header)."""
     ws = Path(workspace_root)
+    ws_str = str(ws)  # TZDATE2 — threaded to every date-rendering call
     view = _load_collections(_entities_path(ws))
     events = _load_events(_events_path(ws))
     name_idx = _name_index(view)
@@ -199,7 +302,7 @@ def regenerate(workspace_root: str | Path) -> dict[str, Any]:
         if not ppl:
             return []
         rendered.add(o["id"])
-        return [_person_card(p, name_idx, events) for p in ppl]
+        return [_person_card(p, name_idx, events, ws_str) for p in ppl]
 
     body: list[str] = []
 
@@ -252,7 +355,7 @@ def regenerate(workspace_root: str | Path) -> dict[str, Any]:
     if unaff:
         body += ["## Unaffiliated", ""]
         for p in sorted(unaff, key=lambda p: (p.get("canonical_name") or "").lower()):
-            body.append(_person_card(p, name_idx, events))
+            body.append(_person_card(p, name_idx, events, ws_str))
 
     if archived:
         names = sorted(a.get("canonical_name") or a.get("id", "") for a in archived)

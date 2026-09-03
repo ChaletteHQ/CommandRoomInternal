@@ -69,6 +69,17 @@ from cru_match import load_events_defensively, score_match
 from cru_match import _normalize_fire_start, _parse_ts  # noqa: E402
 from event_time import event_time  # noqa: E402
 
+# SUPERSEQ1 (walk finding F-11) — the decision-supersede target chains live in
+# ONE home, shared with render_decision_log. This module used to close by id
+# only, so a ruling superseded via any seq-shaped spelling (including the
+# top-level `supersedes_seq` the schema/gate accept) stayed "open" here and
+# could be re-proposed against.
+from event_types import (  # noqa: E402
+    decision_supersede_targets,
+    decision_resolve_targets,
+    decision_self_status,
+)
+
 # v3.5.0+: canonical source in shared/scripts/confidence.py. Aliased here
 # for back-compat — existing callers and __all__ exports keep the old name.
 from confidence import DECISION_MATCH_AUTO_RESOLVE
@@ -265,6 +276,12 @@ _DECISION_FIELD_ALIASES = {
     # follow-up-ritual) all read correctly.
     "title": ("title", "decision", "summary"),
     "decided_by": ("decided_by", "made_by", "owner_id"),
+    # DECSHAPES1 — the status limb is now the SHARED spec: the canonical copy
+    # is `event_types.DECISION_SELF_STATUS_CHAIN`, which both this loader and
+    # the decision-log renderer read the decision's self-status through. Kept
+    # here so this table still documents the full decision shape, and pinned
+    # equal to the shared chain by the DECSHAPES1 drift guard — edit the
+    # vocabulary home, not this entry.
     "status": ("status", "state"),
     "rationale": ("rationale", "reason", "why"),
 }
@@ -327,6 +344,15 @@ def load_open_decisions(events_jsonl_path: str | Path) -> list[dict]:
 
     Mirrors `cru_match.load_open_commitments`. Returns full event dicts so
     the caller can pull title / decided_by / primary_thread_id as needed.
+
+    Three closure routes, all through the shared vocabulary home so the
+    decision-log renderer cannot disagree (DECSHAPES1): an overlay closer
+    naming this decision (`decision_superseded` / `decision_resolved`, id or
+    seq spelling), a restamping `decision`, and the decision's OWN closing
+    status. Note the standing asymmetry, unchanged here: this loader has no
+    reaffirm-restore, so a closed-then-reaffirmed ruling is open in the
+    renderer and closed here (SUPERSEQ1 flagged it; it predates both builds
+    and applies to the id path too).
     """
     path = Path(events_jsonl_path)
     if not path.exists():
@@ -334,6 +360,12 @@ def load_open_decisions(events_jsonl_path: str | Path) -> list[dict]:
 
     open_evs: list[dict] = []
     closed_ids: set[str] = set()
+    # SUPERSEQ1 — seq-shaped supersede targets close too. Every accepted
+    # spelling (data-scope AND the schema's top-level `supersedes_seq`), plus
+    # the restamp shape: a NEW `decision` event carrying `supersedes_seq`
+    # retires the ruling at that seq. Chain home:
+    # event_types.decision_supersede_targets (same one the renderer walks).
+    closed_seqs: set = set()
 
     # EVGUARD — the hand-rolled loop that used to live here caught only
     # JSONDecodeError, so a top-level bare-string line parsed fine and the next
@@ -353,15 +385,48 @@ def load_open_decisions(events_jsonl_path: str | Path) -> list[dict]:
             )
             if did:
                 closed_ids.add(did)
+            # SUPERSEQ1 — a decision_superseded that names its target only by
+            # a seq spelling used to close NOTHING here (the renderer honored
+            # it since 2026-08-13; this reader never did — reader/reader
+            # drift). All accepted spellings now close, via the shared chain.
+            #
+            # DECSHAPES1 — the resolved closer walks its own shared function
+            # (same two chains; see event_types.DECISION_RESOLVE_ID_CHAIN).
+            # SUPERSEQ1 left this one id-only because the builder only ever
+            # writes `data.decision_id`; the gate accepts every other spelling
+            # too, and "the current writer only spells it one way" is the
+            # sentence that preceded all three prior instances of this class.
+            target_ids, target_seqs = decision_supersede_targets(ev)
+            closed_ids.update(target_ids)
+            closed_seqs.update(target_seqs)
+            resolve_ids, resolve_seqs = decision_resolve_targets(ev)
+            closed_ids.update(resolve_ids)
+            closed_seqs.update(resolve_seqs)
         elif et == "decision":
-            status = _decision_field(ev, "status") or "active"
-            # Active is the default; legacy decisions sometimes carry
-            # "Active" (title-cased) or no status at all. Treat anything
-            # other than explicit "superseded" / "resolved" string as open.
-            if str(status).lower() not in ("superseded", "resolved"):
+            # DECSHAPES1 — the self-status read moved to the shared home
+            # (event_types.decision_self_status), which reads the SAME alias
+            # chain in the SAME priority order this loader's `_decision_field`
+            # did, and which the decision-log renderer now binds to as well.
+            # Behavior here is unchanged; the point is that the renderer can
+            # no longer disagree with it about what the field says. Active is
+            # the default: legacy decisions carry "Active" (title-cased),
+            # "pending", or no status at all, and anything that is not an
+            # explicit "superseded" / "resolved" is open.
+            if decision_self_status(ev) is None:
                 open_evs.append(ev)
+            # SUPERSEQ1 — the restamp shape: this decision retires the ruling
+            # at the seq it names (self-reference excluded inside the helper).
+            # The restamping decision itself stays open; its target must not,
+            # or the matcher keeps scoring transcripts against a ruling the
+            # ledger already replaced.
+            _ids, restamp_seqs = decision_supersede_targets(ev)
+            closed_seqs.update(restamp_seqs)
 
-    return [d for d in open_evs if _decision_id(d) not in closed_ids]
+    return [
+        d for d in open_evs
+        if _decision_id(d) not in closed_ids
+        and d.get("seq") not in closed_seqs
+    ]
 
 
 # -----------------------------------------------------------------------------

@@ -1,0 +1,27 @@
+{
+  "version": "5.22.0",
+  "headline": "Stale unconfirmed captures now clean themselves up after two quiet days, your saved tone preferences govern scheduled briefs too, and overnight-drafted session notes wait for your confirmation before entering the record.",
+  "items": [
+    {
+      "id": "v5220_announce_unconfirmed_expiry",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Unconfirmed captures now clean themselves up. When a possible commitment is extracted from a meeting or email and you don't claim or drop it within about two days, it closes on its own and disappears from your queues — reversibly. Heads up on the first morning after this update: the whole standing backlog of stale unconfirmed items will close in one batch, and your brief will say so in one line. That is the new rule working, not data loss — nothing is deleted, saying \"undo\" right after puts every one of them back, and anything you have actually confirmed as a real commitment is never touched.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5220_announce_persona_on_scheduled",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Your saved tone preferences now govern scheduled surfaces too. If you have told your assistant how to talk to you — for example \"never open with pleasantries\" — the morning brief, evening close, and weekly recap now honor it, not just regular chats. Nothing to do: the preference you already saved simply applies everywhere from the next scheduled run.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5220_announce_swept_notes_quarantine",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Overnight-drafted session notes now wait for your confirmation. When you walk away from a work session without saying \"end session\", the nightly sweep still drafts notes for it — but they are held in a side file your client-facing documents cannot see, instead of landing straight in the project's session notes. The next time you say \"end session\" on that project, the held notes fold in as confirmed. If any sit waiting too long, your weekly note will mention them.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -15,7 +15,7 @@ description: "Turn every decision the CEO makes — in meetings, Slack threads, 
 ## Writer Contract
 
 - **Writes:** `decision` events to `_hq/data/events.jsonl` (append-only) with v2.2 shape (`primary_thread_id` + optional `related_thread_ids[]` + `org_ids[]`). **v3.13.0+ MANDATORY: stamp `data.project_id` on every new decision event** by inferring from the active project context (the most-recently-loaded project per session, or the project matching `primary_thread_id`). Without `project_id`, the decision can't be surfaced when the CEO opens that specific project — pre-v3.13.0, ~95% of decisions in M's substrate carried no project_id, breaking project-scoped recall.
-- **Regenerates:** `_hq/views/DECISION_LOG.md` view after every write via `shared/scripts/render_decision_log.py` (v3.13.0+ — script created in this release). Also regenerated when a `decision_resolved`, `decision_superseded`, `decision_reaffirmed`, or `decision_revisit_scheduled` event is appended — those overlays update the status badge ([SUPERSEDED] / [REAFFIRMED] / [SNOOZED]) on the referenced decision in the view. Pre-v3.13.0 the SKILL prose claimed auto-regeneration but no script existed; the view fell ~57 decisions stale.
+- **Regenerates:** `_hq/views/DECISION_LOG.md` view after every write via `shared/scripts/render_decision_log.py` (v3.13.0+ — script created in this release). Also regenerated when a `decision_resolved`, `decision_superseded`, `decision_reaffirmed`, or `decision_revisit_scheduled` event is appended — those overlays update the status badge ([SUPERSEDED] / [RESOLVED] / [REAFFIRMED] / [SNOOZED]) on the referenced decision in the view. Pre-v3.13.0 the SKILL prose claimed auto-regeneration but no script existed; the view fell ~57 decisions stale.
 
 **Event append recipe (MANDATORY — SPEC GATE1 / A1).** The `decision` event MUST be written through the locked writer `atomic_append_jsonl`, NOT a hand-rolled `next_seq`+`open('a')` append or a raw `>>`. The helper reserves the seq and writes inside the cross-process writer lock (`_hq/data/.writer.lock`), so a concurrent append can't lose your decision or duplicate a seq. Omit `seq`/`ts` — the helper auto-stamps both atomically. This recipe is the A1 lock contract; see `shared/WORKSPACE_API.md` → Append Protocol §3.
 
@@ -75,7 +75,7 @@ Per `shared/CONTRACT.md` Rule 4: the regeneration is silent — the user sees th
 - `decision_resolved` — the decision was executed / acted on. Written by the decision-CRU layer (`shared/scripts/decision_match.py`) when a meeting transcript shows completion language matching an open decision (HIGH-confidence auto-write only).
 - `decision_superseded` — a newer decision overrides this one. Same auto-write path, triggered by reversal language in a transcript.
 
-Closed decisions stay in the log — they're marked with a status badge (✓ Resolved or ⚠ Superseded) but never deleted. View regeneration must filter active vs closed when rendering. Per `shared/CONTRACT.md` Rule 24, the CRU layer is silent: closure events never appear in chat. The DECISION_LOG view is where users discover them.
+Closed decisions stay in the log — they're marked with a status badge ([RESOLVED] for a ruling that was carried out, [SUPERSEDED] for one a later ruling replaced) and moved to their own section, but never deleted. The renderer's five buckets are `active` / `reaffirmed` / `snoozed` / `resolved` / `superseded`; the two closed ones are `render_decision_log.CLOSED_DECISION_STATUSES` — read that set rather than spelling the statuses out, so a later bucket cannot slip past a filter. Per `shared/CONTRACT.md` Rule 24, the CRU layer is silent: closure events never appear in chat. The DECISION_LOG view is where users discover them.
 
 ---
 
@@ -186,7 +186,7 @@ Each decision in the log follows this structure:
 **Rationale:** [why — context, alternatives considered]  
 **Made by:** [who made the call]  
 **Impact:** [what changes as a result]  
-**Status:** Active / Superseded by [newer decision + date]  
+**Status:** Active / Reaffirmed / Snoozed / Resolved / Superseded by [newer decision + date]  
 **Tags:** [relevant categories or outcomes]  
 ```
 

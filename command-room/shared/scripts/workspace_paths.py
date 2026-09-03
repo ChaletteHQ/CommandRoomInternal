@@ -103,6 +103,11 @@ POINTER_FIELDS: tuple = (
     # it, and an unswept-but-correct writer is one edit away from an unswept
     # incorrect one.
     "quarantine_file",
+    # MIGRATE2 (2026-09-02). The update-bridge's apply_workspace_migration
+    # runner records where its receipt landed (`_hq/data/migrate1/...`) on
+    # the plugin_update_remediation row it writes — declared here the day it
+    # was added, so the guard-tier sweep reads it from the first release.
+    "receipt_path",
 )
 
 # The generated-deliverable file types CONTRACT.md Rule 3 governs — the ones a

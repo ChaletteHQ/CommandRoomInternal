@@ -267,6 +267,48 @@ def _parse_string_timestamp(value: str) -> datetime:
     )
 
 
+def localize_date(
+    ts: Union[str, None],
+    workspace_path: Union[str, Path, None] = None,
+) -> str:
+    """Workspace-local DATE (YYYY-MM-DD) for an event/connector timestamp.
+
+    The canonical F-12 helper (TZDATE1 built it inside render_decision_log;
+    TZDATE2 hoisted it here and retired the per-renderer copies). Semantics:
+
+      - non-string or empty input → ""
+      - date-only input (exactly YYYY-MM-DD) → returned AS-IS — a value that
+        never carried a time must not be TZ-shifted backwards
+      - with a workspace path → `to_local(...)` then '%Y-%m-%d' (naive input
+        read as UTC, per to_local's contract)
+      - fallback → `ts[:10]`, the UTC spelling's date portion — taken only
+        when localization genuinely cannot resolve (no path, workspace TZ
+        unconfigured, unparseable timestamp; `to_local` raises and this
+        helper swallows it, because a rendered view beats a traceback)
+
+    Every call site MUST pass `workspace_path`. The TZDATE1 walk finding
+    (F-12, P1) was exactly this omission: the decision-log renderer had a
+    working helper and not one call site passed the path, so every timestamp
+    fell through to the UTC slice and every decision logged after 5 PM
+    Pacific rendered a day late — while the same file's regenerated-at
+    header was correctly localized, the mixed-clock tell the walk caught.
+    """
+    if not isinstance(ts, str) or not ts:
+        return ""
+    # Date-only — keep as is
+    if len(ts) == 10 and ts.count("-") == 2:
+        return ts
+    if workspace_path:
+        try:
+            local_dt = to_local(ts, workspace_path=workspace_path)
+            if local_dt:
+                return local_dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    # Fallback: take first 10 chars (ISO date portion)
+    return ts[:10]
+
+
 def format_local(
     value: Union[str, datetime, None],
     fmt: str = "%Y-%m-%d %H:%M %Z",

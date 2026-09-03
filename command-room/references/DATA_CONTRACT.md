@@ -327,7 +327,8 @@ These files all carry the v1.8 version headers (three HTML comments) where appli
 
 - Inside structured data (entities.json, events.jsonl, aliases.json, classifier_feedback.jsonl), references use `id` (`person_042`, `project_008`, `org_acme_restaurant`).
 - Inside markdown sources (BUSINESS_CONTEXT, PROJECT_CONTEXT, PROJECT_BRAIN, SESSION_NOTES), references use `canonical_name` / `display_name` as readable text.
-- Inside regenerated views (`_hq/views/*`), references use `canonical_name` / `display_name` with the id in parentheses on first occurrence per document: `Bo Sample (person_042)`, `Sourcing Bot Rollout (project_008)`, `Acme Restaurant (org_acme_restaurant)`.
+- Inside regenerated views (`_hq/views/*`), references use `canonical_name` / `display_name` with the id in parentheses on first occurrence per document: `Sourcing Bot Rollout (project_008)`, `Acme Restaurant (org_acme_restaurant)`.
+- **PEOPLE.md person-card headings are the one exception (PEOPLEID1, operator ruling 2026-09-02).** The id there is load-bearing for `shared/FUZZY_ROUTER.md`'s name -> id lookup but is customer-facing rendered text, so it is NOT in a visible parenthetical — it rides an HTML comment on the same heading line, invisible when rendered, still readable in the raw source: `Bo Sample <!-- id: person_042 -->`. Old-shape files (`Bo Sample (person_042)`) are still readable during the transition — see `render_people_view.parse_person_headings` / `lookup_person_id`.
 - Inside CONFLICTS.md, always include both for debuggability.
 - User-facing language is **"thread"** throughout. The schema `project_` ID prefix is internal and never surfaces in views or UI copy. Briefings say "3 threads waiting on you", not "3 projects".
 - Org rendering follows `morning-briefing` Step 4: primary-focus orgs first (with nested operating children under holdings), remaining orgs rolled into OTHER ORGS grouped by `relationship_type`.
